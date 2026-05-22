@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import shutil
+from typing import Any
 from .mbox import sync_mailing_list
 from .github import download_github_issues, process_github_issues
 from .meetings import process_meetings
@@ -26,7 +27,7 @@ from .notebooklm import (
 )
 
 
-def load_config_args(wg_name: str) -> dict:
+def load_config_args(wg_name: str) -> dict[str, Any]:
     """Load persisted arguments for a Working Group."""
     config_file = os.path.join(get_config_dir(), wg_name, "config.json")
     if os.path.exists(config_file):
@@ -38,7 +39,7 @@ def load_config_args(wg_name: str) -> dict:
     return {}
 
 
-def save_config_args(wg_name: str, args: dict) -> None:
+def save_config_args(wg_name: str, args: dict[str, Any]) -> None:
     """Save arguments for a Working Group."""
     wg_config_dir = os.path.join(get_config_dir(), wg_name)
     os.makedirs(wg_config_dir, exist_ok=True)
