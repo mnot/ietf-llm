@@ -52,37 +52,27 @@ on the Claude side.
    claude mcp add ietf-llm -- ietf-llm-mcp
    ```
 
-   For Claude Desktop, edit `claude_desktop_config.json` (create it if it
-   doesn't exist):
+   For Claude Desktop, edit `claude_desktop_config.json` (see paths and
+   full snippet under "[MCP Server](#mcp-server)" below).
 
-   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-   - **Linux:** `~/.config/Claude/claude_desktop_config.json`
+   Using a different MCP-capable harness (Codex, Gemini CLI, opencode,
+   Cursor, Zed, …)? See the [MCP Server](#mcp-server) section for
+   per-harness config snippets.
 
-   ```json
-   {
-     "mcpServers": {
-       "ietf-llm": {
-         "command": "ietf-llm-mcp"
-       }
-     }
-   }
-   ```
-
-   Quit and relaunch Claude Desktop — the config is only read at startup.
-   If `ietf-llm-mcp` isn't on the PATH that Claude Desktop sees
-   (common with `pipx`), use the absolute path instead, e.g.
-   `"command": "/Users/you/.local/bin/ietf-llm-mcp"` (find it with
-   `which ietf-llm-mcp`).
-
-3. **(Recommended)** Install the bundled skill so Claude knows the
-   right way to use the corpus (digests first, search before reading,
-   no slurping raw mbox files):
+3. **(Recommended, Claude only)** Install the bundled skill so Claude
+   knows the right way to use the corpus (digests first, search before
+   reading, no slurping raw mbox files):
 
    ```bash
    git clone https://github.com/mnot/ietf-llm /tmp/ietf-llm
    cp -r /tmp/ietf-llm/skill/ietf-llm ~/.claude/skills/
    ```
+
+   Other harnesses don't have a direct equivalent. The MCP server's
+   tool descriptions and the digest files' "How to use this corpus"
+   preamble carry the same guidance, just less forcefully — your agent
+   will mostly figure it out, but a stray "read the whole mbox" call
+   isn't impossible. Watch the first few queries.
 
 ### b) Gathering a Working Group
 
@@ -314,9 +304,10 @@ for a higher-quality local model with 8k context).
 
 ## MCP Server
 
-`ietf-llm-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/)
-server that exposes the gathered corpus to MCP clients (Claude Desktop,
-Claude Code, etc.). Tools:
+`ietf-llm-mcp` is a stdio [Model Context Protocol](https://modelcontextprotocol.io/)
+server that exposes the gathered corpus to any MCP-capable agent —
+Claude Code, Claude Desktop, Codex CLI, Gemini CLI, opencode, Cursor,
+Zed, etc. Tools:
 
 - `list_working_groups()` / `list_files(wg)`
 - `read_digest(wg, kind)` — `index`, `issues`, or `threads`
@@ -325,14 +316,119 @@ Claude Code, etc.). Tools:
 - `read_file_section(wg, file, start_line, max_lines)` — bounded raw read,
   capped at 2000 lines per call
 
-Register the server with your client:
+### Registering the server with your client
+
+Every MCP-capable agent needs the same thing: it needs to know that the
+command `ietf-llm-mcp` (a stdio MCP server) exists. The exact way you
+tell it varies. The snippets below are accurate as of writing, but MCP
+config formats are still evolving — if a client has changed since,
+its own MCP docs are the source of truth.
+
+**Common gotcha (all clients):** if `ietf-llm-mcp` was installed via
+`pipx`, the binary is on _your_ `PATH` but may not be on the `PATH` the
+client process inherits (especially GUI apps launched from Finder /
+Spotlight / Windows Explorer). If the client can't find the command,
+use its absolute path — find it with `which ietf-llm-mcp`.
+
+#### Claude Code
 
 ```bash
-# Claude Code:
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
 
-For Claude Desktop configuration, see the Quick Start above.
+#### Claude Desktop
+
+Edit `claude_desktop_config.json` (create it if missing):
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "ietf-llm-mcp"
+    }
+  }
+}
+```
+
+Quit and relaunch Claude Desktop — the config is only read at startup.
+
+#### Codex CLI (OpenAI)
+
+Edit `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.ietf-llm]
+command = "ietf-llm-mcp"
+```
+
+#### Gemini CLI
+
+Edit `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "ietf-llm-mcp"
+    }
+  }
+}
+```
+
+#### opencode
+
+Edit `~/.config/opencode/opencode.json` (or `opencode.json` in your
+project root for per-project setup):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ietf-llm": {
+      "type": "local",
+      "command": ["ietf-llm-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+#### Cursor
+
+Either the in-app MCP settings panel, or `~/.cursor/mcp.json` (global)
+or `.cursor/mcp.json` (per-project):
+
+```json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "ietf-llm-mcp"
+    }
+  }
+}
+```
+
+#### Zed
+
+In `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "ietf-llm": {
+      "command": {
+        "path": "ietf-llm-mcp",
+        "args": []
+      },
+      "settings": {}
+    }
+  }
+}
+```
 
 ## Using with Claude
 
