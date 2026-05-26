@@ -18,7 +18,7 @@ import shutil
 import sys
 from typing import Any
 
-from . import config
+from . import __version__, config
 from .charter import process_charter
 from .digest import generate_digests
 from .drafts import process_documents
@@ -97,6 +97,9 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             "cache (~/.cache/ietf-llm/<wg>/). For export to NotebookLM or "
             "a local directory, see `ietf-llm-export`."
         )
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument(
         "wg",
@@ -198,7 +201,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
-            print(f"Cleared configuration for {args.wg}.")
+            print(f"Cleared configuration for {args.wg}.", file=sys.stderr)
 
     config.merge(
         args,
@@ -224,11 +227,11 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         os.makedirs(cache_dir, exist_ok=True)
 
     if verbosity != Verbosity.QUIET:
-        print(f"Processing WG: {args.wg}")
-        print(f"Cache: {cache_dir}")
+        print(f"Processing WG: {args.wg}", file=sys.stderr)
+        print(f"Cache: {cache_dir}", file=sys.stderr)
         if args.clear_cache:
-            print("Clear cache: re-downloading all materials.")
-        print("-" * 40)
+            print("Clear cache: re-downloading all materials.", file=sys.stderr)
+        print("-" * 40, file=sys.stderr)
 
     # Charter
     charter_file = os.path.join(cache_dir, f"{args.wg}-charter.txt")
@@ -288,12 +291,13 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         )
 
     if verbosity != Verbosity.QUIET:
-        print("-" * 40)
-        print(f"Cache populated at {cache_dir}.")
+        print("-" * 40, file=sys.stderr)
+        print(f"Cache populated at {cache_dir}.", file=sys.stderr)
         print(
             "To export: `ietf-llm-export "
             f"{args.wg} --destination <dir>` "
-            "(or --create <GCP_PROJECT>)."
+            "(or --create <GCP_PROJECT>).",
+            file=sys.stderr,
         )
 
 

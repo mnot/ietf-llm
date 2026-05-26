@@ -24,7 +24,7 @@ import argparse
 import os
 import sys
 
-from . import config, export
+from . import __version__, config, export
 from .utils import Verbosity, get_config_dir
 
 SCOPE = "export"
@@ -39,6 +39,9 @@ def main() -> None:
             "Export a gathered IETF WG cache to a local directory "
             "(for hand-upload to NotebookLM) or to NotebookLM Enterprise."
         )
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
     sink = parser.add_mutually_exclusive_group()

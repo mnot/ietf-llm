@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import shutil
 import filecmp
@@ -142,13 +143,18 @@ def log(
     verbosity: Verbosity = Verbosity.STATUS,
     level: LogLevel = LogLevel.PROGRESS,
 ) -> None:
-    """
-    Print message based on verbosity level.
-    - level: LogLevel.ERROR, LogLevel.STATUS, LogLevel.PROGRESS
-    - verbosity: Verbosity.QUIET, Verbosity.STATUS, Verbosity.VERBOSE
+    """Print a status / progress / error message to stderr.
+
+    Everything `log()` emits is narration about what the tool is doing,
+    not program output; writing to stderr keeps it clear of any stdout
+    a caller might be piping (e.g. `ietf-llm-search` results, or future
+    stdout-data CLIs). Convention matches curl, git, wget, etc.
+
+    - level: LogLevel.ERROR / STATUS / PROGRESS — ERROR always shows;
+      STATUS shows unless --quiet; PROGRESS shows only under --verbose.
     """
     if level == LogLevel.ERROR:
-        print(f"[ERROR] {message}")
+        print(f"[ERROR] {message}", file=sys.stderr)
         return
 
     if verbosity == Verbosity.QUIET:
@@ -157,7 +163,7 @@ def log(
     if verbosity == Verbosity.VERBOSE or (
         verbosity == Verbosity.STATUS and level == LogLevel.STATUS
     ):
-        print(message)
+        print(message, file=sys.stderr)
 
 
 def fetch_resource(

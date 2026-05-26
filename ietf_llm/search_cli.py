@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import __version__
 from .embeddings import search
 from .utils import Verbosity
 
@@ -12,6 +13,9 @@ from .utils import Verbosity
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Semantic search over a Working Group's gathered corpus."
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
     parser.add_argument("query", help="Search query (natural language)")
