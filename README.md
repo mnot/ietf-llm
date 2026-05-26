@@ -83,9 +83,9 @@ on the Claude side.
 
 ### b) Gathering a Working Group
 
-Gathering still happens via the CLI (it's a slow, network-heavy job
-that's not appropriate to run silently from a chat tool). Do it once
-per WG you want Claude to be able to query:
+Gathering happens via the CLI (it's a slow, network-heavy job that's not
+appropriate to run silently from a chat tool). Do it once per WG you
+want Claude to be able to query:
 
 ```bash
 ietf-llm httpbis \
@@ -104,13 +104,11 @@ What each flag does:
   corpus.** Uses a small local model (no API key) on first run; this
   downloads ~130 MB of model weights once and reuses them after.
 
-Everything is written to `~/.cache/ietf-llm/<wg>/` — the cache,
-the digests, the embedding DB. The MCP server, `ietf-llm-search`,
-and the NotebookLM uploader all read from there. **If you also want
-a plain folder of text/md files to upload to NotebookLM by hand, add
-`--destination ~/ietf/<wg>`** — that creates a mirror of the
-human-readable files. It's optional and not needed for the Claude /
-MCP workflow.
+Everything is written to `~/.cache/ietf-llm/<wg>/` — the cache, the
+digests, the embedding DB. The MCP server, `ietf-llm-search`, and
+`ietf-llm-export` all read from there. **For the Claude / MCP workflow,
+that's all you need to do** — there is no separate "destination"
+directory to manage.
 
 The first gather takes a few minutes (mailing list IMAP fetch
 dominates, then embedding).
@@ -126,15 +124,14 @@ to answer without you having to point at any files.
 
 ### c) Updating a Working Group
 
-Re-run with `--update` to pull new material since the last gather. All
-the WG-specific config (destination, GitHub repos, etc.) is remembered:
+Just re-run the gather. All WG-specific config (GitHub repos, embed
+choice, etc.) is remembered from the first run:
 
 ```bash
-ietf-llm --update httpbis --embed
+ietf-llm httpbis
 ```
 
-- Only files that actually changed are mirrored to the destination.
-- `--embed` is incremental — only changed files are re-embedded, so
+- Embedding is incremental — only changed files are re-embedded, so
   update runs are fast even on large WGs.
 - Add `--summarize` if you want LLM-generated one-line summaries
   refreshed in the digest files (requires an `llm`-configured model).
@@ -142,96 +139,114 @@ ietf-llm --update httpbis --embed
 Run this on a cron or whenever you want fresh data. Claude picks up the
 new state automatically on its next MCP call — nothing to restart.
 
+If you're also using NotebookLM (the section below) and want it to see
+the update, the recommended workflow is to **create a fresh notebook
+each time** rather than try to diff into an existing one. Re-run
+`ietf-llm-export <wg> --destination <dir>` (or `--create <gcp_project>`)
+to get a clean export for the new notebook.
+
 ---
 
-## Usage
+## The Tools
 
-### First Run
+`ietf-llm` ships four console scripts, each with a single job:
 
-To start collecting documents for a Working Group:
+| Command | Job | Reads | Writes |
+|---|---|---|---|
+| `ietf-llm` | Gather / refresh a WG | network | cache |
+| `ietf-llm-export` | Mirror cache to dir, or push to NotebookLM Enterprise | cache | dir / NotebookLM |
+| `ietf-llm-search` | Semantic search over the cache | cache | stdout |
+| `ietf-llm-mcp` | Expose the cache to MCP clients | cache | stdio (MCP) |
+
+All four are independent. The cache (`~/.cache/ietf-llm/<wg>/`) is the
+single source of truth; everything else reads from it.
+
+## Usage: `ietf-llm` (gather)
 
 ```bash
 ietf-llm [OPTIONS] _wg_shortname_
 ```
 
-This populates the local cache at `~/.cache/ietf-llm/<wg>/` with the
-WG charter, meeting minutes, slides, transcripts, mailing list archives,
-and GitHub issues. The MCP server, `ietf-llm-search`, and `--create`
-(NotebookLM Enterprise upload) all read from the cache.
+Populates `~/.cache/ietf-llm/<wg>/` with the WG charter, drafts, RFCs,
+meeting materials, transcripts, mailing list archives, and GitHub
+issues. Generates the three digest files (`_index.md`, `_issues.md`,
+`_threads.md`). Optionally builds the embedding index.
 
-If you want a separate clean folder of text/md files to upload to
-NotebookLM by hand, add `--destination`:
+Per-WG options are persisted at
+`~/.config/ietf-llm/<wg>/gather.json`, so subsequent runs need only
+`ietf-llm <wg>`. Use `--clear-config` to reset.
 
-```bash
-ietf-llm --destination _destination_ _wg_shortname_
-```
+Options:
+- `wg_shortname` (positional) — e.g. `httpbis`, `quic`, `tls`.
+- `--github OWNER/REPO` — repeat for each repo whose issues to gather.
+- `--github-label LABEL` / `--exclude-github-label LABEL` — repeat for
+  multiple labels.
+- `--months N` — months of mailing list / meeting history (default 12).
+- `--summarize` / `--summarize-model MODEL` — add LLM-generated
+  one-liners to digests via the `llm` package.
+- `--embed` / `--embed-model MODEL` — build / refresh the semantic
+  search index (required for `ietf-llm-search` and the MCP
+  `search_corpus` tool).
+- `--rebuild-embeddings` — with `--embed`, drop and re-embed instead of
+  incremental update.
+- `--clear-cache` — wipe the local cache for this WG and re-download.
+- `--clear-config` — clear persisted config for this WG
+  (both gather and export scopes).
+- `--quiet` / `--verbose`.
 
-Then upload the files in _destination_ to NotebookLM.
+### Default behaviour
 
-Because `ietf-llm` persists Working Group configuration options, you don't need to specify them again for that Working Group. Use `--clear-config` to reset a group's configuration.
+- **File caching**: documents are collected under
+  `~/.cache/ietf-llm/<wg>/files/`. Existing cached files are skipped
+  unless `--clear-cache` is used.
+- **Mailing list discovery**: the list address is looked up
+  automatically from the Datatracker.
+- **IMAP retrieval**: mailing list archives are fetched via IMAP from
+  `imap.ietf.org` and cached at `~/.cache/ietf-llm/<wg>/imap-cache/`.
+- **GitHub strategy**: the tool first checks for `archive.json` on the
+  `gh-pages` branch of each repo, then falls back to the API.
+- **GitHub auth**: set `GITHUB_TOKEN` to avoid API rate limits.
+- **Transcripts**: fetched from the `ietf-minutes-data` repo and cached
+  at `~/.cache/ietf-llm/<wg>/transcript-cache/`.
 
-### Subsequent Updates
-
-To update the documents, run with the --update flag.
-
-```bash
-ietf-llm --update _wg_shortname_
-```
-
- _destination_ will only contain files that have changed since the last run. Upload the new and updated files to NotebookLM.
-
-
-### Options
-
-Working Group configuration:
-- `wg_shortname`: IETF Working Group short name (e.g., `httpbis`).
-- `--github`: GitHub org/repo for issues (can be specified multiple times).
-- `--github-label`: Include only GitHub issues with this label (can be specified multiple times).
-- `--exclude-github-label`: Exclude GitHub issues with this label (can be specified multiple times).
-- `--months`: Number of months of mailing list history to fetch (default: 12).
-- `--clear-config`: Clear and reset the persisted configuration for this Working Group.
-
-Output control:
-- `--destination`: Folder to populate with group records.
-- `--create`: See "NotebookLM Export" below.
-- `--clear-cache`: Clear the local file cache and re-download everything from scratch.
-- `--update`: Only write updated files to destination. NOTE: the destination folder is emptied when using this flag.
-
-General options:
-- `--quiet`: No messages except for errors and the final resource summary.
-- `--verbose`: Detailed progress reporting.
-
-
-### Default Behavior
-
-- **Mirroring Strategy**: By default, the `--destination` folder is updated with the latest versions of all files from the local cache. If `--update` is used, only files that have changed during the current run will be written there.
-- **File Caching**: All documents are collected in `~/.cache/ietf-llm/[wg]/files/` to avoid redundant downloads.
-- **Charters, Meetings, and Documents**: Existing files in the cache are skipped unless `--clear-cache` is used.
-- **Mailing List Discovery**: The tool automatically finds the mailing list for the WG from the Datatracker.
-- **IMAP Retrieval**: Mailing list archives are fetched via IMAP from `imap.ietf.org` and cached locally in `~/.cache/ietf-llm/{wg_name}/imap-cache/`.
-- **GitHub Strategy**: The tool first checks for `archive.json` on the `gh-pages` branch.
-- **Transcripts**: Meeting transcripts are fetched from the `ietf-minutes-data` repository and cached locally in `~/.cache/ietf-llm/{wg_name}/transcript-cache/`.
-- **GitHub Auth**: To avoid rate limits when fetching from the API, set the `GITHUB_TOKEN` environment variable.
-- **NotebookLM Export**: Use the `--create` flag to automatically create a new notebook in NotebookLM Enterprise and upload all generated archives as sources.
-
-### NotebookLM Export (Enterprise only)
-
-If you have a Google Workspace Enterprise account with NotebookLM enabled, you can programmatically create a notebook and upload your gathered resources.
+## Usage: `ietf-llm-export`
 
 ```bash
-ietf-llm httpbis --create [MY_PROJECT_ID]
+ietf-llm-export <wg> --destination <dir>          # local mirror
+ietf-llm-export <wg> --create <GCP_PROJECT_ID>    # NotebookLM Enterprise
 ```
 
-**Requirements:**
-1.  **Google Cloud Project**: You must have a GCP project with the **Discovery Engine API** enabled.
-2.  **OAuth Credentials**: You need an "OAuth 2.0 Client ID" (Type: Desktop App) from the [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
-3.  **Client Secrets**: Save the JSON file as `client_secrets.json` in `~/.config/ietf-llm/` (or specify its path with `--credentials-file`).
+Both modes always produce a complete, fresh export — there is no
+incremental / delta mode. The recommended workflow is to **create a
+new NotebookLM notebook on each update** rather than try to merge
+changes into an existing one.
 
-The first time you run this, a browser window will open to authorize the application. Your access permissions will be cached in `~/.config/ietf-llm/token.json` (or you can specify with `--token-file`).
+Per-WG options are persisted at
+`~/.config/ietf-llm/<wg>/export.json`, so subsequent runs of the same
+mode need only `ietf-llm-export <wg>`. The two modes are mutually
+exclusive — switch by passing the new flag explicitly, or
+`ietf-llm <wg> --clear-config` to reset everything.
+
+### NotebookLM Enterprise mode (`--create`)
+
+If you have a Google Workspace Enterprise account with NotebookLM
+enabled, `ietf-llm-export <wg> --create <GCP_PROJECT_ID>` will create
+a notebook and upload every cached file as a source.
+
+Requirements:
+
+1. **Google Cloud Project** with the **Discovery Engine API** enabled.
+2. **OAuth Credentials**: an "OAuth 2.0 Client ID" (Type: Desktop App)
+   from the [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
+3. **Client Secrets**: save the JSON as `client_secrets.json` in
+   `~/.config/ietf-llm/` (or pass `--credentials-file PATH`).
+
+On first run, a browser window opens to authorise the app. The token
+is cached at `~/.config/ietf-llm/token.json` (or `--token-file PATH`).
 
 ## Digest Files
 
-Every run produces three digest files in the destination, designed to be the
+Every gather produces three digest files in the cache, designed to be the
 entry points for navigating the corpus (especially when using an LLM
 assistant):
 
@@ -254,7 +269,7 @@ Pass `--embed` at gather time to build a local embedding index alongside the
 text files:
 
 ```bash
-ietf-llm --update httpbis --embed
+ietf-llm httpbis --embed
 ```
 
 Then search from the command line:

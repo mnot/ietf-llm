@@ -48,6 +48,7 @@ homepage = "https://github.com/mnot/ietf-llm"
 
 [project.scripts]
 ietf-llm = "ietf_llm.__main__:main"
+ietf-llm-export = "ietf_llm.export_cli:main"
 ietf-llm-search = "ietf_llm.search_cli:main"
 ietf-llm-mcp = "ietf_llm.mcp_server:main"
 

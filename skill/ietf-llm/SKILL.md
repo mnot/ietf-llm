@@ -22,32 +22,36 @@ Trigger on any of:
 
 ## Gathering
 
-Run the CLI. It persists per-WG config, so destination only needs to be
-supplied on first run:
+The `ietf-llm` CLI populates the cache. Per-WG config is persisted, so
+subsequent runs need only the shortname:
 
 ```bash
 # First time
-ietf-llm <wg> --destination ~/ietf/<wg> [--github owner/repo ...]
+ietf-llm <wg> [--github owner/repo ...] --embed
 
-# Subsequent updates (only changed files end up in the destination)
-ietf-llm --update <wg>
+# Subsequent refresh (config is remembered)
+ietf-llm <wg>
 ```
 
-If the user wants richer digests, add `--summarize` (uses the `llm` package's
-configured default model; pass `--summarize-model claude-haiku-4-5` etc. to
-override). This is opt-in because it costs API calls.
+`--embed` is required if you want the user to be able to do semantic
+search via `search_corpus` or `ietf-llm-search`. It builds an index in
+`~/.cache/ietf-llm/<wg>/embeddings.db` using a local sentence-transformers
+model (no API key) by default.
 
-For semantic search across the corpus, add `--embed` at gather time:
+If the user wants richer digests, add `--summarize` (uses the `llm`
+package's configured default model; pass `--summarize-model
+claude-haiku-4-5` etc. to override). This is opt-in because it costs
+API calls.
 
-```bash
-ietf-llm --update <wg> --embed [--embed-model 3-small]
-```
+For NotebookLM export (a separate concern from the MCP / search
+workflow), the user runs `ietf-llm-export <wg> --destination <dir>` or
+`ietf-llm-export <wg> --create <GCP_PROJECT>`. Don't conflate this with
+gathering — the gather CLI no longer accepts `--destination` or
+`--create`.
 
-This builds an embedding index in `~/.cache/ietf-llm/<wg>/embeddings.db`.
-It's incremental — only changed files are re-embedded.
-
-After gathering, the destination directory contains a structured corpus plus
-three **digest files** that are your entry points:
+After gathering, the cache at `~/.cache/ietf-llm/<wg>/files/` contains
+the structured corpus plus three **digest files** that are your entry
+points (the MCP server's `read_digest` tool returns each by name):
 
 - `<wg>-_index.md` — landing page; file inventory by kind, with sizes.
 - `<wg>-_issues.md` — one row per GitHub issue (state, title, labels,
