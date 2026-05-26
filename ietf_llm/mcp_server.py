@@ -105,8 +105,23 @@ def tool_read_digest(wg: str, kind: str = "index") -> str:
         return fh.read()
 
 
-def tool_search(wg: str, query: str, k: int = 10) -> str:
-    hits = search(wg, query, k=k, verbose=Verbosity.QUIET)
+def tool_search(
+    wg: str,
+    query: str,
+    k: int = 10,
+    file_pattern: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> str:
+    hits = search(
+        wg,
+        query,
+        k=k,
+        file_pattern=file_pattern,
+        since=since,
+        until=until,
+        verbose=Verbosity.QUIET,
+    )
     if not hits:
         return (
             f"(no results — has `ietf-llm {wg} --embed` been run?)"
@@ -254,12 +269,29 @@ def main() -> None:
         return tool_read_digest(wg, kind)
 
     @server.tool()
-    def search_corpus(wg: str, query: str, k: int = 10) -> str:
+    def search_corpus(
+        wg: str,
+        query: str,
+        k: int = 10,
+        file_pattern: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> str:
         """Semantic search over a WG's gathered corpus. Returns top-k chunks
-        with file, chunk_idx, title, score, snippet. Requires that
-        `ietf-llm <wg> --embed` has been run.
+        with file, chunk_idx, title, score, snippet, and line range.
+        Requires that `ietf-llm <wg> --embed` has been run.
+
+        Optional facets:
+          - file_pattern: SQL LIKE pattern (e.g. "%mailing-list%" to
+            restrict to the mailing list, "%github%" for GitHub issues).
+            % is wildcard.
+          - since / until: ISO 8601 dates (e.g. "2026-01-01"). Only
+            mailing-list and GitHub chunks have dates; windowed draft
+            chunks are excluded when either bound is set.
         """
-        return tool_search(wg, query, k=k)
+        return tool_search(
+            wg, query, k=k, file_pattern=file_pattern, since=since, until=until
+        )
 
     @server.tool()
     def get_chunk_text(wg: str, file: str, chunk_idx: int) -> str:

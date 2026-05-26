@@ -123,8 +123,9 @@ def build_index(
         for chunk, vec in zip(chunks, vectors):
             cur.execute(
                 "INSERT INTO chunks "
-                "(file, chunk_idx, title, text, embedding, start_line, end_line) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(file, chunk_idx, title, text, embedding, "
+                " start_line, end_line, chunk_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
@@ -133,6 +134,7 @@ def build_index(
                     _pack(vec),
                     chunk.start_line,
                     chunk.end_line,
+                    chunk.chunk_date,
                 ),
             )
         cur.execute(
@@ -162,9 +164,21 @@ def search(
     query: str,
     model_name: Optional[str] = None,
     k: int = 10,
+    file_pattern: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Hit]:
-    """Return top-k chunks for a query. Returns [] if no index exists."""
+    """Return top-k chunks for a query. Returns [] if no index exists.
+
+    Optional facets:
+      - file_pattern: SQL LIKE pattern matched against the file column
+        (e.g. "%mailing-list%" or "%github%"). % is wildcard.
+      - since / until: ISO 8601 date strings; only chunks whose
+        chunk_date falls in the range are considered. Chunks with
+        chunk_date NULL (e.g. windowed draft chunks) are excluded when
+        either bound is set, since they have no time semantics.
+    """
     if not os.path.exists(_db_path(wg)):
         log(
             f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
@@ -207,9 +221,22 @@ def search(
     if q_norm:
         q_vec = q_vec / q_norm
 
+    where_clauses: List[str] = []
+    where_args: List[str] = []
+    if file_pattern:
+        where_clauses.append("file LIKE ?")
+        where_args.append(file_pattern)
+    if since:
+        where_clauses.append("chunk_date IS NOT NULL AND chunk_date >= ?")
+        where_args.append(since)
+    if until:
+        where_clauses.append("chunk_date IS NOT NULL AND chunk_date <= ?")
+        where_args.append(until)
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, start_line, end_line "
-        "FROM chunks"
+        f"FROM chunks{where_sql}",
+        where_args,
     )
     rows = cur.fetchall()
     if not rows:

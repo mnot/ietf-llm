@@ -28,11 +28,37 @@ def main() -> None:
         default="text",
         help="Output format (default: text)",
     )
+    parser.add_argument(
+        "--file",
+        metavar="LIKE",
+        help="Only consider chunks whose filename matches this SQL LIKE "
+        "pattern (e.g. '%%mailing-list%%' or '%%github%%').",
+    )
+    parser.add_argument(
+        "--since",
+        metavar="ISO_DATE",
+        help="Only consider chunks dated on or after this date "
+        "(e.g. 2026-01-01). Applies to mailing-list and GitHub chunks; "
+        "windowed draft chunks have no date and are excluded.",
+    )
+    parser.add_argument(
+        "--until",
+        metavar="ISO_DATE",
+        help="Only consider chunks dated on or before this date.",
+    )
     parser.add_argument("--quiet", "-q", action="store_true")
     args = parser.parse_args()
 
     verbosity = Verbosity.QUIET if args.quiet else Verbosity.STATUS
-    hits = search(args.wg, args.query, k=args.top, verbose=verbosity)
+    hits = search(
+        args.wg,
+        args.query,
+        k=args.top,
+        file_pattern=args.file,
+        since=args.since,
+        until=args.until,
+        verbose=verbosity,
+    )
 
     if not hits:
         print("(no results)", file=sys.stderr)

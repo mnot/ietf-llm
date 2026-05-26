@@ -13,9 +13,11 @@ fallback handles drafts, RFCs, transcripts, and minutes.
 from __future__ import annotations
 
 import bisect
+import email.utils
 import os
 import re
 from dataclasses import dataclass
+from datetime import timezone
 from typing import List, Optional
 
 CHUNK_SIZE = 2000  # characters
@@ -34,6 +36,40 @@ class Chunk:
     # (the index migration also leaves them NULL on pre-v2 rows).
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    # ISO 8601 UTC ("YYYY-MM-DDTHH:MM:SSZ") for chunks where time is a
+    # meaningful axis (mailing-list messages, GitHub issues). NULL for
+    # windowed chunks of drafts/RFCs/transcripts where it isn't.
+    chunk_date: Optional[str] = None
+
+
+def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
+    """Parse an email/issue date string and return ISO 8601 UTC, or None.
+
+    Used for the `chunk_date` column. Picks UTC so SQL string
+    comparison gives correct chronological order regardless of the
+    source timezone. Tolerates the two real formats we see:
+      - RFC 5322 from .eml headers ("Mon, 01 Jan 2025 10:00:00 +0000")
+      - github.py's `format_date` output ("2025-01-01 10:00:00 UTC")
+    """
+    date_text = date_text.strip()
+    if not date_text:
+        return None
+    # Try RFC 5322 first (mail headers).
+    try:
+        parsed = email.utils.parsedate_to_datetime(date_text)
+    except (ValueError, TypeError, IndexError):
+        parsed = None
+    # Fall back to the "YYYY-MM-DD HH:MM:SS [TZ]" form github.py emits.
+    if parsed is None:
+        try:
+            from datetime import datetime as _dt  # pylint: disable=import-outside-toplevel
+
+            parsed = _dt.strptime(date_text[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _build_line_index(text: str) -> List[int]:
@@ -107,6 +143,9 @@ def _chunk_message_file(text: str, filename: str) -> List[Chunk]:
                 start_line=_line_at(line_starts, start_off),
                 # max(end_off - 1, 0): byte at end_off is past the part
                 end_line=_line_at(line_starts, max(end_off - 1, 0)),
+                chunk_date=(
+                    _normalize_to_utc_iso(date_m.group(1)) if date_m else None
+                ),
             )
         )
     return chunks
@@ -125,6 +164,7 @@ def _chunk_issues_file(text: str, filename: str) -> List[Chunk]:
             title = f"#{iss_m.group(1)}: {iss_m.group(2).strip()}"
         else:
             title = f"record {idx}"
+        date_m = _DATE_RE.search(part)
         chunks.append(
             Chunk(
                 file=filename,
@@ -133,6 +173,9 @@ def _chunk_issues_file(text: str, filename: str) -> List[Chunk]:
                 text=part[:MAX_CHUNK_CHARS],
                 start_line=_line_at(line_starts, start_off),
                 end_line=_line_at(line_starts, max(end_off - 1, 0)),
+                chunk_date=(
+                    _normalize_to_utc_iso(date_m.group(1)) if date_m else None
+                ),
             )
         )
     return chunks

@@ -66,7 +66,12 @@ Key invariants:
   summaries of what's in `files/`. They're regenerated on every gather.
 - **`embeddings.db` is per-WG.** Different WGs can use different
   embedding models if you want; the model id is recorded in the DB's
-  `meta` table and the search code reads it back at query time.
+  `meta` table and the search code reads it back at query time. The
+  `chunks` table also carries `start_line` / `end_line` (1-indexed,
+  inclusive) so the agent can cite "lines 342-358 of vocab-06.txt",
+  and `chunk_date` (ISO 8601 UTC, NULL for windowed draft chunks)
+  for faceted-by-date search. Schema is versioned; `_open_db`
+  migrates older DBs forward via ALTER TABLE.
 - **`imap-cache/<wg>/<list_name>/`** is the *only* place that holds raw
   per-message `.eml` files. The threads digest walks that tree directly;
   the per-year `*-mailing-list-*.txt` files are a flattened text export
