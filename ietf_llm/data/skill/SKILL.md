@@ -1,144 +1,202 @@
 ---
 name: ietf-llm
-description: Gather and query the public record of an IETF Working Group (charter, drafts, minutes, transcripts, mailing list, GitHub issues) using the `ietf-llm` CLI. Use when the user asks to gather, refresh, or query materials for a named IETF WG (by shortname like `httpbis`, `quic`, `tls`), or asks substantive questions about a WG's drafts, issues, or list discussion.
+description: Query an IETF Working Group's public record (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues) via the `ietf-llm-mcp` MCP server. Use whenever the user asks about a named WG by shortname (`httpbis`, `quic`, `tls`, `aipref`, …) — its current state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Also use when the user asks to gather or refresh materials for a WG.
 ---
 
 # ietf-llm
 
-A capability for working with IETF Working Group corpora gathered by the
-[`ietf-llm`](https://github.com/mnot/ietf-llm) CLI.
+You have access to a local, queryable corpus of an IETF Working Group's
+public record. The tools live under `mcp__ietf-llm__*` and are backed
+by the `ietf-llm` package, which gathers WG material into
+`~/.cache/ietf-llm/<wg>/`.
 
-## When to use this skill
+`<wg>` is always a WG shortname (e.g. `httpbis`, `aipref`, `tls`).
+If the user mentions a WG without giving a shortname, **ask** — don't
+guess.
 
-Trigger on any of:
+## The opening move: always `overview` first
 
-- "gather / refresh / update materials for `<wg>`"
-- "what's open in `<wg>`?"
-- "what does draft `<name>` say about X?"
-- "what's the list been saying about Y in `<wg>`?"
-- "summarize the state of `<wg>`"
+For any new question about a WG, your first tool call should be:
 
-`<wg>` is an IETF working group shortname (e.g. `httpbis`, `quic`, `tls`, `oauth`).
+```
+overview(wg)
+```
 
-## Gathering
+It returns a ~30-line summary: chairs and Area Director, active drafts
+with their authors, the five most recently updated open issues, the
+five most recent mailing list threads, and the latest meeting plus
+latest draft publication. This is **2–3 KB**, vs the **80–100 KB**
+you'd burn reading every digest in full. It's enough to answer the
+common "tell me about this WG" question by itself.
 
-The `ietf-llm` CLI populates the cache. Per-WG config is persisted, so
-subsequent runs need only the shortname:
+Only descend into the specialised digests after the overview tells you
+where to look.
+
+## The specialised digests
+
+Five kinds, all read via `read_digest(wg, kind, ...filters)`:
+
+| kind       | What it's for                                       |
+|------------|-----------------------------------------------------|
+| `index`    | File inventory by category (charter, drafts, etc.)  |
+| `issues`   | One row per GitHub issue — state, labels, author    |
+| `threads`  | One row per mailing list thread, linked to its file |
+| `people`   | Participants; leads with chairs/ADs and authors     |
+| `timeline` | Chronological event log (drafts published, issues, meetings, WGLCs) |
+
+### **Always use filters for catalogue queries**
+
+The full digests can be 15–30 KB each. Filtered reads are typically
+under 2 KB. Always pass filters when answering catalogue questions:
+
+```
+# "What's open?" → ~1 KB, not 15 KB
+read_digest("aipref", "issues", state="open", limit=10)
+
+# "What discussed about RAG?" → only issues with that label
+read_digest("aipref", "issues", label="rag")
+
+# "What's been happening recently?" → newest 20 threads
+read_digest("aipref", "threads", limit=20)
+
+# "Who's a chair?"
+read_digest("aipref", "people", role="Chair")
+
+# "When did WGLC happen?"
+read_digest("aipref", "timeline", event_kind="wglc")
+
+# "What happened in May 2026?"
+read_digest("aipref", "timeline", since="2026-05-01", until="2026-05-31")
+```
+
+Filter parameters by kind:
+
+- **issues**: `state` (`"open"` / `"closed"`), `label` (substring), `author` (substring), `limit`
+- **threads**: `since`, `until` (ISO date), `min_messages`, `limit`
+- **people**: `role` (substring, e.g. `"Chair"`), `min_messages`, `limit`
+- **timeline**: `since`, `until`, `event_kind` (`draft-published` / `issue-opened` / `issue-closed` / `meeting` / `wglc` / `adoption-call`), `limit`
+
+## Semantic search
+
+For substantive questions ("what was said about X?", "what's the WG's
+stance on Y?"), use `search_corpus`:
+
+```
+search_corpus(wg, "vocabulary scope debate", k=8)
+```
+
+Returns top-k chunks with file, chunk index, line range, and a snippet.
+Each chunk's `file` field points at a real cache file — pivot to it
+with `get_chunk_text(wg, file, chunk_idx)` for the full chunk or
+`read_file_section(wg, file, start_line, max_lines)` for surrounding
+context.
+
+`search_corpus` also takes filters:
+
+- `file_pattern` — SQL LIKE pattern (e.g. `"%-thread-%"` for mailing
+  list only, `"%github%"` for issues only, `"draft-%"` for drafts)
+- `since` / `until` — ISO dates; restricts to dated chunks
+- `k` — number of hits (default 10)
+
+## Reading the corpus
+
+The cache contains four kinds of files an agent will routinely encounter:
+
+- **Per-thread mailing list files** (`<wg>-thread-<date>-<slug>.md`) —
+  one file per reconstructed conversation, with a header, an outline,
+  and one section per message. **Read these in full** when a search
+  hit lands inside one and the user wants the whole conversation.
+- **Drafts** (`draft-…-NN.txt`, `rfc<N>.txt`) — self-contained
+  documents with their own author/date headers. Use
+  `read_file_section` with a line range; don't read whole drafts.
+- **GitHub issue text** (`<wg>-github-<owner>-<repo>.txt`) — one
+  block per issue. Read just the block you need by line range.
+- **Slide / transcript markdown** (`<name>.pdf.txt`,
+  `*-transcript.md`) — both carry a meeting-context header at the
+  top so chunks deep inside still have attribution.
+
+Every chunk in the search index, and every search hit, refers back
+to one of these file types.
+
+## Canonical names
+
+Identities are pre-consolidated. When you see "Mark Nottingham" in any
+digest, search snippet, or thread file, that's the canonical name —
+the same person also appears as `mnot` on GitHub, in DMARC-rewritten
+addresses, and via the Datatracker relay. Don't go looking for
+multiple actors; `<wg>-_people.md` is the lookup table when you need
+to verify the link.
+
+## Anti-patterns — never do these
+
+- **Don't read whole digests when you just want a slice.** Use filters.
+- **Don't read whole `<wg>-mailing-list-YYYY.txt` files** — they're
+  multi-MB per year and exist only for human grep / NotebookLM upload.
+  The per-thread files are the readable form.
+- **Don't read whole `<wg>-github-<repo>.txt` files** — multi-MB.
+  Use the issues digest (filtered) or search.
+- **Don't list files to scan content** — `list_files` is for inventory,
+  not for finding answers.
+- **Don't fabricate identity links.** If the GitHub login doesn't
+  appear under a Person in `<wg>-_people.md`, you don't know who it
+  is. Say so.
+
+## Deep dives: delegate to a subagent
+
+If answering takes more than ~5 tool calls or requires reading a long
+thread end-to-end, spawn a focused subagent with a tight prompt and
+have it return a summary. Don't pull raw material into the main
+context.
+
+## Gathering (when the user asks to refresh)
+
+The CLI populates the cache. Per-WG config persists, so subsequent
+runs need only the shortname:
 
 ```bash
-# First time
+# First time — gather + build embedding index
 ietf-llm <wg> [--github owner/repo ...] --embed
 
-# Subsequent refresh (config is remembered)
+# Refresh (config remembered)
 ietf-llm <wg>
+
+# Refresh every gathered WG at once
+ietf-llm --all
 ```
 
-`--embed` is required if you want the user to be able to do semantic
-search via `search_corpus` or `ietf-llm-search`. It builds an index in
-`~/.cache/ietf-llm/<wg>/embeddings.db` using a local sentence-transformers
-model (no API key) by default.
+`--embed` is required for `search_corpus` to work — it builds the
+local embedding index using a small sentence-transformers model
+(no API key, ~130 MB one-time download).
 
-If the user wants richer digests, add `--summarize` (uses the `llm`
-package's configured default model; pass `--summarize-model
-claude-haiku-4-5` etc. to override). This is opt-in because it costs
-API calls.
+Add `--summarize` for LLM-generated one-line summaries in the digests
+(needs `llm` configured with a provider key).
 
-For NotebookLM export (a separate concern from the MCP / search
-workflow), the user runs `ietf-llm-export <wg> --destination <dir>` or
-`ietf-llm-export <wg> --create <GCP_PROJECT>`. Don't conflate this with
-gathering — the gather CLI no longer accepts `--destination` or
-`--create`.
+After gathering, the MCP server picks up the new state automatically
+on its next tool call — nothing to restart.
 
-After gathering, the cache at `~/.cache/ietf-llm/<wg>/files/` contains
-the structured corpus plus three **digest files** that are your entry
-points (the MCP server's `read_digest` tool returns each by name):
+## NotebookLM export
 
-- `<wg>-_index.md` — landing page; file inventory by kind, with sizes.
-- `<wg>-_issues.md` — one row per GitHub issue (state, title, labels,
-  comments, last updated). Sorted open-first.
-- `<wg>-_threads.md` — one row per mailing list thread (normalized subject,
-  message count, participants, date span).
-
-## Querying — the rules
-
-The corpus is **large**. Mailing-list-per-year files and GitHub issue dumps
-are routinely multi-MB. Reading them end-to-end will blow the context window
-and produce worse answers, not better ones.
-
-Follow this order strictly:
-
-1. **Always read the three `_*.md` digest files first.** They were generated
-   for exactly this purpose. They tell you what exists and where.
-2. **For broad / synthesis questions** ("summarize the state of the WG",
-   "what are the active controversies"), the digests alone are usually
-   enough. Cite issue numbers and thread subjects from them.
-3. **For targeted lookups** ("what does §4.2 of draft-X say?"), open just
-   that file and read only the relevant section.
-4. **For cross-document questions** ("what has the list said about issue
-   #42?"), grep first, then read matches in a narrow line window.
-5. **Delegate deep dives to a subagent.** If a question genuinely requires
-   reading many files or long threads, spawn an Explore or general-purpose
-   subagent with a focused prompt and ask it to return a summary. Do not
-   pull the raw material into the main context.
-
-### Forbidden by default
-
-- Reading any `*-mailing-list-YYYY.txt` file end-to-end.
-- Reading any `*-github-<repo>.txt` file end-to-end.
-- `cat`-ing the destination directory.
-
-If a user explicitly insists, warn them about context cost first.
-
-### Good patterns
+If the user wants conversational exploration with grounded citations
+across the whole corpus, suggest NotebookLM:
 
 ```bash
-# Best: semantic search (if --embed has been run)
-ietf-llm-search <wg> "cookie partitioning concerns" -k 8
-
-# Fallback: locate before reading
-grep -nH "cookie partitioning" ~/ietf/httpbis/*.txt
-
-# Narrow read by line range once located
-# (use the Read tool's offset/limit, not `cat`)
-
-# Get just the issue header lines from one repo
-grep -E "^Issue #|^State:|^Labels:" ~/ietf/httpbis/httpbis-github-*.txt
+ietf-llm-export <wg> --destination ~/ietf/<wg>
+# or
+ietf-llm-export <wg> --create <GCP_PROJECT>     # Enterprise
 ```
 
-`ietf-llm-search` returns the top-k chunks (one per mailing list
-message, one per GitHub issue, or a windowed slice of a draft) with a
-score, source file, chunk index, title, and snippet. After a search hit,
-open the source file at the right spot rather than reading it whole.
+Don't conflate this with gathering — `ietf-llm` no longer accepts
+`--destination` or `--create`.
 
-### MCP server (preferred when available)
+## Quick reference: tool call patterns by question shape
 
-If the user has the MCP server registered (`ietf-llm-mcp`), prefer its
-tools over shelling out:
-
-- `list_working_groups()` — what's gathered
-- `read_digest(wg, kind)` — index / issues / threads
-- `search_corpus(wg, query, k)` — semantic search
-- `get_chunk_text(wg, file, chunk_idx)` — full chunk text after a hit
-- `read_file_section(wg, file, start_line, max_lines)` — bounded raw read
-
-The MCP tools enforce a hard cap on raw reads (2000 lines per call) so the
-context window can't be blown by accident.
-
-## Pointing the user at NotebookLM
-
-For genuinely exploratory, conversational, citation-heavy use across the
-whole corpus, the destination directory is designed to be uploaded to
-[NotebookLM](https://notebooklm.google.com/). If the user's question is the
-kind that wants 20 follow-ups and grounded citations across hundreds of
-documents, suggest they upload the directory there rather than asking you to
-synthesize it from raw reads.
-
-The CLI also supports `--create <GCP_PROJECT>` to push directly to
-NotebookLM Enterprise.
-
-## Common WG shortnames (for disambiguation)
-
-If the user mentions a working group without the shortname, ask. Don't guess.
-Common ones: `httpbis` (HTTP), `quic` (QUIC), `tls` (TLS), `oauth` (OAuth),
-`core` (Constrained RESTful Environments), `dnsop` (DNS Operations),
-`mls` (Messaging Layer Security).
+| Question                        | First tool call                                            |
+|---------------------------------|------------------------------------------------------------|
+| "Tell me about `<wg>`"          | `overview(wg)`                                             |
+| "What's open right now?"        | `read_digest(wg, "issues", state="open", limit=10)`        |
+| "Recent mailing list activity?" | `read_digest(wg, "threads", limit=10)`                     |
+| "When did X happen?"            | `read_digest(wg, "timeline", event_kind="…")`              |
+| "Who are the chairs?"           | `read_digest(wg, "people", role="Chair")`                  |
+| "What was said about X?"        | `search_corpus(wg, "X", k=8)`                              |
+| "Read thread Y in full"         | `read_file_section(wg, "<wg>-thread-…md", 1, 2000)`        |
+| "What did slide deck Z cover?"  | `read_file_section(wg, "<deck>.pdf.txt", 1, 2000)`         |
