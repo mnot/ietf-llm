@@ -27,7 +27,7 @@ from .chunking import (
 )
 from .models import DEFAULT_EMBED_MODEL, _MODEL_CACHE, _get_embed_model
 from .search import Hit, build_index, search
-from .storage import get_chunk
+from .storage import chunk_counts, get_chunk
 
 __all__ = [
     # Public surface
@@ -35,6 +35,7 @@ __all__ = [
     "Chunk",
     "Hit",
     "build_index",
+    "chunk_counts",
     "get_chunk",
     "search",
     # Used by mcp_server.py for pre-warming

@@ -89,7 +89,10 @@ Returns top-k chunks with file, chunk index, line range, and a snippet.
 Each chunk's `file` field points at a real cache file — pivot to it
 with `get_chunk_text(wg, file, chunk_idx)` for the full chunk or
 `read_file_section(wg, file, start_line, max_lines)` for surrounding
-context.
+context. To read a short thread / issue end-to-end in one call, pass
+`get_chunk_text(..., end_chunk_idx=N)` to fetch a consecutive range
+(capped at 20 chunks). `list_files(wg)` shows per-file chunk counts
+so you can bound the range without probing.
 
 `search_corpus` also takes filters:
 

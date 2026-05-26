@@ -32,12 +32,16 @@ import sys
 from typing import List, Optional
 
 from .digest.query import query_digest
-from .embeddings import _get_embed_model, get_chunk, search
+from .embeddings import _get_embed_model, chunk_counts, get_chunk, search
 from .digest.overview import build_overview
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400
 MAX_LINES_HARD_CAP = 2000
+# Cap on how many chunks one get_chunk_text call can return when a range
+# is requested. Generous — chunks are bounded to MAX_CHUNK_CHARS (8 KB)
+# each, so 20 is ~160 KB worst case but typically far less.
+MAX_CHUNK_RANGE = 20
 
 
 def _list_wgs() -> List[str]:
@@ -93,12 +97,28 @@ def tool_list_files(wg: str) -> str:
     cache = get_wg_file_cache_dir(wg)
     if not os.path.isdir(cache):
         return f"No cache for {wg}."
+    # chunk_counts() is cheap (one GROUP BY) and lets the consumer bound
+    # get_chunk_text calls instead of blind-probing chunk_idx=0,1,2,…
+    counts = chunk_counts(wg)
     rows = []
     for name in sorted(os.listdir(cache)):
         path = os.path.join(cache, name)
         if not os.path.isfile(path):
             continue
-        rows.append(f"{os.path.getsize(path):>10}  {name}")
+        size = os.path.getsize(path)
+        n_chunks = counts.get(name)
+        if n_chunks is not None:
+            rows.append(f"{size:>10}  chunks={n_chunks:<4}  {name}")
+        elif name.startswith(f"{wg}-_") and name.endswith(".md"):
+            # _-prefixed digests are intentionally NOT chunked; flag them
+            # so consumers know to use read_digest, not get_chunk_text.
+            kind = name[len(f"{wg}-_"):-len(".md")]
+            rows.append(
+                f"{size:>10}  (digest)     {name}  "
+                f"-> read_digest(wg, kind='{kind}')"
+            )
+        else:
+            rows.append(f"{size:>10}  (no chunks)  {name}")
     return "\n".join(rows) or "(empty)"
 
 
@@ -175,15 +195,97 @@ def tool_search(
     return "\n".join(lines)
 
 
-def tool_get_chunk(wg: str, file: str, chunk_idx: int) -> str:
+def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:
+    """If `file` is one of the per-WG digests (`<wg>-_<kind>.md`),
+    return the digest `kind`; otherwise None.
+
+    Used so chunk-fetch / file-section calls on a digest file can
+    return a working hint instead of an opaque "not found" — these
+    files exist but aren't in the embedding index by design.
+    """
+    prefix = f"{wg}-_"
+    if file.startswith(prefix) and file.endswith(".md"):
+        kind = file[len(prefix):-len(".md")]
+        if kind in _DIGEST_KINDS:
+            return kind
+    return None
+
+
+def tool_get_chunk(  # pylint: disable=too-many-return-statements
+    wg: str,
+    file: str,
+    chunk_idx: int,
+    end_chunk_idx: Optional[int] = None,
+) -> str:
+    # Digest files aren't chunked — point the caller at read_digest
+    # instead of returning the unhelpful "Chunk not found".
+    digest_kind = _digest_kind_for_file(wg, file)
+    if digest_kind is not None:
+        return (
+            f"`{file}` is a digest, not a chunked file. "
+            f"Call `read_digest(wg='{wg}', kind='{digest_kind}')` "
+            "(optionally with filters) instead."
+        )
+
+    # Range fetch: return consecutive chunks in one call so consumers
+    # don't have to round-trip per chunk for a small thread / issue.
+    if end_chunk_idx is not None:
+        if end_chunk_idx < chunk_idx:
+            return (
+                f"end_chunk_idx={end_chunk_idx} is less than "
+                f"chunk_idx={chunk_idx}."
+            )
+        span = end_chunk_idx - chunk_idx + 1
+        if span > MAX_CHUNK_RANGE:
+            return (
+                f"Requested {span} chunks; max per call is "
+                f"{MAX_CHUNK_RANGE}. Fetch in smaller batches."
+            )
+        parts: List[str] = []
+        any_found = False
+        for idx in range(chunk_idx, end_chunk_idx + 1):
+            result = get_chunk(wg, file, idx)
+            if result is None:
+                continue
+            any_found = True
+            title, text, start_line, end_line = result
+            where = (
+                f" (lines {start_line}-{end_line})"
+                if start_line is not None
+                else ""
+            )
+            parts.append(f"## chunk {idx}: {title}{where}\n\n{text}")
+        if not any_found:
+            return _chunk_not_found_hint(wg, file, chunk_idx)
+        return "\n\n---\n\n".join(parts)
+
     result = get_chunk(wg, file, chunk_idx)
     if result is None:
-        return f"Chunk not found: {file}#{chunk_idx}"
+        return _chunk_not_found_hint(wg, file, chunk_idx)
     title, text, start_line, end_line = result
     where = (
         f" (lines {start_line}-{end_line})" if start_line is not None else ""
     )
     return f"# {title}{where}\n\n{text}"
+
+
+def _chunk_not_found_hint(wg: str, file: str, chunk_idx: int) -> str:
+    """Compose a 'not found' message that tells the caller what's
+    actually available, so they don't have to blind-probe.
+    """
+    counts = chunk_counts(wg)
+    available = counts.get(file)
+    if available is None:
+        return (
+            f"No chunks indexed for `{file}` in {wg}. "
+            "Either the file isn't in the embedding index "
+            f"(check `list_files('{wg}')`), or "
+            f"`ietf-llm {wg} --embed` hasn't been run."
+        )
+    return (
+        f"Chunk {chunk_idx} not found in `{file}`. "
+        f"This file has {available} chunks (0..{available - 1})."
+    )
 
 
 def tool_read_file_section(
@@ -192,9 +294,33 @@ def tool_read_file_section(
     start_line: int = 1,
     max_lines: int = MAX_LINES_DEFAULT,
 ) -> str:
+    # Reading a digest file by line range works but is the wrong shape
+    # for catalogue queries — nudge towards read_digest with filters.
+    digest_kind = _digest_kind_for_file(wg, file)
+    if digest_kind is not None and start_line == 1:
+        # Only emit the hint on the typical "show me this file" call —
+        # if the caller already passed a non-default start_line they
+        # know what they're doing.
+        path = _safe_path(wg, file)
+        if path is None:
+            return (
+                f"`{file}` is a digest. Call "
+                f"`read_digest(wg='{wg}', kind='{digest_kind}')` instead."
+            )
+        # Fall through and serve the file, but prefix the hint.
+        hint = (
+            f"[hint: for filtered catalogue queries use "
+            f"`read_digest(wg='{wg}', kind='{digest_kind}', ...)` — "
+            f"it's faster and easier on context]\n\n"
+        )
+        return hint + _read_section(path, start_line, max_lines)
     path = _safe_path(wg, file)
     if not path:
         return f"File not found in {wg} cache: {file}"
+    return _read_section(path, start_line, max_lines)
+
+
+def _read_section(path: str, start_line: int, max_lines: int) -> str:
     if max_lines > MAX_LINES_HARD_CAP:
         return (
             f"max_lines={max_lines} exceeds hard cap {MAX_LINES_HARD_CAP}. "
@@ -207,7 +333,9 @@ def tool_read_file_section(
             if idx < start_line:
                 continue
             if idx >= start_line + max_lines:
-                out.append(f"... [truncated at line {idx}; use start_line to continue]")
+                out.append(
+                    f"... [truncated at line {idx}; use start_line to continue]"
+                )
                 break
             out.append(line.rstrip("\n"))
     return "\n".join(out)
@@ -288,25 +416,48 @@ def main() -> None:
 
     @server.tool()
     def list_working_groups() -> str:
-        """List IETF Working Groups gathered locally."""
+        """List IETF Working Groups (WGs) gathered into the local
+        ietf-llm corpus. Use this first if you don't know which
+        `<wg>` shortname to pass to the other ietf-llm tools.
+        """
         return tool_list_working_groups()
 
     @server.tool()
     def overview(wg: str) -> str:
-        """One-call orientation: chairs/ADs, active drafts, the 5 most
-        recently updated open issues, the 5 most recent mailing list
-        threads, and the latest meeting + latest draft publication.
+        """IETF Working Group orientation — one call returns chairs/ADs,
+        active drafts, the 5 most recently updated open issues, the 5
+        most recent mailing list threads, and the latest meeting + latest
+        draft publication.
 
-        **This is the best first call** for any question about a WG —
-        ~30 lines of markdown instead of the 80-100KB of context that
-        reading every digest would burn. Follow up with `read_digest`
-        (with filters) or `search_corpus` for depth.
+        **Best first call** for any question about an IETF WG by
+        shortname (`httpbis`, `quic`, `tls`, `aipref`, …) — ~30 lines
+        of markdown instead of the 80-100KB of context that reading
+        every digest would burn.
+
+        Companion ietf-llm tools to call after this:
+          - `read_digest(wg, kind=...)` — filtered catalogue
+            (kinds: index, issues, threads, people, timeline).
+            Use for "what's open?", "who's a chair?", "what happened
+            in May?" — pass filters, don't read the whole digest.
+          - `search_corpus(wg, query)` — semantic search across the
+            mailing list, drafts, issues, slides, and transcripts.
+            Use for "what was said about X?"
+          - `get_chunk_text(wg, file, chunk_idx)` — full text of one
+            chunk returned by `search_corpus`.
+          - `read_file_section(wg, file, start_line)` — bounded read
+            of any cache file.
+          - `list_files(wg)` — file inventory with chunk counts.
         """
         return tool_overview(wg)
 
     @server.tool()
     def list_files(wg: str) -> str:
-        """List files (with sizes in bytes) in a WG's gathered cache."""
+        """List files in an IETF Working Group's gathered ietf-llm cache.
+
+        Each row shows size, chunk count (where indexed), and filename.
+        `(digest)` rows are the per-WG summary digests — read them via
+        `read_digest`, not `get_chunk_text`.
+        """
         return tool_list_files(wg)
 
     @server.tool()
@@ -323,7 +474,10 @@ def main() -> None:
         min_messages: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> str:
-        """Read a digest file, optionally filtered. Start here.
+        """Filtered catalogue read of an IETF Working Group's gathered
+        digests (issues, mailing list threads, participants, timeline,
+        index). The high-value catalogue tool — pair it with `overview`
+        for "tell me about this WG"-shaped questions.
 
         kind = "index"    — corpus inventory + how-to-use pointer
              | "issues"   — one row per GitHub issue. Filters: state
@@ -362,9 +516,15 @@ def main() -> None:
         since: Optional[str] = None,
         until: Optional[str] = None,
     ) -> str:
-        """Semantic search over a WG's gathered corpus. Returns top-k chunks
-        with file, chunk_idx, title, score, snippet, and line range.
-        Requires that `ietf-llm <wg> --embed` has been run.
+        """Semantic search across an IETF Working Group's gathered
+        ietf-llm corpus — mailing list threads, GitHub issues, drafts,
+        RFCs, slides, transcripts, minutes. Returns top-k chunks with
+        file, chunk_idx, title, score, snippet, and line range.
+
+        Use for substantive "what was said about X?" / "what's the WG's
+        stance on Y?" questions. Pivot with `get_chunk_text` or
+        `read_file_section` to read a hit in context.
+        Requires `ietf-llm <wg> --embed` to have been run.
 
         Optional facets:
           - file_pattern: SQL LIKE pattern (e.g. "%mailing-list%" to
@@ -379,9 +539,24 @@ def main() -> None:
         )
 
     @server.tool()
-    def get_chunk_text(wg: str, file: str, chunk_idx: int) -> str:
-        """Full text of an indexed chunk returned by search_corpus."""
-        return tool_get_chunk(wg, file, chunk_idx)
+    def get_chunk_text(
+        wg: str,
+        file: str,
+        chunk_idx: int,
+        end_chunk_idx: Optional[int] = None,
+    ) -> str:
+        """Full text of an indexed chunk from an IETF Working Group's
+        ietf-llm corpus — typically a single mailing list message,
+        a GitHub issue comment, or a draft section.
+
+        Pass `end_chunk_idx` to fetch a consecutive range in one call
+        (e.g. an entire short thread). Range size is capped at
+        20 chunks per call.
+
+        Note: per-WG digests (`<wg>-_*.md`) are not chunked — use
+        `read_digest` for those.
+        """
+        return tool_get_chunk(wg, file, chunk_idx, end_chunk_idx=end_chunk_idx)
 
     @server.tool()
     def read_file_section(
@@ -390,9 +565,11 @@ def main() -> None:
         start_line: int = 1,
         max_lines: int = MAX_LINES_DEFAULT,
     ) -> str:
-        """Bounded read of any file in the WG cache. Capped at 2000 lines
-        per call so the context window can't be blown by accident. Prefer
-        search_corpus / get_chunk_text for large files.
+        """Bounded read of any file in an IETF Working Group's ietf-llm
+        cache (per-thread files, per-issue files, drafts, RFCs, slides,
+        transcripts, minutes). Capped at 2000 lines per call so the
+        context window can't be blown by accident. Prefer
+        `search_corpus` / `get_chunk_text` for very large files.
         """
         return tool_read_file_section(wg, file, start_line, max_lines)
 

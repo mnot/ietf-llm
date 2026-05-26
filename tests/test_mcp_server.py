@@ -111,3 +111,69 @@ def test_read_digest_rejects_unknown_kind(isolated_home: Path) -> None:
     # Error message names all valid kinds, including the new "people".
     assert "people" in out
     assert "Valid kinds" in out
+
+
+# --- get_chunk_text digest-file hint + chunk-not-found hints ---------------
+
+
+def test_get_chunk_on_digest_file_redirects_to_read_digest(
+    isolated_home: Path,
+) -> None:
+    # The consuming-LLM gap: get_chunk_text("aipref-_people.md", 0) used
+    # to return an opaque "Chunk not found." Now it should name the
+    # right tool to call.
+    write_cache_file(isolated_home, "wg", "wg-_people.md", "# people\n")
+    out = mcp_server.tool_get_chunk("wg", "wg-_people.md", 0)
+    assert "digest" in out.lower()
+    assert "read_digest" in out
+    assert "kind='people'" in out
+
+
+def test_get_chunk_unknown_file_explains_what_to_do(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")  # ensure cache exists
+    out = mcp_server.tool_get_chunk("wg", "not-indexed.md", 0)
+    # No DB / unindexed file → point at list_files or --embed, not silence.
+    assert "list_files" in out or "--embed" in out
+
+
+def test_read_file_section_on_digest_includes_hint(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "wg-_issues.md", "# issues\n\nbody\n")
+    out = mcp_server.tool_read_file_section("wg", "wg-_issues.md")
+    assert "read_digest" in out
+    assert "kind='issues'" in out
+    # And it still serves the content (just prefixed with the hint).
+    assert "# issues" in out
+
+
+# --- list_files chunk counts + digest annotation --------------------------
+
+
+def test_list_files_annotates_digest_files(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "wg-_people.md", "x")
+    write_cache_file(isolated_home, "wg", "wg-_issues.md", "x")
+    write_cache_file(isolated_home, "wg", "other.txt", "x")
+    out = mcp_server.tool_list_files("wg")
+    # Digest files should be flagged + redirect to read_digest.
+    assert "wg-_people.md" in out
+    assert "read_digest" in out
+    assert "kind='people'" in out
+    assert "kind='issues'" in out
+
+
+# --- get_chunk_text range fetch ------------------------------------------
+
+
+def test_get_chunk_range_rejects_inverted_bounds(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_get_chunk("wg", "x.txt", 5, end_chunk_idx=2)
+    assert "less than" in out
+
+
+def test_get_chunk_range_caps_size(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_get_chunk("wg", "x.txt", 0, end_chunk_idx=999)
+    assert "max per call" in out

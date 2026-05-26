@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -112,6 +112,25 @@ def _unpack_matrix(rows: List[bytes]) -> np.ndarray:
         return np.zeros((0, 0), dtype=np.float32)
     dim = len(rows[0]) // 4
     return np.frombuffer(b"".join(rows), dtype=np.float32).reshape(len(rows), dim)
+
+
+def chunk_counts(wg: str) -> Dict[str, int]:
+    """Return {filename: chunk_count} for every file in the WG's index.
+
+    Empty dict if no index exists yet. Used by tool_list_files so the
+    consumer can see how many chunk_idx values are valid for each file
+    instead of having to blind-probe.
+    """
+    if not os.path.exists(_db_path(wg)):
+        return {}
+    conn = sqlite3.connect(_db_path(wg))
+    try:
+        cur = conn.execute(
+            "SELECT file, COUNT(*) FROM chunks GROUP BY file"
+        )
+        return {str(row[0]): int(row[1]) for row in cur.fetchall()}
+    finally:
+        conn.close()
 
 
 def get_chunk(
