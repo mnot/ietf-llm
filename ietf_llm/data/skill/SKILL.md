@@ -59,11 +59,15 @@ ISO (`"2026-05-01"`).
 | `index`    | File inventory by category          | (none — small)                                                         |
 
 `event_kind` ∈ {`draft-published`, `issue-opened`, `issue-closed`,
-`meeting`, `wglc`, `adoption-call`, `charter-approved`,
+`meeting`, `poll`, `wglc`, `adoption-call`, `charter-approved`,
 `chair-appointed`, `group-state`, `doc-adopted`, `doc-iesg`,
-`doc-rfc`, `doc-wglc`}. The latter group is sourced from
-Datatracker; charter approvals and chair appointments span the
-WG's full history (not just the `--months` window). `label` / `author` / `role`
+`doc-rfc`, `doc-wglc`}. The Datatracker-sourced group (charter,
+chair, doc-*) spans the WG's full history regardless of the
+`--months` window; charter approvals and chair appointments are
+always included. `poll` events point at cached
+`<wg>-polls-<meeting>-<datetime>.md` files — session polls aren't
+formal consensus but signal where a session was leaning.
+`label` / `author` / `role`
 are substring matches.
 
 ## Substantive questions: `search_corpus(wg, query, k=8)`
@@ -106,6 +110,9 @@ has landed.
 - **`<name>.pdf.txt`, `*-transcript.md`** — slides and transcripts;
   both carry a meeting-context header at the top so chunks deep
   inside still have attribution.
+- **`<wg>-polls-<meeting>-<datetime>.md`** — session poll records
+  from Datatracker. Read in full when answering "where was the
+  room leaning on X?" — polls aren't consensus but they're signal.
 
 `list_files(wg)` shows per-file chunk counts so you can bound
 `get_chunk_text` ranges without probing.

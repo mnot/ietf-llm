@@ -589,11 +589,12 @@ def main() -> None:
              | "timeline" — chronological events. Filters: since/until,
                             event_kind (drafts: "draft-published";
                             issues: "issue-opened" / "issue-closed";
-                            meetings: "meeting"; procedural: "wglc" /
-                            "adoption-call"; Datatracker governance:
-                            "charter-approved" / "chair-appointed" /
-                            "group-state" / "doc-adopted" / "doc-iesg" /
-                            "doc-rfc" / "doc-wglc"), limit.
+                            meetings: "meeting"; session polls:
+                            "poll"; procedural: "wglc" / "adoption-call";
+                            Datatracker governance: "charter-approved" /
+                            "chair-appointed" / "group-state" /
+                            "doc-adopted" / "doc-iesg" / "doc-rfc" /
+                            "doc-wglc"), limit.
 
         Pass no filters to get the full digest (same bytes as before).
         Filters compose (AND); `limit` truncates after filtering.

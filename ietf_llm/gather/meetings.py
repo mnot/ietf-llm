@@ -141,7 +141,21 @@ def process_meetings(
                 _handle_pdfs(link["url"], destination, safe_num, verbose)
             )
 
-            # 2. Extract minutes text
+            # 2. Look for and download session poll records (same hub
+            # walk as #1; no extra Datatracker endpoint involved).
+            # Lazy import so meetings.py stays the entry point and
+            # session_polls.py can grow without circular concerns.
+            if link["type"] == "material":
+                from .session_polls import (  # pylint: disable=import-outside-toplevel
+                    fetch_polls_from_materials_page,
+                )
+                updated_files.extend(
+                    fetch_polls_from_materials_page(
+                        link["url"], destination, wg_name, verbose,
+                    )
+                )
+
+            # 3. Extract minutes text
             if link["type"] == "minutes":
                 content = _extract_minutes_content(link["url"], verbose)
                 if content:

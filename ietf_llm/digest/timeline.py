@@ -8,6 +8,9 @@ sources, each contributing dated events:
     publication event (date = the announcement's date).
   - **GitHub issues** — opened + closed events from the archive JSON.
   - **Meetings** — minutes files carry a `Date:` line on row 2.
+  - **Session polls** — `<wg>-polls-<meeting>-<datetime>.md` files
+    cached from Datatracker materials. Polls aren't formal consensus
+    but they signal where a session was leaning.
   - **WG procedural milestones from the mailing list** — heuristic
     match on thread subjects (Working Group Last Call, Call for
     Adoption). Used as a fallback when Datatracker has no
@@ -36,6 +39,7 @@ from ..gather.datatracker_history import (
     fetch_role_history,
 )
 from ..gather.mail_threads import Thread, build_threads, thread_slug
+from ..gather.session_polls import discover_local_polls
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .events import Event
@@ -227,6 +231,29 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
     return out
 
 
+def _poll_events(cache_dir: str) -> List[Event]:
+    """One event per cached session-polls file.
+
+    The session datetime is in the filename (set by Datatracker's
+    naming convention), so we don't have to peek inside the file —
+    a directory scan is enough. The link points at the local file
+    so a consuming LLM can read the full poll record with one
+    `read_file_section` call.
+    """
+    out: List[Event] = []
+    for poll in discover_local_polls(cache_dir):
+        out.append(
+            Event(
+                when=poll.when,
+                kind="poll",
+                title=f"Session polls recorded at IETF {poll.meeting}",
+                detail=None,
+                link=f"`{poll.filename}`",
+            )
+        )
+    return out
+
+
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     if not isinstance(value, str):
         return None
@@ -266,6 +293,7 @@ def build_events(
     events: List[Event] = []
     events.extend(_draft_publications(threads))
     events.extend(_meeting_events(cache_dir))
+    events.extend(_poll_events(cache_dir))
     events.extend(_issue_events(cache_dir, wg, registry))
 
     # Datatracker is the authoritative source for governance and
@@ -318,11 +346,11 @@ def write_timeline_digest(
         fh.write(
             f"_{len(events)} dated events across {len(by_year)} year(s) — "
             "drafts published, issues opened and closed, meetings held, "
-            "charter approvals and chair appointments (Datatracker), "
-            "document adoption / IESG / RFC publication (Datatracker), "
-            "WGLCs and adoption calls (Datatracker when available, "
-            "mailing-list subject-line heuristic as fallback). "
-            "Newest first within each year._\n\n"
+            "session polls recorded, charter approvals and chair "
+            "appointments (Datatracker), document adoption / IESG / RFC "
+            "publication (Datatracker), WGLCs and adoption calls "
+            "(Datatracker when available, mailing-list subject-line "
+            "heuristic as fallback). Newest first within each year._\n\n"
         )
         for year in sorted(by_year, reverse=True):
             fh.write(f"## {year}\n\n")
