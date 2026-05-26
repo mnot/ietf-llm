@@ -234,3 +234,75 @@ def test_people_digest_returns_none_for_empty(isolated_home: Path) -> None:
         )
         is None
     )
+
+
+# --- Datatracker roles ----------------------------------------------------
+
+
+def test_add_datatracker_role_merges_with_existing_email(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    assert len(r.persons) == 1
+    assert r.persons[0].roles == {"Chair"}
+
+
+def test_add_datatracker_role_creates_new_when_unknown(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_datatracker_role("Mike Bishop", "mbishop@example.com", "Area Director")
+    assert len(r.persons) == 1
+    assert r.persons[0].canonical_name == "Mike Bishop"
+    assert r.persons[0].roles == {"Area Director"}
+    # And future mail from them gets merged.
+    r.add_email_message("Mike Bishop <mbishop@example.com>", None)
+    assert len(r.persons) == 1
+
+
+def test_leadership_orders_chairs_before_ads(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_datatracker_role("Mike Bishop", "mbishop@x", "Area Director")
+    r.add_datatracker_role("Mark Nottingham", "mnot@x", "Chair")
+    r.add_datatracker_role("Suresh Krishnan", "suresh@x", "Chair")
+    leaders = r.leadership()
+    assert [p.canonical_name for p in leaders] == [
+        "Mark Nottingham",
+        "Suresh Krishnan",
+        "Mike Bishop",
+    ]
+
+
+def test_people_digest_includes_leadership_section(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    r.add_datatracker_role("Mike Bishop", "mbishop@x", "Area Director")
+    path = write_people_digest(
+        "wg", get_wg_file_cache_dir("wg"), r, verbose=Verbosity.QUIET,
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    assert "## Working Group leadership" in text
+    # Chairs listed before ADs.
+    chair_pos = text.find("Mark Nottingham")
+    ad_pos = text.find("Mike Bishop")
+    assert 0 < chair_pos < ad_pos
+
+
+def test_role_column_appears_in_activity_table(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    path = write_people_digest(
+        "wg", get_wg_file_cache_dir("wg"), r, verbose=Verbosity.QUIET,
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    # The mail-only table has a Roles column; Mark's row should show "Chair".
+    assert "Roles" in text
+    # Find Mark's row in the activity table (not the leadership table).
+    activity_section = text.split("## Mailing list only", 1)[1]
+    assert "Chair" in activity_section

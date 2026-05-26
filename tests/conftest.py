@@ -32,6 +32,23 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the Datatracker role fetch in every test.
+
+    The real call hits https://datatracker.ietf.org/ — fine in production
+    but a CI-fragility nightmare. Tests that want to exercise roles
+    should monkeypatch this fixture out or directly call
+    registry.add_datatracker_role.
+    """
+    from ietf_llm import people  # pylint: disable=import-outside-toplevel
+
+    def _noop(wg: str, registry: object, verbose: object) -> None:  # noqa: ARG001
+        return
+
+    monkeypatch.setattr(people, "_ingest_datatracker_roles", _noop)
+
+
 # --- Helpers for building synthetic corpus files ---------------------------
 
 
