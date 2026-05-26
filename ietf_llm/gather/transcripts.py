@@ -2,7 +2,7 @@ import os
 import subprocess
 from datetime import datetime, timedelta
 from typing import List, Optional
-from .utils import LogLevel, Verbosity, log, get_cache_dir
+from ..utils import LogLevel, Verbosity, log, get_cache_dir
 
 
 def process_transcripts(

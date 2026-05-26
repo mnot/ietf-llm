@@ -13,7 +13,7 @@ import email.message
 import email.policy
 from pathlib import Path
 
-from ietf_llm.mail_threads import (
+from ietf_llm.gather.mail_threads import (
     build_threads,
     elide_quotes,
     thread_slug,

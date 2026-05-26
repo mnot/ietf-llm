@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from .utils import (
+from ..utils import (
     LogLevel,
     Verbosity,
     clean_html,

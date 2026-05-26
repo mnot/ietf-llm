@@ -1,7 +1,7 @@
 import os
 from typing import List
 from bs4 import BeautifulSoup
-from .utils import Verbosity, LogLevel, clean_html, fetch_resource, log, get_group_type
+from ..utils import Verbosity, LogLevel, clean_html, fetch_resource, log, get_group_type
 
 
 def process_charter(

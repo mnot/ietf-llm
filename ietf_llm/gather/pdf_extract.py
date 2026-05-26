@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-from .utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, log
 
 #: Files we never try to extract — they're already text or non-PDF.
 _EXCLUDED_SUFFIXES = (".txt", ".md", ".json")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.transcript_context import (
+from ietf_llm.gather.transcript_context import (
     _SENTINEL,
     enrich_transcripts,
     transcript_context,

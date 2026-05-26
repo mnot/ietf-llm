@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from .utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
+from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
 

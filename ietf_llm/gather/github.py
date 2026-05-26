@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import requests
-from .utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, log
 
 
 def format_date(iso_date: Optional[str]) -> str:

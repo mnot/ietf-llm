@@ -157,33 +157,46 @@ ietf_llm/
 ├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + pre-warm)
 ├── skill_install.py        # --install-claude-skill helper
 ├── config.py               # generic per-WG, per-scope JSON config
+├── people.py               # actor model (cross-cutting: used by both
+│                           # gather and digest pipelines)
+├── notebooklm.py           # Google OAuth + Discovery Engine API
+├── text.py                 # generic text helpers (subject normalisation,
+│                           # date parsing, address formatting)
+├── utils.py                # log(), Verbosity/LogLevel enums,
+│                           # cache/config dir helpers, HTTP defaults
 ├── data/skill/             # bundled Claude skill (package data)
 │
-├── digest/                 # digest generation (split for legibility)
+├── gather/                 # content acquisition + per-source post-processing
+│   ├── charter.py              # fetch + clean charter from Datatracker
+│   ├── drafts.py               # fetch active drafts + RFCs
+│   ├── meetings.py             # fetch minutes/slides/agendas
+│   ├── transcripts.py          # fetch from ietf-minutes-data repo
+│   ├── mbox.py                 # IMAP fetch + per-year .txt export
+│   ├── github.py               # archive.json (gh-pages) or REST API
+│   ├── datatracker.py          # chairs/ADs/advisors via JSON API
+│   ├── draft_authors.py        # parse Authors' Addresses sections
+│   ├── mail_threads.py         # reconstruct per-thread .md files
+│   ├── pdf_extract.py          # extract text from slide PDFs
+│   └── transcript_context.py   # prepend meeting context to transcripts
+│
+├── digest/                 # corpus-level digest builders + consumers
 │   ├── __init__.py             # generate_digests() + re-exports
-│   ├── helpers.py              # subject normalisation, date parsing,
-│   │                           # state case-folding, size formatting
+│   ├── helpers.py              # re-exports of generic helpers, state
+│   │                           # case-folding, size formatting
 │   ├── summarizer.py           # optional LLM-backed one-liner wrapper
 │   ├── issues.py               # GitHub issues digest builder
 │   ├── threads.py              # mailing list threads digest builder
-│   └── index.py                # corpus index + file categorisation
+│   ├── index.py                # corpus index + file categorisation
+│   ├── timeline.py             # chronological event log
+│   ├── overview.py             # one-call composed summary
+│   └── query.py                # filtered / paginated digest reads
 │
-├── embeddings/             # semantic search (split for legibility)
-│   ├── __init__.py             # public surface + re-exports
-│   ├── chunking.py             # per-message / per-issue / windowed chunkers
-│   ├── storage.py              # sqlite schema, vector packing, lookup
-│   ├── models.py               # embedding-model loading + process-level cache
-│   └── search.py               # build_index() and search()
-│
-├── charter.py              # fetch + clean charter from Datatracker
-├── drafts.py               # fetch active drafts + RFCs
-├── meetings.py             # fetch minutes/slides/agendas
-├── transcripts.py          # fetch from ietf-minutes-data repo
-├── mbox.py                 # IMAP fetch + per-year .txt export
-├── github.py               # archive.json (gh-pages) or REST API
-├── notebooklm.py           # Google OAuth + Discovery Engine API
-└── utils.py                # log(), Verbosity/LogLevel enums,
-                            # cache/config dir helpers, HTTP defaults
+└── embeddings/             # semantic search (split for legibility)
+    ├── __init__.py             # public surface + re-exports
+    ├── chunking.py             # per-message / per-issue / windowed chunkers
+    ├── storage.py              # sqlite schema, vector packing, lookup
+    ├── models.py               # embedding-model loading + process-level cache
+    └── search.py               # build_index() and search()
 ```
 
 ## Key design decisions

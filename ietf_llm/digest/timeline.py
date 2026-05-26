@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from .mail_threads import Thread, build_threads, thread_slug
-from .people import Registry
-from .utils import LogLevel, Verbosity, log
+from ..gather.mail_threads import Thread, build_threads, thread_slug
+from ..people import Registry
+from ..utils import LogLevel, Verbosity, log
 
 
 @dataclass

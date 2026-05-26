@@ -18,7 +18,7 @@ import os
 import re
 from typing import List, Optional
 
-from .digest_query import parse_md_tables, query_digest
+from .query import parse_md_tables, query_digest
 
 
 def _digest_path(cache_dir: str, wg: str, kind: str) -> str:

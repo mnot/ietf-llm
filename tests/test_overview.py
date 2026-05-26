@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.overview import build_overview
+from ietf_llm.digest.overview import build_overview
 
 
 def _seed_digests(cache: Path, *, with_authors: bool = True) -> None:

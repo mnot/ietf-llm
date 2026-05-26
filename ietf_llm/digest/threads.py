@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from ..mail_threads import build_threads, thread_slug
+from ..gather.mail_threads import build_threads, thread_slug
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .summarizer import _Summarizer

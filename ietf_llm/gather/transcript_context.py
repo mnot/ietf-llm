@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from .utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, log
 
 
 _SENTINEL = "<!-- ietf-llm:context-header -->"

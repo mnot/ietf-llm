@@ -431,7 +431,7 @@ def _ingest_datatracker_roles(
     """Fetch chairs/ADs/advisors from Datatracker and add to the registry."""
     # Lazy import: datatracker.py pulls `requests`; keep it out of the
     # cold-path hot loop and isolate failure to this stage.
-    from .datatracker import fetch_wg_roles  # pylint: disable=import-outside-toplevel
+    from .gather.datatracker import fetch_wg_roles  # pylint: disable=import-outside-toplevel
 
     for role in fetch_wg_roles(wg, verbose=verbose):
         registry.add_datatracker_role(role.name, role.email, role.label)
@@ -446,7 +446,7 @@ def _ingest_draft_authors(
     the chairs review) override any earlier mailing-list-derived form.
     """
     # pylint: disable=import-outside-toplevel
-    from .draft_authors import latest_draft_paths, parse_authors
+    from .gather.draft_authors import latest_draft_paths, parse_authors
     from .utils import get_wg_file_cache_dir
 
     cache_dir = get_wg_file_cache_dir(wg)

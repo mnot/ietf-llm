@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
 from typing import List, Optional, Dict
 
-from .utils import LogLevel, Verbosity, get_mailing_list_name, log, get_cache_dir
+from ..utils import LogLevel, Verbosity, get_mailing_list_name, log, get_cache_dir
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993

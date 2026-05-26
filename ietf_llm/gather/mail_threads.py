@@ -41,9 +41,9 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .mbox import clean_email_text, extract_text_content
-from .people import Registry
-from .text import _normalize_subject, _parse_date, _short_addr
-from .utils import LogLevel, Verbosity, get_cache_dir, log
+from ..people import Registry
+from ..text import _normalize_subject, _parse_date, _short_addr
+from ..utils import LogLevel, Verbosity, get_cache_dir, log
 
 
 @dataclass

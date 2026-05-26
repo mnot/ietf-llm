@@ -19,18 +19,18 @@ import sys
 from typing import Any, List
 
 from . import __version__, config
-from .charter import process_charter
+from .gather.charter import process_charter
 from .digest import generate_digests
-from .drafts import process_documents
-from .github import download_github_issues, process_github_issues
-from .mail_threads import write_thread_files
-from .mbox import sync_mailing_list
-from .meetings import process_meetings
-from .pdf_extract import extract_all_pdfs
+from .gather.drafts import process_documents
+from .gather.github import download_github_issues, process_github_issues
+from .gather.mail_threads import write_thread_files
+from .gather.mbox import sync_mailing_list
+from .gather.meetings import process_meetings
+from .gather.pdf_extract import extract_all_pdfs
 from .people import build_registry, write_people_digest
-from .timeline import write_timeline_digest
-from .transcript_context import enrich_transcripts
-from .transcripts import process_transcripts
+from .digest.timeline import write_timeline_digest
+from .gather.transcript_context import enrich_transcripts
+from .gather.transcripts import process_transcripts
 from .utils import (
     DEFAULT_MONTHS,
     LogLevel,

@@ -31,9 +31,9 @@ import sqlite3
 import sys
 from typing import List, Optional
 
-from .digest_query import query_digest
+from .digest.query import query_digest
 from .embeddings import _get_embed_model, get_chunk, search
-from .overview import build_overview
+from .digest.overview import build_overview
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400

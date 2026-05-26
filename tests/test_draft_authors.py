@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.draft_authors import latest_draft_paths, parse_authors
+from ietf_llm.gather.draft_authors import latest_draft_paths, parse_authors
 
 
 # --- parse_authors ---------------------------------------------------------

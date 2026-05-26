@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.digest_query import (
+from ietf_llm.digest.query import (
     Section,
     filter_rows,
     parse_md_tables,

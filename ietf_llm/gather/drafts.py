@@ -2,7 +2,7 @@ import os
 import re
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
-from .utils import LogLevel, Verbosity, log, fetch_resource, get_group_type
+from ..utils import LogLevel, Verbosity, log, fetch_resource, get_group_type
 
 
 def get_wg_documents(
