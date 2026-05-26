@@ -62,6 +62,14 @@ Key invariants:
 - **`<wg>/files/` is what consumers read.** Anything an MCP tool, the
   search CLI, or the exporter can see lives there. Everything else
   in the cache is intermediate state owned by the gather pipeline.
+- **The mailing list is materialised in two shapes.** `<wg>-mailing-list-YYYY.txt`
+  is the legacy flat year-dump (kept around for grep and NotebookLM
+  upload, but excluded from the embedding index). `<wg>-thread-<date>-<slug>.md`
+  is one file per reconstructed thread, built via RFC 5322
+  In-Reply-To / References headers with a normalised-subject safety
+  net, with quoted runs collapsed and an outline at the top. The
+  thread files are the form an LLM should actually read; the year
+  files are there for human/external tools.
 - **The `_*.md` files are digests** — small, deterministic, LLM-friendly
   summaries of what's in `files/`. They're regenerated on every gather.
 - **`embeddings.db` is per-WG.** Different WGs can use different

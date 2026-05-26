@@ -1,61 +1,25 @@
-"""Small pure helpers shared across digest builders.
-
-These are the leaf-level functions: subject normalisation for thread
-grouping, date parsing with timezone normalisation, address formatting
-for display, GitHub-state case-folding, and file-size formatting for
-the index.
+"""Digest-specific helpers (issue state, size formatting), plus
+re-exports of the generic text helpers so existing callers continue
+to import from `ietf_llm.digest`.
 """
 
 from __future__ import annotations
 
-import email.utils
-import re
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
-_SUBJECT_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:re|fwd|fw|aw|sv)\s*:\s*|\[[^\]]+\]\s*)+",
-    re.IGNORECASE,
-)
+# Re-exported for backward compatibility (tests and external callers
+# import these from ietf_llm.digest); the real definitions live in
+# ietf_llm.text so non-digest modules can use them without triggering
+# the digest package's other imports.
+from ..text import _normalize_subject, _parse_date, _short_addr
 
-
-def _normalize_subject(subject: str) -> str:
-    """Strip Re:/Fwd:/[wg]-style prefixes for thread grouping."""
-    prev = None
-    cur = subject.strip()
-    # Repeatedly strip until stable (handles "Re: [wg] Re: ...")
-    while prev != cur:
-        prev = cur
-        cur = _SUBJECT_PREFIX_RE.sub("", cur).strip()
-    return cur or subject.strip()
-
-
-def _parse_date(date_header: Optional[str]) -> Optional[datetime]:
-    """Parse an RFC 5322 Date header; always return tz-aware (or None).
-
-    Mail dates from the wild come in both tz-aware and tz-naive forms;
-    normalising to UTC-aware here means downstream comparisons across
-    threads never raise.
-    """
-    if not date_header:
-        return None
-    try:
-        parsed = email.utils.parsedate_to_datetime(str(date_header))
-    except (ValueError, TypeError, IndexError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def _short_addr(from_header: str) -> str:
-    """Reduce a From header to a display name or local-part."""
-    name, addr = email.utils.parseaddr(from_header)
-    if name:
-        return name.strip().strip('"')
-    if addr and "@" in addr:
-        return addr.split("@", 1)[0]
-    return from_header.strip() or "(unknown)"
+__all__ = [
+    "_normalize_subject",
+    "_parse_date",
+    "_short_addr",
+    "_state_is_open",
+    "_fmt_size",
+]
 
 
 def _state_is_open(state: Any) -> bool:

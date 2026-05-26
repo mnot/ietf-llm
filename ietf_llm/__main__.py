@@ -23,6 +23,7 @@ from .charter import process_charter
 from .digest import generate_digests
 from .drafts import process_documents
 from .github import download_github_issues, process_github_issues
+from .mail_threads import write_thread_files
 from .mbox import sync_mailing_list
 from .meetings import process_meetings
 from .transcripts import process_transcripts
@@ -240,8 +241,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     # Meetings
     process_meetings(args.wg, cache_dir, verbose=verbosity, months=args.months)
 
-    # Mailing list
+    # Mailing list (year-files for grep / NotebookLM, plus per-thread
+    # reconstructions for legible reading by LLM consumers).
     sync_mailing_list(args.wg, cache_dir, months=args.months, verbose=verbosity)
+    write_thread_files(args.wg, cache_dir, verbose=verbosity)
 
     # Transcripts
     process_transcripts(args.wg, cache_dir, verbose=verbosity, months=args.months)

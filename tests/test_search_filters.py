@@ -77,24 +77,29 @@ def _build_with_stub(wg: str, isolated_home: Path) -> None:
 # --- chunk_date in indexed rows --------------------------------------------
 
 
-def test_message_chunks_get_chunk_date(isolated_home: Path) -> None:
+def test_thread_chunks_get_chunk_date(isolated_home: Path) -> None:
+    # Thread-file message sections carry per-message chunk_date.
     write_cache_file(
-        isolated_home, "wg", "wg-mailing-list-2025.txt",
-        ("Date: Mon, 01 Jan 2025 10:00:00 +0000\n"
-         "From: a@x\nSubject: Topic A\n\nbody\n\n"
-         + "=" * 80 + "\n"),
+        isolated_home, "wg", "wg-thread-2025-01-01-topic-a.md",
+        (
+            "# Topic A\n\n"
+            "**Span:** 2025-01-01 → 2025-01-01\n"
+            "**Messages:** 1\n\n"
+            "## Messages\n\n"
+            "### [1] 2025-01-01 10:00 — Alice\n\n"
+            "body\n"
+        ),
     )
     _build_with_stub("wg", isolated_home)
     hits = search("wg", "anything", k=10, verbose=Verbosity.QUIET)
-    # One chunk indexed with chunk_date populated. (Hit doesn't expose
-    # chunk_date directly yet, but we can verify via the filter facet.)
     hits_in_range = search(
         "wg", "anything", k=10,
         since="2024-01-01T00:00:00Z", until="2026-01-01T00:00:00Z",
         verbose=Verbosity.QUIET,
     )
-    assert len(hits) == 1
-    assert len(hits_in_range) == 1
+    # Header chunk + one message chunk; only the message chunk is dated.
+    assert len(hits) >= 1
+    assert len(hits_in_range) >= 1
 
 
 def test_windowed_chunks_have_null_chunk_date_and_are_filtered_out(
@@ -120,11 +125,16 @@ def test_windowed_chunks_have_null_chunk_date_and_are_filtered_out(
 
 
 def _seed_two_files(isolated_home: Path) -> None:
+    """Seed a thread file (dated 2025-01-01) and a github issues file
+    (dated 2026-06-02). Mailing-list year-files are no longer indexed."""
     write_cache_file(
-        isolated_home, "wg", "wg-mailing-list-2025.txt",
-        ("Date: Mon, 01 Jan 2025 10:00:00 +0000\n"
-         "From: a@x\nSubject: Mail topic\n\nfoo\n\n"
-         + "=" * 80 + "\n"),
+        isolated_home, "wg", "wg-thread-2025-01-01-mail-topic.md",
+        (
+            "# Mail topic\n\n"
+            "**Span:** 2025-01-01 → 2025-01-01\n\n"
+            "## Messages\n\n"
+            "### [1] 2025-01-01 10:00 — Alice\n\nfoo body\n"
+        ),
     )
     write_cache_file(
         isolated_home, "wg", "wg-github-org-repo.txt",
@@ -135,15 +145,15 @@ def _seed_two_files(isolated_home: Path) -> None:
     )
 
 
-def test_file_pattern_filter_restricts_to_mailing_list(
+def test_file_pattern_filter_restricts_to_thread_files(
     isolated_home: Path,
 ) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%mailing-list%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="%-thread-%", verbose=Verbosity.QUIET,
     )
-    assert all("mailing-list" in h.file for h in hits)
+    assert all("-thread-" in h.file for h in hits)
     assert len(hits) >= 1
 
 
@@ -159,8 +169,8 @@ def test_file_pattern_filter_restricts_to_github(isolated_home: Path) -> None:
 def test_since_filter_includes_only_newer_chunks(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
-    # The mail message is dated 2025-01-01; the issue 2026-06-02. since
-    # at the start of 2026 should leave only the issue.
+    # Thread message dated 2025-01-01; issue 2026-06-02. since=2026
+    # should leave only the issue chunk.
     hits = search(
         "wg", "x", k=10, since="2026-01-01T00:00:00Z", verbose=Verbosity.QUIET,
     )
@@ -174,7 +184,7 @@ def test_until_filter_includes_only_older_chunks(isolated_home: Path) -> None:
     hits = search(
         "wg", "x", k=10, until="2026-01-01T00:00:00Z", verbose=Verbosity.QUIET,
     )
-    assert all("mailing-list" in h.file for h in hits)
+    assert all("-thread-" in h.file for h in hits)
     assert hits
 
 

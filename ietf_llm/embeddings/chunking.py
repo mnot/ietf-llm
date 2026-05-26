@@ -43,13 +43,14 @@ class Chunk:
 
 
 def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
-    """Parse an email/issue date string and return ISO 8601 UTC, or None.
+    """Parse an email/issue/thread date string and return ISO 8601 UTC.
 
     Used for the `chunk_date` column. Picks UTC so SQL string
     comparison gives correct chronological order regardless of the
-    source timezone. Tolerates the two real formats we see:
+    source timezone. Tolerates the three real formats we see:
       - RFC 5322 from .eml headers ("Mon, 01 Jan 2025 10:00:00 +0000")
       - github.py's `format_date` output ("2025-01-01 10:00:00 UTC")
+      - Per-thread file section headers ("2025-01-01 10:00", no seconds)
     """
     date_text = date_text.strip()
     if not date_text:
@@ -59,13 +60,18 @@ def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
         parsed = email.utils.parsedate_to_datetime(date_text)
     except (ValueError, TypeError, IndexError):
         parsed = None
-    # Fall back to the "YYYY-MM-DD HH:MM:SS [TZ]" form github.py emits.
+    # Fall back to the two "YYYY-MM-DD HH:MM[:SS] [TZ]" forms.
     if parsed is None:
-        try:
-            from datetime import datetime as _dt  # pylint: disable=import-outside-toplevel
+        # pylint: disable=import-outside-toplevel
+        from datetime import datetime as _dt
 
-            parsed = _dt.strptime(date_text[:19], "%Y-%m-%d %H:%M:%S")
-        except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                parsed = _dt.strptime(date_text[: len(fmt) + 2], fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
             return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -96,6 +102,13 @@ _SUBJECT_RE = re.compile(r"^Subject:\s*(.+)$", re.MULTILINE)
 _FROM_RE = re.compile(r"^From:\s*(.+)$", re.MULTILINE)
 _DATE_RE = re.compile(r"^Date:\s*(.+)$", re.MULTILINE)
 _ISSUE_RE = re.compile(r"^Issue #(\d+):\s*(.+)$", re.MULTILINE)
+
+# Per-thread file message section header:
+#   "### [N] YYYY-MM-DD HH:MM — Sender (reply to [M])"
+_THREAD_MSG_RE = re.compile(
+    r"^### \[(\d+)\] (\S+(?:\s+\S+)?) — (.+?)(?: \(reply to \[\d+\]\))?$",
+    re.MULTILINE,
+)
 
 
 def _record_spans(text: str) -> List[tuple[int, int]]:
@@ -212,6 +225,63 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
     return chunks
 
 
+def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
+    """Split a `<wg>-thread-*.md` file into one chunk per message section.
+
+    The thread file format is fixed (see mail_threads._render_thread):
+    a metadata header, an outline, then one `### [N] DATE — Sender`
+    section per message. We chunk on those section boundaries so the
+    embedding index has one row per actual message — fine-grained
+    retrieval matching the per-thread reading view.
+    """
+    line_starts = _build_line_index(text)
+    matches = list(_THREAD_MSG_RE.finditer(text))
+    chunks: List[Chunk] = []
+
+    if not matches:
+        # Malformed thread file (shouldn't happen for ones we generate);
+        # fall back to windowed chunking so something is still indexed.
+        return _chunk_windowed(text, filename)
+
+    # Header (subject + outline) is everything before the first message.
+    header_end = matches[0].start()
+    header_text = text[:header_end].strip()
+    if header_text:
+        chunks.append(
+            Chunk(
+                file=filename,
+                chunk_idx=0,
+                title="(thread header)",
+                text=header_text[:MAX_CHUNK_CHARS],
+                start_line=1,
+                end_line=_line_at(line_starts, max(header_end - 1, 0)),
+            )
+        )
+
+    for i, match in enumerate(matches):
+        start_off = match.start()
+        end_off = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[start_off:end_off].strip()
+        if not body:
+            continue
+        # Title: "[N] DATE — Sender" without the leading `### `.
+        title = match.group(0)[4:].strip()
+        # Date is group 2 in the regex (e.g. "2026-04-13 10:00").
+        chunk_date = _normalize_to_utc_iso(match.group(2))
+        chunks.append(
+            Chunk(
+                file=filename,
+                chunk_idx=len(chunks),
+                title=title,
+                text=body[:MAX_CHUNK_CHARS],
+                start_line=_line_at(line_starts, start_off),
+                end_line=_line_at(line_starts, max(end_off - 1, 0)),
+                chunk_date=chunk_date,
+            )
+        )
+    return chunks
+
+
 def _chunk_file(path: str) -> List[Chunk]:
     """Read a cache file and dispatch to the right chunker based on its name."""
     filename = os.path.basename(path)
@@ -221,6 +291,10 @@ def _chunk_file(path: str) -> List[Chunk]:
     except OSError:
         return []
     lower = filename.lower()
+    # Per-thread reconstructions are the LLM-legible mailing-list form.
+    # Match before "mailing-list" so order doesn't matter.
+    if "-thread-" in lower and lower.endswith(".md"):
+        return _chunk_thread_file(text, filename)
     if "mailing-list" in lower:
         return _chunk_message_file(text, filename)
     if "-github-" in lower and lower.endswith(".txt"):
@@ -229,12 +303,23 @@ def _chunk_file(path: str) -> List[Chunk]:
 
 
 def _eligible_files(cache_dir: str, wg: str) -> List[str]:
-    """Files worth embedding; skip digests, JSON, binaries."""
+    """Files worth embedding; skip digests, JSON, binaries, and the
+    legacy mailing-list-YYYY year-dumps.
+
+    The year-files are kept on disk for grep / NotebookLM upload but
+    excluded from the embedding index because the per-thread
+    reconstructions (`<wg>-thread-*.md`) cover exactly the same
+    message content in a structured form. Indexing both would
+    double-count every message and pollute search rankings.
+    """
     out = []
     for name in sorted(os.listdir(cache_dir)):
         if name.startswith(f"{wg}-_"):
             continue
         if name.endswith(".json") or name.endswith(".pdf"):
+            continue
+        # Legacy year-dumps duplicate content now in per-thread files.
+        if "mailing-list" in name.lower() and name.endswith(".txt"):
             continue
         path = os.path.join(cache_dir, name)
         if not os.path.isfile(path):
