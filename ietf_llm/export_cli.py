@@ -25,6 +25,7 @@ import os
 import sys
 
 from . import __version__, config, export
+from .freshness import staleness_warning
 from .utils import Verbosity, get_config_dir
 
 SCOPE = "export"
@@ -108,6 +109,13 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # Warn before exporting — the export itself is a no-op cache mirror,
+    # so stale-in stale-out. We want this to land in front of the user
+    # before they spend bytes / GCP quota on stale material.
+    warning = staleness_warning(args.wg)
+    if warning:
+        print(warning, file=sys.stderr)
 
     if args.destination:
         export.directory(args.wg, args.destination, verbose=verbosity)

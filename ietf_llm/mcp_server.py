@@ -34,6 +34,7 @@ from typing import List, Optional
 from .digest.query import query_digest
 from .embeddings import _get_embed_model, chunk_counts, get_chunk, search
 from .digest.overview import build_overview
+from .freshness import staleness_warning
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400
@@ -82,6 +83,19 @@ def _digest_path(wg: str, kind: str) -> Optional[str]:
 # --- Tool implementations (plain functions, also usable for unit tests) -----
 
 
+def _with_freshness(wg: str, body: str) -> str:
+    """Prepend the staleness warning (if any) to a tool response.
+
+    Top-level tools call this; pivot tools (get_chunk_text,
+    read_file_section) skip it because the warning has already been
+    seen on the call that surfaced the file in the first place.
+    """
+    warning = staleness_warning(wg)
+    if not warning:
+        return body
+    return f"{warning}\n\n{body}"
+
+
 def tool_list_working_groups() -> str:
     wgs = _list_wgs()
     if not wgs:
@@ -90,7 +104,7 @@ def tool_list_working_groups() -> str:
 
 
 def tool_overview(wg: str) -> str:
-    return build_overview(wg, get_wg_file_cache_dir(wg))
+    return _with_freshness(wg, build_overview(wg, get_wg_file_cache_dir(wg)))
 
 
 def tool_list_files(wg: str) -> str:
@@ -119,7 +133,7 @@ def tool_list_files(wg: str) -> str:
             )
         else:
             rows.append(f"{size:>10}  (no chunks)  {name}")
-    return "\n".join(rows) or "(empty)"
+    return _with_freshness(wg, "\n".join(rows) or "(empty)")
 
 
 def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -143,18 +157,21 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
             f"Valid kinds: {valid}. "
             f"Run `ietf-llm {wg}` to generate digests."
         )
-    return query_digest(
-        path,
-        kind,
-        state=state,
-        label=label,
-        author=author,
-        role=role,
-        since=since,
-        until=until,
-        event_kind=event_kind,
-        min_messages=min_messages,
-        limit=limit,
+    return _with_freshness(
+        wg,
+        query_digest(
+            path,
+            kind,
+            state=state,
+            label=label,
+            author=author,
+            role=role,
+            since=since,
+            until=until,
+            event_kind=event_kind,
+            min_messages=min_messages,
+            limit=limit,
+        ),
     )
 
 
@@ -180,8 +197,9 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        return (
-            f"(no results — has `ietf-llm {wg} --embed` been run?)"
+        return _with_freshness(
+            wg,
+            f"(no results — has `ietf-llm {wg} --embed` been run?)",
         )
     lines = []
     for i, hit in enumerate(hits, 1):
@@ -202,7 +220,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         if hit.labels:
             lines.append(f"     labels: {hit.labels}")
         lines.append(f"     {hit.snippet}")
-    return "\n".join(lines)
+    return _with_freshness(wg, "\n".join(lines))
 
 
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:

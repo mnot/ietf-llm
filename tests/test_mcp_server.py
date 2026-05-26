@@ -177,3 +177,62 @@ def test_get_chunk_range_caps_size(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "wg", "x.txt", "hi")
     out = mcp_server.tool_get_chunk("wg", "x.txt", 0, end_chunk_idx=999)
     assert "max per call" in out
+
+
+# --- freshness banner on top-level tools ----------------------------------
+
+
+def _make_stale(wg: str, days: int) -> None:
+    """Drop a backdated sentinel so staleness_warning fires."""
+    from datetime import datetime, timedelta, timezone
+
+    from ietf_llm.freshness import _sentinel_path
+
+    when = datetime.now(timezone.utc) - timedelta(days=days)
+    path = Path(_sentinel_path(wg))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(when.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def test_overview_prepends_staleness_warning_when_stale(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg index\n")
+    _make_stale("wg", days=30)
+    out = mcp_server.tool_overview("wg")
+    assert out.startswith("⚠")
+    assert "30 days ago" in out
+    # And the actual overview body still follows it.
+    assert "overview" in out.lower()
+
+
+def test_overview_omits_banner_when_fresh(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg index\n")
+    from ietf_llm.freshness import record_gather
+
+    record_gather("wg")
+    out = mcp_server.tool_overview("wg")
+    assert not out.startswith("⚠")
+
+
+def test_read_digest_prepends_staleness_warning(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "wg-_people.md", "# people\n")
+    _make_stale("wg", days=14)
+    out = mcp_server.tool_read_digest("wg", "people")
+    assert out.startswith("⚠")
+    assert "14 days ago" in out
+
+
+def test_list_files_prepends_staleness_warning(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "anything.txt", "hi")
+    _make_stale("wg", days=10)
+    out = mcp_server.tool_list_files("wg")
+    assert out.startswith("⚠")
+
+
+def test_no_banner_when_sentinel_absent(isolated_home: Path) -> None:
+    # Cache exists but freshness sentinel doesn't (legacy / pre-feature).
+    # Per design we stay silent, not nag.
+    write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg\n")
+    out = mcp_server.tool_overview("wg")
+    assert not out.startswith("⚠")

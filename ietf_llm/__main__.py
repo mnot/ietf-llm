@@ -19,6 +19,7 @@ import sys
 from typing import Any, List
 
 from . import __version__, config
+from .freshness import record_gather
 from .gather.charter import process_charter
 from .digest import generate_digests
 from .gather.drafts import process_documents
@@ -394,6 +395,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             rebuild=args.rebuild_embeddings,
             verbose=verbosity,
         )
+
+    # Record successful gather so freshness checks (export warning,
+    # MCP staleness banner) know when to nag. Best-effort; never fatal.
+    record_gather(args.wg)
 
     if verbosity != Verbosity.QUIET:
         print("-" * 40, file=sys.stderr)
