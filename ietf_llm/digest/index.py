@@ -62,6 +62,7 @@ def _build_index(
     has_issues_digest: bool,
     has_threads_digest: bool,
     verbose: Verbosity,
+    has_people_digest: bool = False,
 ) -> str:
     """Build {wg}-_index.md as the landing page for the corpus."""
     out_path = os.path.join(cache_dir, f"{wg}-_index.md")
@@ -83,7 +84,16 @@ def _build_index(
         if has_issues_digest:
             fh.write(f"- `{wg}-_issues.md` — every GitHub issue, one row each.\n")
         if has_threads_digest:
-            fh.write(f"- `{wg}-_threads.md` — every mailing list thread, one row each.\n")
+            fh.write(
+                f"- `{wg}-_threads.md` — every mailing list thread, one row each. "
+                "Each row links to a per-thread file "
+                f"(`{wg}-thread-<date>-<slug>.md`) with the full conversation.\n"
+            )
+        if has_people_digest:
+            fh.write(
+                f"- `{wg}-_people.md` — participants, with mail addresses "
+                "and GitHub logins consolidated into canonical names.\n"
+            )
         fh.write(
             "\nThe per-year `*-mailing-list-YYYY.txt` files and the "
             "`*-github-<repo>.txt` files are the raw text. They are often "

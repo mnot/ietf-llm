@@ -41,6 +41,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .mbox import clean_email_text, extract_text_content
+from .people import Registry
 from .text import _normalize_subject, _parse_date, _short_addr
 from .utils import LogLevel, Verbosity, get_cache_dir, log
 
@@ -109,8 +110,16 @@ def _extract_references(value: Optional[str]) -> List[str]:
     return _MSGID_RE.findall(value)
 
 
-def parse_eml(path: str) -> Optional[Message]:
-    """Parse one .eml file. Returns None on unrecoverable read errors."""
+def parse_eml(
+    path: str, registry: Optional[Registry] = None
+) -> Optional[Message]:
+    """Parse one .eml file. Returns None on unrecoverable read errors.
+
+    If `registry` is supplied, the sender field is set to the canonical
+    name resolved through it (so "Mark Nottingham via Datatracker" and
+    "Mark Nottingham" both render as "Mark Nottingham"). Without a
+    registry we fall back to plain display-name extraction.
+    """
     try:
         with open(path, "rb") as fh:
             msg = email.message_from_binary_file(fh, policy=email.policy.default)
@@ -118,7 +127,11 @@ def parse_eml(path: str) -> Optional[Message]:
         return None
 
     subject = str(msg.get("Subject") or "(no subject)")
-    sender = _short_addr(str(msg.get("From") or ""))
+    raw_from = str(msg.get("From") or "")
+    if registry is not None:
+        sender = registry.canonical_for_email(raw_from) or _short_addr(raw_from)
+    else:
+        sender = _short_addr(raw_from)
     date = _parse_date(msg.get("Date"))
     msgid = _normalize_msgid(msg.get("Message-Id"))
     if not msgid:
@@ -193,11 +206,17 @@ def _walk_imap_cache(wg: str) -> List[str]:
     return out
 
 
-def build_threads(wg: str) -> List[Thread]:
-    """Reconstruct threads from the WG's IMAP cache."""
+def build_threads(
+    wg: str, registry: Optional[Registry] = None
+) -> List[Thread]:
+    """Reconstruct threads from the WG's IMAP cache.
+
+    Pass `registry` (from `people.build_registry()`) to render senders
+    using consolidated canonical names instead of raw display strings.
+    """
     msgs: List[Message] = []
     for path in _walk_imap_cache(wg):
-        parsed = parse_eml(path)
+        parsed = parse_eml(path, registry=registry)
         if parsed is not None:
             msgs.append(parsed)
     if not msgs:
@@ -348,6 +367,7 @@ def _render_thread(thread: Thread) -> str:
 def write_thread_files(
     wg: str,
     cache_dir: str,
+    registry: Optional[Registry] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[str]:
     """Build threads and write one markdown file per thread.
@@ -356,9 +376,11 @@ def write_thread_files(
     `<wg>-thread-<YYYY-MM-DD>-<slug>.md` and live in `cache_dir`
     (the WG's files/ subdir). Pre-existing thread files are removed
     before writing so a re-gather cleanly reflects the current state.
+
+    Pass `registry` to render senders with consolidated canonical names.
     """
     log("Reconstructing mailing list threads...", verbose, level=LogLevel.STATUS)
-    threads = build_threads(wg)
+    threads = build_threads(wg, registry=registry)
     if not threads:
         return []
 

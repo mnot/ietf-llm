@@ -70,6 +70,15 @@ Key invariants:
   net, with quoted runs collapsed and an outline at the top. The
   thread files are the form an LLM should actually read; the year
   files are there for human/external tools.
+- **Identities are consolidated up front.** `ietf_llm.people.Registry`
+  scans the mail + GitHub data and merges the surface forms of one
+  actor (DMARC-rewritten variants, Datatracker / mailman relay
+  addresses, multiple email accounts, GitHub logins matching an email
+  local-part) into a single canonical name. Threads, digests, and
+  the new `<wg>-_people.md` digest all surface the canonical name,
+  so an LLM doesn't have to figure out that `mnot=40mnot.net@dmarc.ietf.org`,
+  `Mark Nottingham via Datatracker <noreply@ietf.org>`, and the
+  GitHub login `mnot` are the same person.
 - **The `_*.md` files are digests** — small, deterministic, LLM-friendly
   summaries of what's in `files/`. They're regenerated on every gather.
 - **`embeddings.db` is per-WG.** Different WGs can use different

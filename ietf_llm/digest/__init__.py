@@ -65,8 +65,13 @@ def generate_digests(
     cache_dir: str,
     summarize_model: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
+    registry: "Optional[object]" = None,
 ) -> List[str]:
-    """Generate all digest files for the WG. Returns paths of generated files."""
+    """Generate all digest files for the WG. Returns paths of generated files.
+
+    Pass `registry` (an `ietf_llm.people.Registry`) to canonicalise
+    sender and author names across digests.
+    """
     log("Generating digests...", verbose, level=LogLevel.STATUS)
     summarizer = _Summarizer(summarize_model, verbose)
     if summarize_model and not summarizer.active():
@@ -78,21 +83,32 @@ def generate_digests(
 
     generated: List[str] = []
 
-    issues_path = _build_issues_digest(cache_dir, wg, summarizer, verbose)
+    issues_path = _build_issues_digest(
+        cache_dir, wg, summarizer, verbose, registry=registry  # type: ignore[arg-type]
+    )
     if issues_path:
         generated.append(issues_path)
 
-    threads_path = _build_threads_digest(wg, cache_dir, summarizer, verbose)
+    threads_path = _build_threads_digest(
+        wg, cache_dir, summarizer, verbose, registry=registry  # type: ignore[arg-type]
+    )
     if threads_path:
         generated.append(threads_path)
 
-    # Index last so it can reference the others
+    # Index last so it can reference the others.
+    # _people.md is written by ietf_llm.people.write_people_digest from
+    # the gather pipeline (it needs a Registry); we just detect its
+    # presence on disk here.
+    import os  # pylint: disable=import-outside-toplevel
+
+    has_people = os.path.exists(os.path.join(cache_dir, f"{wg}-_people.md"))
     index_path = _build_index(
         wg,
         cache_dir,
         has_issues_digest=issues_path is not None,
         has_threads_digest=threads_path is not None,
         verbose=verbose,
+        has_people_digest=has_people,
     )
     generated.append(index_path)
 

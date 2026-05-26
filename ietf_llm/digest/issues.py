@@ -10,6 +10,7 @@ import json
 import os
 from typing import Optional
 
+from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .helpers import _state_is_open
 from .summarizer import _Summarizer
@@ -26,6 +27,7 @@ def _build_issues_digest(
     wg: str,
     summarizer: _Summarizer,
     verbose: Verbosity,
+    registry: Optional[Registry] = None,
 ) -> Optional[str]:
     """Build {wg}-_issues.md from cached GitHub JSON archives."""
     gh_files = sorted(
@@ -96,7 +98,10 @@ def _build_issues_digest(
                 labels = labels.replace("|", "\\|")
                 n_comments = len(issue.get("comments", []) or [])
                 updated = (issue.get("updatedAt") or issue.get("createdAt") or "")[:10]
-                author = (issue.get("author") or "?").replace("|", "\\|")
+                raw_author = issue.get("author") or "?"
+                if registry is not None:
+                    raw_author = registry.canonical_for_github(raw_author) or raw_author
+                author = raw_author.replace("|", "\\|")
 
                 if _state_is_open(state):
                     total_open += 1

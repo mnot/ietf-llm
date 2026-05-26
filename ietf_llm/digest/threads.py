@@ -13,6 +13,7 @@ import os
 from typing import Optional
 
 from ..mail_threads import build_threads, thread_slug
+from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .summarizer import _Summarizer
 
@@ -27,9 +28,10 @@ def _build_threads_digest(
     cache_dir: str,
     summarizer: _Summarizer,
     verbose: Verbosity,
+    registry: Optional[Registry] = None,
 ) -> Optional[str]:
     """Build {wg}-_threads.md from the reconstructed thread graph."""
-    threads = build_threads(wg)
+    threads = build_threads(wg, registry=registry)
     if not threads:
         return None
 

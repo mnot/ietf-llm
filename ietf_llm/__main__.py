@@ -26,6 +26,7 @@ from .github import download_github_issues, process_github_issues
 from .mail_threads import write_thread_files
 from .mbox import sync_mailing_list
 from .meetings import process_meetings
+from .people import build_registry, write_people_digest
 from .transcripts import process_transcripts
 from .utils import (
     DEFAULT_MONTHS,
@@ -244,7 +245,6 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     # Mailing list (year-files for grep / NotebookLM, plus per-thread
     # reconstructions for legible reading by LLM consumers).
     sync_mailing_list(args.wg, cache_dir, months=args.months, verbose=verbosity)
-    write_thread_files(args.wg, cache_dir, verbose=verbosity)
 
     # Transcripts
     process_transcripts(args.wg, cache_dir, verbose=verbosity, months=args.months)
@@ -270,12 +270,27 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
                     verbose=verbosity,
                 )
 
+    # Identity registry — consolidates mail/GitHub surface forms into
+    # canonical actors, used by thread file generation and the digests.
+    registry = build_registry(args.wg, verbose=verbosity)
+
+    # Per-thread reconstructions (depends on the registry so sender
+    # names are already canonical when threads are written).
+    write_thread_files(args.wg, cache_dir, registry=registry, verbose=verbosity)
+
+    # People digest
+    write_people_digest(args.wg, cache_dir, registry, verbose=verbosity)
+
     # Digests
     summarize_model: Any = None
     if args.summarize or args.summarize_model:
         summarize_model = args.summarize_model or _default_llm_model(verbosity)
     generate_digests(
-        args.wg, cache_dir, summarize_model=summarize_model, verbose=verbosity
+        args.wg,
+        cache_dir,
+        summarize_model=summarize_model,
+        verbose=verbosity,
+        registry=registry,
     )
 
     # Embedding index (opt-in)
