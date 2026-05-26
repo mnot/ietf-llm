@@ -72,6 +72,22 @@ def _canon_github(registry: Optional[Registry], login: str) -> str:
     return registry.canonical_for_github(login) or login
 
 
+def _canon_with_role(registry: Optional[Registry], login: str) -> str:
+    """Canonical name plus a short role tag if the registry knows one.
+
+    Used for section headers and outline bullets where role attribution
+    helps a reader weight the argument ("Editor" wrote the words being
+    argued about; "Chair" rules on resolution; "Author" of a draft has
+    invested in its design). The single-tag rule keeps headers compact
+    — full role lists live in the people digest.
+    """
+    name = _canon_github(registry, login)
+    if registry is None or name == "(unknown)":
+        return name
+    tag = registry.role_tag(name)
+    return f"{name} ({tag})" if tag else name
+
+
 def _format_iso_to_minute(value: Any) -> str:
     """Render an ISO timestamp to 'YYYY-MM-DD HH:MM'; pass through if unparseable."""
     if not isinstance(value, str):
@@ -108,7 +124,7 @@ def _render_issue(
     number = issue.get("number", "?")
     title = issue.get("title") or "(no title)"
     state = (issue.get("state") or "?").upper()
-    author_name = _canon_github(registry, issue.get("author") or "")
+    author_name = _canon_with_role(registry, issue.get("author") or "")
     opened = _format_iso_to_minute(issue.get("createdAt"))
     updated = _format_iso_to_minute(issue.get("updatedAt"))
     labels = ", ".join(issue.get("labels") or [])
@@ -136,7 +152,7 @@ def _render_issue(
         out.append(f"- **[1]** {opened} — {author_name} _(opened issue)_")
         for idx, comment in enumerate(comments, 2):
             c_when = _format_iso_to_minute(comment.get("createdAt"))
-            c_author = _canon_github(registry, comment.get("author") or "")
+            c_author = _canon_with_role(registry, comment.get("author") or "")
             out.append(f"- **[{idx}]** {c_when} — {c_author}")
         out.append("")
 
@@ -150,7 +166,7 @@ def _render_issue(
         out.append("## Comments\n")
         for idx, comment in enumerate(comments, 2):
             c_when = _format_iso_to_minute(comment.get("createdAt"))
-            c_author = _canon_github(registry, comment.get("author") or "")
+            c_author = _canon_with_role(registry, comment.get("author") or "")
             c_body = _normalise_html((comment.get("body") or "").strip())
             out.append(f"### [{idx}] {c_when} — {c_author}\n")
             out.append(c_body or "_(empty comment)_")

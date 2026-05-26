@@ -312,16 +312,35 @@ def _thread_slug_for(thread: Thread) -> str:
     return thread_slug(thread.root.subject, iso)
 
 
-def _build_outline(thread: Thread) -> str:
+def _name_with_role(sender: str, registry: Optional["Registry"]) -> str:
+    """Append a short role tag if the registry knows one for this sender.
+
+    "Mark Nottingham" → "Mark Nottingham (Chair)" when the registry has
+    Mark as a WG chair. Returns the input unchanged when no registry is
+    passed or the sender carries no role we surface. Used in both the
+    outline bullets and the message section headers so role attribution
+    is visible wherever an author name appears.
+    """
+    if registry is None or not sender:
+        return sender
+    tag = registry.role_tag(sender)
+    return f"{sender} ({tag})" if tag else sender
+
+
+def _build_outline(thread: Thread, registry: Optional["Registry"] = None) -> str:
     """A short bulleted list of (date, sender, subject) for navigation."""
     lines = []
     for idx, msg in enumerate(thread.members, 1):
         when = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "(undated)"
-        lines.append(f"- **[{idx}]** {when} — {msg.sender}")
+        lines.append(
+            f"- **[{idx}]** {when} — {_name_with_role(msg.sender, registry)}"
+        )
     return "\n".join(lines)
 
 
-def _render_thread(thread: Thread) -> str:
+def _render_thread(
+    thread: Thread, registry: Optional["Registry"] = None
+) -> str:
     """Build the per-thread markdown document."""
     first, last = thread.span
     span_text = (
@@ -340,12 +359,14 @@ def _render_thread(thread: Thread) -> str:
     )
     parts.append("")
     parts.append("## Outline\n")
-    parts.append(_build_outline(thread))
+    parts.append(_build_outline(thread, registry))
     parts.append("")
     parts.append("## Messages\n")
     for idx, msg in enumerate(thread.members, 1):
         when = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "(undated)"
-        header = f"### [{idx}] {when} — {msg.sender}"
+        header = (
+            f"### [{idx}] {when} — {_name_with_role(msg.sender, registry)}"
+        )
         # Note reply linkage when available.
         if msg.parent_id:
             for p_idx, candidate in enumerate(thread.members, 1):
@@ -403,7 +424,7 @@ def write_thread_files(
             slug = f"{slug}-{used_slugs[slug]}"
         path = os.path.join(cache_dir, f"{wg}-thread-{slug}.md")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(_render_thread(thread))
+            fh.write(_render_thread(thread, registry))
         written.append(path)
 
     log(

@@ -24,6 +24,7 @@ from ietf_llm.embeddings import (
     _chunk_windowed,
     _eligible_files,
 )
+from ietf_llm.embeddings.chunking import _chunk_thread_file
 
 
 # --- per-message chunking --------------------------------------------------
@@ -195,3 +196,37 @@ def test_eligible_files_excludes_digests_json_and_pdf(isolated_home: Path) -> No
     eligible = _eligible_files(str(files_dir), "wg")
     bases = [os.path.basename(p) for p in eligible]
     assert bases == ["wg-charter.txt"]
+
+
+# --- chunker resilience to role-tagged section headers --------------------
+
+
+def test_thread_chunker_parses_section_header_with_role_tag() -> None:
+    # Consumer feedback #6: section headers now carry "(Chair)" /
+    # "(Editor)" / etc. The chunker's lazy `(.+?)` must include the
+    # role tag in the captured title and still recognise the optional
+    # reply-to suffix. Regression test for the regex.
+    text = (
+        "# Topic\n\n"
+        "## Outline\n\n"
+        "- **[1]** 2025-01-01 10:00 — Mark Nottingham (Chair)\n"
+        "- **[2]** 2025-01-02 10:00 — Martin Thomson (Editor)\n\n"
+        "## Messages\n\n"
+        "### [1] 2025-01-01 10:00 — Mark Nottingham (Chair)\n\nbody one\n\n"
+        "### [2] 2025-01-02 10:00 — Martin Thomson (Editor) (reply to [1])\n\n"
+        "body two\n"
+    )
+    chunks = _chunk_thread_file(text, "wg-thread-2025-01-01-topic.md")
+    # Header chunk + two message chunks.
+    assert len(chunks) == 3
+    # The role tag survives into the chunk title — so search hits will
+    # surface it visibly in the title line. This is the load-bearing
+    # property: a regex change that swallowed "(Chair)" / "(Editor)"
+    # into the optional reply-to group would silently lose role
+    # attribution from every indexed chunk.
+    assert "Mark Nottingham (Chair)" in chunks[1].title
+    assert "Martin Thomson (Editor)" in chunks[2].title
+    # Date extraction (group 2 in the regex) still works — the chunk
+    # carries a chunk_date derived from the header timestamp.
+    assert chunks[1].chunk_date is not None
+    assert chunks[2].chunk_date is not None

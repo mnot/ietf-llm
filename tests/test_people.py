@@ -350,3 +350,71 @@ def test_role_column_appears_in_activity_table(isolated_home: Path) -> None:
     # Find Mark's row in the activity table (not the leadership table).
     activity_section = text.split("## Mailing list only", 1)[1]
     assert "Chair" in activity_section
+
+
+# --- role_tag (single short tag for chunk titles) -------------------------
+
+
+def test_role_tag_returns_none_for_unknown(isolated_home: Path) -> None:
+    r = Registry()
+    assert r.role_tag("Nobody") is None
+
+
+def test_role_tag_returns_none_for_known_person_without_role(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_email_message("Alice Wonderland <alice@example.com>", None)
+    assert r.role_tag("Alice Wonderland") is None
+
+
+def test_role_tag_returns_chair(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    assert r.role_tag("Mark Nottingham") == "Chair"
+
+
+def test_role_tag_shortens_area_director_to_ad(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_email_message("Mike Bishop <mb@example.com>", None)
+    r.add_datatracker_role("Mike Bishop", "mb@example.com", "Area Director")
+    assert r.role_tag("Mike Bishop") == "AD"
+
+
+def test_role_tag_prefers_chair_over_editor(isolated_home: Path) -> None:
+    # Someone with both formal leadership AND a draft editorship should
+    # surface the leadership role — that's the higher-weight attribution
+    # for argument-weighting purposes.
+    r = Registry()
+    r.add_email_message("Multi Role <multi@example.com>", None)
+    r.add_datatracker_role("Multi Role", "multi@example.com", "Chair")
+    r.add_document_author(
+        "Multi Role", "multi@example.com",
+        document="draft-foo", is_editor=True,
+    )
+    assert r.role_tag("Multi Role") == "Chair"
+
+
+def test_role_tag_returns_editor_when_no_formal_role(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_email_message("Martin Thomson <mt@example.com>", None)
+    r.add_document_author(
+        "Martin Thomson", "mt@example.com",
+        document="draft-foo", is_editor=True,
+    )
+    assert r.role_tag("Martin Thomson") == "Editor"
+
+
+def test_role_tag_returns_author_when_only_authorship(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_email_message("Paul Keller <paul@example.com>", None)
+    r.add_document_author(
+        "Paul Keller", "paul@example.com",
+        document="draft-foo", is_editor=False,
+    )
+    assert r.role_tag("Paul Keller") == "Author"

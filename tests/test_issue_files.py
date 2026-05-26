@@ -265,6 +265,51 @@ def test_normalise_html_handles_uppercase_tags() -> None:
     assert "- y" in out
 
 
+def test_issue_file_decorates_author_with_role(isolated_home: Path) -> None:
+    # Same role-attribution story as for thread files: section headers
+    # for issue comments should include the author's role tag when one
+    # is known, so an LLM ranking arguments sees the weight.
+    registry = Registry()
+    registry.add_email_message(
+        "Mark Nottingham <mnot@mnot.net>", None,
+    )
+    p = registry.add_github_author("mnot")
+    assert p is not None
+    p.canonical_name = "Mark Nottingham"
+    registry.add_datatracker_role(
+        "Mark Nottingham", "mnot@mnot.net", "Chair",
+    )
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "org/repo",
+        [
+            make_issue(
+                1, "T", author="mnot",
+                comments=[
+                    {
+                        "author": "mnot",
+                        "createdAt": "2026-04-15T11:30:00Z",
+                        "body": "Decision.",
+                    },
+                ],
+            ),
+        ],
+    )
+    write_issue_files(
+        "wg",
+        get_wg_file_cache_dir("wg"),
+        registry=registry,
+        verbose=Verbosity.QUIET,
+    )
+    text = _issue_text("wg", "org/repo", 1)
+    # "Opened by:" line, outline bullet, description section header,
+    # comment section header — all four should carry "(Chair)".
+    assert "Opened by:** Mark Nottingham (Chair)" in text
+    assert "— Mark Nottingham (Chair) _(opened issue)_" in text
+    assert "### [2] 2026-04-15 11:30 — Mark Nottingham (Chair)" in text
+
+
 def test_issue_file_renders_html_lists_as_markdown(isolated_home: Path) -> None:
     # End-to-end: the issue body has an HTML list; the written file
     # has it normalised so the list-aware snippet path can engage.

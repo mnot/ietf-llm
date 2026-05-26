@@ -320,6 +320,39 @@ class Registry:
         person = self._by_github.get(login.strip())
         return person.canonical_name if person else login
 
+    def person_for_name(self, canonical_name: str) -> Optional[Person]:
+        """Look up a Person by their canonical name. Used by file
+        renderers that have already canonicalised a from-header or
+        GitHub login and want the role-bearing Person back."""
+        if not canonical_name:
+            return None
+        return self._by_name.get(canonical_name.lower())
+
+    def role_tag(self, canonical_name: str) -> Optional[str]:
+        """Single short role tag for inline use in chunk titles / outline
+        bullets, or None if the person carries no role we want to surface.
+
+        Priority order matches what argument-weight readers care about:
+        formal leadership (Chair > AD > Tech Advisor > Secretary), then
+        document editorship, then authorship. We only ever return ONE
+        tag — chunk titles are dense already, and "(Chair)" reads better
+        than "(Chair, Editor)". The full role set is in the people
+        digest if a caller needs more.
+        """
+        person = self.person_for_name(canonical_name)
+        if person is None:
+            return None
+        # Datatracker labels come in verbose form; map the ones that
+        # benefit from shortening, pass others through.
+        for label in ("Chair", "Area Director", "Tech Advisor", "Secretary"):
+            if label in person.roles:
+                return {"Area Director": "AD"}.get(label, label)
+        if person.edited_documents:
+            return "Editor"
+        if person.authored_documents:
+            return "Author"
+        return None
+
     # ----- iteration -------------------------------------------------------
 
     def all_persons(self) -> List[Person]:

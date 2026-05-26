@@ -267,3 +267,48 @@ def test_thread_slug_caps_length() -> None:
     slug = thread_slug(long_subject, "2025-01-01")
     # Date prefix is 10 chars + dash; total length capped at 71.
     assert len(slug) <= 71
+
+
+# --- role attribution in thread file section headers ---------------------
+
+
+def test_thread_file_decorates_chair_with_role(isolated_home: Path) -> None:
+    # Consumer feedback #6: section headers should carry an author's
+    # role so an LLM can weight the argument without separate lookup.
+    from ietf_llm.people import Registry
+
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Mark Nottingham <mnot@mnot.net>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000",
+        message_id="<a@x>",
+    )
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    # Both the outline bullet and the section header should carry "(Chair)".
+    assert "— Mark Nottingham (Chair)" in text
+    assert text.count("(Chair)") >= 2  # outline + section header
+
+
+def test_thread_file_no_role_for_unaffiliated(isolated_home: Path) -> None:
+    # A sender the registry has but who carries no role gets no tag.
+    from ietf_llm.people import Registry
+
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Alice Wonderland <alice@example.com>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000",
+        message_id="<a@x>",
+    )
+    r = Registry()
+    r.add_email_message("Alice Wonderland <alice@example.com>", None)
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    assert "Alice Wonderland" in text
+    # No parenthesised role tag added.
+    assert "Alice Wonderland (" not in text
