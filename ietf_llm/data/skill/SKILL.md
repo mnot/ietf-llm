@@ -12,12 +12,31 @@ shortname, **ask** — don't guess. If `overview` returns nothing,
 the WG hasn't been gathered yet; tell the user to run
 `ietf-llm <wg>` from their shell.
 
-## First call: always `overview(wg)`
+## First call: pick by question shape
 
-~30 lines: chairs/ADs, active drafts, top-5 open issues, top-5
-recent threads, latest meeting + latest draft. Often enough on its
-own. Reading every digest in full burns 80–100 KB for the same
-information.
+**Orienting / structural** ("tell me about `<wg>`", "what's this WG
+up to?", "who's on it?") → `overview(wg)`. ~30 lines: chairs/ADs,
+active drafts, top-5 open issues, top-5 recent threads, latest
+meeting + latest draft. Often enough on its own.
+
+**Topical / decision** (specific subject matter or chair rulings)
+→ skip `overview` and go straight to:
+
+- _"arguments for/against X"_, _"scope debate"_ →
+  `search_corpus(wg, "X", label="...")`. Issue labels
+  (`"top-level"`, `"vocabulary"`, `"ready to close"`, …) are the
+  WG's own curation; usually better than semantic ranking alone.
+- _"what did the WG decide about X?"_, _"position on X"_ →
+  `search_corpus(wg, "X", state="closed")`. The chairs' resolution
+  lives in closed issues; open threads can be mid-debate noise.
+- _"what's open / closed / labelled X?"_, _"who's a chair?"_,
+  _"what happened in May?"_ → `read_digest(wg, kind=..., filters)`.
+- _"what was said about X?"_ → `search_corpus(wg, "X")` plus
+  `get_chunk_text` / `read_file_section` to read hits.
+
+If you're unsure which shape the question is, `overview` is the
+safe default — it's cheap and points you at the rest. But for
+specific-topic questions, calling `overview` first wastes a turn.
 
 ## Catalogue queries: `read_digest(wg, kind, ...filters)`
 

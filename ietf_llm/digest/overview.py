@@ -230,10 +230,33 @@ def build_overview(wg: str, cache_dir: str) -> str:
 
     out.append("---")
     out.append("")
+    out.append("## Where to look next")
+    out.append("")
     out.append(
-        "_For depth, call `read_digest(wg, kind, ...filters)` with kind in "
-        "(`issues`, `threads`, `people`, `timeline`) and filters like "
-        "`state`, `label`, `since`, `until`, `limit`. For semantic search "
-        "across the corpus, use `search_corpus`._"
+        "Pick by **question shape**, not by tool — this overview is for "
+        "orienting only:"
+    )
+    out.append("")
+    out.append(
+        '- _"arguments for/against X"_ / _"scope debate about X"_ → '
+        f'`search_corpus("{wg}", "X", label="...")` '
+        "(labels are the WG's own curation; see the issues digest "
+        "for the label vocabulary)."
+    )
+    out.append(
+        '- _"what did the WG decide about X?"_ / _"WG\'s position on X?"_ → '
+        f'`search_corpus("{wg}", "X", state="closed")` '
+        "(the chairs' resolution lives in closed issues)."
+    )
+    out.append(
+        '- _"what was said about X?"_ → '
+        f'`search_corpus("{wg}", "X")`, then pivot with '
+        "`get_chunk_text` / `read_file_section` for full context."
+    )
+    out.append(
+        '- _"what\'s open / closed?"_, _"who\'s a chair?"_, '
+        '_"what happened in May?"_ → '
+        f'`read_digest("{wg}", kind=..., ...filters)` '
+        "(kinds: `issues`, `threads`, `people`, `timeline`, `index`)."
     )
     return "\n".join(out) + "\n"

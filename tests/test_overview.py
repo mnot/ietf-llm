@@ -110,6 +110,35 @@ def test_overview_includes_call_pattern_hints(tmp_path: Path) -> None:
     assert "search_corpus" in out
 
 
+def test_overview_footer_keys_calls_to_question_shape(tmp_path: Path) -> None:
+    # Consumer feedback: the old footer ("for depth, call …") didn't
+    # tell the agent WHICH tool to use for WHICH question. The new
+    # footer keys each suggested call to a question shape — label=
+    # for topical, state="closed" for decisions, etc.
+    _seed_digests(tmp_path)
+    out = build_overview("wg", str(tmp_path))
+    # Question-shape headings are present.
+    assert "Where to look next" in out
+    assert "question shape" in out
+    # And the call signatures for the high-value moves are concrete
+    # (with the WG name baked in, so the agent can copy-paste).
+    assert 'search_corpus("wg", "X", label=' in out
+    assert 'search_corpus("wg", "X", state="closed")' in out
+    assert 'read_digest("wg"' in out
+
+
+def test_overview_footer_baking_in_wg_name(tmp_path: Path) -> None:
+    # Different WG name should produce different copy-pasteable calls.
+    _seed_digests(tmp_path)
+    # Reuse the same digest files by passing a WG name whose digest
+    # paths happen to exist… simplest: write digests under the alias.
+    (tmp_path / "other-_people.md").write_text(
+        (tmp_path / "wg-_people.md").read_text()
+    )
+    out = build_overview("other", str(tmp_path))
+    assert 'search_corpus("other"' in out
+
+
 def test_overview_handles_missing_cache(tmp_path: Path) -> None:
     out = build_overview("wg", str(tmp_path / "nope"))
     assert "No cache" in out

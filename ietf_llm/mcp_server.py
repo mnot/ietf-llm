@@ -439,24 +439,28 @@ def main() -> None:
         most recent mailing list threads, and the latest meeting + latest
         draft publication.
 
-        **Best first call** for any question about an IETF WG by
-        shortname (`httpbis`, `quic`, `tls`, `aipref`, …) — ~30 lines
-        of markdown instead of the 80-100KB of context that reading
-        every digest would burn.
+        **Best first call for ORIENTING / STRUCTURAL questions** about
+        an IETF WG by shortname (`httpbis`, `quic`, `tls`, `aipref`, …):
+        "tell me about WG X", "what's WG X up to?", "who's on WG X?",
+        "what is WG X working on?". ~30 lines of markdown instead of
+        the 80-100 KB of context that reading every digest would burn.
 
-        Companion ietf-llm tools to call after this:
-          - `read_digest(wg, kind=...)` — filtered catalogue
-            (kinds: index, issues, threads, people, timeline).
-            Use for "what's open?", "who's a chair?", "what happened
-            in May?" — pass filters, don't read the whole digest.
-          - `search_corpus(wg, query)` — semantic search across the
-            mailing list, drafts, issues, slides, and transcripts.
-            Use for "what was said about X?"
-          - `get_chunk_text(wg, file, chunk_idx)` — full text of one
-            chunk returned by `search_corpus`.
-          - `read_file_section(wg, file, start_line)` — bounded read
-            of any cache file.
-          - `list_files(wg)` — file inventory with chunk counts.
+        **Skip overview and go straight to the specialised tool for
+        TOPICAL questions:**
+          - "arguments for/against X" / "scope debate about X" →
+            `search_corpus(wg, "X", label="...")` — issue labels are
+            the WG's own curation.
+          - "what did the WG decide about X?" / "what's the WG's
+            position on X?" → `search_corpus(wg, "X", state="closed")`
+            — the chairs' resolution lives in closed issues.
+          - "what's open?" / "who chairs this?" / "what happened in
+            May?" → `read_digest(wg, kind=..., ...filters)`.
+          - "what did Alice say about X?" → `search_corpus` (semantic
+            search, then pivot via `get_chunk_text` or
+            `read_file_section`).
+
+        Other ietf-llm tools: `read_digest`, `search_corpus`,
+        `get_chunk_text`, `read_file_section`, `list_files`.
         """
         return tool_overview(wg)
 
