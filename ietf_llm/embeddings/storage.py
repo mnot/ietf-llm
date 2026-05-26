@@ -27,7 +27,7 @@ from ..utils import get_cache_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 
 def _db_path(wg: str) -> str:
@@ -52,6 +52,7 @@ def _open_db(wg: str) -> sqlite3.Connection:
             chunk_date TEXT,              -- ISO 8601 UTC, NULL for undated chunks
             labels     TEXT,              -- comma-separated, lowercased; for issue chunks
             state      TEXT,              -- 'open'/'closed' for issue chunks; NULL elsewhere
+            url        TEXT,              -- GitHub URL or IETF Archived-At; NULL elsewhere
             UNIQUE (file, chunk_idx)
         )
         """
@@ -100,6 +101,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # decision over an older mid-debate thread.
     if "state" not in have:
         conn.execute("ALTER TABLE chunks ADD COLUMN state TEXT")
+    # v5 → v6: chunk-level citation URL. GitHub issues URL for issue
+    # chunks, IETF mail archive permalink (`Archived-At:`) for thread
+    # message chunks; NULL for drafts/transcripts/etc.
+    if "url" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN url TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",

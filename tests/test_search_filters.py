@@ -543,9 +543,9 @@ def test_tool_search_no_summary_when_states_mixed(isolated_home: Path) -> None:
 def test_tool_search_surfaces_github_url_for_issue_hits(
     isolated_home: Path,
 ) -> None:
-    # Consumer feedback: file paths aren't citeable. For issue chunks,
-    # the URL line in the per-issue file's frontmatter should be lifted
-    # into each search-hit row.
+    # Consumer feedback (round N-1): file paths aren't citeable. For
+    # issue chunks, the URL stamped on the chunk at index time should
+    # surface as a `url:` row in each search hit.
     from ietf_llm import mcp_server
 
     write_cache_file(
@@ -564,14 +564,46 @@ def test_tool_search_surfaces_github_url_for_issue_hits(
     assert "url: https://github.com/org/repo/issues/1" in out
 
 
-def test_tool_search_omits_url_for_non_issue_hits(isolated_home: Path) -> None:
-    # Thread chunks have no GitHub URL — the `url:` line must not appear
-    # (and the helper must not error reading the file).
+def test_tool_search_surfaces_archived_at_for_thread_hits(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback (this round): IETF mail archive Archived-At
+    # permalinks should likewise surface in thread chunks. Each message
+    # has its OWN URL, so different chunks in the same file get
+    # different urls.
     from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
-        "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
+        (
+            "# Topic\n\n"
+            "## Messages\n\n"
+            "### [1] 2025-01-01 10:00 — Alice\n\n"
+            "_Subject:_ Topic\n"
+            "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/wg/aaa/\n\n"
+            "body one\n\n"
+            "### [2] 2025-01-02 10:00 — Bob\n\n"
+            "_Subject:_ Re: Topic\n"
+            "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/wg/bbb/\n\n"
+            "body two\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_search("wg", "x", k=10)
+    # Both message URLs appear, on their respective hits — and they're
+    # different from each other (per-message, not per-file).
+    assert "url: https://mailarchive.ietf.org/arch/msg/wg/aaa/" in out
+    assert "url: https://mailarchive.ietf.org/arch/msg/wg/bbb/" in out
+
+
+def test_tool_search_omits_url_for_unurled_chunks(isolated_home: Path) -> None:
+    # Drafts / threads without Archived-At have no url — the `url:`
+    # line must NOT appear.
+    from ietf_llm import mcp_server
+
+    write_cache_file(
+        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody (no archived-at)\n",
     )
     _build_with_stub("wg", isolated_home)
     out = mcp_server.tool_search("wg", "x", k=5)

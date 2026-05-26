@@ -47,6 +47,11 @@ class Hit:
     # everywhere else. Helps callers prefer the chairs' resolution over
     # older mid-debate threads.
     state: Optional[str] = None
+    # Citation URL for the chunk's source — a GitHub issue URL for
+    # issue chunks, an IETF Archived-At permalink for thread message
+    # chunks, None for drafts/transcripts. Surfaced in MCP search
+    # output so a citing LLM doesn't have to reconstruct it.
+    url: Optional[str] = None
 
 
 def build_index(
@@ -134,8 +139,8 @@ def build_index(
             cur.execute(
                 "INSERT INTO chunks "
                 "(file, chunk_idx, title, text, embedding, "
-                " start_line, end_line, chunk_date, labels, state) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " start_line, end_line, chunk_date, labels, state, url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
@@ -147,6 +152,7 @@ def build_index(
                     chunk.chunk_date,
                     chunk.labels,
                     chunk.state,
+                    chunk.url,
                 ),
             )
         cur.execute(
@@ -278,7 +284,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, "
-        "start_line, end_line, labels, state, chunk_date "
+        "start_line, end_line, labels, state, chunk_date, url "
         f"FROM chunks{where_sql}",
         where_args,
     )
@@ -300,7 +306,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     for i in top:
         (
             file, chunk_idx, title, text, _,
-            start_line, end_line, labels, state_val, _chunk_date,
+            start_line, end_line, labels, state_val, _chunk_date, url,
         ) = rows[i]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
@@ -316,6 +322,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
                 end_line=int(end_line) if end_line is not None else None,
                 labels=labels if labels else None,
                 state=state_val if state_val else None,
+                url=url if url else None,
             )
         )
     conn.close()

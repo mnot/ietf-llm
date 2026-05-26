@@ -52,6 +52,15 @@ class Chunk:
     # chairs' resolution over older mid-debate threads, or surface only
     # things the WG hasn't yet decided.
     state: Optional[str] = None
+    # Citation URL for the chunk's underlying artefact:
+    # - issue chunks: `https://github.com/<owner>/<repo>/issues/<N>`
+    #   (the whole file's GitHub URL; every chunk from the same issue
+    #   shares it)
+    # - thread chunks: the `Archived-At:` permalink for that specific
+    #   message (per-chunk; each message has its own URL)
+    # - everything else: NULL. Surfaced inline in search hits so the
+    #   caller can cite without reconstructing.
+    url: Optional[str] = None
 
 
 def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
@@ -135,6 +144,17 @@ _ISSUE_STATE_RE = re.compile(
     r"^\*\*State:\*\*\s*(\S+)", re.MULTILINE
 )
 
+# Per-issue file URL line (issue_files._render_issue):
+#   "**URL:** https://github.com/<owner>/<repo>/issues/<N>  "
+_ISSUE_URL_RE = re.compile(r"^\*\*URL:\*\*\s*(\S+)", re.MULTILINE)
+
+# Per-thread message Archived-At line (mail_threads._render_thread).
+# One per message section, italicised inline form:
+#   "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/<list>/<tok>/"
+_THREAD_ARCHIVED_AT_RE = re.compile(
+    r"^_Archived-At:_\s*(\S+)", re.MULTILINE
+)
+
 
 def _extract_issue_labels(text: str) -> Optional[str]:
     """Pull the `**Labels:**` line out of a per-issue file's header
@@ -153,6 +173,27 @@ def _extract_issue_labels(text: str) -> Optional[str]:
     parts = [p.strip().lower() for p in raw.split(",")]
     parts = [p for p in parts if p]
     return ",".join(parts) if parts else None
+
+
+def _extract_issue_url(text: str) -> Optional[str]:
+    """Pull the `**URL:**` line out of a per-issue file's header.
+
+    Returns None for malformed archives where the line is missing
+    (e.g. a `repo` field without a `/` so issue_files skipped the URL).
+    """
+    match = _ISSUE_URL_RE.search(text)
+    return match.group(1).strip() if match else None
+
+
+def _extract_thread_archived_at(text: str) -> Optional[str]:
+    """First `_Archived-At:_` URL in a thread message section.
+
+    `text` here is the body of one message section (between two
+    `### [N] ...` headers), so taking the first match is safe — there
+    can only be one Archived-At per message.
+    """
+    match = _THREAD_ARCHIVED_AT_RE.search(text)
+    return match.group(1).strip() if match else None
 
 
 def _extract_issue_state(text: str) -> Optional[str]:
@@ -313,6 +354,11 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     is_issue = "-issue-" in filename.lower()
     labels = _extract_issue_labels(text) if is_issue else None
     state = _extract_issue_state(text) if is_issue else None
+    # Citation URL: for issue files the URL is file-level (every chunk
+    # from the same issue shares it); for thread files each message
+    # section carries its own `_Archived-At:_` line, so we pull the
+    # URL per-chunk below.
+    file_url = _extract_issue_url(text) if is_issue else None
 
     # Header (subject + outline) is everything before the first message.
     header_end = matches[0].start()
@@ -328,6 +374,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 end_line=_line_at(line_starts, max(header_end - 1, 0)),
                 labels=labels,
                 state=state,
+                url=file_url,
             )
         )
 
@@ -341,6 +388,11 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         title = match.group(0)[4:].strip()
         # Date is group 2 in the regex (e.g. "2026-04-13 10:00").
         chunk_date = _normalize_to_utc_iso(match.group(2))
+        # Per-chunk URL: issue chunks inherit the file-level URL;
+        # thread chunks have their own per-message Archived-At line.
+        chunk_url = (
+            file_url if is_issue else _extract_thread_archived_at(body)
+        )
         chunks.append(
             Chunk(
                 file=filename,
@@ -352,6 +404,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 chunk_date=chunk_date,
                 labels=labels,
                 state=state,
+                url=chunk_url,
             )
         )
     return chunks

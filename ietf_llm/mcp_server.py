@@ -261,44 +261,13 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         lines.append(f"     {hit.title}")
         if hit.labels:
             lines.append(f"     labels: {hit.labels}")
-        # GitHub URL for issue chunks — saves the caller reconstructing
-        # it for citation. Cheap (~10-line file read per hit). For
-        # non-issue chunks _issue_url returns None and we skip.
-        url = _issue_url(wg, hit.file)
-        if url:
-            lines.append(f"     url: {url}")
+        # Citation URL straight from the chunk: GitHub URL for issue
+        # chunks, IETF Archived-At permalink for thread message chunks.
+        # NULL for drafts/transcripts and pre-v6 indexes — silently skip.
+        if hit.url:
+            lines.append(f"     url: {hit.url}")
         lines.append(f"     {hit.snippet}")
     return _with_freshness(wg, "\n".join(lines))
-
-
-def _issue_url(wg: str, file: str) -> Optional[str]:
-    """Return the GitHub URL for an issue chunk's source file, or None.
-
-    Per-issue files have `**URL:** https://github.com/<owner>/<repo>/issues/<N>`
-    in their frontmatter (since the issue_files renderer emits it). We
-    read the URL directly from the file rather than reconstructing from
-    the filename, because the filename mashes `<owner>-<repo>` together
-    with a hyphen and repo names themselves can contain hyphens — there's
-    no unambiguous inverse parse.
-
-    Only ~10 lines need to be read; this is cheap enough to call per-hit.
-    """
-    if "-issue-" not in file or not file.endswith(".md"):
-        return None
-    path = _safe_path(wg, file)
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for _ in range(10):
-                line = fh.readline()
-                if not line:
-                    break
-                if line.startswith("**URL:**"):
-                    return line.removeprefix("**URL:**").strip().rstrip()
-    except OSError:
-        return None
-    return None
 
 
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:

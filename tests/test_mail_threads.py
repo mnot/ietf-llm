@@ -312,3 +312,70 @@ def test_thread_file_no_role_for_unaffiliated(isolated_home: Path) -> None:
     assert "Alice Wonderland" in text
     # No parenthesised role tag added.
     assert "Alice Wonderland (" not in text
+
+
+# --- Archived-At extraction + rendering -----------------------------------
+
+
+def test_normalize_archived_at_strips_brackets() -> None:
+    from ietf_llm.gather.mail_threads import _normalize_archived_at
+
+    # RFC 5064 form: URL wrapped in angle brackets.
+    out = _normalize_archived_at(
+        "<https://mailarchive.ietf.org/arch/msg/aipref/abc123/>"
+    )
+    assert out == "https://mailarchive.ietf.org/arch/msg/aipref/abc123/"
+
+
+def test_normalize_archived_at_returns_bare_url() -> None:
+    from ietf_llm.gather.mail_threads import _normalize_archived_at
+
+    # Unbracketed form, also valid.
+    out = _normalize_archived_at(
+        "https://mailarchive.ietf.org/arch/msg/wg/tok/"
+    )
+    assert out == "https://mailarchive.ietf.org/arch/msg/wg/tok/"
+
+
+def test_normalize_archived_at_rejects_non_url() -> None:
+    from ietf_llm.gather.mail_threads import _normalize_archived_at
+
+    # Header value with no scheme — probably garbage, skip rather than
+    # produce a broken citation URL.
+    assert _normalize_archived_at("not a url") is None
+    assert _normalize_archived_at("") is None
+    assert _normalize_archived_at(None) is None
+
+
+def test_thread_file_includes_archived_at_per_message(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: thread search hits had no citeable URL. The
+    # IETF mail archive sets Archived-At on every message; we should
+    # extract it and surface it in the per-thread file's message section
+    # so the chunker can stamp it onto the chunk.
+    from email.message import EmailMessage
+    from email.policy import default as default_policy
+    from ietf_llm.gather.mail_threads import write_thread_files
+
+    imap_dir = (
+        isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list"
+    )
+    imap_dir.mkdir(parents=True, exist_ok=True)
+    msg = EmailMessage(policy=default_policy)
+    msg["Subject"] = "Topic"
+    msg["From"] = "Alice <a@x>"
+    msg["Date"] = "Mon, 01 Jan 2025 10:00:00 +0000"
+    msg["Message-Id"] = "<m1@x>"
+    msg["Archived-At"] = (
+        "<https://mailarchive.ietf.org/arch/msg/wg/abc/>"
+    )
+    msg.set_content("body")
+    (imap_dir / "1.eml").write_bytes(bytes(msg))
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    assert (
+        "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/wg/abc/"
+        in text
+    )

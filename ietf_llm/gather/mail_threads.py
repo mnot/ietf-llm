@@ -58,6 +58,14 @@ class Message:
     in_reply_to: Optional[str] = None
     references: List[str] = field(default_factory=list)
     parent_id: Optional[str] = None  # resolved after threading
+    # IETF mail archive permalink, set by IETF mailman in the
+    # `Archived-At:` header (e.g.
+    # https://mailarchive.ietf.org/arch/msg/<list>/<token>/). Optional
+    # because non-IETF lists won't have it, and some malformed messages
+    # may drop the header. When present, we propagate it down to the
+    # rendered thread file and ultimately to search hits as a citeable
+    # URL for the individual message.
+    archived_at: Optional[str] = None
 
 
 @dataclass
@@ -140,6 +148,7 @@ def parse_eml(
         msgid = f"<synthetic-{os.path.basename(path)}@local>"
     in_reply_to = _normalize_msgid(msg.get("In-Reply-To"))
     references = _extract_references(msg.get("References"))
+    archived_at = _normalize_archived_at(msg.get("Archived-At"))
 
     try:
         body = clean_email_text(extract_text_content(msg))
@@ -154,7 +163,32 @@ def parse_eml(
         body=body,
         in_reply_to=in_reply_to,
         references=references,
+        archived_at=archived_at,
     )
+
+
+def _normalize_archived_at(value: Optional[str]) -> Optional[str]:
+    """Extract a URL from an `Archived-At:` header.
+
+    RFC 5064 allows the URL to be enclosed in `<...>` brackets, and some
+    mail clients wrap it in angle brackets even when the spec doesn't
+    strictly require them. We unwrap exactly that — anything else
+    (commentary, multiple URLs) we pass through unchanged rather than
+    risk producing a broken URL.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith("<") and text.endswith(">"):
+        text = text[1:-1].strip()
+    # A bare scheme like "http://" or "https://" is a useful sanity
+    # check — without it we're probably looking at garbage. Don't be
+    # stricter than this; archive URL schemes vary.
+    if "://" not in text:
+        return None
+    return text
 
 
 # --- Quote elision ---------------------------------------------------------
@@ -376,6 +410,12 @@ def _render_thread(
         parts.append(header)
         parts.append("")
         parts.append(f"_Subject:_ {msg.subject}")
+        if msg.archived_at:
+            # IETF archive permalink for the individual message — chunker
+            # picks this up and stamps the chunk so search hits surface
+            # a citeable URL alongside the file path. Italicised inline
+            # form mirrors `_Subject:_` so the file stays human-readable.
+            parts.append(f"_Archived-At:_ {msg.archived_at}")
         parts.append("")
         body = elide_quotes(msg.body or "")
         # Single trailing newline; the .splitlines() in elide_quotes
