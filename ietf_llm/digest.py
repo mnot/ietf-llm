@@ -52,9 +52,16 @@ def _parse_date(date_header: Optional[str]) -> Optional[datetime]:
     if not date_header:
         return None
     try:
-        return email.utils.parsedate_to_datetime(str(date_header))
+        parsed = email.utils.parsedate_to_datetime(str(date_header))
     except (ValueError, TypeError, IndexError):
         return None
+    # Mail dates from the wild come in both tz-aware and tz-naive forms;
+    # normalise to UTC-aware so comparisons across threads don't raise.
+    if parsed.tzinfo is None:
+        from datetime import timezone  # pylint: disable=import-outside-toplevel
+
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _short_addr(from_header: str) -> str:
@@ -296,12 +303,19 @@ def _build_threads_digest(
     verbose: Verbosity,
 ) -> Optional[str]:
     """Build {wg}-_threads.md by scanning the IMAP .eml cache."""
-    imap_cache = os.path.join(get_cache_dir(), wg, "imap-cache")
+    # mbox.py writes to <cache>/imap-cache/<wg>/<list_name>/<uid>.eml,
+    # so we have to walk two levels deep (and tolerate the WG having
+    # more than one list, though usually it's just one).
+    imap_cache = os.path.join(get_cache_dir(), "imap-cache", wg)
     if not os.path.isdir(imap_cache):
         return None
 
-    eml_files = [f for f in os.listdir(imap_cache) if f.endswith(".eml")]
-    if not eml_files:
+    eml_paths: List[str] = []
+    for dirpath, _, filenames in os.walk(imap_cache):
+        for fname in filenames:
+            if fname.endswith(".eml"):
+                eml_paths.append(os.path.join(dirpath, fname))
+    if not eml_paths:
         return None
 
     # thread_key -> {subject, count, participants, first, last, first_body}
@@ -317,8 +331,7 @@ def _build_threads_digest(
     )
 
     parsed = 0
-    for eml_file in eml_files:
-        path = os.path.join(imap_cache, eml_file)
+    for path in eml_paths:
         try:
             with open(path, "rb") as fh:
                 msg = email.message_from_binary_file(fh, policy=email.policy.default)
@@ -360,13 +373,14 @@ def _build_threads_digest(
     if not threads:
         return None
 
-    # Sort threads by last activity desc; coerce to naive datetimes for the
-    # sort key only so mixed aware/naive don't raise.
+    # Sort threads by last activity desc. Dates are always tz-aware
+    # (see _parse_date), so direct comparison is safe.
+    from datetime import timezone  # pylint: disable=import-outside-toplevel
+
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
     sorted_threads = sorted(
         threads.values(),
-        key=lambda th: (
-            th["last"].replace(tzinfo=None) if th["last"] else datetime.min
-        ),
+        key=lambda th: th["last"] or _epoch,
         reverse=True,
     )
 
