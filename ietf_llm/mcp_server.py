@@ -27,6 +27,7 @@ Tools:
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import sys
 from typing import List, Optional
@@ -96,6 +97,14 @@ def _with_freshness(wg: str, body: str) -> str:
     return f"{warning}\n\n{body}"
 
 
+_NEXT_TOOLS_HINT = (
+    "\n\n_Next: `overview(wg)` for orientation · "
+    "`read_digest(wg, kind=..., ...filters)` for catalogue queries · "
+    "`search_corpus(wg, query, ...)` for substantive content · "
+    "`list_labels(wg)` for the WG's curation vocabulary._"
+)
+
+
 def tool_list_working_groups() -> str:
     wgs = _list_wgs()
     if not wgs:
@@ -103,7 +112,7 @@ def tool_list_working_groups() -> str:
             "(no working / research groups gathered yet — "
             "run `ietf-llm <shortname>`)"
         )
-    return "\n".join(wgs)
+    return "\n".join(wgs) + _NEXT_TOOLS_HINT
 
 
 def tool_overview(wg: str) -> str:
@@ -127,6 +136,15 @@ def tool_list_labels(wg: str) -> str:
     lines.append("|-------|--------|")
     for label, count in labels:
         lines.append(f"| `{label}` | {count} |")
+    # Concrete next-call signatures so a consuming LLM doesn't have to
+    # round-trip through tool_search to recall how to use a label.
+    lines.append("")
+    lines.append(
+        f'_Next: `read_digest("{wg}", kind="issues", label="X", '
+        'include_bodies=True)` for a labelled-cluster summary in one '
+        f'call, or `search_corpus("{wg}", "...", label="X")` for '
+        "semantic search restricted to a label._"
+    )
     return _with_freshness(wg, "\n".join(lines))
 
 
@@ -156,10 +174,17 @@ def tool_list_files(wg: str) -> str:
             )
         else:
             rows.append(f"{size:>10}  (no chunks)  {name}")
-    return _with_freshness(wg, "\n".join(rows) or "(empty)")
+    body = "\n".join(rows) or "(empty)"
+    body += (
+        f"\n\n_Next: `read_file_section(\"{wg}\", \"<filename>\", "
+        "start_line=1)` for a bounded read · "
+        f'`get_chunk_text("{wg}", "<filename>", chunk_idx, end_chunk_idx)` '
+        "for one (or a range of) indexed chunks._"
+    )
+    return _with_freshness(wg, body)
 
 
-def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     wg: str,
     kind: str = "index",
     state: Optional[str] = None,
@@ -171,6 +196,7 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     event_kind: Optional[str] = None,
     min_messages: Optional[int] = None,
     limit: Optional[int] = None,
+    include_bodies: bool = False,
 ) -> str:
     path = _digest_path(wg, kind)
     if not path:
@@ -180,22 +206,76 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
             f"Valid kinds: {valid}. "
             f"Run `ietf-llm {wg}` to generate digests."
         )
-    return _with_freshness(
-        wg,
-        query_digest(
-            path,
-            kind,
-            state=state,
-            label=label,
-            author=author,
-            role=role,
-            since=since,
-            until=until,
-            event_kind=event_kind,
-            min_messages=min_messages,
-            limit=limit,
-        ),
+    filtered = query_digest(
+        path,
+        kind,
+        state=state,
+        label=label,
+        author=author,
+        role=role,
+        since=since,
+        until=until,
+        event_kind=event_kind,
+        min_messages=min_messages,
+        limit=limit,
     )
+    if include_bodies and kind == "issues":
+        filtered = filtered + _append_issue_bodies(wg, filtered)
+    return _with_freshness(wg, filtered)
+
+
+# Regex tuned to the issues-digest schema: the File column carries a
+# backtick-wrapped filename. Picking it up from the rendered markdown is
+# more robust than re-parsing the table — this works whether or not
+# `summarize` is active (which would shift column positions).
+_ISSUE_FILE_CELL_RE = re.compile(r"`(\S+-issue-\S+\.md)`")
+
+
+def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
+    """Append the description body (and frontmatter) of each filtered
+    issue to a read_digest('issues') response.
+
+    The collected bodies come straight from the per-issue files — which
+    already carry state, labels, participants, duplicate-of, closing
+    rationale, and the issue's opening description. We slice through
+    the start of `## Comments` so we don't pull the full comment
+    history (that's what `get_chunk_text(end_chunk_idx=...)` is for).
+    A consuming LLM asking "what are the for/against arguments on
+    label=top-level" gets everything they need in one round-trip.
+    """
+    filenames: List[str] = []
+    seen: set[str] = set()
+    for match in _ISSUE_FILE_CELL_RE.finditer(filtered_markdown):
+        name = match.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        filenames.append(name)
+    if not filenames:
+        return ""
+    chunks: List[str] = ["\n\n## Issue bodies\n"]
+    chunks.append(
+        f"_{len(filenames)} issue(s) below — frontmatter + opening "
+        "description per issue. Use `get_chunk_text` or `read_file_section` "
+        "to read full comment threads._\n"
+    )
+    for name in filenames:
+        path = _safe_path(wg, name)
+        if path is None:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        # Cut at "## Comments" — the comment history is the bulky part
+        # and the consumer can drill into it on demand.
+        cutoff = text.find("\n## Comments")
+        if cutoff != -1:
+            text = text[:cutoff].rstrip() + "\n"
+        chunks.append("\n---\n")
+        chunks.append(text)
+    return "".join(chunks)
 
 
 def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -568,6 +648,7 @@ def main() -> None:
         event_kind: Optional[str] = None,
         min_messages: Optional[int] = None,
         limit: Optional[int] = None,
+        include_bodies: bool = False,
     ) -> str:
         """Read filtered catalogue digests of an IETF Working Group's
         ietf-llm corpus: issues, threads, people, timeline, index. The
@@ -576,6 +657,14 @@ def main() -> None:
         every issue tagged with a topic in one call (e.g. `kind="issues",
         label="top-level"` returns the whole curated cluster, open
         issues first then closed-by-recency).
+
+        `include_bodies=True` (issues only) appends each filtered
+        issue's frontmatter + opening description below the catalogue
+        table, so "what are the arguments for/against X" questions can
+        be answered in ONE call instead of N follow-up file reads.
+        Comment threads are NOT included — use `get_chunk_text` or
+        `read_file_section` to drill into them on demand. Scope tightly
+        with `label=` or `state=` to keep the response bounded.
 
         kind = "index"    — corpus inventory + how-to-use pointer
              | "issues"   — one row per GitHub issue. Filters: state
@@ -607,6 +696,7 @@ def main() -> None:
             state=state, label=label, author=author, role=role,
             since=since, until=until, event_kind=event_kind,
             min_messages=min_messages, limit=limit,
+            include_bodies=include_bodies,
         )
 
     @server.tool()

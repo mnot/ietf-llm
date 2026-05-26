@@ -114,3 +114,38 @@ def test_multi_repo_archives_both_appear(isolated_home: Path) -> None:
     assert "## org/repo1" in text
     assert "## org/repo2" in text
     assert "_Totals: 2 open, 0 closed_" in text
+
+
+# --- Dup-of column (consumer feedback) ------------------------------------
+
+
+def test_dup_of_column_present_and_populated(isolated_home: Path) -> None:
+    # The digest table grows a new "Dup-of" column. Populated when a
+    # comment calls out a duplicate, empty otherwise. Surfacing this
+    # at the digest level lets a consuming LLM skip duplicate issues
+    # when reading a cluster.
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "org/repo",
+        [
+            make_issue(155, "Canonical issue", state="OPEN"),
+            make_issue(
+                169, "Duplicate of canonical", state="CLOSED",
+                body="This appears to be a duplicate of: #155",
+            ),
+        ],
+    )
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    # Column header is present.
+    assert "Dup-of" in text
+    # The duplicate row carries #155 in its dup-of cell. We look for
+    # the row that mentions the duplicate title and check it contains
+    # `| #155 |` somewhere on the line.
+    rows = [
+        line for line in text.splitlines()
+        if "Duplicate of canonical" in line
+    ]
+    assert rows
+    assert "#155" in rows[0]

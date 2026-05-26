@@ -233,6 +233,137 @@ def test_list_files_prepends_staleness_warning(isolated_home: Path) -> None:
     assert out.startswith("⚠")
 
 
+# --- read_digest include_bodies (consumer feedback) ---------------------
+
+
+def test_read_digest_include_bodies_appends_issue_files(
+    isolated_home: Path,
+) -> None:
+    # The single biggest workflow win from the latest consumer trace:
+    # include_bodies=True lets a `label="X"` query return the catalogue
+    # AND the issues' opening descriptions in ONE call, replacing N
+    # follow-up read_file_section calls.
+    write_cache_file(
+        isolated_home, "wg", "wg-_issues.md",
+        (
+            "# wg: issues\n\n## org/repo\n\n"
+            "| # | State | Title | Labels | Comments | Updated | "
+            "Author | Participants | Dup-of | File |\n"
+            "|---|-------|-------|--------|----------|---------|"
+            "--------|--------------|--------|------|\n"
+            "| 1 | OPEN | T1 | top-level | 0 | 2026-05-01 | "
+            "Alice | | | `wg-issue-org-repo-1.md` |\n"
+            "| 2 | OPEN | T2 | top-level | 0 | 2026-05-02 | "
+            "Bob | | | `wg-issue-org-repo-2.md` |\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1: T1\n\n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-05-01 10:00 — Alice _(opened issue)_\n\n"
+            "Opening argument body.\n\n"
+            "## Comments\n\n"
+            "### [2] 2026-05-02 10:00 — Bob\n\n"
+            "Some long comment thread we DON'T want pulled in.\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        (
+            "# Issue #2: T2\n\n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-05-02 10:00 — Bob _(opened issue)_\n\n"
+            "Different argument.\n"
+        ),
+    )
+    out = mcp_server.tool_read_digest(
+        "wg", "issues", label="top-level", include_bodies=True,
+    )
+    # Both bodies appear under an "Issue bodies" section.
+    assert "## Issue bodies" in out
+    assert "Opening argument body." in out
+    assert "Different argument." in out
+    # Comment threads are deliberately NOT pulled in (size discipline).
+    assert "DON'T want pulled in" not in out
+
+
+def test_read_digest_include_bodies_only_for_issues_kind(
+    isolated_home: Path,
+) -> None:
+    # `include_bodies` is a no-op on non-issues kinds — it doesn't
+    # error, it just doesn't add a Bodies section.
+    write_cache_file(
+        isolated_home, "wg", "wg-_threads.md", "# threads\n\nbody\n",
+    )
+    out = mcp_server.tool_read_digest(
+        "wg", "threads", include_bodies=True,
+    )
+    assert "Issue bodies" not in out
+
+
+def test_read_digest_without_include_bodies_unchanged(
+    isolated_home: Path,
+) -> None:
+    # Default behaviour (include_bodies=False) is unchanged.
+    write_cache_file(
+        isolated_home, "wg", "wg-_issues.md",
+        "# wg: issues\n\n## org/repo\n\n"
+        "| # | State | Title | File |\n|---|-------|-------|------|\n"
+        "| 1 | OPEN | T | `wg-issue-org-repo-1.md` |\n",
+    )
+    out = mcp_server.tool_read_digest("wg", "issues")
+    assert "Issue bodies" not in out
+
+
+# --- Next-step pointers on discovery tools ------------------------------
+
+
+def test_list_labels_includes_next_call_signatures(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: discovery tools (list_labels in particular)
+    # are useless without their companion tools, but the harness
+    # lazy-loads. Embedding concrete next-call signatures in the
+    # output gives the consuming LLM the names it needs for the next
+    # tool_search query.
+    write_cache_file(
+        isolated_home, "wg", "wg-_issues.md",
+        (
+            "# wg: issues\n\n## org/repo\n\n"
+            "| # | State | Title | Labels | Comments | Updated | Author |\n"
+            "|---|-------|-------|--------|----------|---------|--------|\n"
+            "| 1 | OPEN | A | top-level | 1 | 2026-05-14 | Alice |\n"
+        ),
+    )
+    out = mcp_server.tool_list_labels("wg")
+    assert "read_digest" in out
+    assert "include_bodies=True" in out  # the recommended new shape
+    assert "search_corpus" in out
+
+
+def test_list_files_includes_next_call_signatures(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "anything.txt", "hi")
+    out = mcp_server.tool_list_files("wg")
+    assert "read_file_section" in out
+    assert "get_chunk_text" in out
+
+
+def test_list_working_groups_includes_next_call_signatures(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_list_working_groups()
+    assert "overview" in out
+    assert "read_digest" in out
+    assert "search_corpus" in out
+
+
 # --- list_labels ----------------------------------------------------------
 
 

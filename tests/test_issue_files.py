@@ -16,6 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ietf_llm.gather.issue_files import (
+    _closing_rationale,
+    _detect_duplicate_of,
     _normalise_html,
     _participants,
     issue_slug,
@@ -360,3 +362,159 @@ def test_issue_file_renders_html_lists_as_markdown(isolated_home: Path) -> None:
     assert "<ul>" not in text
     assert "<li>" not in text
     assert "- fast" in text
+
+
+# --- Duplicate-of detection (consumer feedback) ---------------------------
+
+
+def test_detect_duplicate_of_picks_up_canonical_phrasing() -> None:
+    # "This appears to be a duplicate of: #155" — the literal phrasing
+    # the consumer cited from TimidRobot's comment on issue #169.
+    issue = {
+        "number": 169,
+        "body": "",
+        "comments": [
+            {"author": "x", "body": "This appears to be a duplicate of: #155"},
+        ],
+    }
+    assert _detect_duplicate_of(issue) == 155
+
+
+def test_detect_duplicate_of_handles_variants() -> None:
+    for body, expected in [
+        ("Duplicate of #42", 42),
+        ("Closing as dup of #7", 7),
+        ("This is a dupe of #1234", 1234),
+        ("duplicate 99", 99),  # bare number without #
+    ]:
+        issue = {"number": 999, "body": body, "comments": []}
+        assert _detect_duplicate_of(issue) == expected, body
+
+
+def test_detect_duplicate_of_ignores_self_reference() -> None:
+    # Don't flag an issue as a duplicate of itself even if the body
+    # says so (it shouldn't, but defensively).
+    issue = {
+        "number": 155,
+        "body": "Marked as duplicate of #155.",
+        "comments": [],
+    }
+    assert _detect_duplicate_of(issue) is None
+
+
+def test_detect_duplicate_of_returns_none_for_unrelated_text() -> None:
+    issue = {
+        "number": 1,
+        "body": "Discussion of duplicate detection algorithms.",
+        "comments": [],
+    }
+    assert _detect_duplicate_of(issue) is None
+
+
+# --- Closing rationale extraction -----------------------------------------
+
+
+def test_closing_rationale_for_open_issue_is_none() -> None:
+    # Open issues have no rationale (nothing has been settled).
+    issue = {
+        "state": "OPEN",
+        "comments": [
+            {"author": "x", "body": "ongoing discussion",
+             "createdAt": "2026-01-01T00:00:00Z"},
+        ],
+    }
+    assert _closing_rationale(issue, None) is None
+
+
+def test_closing_rationale_uses_last_comment_when_closed() -> None:
+    # Last comment becomes the rationale. We don't try to detect chair
+    # authorship explicitly — role tags make that visible already.
+    issue = {
+        "state": "CLOSED",
+        "comments": [
+            {"author": "x", "body": "early",
+             "createdAt": "2026-01-01T00:00:00Z"},
+            {"author": "y", "body": "Removed from the next drafts.",
+             "createdAt": "2026-02-01T10:00:00Z"},
+        ],
+    }
+    out = _closing_rationale(issue, None)
+    assert out is not None
+    assert "Removed from the next drafts." in out
+    # Quoted as a blockquote so it's visually distinct in the file.
+    assert "> Removed" in out
+    assert "2026-02-01 10:00" in out
+
+
+def test_closing_rationale_truncates_very_long_comment() -> None:
+    long_body = "very long comment " * 100  # ~1800 chars
+    issue = {
+        "state": "CLOSED",
+        "comments": [
+            {"author": "x", "body": long_body,
+             "createdAt": "2026-02-01T10:00:00Z"},
+        ],
+    }
+    out = _closing_rationale(issue, None)
+    assert out is not None
+    # Truncated with ellipsis somewhere in the body region.
+    assert "..." in out
+    # And the whole formatted block stays well under the original.
+    assert len(out) < 600
+
+
+def test_closing_rationale_handles_no_comments() -> None:
+    issue = {"state": "CLOSED", "comments": []}
+    assert _closing_rationale(issue, None) is None
+
+
+# --- end-to-end: rendered file carries the new metadata ------------------
+
+
+def test_issue_file_includes_duplicate_of_and_rationale(
+    isolated_home: Path,
+) -> None:
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "org/repo",
+        [
+            make_issue(
+                155,
+                "Vocab decision",
+                state="CLOSED",
+                updated_at="2026-02-01T10:00:00Z",
+                body="Original question.",
+                comments=[
+                    {"author": "alice", "body": "Early discussion.",
+                     "createdAt": "2026-01-15T10:00:00Z"},
+                    {"author": "mnot",
+                     "body": "Removed from the next drafts.",
+                     "createdAt": "2026-02-01T10:00:00Z"},
+                ],
+            ),
+            make_issue(
+                169,
+                "Vocab redux",
+                state="CLOSED",
+                body="See discussion in #155.",
+                comments=[
+                    {"author": "timidrobot",
+                     "body": "This appears to be a duplicate of: #155",
+                     "createdAt": "2026-02-02T09:00:00Z"},
+                ],
+            ),
+        ],
+    )
+    write_issue_files("wg", get_wg_file_cache_dir("wg"), verbose=Verbosity.QUIET)
+
+    text_155 = _issue_text("wg", "org/repo", 155)
+    assert "**Closing rationale:**" in text_155
+    assert "Removed from the next drafts." in text_155
+    # Issue 155 has no duplicate marker.
+    assert "**Duplicate of:**" not in text_155
+
+    text_169 = _issue_text("wg", "org/repo", 169)
+    assert "**Duplicate of:** #155" in text_169
+    # 169 is closed too, so it has BOTH duplicate-of AND rationale.
+    assert "**Closing rationale:**" in text_169

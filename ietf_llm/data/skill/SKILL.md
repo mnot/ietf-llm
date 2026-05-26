@@ -16,6 +16,13 @@ IRTF Research Groups work the same way — pass the RG's shortname
 (`cfrg`, `hrpc`, `pearg`, …) anywhere `<wg>` appears below. The
 tools don't distinguish, and you don't need to either.
 
+Tools are lazy-loaded by the harness on first `tool_search` match,
+but stay loaded for the rest of the session — discover incrementally
+rather than batching every possible name into one query. The
+discovery tools (`list_labels`, `list_files`, `list_working_groups`)
+print concrete next-call signatures in their output, so reading
+their response is usually enough to know what to fetch next.
+
 ## First call: pick by question shape
 
 **Orienting / structural** ("tell me about `<wg>`", "what's this WG
@@ -27,11 +34,15 @@ meeting + latest draft. Often enough on its own.
 → skip `overview` and go straight to:
 
 - _"arguments for/against X"_, _"scope debate"_ →
-  `search_corpus(wg, "X", label="...")`. Issue labels
-  (`"top-level"`, `"vocabulary"`, `"ready to close"`, …) are the
-  WG's own curation; usually better than semantic ranking alone.
-  If you don't know the label vocabulary, call `list_labels(wg)`
-  first — labels vary by WG and you can't guess them reliably.
+  `read_digest(wg, kind="issues", label="...", include_bodies=True)`.
+  This returns the catalogue PLUS each issue's opening description
+  in one call — usually enough to answer the question without
+  follow-up file reads. `list_labels(wg)` first if you don't know
+  the vocabulary. `search_corpus(wg, "X", label="...")` is a
+  back-up for when you want semantic ranking inside the cluster
+  (e.g. "the part of these issues that argues Y"), but for
+  *coverage* — every distinct argument across the cluster — the
+  `include_bodies` digest is the right primitive.
 - _"what did the WG decide about X?"_, _"position on X"_ →
   `search_corpus(wg, "X", state="closed")`. The chairs' resolution
   lives in closed issues; open threads can be mid-debate noise.
@@ -52,7 +63,7 @@ ISO (`"2026-05-01"`).
 
 | kind       | rows                                | filters                                                                |
 |------------|-------------------------------------|------------------------------------------------------------------------|
-| `issues`   | One per GitHub issue                | `state` (`open`/`closed`), `label`, `author`, `limit`                  |
+| `issues`   | One per GitHub issue                | `state` (`open`/`closed`), `label`, `author`, `limit`, `include_bodies`|
 | `threads`  | One per mailing list thread         | `since`, `until`, `min_messages`, `limit`                              |
 | `people`   | Participants (chairs/authors lead)  | `role` (e.g. `"Chair"`), `min_messages`, `limit`                       |
 | `timeline` | Events in chronological order       | `since`, `until`, `event_kind`, `limit`                                |
@@ -104,7 +115,11 @@ has landed.
 - **`<wg>-thread-<date>-<slug>.md`** — one reconstructed mailing
   list conversation. Read in full when the user wants the thread.
 - **`<wg>-issue-<owner>-<repo>-<N>.md`** — one GitHub issue with
-  full comment history. Same shape as thread files.
+  full comment history. Same shape as thread files. Frontmatter
+  includes `**Duplicate of:** #N` when a comment calls out a
+  duplicate, and `**Closing rationale:**` (last comment) when the
+  issue is closed — both are load-bearing for "what did the WG
+  decide" questions.
 - **`draft-…-NN.txt`, `rfc<N>.txt`** — large documents. Use
   `read_file_section` by line range, not whole-file reads.
 - **`<name>.pdf.txt`, `*-transcript.md`** — slides and transcripts;

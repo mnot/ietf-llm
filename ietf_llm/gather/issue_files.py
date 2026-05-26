@@ -88,6 +88,86 @@ def _canon_with_role(registry: Optional[Registry], login: str) -> str:
     return f"{name} ({tag})" if tag else name
 
 
+# Phrases people use to call out an issue as a duplicate. Anchored to
+# `#N` (or just `N`) so we don't match unrelated mentions of the word.
+# Case-insensitive. The presence of the marker is what we surface; we
+# don't try to disambiguate "this is a duplicate" vs "is this a
+# duplicate?" — both signal the connection is worth knowing about.
+#
+# Permissive about what sits between "duplicate" / "dupe" / "dup" and
+# the number: the original cited phrasing from a real comment was
+# "duplicate of: #155" (note the colon). We tolerate any run of
+# colon-or-space characters there, and the "of" is optional.
+_DUPLICATE_RE = re.compile(
+    r"\b(?:duplicate|dupe|dup)(?:\s+of)?[:\s]+#?(\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_duplicate_of(issue: Dict[str, Any]) -> Optional[int]:
+    """Scan the issue body + every comment for a `duplicate of #N`
+    marker. Returns the first referenced issue number, or None.
+
+    Self-references are dropped (an issue is never a duplicate of
+    itself). The check runs regardless of issue state: someone calling
+    out a duplicate is informative even while the issue is open.
+    """
+    own_number = issue.get("number")
+    candidates: List[str] = []
+    body = issue.get("body") or ""
+    if body:
+        candidates.append(str(body))
+    for comment in issue.get("comments") or []:
+        text = comment.get("body") or ""
+        if text:
+            candidates.append(str(text))
+    for text in candidates:
+        match = _DUPLICATE_RE.search(text)
+        if not match:
+            continue
+        try:
+            referenced = int(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if referenced == own_number:
+            continue
+        return referenced
+    return None
+
+
+def _closing_rationale(
+    issue: Dict[str, Any], registry: Optional[Registry]
+) -> Optional[str]:
+    """For closed issues, return the last comment's content as the
+    closing rationale, formatted as a markdown blockquote.
+
+    Returns None if the issue is open or has no comments. Heuristic:
+    the last comment is usually either (a) the chair's resolution or
+    (b) the participant's "OK closing" — both are useful context for
+    a consuming LLM asking "what did the WG decide". We don't try to
+    detect chair authorship explicitly because role tags already
+    surface that visibly.
+    """
+    state = (issue.get("state") or "").upper()
+    if state != "CLOSED":
+        return None
+    comments = issue.get("comments") or []
+    if not comments:
+        return None
+    last = comments[-1]
+    body = (last.get("body") or "").strip()
+    if not body:
+        return None
+    when = _format_iso_to_minute(last.get("createdAt"))
+    author = _canon_with_role(registry, last.get("author") or "")
+    # Truncate aggressively — the rationale is metadata, not the
+    # primary content. A consuming LLM that wants the full comment
+    # reads the file (the section is still there in full).
+    snippet = body if len(body) <= 400 else body[:397] + "..."
+    quoted = "\n".join(f"> {line}" for line in snippet.splitlines())
+    return f"_by {author} on {when}:_\n\n{quoted}"
+
+
 def _format_iso_to_minute(value: Any) -> str:
     """Render an ISO timestamp to 'YYYY-MM-DD HH:MM'; pass through if unparseable."""
     if not isinstance(value, str):
@@ -149,6 +229,14 @@ def _render_issue(
         f"**Participants ({len(participants)}):** "
         + ", ".join(participants)
     )
+    duplicate_of = _detect_duplicate_of(issue)
+    if duplicate_of is not None:
+        out.append(f"**Duplicate of:** #{duplicate_of}")
+    rationale = _closing_rationale(issue, registry)
+    if rationale:
+        out.append("")
+        out.append("**Closing rationale:**\n")
+        out.append(rationale)
     out.append("")
 
     if comments:

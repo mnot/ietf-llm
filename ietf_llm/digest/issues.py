@@ -10,7 +10,7 @@ import json
 import os
 from typing import Optional
 
-from ..gather.issue_files import _participants, issue_slug
+from ..gather.issue_files import _detect_duplicate_of, _participants, issue_slug
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .helpers import _state_is_open
@@ -72,16 +72,16 @@ def _build_issues_digest(
             if summarizer.active():
                 fh.write(
                     "| # | State | Title | Labels | Comments | Updated | "
-                    "Author | Participants | File | Summary |\n"
+                    "Author | Participants | Dup-of | File | Summary |\n"
                     "|---|-------|-------|--------|----------|---------|"
-                    "--------|--------------|------|---------|\n"
+                    "--------|--------------|--------|------|---------|\n"
                 )
             else:
                 fh.write(
                     "| # | State | Title | Labels | Comments | Updated | "
-                    "Author | Participants | File |\n"
+                    "Author | Participants | Dup-of | File |\n"
                     "|---|-------|-------|--------|----------|---------|"
-                    "--------|--------------|------|\n"
+                    "--------|--------------|--------|------|\n"
                 )
 
             # Sort: open first, then by updated desc within each group.
@@ -121,6 +121,11 @@ def _build_issues_digest(
                 others = [p for p in participants if p != raw_author]
                 participants_cell = ", ".join(others).replace("|", "\\|")
                 file_cell = f"`{wg}-issue-{issue_slug(repo, number)}.md`"
+                # Surface "duplicate of #N" when detected. Empty for
+                # the common case; the column header keeps the
+                # affordance discoverable.
+                dup_of = _detect_duplicate_of(issue)
+                dup_cell = f"#{dup_of}" if dup_of is not None else ""
 
                 if summarizer.active():
                     body = (issue.get("body") or "").strip()
@@ -131,13 +136,15 @@ def _build_issues_digest(
                     fh.write(
                         f"| {number} | {state} | {title} | {labels} | "
                         f"{n_comments} | {updated} | {author} | "
-                        f"{participants_cell} | {file_cell} | {summary} |\n"
+                        f"{participants_cell} | {dup_cell} | "
+                        f"{file_cell} | {summary} |\n"
                     )
                 else:
                     fh.write(
                         f"| {number} | {state} | {title} | {labels} | "
                         f"{n_comments} | {updated} | {author} | "
-                        f"{participants_cell} | {file_cell} |\n"
+                        f"{participants_cell} | {dup_cell} | "
+                        f"{file_cell} |\n"
                     )
             fh.write("\n")
 
