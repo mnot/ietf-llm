@@ -31,9 +31,9 @@ import sqlite3
 import sys
 from typing import List, Optional
 
+from .digest.overview import _label_frequencies, build_overview
 from .digest.query import query_digest
 from .embeddings import _get_embed_model, chunk_counts, get_chunk, search
-from .digest.overview import build_overview
 from .freshness import staleness_warning
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
@@ -105,6 +105,26 @@ def tool_list_working_groups() -> str:
 
 def tool_overview(wg: str) -> str:
     return _with_freshness(wg, build_overview(wg, get_wg_file_cache_dir(wg)))
+
+
+def tool_list_labels(wg: str) -> str:
+    """All GitHub issue labels with their frequencies, sorted by count
+    descending. Direct exposure of the same data the overview's
+    "Top issue labels" section samples — but here unbounded, so the
+    consumer can verify the curation vocabulary before picking a
+    `label=` filter for read_digest or search_corpus.
+    """
+    labels = _label_frequencies(get_wg_file_cache_dir(wg), wg)
+    if not labels:
+        return _with_freshness(
+            wg, f"No labels recorded for {wg}. (No issues, or no labels used.)"
+        )
+    lines = [f"# {wg}: GitHub issue labels ({len(labels)} distinct)\n"]
+    lines.append("| Label | Issues |")
+    lines.append("|-------|--------|")
+    for label, count in labels:
+        lines.append(f"| `{label}` | {count} |")
+    return _with_freshness(wg, "\n".join(lines))
 
 
 def tool_list_files(wg: str) -> str:
@@ -241,8 +261,44 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         lines.append(f"     {hit.title}")
         if hit.labels:
             lines.append(f"     labels: {hit.labels}")
+        # GitHub URL for issue chunks — saves the caller reconstructing
+        # it for citation. Cheap (~10-line file read per hit). For
+        # non-issue chunks _issue_url returns None and we skip.
+        url = _issue_url(wg, hit.file)
+        if url:
+            lines.append(f"     url: {url}")
         lines.append(f"     {hit.snippet}")
     return _with_freshness(wg, "\n".join(lines))
+
+
+def _issue_url(wg: str, file: str) -> Optional[str]:
+    """Return the GitHub URL for an issue chunk's source file, or None.
+
+    Per-issue files have `**URL:** https://github.com/<owner>/<repo>/issues/<N>`
+    in their frontmatter (since the issue_files renderer emits it). We
+    read the URL directly from the file rather than reconstructing from
+    the filename, because the filename mashes `<owner>-<repo>` together
+    with a hyphen and repo names themselves can contain hyphens — there's
+    no unambiguous inverse parse.
+
+    Only ~10 lines need to be read; this is cheap enough to call per-hit.
+    """
+    if "-issue-" not in file or not file.endswith(".md"):
+        return None
+    path = _safe_path(wg, file)
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for _ in range(10):
+                line = fh.readline()
+                if not line:
+                    break
+                if line.startswith("**URL:**"):
+                    return line.removeprefix("**URL:**").strip().rstrip()
+    except OSError:
+        return None
+    return None
 
 
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:
@@ -466,17 +522,17 @@ def main() -> None:
 
     @server.tool()
     def list_working_groups() -> str:
-        """IETF Working Group ietf-llm directory: which WGs are gathered
-        locally. Use this first when you don't know the `<wg>` shortname
+        """List IETF Working Groups gathered in the local ietf-llm
+        corpus. Use this first when you don't know the `<wg>` shortname
         the user means.
         """
         return tool_list_working_groups()
 
     @server.tool()
     def overview(wg: str) -> str:
-        """IETF Working Group ietf-llm orientation: chairs/ADs, active
-        drafts, top open issues, recent mailing list threads, latest
-        meeting and latest draft publication — one call.
+        """Orient on an IETF Working Group via ietf-llm: chairs/ADs,
+        active drafts, top open issues, recent mailing list threads,
+        latest meeting and latest draft publication — one call.
 
         **Best first call for ORIENTING / STRUCTURAL questions** about
         an IETF WG by shortname (`httpbis`, `quic`, `tls`, `aipref`, …):
@@ -504,9 +560,20 @@ def main() -> None:
         return tool_overview(wg)
 
     @server.tool()
+    def list_labels(wg: str) -> str:
+        """List GitHub issue labels in an IETF Working Group's ietf-llm
+        corpus with frequencies. Call this before picking a `label=`
+        filter for `search_corpus` or `read_digest` — labels are the
+        WG's own curation vocabulary, but you can't guess them; this
+        tool surfaces the actual terms in use, sorted by how many
+        issues each label is attached to.
+        """
+        return tool_list_labels(wg)
+
+    @server.tool()
     def list_files(wg: str) -> str:
-        """IETF Working Group ietf-llm cache inventory: files with sizes
-        and chunk counts.
+        """Inventory an IETF Working Group's ietf-llm cache: files with
+        sizes and chunk counts.
 
         `(digest)` rows are the per-WG summary digests — read them via
         `read_digest`, not `get_chunk_text`.
@@ -527,10 +594,13 @@ def main() -> None:
         min_messages: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> str:
-        """IETF Working Group ietf-llm catalogue read with filters:
-        issues, threads, people, timeline, index. The high-value
-        catalogue tool — pair with `overview` for "tell me about this
-        WG"-shaped questions.
+        """Read filtered catalogue digests of an IETF Working Group's
+        ietf-llm corpus: issues, threads, people, timeline, index. The
+        high-value catalogue tool — pair with `overview` for "tell me
+        about this WG"-shaped questions, and use `label=` here to get
+        every issue tagged with a topic in one call (e.g. `kind="issues",
+        label="top-level"` returns the whole curated cluster, open
+        issues first then closed-by-recency).
 
         kind = "index"    — corpus inventory + how-to-use pointer
              | "issues"   — one row per GitHub issue. Filters: state
@@ -572,10 +642,11 @@ def main() -> None:
         state: Optional[str] = None,
         sort: Optional[str] = None,
     ) -> str:
-        """IETF Working Group ietf-llm semantic search across mailing
-        list threads, GitHub issues, drafts, RFCs, slides, transcripts,
-        and minutes. Returns top-k chunks with file, chunk_idx, title,
-        score, snippet, line range, and (for issue chunks) the issue's
+        """Search an IETF Working Group's ietf-llm corpus semantically
+        across mailing list threads, GitHub issues, drafts, RFCs,
+        slides, transcripts, and minutes. Returns top-k chunks with
+        file, chunk_idx, title, score, snippet, line range, GitHub
+        URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.
 
         Use for substantive "what was said about X?" / "what's the WG's
@@ -621,10 +692,10 @@ def main() -> None:
         chunk_idx: int,
         end_chunk_idx: Optional[int] = None,
     ) -> str:
-        """IETF Working Group ietf-llm chunk reader: full text of a
-        chunk (or a consecutive range) returned by `search_corpus` —
-        typically a single mailing list message, an issue comment,
-        or a draft section.
+        """Get full text of a chunk (or a consecutive range) from an
+        IETF Working Group's ietf-llm corpus — typically a single
+        mailing list message, an issue comment, or a draft section,
+        as returned by `search_corpus`.
 
         Pass `end_chunk_idx` to fetch a consecutive range in one call
         (e.g. an entire short thread). Range size is capped at
@@ -642,8 +713,8 @@ def main() -> None:
         start_line: int = 1,
         max_lines: int = MAX_LINES_DEFAULT,
     ) -> str:
-        """IETF Working Group ietf-llm file reader: bounded read of any
-        cache file (per-thread files, per-issue files, drafts, RFCs,
+        """Read a bounded section of any file in an IETF Working Group's
+        ietf-llm cache (per-thread files, per-issue files, drafts, RFCs,
         slides, transcripts, minutes). Capped at 2000 lines per call
         so the context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.

@@ -230,6 +230,42 @@ def test_list_files_prepends_staleness_warning(isolated_home: Path) -> None:
     assert out.startswith("⚠")
 
 
+# --- list_labels ----------------------------------------------------------
+
+
+def test_list_labels_returns_frequencies(isolated_home: Path) -> None:
+    # Consumer feedback: there was no list_labels tool, so the consumer
+    # had to guess label="top-level". Expose the same data the overview
+    # samples, but unbounded and as a dedicated tool.
+    write_cache_file(
+        isolated_home, "wg", "wg-_issues.md",
+        (
+            "# wg: issues\n\n## org/repo\n\n"
+            "| # | State | Title | Labels | Comments | Updated | Author |\n"
+            "|---|-------|-------|--------|----------|---------|--------|\n"
+            "| 1 | OPEN | A | top-level | 1 | 2026-05-14 | Alice |\n"
+            "| 2 | OPEN | B | top-level, vocab | 1 | 2026-05-13 | Bob |\n"
+            "| 3 | OPEN | C | vocab | 1 | 2026-05-12 | Carol |\n"
+        ),
+    )
+    out = mcp_server.tool_list_labels("wg")
+    # Both labels are listed with their counts.
+    assert "`top-level` | 2" in out
+    assert "`vocab` | 2" in out
+    # Header records the total distinct count.
+    assert "(2 distinct)" in out
+
+
+def test_list_labels_handles_no_issues(isolated_home: Path) -> None:
+    # No issues digest → friendly empty response, not a crash.
+    write_cache_file(isolated_home, "wg", "wg-_index.md", "# index\n")
+    out = mcp_server.tool_list_labels("wg")
+    assert "No labels recorded" in out
+
+
+# --- GitHub URL surfacing on search hits ---------------------------------
+
+
 def test_no_banner_when_sentinel_absent(isolated_home: Path) -> None:
     # Cache exists but freshness sentinel doesn't (legacy / pre-feature).
     # Per design we stay silent, not nag.

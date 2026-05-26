@@ -265,6 +265,37 @@ def test_normalise_html_handles_uppercase_tags() -> None:
     assert "- y" in out
 
 
+def test_issue_file_emits_github_url(isolated_home: Path) -> None:
+    # Consumer feedback: file paths in search results aren't citeable;
+    # the GitHub URL is reconstructible from repo + number and should
+    # be emitted into the issue file frontmatter once at render time
+    # so consumers (LLM or human) don't have to.
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "ietf-wg-aipref/drafts",
+        [make_issue(155, "Category for RAG")],
+    )
+    write_issue_files("wg", get_wg_file_cache_dir("wg"), verbose=Verbosity.QUIET)
+    text = _issue_text("wg", "ietf-wg-aipref/drafts", 155)
+    assert (
+        "**URL:** https://github.com/ietf-wg-aipref/drafts/issues/155"
+        in text
+    )
+
+
+def test_issue_file_skips_url_when_repo_lacks_slash(
+    isolated_home: Path,
+) -> None:
+    # Edge case: if the archive's "repo" field is malformed (no owner/
+    # repo split), we'd produce a bogus URL. Skip the line entirely
+    # rather than emit garbage.
+    write_github_archive(isolated_home, "wg", "bare-repo-name", [make_issue(1, "T")])
+    write_issue_files("wg", get_wg_file_cache_dir("wg"), verbose=Verbosity.QUIET)
+    text = _issue_text("wg", "bare-repo-name", 1)
+    assert "**URL:**" not in text
+
+
 def test_issue_file_decorates_author_with_role(isolated_home: Path) -> None:
     # Same role-attribution story as for thread files: section headers
     # for issue comments should include the author's role tag when one

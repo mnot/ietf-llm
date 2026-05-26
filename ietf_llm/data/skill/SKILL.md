@@ -26,6 +26,8 @@ meeting + latest draft. Often enough on its own.
   `search_corpus(wg, "X", label="...")`. Issue labels
   (`"top-level"`, `"vocabulary"`, `"ready to close"`, …) are the
   WG's own curation; usually better than semantic ranking alone.
+  If you don't know the label vocabulary, call `list_labels(wg)`
+  first — labels vary by WG and you can't guess them reliably.
 - _"what did the WG decide about X?"_, _"position on X"_ →
   `search_corpus(wg, "X", state="closed")`. The chairs' resolution
   lives in closed issues; open threads can be mid-debate noise.

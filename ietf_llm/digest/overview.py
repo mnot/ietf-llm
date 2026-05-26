@@ -288,8 +288,8 @@ def build_overview(wg: str, cache_dir: str) -> str:
     out.append(
         '- _"arguments for/against X"_ / _"scope debate about X"_ → '
         f'`search_corpus("{wg}", "X", label="...")` '
-        "(labels are the WG's own curation; see the issues digest "
-        "for the label vocabulary)."
+        f"(labels are the WG's own curation; call `list_labels(\"{wg}\")` "
+        "first if you don't know the vocabulary)."
     )
     out.append(
         '- _"what did the WG decide about X?"_ / _"WG\'s position on X?"_ → '

@@ -540,6 +540,44 @@ def test_tool_search_no_summary_when_states_mixed(isolated_home: Path) -> None:
     assert "All " not in out or "hits are from" not in out
 
 
+def test_tool_search_surfaces_github_url_for_issue_hits(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: file paths aren't citeable. For issue chunks,
+    # the URL line in the per-issue file's frontmatter should be lifted
+    # into each search-hit row.
+    from ietf_llm import mcp_server
+
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1: T\n\n"
+            "**Repository:** org/repo  \n"
+            "**URL:** https://github.com/org/repo/issues/1  \n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_search("wg", "x", k=5)
+    assert "url: https://github.com/org/repo/issues/1" in out
+
+
+def test_tool_search_omits_url_for_non_issue_hits(isolated_home: Path) -> None:
+    # Thread chunks have no GitHub URL — the `url:` line must not appear
+    # (and the helper must not error reading the file).
+    from ietf_llm import mcp_server
+
+    write_cache_file(
+        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
+    )
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_search("wg", "x", k=5)
+    assert "url:" not in out
+
+
 def test_mail_archive_year_dump_is_not_indexed(isolated_home: Path) -> None:
     # The legacy `<wg>-mail-archive-YYYY.txt` blob duplicates content
     # already covered by per-thread .md files. It must be excluded

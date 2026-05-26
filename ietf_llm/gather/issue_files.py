@@ -134,6 +134,10 @@ def _render_issue(
     out: List[str] = []
     out.append(f"# Issue #{number}: {title}\n")
     out.append(f"**Repository:** {repo}  ")
+    # GitHub URL is reconstructible from repo + number; we emit it
+    # verbatim so a citing consumer (LLM or human) doesn't have to.
+    if "/" in repo and number != "?":
+        out.append(f"**URL:** https://github.com/{repo}/issues/{number}  ")
     out.append(f"**State:** {state}  ")
     out.append(f"**Opened by:** {author_name} on {opened}  ")
     if updated and updated != opened:
