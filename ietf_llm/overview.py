@@ -1,0 +1,239 @@
+"""Compose a tight first-call overview of a WG.
+
+The agent's most common opening move is "tell me about this WG."
+Reading four full digests to answer that question burns ~80-100KB
+of context for data the agent will mostly never reference again.
+
+`build_overview(wg, cache_dir)` returns a ~30-line markdown summary
+that answers the structural questions — who runs the WG, what
+documents are active, what's the most recent activity, where to
+look next — in one tool call. Composed from the existing digests
+via `digest_query.query_digest`, so it always reflects the current
+on-disk state and respects the same filter semantics.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from typing import List, Optional
+
+from .digest_query import parse_md_tables, query_digest
+
+
+def _digest_path(cache_dir: str, wg: str, kind: str) -> str:
+    return os.path.join(cache_dir, f"{wg}-_{kind}.md")
+
+
+def _section_lines(path: str, heading_prefix: str) -> List[str]:
+    """Return the body lines of the first section whose heading starts
+    with `heading_prefix`. Empty list if not found."""
+    if not os.path.isfile(path):
+        return []
+    out: List[str] = []
+    capturing = False
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.rstrip("\n")
+            if stripped.startswith("## "):
+                if capturing:
+                    break
+                if stripped.startswith(f"## {heading_prefix}"):
+                    capturing = True
+                    continue
+            if capturing:
+                out.append(stripped)
+    # Trim leading/trailing blanks.
+    while out and not out[0].strip():
+        out.pop(0)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def _top_n_table_rows(path: str, heading_prefix: str, limit: int) -> List[List[str]]:
+    """Pull rows from the first matching section's first table."""
+    body = "\n".join(_section_lines(path, heading_prefix))
+    if not body:
+        return []
+    sections = parse_md_tables(body)
+    if not sections:
+        return []
+    return sections[0].rows[:limit]
+
+
+def _leadership_summary(cache_dir: str, wg: str) -> str:
+    """One-line "Chairs: X, Y · AD: Z" derived from the people digest."""
+    rows = _top_n_table_rows(
+        _digest_path(cache_dir, wg, "people"),
+        "Working Group leadership",
+        limit=10,
+    )
+    chairs: List[str] = []
+    ads: List[str] = []
+    other: List[str] = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        role = row[0]
+        name = row[1]
+        if "Chair" in role:
+            chairs.append(name)
+        elif "Area Director" in role:
+            ads.append(name)
+        else:
+            other.append(f"{role}: {name}")
+    parts: List[str] = []
+    if chairs:
+        parts.append("**Chairs:** " + ", ".join(chairs))
+    if ads:
+        parts.append("**AD:** " + ", ".join(ads))
+    parts.extend(other)
+    return " · ".join(parts) if parts else "_(no leadership recorded)_"
+
+
+def _documents_summary(cache_dir: str, wg: str) -> List[str]:
+    """One bullet per active document from the people digest."""
+    rows = _top_n_table_rows(
+        _digest_path(cache_dir, wg, "people"),
+        "Document authors",
+        limit=50,
+    )
+    # The table is Name | Documents | Email; we want one bullet per
+    # distinct document with its authors gathered alongside.
+    docs: dict[str, List[str]] = {}
+    for row in rows:
+        if len(row) < 2:
+            continue
+        name = row[0]
+        document_cell = row[1]
+        for entry in [d.strip() for d in document_cell.split(",")]:
+            if not entry:
+                continue
+            # "draft-foo (ed.)" → key "draft-foo", role "editor"
+            match = re.match(r"^(?P<doc>[^\s(]+)\s*(?P<role>\(.*\))?$", entry)
+            if not match:
+                continue
+            doc = match.group("doc")
+            tagged = (
+                f"{name} {match.group('role')}".strip()
+                if match.group("role")
+                else name
+            )
+            docs.setdefault(doc, []).append(tagged)
+    return [
+        f"- `{doc}` — {', '.join(sorted(authors))}"
+        for doc, authors in sorted(docs.items())
+    ]
+
+
+def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
+    """Filter the issues digest to the most recently updated open ones."""
+    issues_path = _digest_path(cache_dir, wg, "issues")
+    if not os.path.isfile(issues_path):
+        return []
+    filtered_md = query_digest(issues_path, "issues", state="open", limit=limit)
+    sections = parse_md_tables(filtered_md)
+    rows: List[List[str]] = []
+    for section in sections:
+        rows.extend(section.rows)
+        if len(rows) >= limit:
+            break
+    return rows[:limit]
+
+
+def _recent_threads(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
+    threads_path = _digest_path(cache_dir, wg, "threads")
+    if not os.path.isfile(threads_path):
+        return []
+    filtered_md = query_digest(threads_path, "threads", limit=limit)
+    sections = parse_md_tables(filtered_md)
+    rows: List[List[str]] = []
+    for section in sections:
+        rows.extend(section.rows)
+        if len(rows) >= limit:
+            break
+    return rows[:limit]
+
+
+def _latest_event(
+    cache_dir: str, wg: str, event_kind: str
+) -> Optional[str]:
+    """Return the most recent bullet of the given event kind, or None."""
+    timeline_path = _digest_path(cache_dir, wg, "timeline")
+    if not os.path.isfile(timeline_path):
+        return None
+    filtered = query_digest(
+        timeline_path, "timeline", event_kind=event_kind, limit=1
+    )
+    for line in filtered.splitlines():
+        if line.startswith("- **"):
+            return line[2:].strip()
+    return None
+
+
+# --- Public entry point ---------------------------------------------------
+
+
+def build_overview(wg: str, cache_dir: str) -> str:
+    """Return a ~30-line markdown overview of the WG.
+
+    Composes from the existing digest files; no network, no model.
+    Cheap to call.
+    """
+    if not os.path.isdir(cache_dir):
+        return (
+            f"No cache for {wg}. "
+            f"Run `ietf-llm {wg}` first to gather materials."
+        )
+
+    out: List[str] = []
+    out.append(f"# {wg} — overview\n")
+
+    out.append("## Working Group")
+    out.append(_leadership_summary(cache_dir, wg))
+    out.append("")
+
+    docs = _documents_summary(cache_dir, wg)
+    if docs:
+        out.append(f"## Documents ({len(docs)})")
+        out.extend(docs)
+        out.append("")
+
+    open_issues = _recent_open_issues(cache_dir, wg, limit=5)
+    if open_issues:
+        out.append("## 5 most-recently-updated open issues")
+        out.append("| # | State | Title | Labels | Comments | Updated | Author |")
+        out.append("|---|-------|-------|--------|----------|---------|--------|")
+        for row in open_issues:
+            out.append("| " + " | ".join(row) + " |")
+        out.append("")
+
+    recent_threads = _recent_threads(cache_dir, wg, limit=5)
+    if recent_threads:
+        out.append("## 5 most recent mailing list threads")
+        out.append("| Subject | Msgs | Participants | First | Last | File |")
+        out.append("|---|---|---|---|---|---|")
+        for row in recent_threads:
+            out.append("| " + " | ".join(row) + " |")
+        out.append("")
+
+    latest_meeting = _latest_event(cache_dir, wg, "meeting")
+    latest_draft = _latest_event(cache_dir, wg, "draft-published")
+    if latest_meeting or latest_draft:
+        out.append("## Latest events")
+        if latest_meeting:
+            out.append(f"- {latest_meeting}")
+        if latest_draft:
+            out.append(f"- {latest_draft}")
+        out.append("")
+
+    out.append("---")
+    out.append("")
+    out.append(
+        "_For depth, call `read_digest(wg, kind, ...filters)` with kind in "
+        "(`issues`, `threads`, `people`, `timeline`) and filters like "
+        "`state`, `label`, `since`, `until`, `limit`. For semantic search "
+        "across the corpus, use `search_corpus`._"
+    )
+    return "\n".join(out) + "\n"

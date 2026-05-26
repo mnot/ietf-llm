@@ -31,7 +31,9 @@ import sqlite3
 import sys
 from typing import List, Optional
 
+from .digest_query import query_digest
 from .embeddings import _get_embed_model, get_chunk, search
+from .overview import build_overview
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400
@@ -83,6 +85,10 @@ def tool_list_working_groups() -> str:
     return "\n".join(wgs)
 
 
+def tool_overview(wg: str) -> str:
+    return build_overview(wg, get_wg_file_cache_dir(wg))
+
+
 def tool_list_files(wg: str) -> str:
     cache = get_wg_file_cache_dir(wg)
     if not os.path.isdir(cache):
@@ -96,7 +102,19 @@ def tool_list_files(wg: str) -> str:
     return "\n".join(rows) or "(empty)"
 
 
-def tool_read_digest(wg: str, kind: str = "index") -> str:
+def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    wg: str,
+    kind: str = "index",
+    state: Optional[str] = None,
+    label: Optional[str] = None,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    event_kind: Optional[str] = None,
+    min_messages: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> str:
     path = _digest_path(wg, kind)
     if not path:
         valid = ", ".join(_DIGEST_KINDS)
@@ -105,8 +123,19 @@ def tool_read_digest(wg: str, kind: str = "index") -> str:
             f"Valid kinds: {valid}. "
             f"Run `ietf-llm {wg}` to generate digests."
         )
-    with open(path, "r", encoding="utf-8") as fh:
-        return fh.read()
+    return query_digest(
+        path,
+        kind,
+        state=state,
+        label=label,
+        author=author,
+        role=role,
+        since=since,
+        until=until,
+        event_kind=event_kind,
+        min_messages=min_messages,
+        limit=limit,
+    )
 
 
 def tool_search(
@@ -263,24 +292,66 @@ def main() -> None:
         return tool_list_working_groups()
 
     @server.tool()
+    def overview(wg: str) -> str:
+        """One-call orientation: chairs/ADs, active drafts, the 5 most
+        recently updated open issues, the 5 most recent mailing list
+        threads, and the latest meeting + latest draft publication.
+
+        **This is the best first call** for any question about a WG —
+        ~30 lines of markdown instead of the 80-100KB of context that
+        reading every digest would burn. Follow up with `read_digest`
+        (with filters) or `search_corpus` for depth.
+        """
+        return tool_overview(wg)
+
+    @server.tool()
     def list_files(wg: str) -> str:
         """List files (with sizes in bytes) in a WG's gathered cache."""
         return tool_list_files(wg)
 
     @server.tool()
-    def read_digest(wg: str, kind: str = "index") -> str:
-        """Read a digest file. Start here.
+    def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        wg: str,
+        kind: str = "index",
+        state: Optional[str] = None,
+        label: Optional[str] = None,
+        author: Optional[str] = None,
+        role: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        event_kind: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> str:
+        """Read a digest file, optionally filtered. Start here.
 
         kind = "index"    — corpus inventory + how-to-use pointer
-             | "issues"   — one row per GitHub issue (state, labels, …)
-             | "threads"  — one row per mailing list thread, with links
-                           to the per-thread reading files
-             | "people"   — participants, with chairs/ADs and document
-                           authors surfaced at the top
-             | "timeline" — chronological event log (drafts published,
-                           issues opened/closed, meetings, WGLCs)
+             | "issues"   — one row per GitHub issue. Filters: state
+                            ("open"/"closed"), label (substring),
+                            author (substring), limit (int).
+             | "threads"  — one row per mailing list thread. Filters:
+                            since/until ("YYYY-MM-DD"), min_messages,
+                            limit.
+             | "people"   — participants. Filters: role (substring,
+                            e.g. "Chair"), min_messages, limit.
+             | "timeline" — chronological events. Filters: since/until,
+                            event_kind ("draft-published" /
+                            "issue-opened" / "issue-closed" /
+                            "meeting" / "wglc" / "adoption-call"),
+                            limit.
+
+        Pass no filters to get the full digest (same bytes as before).
+        Filters compose (AND); `limit` truncates after filtering.
+        For catalogue-style queries (e.g. "open issues with label X"),
+        always use filters rather than reading the full digest and
+        scanning — both faster and easier on context.
         """
-        return tool_read_digest(wg, kind)
+        return tool_read_digest(
+            wg, kind,
+            state=state, label=label, author=author, role=role,
+            since=since, until=until, event_kind=event_kind,
+            min_messages=min_messages, limit=limit,
+        )
 
     @server.tool()
     def search_corpus(
