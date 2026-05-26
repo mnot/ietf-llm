@@ -1,8 +1,20 @@
 # ietf-llm
 
-Automate gathering of [NotebookLM](https://notebooklm.google.com/)-ready documents for an [IETF](https://www.ietf.org/) Working Group.
+Maintain a local, queryable corpus of an [IETF](https://www.ietf.org/)
+Working Group's public record — charter, drafts, RFCs, meeting minutes,
+slides, transcripts, mailing list archives, and GitHub issues — for use
+with LLM-based tools.
 
-This tool gathers Working Group charters, drafts, meeting minutes, PDF slides, meeting transcripts, mailing list archives, and GitHub issues into a set of clean text files and PDFs suitable for ingestion into NotebookLM.
+The cache can be queried directly via [Model Context Protocol](https://modelcontextprotocol.io/)
+(e.g. from Claude Desktop or Claude Code), searched semantically from the
+command line, or exported as a directory of clean text files for
+[NotebookLM](https://notebooklm.google.com/).
+
+> **Note:** This package was previously published as `ietf-notebook`.
+> That distribution is deprecated and no longer maintained. The rename
+> reflects a broader purpose (the tool now feeds LLM consumers
+> generally, not just NotebookLM) and a restructured CLI surface — see
+> "Migrating from ietf-notebook" below.
 
 ## Installation
 
@@ -330,6 +342,68 @@ prefer `ietf-llm-search` / the MCP tools over raw reads, and avoid
 pulling multi-MB mailing-list or issue dumps into context. For broad
 exploratory Q&A across the full corpus, NotebookLM remains a good fit
 (the destination directory is designed to be uploaded as-is).
+
+## Migrating from `ietf-notebook`
+
+If you previously used the `ietf-notebook` distribution, here's what
+changed:
+
+### Uninstall the old, install the new
+
+```bash
+pipx uninstall ietf-notebook
+pipx install 'ietf-llm[search,mcp]'
+```
+
+### Move the cache and config (optional)
+
+The cache and config directories changed names. There is no automatic
+migration; if you want to preserve a gathered cache, move it by hand:
+
+```bash
+mv ~/.cache/ietf-notebook  ~/.cache/ietf-llm
+mv ~/.config/ietf-notebook ~/.config/ietf-llm
+```
+
+If you don't, the old directories are simply ignored and the new tool
+starts with an empty cache.
+
+### Command renames
+
+| Before | After |
+|---|---|
+| `ietf-notebook <wg>` | `ietf-llm <wg>` |
+| (no equivalent) | `ietf-llm-export <wg>` (split out — see below) |
+| (no equivalent) | `ietf-llm-search <wg> <query>` (new) |
+| (no equivalent) | `ietf-llm-mcp` (new) |
+
+### Flags moved off the gather CLI
+
+These now live on `ietf-llm-export`:
+
+| Old: `ietf-notebook <wg> ...` | New |
+|---|---|
+| `--destination DIR` | `ietf-llm-export <wg> --destination DIR` |
+| `--create GCP_PROJECT` | `ietf-llm-export <wg> --create GCP_PROJECT` |
+| `--credentials-file PATH` | `ietf-llm-export <wg> --credentials-file PATH` |
+| `--token-file PATH` | `ietf-llm-export <wg> --token-file PATH` |
+
+If you pass any of these to `ietf-llm`, you'll get a redirect error
+explaining where they went.
+
+### `--update` is gone
+
+The previous "only mirror files that changed in this run" behaviour has
+been removed. The gather CLI is now idempotent — re-run it whenever you
+want fresh data, no special flag needed:
+
+```bash
+ietf-llm httpbis              # gather or refresh
+```
+
+The export CLI always produces a complete fresh dump. For NotebookLM,
+the recommended workflow is to **create a new notebook on each update**
+rather than try to merge changes into an existing one.
 
 ## Contributing
 
