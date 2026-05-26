@@ -93,3 +93,21 @@ def test_list_working_groups_only_wgs_with_files_dir(isolated_home: Path) -> Non
 def test_list_working_groups_empty_message(isolated_home: Path) -> None:
     out = mcp_server.tool_list_working_groups()
     assert "no working groups" in out.lower()
+
+
+# --- read_digest ----------------------------------------------------------
+
+
+def test_read_digest_people_kind_is_valid(isolated_home: Path) -> None:
+    # "people" is one of the recognised kinds. With no file present
+    # we get the not-found message; with the file present we get content.
+    write_cache_file(isolated_home, "wg", "wg-_people.md", "# people\n")
+    out = mcp_server.tool_read_digest("wg", "people")
+    assert "# people" in out
+
+
+def test_read_digest_rejects_unknown_kind(isolated_home: Path) -> None:
+    out = mcp_server.tool_read_digest("wg", "nonsense")
+    # Error message names all valid kinds, including the new "people".
+    assert "people" in out
+    assert "Valid kinds" in out

@@ -62,8 +62,11 @@ def _safe_path(wg: str, file: str) -> Optional[str]:
     return candidate
 
 
+_DIGEST_KINDS = ("index", "issues", "threads", "people")
+
+
 def _digest_path(wg: str, kind: str) -> Optional[str]:
-    if kind not in ("index", "issues", "threads"):
+    if kind not in _DIGEST_KINDS:
         return None
     cache = get_wg_file_cache_dir(wg)
     path = os.path.join(cache, f"{wg}-_{kind}.md")
@@ -96,9 +99,10 @@ def tool_list_files(wg: str) -> str:
 def tool_read_digest(wg: str, kind: str = "index") -> str:
     path = _digest_path(wg, kind)
     if not path:
+        valid = ", ".join(_DIGEST_KINDS)
         return (
             f"No '{kind}' digest for {wg}. "
-            f"Valid kinds: index, issues, threads. "
+            f"Valid kinds: {valid}. "
             f"Run `ietf-llm {wg}` to generate digests."
         )
     with open(path, "r", encoding="utf-8") as fh:
@@ -265,7 +269,15 @@ def main() -> None:
 
     @server.tool()
     def read_digest(wg: str, kind: str = "index") -> str:
-        """Read a digest file. kind = "index" | "issues" | "threads". Start here."""
+        """Read a digest file. Start here.
+
+        kind = "index"   — corpus inventory + how-to-use pointer
+             | "issues"  — one row per GitHub issue (state, labels, …)
+             | "threads" — one row per mailing list thread, with links
+                          to the per-thread reading files
+             | "people"  — participants, with chairs/ADs and document
+                          authors surfaced at the top
+        """
         return tool_read_digest(wg, kind)
 
     @server.tool()

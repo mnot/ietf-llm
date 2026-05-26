@@ -311,7 +311,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Documents (drafts & RFCs)
     process_documents(args.wg, cache_dir, verbose=verbosity)
 
-    # GitHub issues
+    # GitHub issues — download the raw JSON archives first, but defer
+    # rendering the .txt files until after the registry is built so the
+    # Author / Comment-by lines can use canonical names.
+    gh_pending: List[tuple[str, str]] = []
     if args.github:
         for repo_short in args.github:
             if repo_short.startswith("http"):
@@ -321,17 +324,22 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             gh_json = os.path.join(cache_dir, f"{args.wg}-github-{repo_slug}.json")
             gh_txt = os.path.join(cache_dir, f"{args.wg}-github-{repo_slug}.txt")
             if download_github_issues(repo_short, gh_json, verbose=verbosity):
-                process_github_issues(
-                    gh_json,
-                    gh_txt,
-                    include_labels=args.github_label,
-                    exclude_labels=args.exclude_github_label,
-                    verbose=verbosity,
-                )
+                gh_pending.append((gh_json, gh_txt))
 
-    # Identity registry — consolidates mail/GitHub surface forms into
-    # canonical actors, used by thread file generation and the digests.
+    # Identity registry — consolidates mail/GitHub/Datatracker/draft
+    # surface forms into canonical actors. Built BEFORE the github .txt
+    # files are rendered so author lines come out canonical.
     registry = build_registry(args.wg, verbose=verbosity)
+
+    for gh_json, gh_txt in gh_pending:
+        process_github_issues(
+            gh_json,
+            gh_txt,
+            include_labels=args.github_label,
+            exclude_labels=args.exclude_github_label,
+            verbose=verbosity,
+            registry=registry,
+        )
 
     # Per-thread reconstructions (depends on the registry so sender
     # names are already canonical when threads are written).

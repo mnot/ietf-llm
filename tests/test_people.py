@@ -292,6 +292,50 @@ def test_people_digest_includes_leadership_section(isolated_home: Path) -> None:
     assert 0 < chair_pos < ad_pos
 
 
+def test_add_document_author_records_authorship(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-ietf-aipref-vocab", is_editor=False,
+    )
+    assert len(r.persons) == 1
+    person = r.persons[0]
+    assert person.authored_documents == {"draft-ietf-aipref-vocab"}
+    assert person.edited_documents == set()
+
+
+def test_add_document_editor_separates_role(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_document_author(
+        "Martin Thomson", "mt@lowentropy.net",
+        document="draft-ietf-aipref-vocab", is_editor=True,
+    )
+    person = r.persons[0]
+    assert person.edited_documents == {"draft-ietf-aipref-vocab"}
+    assert person.authored_documents == set()
+
+
+def test_people_digest_includes_document_authors(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_document_author(
+        "Paul Keller", "paul@openfuture.eu",
+        document="draft-ietf-aipref-vocab", is_editor=False,
+    )
+    r.add_document_author(
+        "Martin Thomson", "mt@lowentropy.net",
+        document="draft-ietf-aipref-vocab", is_editor=True,
+    )
+    path = write_people_digest(
+        "wg", get_wg_file_cache_dir("wg"), r, verbose=Verbosity.QUIET,
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    assert "## Document authors / editors" in text
+    assert "draft-ietf-aipref-vocab (ed.)" in text  # Martin's editor mark
+    assert "Paul Keller" in text
+
+
 def test_role_column_appears_in_activity_table(isolated_home: Path) -> None:
     r = Registry()
     r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)

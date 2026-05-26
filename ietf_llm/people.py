@@ -59,6 +59,11 @@ class Person:
     # "Tech Advisor", "Secretary", …). Empty for participants without a
     # formal role.
     roles: Set[str] = field(default_factory=set)
+    # Drafts / RFCs this person is listed as an author of (basename
+    # without version suffix). Editor status, if any, lives in
+    # `edited_documents` so callers can distinguish.
+    authored_documents: Set[str] = field(default_factory=set)
+    edited_documents: Set[str] = field(default_factory=set)
     message_count: int = 0
     issue_count: int = 0
     first_seen: Optional[datetime] = None
@@ -224,6 +229,46 @@ class Registry:
         person.touch_date(when)
         return person
 
+    def add_document_author(
+        self,
+        name: str,
+        email_address: Optional[str],
+        document: str,
+        is_editor: bool = False,
+    ) -> Optional[Person]:
+        """Record `name` as an author of `document` (a draft/RFC basename).
+
+        Merges by email then by name with the existing registry, same
+        way add_datatracker_role does. The document basename is stored
+        without the version suffix (`draft-ietf-aipref-vocab` not
+        `…-06`) so multiple versions don't multiply the role count.
+        """
+        if not name and not email_address:
+            return None
+        norm_email = _normalise_email(email_address) if email_address else None
+
+        person = self._by_email.get(norm_email) if norm_email else None
+        if person is None and name:
+            person = self._by_name.get(name.lower())
+        if person is None:
+            person = Person(canonical_name=name or (norm_email or "unknown"))
+            self.persons.append(person)
+
+        # Draft author lists are the most carefully maintained source
+        # of canonical-name spellings (chairs review them); use as the
+        # authoritative form.
+        if name:
+            person.canonical_name = name
+            self._by_name[name.lower()] = person
+        if norm_email:
+            person.emails.add(norm_email)
+            self._by_email[norm_email] = person
+        if is_editor:
+            person.edited_documents.add(document)
+        else:
+            person.authored_documents.add(document)
+        return person
+
     def add_datatracker_role(
         self,
         name: str,
@@ -298,7 +343,7 @@ def _looks_like_email(name: str) -> bool:
 
 
 def build_registry(wg: str, verbose: Verbosity = Verbosity.STATUS) -> Registry:
-    """Build a Registry by scanning IMAP, GitHub, and Datatracker.
+    """Build a Registry by scanning IMAP, GitHub, Datatracker, and drafts.
 
     The Datatracker step is best-effort: if the network call fails or
     the WG isn't recognised, roles are silently omitted and the rest
@@ -308,9 +353,12 @@ def build_registry(wg: str, verbose: Verbosity = Verbosity.STATUS) -> Registry:
     _ingest_mail(wg, registry, verbose)
     _ingest_github(wg, registry, verbose)
     _ingest_datatracker_roles(wg, registry, verbose)
+    _ingest_draft_authors(wg, registry, verbose)
     log(
         f"Identity registry: {len(registry.persons)} distinct actors "
-        f"({sum(1 for p in registry.persons if p.roles)} with formal roles)",
+        f"({sum(1 for p in registry.persons if p.roles)} with formal roles, "
+        f"{sum(1 for p in registry.persons if p.authored_documents or p.edited_documents)} "
+        "document authors)",
         verbose,
         level=LogLevel.STATUS,
     )
@@ -389,6 +437,45 @@ def _ingest_datatracker_roles(
         registry.add_datatracker_role(role.name, role.email, role.label)
 
 
+def _ingest_draft_authors(
+    wg: str, registry: Registry, verbose: Verbosity
+) -> None:
+    """Parse the Authors' Addresses section of each draft / RFC in the cache.
+
+    Stable name spellings (taken from the document front-matter that
+    the chairs review) override any earlier mailing-list-derived form.
+    """
+    # pylint: disable=import-outside-toplevel
+    from .draft_authors import latest_draft_paths, parse_authors
+    from .utils import get_wg_file_cache_dir
+
+    cache_dir = get_wg_file_cache_dir(wg)
+    count = 0
+    for path in latest_draft_paths(cache_dir):
+        basename = os.path.basename(path)
+        # Strip the version suffix so "draft-…-06.txt" and "…-05.txt"
+        # collapse to the same logical document.
+        doc_id = re.sub(r"-\d+\.txt$|\.txt$", "", basename)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for author in parse_authors(text):
+            registry.add_document_author(
+                author.name,
+                author.email,
+                document=doc_id,
+                is_editor=author.is_editor,
+            )
+            count += 1
+    log(
+        f"  ingested {count} author records from drafts/RFCs",
+        verbose,
+        level=LogLevel.PROGRESS,
+    )
+
+
 def _maybe_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str):
         return None
@@ -444,6 +531,27 @@ def write_people_digest(
                 fh.write(
                     f"| {roles_text} | {person.canonical_name} | "
                     f"{primary_email} |\n"
+                )
+            fh.write("\n")
+
+        # Document authors — surfaced next because "who wrote this
+        # draft" is the second question after "who runs the WG".
+        authors = [
+            p for p in persons
+            if p.authored_documents or p.edited_documents
+        ]
+        if authors:
+            fh.write(f"## Document authors / editors ({len(authors)})\n\n")
+            fh.write("| Name | Documents | Email |\n|---|---|---|\n")
+            authors.sort(key=lambda p: p.canonical_name.lower())
+            for person in authors:
+                primary_email = next(iter(sorted(person.emails)), "")
+                parts = sorted(person.authored_documents) + [
+                    f"{d} (ed.)" for d in sorted(person.edited_documents)
+                ]
+                docs = ", ".join(parts)
+                fh.write(
+                    f"| {person.canonical_name} | {docs} | {primary_email} |\n"
                 )
             fh.write("\n")
 

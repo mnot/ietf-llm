@@ -23,8 +23,21 @@ def process_github_issues(
     include_labels: Optional[List[str]] = None,
     exclude_labels: Optional[List[str]] = None,
     verbose: Verbosity = Verbosity.STATUS,
+    registry: "Optional[object]" = None,
 ) -> List[str]:
-    """Process a GitHub issues JSON archive and write cleaned text to output_file."""
+    """Process a GitHub issues JSON archive and write cleaned text to output_file.
+
+    If `registry` is supplied (an `ietf_llm.people.Registry`), the
+    Author / Comment-by lines are written using canonical names —
+    so the agent reading this file sees "Mark Nottingham" instead
+    of the raw `mnot` GitHub login.
+    """
+
+    def _canon(login: str) -> str:
+        if registry is None or not login:
+            return login
+        resolved = registry.canonical_for_github(login)  # type: ignore[attr-defined]
+        return resolved or login
     log(f"Opening {input_file}...", verbose, level=LogLevel.PROGRESS)
     try:
         with open(input_file, "r", encoding="utf-8") as json_fh:
@@ -69,7 +82,7 @@ def process_github_issues(
             out_fh.write(f"Issue #{number}: {title}\n")
             out_fh.write(f"State: {state}\n")
             out_fh.write(f"Date: {created_at}\n")
-            out_fh.write(f"Author: {author}\n")
+            out_fh.write(f"Author: {_canon(author)}\n")
             if labels_str:
                 out_fh.write(f"Labels: {labels_str}\n")
             out_fh.write("\n")
@@ -85,7 +98,9 @@ def process_github_issues(
                     c_date = format_date(comment.get("createdAt"))
                     c_body = (comment.get("body") or "").strip()
 
-                    out_fh.write(f"--- Comment by {c_author} on {c_date} ---\n")
+                    out_fh.write(
+                        f"--- Comment by {_canon(c_author)} on {c_date} ---\n"
+                    )
                     out_fh.write(c_body + "\n\n")
 
             out_fh.write("=" * 80 + "\n\n")
