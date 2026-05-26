@@ -1,0 +1,98 @@
+"""End-to-end tests for the mailing list threads digest.
+
+Covers:
+- IMAP cache path layout matches what mbox.py writes (the regression).
+- Subject normalisation actually groups Re:/Fwd:/[wg] variants.
+- Mixed tz-aware/naive Date headers don't crash thread building.
+- Sort order: most recently active threads first.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from ietf_llm.digest import generate_digests
+from ietf_llm.utils import get_wg_file_cache_dir
+
+from conftest import write_eml
+
+
+def _digest_text(wg: str) -> str:
+    path = Path(get_wg_file_cache_dir(wg)) / f"{wg}-_threads.md"
+    return path.read_text()
+
+
+def test_no_imap_cache_no_digest(isolated_home: Path) -> None:
+    paths = generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    assert not (Path(get_wg_file_cache_dir("wg")) / "wg-_threads.md").exists()
+    assert all("_threads.md" not in p for p in paths)
+
+
+def test_imap_cache_at_correct_path_produces_digest(isolated_home: Path) -> None:
+    # The regression bug had digest.py looking at the wrong path
+    # (<wg>/imap-cache/ instead of imap-cache/<wg>/). This test pins
+    # the correct location.
+    write_eml(
+        isolated_home, "wg", "ai-control", 1,
+        "Cookie partitioning", "Alice <a@x>",
+        "Mon, 01 Jan 2025 10:00:00 +0000",
+    )
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    assert "Cookie partitioning" in text
+
+
+def test_subject_variants_collapse_to_one_thread(isolated_home: Path) -> None:
+    write_eml(isolated_home, "wg", "list", 1,
+              "Cookie partitioning", "Alice <a@x>",
+              "Mon, 01 Jan 2025 10:00:00 +0000")
+    write_eml(isolated_home, "wg", "list", 2,
+              "Re: [wg] Cookie partitioning", "Bob <b@x>",
+              "Tue, 02 Jan 2025 10:00:00 +0000")
+    write_eml(isolated_home, "wg", "list", 3,
+              "Re: Re: Cookie partitioning", "Carol <c@x>",
+              "Wed, 03 Jan 2025 10:00:00 +0000")
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    # 1 thread, 3 messages, 3 participants
+    assert "_3 threads" not in text  # not three separate threads
+    assert "1 threads across 3 messages" in text
+
+
+def test_mixed_aware_and_naive_dates_do_not_crash(isolated_home: Path) -> None:
+    # Pre-fix this would TypeError on the comparison `date < thread['first']`.
+    write_eml(isolated_home, "wg", "list", 1,
+              "Topic A", "Alice <a@x>",
+              "Mon, 01 Jan 2025 10:00:00 +0000")        # aware
+    write_eml(isolated_home, "wg", "list", 2,
+              "Re: Topic A", "Bob <b@x>",
+              "Tue, 02 Jan 2025 10:00:00")              # naive
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    assert "1 threads across 2 messages" in text
+
+
+def test_threads_sorted_by_last_activity_desc(isolated_home: Path) -> None:
+    write_eml(isolated_home, "wg", "list", 1, "Old topic", "Alice <a@x>",
+              "Mon, 01 Jan 2025 10:00:00 +0000")
+    write_eml(isolated_home, "wg", "list", 2, "New topic", "Bob <b@x>",
+              "Mon, 01 Jun 2026 10:00:00 +0000")
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    new_pos = text.find("New topic")
+    old_pos = text.find("Old topic")
+    assert 0 < new_pos < old_pos
+
+
+def test_multiple_lists_under_one_wg_are_merged(isolated_home: Path) -> None:
+    # A WG could in principle have more than one mailing list; both
+    # should be scanned (digest walks the IMAP tree).
+    write_eml(isolated_home, "wg", "list-a", 1, "From list A",
+              "Alice <a@x>", "Mon, 01 Jan 2025 10:00:00 +0000")
+    write_eml(isolated_home, "wg", "list-b", 1, "From list B",
+              "Bob <b@x>", "Mon, 01 Jan 2025 10:00:00 +0000")
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    assert "From list A" in text
+    assert "From list B" in text
+    assert "2 threads across 2 messages" in text

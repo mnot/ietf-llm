@@ -14,7 +14,7 @@ typecheck: typecheck_py
 tidy: tidy_py
 
 .PHONY: test
-test:
-	@echo "needs tests"
+test: venv
+	$(VENV)/python -m pytest tests/
 
 include Makefile.pyproject
