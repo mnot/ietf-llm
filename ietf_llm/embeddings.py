@@ -214,6 +214,13 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:
 
 _ST_PREFIX = "sentence-transformers/"
 
+# Process-level cache of loaded embedding models, keyed by full model id.
+# Critical for the MCP server: without it, every search_corpus call would
+# re-load the ~130 MB sentence-transformers weights from disk, adding
+# 5-15 seconds of latency to every query and making the agent appear to
+# hang. The CLI benefits too when running many searches in one process.
+_MODEL_CACHE: dict[str, Any] = {}
+
 
 def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
     """Construct (and persist registration of) a sentence-transformers model.
@@ -274,30 +281,41 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
 
 
 def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
+    cached = _MODEL_CACHE.get(model_name)
+    if cached is not None:
+        return cached
+
+    model: Any = None
     # Local sentence-transformers path: construct directly, skip llm's
     # registry (see _load_sentence_transformer docstring).
     if model_name.startswith(_ST_PREFIX):
-        return _load_sentence_transformer(model_name, verbose)
+        model = _load_sentence_transformer(model_name, verbose)
+    else:
+        try:
+            import llm  # pylint: disable=import-outside-toplevel,import-error
+        except ImportError:
+            log(
+                "`llm` package is missing — this should ship with ietf-llm. "
+                "Try reinstalling: pipx install --force ietf-llm",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            return None
+        try:
+            model = llm.get_embedding_model(  # type: ignore[no-untyped-call]
+                model_name
+            )
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"Could not load embedding model '{model_name}': {err}",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            return None
 
-    try:
-        import llm  # pylint: disable=import-outside-toplevel,import-error
-    except ImportError:
-        log(
-            "`llm` package is missing — this should ship with ietf-llm. "
-            "Try reinstalling: pipx install --force ietf-llm",
-            verbose,
-            level=LogLevel.ERROR,
-        )
-        return None
-    try:
-        return llm.get_embedding_model(model_name)  # type: ignore[no-untyped-call]
-    except Exception as err:  # pylint: disable=broad-except
-        log(
-            f"Could not load embedding model '{model_name}': {err}",
-            verbose,
-            level=LogLevel.ERROR,
-        )
-        return None
+    if model is not None:
+        _MODEL_CACHE[model_name] = model
+    return model
 
 
 # --- Public API -------------------------------------------------------------

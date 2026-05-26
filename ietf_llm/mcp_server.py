@@ -27,10 +27,11 @@ Tools:
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 from typing import List, Optional
 
-from .embeddings import get_chunk, search
+from .embeddings import _get_embed_model, get_chunk, search
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400
@@ -158,6 +159,57 @@ def tool_read_file_section(
 # --- MCP server wiring -------------------------------------------------------
 
 
+def _prewarm_embedding_model() -> None:
+    """Eagerly load the embedding model so the first search_corpus call
+    doesn't take ~10s and look like the server has hung.
+
+    Skips if no WG has an embedding index yet (search isn't usable anyway).
+    Picks the model name from the first index found so a non-default
+    --embed-model gets pre-warmed too. Errors are swallowed; pre-warm is
+    best-effort and lazy loading on first call still works as a fallback.
+    """
+    root = get_cache_dir()
+    if not os.path.isdir(root):
+        return
+    model_name: Optional[str] = None
+    for name in sorted(os.listdir(root)):
+        db_path = os.path.join(root, name, "embeddings.db")
+        if not os.path.isfile(db_path):
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key='model'"
+                ).fetchone()
+                if row:
+                    model_name = row[0]
+                    break
+        except sqlite3.Error:
+            continue
+    if not model_name:
+        return
+
+    print(
+        f"ietf-llm-mcp: pre-warming embedding model '{model_name}' "
+        "(one-time, ~10s)...",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        model = _get_embed_model(model_name, Verbosity.QUIET)
+        if model is not None:
+            # llm-sentence-transformers loads weights lazily on first
+            # embed() — force that here.
+            list(model.embed("warmup"))
+        print("ietf-llm-mcp: ready.", file=sys.stderr, flush=True)
+    except Exception as err:  # pylint: disable=broad-except
+        print(
+            f"ietf-llm-mcp: pre-warm failed ({err}); first search may be slow.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def main() -> None:
     try:
         from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
@@ -214,6 +266,7 @@ def main() -> None:
         """
         return tool_read_file_section(wg, file, start_line, max_lines)
 
+    _prewarm_embedding_model()
     server.run()
 
 
