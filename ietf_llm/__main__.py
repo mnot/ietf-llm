@@ -57,8 +57,12 @@ def _default_llm_model(verbose: Verbosity) -> str:
 
         return str(llm.get_default_model())  # type: ignore[no-untyped-call]
     except Exception as err:  # pylint: disable=broad-except
+        # llm.get_default_model() can fail many ways depending on what
+        # plugins/config the user has; this is a fallback so we don't
+        # narrow.
         log(
-            f"Could not resolve default llm model ({err}); "
+            f"Could not resolve default llm model "
+            f"({type(err).__name__}: {err}); "
             "falling back to 'claude-haiku-4-5'.",
             verbose,
             level=LogLevel.PROGRESS,

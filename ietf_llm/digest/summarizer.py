@@ -72,7 +72,15 @@ class _Summarizer:
             self.model = llm.get_model(model_name)
         except Exception as err:  # pylint: disable=broad-except
             # Most common case: unknown model (provider plugin not installed).
-            log(_llm_setup_help(model_name, str(err)), verbose, level=LogLevel.ERROR)
+            # llm and its provider plugins don't share a typed exception
+            # hierarchy, so we catch broadly.
+            log(
+                _llm_setup_help(
+                    model_name, f"{type(err).__name__}: {err}"
+                ),
+                verbose,
+                level=LogLevel.ERROR,
+            )
 
     def active(self) -> bool:
         return self.model is not None
@@ -95,7 +103,10 @@ class _Summarizer:
             # the error or rack up zero-value API attempts.
             if not self._warned:
                 log(
-                    _llm_setup_help(self.model_name or "(unknown)", str(err)),
+                    _llm_setup_help(
+                        self.model_name or "(unknown)",
+                        f"{type(err).__name__}: {err}",
+                    ),
                     self.verbose,
                     level=LogLevel.ERROR,
                 )

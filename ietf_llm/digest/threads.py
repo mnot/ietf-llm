@@ -8,12 +8,14 @@ and emits a markdown table sorted by most-recent-activity-first.
 from __future__ import annotations
 
 import email
+import email.errors
 import email.policy
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from ..mbox import clean_email_text, extract_text_content
 from ..utils import LogLevel, Verbosity, get_cache_dir, log
 from .helpers import _normalize_subject, _parse_date, _short_addr
 from .summarizer import _Summarizer
@@ -60,11 +62,20 @@ def _build_threads_digest(
     )
 
     parsed = 0
+    skipped = 0
     for path in eml_paths:
         try:
             with open(path, "rb") as fh:
                 msg = email.message_from_binary_file(fh, policy=email.policy.default)
-        except Exception:  # pylint: disable=broad-except
+        except (OSError, email.errors.MessageError) as err:
+            # Malformed or unreadable .eml; skip without aborting the digest.
+            log(
+                f"Skipping {os.path.basename(path)}: "
+                f"{type(err).__name__}: {err}",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            skipped += 1
             continue
 
         subject = str(msg.get("Subject") or "(no subject)")
@@ -82,19 +93,26 @@ def _build_threads_digest(
         if date:
             if thread["first"] is None or date < thread["first"]:
                 thread["first"] = date
-                # Capture body of earliest known message for summarization
+                # Capture body of earliest known message for summarization.
+                # Body extraction touches arbitrary mail in the wild — any
+                # number of encoding/structure quirks can blow up. The
+                # summariser will just see an empty body for this thread
+                # (which is fine; one fewer summary, no crash), but we
+                # log the failure shape at PROGRESS level so debugging is
+                # possible.
                 if summarizer.active():
                     try:
-                        from ..mbox import (  # pylint: disable=import-outside-toplevel
-                            clean_email_text,
-                            extract_text_content,
-                        )
-
                         thread["first_body"] = clean_email_text(
                             extract_text_content(msg)
                         )[:4000]
-                    except Exception:  # pylint: disable=broad-except
-                        pass
+                    except Exception as err:  # pylint: disable=broad-except
+                        log(
+                            f"Body extraction failed for "
+                            f"{os.path.basename(path)}: "
+                            f"{type(err).__name__}: {err}",
+                            verbose,
+                            level=LogLevel.PROGRESS,
+                        )
             if thread["last"] is None or date > thread["last"]:
                 thread["last"] = date
         parsed += 1
@@ -161,9 +179,10 @@ def _build_threads_digest(
                     f"{first} | {last} | {top} |\n"
                 )
 
-    log(
-        f"Wrote threads digest: {len(threads)} threads from {parsed} messages",
-        verbose,
-        level=LogLevel.STATUS,
+    summary_line = (
+        f"Wrote threads digest: {len(threads)} threads from {parsed} messages"
     )
+    if skipped:
+        summary_line += f" ({skipped} skipped)"
+    log(summary_line, verbose, level=LogLevel.STATUS)
     return out_path

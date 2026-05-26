@@ -79,8 +79,12 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
             f"{_ST_PREFIX}{bare}", bare, False
         )
     except Exception as err:  # pylint: disable=broad-except
+        # The underlying stack (huggingface_hub, sentence-transformers,
+        # torch) doesn't expose a stable exception hierarchy, so we
+        # catch broadly but include the type name for debuggability.
         log(
-            f"Could not load sentence-transformers model '{bare}': {err}. "
+            f"Could not load sentence-transformers model '{bare}': "
+            f"{type(err).__name__}: {err}. "
             f"Try manually: llm sentence-transformers register {bare}",
             verbose,
             level=LogLevel.ERROR,
@@ -114,8 +118,11 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
                 model_name
             )
         except Exception as err:  # pylint: disable=broad-except
+            # `llm.get_embedding_model` and the various provider plugins
+            # don't share a typed exception hierarchy.
             log(
-                f"Could not load embedding model '{model_name}': {err}",
+                f"Could not load embedding model '{model_name}': "
+                f"{type(err).__name__}: {err}",
                 verbose,
                 level=LogLevel.ERROR,
             )

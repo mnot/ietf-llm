@@ -106,8 +106,10 @@ def build_index(
         try:
             vectors = list(model.embed_multi(texts))
         except Exception as err:  # pylint: disable=broad-except
+            # Embedding failures vary by provider (HTTP errors, OOM,
+            # rate limits, …) and don't share a typed hierarchy.
             log(
-                f"Embedding failed for {name}: {err}",
+                f"Embedding failed for {name}: {type(err).__name__}: {err}",
                 verbose,
                 level=LogLevel.ERROR,
             )
@@ -180,7 +182,12 @@ def search(
     try:
         q_vec = np.asarray(list(model.embed(query)), dtype=np.float32)
     except Exception as err:  # pylint: disable=broad-except
-        log(f"Query embedding failed: {err}", verbose, level=LogLevel.ERROR)
+        # Same provider-variability story as build_index().
+        log(
+            f"Query embedding failed: {type(err).__name__}: {err}",
+            verbose,
+            level=LogLevel.ERROR,
+        )
         return []
     q_norm = float(np.linalg.norm(q_vec))
     if q_norm:

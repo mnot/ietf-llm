@@ -2,9 +2,10 @@ import os
 import base64
 from typing import Optional
 import requests
-from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 
 from .utils import log, Verbosity, LogLevel
 
@@ -33,8 +34,12 @@ def get_credentials(
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                log(f"Error refreshing token: {err}", verbose, level=LogLevel.ERROR)
+            except (GoogleAuthError, requests.RequestException) as err:
+                log(
+                    f"Error refreshing token: {type(err).__name__}: {err}",
+                    verbose,
+                    level=LogLevel.ERROR,
+                )
                 creds = None
 
         if not creds:
@@ -50,8 +55,14 @@ def get_credentials(
                     client_secrets_path, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                log(f"Error during OAuth flow: {err}", verbose, level=LogLevel.ERROR)
+            except (GoogleAuthError, OSError, requests.RequestException) as err:
+                # OSError covers port-already-in-use and similar local
+                # binding failures from the temporary OAuth callback server.
+                log(
+                    f"Error during OAuth flow: {type(err).__name__}: {err}",
+                    verbose,
+                    level=LogLevel.ERROR,
+                )
                 return None
 
         # Save credentials for next time

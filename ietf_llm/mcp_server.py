@@ -203,8 +203,12 @@ def _prewarm_embedding_model() -> None:
             list(model.embed("warmup"))
         print("ietf-llm-mcp: ready.", file=sys.stderr, flush=True)
     except Exception as err:  # pylint: disable=broad-except
+        # Best-effort: any failure here means lazy load on first
+        # search_corpus call takes over. Log the exception type so the
+        # symptom ("first search is slow") can be traced if needed.
         print(
-            f"ietf-llm-mcp: pre-warm failed ({err}); first search may be slow.",
+            f"ietf-llm-mcp: pre-warm failed "
+            f"({type(err).__name__}: {err}); first search may be slow.",
             file=sys.stderr,
             flush=True,
         )

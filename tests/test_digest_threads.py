@@ -84,6 +84,25 @@ def test_threads_sorted_by_last_activity_desc(isolated_home: Path) -> None:
     assert 0 < new_pos < old_pos
 
 
+def test_malformed_eml_is_skipped_not_fatal(isolated_home: Path) -> None:
+    # A garbage .eml in the IMAP cache must not abort the digest; the
+    # narrowed except in _build_threads_digest catches the malformed
+    # message and continues to the next one.
+    write_eml(
+        isolated_home, "wg", "list", 1, "Real subject",
+        "Alice <a@x>", "Mon, 01 Jan 2025 10:00:00 +0000",
+    )
+    # Plant a corrupt eml alongside a good one.
+    imap_dir = (
+        isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list"
+    )
+    (imap_dir / "999.eml").write_bytes(b"\x00\x01\x02 not an email at all")
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    # Good message still indexed; bad message reported skipped.
+    assert "Real subject" in text
+
+
 def test_multiple_lists_under_one_wg_are_merged(isolated_home: Path) -> None:
     # A WG could in principle have more than one mailing list; both
     # should be scanned (digest walks the IMAP tree).
