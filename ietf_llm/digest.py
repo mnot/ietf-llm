@@ -25,7 +25,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .utils import LogLevel, Verbosity, get_cache_dir, get_wg_title, log
 
@@ -180,6 +180,17 @@ _THREAD_PROMPT = (
 )
 
 
+def _state_is_open(state: Any) -> bool:
+    """True iff an issue state value represents 'open'.
+
+    GitHub's archive JSON uses both lowercase ('open'/'closed', the
+    REST API convention) and uppercase ('OPEN'/'CLOSED', the GraphQL
+    convention) depending on which exporter produced the archive.
+    Normalise here so downstream sorting and counting work either way.
+    """
+    return isinstance(state, str) and state.strip().lower() == "open"
+
+
 # --- GitHub issues digest -----------------------------------------------------
 
 
@@ -236,18 +247,20 @@ def _build_issues_digest(
                     "|---|-------|-------|--------|----------|---------|--------|\n"
                 )
 
-            # Sort: open first, then by updated desc
-            def sort_key(iss: Dict[str, Any]) -> Tuple[int, str]:
-                state_rank = 0 if iss.get("state") == "open" else 1
-                return (state_rank, iss.get("updatedAt") or iss.get("createdAt") or "")
-
-            issues_sorted = sorted(issues, key=sort_key, reverse=False)
-            # reverse=False keeps open first; within group we want newest first
-            issues_sorted.sort(
+            # Sort: open first, then by updated desc within each group.
+            # GitHub's archive JSON has used both lowercase ("open"/"closed")
+            # and uppercase ("OPEN"/"CLOSED") for state depending on which
+            # API/exporter produced it, so all comparisons are case-folded.
+            # Two passes leveraging Python's stable sort: first by date as
+            # the secondary key, then by state as the primary.
+            issues_sorted = sorted(
+                issues,
                 key=lambda i: i.get("updatedAt") or i.get("createdAt") or "",
                 reverse=True,
             )
-            issues_sorted.sort(key=lambda i: 0 if i.get("state") == "open" else 1)
+            issues_sorted.sort(
+                key=lambda i: 0 if _state_is_open(i.get("state")) else 1
+            )
 
             for issue in issues_sorted:
                 number = issue.get("number", "?")
@@ -259,7 +272,7 @@ def _build_issues_digest(
                 updated = (issue.get("updatedAt") or issue.get("createdAt") or "")[:10]
                 author = (issue.get("author") or "?").replace("|", "\\|")
 
-                if state == "open":
+                if _state_is_open(state):
                     total_open += 1
                 else:
                     total_closed += 1
