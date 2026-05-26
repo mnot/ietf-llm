@@ -84,13 +84,6 @@ on the Claude side.
    cp -r /tmp/ietf-llm/skill/ietf-llm ~/.claude/skills/
    ```
 
-4. **(Optional)** Set `GITHUB_TOKEN` in your shell environment to avoid
-   GitHub API rate limits during gather:
-
-   ```bash
-   export GITHUB_TOKEN=ghp_...
-   ```
-
 ### b) Gathering a Working Group
 
 Gathering happens via the CLI (it's a slow, network-heavy job that's not
@@ -215,7 +208,26 @@ Options:
   `imap.ietf.org` and cached at `~/.cache/ietf-llm/<wg>/imap-cache/`.
 - **GitHub strategy**: the tool first checks for `archive.json` on the
   `gh-pages` branch of each repo, then falls back to the API.
-- **GitHub auth**: set `GITHUB_TOKEN` to avoid API rate limits.
+- **GitHub auth**: the gather reads `GITHUB_TOKEN` from the environment
+  if present. Use a fine-scoped personal access token (read-only, public
+  repos is plenty) and pass it only on the gather invocation rather
+  than exporting it in your shell rc — that way it doesn't sit in your
+  environment leaking into every other tool, subprocess, or assistant
+  you run. For example:
+
+  ```bash
+  GITHUB_TOKEN=ghp_... ietf-llm httpbis
+  ```
+
+  Or, if you keep it in a secret manager:
+
+  ```bash
+  GITHUB_TOKEN=$(security find-generic-password -s github-readonly -w) \
+      ietf-llm httpbis     # macOS Keychain example
+  ```
+
+  Without a token the gather still works but you'll hit anonymous API
+  rate limits quickly on large WGs.
 - **Transcripts**: fetched from the `ietf-minutes-data` repo and cached
   at `~/.cache/ietf-llm/<wg>/transcript-cache/`.
 
