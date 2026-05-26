@@ -5,6 +5,11 @@ Working Group's public record — charter, drafts, RFCs, meeting minutes,
 slides, transcripts, mailing list archives, and GitHub issues — for use
 with LLM-based tools.
 
+> Also works with [IRTF](https://irtf.org/) Research Groups. Pass the
+> RG's shortname (e.g. `cfrg`, `hrpc`, `pearg`) anywhere this README
+> says `<wg>` — the IRTF sits under the IETF umbrella and Datatracker
+> exposes RGs through the same endpoints we already consume.
+
 The cache can be queried directly via [Model Context Protocol](https://modelcontextprotocol.io/)
 (e.g. from Claude Desktop or Claude Code), searched semantically from the
 command line, or exported as a directory of clean text files for

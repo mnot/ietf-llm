@@ -92,7 +92,10 @@ def test_list_working_groups_only_wgs_with_files_dir(isolated_home: Path) -> Non
 
 def test_list_working_groups_empty_message(isolated_home: Path) -> None:
     out = mcp_server.tool_list_working_groups()
-    assert "no working groups" in out.lower()
+    # Message wording covers IRTF research groups too — the listing
+    # tool is the natural place to learn the tool isn't WG-exclusive.
+    assert "research groups" in out.lower()
+    assert "working" in out.lower()
 
 
 # --- read_digest ----------------------------------------------------------

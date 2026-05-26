@@ -12,6 +12,10 @@ shortname, **ask** — don't guess. If `overview` returns nothing,
 the WG hasn't been gathered yet; tell the user to run
 `ietf-llm <wg>` from their shell.
 
+IRTF Research Groups work the same way — pass the RG's shortname
+(`cfrg`, `hrpc`, `pearg`, …) anywhere `<wg>` appears below. The
+tools don't distinguish, and you don't need to either.
+
 ## First call: pick by question shape
 
 **Orienting / structural** ("tell me about `<wg>`", "what's this WG

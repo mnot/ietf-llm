@@ -99,7 +99,10 @@ def _with_freshness(wg: str, body: str) -> str:
 def tool_list_working_groups() -> str:
     wgs = _list_wgs()
     if not wgs:
-        return "(no working groups gathered yet — run `ietf-llm <wg>`)"
+        return (
+            "(no working / research groups gathered yet — "
+            "run `ietf-llm <shortname>`)"
+        )
     return "\n".join(wgs)
 
 
@@ -491,9 +494,11 @@ def main() -> None:
 
     @server.tool()
     def list_working_groups() -> str:
-        """List IETF Working Groups gathered in the local ietf-llm
-        corpus. Use this first when you don't know the `<wg>` shortname
-        the user means.
+        """List IETF Working Groups (and IRTF Research Groups) gathered
+        in the local ietf-llm corpus. Use this first when you don't
+        know the `<wg>` shortname the user means. IRTF RGs use the
+        same shortname convention (e.g. `cfrg`, `hrpc`) and are first-
+        class — every other tool accepts them too.
         """
         return tool_list_working_groups()
 
@@ -504,10 +509,11 @@ def main() -> None:
         latest meeting and latest draft publication — one call.
 
         **Best first call for ORIENTING / STRUCTURAL questions** about
-        an IETF WG by shortname (`httpbis`, `quic`, `tls`, `aipref`, …):
-        "tell me about WG X", "what's WG X up to?", "who's on WG X?",
-        "what is WG X working on?". ~30 lines of markdown instead of
-        the 80-100 KB of context that reading every digest would burn.
+        an IETF WG or IRTF RG by shortname (`httpbis`, `quic`, `tls`,
+        `aipref`, `cfrg`, `hrpc`, …): "tell me about X", "what's X up
+        to?", "who's on X?", "what is X working on?". ~30 lines of
+        markdown instead of the 80-100 KB of context that reading
+        every digest would burn.
 
         **Skip overview and go straight to the specialised tool for
         TOPICAL questions:**
