@@ -12,10 +12,11 @@ fallback handles drafts, RFCs, transcripts, and minutes.
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 CHUNK_SIZE = 2000  # characters
 CHUNK_OVERLAP = 200
@@ -28,6 +29,30 @@ class Chunk:
     chunk_idx: int  # ordinal within the file
     title: str  # subject / issue title / section hint, for display
     text: str
+    # 1-indexed inclusive line range within the source file. Allow None
+    # so legacy code paths and tests can construct chunks without them
+    # (the index migration also leaves them NULL on pre-v2 rows).
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+
+
+def _build_line_index(text: str) -> List[int]:
+    """Return byte offsets where each line starts.
+
+    `line_starts[n]` is the byte offset of line `n+1` (0-indexed list,
+    1-indexed line numbers). Used to convert chunk byte-offsets back
+    to source-file line numbers in O(log n) via bisect.
+    """
+    starts = [0]
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            starts.append(i + 1)
+    return starts
+
+
+def _line_at(line_starts: List[int], offset: int) -> int:
+    """1-indexed line number containing the given byte offset."""
+    return bisect.bisect_right(line_starts, offset)
 
 
 _RECORD_SEP = re.compile(r"\n=+\n+", re.MULTILINE)
@@ -37,11 +62,31 @@ _DATE_RE = re.compile(r"^Date:\s*(.+)$", re.MULTILINE)
 _ISSUE_RE = re.compile(r"^Issue #(\d+):\s*(.+)$", re.MULTILINE)
 
 
+def _record_spans(text: str) -> List[tuple[int, int]]:
+    """Return (start, end) byte offsets for each record between separators.
+
+    Mirrors `_RECORD_SEP.split(text)` but preserves positions in the
+    original text so chunks can carry line numbers back to the source.
+    """
+    spans: List[tuple[int, int]] = []
+    cursor = 0
+    for match in _RECORD_SEP.finditer(text):
+        if match.start() > cursor:
+            spans.append((cursor, match.start()))
+        cursor = match.end()
+    if cursor < len(text):
+        spans.append((cursor, len(text)))
+    return spans
+
+
 def _chunk_message_file(text: str, filename: str) -> List[Chunk]:
     """Split a mailing-list-YYYY.txt file into one chunk per message."""
-    parts = [p.strip() for p in _RECORD_SEP.split(text) if p.strip()]
+    line_starts = _build_line_index(text)
     chunks: List[Chunk] = []
-    for idx, part in enumerate(parts):
+    for idx, (start_off, end_off) in enumerate(_record_spans(text)):
+        part = text[start_off:end_off].strip()
+        if not part:
+            continue
         subj_m = _SUBJECT_RE.search(part)
         from_m = _FROM_RE.search(part)
         date_m = _DATE_RE.search(part)
@@ -54,23 +99,41 @@ def _chunk_message_file(text: str, filename: str) -> List[Chunk]:
             title_bits.append(date_m.group(1).strip()[:25])
         title = " · ".join(title_bits) or f"message {idx}"
         chunks.append(
-            Chunk(file=filename, chunk_idx=idx, title=title, text=part[:MAX_CHUNK_CHARS])
+            Chunk(
+                file=filename,
+                chunk_idx=idx,
+                title=title,
+                text=part[:MAX_CHUNK_CHARS],
+                start_line=_line_at(line_starts, start_off),
+                # max(end_off - 1, 0): byte at end_off is past the part
+                end_line=_line_at(line_starts, max(end_off - 1, 0)),
+            )
         )
     return chunks
 
 
 def _chunk_issues_file(text: str, filename: str) -> List[Chunk]:
     """Split a github-<repo>.txt file into one chunk per issue."""
-    parts = [p.strip() for p in _RECORD_SEP.split(text) if p.strip()]
+    line_starts = _build_line_index(text)
     chunks: List[Chunk] = []
-    for idx, part in enumerate(parts):
+    for idx, (start_off, end_off) in enumerate(_record_spans(text)):
+        part = text[start_off:end_off].strip()
+        if not part:
+            continue
         iss_m = _ISSUE_RE.search(part)
         if iss_m:
             title = f"#{iss_m.group(1)}: {iss_m.group(2).strip()}"
         else:
             title = f"record {idx}"
         chunks.append(
-            Chunk(file=filename, chunk_idx=idx, title=title, text=part[:MAX_CHUNK_CHARS])
+            Chunk(
+                file=filename,
+                chunk_idx=idx,
+                title=title,
+                text=part[:MAX_CHUNK_CHARS],
+                start_line=_line_at(line_starts, start_off),
+                end_line=_line_at(line_starts, max(end_off - 1, 0)),
+            )
         )
     return chunks
 
@@ -81,6 +144,7 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
     text = text.strip()
     if not text:
         return chunks
+    line_starts = _build_line_index(text)
     step = CHUNK_SIZE - CHUNK_OVERLAP
     idx = 0
     pos = 0
@@ -91,7 +155,14 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
         if len(title) > 80:
             title = title[:77] + "..."
         chunks.append(
-            Chunk(file=filename, chunk_idx=idx, title=title, text=body)
+            Chunk(
+                file=filename,
+                chunk_idx=idx,
+                title=title,
+                text=body,
+                start_line=_line_at(line_starts, pos),
+                end_line=_line_at(line_starts, pos + len(body) - 1),
+            )
         )
         idx += 1
         pos += step

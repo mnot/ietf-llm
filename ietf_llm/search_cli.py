@@ -40,14 +40,26 @@ def main() -> None:
 
     if args.format == "tsv":
         for hit in hits:
+            lines = (
+                f"L{hit.start_line}-{hit.end_line}"
+                if hit.start_line is not None
+                else "L?"
+            )
             print(
                 f"{hit.score:.3f}\t{hit.file}\t{hit.chunk_idx}\t"
-                f"{hit.title}\t{hit.snippet}"
+                f"{lines}\t{hit.title}\t{hit.snippet}"
             )
         return
 
     for i, hit in enumerate(hits, 1):
-        print(f"[{i}] score={hit.score:.3f}  {hit.file}  (chunk {hit.chunk_idx})")
+        lines = (
+            f"L{hit.start_line}-{hit.end_line}"
+            if hit.start_line is not None
+            else "lines unknown (legacy index; run --embed --rebuild-embeddings)"
+        )
+        print(
+            f"[{i}] score={hit.score:.3f}  {hit.file}  (chunk {hit.chunk_idx}, {lines})"
+        )
         print(f"    {hit.title}")
         print(f"    {hit.snippet}")
         print()

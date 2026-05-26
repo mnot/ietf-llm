@@ -113,8 +113,14 @@ def tool_search(wg: str, query: str, k: int = 10) -> str:
         )
     lines = []
     for i, hit in enumerate(hits, 1):
+        loc = (
+            f" lines={hit.start_line}-{hit.end_line}"
+            if hit.start_line is not None
+            else ""
+        )
         lines.append(
-            f"[{i}] score={hit.score:.3f}  file={hit.file}  chunk={hit.chunk_idx}"
+            f"[{i}] score={hit.score:.3f}  file={hit.file}  "
+            f"chunk={hit.chunk_idx}{loc}"
         )
         lines.append(f"     {hit.title}")
         lines.append(f"     {hit.snippet}")
@@ -125,8 +131,11 @@ def tool_get_chunk(wg: str, file: str, chunk_idx: int) -> str:
     result = get_chunk(wg, file, chunk_idx)
     if result is None:
         return f"Chunk not found: {file}#{chunk_idx}"
-    title, text = result
-    return f"# {title}\n\n{text}"
+    title, text, start_line, end_line = result
+    where = (
+        f" (lines {start_line}-{end_line})" if start_line is not None else ""
+    )
+    return f"# {title}{where}\n\n{text}"
 
 
 def tool_read_file_section(

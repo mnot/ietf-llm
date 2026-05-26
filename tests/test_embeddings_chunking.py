@@ -53,6 +53,49 @@ def test_message_chunking_yields_one_chunk_per_message() -> None:
     assert [c.chunk_idx for c in chunks] == [0, 1, 2]
 
 
+def test_message_chunking_tracks_line_numbers() -> None:
+    text = _ml_text([
+        ("Mon, 01 Jan 2025 10:00:00 +0000", "Alice <a@x>", "Topic A", "B1"),
+        ("Tue, 02 Jan 2025 10:00:00 +0000", "Bob <b@x>", "Topic B", "B2"),
+    ])
+    chunks = _chunk_message_file(text, "wg-mailing-list-2025.txt")
+    # All chunks have populated, monotone, plausible line ranges.
+    assert all(c.start_line is not None and c.end_line is not None for c in chunks)
+    assert chunks[0].start_line == 1
+    # The second message starts strictly after the first one ends.
+    assert chunks[1].start_line > chunks[0].end_line  # type: ignore[operator]
+    # And the reported end_line of the last chunk doesn't exceed the file.
+    file_lines = text.count("\n") + 1
+    assert chunks[-1].end_line <= file_lines  # type: ignore[operator]
+
+
+def test_windowed_chunking_tracks_line_numbers() -> None:
+    # Build text where each window's expected line range is predictable.
+    lines = [f"line {i}" for i in range(1, 501)]
+    text = "\n".join(lines) + "\n"
+    chunks = _chunk_windowed(text, "draft-foo-00.txt")
+    assert chunks[0].start_line == 1
+    # Successive chunks advance in line number (overlap means they
+    # overlap, but each new chunk's start_line >= previous start_line).
+    for prev, nxt in zip(chunks, chunks[1:]):
+        assert nxt.start_line is not None and prev.start_line is not None
+        assert nxt.start_line > prev.start_line
+
+
+def test_issue_chunking_tracks_line_numbers() -> None:
+    text = (
+        "Repository: org/repo\n" + "=" * 80 + "\n\n"
+        + "Issue #42: First\nState: open\n\nbody\n\n" + "=" * 80 + "\n\n"
+        + "Issue #43: Second\nState: closed\n\nbody2\n\n" + "=" * 80 + "\n"
+    )
+    chunks = _chunk_issues_file(text, "wg-github-org-repo.txt")
+    assert all(c.start_line is not None for c in chunks)
+    # Header record starts at line 1.
+    assert chunks[0].start_line == 1
+    # Issue #42 record comes after the first separator.
+    assert chunks[1].start_line > chunks[0].end_line  # type: ignore[operator]
+
+
 def test_message_chunking_handles_missing_headers() -> None:
     text = "Subject: only this\n\nbody\n\n" + "=" * 80 + "\n"
     chunks = _chunk_message_file(text, "wg-mailing-list-2025.txt")

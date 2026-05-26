@@ -32,6 +32,11 @@ class Hit:
     chunk_idx: int
     title: str
     snippet: str
+    # 1-indexed inclusive line range within `file`. May be None for
+    # chunks indexed before line tracking was added (schema v1) until
+    # the user runs `--rebuild-embeddings`.
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
 
 
 def build_index(
@@ -117,9 +122,18 @@ def build_index(
 
         for chunk, vec in zip(chunks, vectors):
             cur.execute(
-                "INSERT INTO chunks (file, chunk_idx, title, text, embedding) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (chunk.file, chunk.chunk_idx, chunk.title, chunk.text, _pack(vec)),
+                "INSERT INTO chunks "
+                "(file, chunk_idx, title, text, embedding, start_line, end_line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    chunk.file,
+                    chunk.chunk_idx,
+                    chunk.title,
+                    chunk.text,
+                    _pack(vec),
+                    chunk.start_line,
+                    chunk.end_line,
+                ),
             )
         cur.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
@@ -193,7 +207,10 @@ def search(
     if q_norm:
         q_vec = q_vec / q_norm
 
-    cur.execute("SELECT file, chunk_idx, title, text, embedding FROM chunks")
+    cur.execute(
+        "SELECT file, chunk_idx, title, text, embedding, start_line, end_line "
+        "FROM chunks"
+    )
     rows = cur.fetchall()
     if not rows:
         return []
@@ -203,7 +220,7 @@ def search(
     top = np.argsort(-scores)[:k]
     hits: List[Hit] = []
     for i in top:
-        file, chunk_idx, title, text, _ = rows[i]
+        file, chunk_idx, title, text, _, start_line, end_line = rows[i]
         snippet = text.strip().replace("\n", " ")
         if len(snippet) > 280:
             snippet = snippet[:277] + "..."
@@ -214,6 +231,8 @@ def search(
                 chunk_idx=int(chunk_idx),
                 title=title,
                 snippet=snippet,
+                start_line=int(start_line) if start_line is not None else None,
+                end_line=int(end_line) if end_line is not None else None,
             )
         )
     conn.close()
