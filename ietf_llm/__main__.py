@@ -94,7 +94,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             "a local directory, see `ietf-llm-export`."
         )
     )
-    parser.add_argument("wg", help="IETF Working Group short name (e.g. 'httpbis')")
+    parser.add_argument(
+        "wg",
+        nargs="?",
+        help="IETF Working Group short name (e.g. 'httpbis'). "
+        "Optional only when using --install-claude-skill.",
+    )
     parser.add_argument(
         "--github",
         action="append",
@@ -160,12 +165,32 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         help="Clear the persisted configuration for this WG "
         "(both gather and export scopes).",
     )
+    parser.add_argument(
+        "--install-claude-skill",
+        action="store_true",
+        help="Install the bundled Claude skill into ~/.claude/skills/ietf-llm "
+        "and exit. Does not gather. (Claude Code only.)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --install-claude-skill: overwrite an existing skill "
+        "even if it has been locally modified.",
+    )
     parser.add_argument("--quiet", "-q", action="store_true", help="Only output errors.")
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Detailed progress reporting."
     )
 
     args = parser.parse_args()
+
+    if args.install_claude_skill:
+        from .skill_install import install  # pylint: disable=import-outside-toplevel
+
+        sys.exit(install(force=args.force))
+
+    if not args.wg:
+        parser.error("wg argument is required (unless using --install-claude-skill)")
 
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:

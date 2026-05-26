@@ -64,15 +64,19 @@ on the Claude side.
    reading, no slurping raw mbox files):
 
    ```bash
-   git clone https://github.com/mnot/ietf-llm /tmp/ietf-llm
-   cp -r /tmp/ietf-llm/skill/ietf-llm ~/.claude/skills/
+   ietf-llm --install-claude-skill
    ```
 
-   Other harnesses don't have a direct equivalent. The MCP server's
-   tool descriptions and the digest files' "How to use this corpus"
-   preamble carry the same guidance, just less forcefully — your agent
-   will mostly figure it out, but a stray "read the whole mbox" call
-   isn't impossible. Watch the first few queries.
+   This copies the skill into `~/.claude/skills/ietf-llm/`. Re-run any
+   time after upgrading the package to pick up improvements; if you've
+   locally edited the file, the command refuses to overwrite unless
+   you also pass `--force`.
+
+   Other harnesses don't have a direct skill equivalent. The MCP
+   server's tool descriptions and the digest files' "How to use this
+   corpus" preamble carry the same guidance, just less forcefully —
+   your agent will mostly figure it out, but a stray "read the whole
+   mbox" call isn't impossible. Watch the first few queries.
 
 ### b) Gathering a Working Group
 
@@ -432,19 +436,20 @@ In `~/.config/zed/settings.json`:
 
 ## Using with Claude
 
-A Claude Code skill is included at `skill/ietf-llm/SKILL.md`. Copy it
-into your skills directory to let Claude gather and query WG corpora on your
-behalf:
+A Claude Code skill ships with the package. Install it with one command
+to let Claude gather and query WG corpora on your behalf:
 
 ```bash
-cp -r skill/ietf-llm ~/.claude/skills/
+ietf-llm --install-claude-skill         # one-shot install
+ietf-llm --install-claude-skill --force # overwrite locally edited copy
 ```
 
 The skill teaches Claude to drive the CLI, read the digest files first,
 prefer `ietf-llm-search` / the MCP tools over raw reads, and avoid
 pulling multi-MB mailing-list or issue dumps into context. For broad
 exploratory Q&A across the full corpus, NotebookLM remains a good fit
-(the destination directory is designed to be uploaded as-is).
+(`ietf-llm-export <wg> --destination <dir>` produces an upload-ready
+directory).
 
 ## Migrating from `ietf-notebook`
 
