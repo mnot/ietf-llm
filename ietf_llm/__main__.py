@@ -16,7 +16,7 @@ import argparse
 import os
 import shutil
 import sys
-from typing import Any
+from typing import Any, List
 
 from . import __version__, config
 from .charter import process_charter
@@ -107,7 +107,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "wg",
         nargs="?",
         help="IETF Working Group short name (e.g. 'httpbis'). "
-        "Optional only when using --install-claude-skill.",
+        "Optional when using --install-claude-skill or --all.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Refresh every WG that already has a cache directory under "
+        "~/.cache/ietf-llm/, using each one's persisted gather config. "
+        "Mutually exclusive with a positional wg argument; --clear-config "
+        "is refused in this mode.",
     )
     parser.add_argument(
         "--github",
@@ -198,9 +206,66 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
         sys.exit(install(force=args.force))
 
-    if not args.wg:
-        parser.error("wg argument is required (unless using --install-claude-skill)")
+    if args.all and args.wg:
+        parser.error("--all is mutually exclusive with a positional wg argument")
+    if args.all and args.clear_config:
+        parser.error("--clear-config is refused with --all (too easy to nuke "
+                     "every WG's config by accident); clear one WG at a time")
+    if not args.all and not args.wg:
+        parser.error(
+            "wg argument is required (unless using --install-claude-skill or --all)"
+        )
 
+    verbosity = Verbosity.STATUS
+    if args.quiet:
+        verbosity = Verbosity.QUIET
+    elif args.verbose:
+        verbosity = Verbosity.VERBOSE
+
+    if args.all:
+        targets = _discover_gathered_wgs()
+        if not targets:
+            print(
+                "No gathered WGs found under ~/.cache/ietf-llm/. "
+                "Run `ietf-llm <wg>` once per WG first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if verbosity != Verbosity.QUIET:
+            print(
+                f"Refreshing {len(targets)} WG(s): {', '.join(targets)}",
+                file=sys.stderr,
+            )
+        for wg in targets:
+            args.wg = wg
+            _gather_one(args, verbosity)
+        return
+
+    _gather_one(args, verbosity)
+
+
+def _discover_gathered_wgs() -> List[str]:
+    """Return acronyms of every WG that has a files/ subdir in the cache."""
+    root = get_cache_dir()
+    if not os.path.isdir(root):
+        return []
+    out: List[str] = []
+    for name in sorted(os.listdir(root)):
+        if name.startswith(".") or name.startswith("_"):
+            continue
+        if os.path.isdir(os.path.join(root, name, "files")):
+            out.append(name)
+    return out
+
+
+def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
+    """Run the full gather pipeline for a single WG.
+
+    Loads the WG's persisted config first (so per-WG --github lists etc.
+    apply), then walks the gather stages in order. Mutates args in place
+    via config.merge; safe to call repeatedly with different args.wg
+    values for --all.
+    """
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
             print(f"Cleared configuration for {args.wg}.", file=sys.stderr)
@@ -213,12 +278,6 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         lists=("github", "github_label", "exclude_github_label"),
         defaults={"months": DEFAULT_MONTHS, "summarize": False, "embed": False},
     )
-
-    verbosity = Verbosity.STATUS
-    if args.quiet:
-        verbosity = Verbosity.QUIET
-    elif args.verbose:
-        verbosity = Verbosity.VERBOSE
 
     wg_cache_dir = os.path.join(get_cache_dir(), args.wg)
     cache_dir = get_wg_file_cache_dir(args.wg)
