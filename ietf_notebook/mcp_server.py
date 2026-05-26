@@ -1,0 +1,221 @@
+"""
+MCP server for ietf-notebook. Exposes the gathered corpus to MCP clients
+(Claude Desktop, Claude Code, etc.) via a small set of tools focused on
+context-safe retrieval.
+
+Tools:
+  list_working_groups()
+      -> the WGs that have been gathered locally.
+  read_digest(wg, kind="index"|"issues"|"threads")
+      -> contents of one of the small digest files. Start here.
+  search(wg, query, k=10)
+      -> top-k semantic chunks (file, chunk_idx, title, score, snippet).
+         Requires that `ietf-notebook <wg> --embed` has been run.
+  get_chunk(wg, file, chunk_idx)
+      -> full text of a single indexed chunk (one message / one issue / one
+         draft section). Use after search to read a hit in full without
+         pulling the whole source file.
+  read_file_section(wg, file, start_line=1, max_lines=400)
+      -> bounded read of any file in the WG's cache
+         (~/.cache/ietf-notebook/<wg>/files/). Refuses to return more than
+         `max_lines` lines (default 400) so context can't be blown by
+         accident.
+  list_files(wg)
+      -> filenames + sizes for the WG.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from typing import List, Optional
+
+from .embeddings import get_chunk, search
+from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
+
+MAX_LINES_DEFAULT = 400
+MAX_LINES_HARD_CAP = 2000
+
+
+def _list_wgs() -> List[str]:
+    root = get_cache_dir()
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for name in sorted(os.listdir(root)):
+        if name.startswith("_") or name.startswith("."):
+            continue
+        if os.path.isdir(os.path.join(root, name, "files")):
+            out.append(name)
+    return out
+
+
+def _safe_path(wg: str, file: str) -> Optional[str]:
+    """Resolve `file` inside the WG's file cache; refuse path escapes."""
+    cache = get_wg_file_cache_dir(wg)
+    candidate = os.path.realpath(os.path.join(cache, file))
+    if not candidate.startswith(os.path.realpath(cache) + os.sep):
+        return None
+    if not os.path.isfile(candidate):
+        return None
+    return candidate
+
+
+def _digest_path(wg: str, kind: str) -> Optional[str]:
+    if kind not in ("index", "issues", "threads"):
+        return None
+    cache = get_wg_file_cache_dir(wg)
+    path = os.path.join(cache, f"{wg}-_{kind}.md")
+    return path if os.path.isfile(path) else None
+
+
+# --- Tool implementations (plain functions, also usable for unit tests) -----
+
+
+def tool_list_working_groups() -> str:
+    wgs = _list_wgs()
+    if not wgs:
+        return "(no working groups gathered yet — run `ietf-notebook <wg>`)"
+    return "\n".join(wgs)
+
+
+def tool_list_files(wg: str) -> str:
+    cache = get_wg_file_cache_dir(wg)
+    if not os.path.isdir(cache):
+        return f"No cache for {wg}."
+    rows = []
+    for name in sorted(os.listdir(cache)):
+        path = os.path.join(cache, name)
+        if not os.path.isfile(path):
+            continue
+        rows.append(f"{os.path.getsize(path):>10}  {name}")
+    return "\n".join(rows) or "(empty)"
+
+
+def tool_read_digest(wg: str, kind: str = "index") -> str:
+    path = _digest_path(wg, kind)
+    if not path:
+        return (
+            f"No '{kind}' digest for {wg}. "
+            f"Valid kinds: index, issues, threads. "
+            f"Run `ietf-notebook {wg}` to generate digests."
+        )
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def tool_search(wg: str, query: str, k: int = 10) -> str:
+    hits = search(wg, query, k=k, verbose=Verbosity.QUIET)
+    if not hits:
+        return (
+            f"(no results — has `ietf-notebook {wg} --embed` been run?)"
+        )
+    lines = []
+    for i, hit in enumerate(hits, 1):
+        lines.append(
+            f"[{i}] score={hit.score:.3f}  file={hit.file}  chunk={hit.chunk_idx}"
+        )
+        lines.append(f"     {hit.title}")
+        lines.append(f"     {hit.snippet}")
+    return "\n".join(lines)
+
+
+def tool_get_chunk(wg: str, file: str, chunk_idx: int) -> str:
+    result = get_chunk(wg, file, chunk_idx)
+    if result is None:
+        return f"Chunk not found: {file}#{chunk_idx}"
+    title, text = result
+    return f"# {title}\n\n{text}"
+
+
+def tool_read_file_section(
+    wg: str,
+    file: str,
+    start_line: int = 1,
+    max_lines: int = MAX_LINES_DEFAULT,
+) -> str:
+    path = _safe_path(wg, file)
+    if not path:
+        return f"File not found in {wg} cache: {file}"
+    if max_lines > MAX_LINES_HARD_CAP:
+        return (
+            f"max_lines={max_lines} exceeds hard cap {MAX_LINES_HARD_CAP}. "
+            "Use search() or get_chunk() instead of reading huge files."
+        )
+    start_line = max(1, int(start_line))
+    out = []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for idx, line in enumerate(fh, 1):
+            if idx < start_line:
+                continue
+            if idx >= start_line + max_lines:
+                out.append(f"... [truncated at line {idx}; use start_line to continue]")
+                break
+            out.append(line.rstrip("\n"))
+    return "\n".join(out)
+
+
+# --- MCP server wiring -------------------------------------------------------
+
+
+def main() -> None:
+    try:
+        from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
+            FastMCP,
+        )
+    except ImportError:
+        print(
+            "The `mcp` package is required. Install with: "
+            "pipx inject ietf-notebook mcp  (or use the `mcp` extra)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    server = FastMCP("ietf-notebook")
+
+    @server.tool()
+    def list_working_groups() -> str:
+        """List IETF Working Groups gathered locally."""
+        return tool_list_working_groups()
+
+    @server.tool()
+    def list_files(wg: str) -> str:
+        """List files (with sizes in bytes) in a WG's gathered cache."""
+        return tool_list_files(wg)
+
+    @server.tool()
+    def read_digest(wg: str, kind: str = "index") -> str:
+        """Read a digest file. kind = "index" | "issues" | "threads". Start here."""
+        return tool_read_digest(wg, kind)
+
+    @server.tool()
+    def search_corpus(wg: str, query: str, k: int = 10) -> str:
+        """Semantic search over a WG's gathered corpus. Returns top-k chunks
+        with file, chunk_idx, title, score, snippet. Requires that
+        `ietf-notebook <wg> --embed` has been run.
+        """
+        return tool_search(wg, query, k=k)
+
+    @server.tool()
+    def get_chunk_text(wg: str, file: str, chunk_idx: int) -> str:
+        """Full text of an indexed chunk returned by search_corpus."""
+        return tool_get_chunk(wg, file, chunk_idx)
+
+    @server.tool()
+    def read_file_section(
+        wg: str,
+        file: str,
+        start_line: int = 1,
+        max_lines: int = MAX_LINES_DEFAULT,
+    ) -> str:
+        """Bounded read of any file in the WG cache. Capped at 2000 lines
+        per call so the context window can't be blown by accident. Prefer
+        search_corpus / get_chunk_text for large files.
+        """
+        return tool_read_file_section(wg, file, start_line, max_lines)
+
+    server.run()
+
+
+if __name__ == "__main__":
+    main()

@@ -24,6 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 certs = ["pip-system-certs"]
+summarize = ["llm"]
+search = ["llm", "llm-sentence-transformers", "numpy"]
+mcp = ["mcp"]
 dev = [
     "mypy",
     "black",
@@ -33,7 +36,11 @@ dev = [
     "validate-pyproject",
     "build",
     "types-requests",
-    "types-beautifulsoup4"
+    "types-beautifulsoup4",
+    "llm",
+    "llm-sentence-transformers",
+    "numpy",
+    "mcp",
 ]
 
 [project.urls]
@@ -41,6 +48,8 @@ homepage = "https://github.com/mnot/ietf-notebook"
 
 [project.scripts]
 ietf-notebook = "ietf_notebook.__main__:main"
+ietf-notebook-search = "ietf_notebook.search_cli:main"
+ietf-notebook-mcp = "ietf_notebook.mcp_server:main"
 
 
 [build-system]

@@ -9,6 +9,7 @@ from .meetings import process_meetings
 from .charter import process_charter
 from .drafts import process_documents
 from .transcripts import process_transcripts
+from .digest import generate_digests
 from .utils import (
     Verbosity,
     LogLevel,
@@ -25,6 +26,22 @@ from .notebooklm import (
     create_notebook,
     upload_source,
 )
+
+
+def _default_llm_model(verbose: Verbosity) -> str:
+    """Return the user's configured default `llm` model name, or a fallback."""
+    try:
+        import llm  # pylint: disable=import-outside-toplevel,import-error
+
+        return str(llm.get_default_model())  # type: ignore[no-untyped-call]
+    except Exception as err:  # pylint: disable=broad-except
+        log(
+            f"Could not resolve default llm model ({err}); "
+            "falling back to 'claude-haiku-4-5'.",
+            verbose,
+            level=LogLevel.PROGRESS,
+        )
+        return "claude-haiku-4-5"
 
 
 def load_config_args(wg_name: str) -> dict[str, Any]:
@@ -166,7 +183,7 @@ def export_to_notebooklm(
         )
 
 
-def main() -> None:
+def main() -> None:  # pylint: disable=too-many-branches
     parser = argparse.ArgumentParser(
         description="Automate creation of NotebookLM-ready documents for an IETF Working Group."
     )
@@ -231,20 +248,50 @@ def main() -> None:
         action="store_true",
         help="Only write updated files to destination.",
     )
+    parser.add_argument(
+        "--summarize",
+        action="store_true",
+        help="Add LLM-generated one-line summaries to digest files. "
+        "Requires the `llm` package (https://llm.datasette.io/) and a "
+        "configured model.",
+    )
+    parser.add_argument(
+        "--summarize-model",
+        metavar="MODEL",
+        help="Model id for --summarize (e.g. 'claude-haiku-4-5', "
+        "'gpt-4o-mini'). Defaults to `llm`'s configured default.",
+    )
+    parser.add_argument(
+        "--embed",
+        action="store_true",
+        help="After gather, build/refresh the semantic search index for this "
+        "WG. Requires the `llm` and `numpy` packages (install with the "
+        "`search` extra).",
+    )
+    parser.add_argument(
+        "--embed-model",
+        metavar="MODEL",
+        help="Embedding model id for --embed (e.g. '3-small'). Defaults to "
+        "OpenAI text-embedding-3-small.",
+    )
+    parser.add_argument(
+        "--rebuild-embeddings",
+        action="store_true",
+        help="With --embed, drop and re-embed all files instead of "
+        "incrementally updating.",
+    )
 
     args = parser.parse_args()
 
     merge_config_args(args)
 
-    if not args.destination:
-        print(
-            "Error: --destination is required (either on command line or from config)."
-        )
-        print(f"Usage: ietf-notebook {args.wg} --destination ./my-docs")
-        return
-
-    # 1. Ensure destination folder exists
-    os.makedirs(args.destination, exist_ok=True)
+    # --destination is optional. Without it, the gather still populates the
+    # cache at ~/.cache/ietf-notebook/<wg>/, which is what the MCP server,
+    # `ietf-notebook-search`, and `--create` (NotebookLM upload) all read
+    # from. A destination is only needed if you want a clean directory of
+    # text/md files to upload to NotebookLM by hand.
+    if args.destination:
+        os.makedirs(args.destination, exist_ok=True)
 
     # 1. Handle --clear-cache
     wg_cache_dir = os.path.join(get_cache_dir(), args.wg)
@@ -263,7 +310,10 @@ def main() -> None:
 
     if verbosity != Verbosity.QUIET:
         print(f"Processing WG: {args.wg}")
-        print(f"Destination: {args.destination}")
+        if args.destination:
+            print(f"Destination: {args.destination}")
+        else:
+            print("Destination: (cache-only; no mirror)")
         if args.clear_cache:
             print("Clear cache: Re-downloading all materials.")
         else:
@@ -334,34 +384,67 @@ def main() -> None:
                     )
                 )
 
-    # 7. Mirror to destination
+    # 6b. Digests (index + issues + threads)
+    summarize_model: Any = None
+    if args.summarize or args.summarize_model:
+        # If user passed --summarize-model, use it; else None -> llm default
+        summarize_model = args.summarize_model or _default_llm_model(verbosity)
+    generated_cache_files.extend(
+        generate_digests(
+            args.wg,
+            cache_dir,
+            summarize_model=summarize_model,
+            verbose=verbosity,
+        )
+    )
+
+    # 7. Mirror to destination (if one was supplied; otherwise everything
+    # is already in the cache for the MCP server / search CLI to read).
     updated_files = []
-    # Filter out internal JSON/binary files from mirroring to destination if appropriate
-    # but for now we mirror all returned generated files.
-    for src in sorted(list(set(generated_cache_files))):
-        if not os.path.exists(src):
-            continue
-        if src.endswith(".json"):  # Don't mirror internal JSON
-            continue
-        filename = os.path.basename(src)
-        dst = os.path.join(args.destination, filename)
-        if copy_if_updated(src, dst):
-            updated_files.append(dst)
-        elif args.update:
-            # If --update is specified, we want ONLY changed files.
-            # So if it's the same, it's not "newly changed", so remove it from destination.
-            if os.path.exists(dst):
-                os.remove(dst)
+    if args.destination:
+        for src in sorted(list(set(generated_cache_files))):
+            if not os.path.exists(src):
+                continue
+            if src.endswith(".json"):  # Don't mirror internal JSON
+                continue
+            filename = os.path.basename(src)
+            dst = os.path.join(args.destination, filename)
+            if copy_if_updated(src, dst):
+                updated_files.append(dst)
+            elif args.update:
+                # If --update is specified, we want ONLY changed files.
+                # So if it's the same, it's not "newly changed", so remove
+                # it from destination.
+                if os.path.exists(dst):
+                    os.remove(dst)
+
+    # 8. Embedding index (opt-in)
+    if args.embed:
+        from .embeddings import (  # pylint: disable=import-outside-toplevel
+            DEFAULT_EMBED_MODEL,
+            build_index,
+        )
+
+        build_index(
+            args.wg,
+            cache_dir,
+            model_name=args.embed_model or DEFAULT_EMBED_MODEL,
+            rebuild=args.rebuild_embeddings,
+            verbose=verbosity,
+        )
 
     if args.create:
         export_to_notebooklm(args, cache_dir, verbosity)
 
     if verbosity != Verbosity.QUIET:
         print("-" * 40)
-        if updated_files:
-            print(f"Updated {len(updated_files)} files in {args.destination}.")
+        if args.destination:
+            if updated_files:
+                print(f"Updated {len(updated_files)} files in {args.destination}.")
+            else:
+                print("No files updated in destination.")
         else:
-            print("No files updated in destination.")
+            print("Cache populated; no destination mirror requested.")
         print("All tasks completed.")
 
 
