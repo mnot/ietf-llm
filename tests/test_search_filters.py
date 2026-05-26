@@ -143,7 +143,8 @@ def _seed_two_files(isolated_home: Path) -> None:
         (
             "# Issue #1: Issue topic\n\n"
             "**Repository:** org/repo  \n"
-            "**State:** OPEN  \n\n"
+            "**State:** OPEN  \n"
+            "**Labels:** Vocabulary, Top-Level, ready to close  \n\n"
             "## Description\n\n"
             "### [1] 2026-06-02 10:00 — Alice _(opened issue)_\n\nbody\n"
         ),
@@ -202,3 +203,100 @@ def test_combined_filters_can_return_empty(isolated_home: Path) -> None:
         "wg", "x", k=10, since="2030-01-01T00:00:00Z", verbose=Verbosity.QUIET,
     )
     assert hits == []
+
+
+# --- label filter (per-issue file labels in the chunks index) -------------
+
+
+def test_issue_chunks_carry_lowercased_labels(isolated_home: Path) -> None:
+    # The seed file uses mixed case in the `**Labels:**` header line;
+    # the chunker lowercases + comma-normalises for predictable LIKE
+    # filtering at search time.
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+    )
+    # Every chunk in the issue file inherits the same file-level labels.
+    assert hits
+    for hit in hits:
+        assert hit.labels == "vocabulary,top-level,ready to close"
+
+
+def test_thread_chunks_have_no_labels(isolated_home: Path) -> None:
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=10, file_pattern="%-thread-%", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all(h.labels is None for h in hits)
+
+
+def test_label_filter_matches_substring_case_insensitively(
+    isolated_home: Path,
+) -> None:
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    # Caller can pass any case; matched against the normalised column.
+    hits = search(
+        "wg", "x", k=10, label="Top-Level", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all("top-level" in (h.labels or "") for h in hits)
+    # Thread file (no labels at all) must NOT come back.
+    assert all("-thread-" not in h.file for h in hits)
+
+
+def test_label_filter_excludes_unlabelled_chunks(isolated_home: Path) -> None:
+    # A label that isn't on the seeded issue should return nothing
+    # (and definitely shouldn't surface thread/draft chunks, which
+    # have labels=NULL).
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=10, label="nonexistent", verbose=Verbosity.QUIET,
+    )
+    assert hits == []
+
+
+def test_issue_file_without_labels_line_gets_null_labels(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        (
+            "# Issue #2: No labels here\n\n"
+            "**Repository:** org/repo  \n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-06-02 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all(h.labels is None for h in hits)
+
+
+# --- mail-archive year-dump exclusion (consumer feedback #7) --------------
+
+
+def test_mail_archive_year_dump_is_not_indexed(isolated_home: Path) -> None:
+    # The legacy `<wg>-mail-archive-YYYY.txt` blob duplicates content
+    # already covered by per-thread .md files. It must be excluded
+    # from indexing so search hits are de-duplicated.
+    write_cache_file(
+        isolated_home, "wg", "wg-mail-archive-2025.txt",
+        "Subject: legacy\nFrom: a\nDate: 2025-01-01\n\nbody\n",
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search("wg", "anything", k=20, verbose=Verbosity.QUIET)
+    assert hits
+    assert all("mail-archive" not in h.file for h in hits)

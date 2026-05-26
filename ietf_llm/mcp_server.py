@@ -158,13 +158,14 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     )
 
 
-def tool_search(
+def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     wg: str,
     query: str,
     k: int = 10,
     file_pattern: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    label: Optional[str] = None,
 ) -> str:
     hits = search(
         wg,
@@ -173,6 +174,7 @@ def tool_search(
         file_pattern=file_pattern,
         since=since,
         until=until,
+        label=label,
         verbose=Verbosity.QUIET,
     )
     if not hits:
@@ -191,6 +193,10 @@ def tool_search(
             f"chunk={hit.chunk_idx}{loc}"
         )
         lines.append(f"     {hit.title}")
+        # Labels are doing curation work the WG already did; surface
+        # them on the same line they'd be useful for ranking decisions.
+        if hit.labels:
+            lines.append(f"     labels: {hit.labels}")
         lines.append(f"     {hit.snippet}")
     return "\n".join(lines)
 
@@ -508,22 +514,31 @@ def main() -> None:
         )
 
     @server.tool()
-    def search_corpus(
+    def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         wg: str,
         query: str,
         k: int = 10,
         file_pattern: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        label: Optional[str] = None,
     ) -> str:
         """Semantic search across an IETF Working Group's gathered
         ietf-llm corpus — mailing list threads, GitHub issues, drafts,
         RFCs, slides, transcripts, minutes. Returns top-k chunks with
-        file, chunk_idx, title, score, snippet, and line range.
+        file, chunk_idx, title, score, snippet, line range, and (for
+        issue chunks) the issue's GitHub labels.
 
         Use for substantive "what was said about X?" / "what's the WG's
         stance on Y?" questions. Pivot with `get_chunk_text` or
         `read_file_section` to read a hit in context.
+
+        For topical questions ("arguments for/against X", "scope debate")
+        try `label=` first — the WG's own labels (e.g. "vocabulary",
+        "top-level", "ready to close") are usually better curation than
+        semantic ranking alone. Pair with `kind="issues"` in `read_digest`
+        to get the issue catalogue, then `search_corpus` for depth inside
+        the matching issues.
         Requires `ietf-llm <wg> --embed` to have been run.
 
         Optional facets:
@@ -535,7 +550,8 @@ def main() -> None:
             chunks are excluded when either bound is set.
         """
         return tool_search(
-            wg, query, k=k, file_pattern=file_pattern, since=since, until=until
+            wg, query, k=k, file_pattern=file_pattern,
+            since=since, until=until, label=label,
         )
 
     @server.tool()

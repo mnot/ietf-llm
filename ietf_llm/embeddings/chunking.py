@@ -1,13 +1,14 @@
 """Content-aware chunking for the semantic-search corpus.
 
-Three chunking strategies, dispatched by filename:
+Content-aware chunking, dispatched by filename:
 
-  *-mailing-list-YYYY.txt   → one chunk per message  (===... separator)
-  *-github-<repo>.txt       → one chunk per issue    (===... separator)
+  *-thread-*.md             → one chunk per message section
+  *-issue-*.md              → one chunk per comment section
   everything else (.txt/.md) → fixed-size character windows with overlap
 
-Per-message and per-issue chunks give clean citations; the windowed
-fallback handles drafts, RFCs, transcripts, and minutes.
+The legacy `<wg>-mail-archive-YYYY.txt` and `<wg>-github-<repo>.txt`
+year-dumps duplicate the same content in less structured form; they
+are excluded from indexing entirely in `_eligible_files`.
 """
 
 from __future__ import annotations
@@ -40,6 +41,12 @@ class Chunk:
     # meaningful axis (mailing-list messages, GitHub issues). NULL for
     # windowed chunks of drafts/RFCs/transcripts where it isn't.
     chunk_date: Optional[str] = None
+    # Comma-separated lowercased label list for chunks coming from a
+    # per-issue file (e.g. "vocabulary,top-level,ready to close"). NULL
+    # everywhere else. Every chunk from the same issue file carries the
+    # same value — the file-level labels — so a `LIKE %label%` filter at
+    # search time can shortlist issues by topic.
+    labels: Optional[str] = None
 
 
 def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
@@ -109,6 +116,31 @@ _THREAD_MSG_RE = re.compile(
     r"^### \[(\d+)\] (\S+(?:\s+\S+)?) — (.+?)(?: \(reply to \[\d+\]\))?$",
     re.MULTILINE,
 )
+
+# Per-issue file labels line (issue_files._render_issue):
+#   "**Labels:** vocabulary, top-level, ready to close  "
+_ISSUE_LABELS_RE = re.compile(
+    r"^\*\*Labels:\*\*\s*(.+?)\s*$", re.MULTILINE
+)
+
+
+def _extract_issue_labels(text: str) -> Optional[str]:
+    """Pull the `**Labels:**` line out of a per-issue file's header
+    and return a normalised comma-separated lowercase string.
+
+    Returns None if the file has no labels line (issues created without
+    any GitHub labels won't have one). Whitespace around individual
+    labels is trimmed; the original ordering is preserved.
+    """
+    match = _ISSUE_LABELS_RE.search(text)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    if not raw:
+        return None
+    parts = [p.strip().lower() for p in raw.split(",")]
+    parts = [p for p in parts if p]
+    return ",".join(parts) if parts else None
 
 
 def _record_spans(text: str) -> List[tuple[int, int]]:
@@ -226,13 +258,19 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
 
 
 def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
-    """Split a `<wg>-thread-*.md` file into one chunk per message section.
+    """Split a `<wg>-thread-*.md` or `<wg>-issue-*.md` file into one
+    chunk per message / comment section.
 
-    The thread file format is fixed (see mail_threads._render_thread):
-    a metadata header, an outline, then one `### [N] DATE — Sender`
-    section per message. We chunk on those section boundaries so the
-    embedding index has one row per actual message — fine-grained
-    retrieval matching the per-thread reading view.
+    Both file types share a format (mail_threads._render_thread and
+    issue_files._render_issue): metadata header, an outline, then one
+    `### [N] DATE — Sender` section per message/comment. We chunk on
+    those section boundaries so the embedding index has one row per
+    actual message — fine-grained retrieval matching the per-thread /
+    per-issue reading view.
+
+    For issue files only, we additionally extract the `**Labels:**`
+    line from the header and stamp the comma-separated label list onto
+    every chunk in the file, so search can filter by topic label.
     """
     line_starts = _build_line_index(text)
     matches = list(_THREAD_MSG_RE.finditer(text))
@@ -242,6 +280,13 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         # Malformed thread file (shouldn't happen for ones we generate);
         # fall back to windowed chunking so something is still indexed.
         return _chunk_windowed(text, filename)
+
+    # Issue files have a `**Labels:**` header line; thread files don't.
+    # Stamping the file's labels onto every chunk lets a search-time
+    # `label="top-level"` filter shortlist by topic before semantic ranking.
+    labels = (
+        _extract_issue_labels(text) if "-issue-" in filename.lower() else None
+    )
 
     # Header (subject + outline) is everything before the first message.
     header_end = matches[0].start()
@@ -255,6 +300,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 text=header_text[:MAX_CHUNK_CHARS],
                 start_line=1,
                 end_line=_line_at(line_starts, max(header_end - 1, 0)),
+                labels=labels,
             )
         )
 
@@ -277,6 +323,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 start_line=_line_at(line_starts, start_off),
                 end_line=_line_at(line_starts, max(end_off - 1, 0)),
                 chunk_date=chunk_date,
+                labels=labels,
             )
         )
     return chunks
@@ -322,8 +369,12 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:
             continue
         if name.endswith(".json") or name.endswith(".pdf"):
             continue
-        # Legacy year-dumps duplicate content now in per-thread files.
-        if "mailing-list" in name.lower() and name.endswith(".txt"):
+        # Legacy mail year-dumps duplicate content now in per-thread files.
+        # Real filename is "<wg>-mail-archive-YYYY.txt" (note: the older
+        # comment said "mailing-list" but the actual gather writes
+        # "mail-archive", and the windowed-chunker fallback was indexing
+        # them — producing duplicate hits with every per-thread message).
+        if "-mail-archive-" in name.lower() and name.endswith(".txt"):
             continue
         # Per-issue .md files duplicate the content of the github-<repo>.txt
         # blob; skip the big blob in favour of the structured per-issue files.

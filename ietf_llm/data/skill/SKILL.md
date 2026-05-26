@@ -40,7 +40,8 @@ are substring matches.
 ## Substantive questions: `search_corpus(wg, query, k=8)`
 
 Returns top-k chunks with `file`, `chunk_idx`, `line_range`,
-snippet. Pivot to the source with:
+snippet, and (for issue chunks) the issue's GitHub `labels`. Pivot
+to the source with:
 
 - `get_chunk_text(wg, file, chunk_idx)` — full text of one chunk.
   Pass `end_chunk_idx=N` to fetch a consecutive range (≤20 chunks)
@@ -48,9 +49,16 @@ snippet. Pivot to the source with:
 - `read_file_section(wg, file, start_line, max_lines)` — bounded
   read for surrounding context or whole-file reading.
 
-`search_corpus` also takes `since` / `until` and `file_pattern`
-(SQL LIKE): `"%-thread-%"` for the mailing list, `"%-issue-%"` for
-GitHub, `"draft-%"` for drafts.
+`search_corpus` also takes `since` / `until`, `file_pattern` (SQL
+LIKE: `"%-thread-%"`, `"%-issue-%"`, `"draft-%"`), and `label`
+(substring against an issue's GitHub labels).
+
+**For "arguments for/against X" or "scope debate" questions, try
+`label=` first.** The WG's own labels (e.g. `"top-level"`,
+`"vocabulary"`, `"ready to close"`) are usually better curation
+than semantic ranking alone, and a label-filtered search lands
+on the canonical issue immediately instead of via a thread reply
+that mentions it.
 
 ## File types you'll encounter
 

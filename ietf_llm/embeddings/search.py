@@ -37,6 +37,11 @@ class Hit:
     # the user runs `--rebuild-embeddings`.
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    # Comma-separated lowercased GitHub labels, only set for chunks
+    # from per-issue files. None for thread/draft/transcript chunks.
+    # Surfaced in the search output so the caller can see at-a-glance
+    # why an issue chunk matched a topical query.
+    labels: Optional[str] = None
 
 
 def build_index(
@@ -124,8 +129,8 @@ def build_index(
             cur.execute(
                 "INSERT INTO chunks "
                 "(file, chunk_idx, title, text, embedding, "
-                " start_line, end_line, chunk_date) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " start_line, end_line, chunk_date, labels) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
@@ -135,6 +140,7 @@ def build_index(
                     chunk.start_line,
                     chunk.end_line,
                     chunk.chunk_date,
+                    chunk.labels,
                 ),
             )
         cur.execute(
@@ -159,7 +165,7 @@ def build_index(
     return total_new
 
 
-def search(
+def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     wg: str,
     query: str,
     model_name: Optional[str] = None,
@@ -167,17 +173,21 @@ def search(
     file_pattern: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    label: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Hit]:
     """Return top-k chunks for a query. Returns [] if no index exists.
 
     Optional facets:
       - file_pattern: SQL LIKE pattern matched against the file column
-        (e.g. "%mailing-list%" or "%github%"). % is wildcard.
+        (e.g. "%-thread-%" or "%-issue-%"). % is wildcard.
       - since / until: ISO 8601 date strings; only chunks whose
         chunk_date falls in the range are considered. Chunks with
         chunk_date NULL (e.g. windowed draft chunks) are excluded when
         either bound is set, since they have no time semantics.
+      - label: substring match against the (lowercased, comma-separated)
+        labels column. Restricts to issue chunks tagged with that
+        GitHub label — the curation work the WG already did.
     """
     if not os.path.exists(_db_path(wg)):
         log(
@@ -232,9 +242,15 @@ def search(
     if until:
         where_clauses.append("chunk_date IS NOT NULL AND chunk_date <= ?")
         where_args.append(until)
+    if label:
+        # Substring match on the comma-separated label column. Lowercased
+        # at index time so the caller doesn't have to match case.
+        where_clauses.append("labels IS NOT NULL AND labels LIKE ?")
+        where_args.append(f"%{label.lower()}%")
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
-        "SELECT file, chunk_idx, title, text, embedding, start_line, end_line "
+        "SELECT file, chunk_idx, title, text, embedding, "
+        "start_line, end_line, labels "
         f"FROM chunks{where_sql}",
         where_args,
     )
@@ -247,7 +263,10 @@ def search(
     top = np.argsort(-scores)[:k]
     hits: List[Hit] = []
     for i in top:
-        file, chunk_idx, title, text, _, start_line, end_line = rows[i]
+        (
+            file, chunk_idx, title, text, _,
+            start_line, end_line, labels,
+        ) = rows[i]
         snippet = text.strip().replace("\n", " ")
         if len(snippet) > 280:
             snippet = snippet[:277] + "..."
@@ -260,6 +279,7 @@ def search(
                 snippet=snippet,
                 start_line=int(start_line) if start_line is not None else None,
                 end_line=int(end_line) if end_line is not None else None,
+                labels=labels if labels else None,
             )
         )
     conn.close()

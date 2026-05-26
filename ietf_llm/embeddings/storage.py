@@ -27,7 +27,7 @@ from ..utils import get_cache_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 
 def _db_path(wg: str) -> str:
@@ -50,6 +50,7 @@ def _open_db(wg: str) -> sqlite3.Connection:
             start_line INTEGER,
             end_line   INTEGER,
             chunk_date TEXT,              -- ISO 8601 UTC, NULL for undated chunks
+            labels     TEXT,              -- comma-separated, lowercased; for issue chunks
             UNIQUE (file, chunk_idx)
         )
         """
@@ -89,6 +90,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v2 → v3: chunk_date for faceted search.
     if "chunk_date" not in have:
         conn.execute("ALTER TABLE chunks ADD COLUMN chunk_date TEXT")
+    # v3 → v4: per-issue labels for faceted search.
+    # Existing chunks get NULL until --rebuild-embeddings.
+    if "labels" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN labels TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
