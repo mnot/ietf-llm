@@ -82,8 +82,9 @@ class _Summarizer:
             import llm  # pylint: disable=import-outside-toplevel,import-error
         except ImportError:
             log(
-                "Summarization requested but `llm` package is not installed. "
-                "Install with: pipx inject ietf-llm llm  (or pip install llm)",
+                "Summarization requested but `llm` package is missing — "
+                "this should ship with ietf-llm. Try reinstalling: "
+                "pipx install --force ietf-llm",
                 verbose,
                 level=LogLevel.ERROR,
             )

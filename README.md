@@ -39,14 +39,12 @@ on the Claude side.
 
 ### a) One-time MCP setup
 
-1. **Install with the search + MCP extras** so embeddings and the MCP
-   server are both available:
+1. **Install the package** (semantic search, the MCP server, and the
+   `llm`-based summariser are all included by default):
 
    ```bash
-   pipx install 'ietf-llm[search,mcp]'
+   pipx install ietf-llm
    ```
-
-   (If you already have it installed: `pipx install --force 'ietf-llm[search,mcp]'`.)
 
 2. **Register the MCP server** with your Claude client. For Claude Code:
 
@@ -270,10 +268,10 @@ assistant):
 
 These are generated deterministically from the cache and add no API cost.
 Pass `--summarize` to also include one-line LLM summaries per issue and
-thread; this requires the [`llm`](https://llm.datasette.io/) package
-(install with `pipx inject ietf-llm llm`, or use the `summarize`
-extra) and a configured model. Override the model with
-`--summarize-model claude-haiku-4-5` (or any other model id known to `llm`).
+thread, via the bundled [`llm`](https://llm.datasette.io/) package.
+You'll need a model configured (`llm keys set ...`); override the
+default with `--summarize-model claude-haiku-4-5` (or any other model
+id `llm` knows about).
 
 ## Semantic Search
 
@@ -292,12 +290,8 @@ ietf-llm-search httpbis "skepticism about cookie partitioning" -k 8
 
 Chunks are content-aware: one chunk per mailing list message, one per
 GitHub issue, and a windowed slice of drafts/RFCs/transcripts. The index
-lives at `~/.cache/ietf-llm/<wg>/embeddings.db` and updates
-incrementally on the next `--embed` run. Requires the `search` extra:
-
-```bash
-pipx inject ietf-llm 'ietf-llm[search]'
-```
+lives at `~/.cache/ietf-llm/<wg>/embeddings.db` and updates incrementally
+on the next `--embed` run.
 
 The default model is **`sentence-transformers/BAAI/bge-small-en-v1.5`** —
 a small (~33M params), MPS-accelerated local model that runs entirely on
@@ -319,13 +313,14 @@ Claude Code, etc.). Tools:
 - `read_file_section(wg, file, start_line, max_lines)` — bounded raw read,
   capped at 2000 lines per call
 
-Install the extra and register the server with your client:
+Register the server with your client:
 
 ```bash
-pipx inject ietf-llm mcp
 # Claude Code:
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
+
+For Claude Desktop configuration, see the Quick Start above.
 
 ## Using with Claude
 
@@ -352,7 +347,7 @@ changed:
 
 ```bash
 pipx uninstall ietf-notebook
-pipx install 'ietf-llm[search,mcp]'
+pipx install ietf-llm
 ```
 
 ### Move the cache and config (optional)

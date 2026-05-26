@@ -165,8 +165,8 @@ def main() -> None:
         )
     except ImportError:
         print(
-            "The `mcp` package is required. Install with: "
-            "pipx inject ietf-llm mcp  (or use the `mcp` extra)",
+            "The `mcp` package is missing — this should ship with "
+            "ietf-llm. Try reinstalling: pipx install --force ietf-llm",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -4,7 +4,7 @@ dynamic = ["version"]
 authors = [
     {name="Mark Nottingham", email="mnot@mnot.net"}
 ]
-description = "Gather resources for an IETF Working Group for use in NotebookLM"
+description = "Maintain a local, LLM-queryable corpus of an IETF Working Group's public record (drafts, mailing list, GitHub issues, meetings), with an MCP server, semantic search, and NotebookLM export."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -15,18 +15,23 @@ classifiers = [
 ]
 
 dependencies = [
+    # Core gather / parse
     "requests",
     "beautifulsoup4",
+    # NotebookLM Enterprise export
     "google-auth",
     "google-auth-oauthlib",
     "google-auth-httplib2",
+    # Digests, semantic search index, MCP server — all first-class features
+    "llm",
+    "llm-sentence-transformers",
+    "numpy",
+    "mcp",
 ]
 
 [project.optional-dependencies]
+# Behaviour-shaping extras (not feature-gating)
 certs = ["pip-system-certs"]
-summarize = ["llm"]
-search = ["llm", "llm-sentence-transformers", "numpy"]
-mcp = ["mcp"]
 dev = [
     "mypy",
     "black",
@@ -37,10 +42,6 @@ dev = [
     "build",
     "types-requests",
     "types-beautifulsoup4",
-    "llm",
-    "llm-sentence-transformers",
-    "numpy",
-    "mcp",
 ]
 
 [project.urls]

@@ -235,9 +235,8 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         )
     except ImportError:
         log(
-            "Sentence-transformers embeddings require the "
-            "`llm-sentence-transformers` plugin. Install with: "
-            "pipx inject ietf-llm llm-sentence-transformers",
+            "`llm-sentence-transformers` is missing — this should ship "
+            "with ietf-llm. Try reinstalling: pipx install --force ietf-llm",
             verbose,
             level=LogLevel.ERROR,
         )
@@ -276,8 +275,8 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
         import llm  # pylint: disable=import-outside-toplevel,import-error
     except ImportError:
         log(
-            "Embedding requires the `llm` package. Install with: "
-            "pipx install 'ietf-llm[search]'",
+            "`llm` package is missing — this should ship with ietf-llm. "
+            "Try reinstalling: pipx install --force ietf-llm",
             verbose,
             level=LogLevel.ERROR,
         )
