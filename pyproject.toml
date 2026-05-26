@@ -1,5 +1,5 @@
 [project]
-name = "ietf-notebook"
+name = "ietf-llm"
 dynamic = ["version"]
 authors = [
     {name="Mark Nottingham", email="mnot@mnot.net"}
@@ -44,12 +44,12 @@ dev = [
 ]
 
 [project.urls]
-homepage = "https://github.com/mnot/ietf-notebook"
+homepage = "https://github.com/mnot/ietf-llm"
 
 [project.scripts]
-ietf-notebook = "ietf_notebook.__main__:main"
-ietf-notebook-search = "ietf_notebook.search_cli:main"
-ietf-notebook-mcp = "ietf_notebook.mcp_server:main"
+ietf-llm = "ietf_llm.__main__:main"
+ietf-llm-search = "ietf_llm.search_cli:main"
+ietf-llm-mcp = "ietf_llm.mcp_server:main"
 
 
 [build-system]
@@ -60,16 +60,16 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
-version = {attr = "ietf_notebook.__version__"}
+version = {attr = "ietf_llm.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ietf_notebook", "ietf_notebook.*"]
+include = ["ietf_llm", "ietf_llm.*"]
 namespaces = false
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.package-data]
-ietf_notebook = ["py.typed"]
+ietf_llm = ["py.typed"]
 

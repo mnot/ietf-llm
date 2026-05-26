@@ -3,7 +3,7 @@ Local semantic search over a Working Group's gathered corpus.
 
 Chunks the cached text files, embeds them via the `llm` package (so the user
 picks the embedding provider/model), and stores vectors in a per-WG sqlite
-database at ~/.cache/ietf-notebook/<wg>/embeddings.db.
+database at ~/.cache/ietf-llm/<wg>/embeddings.db.
 
 Public surface:
   build_index(wg, model, ...)    -- (re)build the per-WG embedding index
@@ -237,7 +237,7 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         log(
             "Sentence-transformers embeddings require the "
             "`llm-sentence-transformers` plugin. Install with: "
-            "pipx inject ietf-notebook llm-sentence-transformers",
+            "pipx inject ietf-llm llm-sentence-transformers",
             verbose,
             level=LogLevel.ERROR,
         )
@@ -277,7 +277,7 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
     except ImportError:
         log(
             "Embedding requires the `llm` package. Install with: "
-            "pipx install 'ietf-notebook[search]'",
+            "pipx install 'ietf-llm[search]'",
             verbose,
             level=LogLevel.ERROR,
         )
@@ -416,7 +416,7 @@ def search(
     """Return top-k chunks for a query. Returns [] if no index exists."""
     if not os.path.exists(_db_path(wg)):
         log(
-            f"No embeddings index for {wg}. Run `ietf-notebook {wg} --embed` first.",
+            f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
             verbose,
             level=LogLevel.ERROR,
         )

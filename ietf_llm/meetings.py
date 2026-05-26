@@ -217,7 +217,7 @@ def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
             url,
             timeout=60,
             stream=True,
-            headers={"User-Agent": "ietf-notebook/0.1.0"},
+            headers={"User-Agent": "ietf-llm/0.1.0"},
         )
         p_res.raise_for_status()
         c_type = p_res.headers.get("Content-Type", "").lower()

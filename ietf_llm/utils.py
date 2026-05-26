@@ -7,13 +7,13 @@ from typing import Optional, Dict
 import requests
 from bs4 import BeautifulSoup, Tag
 
-DEFAULT_HEADERS = {"User-Agent": "ietf-notebook/0.1.0"}
+DEFAULT_HEADERS = {"User-Agent": "ietf-llm/0.1.0"}
 DEFAULT_MONTHS = 12
 
 
 def get_config_dir() -> str:
     """Return the configuration directory, creating it if necessary."""
-    config_dir = os.path.expanduser("~/.config/ietf-notebook")
+    config_dir = os.path.expanduser("~/.config/ietf-llm")
     if not os.path.exists(config_dir):
         os.makedirs(config_dir, exist_ok=True)
     return config_dir
@@ -21,7 +21,7 @@ def get_config_dir() -> str:
 
 def get_cache_dir() -> str:
     """Return the cache directory, creating it if necessary."""
-    cache_dir = os.path.expanduser("~/.cache/ietf-notebook")
+    cache_dir = os.path.expanduser("~/.cache/ietf-llm")
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
     return cache_dir

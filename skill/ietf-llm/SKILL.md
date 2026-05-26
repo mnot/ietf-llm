@@ -1,12 +1,12 @@
 ---
-name: ietf-notebook
-description: Gather and query the public record of an IETF Working Group (charter, drafts, minutes, transcripts, mailing list, GitHub issues) using the `ietf-notebook` CLI. Use when the user asks to gather, refresh, or query materials for a named IETF WG (by shortname like `httpbis`, `quic`, `tls`), or asks substantive questions about a WG's drafts, issues, or list discussion.
+name: ietf-llm
+description: Gather and query the public record of an IETF Working Group (charter, drafts, minutes, transcripts, mailing list, GitHub issues) using the `ietf-llm` CLI. Use when the user asks to gather, refresh, or query materials for a named IETF WG (by shortname like `httpbis`, `quic`, `tls`), or asks substantive questions about a WG's drafts, issues, or list discussion.
 ---
 
-# ietf-notebook
+# ietf-llm
 
 A capability for working with IETF Working Group corpora gathered by the
-[`ietf-notebook`](https://github.com/mnot/ietf-notebook) CLI.
+[`ietf-llm`](https://github.com/mnot/ietf-llm) CLI.
 
 ## When to use this skill
 
@@ -27,10 +27,10 @@ supplied on first run:
 
 ```bash
 # First time
-ietf-notebook <wg> --destination ~/ietf/<wg> [--github owner/repo ...]
+ietf-llm <wg> --destination ~/ietf/<wg> [--github owner/repo ...]
 
 # Subsequent updates (only changed files end up in the destination)
-ietf-notebook --update <wg>
+ietf-llm --update <wg>
 ```
 
 If the user wants richer digests, add `--summarize` (uses the `llm` package's
@@ -40,10 +40,10 @@ override). This is opt-in because it costs API calls.
 For semantic search across the corpus, add `--embed` at gather time:
 
 ```bash
-ietf-notebook --update <wg> --embed [--embed-model 3-small]
+ietf-llm --update <wg> --embed [--embed-model 3-small]
 ```
 
-This builds an embedding index in `~/.cache/ietf-notebook/<wg>/embeddings.db`.
+This builds an embedding index in `~/.cache/ietf-llm/<wg>/embeddings.db`.
 It's incremental — only changed files are re-embedded.
 
 After gathering, the destination directory contains a structured corpus plus
@@ -89,7 +89,7 @@ If a user explicitly insists, warn them about context cost first.
 
 ```bash
 # Best: semantic search (if --embed has been run)
-ietf-notebook-search <wg> "cookie partitioning concerns" -k 8
+ietf-llm-search <wg> "cookie partitioning concerns" -k 8
 
 # Fallback: locate before reading
 grep -nH "cookie partitioning" ~/ietf/httpbis/*.txt
@@ -101,14 +101,14 @@ grep -nH "cookie partitioning" ~/ietf/httpbis/*.txt
 grep -E "^Issue #|^State:|^Labels:" ~/ietf/httpbis/httpbis-github-*.txt
 ```
 
-`ietf-notebook-search` returns the top-k chunks (one per mailing list
+`ietf-llm-search` returns the top-k chunks (one per mailing list
 message, one per GitHub issue, or a windowed slice of a draft) with a
 score, source file, chunk index, title, and snippet. After a search hit,
 open the source file at the right spot rather than reading it whole.
 
 ### MCP server (preferred when available)
 
-If the user has the MCP server registered (`ietf-notebook-mcp`), prefer its
+If the user has the MCP server registered (`ietf-llm-mcp`), prefer its
 tools over shelling out:
 
 - `list_working_groups()` — what's gathered

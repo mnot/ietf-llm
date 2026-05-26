@@ -1,4 +1,4 @@
-PROJECT = ietf_notebook
+PROJECT = ietf_llm
 
 
 .PHONY: clean

@@ -83,7 +83,7 @@ class _Summarizer:
         except ImportError:
             log(
                 "Summarization requested but `llm` package is not installed. "
-                "Install with: pipx inject ietf-notebook llm  (or pip install llm)",
+                "Install with: pipx inject ietf-llm llm  (or pip install llm)",
                 verbose,
                 level=LogLevel.ERROR,
             )
@@ -444,7 +444,7 @@ def _build_index(
         fh.write(f"# {wg} ({title}) — corpus index\n\n")
         fh.write(
             f"_Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} by "
-            "`ietf-notebook`. Start here._\n\n"
+            "`ietf-llm`. Start here._\n\n"
         )
 
         fh.write("## How to use this corpus\n\n")

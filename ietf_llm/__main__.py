@@ -286,8 +286,8 @@ def main() -> None:  # pylint: disable=too-many-branches
     merge_config_args(args)
 
     # --destination is optional. Without it, the gather still populates the
-    # cache at ~/.cache/ietf-notebook/<wg>/, which is what the MCP server,
-    # `ietf-notebook-search`, and `--create` (NotebookLM upload) all read
+    # cache at ~/.cache/ietf-llm/<wg>/, which is what the MCP server,
+    # `ietf-llm-search`, and `--create` (NotebookLM upload) all read
     # from. A destination is only needed if you want a clean directory of
     # text/md files to upload to NotebookLM by hand.
     if args.destination:

@@ -14,7 +14,7 @@ from .utils import LogLevel, Verbosity, get_mailing_list_name, log, get_cache_di
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993
 IMAP_USER = "anonymous"
-IMAP_PASS = "mnot+ietf-notebook@ietf.org"
+IMAP_PASS = "mnot+ietf-llm@ietf.org"
 BATCH_SIZE = 50
 
 

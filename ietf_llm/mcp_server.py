@@ -1,5 +1,5 @@
 """
-MCP server for ietf-notebook. Exposes the gathered corpus to MCP clients
+MCP server for ietf-llm. Exposes the gathered corpus to MCP clients
 (Claude Desktop, Claude Code, etc.) via a small set of tools focused on
 context-safe retrieval.
 
@@ -10,14 +10,14 @@ Tools:
       -> contents of one of the small digest files. Start here.
   search(wg, query, k=10)
       -> top-k semantic chunks (file, chunk_idx, title, score, snippet).
-         Requires that `ietf-notebook <wg> --embed` has been run.
+         Requires that `ietf-llm <wg> --embed` has been run.
   get_chunk(wg, file, chunk_idx)
       -> full text of a single indexed chunk (one message / one issue / one
          draft section). Use after search to read a hit in full without
          pulling the whole source file.
   read_file_section(wg, file, start_line=1, max_lines=400)
       -> bounded read of any file in the WG's cache
-         (~/.cache/ietf-notebook/<wg>/files/). Refuses to return more than
+         (~/.cache/ietf-llm/<wg>/files/). Refuses to return more than
          `max_lines` lines (default 400) so context can't be blown by
          accident.
   list_files(wg)
@@ -75,7 +75,7 @@ def _digest_path(wg: str, kind: str) -> Optional[str]:
 def tool_list_working_groups() -> str:
     wgs = _list_wgs()
     if not wgs:
-        return "(no working groups gathered yet — run `ietf-notebook <wg>`)"
+        return "(no working groups gathered yet — run `ietf-llm <wg>`)"
     return "\n".join(wgs)
 
 
@@ -98,7 +98,7 @@ def tool_read_digest(wg: str, kind: str = "index") -> str:
         return (
             f"No '{kind}' digest for {wg}. "
             f"Valid kinds: index, issues, threads. "
-            f"Run `ietf-notebook {wg}` to generate digests."
+            f"Run `ietf-llm {wg}` to generate digests."
         )
     with open(path, "r", encoding="utf-8") as fh:
         return fh.read()
@@ -108,7 +108,7 @@ def tool_search(wg: str, query: str, k: int = 10) -> str:
     hits = search(wg, query, k=k, verbose=Verbosity.QUIET)
     if not hits:
         return (
-            f"(no results — has `ietf-notebook {wg} --embed` been run?)"
+            f"(no results — has `ietf-llm {wg} --embed` been run?)"
         )
     lines = []
     for i, hit in enumerate(hits, 1):
@@ -166,12 +166,12 @@ def main() -> None:
     except ImportError:
         print(
             "The `mcp` package is required. Install with: "
-            "pipx inject ietf-notebook mcp  (or use the `mcp` extra)",
+            "pipx inject ietf-llm mcp  (or use the `mcp` extra)",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    server = FastMCP("ietf-notebook")
+    server = FastMCP("ietf-llm")
 
     @server.tool()
     def list_working_groups() -> str:
@@ -192,7 +192,7 @@ def main() -> None:
     def search_corpus(wg: str, query: str, k: int = 10) -> str:
         """Semantic search over a WG's gathered corpus. Returns top-k chunks
         with file, chunk_idx, title, score, snippet. Requires that
-        `ietf-notebook <wg> --embed` has been run.
+        `ietf-llm <wg> --embed` has been run.
         """
         return tool_search(wg, query, k=k)
 

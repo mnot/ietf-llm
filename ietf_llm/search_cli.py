@@ -1,4 +1,4 @@
-"""`ietf-notebook-search <wg> <query>` — query the embedding index."""
+"""`ietf-llm-search <wg> <query>` — query the embedding index."""
 
 from __future__ import annotations
 
