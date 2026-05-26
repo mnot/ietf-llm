@@ -184,6 +184,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     until: Optional[str] = None,
     label: Optional[str] = None,
     state: Optional[str] = None,
+    sort: Optional[str] = None,
 ) -> str:
     hits = search(
         wg,
@@ -194,6 +195,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         until=until,
         label=label,
         state=state,
+        sort=sort,
         verbose=Verbosity.QUIET,
     )
     if not hits:
@@ -568,6 +570,7 @@ def main() -> None:
         until: Optional[str] = None,
         label: Optional[str] = None,
         state: Optional[str] = None,
+        sort: Optional[str] = None,
     ) -> str:
         """IETF Working Group ietf-llm semantic search across mailing
         list threads, GitHub issues, drafts, RFCs, slides, transcripts,
@@ -589,6 +592,13 @@ def main() -> None:
         `state="closed"` narrows to resolved issues — prefer this when
         the user wants the WG's settled position rather than ongoing
         debate. `state="open"` is the inverse: only unresolved threads.
+
+        `sort="date"` re-orders the top-k hits chronologically (oldest
+        first) instead of by relevance, so a consumer reading
+        top-to-bottom sees an early objection → settled-position
+        arc. Combine with `file_pattern="%-issue-…-N.md"` to scope to
+        one issue, or `since`/`until` for a time window. NULL-dated
+        chunks (drafts, transcripts) are excluded under `sort="date"`.
         Requires `ietf-llm <wg> --embed` to have been run.
 
         Optional facets:
@@ -601,7 +611,7 @@ def main() -> None:
         """
         return tool_search(
             wg, query, k=k, file_pattern=file_pattern,
-            since=since, until=until, label=label, state=state,
+            since=since, until=until, label=label, state=state, sort=sort,
         )
 
     @server.tool()

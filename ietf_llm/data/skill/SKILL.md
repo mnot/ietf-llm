@@ -103,12 +103,16 @@ has landed.
 ## Reading a debate in chronological order
 
 `search_corpus` ranks by relevance, which can hide whether an
-argument is an early objection or a settled position. For a single
-issue's full timeline, open the per-issue file
-(`<wg>-issue-<owner>-<repo>-<N>.md`) directly via
-`read_file_section` or `get_chunk_text` with an `end_chunk_idx`
-range — the file is already chronologically ordered with an outline
-of who spoke when. Cheaper and more accurate than re-querying.
+argument is an early objection or a settled position. Add
+`sort="date"` to re-order the top-k hits oldest-first instead — a
+consumer reading the result top-to-bottom sees how the debate
+evolved. Scope to one issue with `file_pattern="%-issue-…-N.md"`
+or to a time window with `since` / `until`.
+
+If you want the *whole* issue end-to-end (not just hits matching a
+query), read the per-issue file directly via `read_file_section` or
+`get_chunk_text(..., end_chunk_idx=N)` — the file is already in
+chronological order with an outline of who spoke when.
 
 ## Canonical names
 

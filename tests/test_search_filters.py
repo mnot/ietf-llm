@@ -380,6 +380,108 @@ def test_issue_file_without_labels_line_gets_null_labels(
 # --- mail-archive year-dump exclusion (consumer feedback #7) --------------
 
 
+# --- sort="date" (chronological lens, consumer feedback #4) --------------
+
+
+def _seed_chronological_issue(isolated_home: Path) -> None:
+    """One issue file with four dated messages spanning Sept-Nov 2025,
+    written out of order so a chronological sort has to do real work."""
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-155.md",
+        (
+            "# Issue #155: Category for RAG\n\n"
+            "**State:** CLOSED  \n"
+            "**Labels:** top-level  \n\n"
+            "## Description\n\n"
+            "### [1] 2025-09-15 10:00 — Alice _(opened issue)_\n\n"
+            "Early objection: this overlaps with X.\n\n"
+            "### [2] 2025-11-20 09:00 — Dan\n\n"
+            "Settled position after chairs' resolution.\n\n"
+            "### [3] 2025-10-14 14:30 — Martin Thomson\n\n"
+            "IETF 124 clarification: actually the shape is Y.\n\n"
+            "### [4] 2025-10-02 08:00 — Bob\n\n"
+            "Mid-debate proposal.\n"
+        ),
+    )
+
+
+def test_sort_date_returns_oldest_first(isolated_home: Path) -> None:
+    # The consumer-feedback case: a debate evolving over weeks, where
+    # relevance-ranking hides whether a position is early or settled.
+    _seed_chronological_issue(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "anything", k=10, sort="date", verbose=Verbosity.QUIET,
+    )
+    # All four dated message chunks come back (the header chunk has
+    # no chunk_date and is filtered out).
+    titles = [h.title for h in hits]
+    assert len(titles) == 4
+    # Strictly ascending by the embedded YYYY-MM-DD prefix.
+    assert titles[0].startswith("[1] 2025-09-15")
+    assert titles[1].startswith("[4] 2025-10-02")
+    assert titles[2].startswith("[3] 2025-10-14")
+    assert titles[3].startswith("[2] 2025-11-20")
+
+
+def test_sort_date_excludes_undated_chunks(isolated_home: Path) -> None:
+    # Drafts / transcripts get NULL chunk_date; they have no place in
+    # a chronological view of a debate and must be excluded.
+    _seed_chronological_issue(isolated_home)
+    write_cache_file(
+        isolated_home, "wg", "draft-foo-00.txt",
+        "draft body " * 200,  # windowed chunker, no chunk_date
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "anything", k=20, sort="date", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all("draft-foo" not in h.file for h in hits)
+
+
+def test_sort_date_default_is_relevance(isolated_home: Path) -> None:
+    # Without sort= the existing relevance behaviour is unchanged.
+    # The stub model gives every chunk the same vector, so under
+    # relevance ranking the result order is implementation-defined,
+    # but it must NOT be ascending-by-date (since that's the new mode).
+    _seed_chronological_issue(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits_relevance = search(
+        "wg", "anything", k=10, verbose=Verbosity.QUIET,
+    )
+    hits_date = search(
+        "wg", "anything", k=10, sort="date", verbose=Verbosity.QUIET,
+    )
+    # Date-sorted result is strictly ordered; relevance result happens
+    # to not be (or is by accident). The two orderings must differ for
+    # the test corpus, otherwise sort="date" isn't doing any work.
+    assert [h.title for h in hits_relevance] != [h.title for h in hits_date]
+
+
+def test_sort_date_composes_with_file_pattern(isolated_home: Path) -> None:
+    # Common use case from the docstring: scope chronological mode to
+    # a single issue with file_pattern.
+    _seed_chronological_issue(isolated_home)
+    # Another issue we DON'T want in the result.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-99.md",
+        (
+            "# Issue #99: Unrelated\n\n"
+            "## Description\n\n"
+            "### [1] 2025-10-10 10:00 — Eve _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=20, sort="date",
+        file_pattern="%-issue-org-repo-155.md",
+        verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all("org-repo-155" in h.file for h in hits)
+
+
 def test_tool_search_summarises_uniform_closed_state(
     isolated_home: Path,
 ) -> None:

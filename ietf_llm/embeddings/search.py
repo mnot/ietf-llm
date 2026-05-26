@@ -181,6 +181,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     until: Optional[str] = None,
     label: Optional[str] = None,
     state: Optional[str] = None,
+    sort: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Hit]:
     """Return top-k chunks for a query. Returns [] if no index exists.
@@ -199,6 +200,13 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         that resolution status. Useful for preferring the chairs'
         decision (closed issues) over older mid-debate threads, or
         vice versa.
+      - sort: None (default) returns top-k by relevance.
+        'date' returns the top-k by relevance then re-sorts the
+        survivors chronologically (oldest first), so a consumer
+        reading top-to-bottom sees how a debate evolved rather than
+        what's currently most salient. NULL-dated chunks (drafts,
+        transcripts, windowed) are excluded under 'date' since they
+        have no place in the chronology.
     """
     if not os.path.exists(_db_path(wg)):
         log(
@@ -263,10 +271,14 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         # transcripts) are implicitly excluded.
         where_clauses.append("state = ?")
         where_args.append(state.lower())
+    if sort == "date":
+        # Chronological mode excludes undated chunks — a draft windowed
+        # chunk has no place in a timeline view of a debate.
+        where_clauses.append("chunk_date IS NOT NULL")
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, "
-        "start_line, end_line, labels, state "
+        "start_line, end_line, labels, state, chunk_date "
         f"FROM chunks{where_sql}",
         where_args,
     )
@@ -276,12 +288,19 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
 
     embs = _unpack_matrix([r[4] for r in rows])
     scores = embs @ q_vec  # cosine since both sides are normalized
-    top = np.argsort(-scores)[:k]
+    top: List[int] = [int(i) for i in np.argsort(-scores)[:k]]
+    # Chronological mode: pick top-k by relevance (so the query still
+    # filters what's "about" the topic), then re-order those survivors
+    # by date so the consumer reads early-objection → settled-position
+    # rather than most-salient-first. Hit.score is preserved either way
+    # so the caller can tell the underlying ranking apart.
+    if sort == "date":
+        top = sorted(top, key=lambda i: rows[i][9] or "")
     hits: List[Hit] = []
     for i in top:
         (
             file, chunk_idx, title, text, _,
-            start_line, end_line, labels, state_val,
+            start_line, end_line, labels, state_val, _chunk_date,
         ) = rows[i]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
