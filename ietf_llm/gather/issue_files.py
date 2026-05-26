@@ -1,0 +1,195 @@
+"""Per-issue Markdown files for GitHub issues — symmetric with the
+per-thread files written by `mail_threads`.
+
+The existing `<wg>-github-<repo>.txt` file dumps every issue + every
+comment into one multi-MB blob. An agent reading the issues digest
+can see the issue's author and a comment count, but to learn who
+commented (let alone what they said), it has to read the giant
+text file. The threads digest already had this problem solved — per-
+conversation `.md` files with structured headers — so we apply the
+same pattern here.
+
+For each issue we emit:
+
+  <cache>/files/<wg>-issue-<repo-slug>-<NNN>.md
+
+Inside:
+  - YAML-style frontmatter: state, opened by, labels, participants
+  - The issue body as the first message
+  - One `### [N] DATE — Author` section per comment
+
+Canonical names are used throughout (passed via the Registry), so
+"mnot" / "Mark Nottingham via Datatracker" / DMARC-rewritten variants
+all render as "Mark Nottingham" — same as in threads.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional
+
+from ..people import Registry
+from ..utils import LogLevel, Verbosity, log
+
+
+def _canon_github(registry: Optional[Registry], login: str) -> str:
+    if not login:
+        return "(unknown)"
+    if registry is None:
+        return login
+    return registry.canonical_for_github(login) or login
+
+
+def _format_iso_to_minute(value: Any) -> str:
+    """Render an ISO timestamp to 'YYYY-MM-DD HH:MM'; pass through if unparseable."""
+    if not isinstance(value, str):
+        return ""
+    # The archive uses "2026-04-19T00:00:00Z" — strip seconds + suffix.
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})", value)
+    if match:
+        return f"{match.group(1)} {match.group(2)}"
+    return value
+
+
+def _participants(
+    issue: Dict[str, Any], registry: Optional[Registry]
+) -> List[str]:
+    """Canonical names of every author + commenter on the issue."""
+    seen: List[str] = []
+    seen_set: set[str] = set()
+    for login in [issue.get("author")] + [
+        c.get("author") for c in (issue.get("comments") or [])
+    ]:
+        if not login:
+            continue
+        name = _canon_github(registry, login)
+        if name in seen_set:
+            continue
+        seen_set.add(name)
+        seen.append(name)
+    return seen
+
+
+def _render_issue(
+    repo: str, issue: Dict[str, Any], registry: Optional[Registry]
+) -> str:
+    number = issue.get("number", "?")
+    title = issue.get("title") or "(no title)"
+    state = (issue.get("state") or "?").upper()
+    author_name = _canon_github(registry, issue.get("author") or "")
+    opened = _format_iso_to_minute(issue.get("createdAt"))
+    updated = _format_iso_to_minute(issue.get("updatedAt"))
+    labels = ", ".join(issue.get("labels") or [])
+    comments = issue.get("comments") or []
+    participants = _participants(issue, registry)
+
+    out: List[str] = []
+    out.append(f"# Issue #{number}: {title}\n")
+    out.append(f"**Repository:** {repo}  ")
+    out.append(f"**State:** {state}  ")
+    out.append(f"**Opened by:** {author_name} on {opened}  ")
+    if updated and updated != opened:
+        out.append(f"**Last updated:** {updated}  ")
+    if labels:
+        out.append(f"**Labels:** {labels}  ")
+    out.append(
+        f"**Comments:** {len(comments)}  ·  "
+        f"**Participants ({len(participants)}):** "
+        + ", ".join(participants)
+    )
+    out.append("")
+
+    if comments:
+        out.append("## Outline\n")
+        out.append(f"- **[1]** {opened} — {author_name} _(opened issue)_")
+        for idx, comment in enumerate(comments, 2):
+            c_when = _format_iso_to_minute(comment.get("createdAt"))
+            c_author = _canon_github(registry, comment.get("author") or "")
+            out.append(f"- **[{idx}]** {c_when} — {c_author}")
+        out.append("")
+
+    out.append("## Description\n")
+    out.append(f"### [1] {opened} — {author_name} _(opened issue)_\n")
+    body = (issue.get("body") or "").strip()
+    out.append(body or "_(no description provided)_")
+    out.append("")
+
+    if comments:
+        out.append("## Comments\n")
+        for idx, comment in enumerate(comments, 2):
+            c_when = _format_iso_to_minute(comment.get("createdAt"))
+            c_author = _canon_github(registry, comment.get("author") or "")
+            c_body = (comment.get("body") or "").strip()
+            out.append(f"### [{idx}] {c_when} — {c_author}\n")
+            out.append(c_body or "_(empty comment)_")
+            out.append("")
+    return "\n".join(out) + "\n"
+
+
+def issue_slug(repo: str, number: Any) -> str:
+    """Filename stem for an issue: `<repo-slug>-<NNN>` with repo
+    slug matching the github JSON archive convention."""
+    repo_slug = repo.replace("/", "-").lower()
+    return f"{repo_slug}-{number}"
+
+
+def write_issue_files(
+    wg: str,
+    cache_dir: str,
+    registry: Optional[Registry] = None,
+    verbose: Verbosity = Verbosity.STATUS,
+) -> List[str]:
+    """For each cached `<wg>-github-<repo>.json`, write per-issue .md files.
+
+    Files are named `<wg>-issue-<repo>-<NNN>.md`. Pre-existing files
+    matching the prefix are cleared before writing, so a re-gather
+    cleanly reflects the current archive (no stale issues lying around).
+    """
+    if not os.path.isdir(cache_dir):
+        return []
+
+    # Wipe any stale per-issue files for this WG.
+    prefix = f"{wg}-issue-"
+    for name in os.listdir(cache_dir):
+        if name.startswith(prefix) and name.endswith(".md"):
+            try:
+                os.remove(os.path.join(cache_dir, name))
+            except OSError:
+                pass
+
+    written: List[str] = []
+    for name in sorted(os.listdir(cache_dir)):
+        if not (name.startswith(f"{wg}-github-") and name.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(cache_dir, name), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as err:
+            log(
+                f"Skipping {name}: {type(err).__name__}: {err}",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            continue
+
+        repo = data.get("repo", "")
+        for issue in data.get("issues") or []:
+            number = issue.get("number")
+            if number is None:
+                continue
+            path = os.path.join(
+                cache_dir, f"{wg}-issue-{issue_slug(repo, number)}.md"
+            )
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(_render_issue(repo, issue, registry))
+            written.append(path)
+
+    if written:
+        log(
+            f"Wrote {len(written)} per-issue files",
+            verbose,
+            level=LogLevel.STATUS,
+        )
+    return written

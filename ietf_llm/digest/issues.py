@@ -10,6 +10,7 @@ import json
 import os
 from typing import Optional
 
+from ..gather.issue_files import _participants, issue_slug
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .helpers import _state_is_open
@@ -60,20 +61,27 @@ def _build_issues_digest(
 
             repo = data.get("repo", gh_file)
             issues = data.get("issues", []) or []
-            source_txt = gh_file.replace(".json", ".txt")
 
             fh.write(f"## {repo}\n\n")
-            fh.write(f"_Full text: `{source_txt}` ({len(issues)} issues)_\n\n")
+            fh.write(
+                f"_Per-issue files: "
+                f"`{wg}-issue-{repo.replace('/', '-').lower()}-*.md` "
+                f"({len(issues)} issues)_\n\n"
+            )
 
             if summarizer.active():
                 fh.write(
-                    "| # | State | Title | Labels | Comments | Updated | Summary |\n"
-                    "|---|-------|-------|--------|----------|---------|---------|\n"
+                    "| # | State | Title | Labels | Comments | Updated | "
+                    "Author | Participants | File | Summary |\n"
+                    "|---|-------|-------|--------|----------|---------|"
+                    "--------|--------------|------|---------|\n"
                 )
             else:
                 fh.write(
-                    "| # | State | Title | Labels | Comments | Updated | Author |\n"
-                    "|---|-------|-------|--------|----------|---------|--------|\n"
+                    "| # | State | Title | Labels | Comments | Updated | "
+                    "Author | Participants | File |\n"
+                    "|---|-------|-------|--------|----------|---------|"
+                    "--------|--------------|------|\n"
                 )
 
             # Sort: open first, then by updated desc within each group.
@@ -108,6 +116,12 @@ def _build_issues_digest(
                 else:
                     total_closed += 1
 
+                participants = _participants(issue, registry)
+                # Drop the author since it's already in its own column.
+                others = [p for p in participants if p != raw_author]
+                participants_cell = ", ".join(others).replace("|", "\\|")
+                file_cell = f"`{wg}-issue-{issue_slug(repo, number)}.md`"
+
                 if summarizer.active():
                     body = (issue.get("body") or "").strip()
                     summary = summarizer.summarize(
@@ -116,12 +130,14 @@ def _build_issues_digest(
                     summary = summary.replace("|", "\\|")
                     fh.write(
                         f"| {number} | {state} | {title} | {labels} | "
-                        f"{n_comments} | {updated} | {summary} |\n"
+                        f"{n_comments} | {updated} | {author} | "
+                        f"{participants_cell} | {file_cell} | {summary} |\n"
                     )
                 else:
                     fh.write(
                         f"| {number} | {state} | {title} | {labels} | "
-                        f"{n_comments} | {updated} | {author} |\n"
+                        f"{n_comments} | {updated} | {author} | "
+                        f"{participants_cell} | {file_cell} |\n"
                     )
             fh.write("\n")
 

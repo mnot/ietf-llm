@@ -295,6 +295,10 @@ def _chunk_file(path: str) -> List[Chunk]:
     # Match before "mailing-list" so order doesn't matter.
     if "-thread-" in lower and lower.endswith(".md"):
         return _chunk_thread_file(text, filename)
+    # Per-issue reconstructions share the thread file format (### [N] DATE — Author),
+    # so the same chunker applies.
+    if "-issue-" in lower and lower.endswith(".md"):
+        return _chunk_thread_file(text, filename)
     if "mailing-list" in lower:
         return _chunk_message_file(text, filename)
     if "-github-" in lower and lower.endswith(".txt"):
@@ -320,6 +324,10 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:
             continue
         # Legacy year-dumps duplicate content now in per-thread files.
         if "mailing-list" in name.lower() and name.endswith(".txt"):
+            continue
+        # Per-issue .md files duplicate the content of the github-<repo>.txt
+        # blob; skip the big blob in favour of the structured per-issue files.
+        if "-github-" in name.lower() and name.endswith(".txt"):
             continue
         path = os.path.join(cache_dir, name)
         if not os.path.isfile(path):

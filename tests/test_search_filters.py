@@ -125,8 +125,10 @@ def test_windowed_chunks_have_null_chunk_date_and_are_filtered_out(
 
 
 def _seed_two_files(isolated_home: Path) -> None:
-    """Seed a thread file (dated 2025-01-01) and a github issues file
-    (dated 2026-06-02). Mailing-list year-files are no longer indexed."""
+    """Seed a thread file (dated 2025-01-01) and a per-issue file
+    (dated 2026-06-02). The legacy `<wg>-github-<repo>.txt` blob is
+    no longer indexed — per-issue .md files cover its content with
+    proper per-message chunking."""
     write_cache_file(
         isolated_home, "wg", "wg-thread-2025-01-01-mail-topic.md",
         (
@@ -137,11 +139,14 @@ def _seed_two_files(isolated_home: Path) -> None:
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-github-org-repo.txt",
-        ("Repository: org/repo\n" + "=" * 80 + "\n\n"
-         "Issue #1: Issue topic\n"
-         "Date: Tue, 02 Jun 2026 10:00:00 +0000\n"
-         "State: open\n\nbody\n\n" + "=" * 80 + "\n"),
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1: Issue topic\n\n"
+            "**Repository:** org/repo  \n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-06-02 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
     )
 
 
@@ -161,9 +166,10 @@ def test_file_pattern_filter_restricts_to_github(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%github%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
     )
-    assert all("github" in h.file for h in hits)
+    assert all("-issue-" in h.file for h in hits)
+    assert hits
 
 
 def test_since_filter_includes_only_newer_chunks(isolated_home: Path) -> None:
@@ -174,7 +180,7 @@ def test_since_filter_includes_only_newer_chunks(isolated_home: Path) -> None:
     hits = search(
         "wg", "x", k=10, since="2026-01-01T00:00:00Z", verbose=Verbosity.QUIET,
     )
-    assert all("github" in h.file for h in hits)
+    assert all("-issue-" in h.file for h in hits)
     assert hits
 
 

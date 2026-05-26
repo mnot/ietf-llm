@@ -94,7 +94,7 @@ context.
 `search_corpus` also takes filters:
 
 - `file_pattern` — SQL LIKE pattern (e.g. `"%-thread-%"` for mailing
-  list only, `"%github%"` for issues only, `"draft-%"` for drafts)
+  list only, `"%-issue-%"` for GitHub issues only, `"draft-%"` for drafts)
 - `since` / `until` — ISO dates; restricts to dated chunks
 - `k` — number of hits (default 10)
 
@@ -109,8 +109,12 @@ The cache contains four kinds of files an agent will routinely encounter:
 - **Drafts** (`draft-…-NN.txt`, `rfc<N>.txt`) — self-contained
   documents with their own author/date headers. Use
   `read_file_section` with a line range; don't read whole drafts.
-- **GitHub issue text** (`<wg>-github-<owner>-<repo>.txt`) — one
-  block per issue. Read just the block you need by line range.
+- **Per-issue GitHub files** (`<wg>-issue-<owner>-<repo>-<NNN>.md`) —
+  one file per reconstructed issue, with frontmatter, outline, and
+  one section per comment. Same shape as the per-thread files; read
+  in full when an issue is the answer. The legacy
+  `<wg>-github-<owner>-<repo>.txt` blob is kept only for grep /
+  NotebookLM upload and is NOT in the search index.
 - **Slide / transcript markdown** (`<name>.pdf.txt`,
   `*-transcript.md`) — both carry a meeting-context header at the
   top so chunks deep inside still have attribution.

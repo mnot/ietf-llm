@@ -23,6 +23,7 @@ from .gather.charter import process_charter
 from .digest import generate_digests
 from .gather.drafts import process_documents
 from .gather.github import download_github_issues, process_github_issues
+from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
 from .gather.mbox import sync_mailing_list
 from .gather.meetings import process_meetings
@@ -351,6 +352,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             verbose=verbosity,
             registry=registry,
         )
+
+    # Per-issue .md files — symmetric with per-thread mail files; gives
+    # each GitHub issue a structured reading view with full comment
+    # history attributed to canonical names.
+    write_issue_files(args.wg, cache_dir, registry=registry, verbose=verbosity)
 
     # Per-thread reconstructions (depends on the registry so sender
     # names are already canonical when threads are written).
