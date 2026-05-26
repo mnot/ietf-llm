@@ -367,7 +367,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     write_people_digest(args.wg, cache_dir, registry, verbose=verbosity)
 
     # Timeline digest
-    write_timeline_digest(args.wg, cache_dir, registry, verbose=verbosity)
+    write_timeline_digest(
+        args.wg, cache_dir, registry,
+        months=args.months, verbose=verbosity,
+    )
 
     # Digests
     summarize_model: Any = None

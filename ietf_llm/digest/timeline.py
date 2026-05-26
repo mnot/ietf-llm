@@ -1,15 +1,21 @@
 """Build a chronological event log for a Working Group.
 
 The events we surface answer "what happened, when" without forcing
-an LLM to reconstruct chronology from per-file metadata. Four signal
+an LLM to reconstruct chronology from per-file metadata. Signal
 sources, each contributing dated events:
 
   - **Draft publications** — every `I-D Action: draft-…` thread is one
     publication event (date = the announcement's date).
   - **GitHub issues** — opened + closed events from the archive JSON.
   - **Meetings** — minutes files carry a `Date:` line on row 2.
-  - **WG procedural milestones** — heuristic match on thread subjects:
-    Working Group Last Call, Call for Adoption, etc.
+  - **WG procedural milestones from the mailing list** — heuristic
+    match on thread subjects (Working Group Last Call, Call for
+    Adoption). Used as a fallback when Datatracker has no
+    corresponding authoritative event.
+  - **Datatracker governance** — charter approvals, chair
+    appointments, group state changes, document adoption / IESG /
+    RFC publication. Charter and chair events ignore the `--months`
+    cutoff (foundational context); document events respect it.
 
 Output: `<wg>-_timeline.md`. Events ordered most-recent-first within
 each year, with years as `## YYYY` section headings so the agent
@@ -21,22 +27,18 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from ..gather.datatracker_history import (
+    fetch_doc_events,
+    fetch_group_events,
+    fetch_role_history,
+)
 from ..gather.mail_threads import Thread, build_threads, thread_slug
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
-
-
-@dataclass
-class Event:
-    when: datetime  # tz-aware UTC
-    kind: str  # short slug: draft-published, issue-opened, …
-    title: str  # one-line description for the digest row
-    detail: Optional[str] = None  # optional second-line context
-    link: Optional[str] = None  # filename to point readers at
+from .events import Event
 
 
 # --- Sources ---------------------------------------------------------------
@@ -247,15 +249,43 @@ def _thread_link(thread: Thread) -> str:
 
 
 def build_events(
-    wg: str, cache_dir: str, registry: Registry
+    wg: str,
+    cache_dir: str,
+    registry: Registry,
+    months: int = 12,
+    verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Event]:
-    """Collect events from every source and return them sorted desc."""
+    """Collect events from every source and return them sorted desc.
+
+    `months` bounds the Datatracker document-event window; group-level
+    events (charter, chair appointments) ignore it per policy. The
+    mailing-list-derived events are implicitly bounded by whatever
+    `--months` was used when the mail was fetched.
+    """
     threads = build_threads(wg, registry=registry)
     events: List[Event] = []
     events.extend(_draft_publications(threads))
-    events.extend(_procedural_events(threads))
     events.extend(_meeting_events(cache_dir))
     events.extend(_issue_events(cache_dir, wg, registry))
+
+    # Datatracker is the authoritative source for governance and
+    # document-lifecycle events. If those calls succeed we prefer them
+    # over the mail-subject heuristic for WGLC / adoption.
+    dt_events: List[Event] = []
+    dt_events.extend(fetch_group_events(wg, months, verbose))
+    dt_events.extend(fetch_role_history(wg, verbose))
+    dt_events.extend(fetch_doc_events(wg, months, verbose))
+    events.extend(dt_events)
+
+    # Heuristic WGLC / adoption from mailing list subjects. Datatracker
+    # ought to cover these authoritatively, but we keep the fallback for
+    # WGs whose Datatracker history is sparse or unavailable: a
+    # heuristic-derived event is better than no event. The merge is
+    # additive — if Datatracker AND the subject heuristic both fire on
+    # the same procedural moment, the digest just shows both rows, which
+    # is informative rather than wrong.
+    events.extend(_procedural_events(threads))
+
     events.sort(key=lambda e: e.when, reverse=True)
     return events
 
@@ -264,14 +294,17 @@ def write_timeline_digest(
     wg: str,
     cache_dir: str,
     registry: Registry,
+    months: int = 12,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> Optional[str]:
     """Render `<wg>-_timeline.md`. Returns the file path, or None if empty.
 
     The link column substitutes the actual WG acronym so the file
-    references resolve against the cache.
+    references resolve against the cache. `months` bounds the
+    Datatracker document-event window (governance events always
+    appear, regardless).
     """
-    events = build_events(wg, cache_dir, registry)
+    events = build_events(wg, cache_dir, registry, months=months, verbose=verbose)
     if not events:
         return None
 
@@ -285,9 +318,11 @@ def write_timeline_digest(
         fh.write(
             f"_{len(events)} dated events across {len(by_year)} year(s) — "
             "drafts published, issues opened and closed, meetings held, "
-            "WGLCs and adoption calls. Newest first within each year. "
-            "Heuristic for procedural events: thread-subject pattern "
-            "matches, so phrasing variations may be missed._\n\n"
+            "charter approvals and chair appointments (Datatracker), "
+            "document adoption / IESG / RFC publication (Datatracker), "
+            "WGLCs and adoption calls (Datatracker when available, "
+            "mailing-list subject-line heuristic as fallback). "
+            "Newest first within each year._\n\n"
         )
         for year in sorted(by_year, reverse=True):
             fh.write(f"## {year}\n\n")

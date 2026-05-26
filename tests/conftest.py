@@ -34,19 +34,31 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture(autouse=True)
 def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub the Datatracker role fetch in every test.
+    """Stub Datatracker-touching code paths in every test.
 
-    The real call hits https://datatracker.ietf.org/ — fine in production
-    but a CI-fragility nightmare. Tests that want to exercise roles
-    should monkeypatch this fixture out or directly call
-    registry.add_datatracker_role.
+    The real calls hit https://datatracker.ietf.org/ — fine in production
+    but a CI-fragility nightmare. Tests that want to exercise these
+    surfaces should monkeypatch this fixture out, or directly invoke
+    the relevant Registry method (for roles) or stub `_get_json` in
+    `datatracker_history` (for governance events).
     """
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
+        datatracker_history,
+    )
 
     def _noop(wg: str, registry: object, verbose: object) -> None:  # noqa: ARG001
         return
 
     monkeypatch.setattr(people, "_ingest_datatracker_roles", _noop)
+    # Block HTTP calls from datatracker_history at the network boundary;
+    # the real fetch_* functions still run, they just receive None and
+    # return []. Tests that want to exercise the parsing path
+    # monkeypatch this same attribute to supply canned responses.
+    monkeypatch.setattr(
+        datatracker_history, "_get_json",
+        lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
 
 
 # --- Helpers for building synthetic corpus files ---------------------------

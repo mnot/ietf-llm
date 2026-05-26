@@ -59,7 +59,11 @@ ISO (`"2026-05-01"`).
 | `index`    | File inventory by category          | (none — small)                                                         |
 
 `event_kind` ∈ {`draft-published`, `issue-opened`, `issue-closed`,
-`meeting`, `wglc`, `adoption-call`}. `label` / `author` / `role`
+`meeting`, `wglc`, `adoption-call`, `charter-approved`,
+`chair-appointed`, `group-state`, `doc-adopted`, `doc-iesg`,
+`doc-rfc`, `doc-wglc`}. The latter group is sourced from
+Datatracker; charter approvals and chair appointments span the
+WG's full history (not just the `--months` window). `label` / `author` / `role`
 are substring matches.
 
 ## Substantive questions: `search_corpus(wg, query, k=8)`
