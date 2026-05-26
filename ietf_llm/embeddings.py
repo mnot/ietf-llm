@@ -21,6 +21,7 @@ import os
 import re
 import sqlite3
 import struct
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Tuple
@@ -243,11 +244,18 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         return None
     try:
         models = read_models()
-        if not any(m.get("name") == bare for m in models):
-            log(
-                f"Registering '{bare}' with llm (first-time setup)...",
-                verbose,
-                level=LogLevel.STATUS,
+        first_use = not any(m.get("name") == bare for m in models)
+        if first_use:
+            # Emit on stderr so it clusters with HuggingFace's tqdm bars
+            # and survives stdout redirection. Always shown (even with
+            # --quiet) because a multi-minute network operation deserves
+            # a heads-up.
+            print(
+                f"\nFirst use of '{bare}': downloading model weights from "
+                f"HuggingFace (typically 100-500 MB; one-time, then cached "
+                f"in ~/.cache/huggingface/).\n",
+                file=sys.stderr,
+                flush=True,
             )
             models.append({"name": bare, "trust_remote_code": False})
             write_models(models)
