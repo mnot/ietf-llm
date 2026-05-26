@@ -100,6 +100,16 @@ has landed.
 `list_files(wg)` shows per-file chunk counts so you can bound
 `get_chunk_text` ranges without probing.
 
+## Reading a debate in chronological order
+
+`search_corpus` ranks by relevance, which can hide whether an
+argument is an early objection or a settled position. For a single
+issue's full timeline, open the per-issue file
+(`<wg>-issue-<owner>-<repo>-<N>.md`) directly via
+`read_file_section` or `get_chunk_text` with an `end_chunk_idx`
+range — the file is already chronologically ordered with an outline
+of who spoke when. Cheaper and more accurate than re-querying.
+
 ## Canonical names
 
 Identities are pre-consolidated. "Mark Nottingham" in any digest,

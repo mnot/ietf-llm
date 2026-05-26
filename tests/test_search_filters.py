@@ -380,6 +380,64 @@ def test_issue_file_without_labels_line_gets_null_labels(
 # --- mail-archive year-dump exclusion (consumer feedback #7) --------------
 
 
+def test_tool_search_summarises_uniform_closed_state(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: when every hit is from a closed issue, that's
+    # the answer the user cares about. Surface it once as a result-set
+    # summary instead of N times as a per-hit `[closed]` tag.
+    from ietf_llm import mcp_server
+
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1\n\n"
+            "**State:** CLOSED  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        (
+            "# Issue #2\n\n"
+            "**State:** CLOSED  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-02 10:00 — Bob _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_search("wg", "x", k=10)
+    # Summary line is present and concrete about what "all closed" implies.
+    assert "All " in out and "closed" in out
+    assert "resolved" in out.lower()
+    # And it leads the output — not buried after the hit list.
+    assert out.index("All ") < out.index("score=")
+
+
+def test_tool_search_no_summary_when_states_mixed(isolated_home: Path) -> None:
+    from ietf_llm import mcp_server
+
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1\n\n**State:** OPEN  \n\n## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        (
+            "# Issue #2\n\n**State:** CLOSED  \n\n## Description\n\n"
+            "### [1] 2026-01-02 10:00 — Bob _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_search("wg", "x", k=10)
+    # Mixed state → don't make claims about resolution.
+    assert "All " not in out or "hits are from" not in out
+
+
 def test_mail_archive_year_dump_is_not_indexed(isolated_home: Path) -> None:
     # The legacy `<wg>-mail-archive-YYYY.txt` blob duplicates content
     # already covered by per-thread .md files. It must be excluded

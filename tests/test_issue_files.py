@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ietf_llm.gather.issue_files import (
+    _normalise_html,
     _participants,
     issue_slug,
     write_issue_files,
@@ -210,3 +211,76 @@ def test_malformed_json_is_skipped(isolated_home: Path) -> None:
 
 def test_no_cache_dir_returns_empty(tmp_path: Path) -> None:
     assert write_issue_files("wg", str(tmp_path / "nope")) == []
+
+
+# --- HTML normalisation in issue bodies -----------------------------------
+
+
+def test_normalise_html_passes_through_when_no_tags() -> None:
+    assert _normalise_html("plain prose") == "plain prose"
+    assert _normalise_html("") == ""
+
+
+def test_normalise_html_unrolls_ul_li() -> None:
+    # The literal consumer-feedback case: a `<ul><li>...</li>` list
+    # embedded in a table cell.
+    raw = "Pros: <ul><li>fast</li><li>easy</li><li>clear</li></ul>"
+    out = _normalise_html(raw)
+    assert "<li>" not in out and "</li>" not in out
+    assert "<ul>" not in out and "</ul>" not in out
+    # Each bullet on its own line, so the list-aware snippet detector
+    # can find ≥3 items.
+    assert "- fast" in out
+    assert "- easy" in out
+    assert "- clear" in out
+
+
+def test_normalise_html_unrolls_ol_li() -> None:
+    out = _normalise_html("<ol><li>one</li><li>two</li></ol>")
+    assert "<ol>" not in out and "<li>" not in out
+    assert "- one" in out
+    assert "- two" in out
+
+
+def test_normalise_html_replaces_br_with_newline() -> None:
+    out = _normalise_html("first<br>second<br/>third<br />fourth")
+    # Three breaks → four lines worth of content.
+    assert out.count("\n") >= 3
+    assert "<br" not in out.lower()
+
+
+def test_normalise_html_leaves_unknown_tags_alone() -> None:
+    # Better to leave a tag visible than to misrender something we
+    # haven't tested. <pre> blocks, in particular, should not be
+    # silently mangled.
+    raw = "<pre>code block</pre> <a href='x'>link</a>"
+    out = _normalise_html(raw)
+    assert "<pre>" in out
+    assert "<a href" in out
+
+
+def test_normalise_html_handles_uppercase_tags() -> None:
+    out = _normalise_html("<UL><LI>x</LI><LI>y</LI></UL>")
+    assert "- x" in out
+    assert "- y" in out
+
+
+def test_issue_file_renders_html_lists_as_markdown(isolated_home: Path) -> None:
+    # End-to-end: the issue body has an HTML list; the written file
+    # has it normalised so the list-aware snippet path can engage.
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "org/repo",
+        [
+            make_issue(
+                1, "Has HTML body",
+                body="Options: <ul><li>fast</li><li>easy</li><li>clear</li></ul>",
+            ),
+        ],
+    )
+    write_issue_files("wg", get_wg_file_cache_dir("wg"), verbose=Verbosity.QUIET)
+    text = _issue_text("wg", "org/repo", 1)
+    assert "<ul>" not in text
+    assert "<li>" not in text
+    assert "- fast" in text

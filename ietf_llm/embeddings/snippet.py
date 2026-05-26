@@ -17,7 +17,12 @@ prefers, in order:
 3. The chunk's prose with newlines collapsed to spaces (original
    behaviour).
 
-Output is always single-line and capped at `max_chars`.
+Output is single-line. Structured snippets (tables / lists) get a
+bigger character budget than prose snippets — each row or bullet
+carries more ranking signal per byte than the same number of bytes
+of paragraph text, and the consumer of the snippet (a ranking LLM)
+benefits from seeing the whole structure rather than a truncated
+half.
 """
 
 from __future__ import annotations
@@ -36,17 +41,39 @@ _TABLE_SEP_RE = re.compile(r"^\|[\s\-–—:|]+\|$")
 _LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.+)$")
 
 
-def make_snippet(text: str, max_chars: int = 280) -> str:
-    """Compose a single-line snippet for a search hit."""
+#: Character budget for prose snippets. Tight, since paragraph text
+#: has low information density per byte for ranking purposes.
+PROSE_CHARS = 280
+
+#: Character budget for structured snippets (tables, lists). Larger —
+#: a whole pro/con table or option list is the actual ranking signal,
+#: and truncating it mid-bullet (as consumer feedback noted) costs a
+#: needless round-trip to get_chunk_text.
+STRUCTURED_CHARS = 600
+
+
+def make_snippet(
+    text: str,
+    max_chars: Optional[int] = None,
+) -> str:
+    """Compose a single-line snippet for a search hit.
+
+    `max_chars` lets a caller override the budget — tests use it to
+    pin truncation behaviour. The default lets prose and structured
+    content pick their own appropriate budgets (see PROSE_CHARS,
+    STRUCTURED_CHARS).
+    """
     if not text.strip():
         return ""
-    table = _table_preview(text, max_chars)
+    structured_budget = max_chars if max_chars is not None else STRUCTURED_CHARS
+    prose_budget = max_chars if max_chars is not None else PROSE_CHARS
+    table = _table_preview(text, structured_budget)
     if table:
         return table
-    listing = _list_preview(text, max_chars)
+    listing = _list_preview(text, structured_budget)
     if listing:
         return listing
-    return _prose_preview(text, max_chars)
+    return _prose_preview(text, prose_budget)
 
 
 def _prose_preview(text: str, max_chars: int) -> str:
@@ -103,15 +130,21 @@ def _table_preview(text: str, max_chars: int) -> Optional[str]:
         if len(non_sep) < 2:
             continue  # header only, no data rows worth previewing
         header = non_sep[0]
-        data = non_sep[1:3]
         n_data_total = len(non_sep) - 1
         # Column count: count cells in the header (pipes minus the two
         # borders). max(1, …) so we never report 0 cols on malformed input.
         n_cols = max(1, header.count("|") - 1)
-        preview = (
-            f"[table: {n_data_total} rows × {n_cols} cols] "
-            + " · ".join([header] + data)
-        )
+        prefix = f"[table: {n_data_total} rows × {n_cols} cols] "
+        # Pack rows greedily until they wouldn't fit in the budget — so
+        # a bigger budget actually surfaces more rows, not just more
+        # padding on the same 2 rows.
+        parts: List[str] = [header]
+        for row in non_sep[1:]:
+            candidate = prefix + " · ".join(parts + [row])
+            if len(candidate) > max_chars:
+                break
+            parts.append(row)
+        preview = prefix + " · ".join(parts)
         # Collapse internal whitespace runs that come from padded cells.
         preview = re.sub(r" {2,}", " ", preview)
         if len(preview) > max_chars:

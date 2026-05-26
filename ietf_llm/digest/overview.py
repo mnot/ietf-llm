@@ -142,6 +142,39 @@ def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     return rows[:limit]
 
 
+def _label_frequencies(cache_dir: str, wg: str) -> List[tuple[str, int]]:
+    """Count distinct issue labels across the issues digest.
+
+    Returns `[(label, n), ...]` sorted by frequency descending. The point
+    is to give a consuming LLM a frequency-based glossary so it can
+    weight hits faster and explain unfamiliar labels (`"wglc"`, `"ready
+    to close"`, …) by association. Labels are stored as `"a, b, c"` in
+    the digest's Labels column; we just split and count.
+    """
+    issues_path = _digest_path(cache_dir, wg, "issues")
+    if not os.path.isfile(issues_path):
+        return []
+    with open(issues_path, encoding="utf-8") as fh:
+        sections = parse_md_tables(fh.read())
+    counts: dict[str, int] = {}
+    for section in sections:
+        # Locate the "Labels" column by header so we don't depend on
+        # ordering (the issues digest schema has shifted over time).
+        try:
+            label_idx = section.columns.index("Labels")
+        except ValueError:
+            continue
+        for row in section.rows:
+            if label_idx >= len(row):
+                continue
+            for label in (lbl.strip() for lbl in row[label_idx].split(",")):
+                if not label:
+                    continue
+                counts[label] = counts.get(label, 0) + 1
+    # Sort by count desc, then label asc for stable output.
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def _recent_threads(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     threads_path = _digest_path(cache_dir, wg, "threads")
     if not os.path.isfile(threads_path):
@@ -198,6 +231,21 @@ def build_overview(wg: str, cache_dir: str) -> str:
     if docs:
         out.append(f"## Documents ({len(docs)})")
         out.extend(docs)
+        out.append("")
+
+    labels = _label_frequencies(cache_dir, wg)
+    if labels:
+        # Top labels by frequency — a poor-man's glossary. A consuming
+        # LLM that sees "top-level (8)" or "wglc (3)" can infer the
+        # label's role from its frequency + context. We cap at 12 to
+        # keep this section bounded; the full label set is in the
+        # issues digest.
+        top = labels[:12]
+        out.append(f"## Top issue labels ({len(labels)} total)")
+        out.append(
+            ", ".join(f"`{label}` ({count})" for label, count in top)
+            + ("." if len(labels) <= len(top) else " — _and others._")
+        )
         out.append("")
 
     open_issues = _recent_open_issues(cache_dir, wg, limit=5)

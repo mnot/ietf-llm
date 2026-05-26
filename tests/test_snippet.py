@@ -161,3 +161,41 @@ def test_table_wins_over_list_when_both_present() -> None:
     out = make_snippet(text)
     assert out.startswith("[table:")
     assert "[list" not in out
+
+
+# --- structured snippets get a bigger budget than prose -------------------
+
+
+def test_structured_content_gets_bigger_default_budget_than_prose() -> None:
+    # Consumer feedback: a pro/con table is the actual ranking signal,
+    # but the old 280-char cap truncated it mid-bullet. The structured
+    # budget must be visibly bigger than the prose one so callers see
+    # whole tables / lists.
+    from ietf_llm.embeddings.snippet import PROSE_CHARS, STRUCTURED_CHARS
+    assert STRUCTURED_CHARS > PROSE_CHARS
+
+
+def test_long_table_uses_structured_budget_not_prose_one() -> None:
+    # A 10-row table previously got chopped at ~280 chars; with the
+    # bigger structured budget it should fit a lot more rows.
+    rows = "\n".join(f"| Aspect{i} | Pro{i} reasoning | Con{i} reasoning |" for i in range(8))
+    text = (
+        "Some intro prose here that is short.\n\n"
+        "| Aspect | Pro | Con |\n"
+        "|--------|-----|-----|\n"
+        + rows
+    )
+    out = make_snippet(text)
+    # With prose budget (280) only ~2 data rows would fit. With the
+    # structured budget (600) we should see substantially more.
+    assert len(out) > 280
+    assert out.startswith("[table:")
+
+
+def test_explicit_max_chars_overrides_default_budget() -> None:
+    # Tests that previously asserted the 280-char cap should still
+    # work via an explicit override — the override applies to both
+    # structured and prose paths.
+    text = "| col | val |\n|-----|-----|\n| a | 1 |\n| b | 2 |\n"
+    out = make_snippet(text, max_chars=80)
+    assert len(out) <= 80

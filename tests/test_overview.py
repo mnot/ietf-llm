@@ -127,6 +127,38 @@ def test_overview_footer_keys_calls_to_question_shape(tmp_path: Path) -> None:
     assert 'read_digest("wg"' in out
 
 
+def test_overview_lists_top_labels_with_counts(tmp_path: Path) -> None:
+    # The issues digest's seed has one label per row: x, y, z, a, b, c, d.
+    # Each appears once, so the Top labels section should list them all
+    # with count 1 — proving the frequency aggregator works even when
+    # there are no ties.
+    _seed_digests(tmp_path)
+    out = build_overview("wg", str(tmp_path))
+    assert "Top issue labels" in out
+    # Each label is rendered with its count in backticks.
+    assert "`x` (1)" in out
+    assert "`y` (1)" in out
+
+
+def test_overview_top_labels_aggregates_repeats(tmp_path: Path) -> None:
+    # Seed issues with a label that appears multiple times so the
+    # count is non-trivial.
+    cache = tmp_path
+    (cache / "wg-_issues.md").write_text(
+        "# wg: issues\n\n"
+        "## org/repo\n\n"
+        "| # | State | Title | Labels | Comments | Updated | Author |\n"
+        "|---|-------|-------|--------|----------|---------|--------|\n"
+        "| 1 | OPEN | A | top-level | 1 | 2026-05-14 | Mark |\n"
+        "| 2 | OPEN | B | top-level, vocab | 1 | 2026-05-13 | Mark |\n"
+        "| 3 | OPEN | C | vocab | 1 | 2026-05-12 | Mark |\n"
+    )
+    out = build_overview("wg", str(cache))
+    # top-level appears twice, vocab twice, so both should show "(2)".
+    assert "`top-level` (2)" in out
+    assert "`vocab` (2)" in out
+
+
 def test_overview_footer_baking_in_wg_name(tmp_path: Path) -> None:
     # Different WG name should produce different copy-pasteable calls.
     _seed_digests(tmp_path)

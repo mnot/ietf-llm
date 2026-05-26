@@ -34,6 +34,36 @@ from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 
 
+# Lightweight HTML→Markdown normalisation for issue bodies and comments.
+# GitHub renders HTML inline (especially in tables, where Markdown lists
+# don't work), so authors paste `<ul><li>...</li></ul>` and similar. The
+# raw HTML ends up in our chunk text and snippets, hurts the list-aware
+# snippet detector, and makes the corpus harder to skim. We don't need a
+# full HTML parser — just the four patterns we actually see.
+_HTML_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_HTML_LI_RE = re.compile(r"<li[^>]*>\s*", re.IGNORECASE)
+_HTML_LI_CLOSE_RE = re.compile(r"\s*</li>", re.IGNORECASE)
+_HTML_LIST_TAG_RE = re.compile(r"</?(?:ul|ol)[^>]*>", re.IGNORECASE)
+
+
+def _normalise_html(text: str) -> str:
+    """Convert the small set of HTML constructs we routinely see in
+    GitHub issue bodies into Markdown-ish equivalents.
+
+    Handles: `<br>` / `<br/>` → newline; `<li>foo</li>` → `- foo`;
+    surrounding `<ul>` / `<ol>` → stripped. Anything else passes through
+    unchanged — better to leave a tag visible than to misrender a
+    construct we haven't tested.
+    """
+    if not text or "<" not in text:
+        return text
+    out = _HTML_BR_RE.sub("\n", text)
+    out = _HTML_LI_RE.sub("\n- ", out)
+    out = _HTML_LI_CLOSE_RE.sub("", out)
+    out = _HTML_LIST_TAG_RE.sub("", out)
+    return out
+
+
 def _canon_github(registry: Optional[Registry], login: str) -> str:
     if not login:
         return "(unknown)"
@@ -112,7 +142,7 @@ def _render_issue(
 
     out.append("## Description\n")
     out.append(f"### [1] {opened} — {author_name} _(opened issue)_\n")
-    body = (issue.get("body") or "").strip()
+    body = _normalise_html((issue.get("body") or "").strip())
     out.append(body or "_(no description provided)_")
     out.append("")
 
@@ -121,7 +151,7 @@ def _render_issue(
         for idx, comment in enumerate(comments, 2):
             c_when = _format_iso_to_minute(comment.get("createdAt"))
             c_author = _canon_github(registry, comment.get("author") or "")
-            c_body = (comment.get("body") or "").strip()
+            c_body = _normalise_html((comment.get("body") or "").strip())
             out.append(f"### [{idx}] {c_when} — {c_author}\n")
             out.append(c_body or "_(empty comment)_")
             out.append("")

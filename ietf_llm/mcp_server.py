@@ -202,6 +202,26 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
             f"(no results — has `ietf-llm {wg} --embed` been run?)",
         )
     lines = []
+    # Result-set state summary. When every hit comes from a closed issue,
+    # the answer the consumer cares about is "this debate is resolved"
+    # — surfacing that once at the top stops an LLM from presenting an
+    # archived debate as if it were live (and saves the per-hit `[closed]`
+    # tags from being noise on a uniform result set).
+    states = {h.state for h in hits if h.state}
+    files_with_state = sum(1 for h in hits if h.state)
+    if states and len(states) == 1 and files_with_state == len(hits):
+        only_state = next(iter(states))
+        lines.append(
+            f"_All {len(hits)} hits are from {only_state} issues. "
+            + (
+                "This topic appears resolved; closed issues hold the "
+                "chairs' resolution."
+                if only_state == "closed"
+                else "These issues are still under discussion."
+            )
+            + "_"
+        )
+        lines.append("")
     for i, hit in enumerate(hits, 1):
         loc = (
             f" lines={hit.start_line}-{hit.end_line}"
@@ -444,18 +464,17 @@ def main() -> None:
 
     @server.tool()
     def list_working_groups() -> str:
-        """List IETF Working Groups (WGs) gathered into the local
-        ietf-llm corpus. Use this first if you don't know which
-        `<wg>` shortname to pass to the other ietf-llm tools.
+        """IETF Working Group ietf-llm directory: which WGs are gathered
+        locally. Use this first when you don't know the `<wg>` shortname
+        the user means.
         """
         return tool_list_working_groups()
 
     @server.tool()
     def overview(wg: str) -> str:
-        """IETF Working Group orientation — one call returns chairs/ADs,
-        active drafts, the 5 most recently updated open issues, the 5
-        most recent mailing list threads, and the latest meeting + latest
-        draft publication.
+        """IETF Working Group ietf-llm orientation: chairs/ADs, active
+        drafts, top open issues, recent mailing list threads, latest
+        meeting and latest draft publication — one call.
 
         **Best first call for ORIENTING / STRUCTURAL questions** about
         an IETF WG by shortname (`httpbis`, `quic`, `tls`, `aipref`, …):
@@ -484,9 +503,9 @@ def main() -> None:
 
     @server.tool()
     def list_files(wg: str) -> str:
-        """List files in an IETF Working Group's gathered ietf-llm cache.
+        """IETF Working Group ietf-llm cache inventory: files with sizes
+        and chunk counts.
 
-        Each row shows size, chunk count (where indexed), and filename.
         `(digest)` rows are the per-WG summary digests — read them via
         `read_digest`, not `get_chunk_text`.
         """
@@ -506,10 +525,10 @@ def main() -> None:
         min_messages: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> str:
-        """Filtered catalogue read of an IETF Working Group's gathered
-        digests (issues, mailing list threads, participants, timeline,
-        index). The high-value catalogue tool — pair it with `overview`
-        for "tell me about this WG"-shaped questions.
+        """IETF Working Group ietf-llm catalogue read with filters:
+        issues, threads, people, timeline, index. The high-value
+        catalogue tool — pair with `overview` for "tell me about this
+        WG"-shaped questions.
 
         kind = "index"    — corpus inventory + how-to-use pointer
              | "issues"   — one row per GitHub issue. Filters: state
@@ -550,11 +569,11 @@ def main() -> None:
         label: Optional[str] = None,
         state: Optional[str] = None,
     ) -> str:
-        """Semantic search across an IETF Working Group's gathered
-        ietf-llm corpus — mailing list threads, GitHub issues, drafts,
-        RFCs, slides, transcripts, minutes. Returns top-k chunks with
-        file, chunk_idx, title, score, snippet, line range, and (for
-        issue chunks) the issue's GitHub labels + open/closed state.
+        """IETF Working Group ietf-llm semantic search across mailing
+        list threads, GitHub issues, drafts, RFCs, slides, transcripts,
+        and minutes. Returns top-k chunks with file, chunk_idx, title,
+        score, snippet, line range, and (for issue chunks) the issue's
+        GitHub labels + open/closed state.
 
         Use for substantive "what was said about X?" / "what's the WG's
         stance on Y?" questions. Pivot with `get_chunk_text` or
@@ -592,9 +611,10 @@ def main() -> None:
         chunk_idx: int,
         end_chunk_idx: Optional[int] = None,
     ) -> str:
-        """Full text of an indexed chunk from an IETF Working Group's
-        ietf-llm corpus — typically a single mailing list message,
-        a GitHub issue comment, or a draft section.
+        """IETF Working Group ietf-llm chunk reader: full text of a
+        chunk (or a consecutive range) returned by `search_corpus` —
+        typically a single mailing list message, an issue comment,
+        or a draft section.
 
         Pass `end_chunk_idx` to fetch a consecutive range in one call
         (e.g. an entire short thread). Range size is capped at
@@ -612,10 +632,10 @@ def main() -> None:
         start_line: int = 1,
         max_lines: int = MAX_LINES_DEFAULT,
     ) -> str:
-        """Bounded read of any file in an IETF Working Group's ietf-llm
-        cache (per-thread files, per-issue files, drafts, RFCs, slides,
-        transcripts, minutes). Capped at 2000 lines per call so the
-        context window can't be blown by accident. Prefer
+        """IETF Working Group ietf-llm file reader: bounded read of any
+        cache file (per-thread files, per-issue files, drafts, RFCs,
+        slides, transcripts, minutes). Capped at 2000 lines per call
+        so the context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.
         """
         return tool_read_file_section(wg, file, start_line, max_lines)
