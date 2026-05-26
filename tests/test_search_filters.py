@@ -260,6 +260,102 @@ def test_label_filter_excludes_unlabelled_chunks(isolated_home: Path) -> None:
     assert hits == []
 
 
+def test_issue_chunks_carry_normalised_state(isolated_home: Path) -> None:
+    # The seed file uses uppercase "OPEN" in the **State:** line; the
+    # chunker lowercases for predictable filtering.
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    for hit in hits:
+        assert hit.state == "open"
+
+
+def test_thread_chunks_have_no_state(isolated_home: Path) -> None:
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=10, file_pattern="%-thread-%", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all(h.state is None for h in hits)
+
+
+def test_state_filter_excludes_other_states(isolated_home: Path) -> None:
+    # Seed two issues: one OPEN, one CLOSED. state="closed" should
+    # return only the closed one.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1: Open question\n\n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nopen body\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        (
+            "# Issue #2: Resolved question\n\n"
+            "**State:** CLOSED  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-02 10:00 — Bob _(opened issue)_\n\nclosed body\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=20, state="closed", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all(h.state == "closed" for h in hits)
+    assert all("org-repo-2" in h.file for h in hits)
+
+
+def test_state_filter_excludes_unstated_chunks(isolated_home: Path) -> None:
+    # Threads and drafts have state=NULL — a state filter must not
+    # return them.
+    _seed_two_files(isolated_home)
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=20, state="open", verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all("-thread-" not in h.file for h in hits)
+
+
+def test_state_and_label_filters_compose(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-3.md",
+        (
+            "# Issue #3: Closed top-level\n\n"
+            "**State:** CLOSED  \n"
+            "**Labels:** top-level, ready to close  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-03 10:00 — Carol _(opened issue)_\n\nbody\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-4.md",
+        (
+            "# Issue #4: Closed unrelated\n\n"
+            "**State:** CLOSED  \n"
+            "**Labels:** something-else  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-04 10:00 — Dan _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search(
+        "wg", "x", k=20,
+        state="closed", label="top-level",
+        verbose=Verbosity.QUIET,
+    )
+    assert hits
+    assert all("org-repo-3" in h.file for h in hits)
+
+
 def test_issue_file_without_labels_line_gets_null_labels(
     isolated_home: Path,
 ) -> None:

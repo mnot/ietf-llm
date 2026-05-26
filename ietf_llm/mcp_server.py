@@ -166,6 +166,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     since: Optional[str] = None,
     until: Optional[str] = None,
     label: Optional[str] = None,
+    state: Optional[str] = None,
 ) -> str:
     hits = search(
         wg,
@@ -175,6 +176,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         since=since,
         until=until,
         label=label,
+        state=state,
         verbose=Verbosity.QUIET,
     )
     if not hits:
@@ -188,13 +190,15 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
             if hit.start_line is not None
             else ""
         )
+        # State goes on the header line — it's a one-word signal that
+        # changes how the caller should weight the hit. Labels (longer
+        # and only sometimes present) get their own line below.
+        state_tag = f"  [{hit.state}]" if hit.state else ""
         lines.append(
             f"[{i}] score={hit.score:.3f}  file={hit.file}  "
-            f"chunk={hit.chunk_idx}{loc}"
+            f"chunk={hit.chunk_idx}{loc}{state_tag}"
         )
         lines.append(f"     {hit.title}")
-        # Labels are doing curation work the WG already did; surface
-        # them on the same line they'd be useful for ranking decisions.
         if hit.labels:
             lines.append(f"     labels: {hit.labels}")
         lines.append(f"     {hit.snippet}")
@@ -522,12 +526,13 @@ def main() -> None:
         since: Optional[str] = None,
         until: Optional[str] = None,
         label: Optional[str] = None,
+        state: Optional[str] = None,
     ) -> str:
         """Semantic search across an IETF Working Group's gathered
         ietf-llm corpus — mailing list threads, GitHub issues, drafts,
         RFCs, slides, transcripts, minutes. Returns top-k chunks with
         file, chunk_idx, title, score, snippet, line range, and (for
-        issue chunks) the issue's GitHub labels.
+        issue chunks) the issue's GitHub labels + open/closed state.
 
         Use for substantive "what was said about X?" / "what's the WG's
         stance on Y?" questions. Pivot with `get_chunk_text` or
@@ -539,6 +544,10 @@ def main() -> None:
         semantic ranking alone. Pair with `kind="issues"` in `read_digest`
         to get the issue catalogue, then `search_corpus` for depth inside
         the matching issues.
+
+        `state="closed"` narrows to resolved issues — prefer this when
+        the user wants the WG's settled position rather than ongoing
+        debate. `state="open"` is the inverse: only unresolved threads.
         Requires `ietf-llm <wg> --embed` to have been run.
 
         Optional facets:
@@ -551,7 +560,7 @@ def main() -> None:
         """
         return tool_search(
             wg, query, k=k, file_pattern=file_pattern,
-            since=since, until=until, label=label,
+            since=since, until=until, label=label, state=state,
         )
 
     @server.tool()

@@ -47,6 +47,11 @@ class Chunk:
     # same value — the file-level labels — so a `LIKE %label%` filter at
     # search time can shortlist issues by topic.
     labels: Optional[str] = None
+    # Normalised issue state ('open' / 'closed') for chunks from a
+    # per-issue file. NULL everywhere else. Lets search prioritise the
+    # chairs' resolution over older mid-debate threads, or surface only
+    # things the WG hasn't yet decided.
+    state: Optional[str] = None
 
 
 def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
@@ -123,6 +128,13 @@ _ISSUE_LABELS_RE = re.compile(
     r"^\*\*Labels:\*\*\s*(.+?)\s*$", re.MULTILINE
 )
 
+# Per-issue file state line (issue_files._render_issue renders uppercase
+# "OPEN" / "CLOSED" but tolerate any case in case the format ever shifts):
+#   "**State:** OPEN  "
+_ISSUE_STATE_RE = re.compile(
+    r"^\*\*State:\*\*\s*(\S+)", re.MULTILINE
+)
+
 
 def _extract_issue_labels(text: str) -> Optional[str]:
     """Pull the `**Labels:**` line out of a per-issue file's header
@@ -141,6 +153,19 @@ def _extract_issue_labels(text: str) -> Optional[str]:
     parts = [p.strip().lower() for p in raw.split(",")]
     parts = [p for p in parts if p]
     return ",".join(parts) if parts else None
+
+
+def _extract_issue_state(text: str) -> Optional[str]:
+    """Pull the `**State:**` line and normalise to 'open' / 'closed'.
+
+    Anything else (an unexpected state string) is returned lowercased
+    as-is rather than dropped — better to surface a surprise than to
+    silently swallow it. Returns None if the file has no state line.
+    """
+    match = _ISSUE_STATE_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).strip().lower() or None
 
 
 def _record_spans(text: str) -> List[tuple[int, int]]:
@@ -281,12 +306,13 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         # fall back to windowed chunking so something is still indexed.
         return _chunk_windowed(text, filename)
 
-    # Issue files have a `**Labels:**` header line; thread files don't.
-    # Stamping the file's labels onto every chunk lets a search-time
-    # `label="top-level"` filter shortlist by topic before semantic ranking.
-    labels = (
-        _extract_issue_labels(text) if "-issue-" in filename.lower() else None
-    )
+    # Issue files have `**Labels:**` and `**State:**` header lines;
+    # thread files don't. Stamping the file-level values onto every
+    # chunk lets search-time filters (label="top-level", state="closed")
+    # shortlist by curation + resolution before semantic ranking.
+    is_issue = "-issue-" in filename.lower()
+    labels = _extract_issue_labels(text) if is_issue else None
+    state = _extract_issue_state(text) if is_issue else None
 
     # Header (subject + outline) is everything before the first message.
     header_end = matches[0].start()
@@ -301,6 +327,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 start_line=1,
                 end_line=_line_at(line_starts, max(header_end - 1, 0)),
                 labels=labels,
+                state=state,
             )
         )
 
@@ -324,6 +351,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 end_line=_line_at(line_starts, max(end_off - 1, 0)),
                 chunk_date=chunk_date,
                 labels=labels,
+                state=state,
             )
         )
     return chunks

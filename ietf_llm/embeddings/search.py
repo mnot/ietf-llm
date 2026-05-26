@@ -42,6 +42,10 @@ class Hit:
     # Surfaced in the search output so the caller can see at-a-glance
     # why an issue chunk matched a topical query.
     labels: Optional[str] = None
+    # Normalised issue state ('open' / 'closed') for issue chunks; None
+    # everywhere else. Helps callers prefer the chairs' resolution over
+    # older mid-debate threads.
+    state: Optional[str] = None
 
 
 def build_index(
@@ -129,8 +133,8 @@ def build_index(
             cur.execute(
                 "INSERT INTO chunks "
                 "(file, chunk_idx, title, text, embedding, "
-                " start_line, end_line, chunk_date, labels) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " start_line, end_line, chunk_date, labels, state) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
@@ -141,6 +145,7 @@ def build_index(
                     chunk.end_line,
                     chunk.chunk_date,
                     chunk.labels,
+                    chunk.state,
                 ),
             )
         cur.execute(
@@ -165,7 +170,7 @@ def build_index(
     return total_new
 
 
-def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     wg: str,
     query: str,
     model_name: Optional[str] = None,
@@ -174,6 +179,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     since: Optional[str] = None,
     until: Optional[str] = None,
     label: Optional[str] = None,
+    state: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Hit]:
     """Return top-k chunks for a query. Returns [] if no index exists.
@@ -188,6 +194,10 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
       - label: substring match against the (lowercased, comma-separated)
         labels column. Restricts to issue chunks tagged with that
         GitHub label — the curation work the WG already did.
+      - state: 'open' or 'closed' — restricts to issue chunks with
+        that resolution status. Useful for preferring the chairs'
+        decision (closed issues) over older mid-debate threads, or
+        vice versa.
     """
     if not os.path.exists(_db_path(wg)):
         log(
@@ -247,10 +257,15 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         # at index time so the caller doesn't have to match case.
         where_clauses.append("labels IS NOT NULL AND labels LIKE ?")
         where_args.append(f"%{label.lower()}%")
+    if state:
+        # Exact match on normalised state. NULL chunks (drafts, threads,
+        # transcripts) are implicitly excluded.
+        where_clauses.append("state = ?")
+        where_args.append(state.lower())
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, "
-        "start_line, end_line, labels "
+        "start_line, end_line, labels, state "
         f"FROM chunks{where_sql}",
         where_args,
     )
@@ -265,7 +280,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     for i in top:
         (
             file, chunk_idx, title, text, _,
-            start_line, end_line, labels,
+            start_line, end_line, labels, state_val,
         ) = rows[i]
         snippet = text.strip().replace("\n", " ")
         if len(snippet) > 280:
@@ -280,6 +295,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
                 start_line=int(start_line) if start_line is not None else None,
                 end_line=int(end_line) if end_line is not None else None,
                 labels=labels if labels else None,
+                state=state_val if state_val else None,
             )
         )
     conn.close()
