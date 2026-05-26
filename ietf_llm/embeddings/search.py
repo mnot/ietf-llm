@@ -22,6 +22,7 @@ import numpy as np
 from ..utils import LogLevel, Verbosity, log
 from .chunking import _chunk_file, _eligible_files
 from .models import DEFAULT_EMBED_MODEL, _get_embed_model
+from .snippet import make_snippet
 from .storage import _db_path, _open_db, _pack, _unpack_matrix
 
 
@@ -282,9 +283,9 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             file, chunk_idx, title, text, _,
             start_line, end_line, labels, state_val,
         ) = rows[i]
-        snippet = text.strip().replace("\n", " ")
-        if len(snippet) > 280:
-            snippet = snippet[:277] + "..."
+        # Structure-aware snippet: prefer tables / lists when present,
+        # since those carry the most ranking information per byte.
+        snippet = make_snippet(text)
         hits.append(
             Hit(
                 score=float(scores[i]),
