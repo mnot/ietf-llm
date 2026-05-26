@@ -125,11 +125,33 @@ def test_bulleted_list_of_three_items_is_previewed() -> None:
     assert "• one" in out and "• two" in out and "• three" in out
 
 
-def test_long_list_shows_count_and_first_three() -> None:
+def test_short_list_items_pack_into_full_budget() -> None:
+    # 10 short items all fit in the structured budget — greedy packing
+    # shows every one rather than wasting space on a "+ 7 more" tail
+    # the consumer would have to fetch the chunk to see past.
     text = "\n".join(f"- item {i}" for i in range(10))
     out = make_snippet(text)
     assert out.startswith("[list: 10 items]")
-    assert "+ 7 more" in out
+    # Every item appears in the preview.
+    for i in range(10):
+        assert f"• item {i}" in out
+    # No "+ N more" tail when everything fit.
+    assert "more" not in out
+
+
+def test_long_list_truncates_only_what_doesnt_fit() -> None:
+    # When items don't all fit, show as many as the budget allows
+    # plus a "+ remaining more" tail naming the exact remainder.
+    text = "\n".join(f"- this item has a fairly long description {i}" for i in range(20))
+    out = make_snippet(text)
+    assert out.startswith("[list: 20 items]")
+    assert "more" in out
+    # The "more" count is the actual remainder, not a hard-coded N-3.
+    import re as _re  # local alias to avoid clashing with module-top re
+    match = _re.search(r"\+ (\d+) more", out)
+    assert match is not None
+    shown_count = sum(1 for _ in _re.finditer(r"•", out))
+    assert int(match.group(1)) == 20 - shown_count
 
 
 def test_numbered_list_also_qualifies() -> None:

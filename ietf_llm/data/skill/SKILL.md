@@ -102,6 +102,10 @@ Pivot to the source with:
 - `fetch_by_url(wg, url)` — when the user pastes a GitHub issue
   URL or an IETF mail-archive permalink, this resolves it to the
   cached chunk content without you needing to know the file name.
+  Also reach for it when a chunk you're reading **cites** a URL
+  inline (a quoted message link, a referenced issue) and you want
+  the underlying content rather than the cited paraphrase —
+  cheaper than searching, and the citation isn't always faithful.
 
 `search_corpus` also takes `since` / `until`, `file_pattern` (SQL
 LIKE: `"%-thread-%"`, `"%-issue-%"`, `"draft-%"`), `label`
@@ -151,10 +155,13 @@ consumer reading the result top-to-bottom sees how the debate
 evolved. Scope to one issue with `file_pattern="%-issue-…-N.md"`
 or to a time window with `since` / `until`.
 
-If you want the *whole* issue end-to-end (not just hits matching a
-query), read the per-issue file directly via `read_file_section` or
-`get_chunk_text(..., end_chunk_idx=N)` — the file is already in
-chronological order with an outline of who spoke when.
+If you want the *whole* issue or thread end-to-end (not just hits
+matching a query), use `read_file_section(wg, file, start_line=1)`
+on the per-issue / per-thread file — it's already in chronological
+order with an outline of who spoke when, and the line cap is high
+enough to cover virtually every issue in one call. Reach for
+`get_chunks_batch` only when you need chunks from *multiple* files
+in one round-trip.
 
 ## Canonical names
 

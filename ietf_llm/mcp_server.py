@@ -45,7 +45,12 @@ from .freshness import staleness_warning
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400
-MAX_LINES_HARD_CAP = 2000
+# Raised from 2000 once consumers reported hitting it on long issue
+# threads. 5000 covers virtually every per-issue file in one call —
+# even high-traffic issues like httpbis adoption debates cap out
+# around 3-4k lines. Still a real ceiling so a runaway file can't
+# blow the context window in one read.
+MAX_LINES_HARD_CAP = 5000
 # Cap on how many chunks one get_chunk_text call can return when a range
 # is requested. Generous — chunks are bounded to MAX_CHUNK_CHARS (8 KB)
 # each, so 20 is ~160 KB worst case but typically far less.

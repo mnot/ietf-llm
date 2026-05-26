@@ -181,15 +181,34 @@ def _list_preview(text: str, max_chars: int) -> Optional[str]:
     if len(items) < 3:
         return None
     count = len(items)
-    shown = [_truncate(it, 60) for it in items[:3]]
-    suffix = f" + {count - 3} more" if count > 3 else ""
-    preview = (
-        f"[list: {count} items] "
-        + " · ".join(f"• {it}" for it in shown)
-        + suffix
-    )
+    # Pack greedily into the budget, mirroring _table_preview. The old
+    # hard-coded "first 3 + (N - 3) more" wasted budget on short items
+    # and obscured content the consumer specifically needed — feedback
+    # cited a 20-item list where they had to fetch the full chunk just
+    # to see what was past item 3. Per-item truncation at 60 chars
+    # keeps individual cells readable.
+    prefix = f"[list: {count} items] "
+    shown: List[str] = []
+    for item in items:
+        truncated_item = _truncate(item, 60)
+        candidate = prefix + " · ".join(
+            [*[f"• {x}" for x in shown], f"• {truncated_item}"]
+        )
+        # Reserve budget for a potential "+N more" tail so we don't
+        # squeeze it out at the very end.
+        reserve = len(f" + {count - len(shown) - 1} more") if shown else 0
+        if len(candidate) + reserve > max_chars:
+            break
+        shown.append(truncated_item)
+    if not shown:
+        # Even one item didn't fit. Fall back to the first item plus
+        # the count tag — better than no list preview at all.
+        shown = [_truncate(items[0], max_chars - len(prefix) - 4)]
+    remaining = count - len(shown)
+    suffix = f" + {remaining} more" if remaining > 0 else ""
+    preview = prefix + " · ".join(f"• {it}" for it in shown) + suffix
     if len(preview) > max_chars:
-        preview = preview[: max_chars - 3] + "..."
+        preview = preview[: max_chars - len(" [truncated]")] + " [truncated]"
     return preview
 
 
