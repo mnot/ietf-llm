@@ -81,7 +81,12 @@ def _prose_preview(text: str, max_chars: int) -> str:
     # Collapse runs of whitespace produced by joined paragraphs.
     snippet = re.sub(r"\s+", " ", snippet)
     if len(snippet) > max_chars:
-        snippet = snippet[: max_chars - 3] + "..."
+        # Explicit truncation marker: the consumer's previous failure
+        # mode was re-fetching a chunk because they couldn't tell if
+        # the snippet was complete. "..." alone was ambiguous (could be
+        # part of the prose). The bracketed `[truncated]` tag is
+        # unmistakable.
+        snippet = snippet[: max_chars - len(" [truncated]")] + " [truncated]"
     return snippet
 
 
@@ -147,8 +152,13 @@ def _table_preview(text: str, max_chars: int) -> Optional[str]:
         preview = prefix + " · ".join(parts)
         # Collapse internal whitespace runs that come from padded cells.
         preview = re.sub(r" {2,}", " ", preview)
-        if len(preview) > max_chars:
-            preview = preview[: max_chars - 3] + "..."
+        # The `[table: R rows × C cols]` prefix already names the total
+        # row count. If `parts` doesn't contain every row, append a
+        # truncation marker so the consumer knows the chunk has more
+        # rows than what's shown — saving a redundant get_chunk_text
+        # call to verify completeness.
+        if len(parts) - 1 < n_data_total:
+            preview = preview + " [truncated]"
         return preview
     return None
 

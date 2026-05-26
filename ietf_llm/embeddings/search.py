@@ -52,6 +52,12 @@ class Hit:
     # chunks, None for drafts/transcripts. Surfaced in MCP search
     # output so a citing LLM doesn't have to reconstruct it.
     url: Optional[str] = None
+    # Issue-cluster signals (issue chunks only). `duplicate_of` is the
+    # #N this issue is marked as a dup of (file-level); the consuming
+    # LLM can skip reading dup issues. `closing_rationale` is the last
+    # comment on a closed issue, useful as a one-line "why" indicator.
+    duplicate_of: Optional[int] = None
+    closing_rationale: Optional[str] = None
 
 
 def build_index(
@@ -139,8 +145,9 @@ def build_index(
             cur.execute(
                 "INSERT INTO chunks "
                 "(file, chunk_idx, title, text, embedding, "
-                " start_line, end_line, chunk_date, labels, state, url) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " start_line, end_line, chunk_date, labels, state, "
+                " url, duplicate_of, closing_rationale) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
@@ -153,6 +160,8 @@ def build_index(
                     chunk.labels,
                     chunk.state,
                     chunk.url,
+                    chunk.duplicate_of,
+                    chunk.closing_rationale,
                 ),
             )
         cur.execute(
@@ -284,7 +293,8 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, "
-        "start_line, end_line, labels, state, chunk_date, url "
+        "start_line, end_line, labels, state, chunk_date, url, "
+        "duplicate_of, closing_rationale "
         f"FROM chunks{where_sql}",
         where_args,
     )
@@ -307,6 +317,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         (
             file, chunk_idx, title, text, _,
             start_line, end_line, labels, state_val, _chunk_date, url,
+            duplicate_of, closing_rationale,
         ) = rows[i]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
@@ -323,6 +334,10 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
                 labels=labels if labels else None,
                 state=state_val if state_val else None,
                 url=url if url else None,
+                duplicate_of=(
+                    int(duplicate_of) if duplicate_of is not None else None
+                ),
+                closing_rationale=closing_rationale if closing_rationale else None,
             )
         )
     conn.close()

@@ -61,6 +61,11 @@ class Chunk:
     # - everything else: NULL. Surfaced inline in search hits so the
     #   caller can cite without reconstructing.
     url: Optional[str] = None
+    # Issue-cluster signals (per-issue files only). Every chunk from
+    # the same issue file carries the same values so a search hit
+    # reveals "this is a duplicate" / "closed because…" inline.
+    duplicate_of: Optional[int] = None
+    closing_rationale: Optional[str] = None
 
 
 def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
@@ -148,6 +153,19 @@ _ISSUE_STATE_RE = re.compile(
 #   "**URL:** https://github.com/<owner>/<repo>/issues/<N>  "
 _ISSUE_URL_RE = re.compile(r"^\*\*URL:\*\*\s*(\S+)", re.MULTILINE)
 
+# Per-issue file duplicate-of line:
+#   "**Duplicate of:** #155"
+_ISSUE_DUP_RE = re.compile(r"^\*\*Duplicate of:\*\*\s*#?(\d+)", re.MULTILINE)
+
+# Per-issue file closing-rationale block. The renderer emits
+# "**Closing rationale:**\n\n_by Author on Date:_\n\n> quoted body"
+# We capture everything up to the next blank line + ## section, since
+# the rationale is one block of markdown.
+_ISSUE_RATIONALE_RE = re.compile(
+    r"^\*\*Closing rationale:\*\*\s*\n+(.+?)(?=\n\n##|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
 # Per-thread message Archived-At line (mail_threads._render_thread).
 # One per message section, italicised inline form:
 #   "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/<list>/<tok>/"
@@ -182,6 +200,28 @@ def _extract_issue_url(text: str) -> Optional[str]:
     (e.g. a `repo` field without a `/` so issue_files skipped the URL).
     """
     match = _ISSUE_URL_RE.search(text)
+    return match.group(1).strip() if match else None
+
+
+def _extract_issue_duplicate_of(text: str) -> Optional[int]:
+    """Pull the `**Duplicate of:**` line and return its #N as an int."""
+    match = _ISSUE_DUP_RE.search(text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_issue_rationale(text: str) -> Optional[str]:
+    """Pull the `**Closing rationale:**` block out of a per-issue file.
+
+    Returns the block content (the formatted markdown beneath the
+    label), suitable for direct inclusion in search-hit output. None
+    if the issue isn't closed or carries no comments.
+    """
+    match = _ISSUE_RATIONALE_RE.search(text)
     return match.group(1).strip() if match else None
 
 
@@ -359,6 +399,15 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     # section carries its own `_Archived-At:_` line, so we pull the
     # URL per-chunk below.
     file_url = _extract_issue_url(text) if is_issue else None
+    # Issue-cluster signals: duplicate-of marker and closing rationale.
+    # File-level: every chunk from this issue inherits them, so a
+    # search hit reveals "this is a dup" or "closed because…" inline.
+    duplicate_of = (
+        _extract_issue_duplicate_of(text) if is_issue else None
+    )
+    closing_rationale = (
+        _extract_issue_rationale(text) if is_issue else None
+    )
 
     # Header (subject + outline) is everything before the first message.
     header_end = matches[0].start()
@@ -375,6 +424,8 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 labels=labels,
                 state=state,
                 url=file_url,
+                duplicate_of=duplicate_of,
+                closing_rationale=closing_rationale,
             )
         )
 
@@ -405,6 +456,8 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
                 labels=labels,
                 state=state,
                 url=chunk_url,
+                duplicate_of=duplicate_of,
+                closing_rationale=closing_rationale,
             )
         )
     return chunks

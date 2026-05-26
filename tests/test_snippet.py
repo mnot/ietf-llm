@@ -30,11 +30,14 @@ def test_empty_chunk_returns_empty_string() -> None:
     assert make_snippet("   \n\n\t") == ""
 
 
-def test_long_prose_is_truncated_with_ellipsis() -> None:
+def test_long_prose_is_truncated_with_marker() -> None:
+    # Explicit `[truncated]` marker — consumer feedback: the old
+    # ellipsis-only form was ambiguous (could be part of the prose,
+    # leaving the consumer unsure whether to re-fetch).
     text = "word " * 200
     out = make_snippet(text, max_chars=50)
     assert len(out) == 50
-    assert out.endswith("...")
+    assert out.endswith("[truncated]")
 
 
 def test_prose_collapses_internal_whitespace() -> None:

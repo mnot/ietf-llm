@@ -30,11 +30,17 @@ import os
 import re
 import sqlite3
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .digest.overview import _label_frequencies, build_overview
 from .digest.query import query_digest
-from .embeddings import _get_embed_model, chunk_counts, get_chunk, search
+from .embeddings import (
+    _get_embed_model,
+    chunk_counts,
+    find_chunks_by_url,
+    get_chunk,
+    search,
+)
 from .freshness import staleness_warning
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
@@ -95,6 +101,31 @@ def _with_freshness(wg: str, body: str) -> str:
     if not warning:
         return body
     return f"{warning}\n\n{body}"
+
+
+def _flatten_rationale(rationale: str, limit: int) -> str:
+    """Strip blockquote markers and metadata lines for a one-line
+    preview of a closing rationale. The full formatted rationale lives
+    in the per-issue file; this is just the inline hint in search
+    output, so we want the substance of the comment, not the chrome.
+    """
+    cleaned: List[str] = []
+    for line in rationale.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Drop the "_by Author on Date:_" italic byline and the
+        # leading `> ` blockquote markers — both are formatting that
+        # doesn't carry information at preview size.
+        if stripped.startswith("_by ") and stripped.endswith(":_"):
+            continue
+        if stripped.startswith("> "):
+            stripped = stripped[2:]
+        cleaned.append(stripped)
+    flat = " ".join(cleaned)
+    if len(flat) > limit:
+        flat = flat[: limit - 1] + "…"
+    return flat
 
 
 _NEXT_TOOLS_HINT = (
@@ -344,6 +375,15 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         lines.append(f"     {hit.title}")
         if hit.labels:
             lines.append(f"     labels: {hit.labels}")
+        # Cluster signals — saves a follow-up file read when scanning
+        # results. dup-of nudges the LLM to skip duplicate issues;
+        # the closing-rationale preview surfaces the "why" without
+        # the consumer having to open the file.
+        if hit.duplicate_of is not None:
+            lines.append(f"     duplicate of: #{hit.duplicate_of}")
+        if hit.closing_rationale:
+            preview = _flatten_rationale(hit.closing_rationale, 140)
+            lines.append(f"     closing: {preview}")
         # Citation URL straight from the chunk: GitHub URL for issue
         # chunks, IETF Archived-At permalink for thread message chunks.
         # NULL for drafts/transcripts and pre-v6 indexes — silently skip.
@@ -367,6 +407,107 @@ def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:
         if kind in _DIGEST_KINDS:
             return kind
     return None
+
+
+def tool_get_chunks_batch(
+    wg: str, requests: List[Dict[str, Any]]
+) -> str:
+    """Fetch multiple (file, chunk_idx [, end_chunk_idx]) chunks in one
+    call. Returns the concatenated chunk texts, each prefixed with its
+    file + chunk-index header. Total chunks across all requests are
+    capped at MAX_CHUNK_RANGE (20).
+
+    Use this when search_corpus or read_digest returns multiple hits
+    spanning different files and you want to read them all together
+    rather than round-tripping per file.
+    """
+    # Defensive against the consumer passing a single dict instead of a
+    # list — MCP serialisation can flatten unintentionally.
+    if isinstance(requests, dict):
+        requests = [requests]
+    if not requests:
+        return "(no requests)"
+
+    total = 0
+    for req in requests:
+        start = int(req.get("chunk_idx", 0))
+        end = req.get("end_chunk_idx")
+        span = (int(end) - start + 1) if end is not None else 1
+        if span < 1:
+            return (
+                f"end_chunk_idx must be >= chunk_idx in request "
+                f"{req}; got span {span}."
+            )
+        total += span
+    if total > MAX_CHUNK_RANGE:
+        return (
+            f"Requested {total} chunks total; max per call is "
+            f"{MAX_CHUNK_RANGE}. Split into smaller batches."
+        )
+
+    out_parts: List[str] = []
+    for req in requests:
+        file = str(req.get("file") or "")
+        if not file:
+            out_parts.append("_(skipped: missing file)_\n")
+            continue
+        start = int(req.get("chunk_idx", 0))
+        end = req.get("end_chunk_idx")
+        end_val = int(end) if end is not None else None
+        single = tool_get_chunk(wg, file, start, end_chunk_idx=end_val)
+        out_parts.append(f"## {file} @ chunk {start}")
+        if end_val is not None:
+            out_parts[-1] += f"–{end_val}"
+        out_parts.append("")
+        out_parts.append(single)
+        out_parts.append("")
+    return _with_freshness(wg, "\n".join(out_parts))
+
+
+def tool_fetch_by_url(wg: str, url: str) -> str:
+    """Resolve a citation URL to its cached corpus content.
+
+    Exact-match on the `url` column the chunker stamped at index time.
+    Two cases by URL kind:
+
+    - **Thread `Archived-At:` permalink** → matches exactly one chunk
+      (per-message). Returned as a single chunk.
+    - **GitHub issue URL** → matches every chunk in the per-issue file
+      (file-level URL). Returned as the file's concatenated content,
+      since the consumer almost certainly wants the issue, not just
+      its frontmatter header.
+    """
+    matches = find_chunks_by_url(wg, url)
+    if not matches:
+        return (
+            f"No cached chunk for {url}. The URL may not be in this WG's "
+            "corpus, or the index predates the `url` column (run "
+            f"`ietf-llm {wg} --rebuild-embeddings`)."
+        )
+    if len(matches) == 1:
+        file, chunk_idx, title, text, start_line, end_line = matches[0]
+        where = (
+            f" (lines {start_line}-{end_line})" if start_line is not None else ""
+        )
+        header = (
+            f"# {title}{where}\n"
+            f"_file:_ `{file}`  ·  _chunk:_ {chunk_idx}\n\n"
+        )
+        return _with_freshness(wg, header + text)
+    # Multiple chunks → file-level URL. Concatenate by chunk order.
+    file = matches[0][0]
+    n_chunks = len(matches)
+    parts: List[str] = [
+        f"# {url}\n",
+        f"_file:_ `{file}`  ·  _chunks:_ 0..{n_chunks - 1}\n",
+        "",
+    ]
+    for _f, idx, title, text, _s, _e in matches:
+        parts.append(f"## chunk {idx}: {title}")
+        parts.append("")
+        parts.append(text)
+        parts.append("")
+    return _with_freshness(wg, "\n".join(parts))
 
 
 def tool_get_chunk(  # pylint: disable=too-many-return-statements
@@ -774,6 +915,40 @@ def main() -> None:
         `read_digest` for those.
         """
         return tool_get_chunk(wg, file, chunk_idx, end_chunk_idx=end_chunk_idx)
+
+    @server.tool()
+    def get_chunks_batch(
+        wg: str, requests: List[Dict[str, Any]],
+    ) -> str:
+        """Fetch multiple chunks from an IETF Working Group's ietf-llm
+        corpus in one call. `requests` is a list of dicts, each with:
+          - `file` (str): chunk's source file
+          - `chunk_idx` (int): first chunk index
+          - `end_chunk_idx` (int, optional): last chunk index (inclusive)
+            for a range from this file
+
+        Use when search_corpus returned hits across multiple files and
+        you want all of them in one round-trip rather than N calls.
+        Total chunks across all requests are capped at 20.
+        """
+        return tool_get_chunks_batch(wg, requests)
+
+    @server.tool()
+    def fetch_by_url(wg: str, url: str) -> str:
+        """Resolve an external citation URL to its cached chunk in an
+        IETF Working Group's ietf-llm corpus. Accepts:
+
+        - GitHub issue URLs (e.g.
+          `https://github.com/<owner>/<repo>/issues/<N>`)
+        - IETF mail-archive permalinks (e.g.
+          `https://mailarchive.ietf.org/arch/msg/<list>/<token>/`)
+
+        Returns the chunk text — same shape as `get_chunk_text` —
+        without requiring the caller to know which file or chunk_idx
+        backs the URL. Use this when the user pastes (or you've
+        already cited) a URL and you need the underlying content.
+        """
+        return tool_fetch_by_url(wg, url)
 
     @server.tool()
     def read_file_section(

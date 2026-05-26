@@ -610,6 +610,81 @@ def test_tool_search_omits_url_for_unurled_chunks(isolated_home: Path) -> None:
     assert "url:" not in out
 
 
+def test_search_hits_surface_duplicate_of(isolated_home: Path) -> None:
+    # Consumer feedback: dup-of was in per-issue files and the digest,
+    # but not in search hits. An LLM scanning hits should see "this
+    # is a dup of #155" inline so they can skip the duplicate issues.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-169.md",
+        (
+            "# Issue #169: Duplicate one\n\n"
+            "**Repository:** org/repo  \n"
+            "**State:** CLOSED  \n"
+            "**Duplicate of:** #155\n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    from ietf_llm import mcp_server
+    out = mcp_server.tool_search("wg", "x", k=5)
+    assert "duplicate of: #155" in out
+
+
+def test_search_hits_surface_closing_rationale(isolated_home: Path) -> None:
+    # Closed-issue chunks should preview the closing rationale on a
+    # `closing:` line, saving the consumer a file read just to learn
+    # WHY the issue closed. The preview strips blockquote chrome and
+    # the metadata byline so the substance fits on one line.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-155.md",
+        (
+            "# Issue #155: Vocab decision\n\n"
+            "**Repository:** org/repo  \n"
+            "**State:** CLOSED  \n\n"
+            "**Closing rationale:**\n\n"
+            "_by Mark Nottingham (Chair) on 2026-02-01 10:00:_\n\n"
+            "> Removed from the next set of drafts. This is\n"
+            "> not a declaration of consensus to omit them.\n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    from ietf_llm import mcp_server
+    out = mcp_server.tool_search("wg", "x", k=5)
+    # The rationale substance appears on a `closing:` line. Check the
+    # specific line (not the whole output, since chunk-0's snippet
+    # contains the full header text including the formatted rationale
+    # block; we're only validating the inline `closing:` formatting).
+    closing_lines = [
+        line for line in out.splitlines() if "closing:" in line
+    ]
+    assert closing_lines
+    rendered = closing_lines[0]
+    assert "Removed from the next set of drafts" in rendered
+    # Blockquote markers and byline must be stripped from the inline
+    # form (they're chrome at preview size).
+    assert "_by Mark Nottingham" not in rendered
+    assert "> Removed" not in rendered
+
+
+def test_search_hits_for_thread_chunks_omit_issue_signals(
+    isolated_home: Path,
+) -> None:
+    # Thread chunks don't have dup-of / closing-rationale columns
+    # populated — the per-hit renderer must NOT emit those lines.
+    write_cache_file(
+        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
+    )
+    _build_with_stub("wg", isolated_home)
+    from ietf_llm import mcp_server
+    out = mcp_server.tool_search("wg", "x", k=5)
+    assert "duplicate of:" not in out
+    assert "closing:" not in out
+
+
 def test_mail_archive_year_dump_is_not_indexed(isolated_home: Path) -> None:
     # The legacy `<wg>-mail-archive-YYYY.txt` blob duplicates content
     # already covered by per-thread .md files. It must be excluded

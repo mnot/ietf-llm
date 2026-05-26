@@ -406,3 +406,121 @@ def test_no_banner_when_sentinel_absent(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg\n")
     out = mcp_server.tool_overview("wg")
     assert not out.startswith("⚠")
+
+
+# --- fetch_by_url (consumer feedback #9) ---------------------------------
+
+
+def test_fetch_by_url_returns_chunk_when_url_matches(
+    isolated_home: Path,
+) -> None:
+    # Seed the chunks DB the long way: write a per-issue file with a
+    # **URL:** line, then build the embedding index against it. The
+    # chunker stamps the file-level URL onto every chunk; fetch_by_url
+    # rounds-trips through that column.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        (
+            "# Issue #1: T\n\n"
+            "**Repository:** org/repo  \n"
+            "**URL:** https://github.com/org/repo/issues/1  \n"
+            "**State:** OPEN  \n\n"
+            "## Description\n\n"
+            "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\n"
+            "the actual chunk body here.\n"
+        ),
+    )
+    # Build the index via the stub-model fixture used by search tests.
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_fetch_by_url(
+        "wg", "https://github.com/org/repo/issues/1",
+    )
+    assert "the actual chunk body here" in out
+    # Header carries enough metadata for the caller to pivot.
+    assert "wg-issue-org-repo-1.md" in out
+
+
+def test_fetch_by_url_returns_helpful_miss_message(
+    isolated_home: Path,
+) -> None:
+    # Unknown URL → message that explains what to do, not silent None.
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_fetch_by_url("wg", "https://nope.example/")
+    assert "No cached chunk" in out
+    assert "ietf-llm wg" in out  # the recovery hint
+
+
+# --- get_chunks_batch (cross-file batch reads) ---------------------------
+
+
+def test_get_chunks_batch_concatenates_multiple_files(
+    isolated_home: Path,
+) -> None:
+    # Seed two per-issue files; verify a single batch call returns
+    # chunks from both, separated by per-file headers.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        "# Issue #1: T1\n\n## Description\n\n"
+        "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\n"
+        "first issue body.\n",
+    )
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        "# Issue #2: T2\n\n## Description\n\n"
+        "### [1] 2026-01-02 10:00 — Bob _(opened issue)_\n\n"
+        "second issue body.\n",
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_get_chunks_batch("wg", [
+        {"file": "wg-issue-org-repo-1.md", "chunk_idx": 1},
+        {"file": "wg-issue-org-repo-2.md", "chunk_idx": 1},
+    ])
+    assert "first issue body" in out
+    assert "second issue body" in out
+    # Per-file headers so the consumer can tell hits apart.
+    assert "wg-issue-org-repo-1.md @ chunk 1" in out
+    assert "wg-issue-org-repo-2.md @ chunk 1" in out
+
+
+def test_get_chunks_batch_caps_total_chunks(isolated_home: Path) -> None:
+    # 21 chunks across requests exceeds the cap. The error message
+    # names the cap so the consumer can split sensibly.
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_get_chunks_batch("wg", [
+        {"file": "f.md", "chunk_idx": 0, "end_chunk_idx": 20},
+    ])
+    assert "max per call is 20" in out
+
+
+def test_get_chunks_batch_rejects_inverted_range(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_get_chunks_batch("wg", [
+        {"file": "f.md", "chunk_idx": 5, "end_chunk_idx": 2},
+    ])
+    assert "must be >= chunk_idx" in out
+
+
+def test_get_chunks_batch_tolerates_single_dict_input(
+    isolated_home: Path,
+) -> None:
+    # Defensive: if the MCP serialiser passes a lone dict instead of
+    # a 1-element list, treat as length-1 batch rather than erroring.
+    write_cache_file(
+        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        "# Issue #1: T\n\n## Description\n\n"
+        "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n",
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_get_chunks_batch(
+        "wg",
+        {"file": "wg-issue-org-repo-1.md", "chunk_idx": 1},  # type: ignore[arg-type]
+    )
+    assert "body" in out

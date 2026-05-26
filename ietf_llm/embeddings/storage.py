@@ -27,7 +27,7 @@ from ..utils import get_cache_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 
 def _db_path(wg: str) -> str:
@@ -53,6 +53,8 @@ def _open_db(wg: str) -> sqlite3.Connection:
             labels     TEXT,              -- comma-separated, lowercased; for issue chunks
             state      TEXT,              -- 'open'/'closed' for issue chunks; NULL elsewhere
             url        TEXT,              -- GitHub URL or IETF Archived-At; NULL elsewhere
+            duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
+            closing_rationale TEXT,        -- issue chunks only: last comment body when closed
             UNIQUE (file, chunk_idx)
         )
         """
@@ -106,6 +108,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # message chunks; NULL for drafts/transcripts/etc.
     if "url" not in have:
         conn.execute("ALTER TABLE chunks ADD COLUMN url TEXT")
+    # v6 → v7: per-issue cluster signals — `duplicate_of` (the #N this
+    # issue is a dup of, when called out in any comment) and
+    # `closing_rationale` (last comment body when state=closed). Both
+    # are file-level metadata applied to every chunk from the issue,
+    # so an LLM scanning search hits sees "this is a dup" / "closed
+    # because X" inline without opening the file.
+    if "duplicate_of" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN duplicate_of INTEGER")
+    if "closing_rationale" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN closing_rationale TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
@@ -146,6 +158,42 @@ def chunk_counts(wg: str) -> Dict[str, int]:
             "SELECT file, COUNT(*) FROM chunks GROUP BY file"
         )
         return {str(row[0]): int(row[1]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def find_chunks_by_url(
+    wg: str, url: str
+) -> List[Tuple[str, int, str, str, Optional[int], Optional[int]]]:
+    """All chunks whose `url` exactly equals the given citation URL,
+    sorted by (file, chunk_idx).
+
+    Returns an empty list if no chunk matches. A thread Archived-At URL
+    is per-message and matches exactly one chunk; a GitHub issue URL
+    is file-level and matches every chunk in that issue's per-issue
+    file. Callers (notably the MCP `fetch_by_url` tool) use the row
+    count to decide whether to return a single chunk or the whole file.
+    """
+    if not os.path.exists(_db_path(wg)):
+        return []
+    conn = sqlite3.connect(_db_path(wg))
+    try:
+        cur = conn.execute(
+            "SELECT file, chunk_idx, title, text, start_line, end_line "
+            "FROM chunks WHERE url = ? ORDER BY file, chunk_idx",
+            (url,),
+        )
+        out: List[Tuple[str, int, str, str, Optional[int], Optional[int]]] = []
+        for row in cur.fetchall():
+            out.append((
+                str(row[0]),
+                int(row[1]),
+                str(row[2]),
+                str(row[3]),
+                int(row[4]) if row[4] is not None else None,
+                int(row[5]) if row[5] is not None else None,
+            ))
+        return out
     finally:
         conn.close()
 

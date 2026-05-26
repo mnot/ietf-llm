@@ -84,14 +84,24 @@ are substring matches.
 ## Substantive questions: `search_corpus(wg, query, k=8)`
 
 Returns top-k chunks with `file`, `chunk_idx`, `line_range`,
-snippet, and (for issue chunks) the issue's GitHub `labels` plus
-open/closed `state`. Pivot to the source with:
+snippet, and — for issue chunks — the issue's GitHub `labels`,
+open/closed `state`, `duplicate of: #N` when marked, and a
+`closing: …` preview when the issue is closed. The snippet ends
+with `[truncated]` when the chunk has more content than what's
+shown; absence of the marker means the snippet is the whole chunk.
+Pivot to the source with:
 
 - `get_chunk_text(wg, file, chunk_idx)` — full text of one chunk.
   Pass `end_chunk_idx=N` to fetch a consecutive range (≤20 chunks)
   in one call — use this to read a short thread / issue end-to-end.
+- `get_chunks_batch(wg, [{file, chunk_idx, end_chunk_idx?}, …])` —
+  the same, but across multiple files in one round-trip. Use when
+  search hits span several files and you want all of them.
 - `read_file_section(wg, file, start_line, max_lines)` — bounded
   read for surrounding context or whole-file reading.
+- `fetch_by_url(wg, url)` — when the user pastes a GitHub issue
+  URL or an IETF mail-archive permalink, this resolves it to the
+  cached chunk content without you needing to know the file name.
 
 `search_corpus` also takes `since` / `until`, `file_pattern` (SQL
 LIKE: `"%-thread-%"`, `"%-issue-%"`, `"draft-%"`), `label`
