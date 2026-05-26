@@ -26,6 +26,7 @@ from .github import download_github_issues, process_github_issues
 from .mail_threads import write_thread_files
 from .mbox import sync_mailing_list
 from .meetings import process_meetings
+from .pdf_extract import extract_all_pdfs
 from .people import build_registry, write_people_digest
 from .timeline import write_timeline_digest
 from .transcripts import process_transcripts
@@ -311,6 +312,12 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
     # Documents (drafts & RFCs)
     process_documents(args.wg, cache_dir, verbose=verbosity)
+
+    # Extract text from any PDFs in the cache (slide decks, whiteboards,
+    # etc.). Writes a sibling .pdf.txt for each so the chunker picks
+    # them up — slides become searchable content rather than invisible
+    # binaries.
+    extract_all_pdfs(cache_dir, verbose=verbosity)
 
     # GitHub issues — download the raw JSON archives first, but defer
     # rendering the .txt files until after the registry is built so the

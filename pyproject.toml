@@ -18,6 +18,7 @@ dependencies = [
     # Core gather / parse
     "requests",
     "beautifulsoup4",
+    "pypdf",
     # NotebookLM Enterprise export
     "google-auth",
     "google-auth-oauthlib",
