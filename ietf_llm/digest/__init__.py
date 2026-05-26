@@ -102,6 +102,9 @@ def generate_digests(
     import os  # pylint: disable=import-outside-toplevel
 
     has_people = os.path.exists(os.path.join(cache_dir, f"{wg}-_people.md"))
+    has_timeline = os.path.exists(
+        os.path.join(cache_dir, f"{wg}-_timeline.md")
+    )
     index_path = _build_index(
         wg,
         cache_dir,
@@ -109,6 +112,7 @@ def generate_digests(
         has_threads_digest=threads_path is not None,
         verbose=verbose,
         has_people_digest=has_people,
+        has_timeline_digest=has_timeline,
     )
     generated.append(index_path)
 

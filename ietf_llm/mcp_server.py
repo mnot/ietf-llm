@@ -62,7 +62,7 @@ def _safe_path(wg: str, file: str) -> Optional[str]:
     return candidate
 
 
-_DIGEST_KINDS = ("index", "issues", "threads", "people")
+_DIGEST_KINDS = ("index", "issues", "threads", "people", "timeline")
 
 
 def _digest_path(wg: str, kind: str) -> Optional[str]:
@@ -271,12 +271,14 @@ def main() -> None:
     def read_digest(wg: str, kind: str = "index") -> str:
         """Read a digest file. Start here.
 
-        kind = "index"   — corpus inventory + how-to-use pointer
-             | "issues"  — one row per GitHub issue (state, labels, …)
-             | "threads" — one row per mailing list thread, with links
-                          to the per-thread reading files
-             | "people"  — participants, with chairs/ADs and document
-                          authors surfaced at the top
+        kind = "index"    — corpus inventory + how-to-use pointer
+             | "issues"   — one row per GitHub issue (state, labels, …)
+             | "threads"  — one row per mailing list thread, with links
+                           to the per-thread reading files
+             | "people"   — participants, with chairs/ADs and document
+                           authors surfaced at the top
+             | "timeline" — chronological event log (drafts published,
+                           issues opened/closed, meetings, WGLCs)
         """
         return tool_read_digest(wg, kind)
 

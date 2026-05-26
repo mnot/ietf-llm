@@ -1,0 +1,194 @@
+"""Tests for the timeline digest.
+
+Four event sources, each tested with synthetic cache contents.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from ietf_llm.people import Registry
+from ietf_llm.timeline import _meeting_label, build_events, write_timeline_digest
+from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
+
+from conftest import (
+    make_issue,
+    write_cache_file,
+    write_eml,
+    write_github_archive,
+)
+
+
+def _build(wg: str = "wg") -> list:
+    cache = get_wg_file_cache_dir(wg)
+    return build_events(wg, cache, Registry())
+
+
+# --- Source: draft publications -------------------------------------------
+
+
+def test_draft_publication_event_from_i_d_action_thread(
+    isolated_home: Path,
+) -> None:
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "I-D Action: draft-ietf-wg-foo-04.txt", "internet-drafts@ietf.org",
+        "Mon, 27 Apr 2026 10:00:00 +0000",
+    )
+    events = _build()
+    assert len(events) == 1
+    assert events[0].kind == "draft-published"
+    assert events[0].title == "`draft-ietf-wg-foo-04` published"
+    assert events[0].when.year == 2026
+
+
+# --- Source: meetings ------------------------------------------------------
+
+
+def test_meeting_event_from_minutes_date_line(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, "wg", "ietf124-minutes.md",
+        "# Meeting Materials for IETF IETF 124 (wg)\n"
+        "Date: 2025-11-05 21:00\n\n## Minutes\n",
+    )
+    events = _build()
+    meeting_events = [e for e in events if e.kind == "meeting"]
+    assert len(meeting_events) == 1
+    assert meeting_events[0].title == "IETF 124 meeting held"
+    assert meeting_events[0].when.year == 2025
+
+
+def test_interim_meeting_label(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, "wg", "interim2025wg09-minutes.md",
+        "# header\nDate: 2025-09-30 07:15\n\n",
+    )
+    events = _build()
+    meetings = [e for e in events if e.kind == "meeting"]
+    assert len(meetings) == 1
+    assert "Interim 2025 #09" in meetings[0].title
+
+
+def test_minutes_without_date_line_skipped(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, "wg", "no-date-minutes.md", "no date here\n",
+    )
+    events = _build()
+    assert events == []
+
+
+# --- Source: GitHub issue events ------------------------------------------
+
+
+def test_issue_open_close_events(isolated_home: Path) -> None:
+    write_github_archive(
+        isolated_home, "wg", "org/repo",
+        [
+            make_issue(
+                1, "Cookie partitioning", state="closed",
+                updated_at="2026-04-19T00:00:00Z",
+            ),
+            make_issue(
+                2, "Search scope", state="open",
+                updated_at="2026-05-14T00:00:00Z",
+            ),
+        ],
+    )
+    events = _build()
+    kinds = sorted(e.kind for e in events)
+    # 2 issues × (opened + closed for closed-one + opened-only for open-one)
+    assert "issue-opened" in kinds
+    assert "issue-closed" in kinds
+    # Closed event uses updatedAt as the proxy date.
+    closed = [e for e in events if e.kind == "issue-closed"][0]
+    assert closed.when.strftime("%Y-%m-%d") == "2026-04-19"
+
+
+# --- Source: WGLC / adoption-call heuristics ------------------------------
+
+
+def test_wglc_thread_detected(isolated_home: Path) -> None:
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "Working Group Last Call on our documents",
+        "Chair <chair@x>",
+        "Thu, 04 Sep 2025 10:00:00 +0000",
+    )
+    events = _build()
+    wglc = [e for e in events if e.kind == "wglc"]
+    assert len(wglc) == 1
+    assert "Last Call" in wglc[0].title
+
+
+def test_call_for_adoption_thread_detected(isolated_home: Path) -> None:
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "Call for Adoption: draft-it-aipref-attachment-00",
+        "Chair <chair@x>",
+        "Mon, 02 Jun 2025 10:00:00 +0000",
+    )
+    events = _build()
+    adopt = [e for e in events if e.kind == "adoption-call"]
+    assert len(adopt) == 1
+
+
+# --- Ordering and rendering ------------------------------------------------
+
+
+def test_events_sorted_most_recent_first(isolated_home: Path) -> None:
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "I-D Action: draft-ietf-wg-foo-00.txt", "internet-drafts@ietf.org",
+        "Mon, 01 Jan 2025 10:00:00 +0000",
+    )
+    write_eml(
+        isolated_home, "wg", "list", 2,
+        "I-D Action: draft-ietf-wg-foo-01.txt", "internet-drafts@ietf.org",
+        "Mon, 01 Jun 2026 10:00:00 +0000",
+    )
+    events = _build()
+    assert events[0].when > events[1].when
+
+
+def test_digest_writes_yearly_sections(isolated_home: Path) -> None:
+    # 2025 and 2026 events both present → both year headings.
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "I-D Action: draft-ietf-wg-foo-00.txt", "internet-drafts@ietf.org",
+        "Mon, 01 Jan 2025 10:00:00 +0000",
+    )
+    write_eml(
+        isolated_home, "wg", "list", 2,
+        "I-D Action: draft-ietf-wg-foo-01.txt", "internet-drafts@ietf.org",
+        "Mon, 01 Jun 2026 10:00:00 +0000",
+    )
+    path = write_timeline_digest(
+        "wg", get_wg_file_cache_dir("wg"), Registry(),
+        verbose=Verbosity.QUIET,
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    assert "## 2026" in text
+    assert "## 2025" in text
+    # 2026 comes first (newest year first).
+    assert text.find("## 2026") < text.find("## 2025")
+
+
+def test_digest_returns_none_when_no_events(isolated_home: Path) -> None:
+    assert (
+        write_timeline_digest(
+            "wg", get_wg_file_cache_dir("wg"), Registry(),
+            verbose=Verbosity.QUIET,
+        )
+        is None
+    )
+
+
+# --- Helper: _meeting_label -----------------------------------------------
+
+
+def test_meeting_label_handles_known_forms() -> None:
+    assert _meeting_label("ietf124-minutes.md") == "IETF 124 meeting"
+    assert _meeting_label("interim2025aipref09-minutes.md") == "Interim 2025 #09"
+    # Falls back to the base if it's something we don't recognise.
+    assert _meeting_label("weird-meeting-minutes.md") == "weird-meeting"

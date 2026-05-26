@@ -27,6 +27,7 @@ from .mail_threads import write_thread_files
 from .mbox import sync_mailing_list
 from .meetings import process_meetings
 from .people import build_registry, write_people_digest
+from .timeline import write_timeline_digest
 from .transcripts import process_transcripts
 from .utils import (
     DEFAULT_MONTHS,
@@ -347,6 +348,9 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
     # People digest
     write_people_digest(args.wg, cache_dir, registry, verbose=verbosity)
+
+    # Timeline digest
+    write_timeline_digest(args.wg, cache_dir, registry, verbose=verbosity)
 
     # Digests
     summarize_model: Any = None

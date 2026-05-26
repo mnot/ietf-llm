@@ -63,6 +63,7 @@ def _build_index(
     has_threads_digest: bool,
     verbose: Verbosity,
     has_people_digest: bool = False,
+    has_timeline_digest: bool = False,
 ) -> str:
     """Build {wg}-_index.md as the landing page for the corpus."""
     out_path = os.path.join(cache_dir, f"{wg}-_index.md")
@@ -92,7 +93,13 @@ def _build_index(
         if has_people_digest:
             fh.write(
                 f"- `{wg}-_people.md` — participants, with mail addresses "
-                "and GitHub logins consolidated into canonical names.\n"
+                "and GitHub logins consolidated into canonical names; "
+                "leads with WG leadership and document authors.\n"
+            )
+        if has_timeline_digest:
+            fh.write(
+                f"- `{wg}-_timeline.md` — chronological event log "
+                "(drafts published, issues opened/closed, meetings, WGLCs).\n"
             )
         fh.write(
             "\nThe per-year `*-mailing-list-YYYY.txt` files and the "
