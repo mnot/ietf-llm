@@ -70,12 +70,47 @@ def _short_addr(from_header: str) -> str:
 # --- Optional LLM summarization ----------------------------------------------
 
 
+def _llm_setup_help(model_name: str, underlying_error: str) -> str:
+    """Compose a multi-line help message for an --summarize misconfiguration.
+
+    Written for users who installed ietf-llm via `pipx`, which is the
+    main install path. The two simplest paths are:
+
+      1. Inline env var (works for OpenAI out of the box; other providers
+         need their `llm-<provider>` plugin injected first).
+      2. `pipx inject` a provider plugin, then run with the env var.
+    """
+    return (
+        f"--summarize couldn't use model '{model_name}': {underlying_error}\n"
+        "\n"
+        "ietf-llm uses Simon Willison's `llm` package for summarisation. "
+        "OpenAI is built in; Anthropic, Gemini etc. need their `llm-<provider>` "
+        "plugin. Two quick fixes (assuming you installed via pipx):\n"
+        "\n"
+        "  # OpenAI (built in, no plugin needed):\n"
+        "  OPENAI_API_KEY=sk-... ietf-llm <wg> --summarize "
+        "--summarize-model gpt-4o-mini\n"
+        "\n"
+        "  # Anthropic (or substitute llm-gemini, llm-mistral, etc.):\n"
+        "  pipx inject ietf-llm llm-anthropic\n"
+        "  ANTHROPIC_API_KEY=sk-ant-... ietf-llm <wg> --summarize "
+        "--summarize-model claude-haiku-4-5\n"
+        "\n"
+        "For persistent setup (so you don't have to inline the key each "
+        "time) see https://llm.datasette.io/en/stable/setup.html — note "
+        "that `llm keys set ...` needs the `llm` binary on your PATH, "
+        "which pipx only exposes if you reinstall with `--include-deps`."
+    )
+
+
 class _Summarizer:
-    """Wraps the optional `llm` package. No-op if model is None or llm missing."""
+    """Wraps the `llm` package. No-op if generation fails."""
 
     def __init__(self, model_name: Optional[str], verbose: Verbosity):
         self.model = None
+        self.model_name = model_name
         self.verbose = verbose
+        self._warned = False
         if not model_name:
             return
         try:
@@ -92,11 +127,8 @@ class _Summarizer:
         try:
             self.model = llm.get_model(model_name)
         except Exception as err:  # pylint: disable=broad-except
-            log(
-                f"Could not load llm model '{model_name}': {err}",
-                verbose,
-                level=LogLevel.ERROR,
-            )
+            # Most common case: unknown model (provider plugin not installed).
+            log(_llm_setup_help(model_name, str(err)), verbose, level=LogLevel.ERROR)
 
     def active(self) -> bool:
         return self.model is not None
@@ -113,7 +145,18 @@ class _Summarizer:
                 text = text[1:-1]
             return text
         except Exception as err:  # pylint: disable=broad-except
-            log(f"LLM summary failed: {err}", self.verbose, level=LogLevel.PROGRESS)
+            # Most common case: model loaded but API key missing/invalid.
+            # Surface the full setup help on the first failure, then
+            # disable the summariser so subsequent chunks don't repeat
+            # the error or rack up zero-value API attempts.
+            if not self._warned:
+                log(
+                    _llm_setup_help(self.model_name or "(unknown)", str(err)),
+                    self.verbose,
+                    level=LogLevel.ERROR,
+                )
+                self._warned = True
+                self.model = None
             return ""
 
 
