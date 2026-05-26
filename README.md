@@ -509,3 +509,8 @@ rather than try to merge changes into an existing one.
 ## Contributing
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+[ARCHITECTURE.md](ARCHITECTURE.md) is the read-this-first for anyone
+poking at the code: package layout, cache and config conventions,
+data flow, and the key design decisions worth knowing before you
+change anything.
