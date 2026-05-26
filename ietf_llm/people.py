@@ -385,6 +385,11 @@ def build_registry(wg: str, verbose: Verbosity = Verbosity.STATUS) -> Registry:
     registry = Registry()
     _ingest_mail(wg, registry, verbose)
     _ingest_github(wg, registry, verbose)
+    # After GitHub authors are loaded, resolve any remaining
+    # login-as-name actors (heuristic email/local-part linking didn't
+    # find them) via the GitHub users API. Best-effort; no-op if there
+    # are no unresolved logins or the API isn't reachable.
+    _resolve_github_user_names(registry, verbose)
     _ingest_datatracker_roles(wg, registry, verbose)
     _ingest_draft_authors(wg, registry, verbose)
     log(
@@ -456,6 +461,61 @@ def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
                 )
             count += 1
     log(f"  ingested authors from {count} issues", verbose, level=LogLevel.PROGRESS)
+
+
+def _resolve_github_user_names(
+    registry: Registry, verbose: Verbosity,
+) -> None:
+    """For each Person whose canonical_name is just their GitHub login
+    (heuristic linking didn't find them in the mail registry), look up
+    the user's real name via the GitHub API and upgrade.
+
+    Logins where we already have a human-readable canonical_name are
+    skipped. Logins where the API returns no name (or returns 404)
+    stay as the login — but the cache records the absence so we
+    don't re-ask next gather. Names only; affiliation is deliberately
+    NOT pulled, per SKILL.md's "individuals not employers" norm.
+    """
+    # Lazy import: keep `requests` out of the people.py top-level so
+    # the gather pipeline doesn't drag it in when GitHub isn't gathered.
+    from .gather.github_users import resolve_logins  # pylint: disable=import-outside-toplevel
+
+    candidates: List[str] = []
+    by_login: Dict[str, Person] = {}
+    for person in registry.persons:
+        if not person.github_logins:
+            continue
+        # Heuristic: canonical_name equals one of the github_logins
+        # means we never upgraded it to a real human name. Try the API.
+        if person.canonical_name in person.github_logins:
+            login = person.canonical_name
+            candidates.append(login)
+            by_login[login] = person
+    if not candidates:
+        return
+
+    log(
+        f"Resolving {len(candidates)} GitHub login(s) to real names...",
+        verbose, level=LogLevel.STATUS,
+    )
+    resolved = resolve_logins(candidates, verbose=verbose)
+    n_upgraded = 0
+    for login, name in resolved.items():
+        if not name:
+            continue
+        target = by_login.get(login)
+        if target is None:
+            continue
+        # Keep the by_name index in sync so canonical_for_email
+        # lookups land on this Person now that we have a real name.
+        target.canonical_name = name
+        registry._by_name[name.lower()] = target  # pylint: disable=protected-access
+        n_upgraded += 1
+    if n_upgraded:
+        log(
+            f"  upgraded {n_upgraded} login(s) to real names",
+            verbose, level=LogLevel.STATUS,
+        )
 
 
 def _ingest_datatracker_roles(

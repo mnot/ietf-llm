@@ -45,6 +45,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
     from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
         datatracker_history,
+        github_users,
     )
 
     def _noop(wg: str, registry: object, verbose: object) -> None:  # noqa: ARG001
@@ -58,6 +59,16 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         datatracker_history, "_get_json",
         lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
+    # Block GitHub user lookups too — tests that want to exercise the
+    # name-resolution path stub `_fetch_one` (or `resolve_logins`)
+    # directly. Default: act as if every login is uncacheable
+    # transient-failure, so the registry's canonical_name stays unchanged.
+    monkeypatch.setattr(
+        github_users, "_fetch_one",
+        lambda login, headers, verbose: github_users._Outcome(  # noqa: ARG005
+            name=None, cacheable=False,
+        ),
     )
 
 
