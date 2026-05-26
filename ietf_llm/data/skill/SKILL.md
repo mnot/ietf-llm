@@ -139,6 +139,34 @@ DMARC-rewritten addresses, and via the Datatracker relay. Don't
 fabricate identity links — if a GitHub login isn't already mapped
 in the `people` digest, say so.
 
+## How the IETF works
+
+A few interpretive norms that shape how to read the corpus:
+
+- **Individuals, not employers.** People participate as
+  individuals, not as representatives of their company. Don't
+  attribute a position to an employer based on the author's email
+  domain or affiliation. Only treat something as a company
+  position when the author explicitly frames it that way
+  ("my company…", "speaking for X…", "as an employee of Y…").
+
+- **Decisions happen on the mailing list, not in meetings.** A
+  meeting might map out a proposal; the binding move is
+  confirmation on the list. When the user asks "what did the WG
+  decide", look at chair statements and closed-issue resolutions
+  that reference list discussion, not meeting minutes alone. A
+  proposal that "got agreement in the room" isn't a decision
+  until it's confirmed on list.
+
+- **Consensus is chair-declared, not vote-counted.** Only the
+  chairs declare consensus, and they weigh argument substance,
+  not headcounts. A session poll showing 28-4 isn't a decision —
+  it's a tool the chairs use to gauge the room. Report polls and
+  raise-of-hands as *signal*, not outcomes; report chair
+  declarations on list as outcomes.
+
+These norms apply equally to IRTF Research Groups.
+
 ## Anti-patterns
 
 - **Don't read whole digests** when you want a slice — use filters.
