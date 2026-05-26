@@ -30,14 +30,15 @@ If you encounter SSL or certificate errors (common behind corporate firewalls), 
 pipx install ietf-llm[certs]
 ```
 
-## Quick Start: Using with Claude via MCP
+## Quick Start
 
 The fastest way to use `ietf-llm` is to register its MCP server with
-Claude (Code or Desktop). Once set up, Claude can read digests, search,
-and inspect any Working Group you've gathered — no per-WG configuration
-on the Claude side.
+your AI agent (any MCP-capable harness — Claude Code, Claude Desktop,
+Codex CLI, Gemini CLI, opencode, Cursor, Zed, …). Once set up, the
+agent can read digests, search, and inspect any Working Group you've
+gathered — no per-WG configuration on the agent side.
 
-### a) One-time MCP setup
+### a) One-time setup
 
 1. **Install the package** (semantic search, the MCP server, and the
    `llm`-based summariser are all included by default):
@@ -46,22 +47,14 @@ on the Claude side.
    pipx install ietf-llm
    ```
 
-2. **Register the MCP server** with your Claude client. For Claude Code:
+2. **Register the MCP server** with your agent. The exact incantation
+   depends on the harness — see the [MCP Server](#mcp-server) section
+   below for ready-to-paste config snippets for each. (Claude Code
+   users: it's a one-liner — `claude mcp add ietf-llm -- ietf-llm-mcp`.)
 
-   ```bash
-   claude mcp add ietf-llm -- ietf-llm-mcp
-   ```
-
-   For Claude Desktop, edit `claude_desktop_config.json` (see paths and
-   full snippet under "[MCP Server](#mcp-server)" below).
-
-   Using a different MCP-capable harness (Codex, Gemini CLI, opencode,
-   Cursor, Zed, …)? See the [MCP Server](#mcp-server) section for
-   per-harness config snippets.
-
-3. **(Recommended, Claude only)** Install the bundled skill so Claude
-   knows the right way to use the corpus (digests first, search before
-   reading, no slurping raw mbox files):
+3. **(Claude only, optional)** Install the bundled Claude skill so
+   Claude is guided toward the right usage pattern (digests first,
+   search before reading, no slurping raw mbox files):
 
    ```bash
    ietf-llm --install-claude-skill
@@ -80,9 +73,9 @@ on the Claude side.
 
 ### b) Gathering a Working Group
 
-Gathering happens via the CLI (it's a slow, network-heavy job that's not
-appropriate to run silently from a chat tool). Do it once per WG you
-want Claude to be able to query:
+Gathering happens via the CLI — it's a slow, network-heavy job that's
+not appropriate to run silently from a chat tool. Do it once per WG
+you want the agent to be able to query:
 
 ```bash
 ietf-llm httpbis \
@@ -96,27 +89,27 @@ What each flag does:
 - `--github org/repo` — GitHub repos whose issues should be gathered.
   Repeat for each repo. Persisted after first run, so future updates
   don't need it.
-- `--embed` — builds the local semantic search index that backs
-  `search_corpus` in MCP. **Required if you want Claude to search the
-  corpus.** Uses a small local model (no API key) on first run; this
-  downloads ~130 MB of model weights once and reuses them after.
+- `--embed` — builds the local semantic search index that backs the
+  `search_corpus` MCP tool. **Required if you want the agent to search
+  the corpus.** Uses a small local model (no API key) on first run;
+  this downloads ~130 MB of model weights once and reuses them after.
 
 Everything is written to `~/.cache/ietf-llm/<wg>/` — the cache, the
 digests, the embedding DB. The MCP server, `ietf-llm-search`, and
-`ietf-llm-export` all read from there. **For the Claude / MCP workflow,
-that's all you need to do** — there is no separate "destination"
-directory to manage.
+`ietf-llm-export` all read from there. **For the MCP workflow that's
+all you need to do** — there is no separate "destination" directory
+to manage.
 
 The first gather takes a few minutes (mailing list IMAP fetch
 dominates, then embedding).
 
-Now in Claude:
+Now ask your agent:
 
 > "What's open in httpbis right now?"
 > "Anyone on the list raised concerns about cookie partitioning?"
 > "Summarize what draft-ietf-httpbis-rfc6265bis says about §5.4."
 
-Claude will use `list_working_groups`, `read_digest`, and `search_corpus`
+It will use `list_working_groups`, `read_digest`, and `search_corpus`
 to answer without you having to point at any files.
 
 ### c) Updating a Working Group
@@ -133,8 +126,8 @@ ietf-llm httpbis
 - Add `--summarize` if you want LLM-generated one-line summaries
   refreshed in the digest files (requires an `llm`-configured model).
 
-Run this on a cron or whenever you want fresh data. Claude picks up the
-new state automatically on its next MCP call — nothing to restart.
+Run this on a cron or whenever you want fresh data. The agent picks up
+the new state automatically on its next MCP call — nothing to restart.
 
 If you're also using NotebookLM (the section below) and want it to see
 the update, the recommended workflow is to **create a fresh notebook
