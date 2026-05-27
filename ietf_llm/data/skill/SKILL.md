@@ -222,10 +222,11 @@ These norms apply equally to IRTF Research Groups.
 ## Anti-patterns
 
 - **Don't read whole digests** when you want a slice — use filters.
-- **Don't read `<wg>-mailing-list-YYYY.txt` or
-  `<wg>-github-<repo>.txt`** — multi-MB blobs kept only for grep /
-  NotebookLM upload. The per-thread and per-issue files cover the
-  same content in chunkable form.
+- **Don't read anything under `raw/`** — multi-MB per-year mailing-
+  list dumps and legacy GitHub text blobs, kept only for grep /
+  NotebookLM upload. Same content lives in the per-thread
+  (`threads/`) and per-issue (`issues/`) files in chunkable form;
+  `list_files` tags these as `(not indexed)` for the same reason.
 - **Don't use `list_files` to find answers** — inventory only.
 - **Deep dives** (long thread end-to-end, >5 tool calls): spawn a
   subagent with a tight prompt and have it return a summary.
