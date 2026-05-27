@@ -106,46 +106,148 @@ _WEAK_OPPOSE = re.compile(
     re.IGNORECASE,
 )
 
-# Poll / option-choice patterns. Chairs frequently run option polls
-# ("please pick 1, 2, or 3"); participants respond with terse choices
-# that don't trip the support / oppose heuristics. Coverage went from
-# 4% to >50% on real poll threads after adding these. The choice can
-# be a number or a letter (`A`, `B`) but is constrained to a single
-# alphanumeric token to avoid matching rhetorical "I prefer this option
-# over that one" prose.
-_POLL_CHOICE_RE = re.compile(
+# Poll / option-choice detection — two-stage design.
+#
+# Real IETF option polls produce three shapes of vote:
+#   1. Terse line-start reply ("Option 2", "#2") — bare marker, no
+#      surrounding intent language.
+#   2. Intent + marker in the same window ("I want option 2",
+#      "Strong preference for #2", "in favor of option 2",
+#      "+1 on #1", "definitely anonymous first (#1)").
+#   3. Bare numbered list reply ("1.", "2)") — too ambiguous, not
+#      attempted; consumer didn't report misses of that shape.
+#
+# An earlier single-regex implementation had a parse bug: with the
+# optional `(?:\s+is)?` capture, the engine would drop "is" from the
+# optional group and grab "is" as the choice token in "my preference
+# is #1", producing the bogus choice "IS". The current two-stage
+# design separates marker detection (what's the choice?) from intent
+# detection (is this a vote at all?), so the choice is always a
+# clean alphanumeric token from a structurally-anchored capture.
+
+# Markers — surface forms where a poll choice is explicitly tagged.
+# `m_word` is the digit/letter after "option"/"opt"/"choice"/
+# "alternative"; `m_hash` is the number after `#`. The lookbehind on
+# `#` keeps us from matching `foo#1` mid-token.
+_POLL_MARKER_RE = re.compile(
     r"""(?:
-        ^\s* (?: option | opt\.? | alternative | choice ) \s* [:#]? \s* (?P<o1>[A-Za-z0-9]+) \b
-      | ^\s* \# (?P<o2>[A-Za-z0-9]+) \s* $
-      | \b I \s* (?:'?d \s+|\s+would\s+)? prefer \s+ (?:option \s+)? (?P<o3>[A-Za-z0-9]+) \b
-      | \b (?: my \s+ (?: vote | choice | pref(?:erence)? ) (?:\s+is)?
-              | I'?m \s+ for ) \s+ (?:option \s+)? (?P<o4>[A-Za-z0-9]+) \b
-      | \b hum \s+ for \s+ (?:option \s+)? (?P<o5>[A-Za-z0-9]+) \b
+        \b (?: option | opt\.? | alternative | choice ) \s+ (?P<m_word>\d{1,2}|[A-Za-z]) \b
+      | (?<![A-Za-z0-9]) \# (?P<m_hash>\d{1,2}) \b
     )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Direct: intent verb followed *immediately* by a choice (digit,
+# `#N`, or `option N`). This is the bridge that catches bare-digit
+# votes like "I prefer 2" / "preference is #1" / "+1 on #1" /
+# "in favor of option 2" — no marker word required after the verb.
+# The `+1 …` branch uses an explicit anchor instead of `\b\+1` since
+# `+` is non-word and `\b` before `+` doesn't fire when preceded by
+# whitespace.
+_POLL_DIRECT_RE = re.compile(
+    r"""(?:
+        \b (?:
+            I \s+ (?: want | prefer | favor | support | back | choose | pick )
+          | I \s+ (?:'d|would) \s+ (?: like | prefer | choose | go \s+ with )
+          | I \s+ think \s+ the \s+ answer \s+ is
+          | (?: my | the ) \s+ pref(?:erence)? \s+ (?: is | would \s+ be )
+          | pref(?:erence)? \s+ would \s+ be
+          | (?: strong(?:ly)? | slight(?:ly)? ) \s+ pref(?:erence)? \s+ for
+          | in \s+ favor \s+ of
+          | (?: my \s+ )? vote \s+ (?: is | for | goes \s+ to )
+          | hum \s+ for
+        ) \s+
+      | (?: ^ | (?<=\s) ) \+1 \s+ (?: on | to | for )? \s*
+    )
+    (?: option \s+ | \# )?
+    (?P<d_choice>\d{1,2})
+    \b""",
+    re.IGNORECASE | re.VERBOSE | re.MULTILINE,
+)
+
+# Intent phrases — used by the window-based fallback when a marker
+# appears with looser surrounding language. Catches "definitely
+# anonymous first (#1)" (intent "definitely", marker "(#1)") and
+# similar shapes where intent and marker are separated by descriptive
+# words. `\+1` uses an explicit anchor for the same reason as above.
+_POLL_INTENT_RE = re.compile(
+    r"""(?:
+        \b I \s+ (?: want | prefer | favor | support | back | choose | pick ) \b
+      | \b I \s+ (?:'d|would) \s+ (?: like | prefer | choose | go \s+ with ) \b
+      | \b I \s+ think \s+ the \s+ answer \b
+      | \b (?: strong(?:ly)? | slight(?:ly)? ) \s+ pref(?:erence)? \b
+      | \b (?: my | the ) \s+ pref(?:erence)? \b
+      | \b pref(?:erence)? \s+ (?: is | would \s+ be ) \b
+      | \b (?: my \s+ )? vote \b
+      | \b in \s+ favor \s+ of \b
+      | \b definitely \b
+      | \b hum \s+ for \b
+      | (?: ^ | (?<=\s) ) \+1 (?= \s | $ | [^\d] )
+    )""",
+    re.IGNORECASE | re.VERBOSE | re.MULTILINE,
+)
+_POLL_INTENT_WINDOW = 80
+
+# Bare line-start marker — terse poll reply where the marker IS the
+# message's opening content. ("Option 2.", "#2", "Option 2 because
+# it's simpler.") No surrounding intent required; line-start position
+# IS the signal.
+_POLL_BARE_RE = re.compile(
+    r"""^\s*
+        (?:
+            (?: option | opt\.? | alternative | choice ) \s+ (?P<b_word>\d{1,2}|[A-Za-z]) \b
+          | \# (?P<b_hash>\d{1,2}) \b
+        )""",
     re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
 
 
 def _extract_poll_choice(text: str) -> Optional[Tuple[str, re.Match[str]]]:
-    """Run the poll-syntax matcher and return (normalised_choice, match)
-    or None. Choice is uppercased so "option 2", "#2", and "I prefer 2"
-    all bucket together. Tokens longer than 3 characters are rejected
-    — "I prefer something" should NOT register as choice "SOMETHING";
-    real poll choices are short (`2`, `b`, `2a`).
+    """Detect a poll vote in `text` and return (choice, match) or None.
+
+    Three modes, tried in order:
+      1. Terse line-start marker (`Option 2`, `#2` at line start) →
+         bare poll vote. The line-start position is the signal.
+      2. Direct intent verb immediately followed by a choice
+         (`I prefer 2`, `preference is #1`, `+1 on #1`,
+         `in favor of option 2`). The intent and marker are
+         syntactically attached.
+      3. Marker preceded by an intent phrase within
+         `_POLL_INTENT_WINDOW` chars (`Definitely anonymous first
+         (#1)`). Looser; the intent and marker can have descriptive
+         text between them.
+
+    The choice is uppercased ("Option 2" / "#2" / "I want 2" → "2";
+    "option b" → "B") so the renderer can aggregate by choice.
+
+    A previous single-regex design had a parse bug where the optional
+    "(?:\\s+is)?" group could drop "is" and have it captured as the
+    choice token ("preference is #1" → choice "IS"). The current
+    structure captures the choice from a structurally-anchored
+    digit/letter group, so this can't happen.
     """
-    match = _POLL_CHOICE_RE.search(text)
-    if not match:
-        return None
-    choice = next(
-        (g for g in match.groups() if g), ""
-    ).upper()
-    if not choice or len(choice) > 3:
-        return None
-    # Filter out tokens that are clearly natural-language continuations
-    # rather than poll choices (`option SHOULD …`).
-    if not (choice.isdigit() or choice[0].isalnum()):
-        return None
-    return (choice, match)
+    bare = _POLL_BARE_RE.search(text)
+    if bare is not None:
+        choice = (bare.group("b_word") or bare.group("b_hash") or "").upper()
+        if choice:
+            return (choice, bare)
+
+    direct = _POLL_DIRECT_RE.search(text)
+    if direct is not None:
+        choice = (direct.group("d_choice") or "").upper()
+        if choice:
+            return (choice, direct)
+
+    for marker in _POLL_MARKER_RE.finditer(text):
+        window_start = max(0, marker.start() - _POLL_INTENT_WINDOW)
+        preceding = text[window_start:marker.start()]
+        if _POLL_INTENT_RE.search(preceding) is not None:
+            choice = (
+                marker.group("m_word") or marker.group("m_hash") or ""
+            ).upper()
+            if choice:
+                return (choice, marker)
+    return None
 
 # Chair-decision language. When a chair (role tag carries "Chair")
 # posts a message containing one of these phrases, it's likely a

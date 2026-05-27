@@ -169,6 +169,113 @@ def test_long_token_after_prefer_is_not_a_poll_choice() -> None:
     assert choice is None
 
 
+# --- consumer-reported misses (regression set) ---------------------------
+#
+# Each of these phrasings was missed by the earlier single-regex poll
+# detector. The two-stage intent-plus-marker design catches them.
+
+
+def test_i_want_option_n() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "I want option 2 because the threat model is cleaner.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_my_preference_would_be_option_n() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "My preference would be option 2.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_strong_preference_for_hash_n() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "Strong preference for #2.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_i_think_the_answer_is_hash_n() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "I think the answer is #1.\n"
+    )
+    assert label == "poll"
+    assert choice == "1"
+
+
+def test_definitely_with_parenthesised_hash() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "Definitely anonymous first (#1), then attested later.\n"
+    )
+    assert label == "poll"
+    assert choice == "1"
+
+
+def test_plus_one_on_hash_n_is_poll_not_bare_support() -> None:
+    # Previously matched "+1" as bare strong support and missed the
+    # "#1" — losing the option signal. With intent + marker, the
+    # poll detection wins because it runs first AND finds the marker.
+    label, _conf, _excerpt, choice = extract_position(
+        "+1 on #1, focusing first on the anonymous approach.\n"
+    )
+    assert label == "poll"
+    assert choice == "1"
+
+
+def test_in_favor_of_option_n() -> None:
+    # Previously misclassified as weak support; the marker was right
+    # there but only the strong-support / weak-support regexes saw it.
+    label, _conf, _excerpt, choice = extract_position(
+        "After thinking about this, I am in favor of option 2.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_preference_is_hash_n_does_not_yield_choice_is() -> None:
+    # The original parse bug: optional `(?:\s+is)?` allowed the
+    # engine to capture "IS" as the choice. The current detector
+    # builds the choice from a structurally-anchored marker capture
+    # (`#1`), so "is" can't sneak in.
+    label, _conf, _excerpt, choice = extract_position(
+        "My preference is #1.\n"
+    )
+    assert label == "poll"
+    assert choice == "1"
+    assert choice != "IS"
+
+
+def test_marker_without_intent_is_not_a_vote() -> None:
+    # A message that mentions an option in prose but doesn't register
+    # an opinion must not be classified as a vote. Avoids
+    # false-positives on chair questions / meeting summaries / etc.
+    body = (
+        "I see we discussed option 1 and option 2 in the last "
+        "meeting, but no decision was made.\n"
+    )
+    label, _conf, _excerpt, choice = extract_position(body)
+    assert label != "poll"
+    assert choice is None
+
+
+def test_intent_far_from_marker_is_not_a_vote() -> None:
+    # Intent and marker must be near each other; an "I support" at
+    # the top of a long message and an "option 2" 500 chars later
+    # shouldn't bind into a poll vote.
+    body = (
+        "I support keeping the WG charter as-is.\n\n"
+        + ("Some paragraph of unrelated discussion. " * 8)
+        + "We could also consider option 2 in a follow-up draft.\n"
+    )
+    label, _conf, _excerpt, _choice = extract_position(body)
+    # Should fall through to support (the "I support" intent at the top).
+    assert label == "support"
+
+
 # --- tally_thread + render -------------------------------------------------
 
 
