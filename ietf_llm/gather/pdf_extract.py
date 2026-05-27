@@ -20,6 +20,7 @@ boundaries.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -27,6 +28,14 @@ from typing import List, Optional
 
 from ..paths import meeting_code_for_relpath, minutes_path
 from ..utils import LogLevel, Verbosity, log
+
+# pypdf emits a steady stream of "Ignoring wrong pointing object N 0
+# (offset 0)" warnings on slide decks exported from PowerPoint / Keynote
+# — those decks have a quirky xref table that pypdf works around fine
+# but still complains about. The warnings are pure noise (extraction
+# succeeds anyway); silence them at module load so a gather doesn't
+# scroll dozens of unactionable lines past the user.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 #: Files we never try to extract — they're already text or non-PDF.
 _EXCLUDED_SUFFIXES = (".txt", ".md", ".json")
