@@ -25,6 +25,13 @@ from .models import DEFAULT_EMBED_MODEL, _get_embed_model
 from .snippet import make_snippet
 from .storage import _db_path, _open_db, _pack, _unpack_matrix
 
+#: After every N files processed, emit a one-line STATUS progress update.
+_PROGRESS_EVERY = 25
+#: …or after this many seconds of silence, whichever comes first. Picked
+#: short enough that a slow embed call doesn't look like the gather
+#: has hung, long enough that small WGs don't get spammed.
+_PROGRESS_SECS = 20.0
+
 
 @dataclass
 class Hit:
@@ -109,8 +116,39 @@ def build_index(
     cur.execute("SELECT DISTINCT file FROM chunks")
     already = {row[0] for row in cur.fetchall()}
 
+    # Quick first pass: how many files actually need re-embedding?
+    # The cache is incremental, so most re-gathers touch only a handful
+    # of files — let the user see that up front instead of waiting
+    # silently through 280 unchanged-file skips.
+    pending = 0
+    for path in files:
+        relpath = os.path.relpath(path, cache_dir)
+        mtime_key = f"mtime:{relpath}"
+        file_mtime = os.path.getmtime(path)
+        cur.execute("SELECT value FROM meta WHERE key=?", (mtime_key,))
+        prev = cur.fetchone()
+        if relpath in already and prev and float(prev[0]) >= file_mtime:
+            continue
+        pending += 1
+    if pending == 0:
+        log(
+            "Embedding index already up to date.",
+            verbose, level=LogLevel.STATUS,
+        )
+    else:
+        log(
+            f"Embedding {pending} new / changed file(s)...",
+            verbose, level=LogLevel.STATUS,
+        )
+
     total_new = 0
     start = time.time()
+    # Periodic progress: emit a one-line update at STATUS level every
+    # `_PROGRESS_EVERY` processed files OR every `_PROGRESS_SECS`,
+    # whichever comes first. Keeps the user informed during long
+    # embeds without spamming on small ones.
+    files_done = 0
+    last_status = start
     for path in files:
         # Relative path within the WG cache is what we store as
         # chunks.file, what consumers pass to get_chunk_text /
@@ -172,11 +210,26 @@ def build_index(
             (mtime_key, str(file_mtime)),
         )
         total_new += len(chunks)
+        files_done += 1
         log(
             f"  embedded {relpath}: {len(chunks)} chunks",
             verbose,
             level=LogLevel.PROGRESS,
         )
+        # Light-touch STATUS pulse so the user sees progress on long
+        # embeds without --verbose. Only fires when we've actually done
+        # work (the skip-unchanged branch above continues without
+        # incrementing files_done).
+        now = time.time()
+        if files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS:
+            elapsed = now - start
+            log(
+                f"  …{files_done}/{pending} files, "
+                f"{total_new} chunks, {elapsed:.0f}s elapsed",
+                verbose,
+                level=LogLevel.STATUS,
+            )
+            last_status = now
 
     conn.commit()
     conn.close()

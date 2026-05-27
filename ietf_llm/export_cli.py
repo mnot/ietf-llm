@@ -69,6 +69,15 @@ def main() -> None:
         help="Where to cache the OAuth2 token (for --create). "
         f"Default: {default_token}",
     )
+    parser.add_argument(
+        "--no-bundle",
+        action="store_true",
+        help="Disable per-year thread bundling and per-repo issue "
+        "bundling. By default the export collapses hundreds of small "
+        "per-thread / per-issue files into a handful of bundles to "
+        "stay under NotebookLM's per-notebook source limits (50 free, "
+        "300 Plus). Pass this for the fully granular per-file dump.",
+    )
     parser.add_argument("--quiet", "-q", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -117,8 +126,11 @@ def main() -> None:
     if warning:
         print(warning, file=sys.stderr)
 
+    bundle = not args.no_bundle
     if args.destination:
-        export.directory(args.wg, args.destination, verbose=verbosity)
+        export.directory(
+            args.wg, args.destination, verbose=verbosity, bundle=bundle,
+        )
     else:
         export.notebooklm(
             args.wg,
@@ -126,4 +138,5 @@ def main() -> None:
             args.credentials_file,
             args.token_file,
             verbose=verbosity,
+            bundle=bundle,
         )

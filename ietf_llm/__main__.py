@@ -159,22 +159,25 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         help="Model id for --summarize (defaults to `llm`'s configured default).",
     )
     parser.add_argument(
-        "--embed",
+        "--no-embed",
         action="store_true",
-        help="Build/refresh the semantic search index for this WG. "
-        "Required for `ietf-llm-search` and the MCP `search_corpus` tool.",
+        help="Skip building the semantic search index. By default the "
+        "index is built on every gather (incremental — only new / changed "
+        "files are re-embedded). Use this to defer index work on the "
+        "first gather, then re-run without the flag later.",
     )
     parser.add_argument(
         "--embed-model",
         metavar="MODEL",
-        help="Embedding model id for --embed. Defaults to a small local "
+        help="Embedding model id. Defaults to a small local "
         "sentence-transformers model with no API key.",
     )
     parser.add_argument(
         "--rebuild-embeddings",
         action="store_true",
-        help="With --embed, drop and re-embed everything instead of "
-        "incrementally updating.",
+        help="Drop and re-embed everything (instead of incrementally "
+        "updating). Useful after a schema migration that adds a new "
+        "per-chunk column.",
     )
     parser.add_argument(
         "--clear-cache",
@@ -279,9 +282,9 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         args,
         wg=args.wg,
         scope=SCOPE,
-        scalars=("months", "summarize", "summarize_model", "embed", "embed_model"),
+        scalars=("months", "summarize", "summarize_model", "no_embed", "embed_model"),
         lists=("github", "github_label", "exclude_github_label"),
-        defaults={"months": DEFAULT_MONTHS, "summarize": False, "embed": False},
+        defaults={"months": DEFAULT_MONTHS, "summarize": False, "no_embed": False},
     )
 
     wg_cache_dir = os.path.join(get_cache_dir(), args.wg)
@@ -389,8 +392,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         registry=registry,
     )
 
-    # Embedding index (opt-in)
-    if args.embed:
+    # Embedding index. Default-on now; opt out with --no-embed for
+    # the rare case (long-running first gather where the user wants
+    # to defer the embed cost).
+    if not args.no_embed:
         from .embeddings import (  # pylint: disable=import-outside-toplevel
             DEFAULT_EMBED_MODEL,
             build_index,
