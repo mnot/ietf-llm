@@ -251,11 +251,17 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
     relayed the chair's characterisation instead of counting" as the
     accuracy gap to close.
     """
-    positions: List[Position] = []
+    # Single pass: split_messages is O(file_size) — re-running it for
+    # the message-count tally was doubling the work on large WGLC
+    # threads (the 282-message TLS MLKEM WGLC was timing out the MCP
+    # client). Build the messages list once, then derive both
+    # msg_counts and positions from it.
+    messages = _split_messages(file_text)
     msg_counts: Dict[str, int] = {}
-    for _idx, sender, _body in _split_messages(file_text):
+    for _idx, sender, _body in messages:
         msg_counts[sender] = msg_counts.get(sender, 0) + 1
-    for msg_idx, sender, body in _split_messages(file_text):
+    positions: List[Position] = []
+    for msg_idx, sender, body in messages:
         label, conf, excerpt = extract_position(body)
         positions.append(
             Position(
