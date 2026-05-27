@@ -37,7 +37,7 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .mbox import clean_email_text, extract_text_content
@@ -362,11 +362,28 @@ def _name_with_role(sender: str, registry: Optional["Registry"]) -> str:
     return f"{sender} ({tag})" if tag else sender
 
 
+def _format_msg_date(msg: "Message") -> str:
+    """Render `msg.date` for the per-thread file's section headers.
+
+    Always emits UTC ("YYYY-MM-DD HH:MM") regardless of the original
+    Date header's timezone. This matters: the chunker re-parses
+    these timestamps to build `chunks.chunk_date` for chronological
+    sorting (read_topic, sort=date). If we render in the message's
+    local timezone, a 15:00 PT message looks identical on the page
+    to a 15:00 UTC message — and `read_topic` mis-orders them by
+    up to 12 hours. Naive datetimes are treated as already-UTC.
+    """
+    if msg.date is None:
+        return "(undated)"
+    aware = msg.date if msg.date.tzinfo else msg.date.replace(tzinfo=timezone.utc)
+    return aware.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
 def _build_outline(thread: Thread, registry: Optional["Registry"] = None) -> str:
     """A short bulleted list of (date, sender, subject) for navigation."""
     lines = []
     for idx, msg in enumerate(thread.members, 1):
-        when = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "(undated)"
+        when = _format_msg_date(msg)
         lines.append(
             f"- **[{idx}]** {when} — {_name_with_role(msg.sender, registry)}"
         )
@@ -426,7 +443,7 @@ def _render_thread(
     parts.append("")
     parts.append("## Messages\n")
     for idx, msg in enumerate(thread.members, 1):
-        when = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "(undated)"
+        when = _format_msg_date(msg)
         header = (
             f"### [{idx}] {when} — {_name_with_role(msg.sender, registry)}"
         )

@@ -275,6 +275,14 @@ chunk (snippet, not full text), and there's no reply-expansion.
 Useful when you want relevance hits in date order but don't need
 the full message bodies.
 
+## Message numbering and `chunk_idx`
+
+In per-thread and per-issue files, the `### [N]` heading number IS
+the chunk_idx — message `[3]` in the file is `chunk_idx=3` in the
+embedding index. `get_chunk_text`, `find_replies`, `read_topic`'s
+output all use the same number. When the user asks about
+"message 3", either reference is correct.
+
 ## Canonical names
 
 Identities are pre-consolidated. "Mark Nottingham" in any digest,

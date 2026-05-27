@@ -470,6 +470,21 @@ def build_overview(wg: str, cache_dir: str) -> str:
         "`get_chunk_text` / `read_file_section` for full context."
     )
     out.append(
+        '- _"how did the debate on X evolve?"_, _"walk me through the '
+        'discussion of Y"_ → '
+        f'`read_topic("{wg}", "X")` '
+        "(returns full messages in date order across threads and "
+        "issues; the narrative-arc primitive)."
+    )
+    out.append(
+        '- _"level of support for X?"_, _"who\'s in which camp?"_, '
+        '_"did the chair call consensus, and is it visible in the '
+        'traffic?"_ → '
+        f'`tally_positions("{wg}", "<one thread or issue file>")` '
+        "(grounded +1/-1/poll-option count plus chair-statements "
+        "section)."
+    )
+    out.append(
         '- _"what\'s open / closed?"_, _"who\'s a chair?"_, '
         '_"what happened in May?"_ → '
         f'`read_digest("{wg}", kind=..., ...filters)` '

@@ -148,7 +148,7 @@ _POLL_DIRECT_RE = re.compile(
     r"""(?:
         \b (?:
             I \s+ (?: want | prefer | favor | support | back | choose | pick )
-          | I \s+ (?:'d|would) \s+ (?: like | prefer | choose | go \s+ with )
+          | (?: I'd | I \s+ (?: 'd | would ) ) \s+ (?: like | prefer | choose | go \s+ with )
           | I \s+ think \s+ the \s+ answer \s+ is
           | (?: my | the ) \s+ pref(?:erence)? \s+ (?: is | would \s+ be )
           | pref(?:erence)? \s+ would \s+ be
@@ -173,7 +173,7 @@ _POLL_DIRECT_RE = re.compile(
 _POLL_INTENT_RE = re.compile(
     r"""(?:
         \b I \s+ (?: want | prefer | favor | support | back | choose | pick ) \b
-      | \b I \s+ (?:'d|would) \s+ (?: like | prefer | choose | go \s+ with ) \b
+      | \b (?: I'd | I \s+ (?: 'd | would ) ) \s+ (?: like | prefer | choose | go \s+ with ) \b
       | \b I \s+ think \s+ the \s+ answer \b
       | \b (?: strong(?:ly)? | slight(?:ly)? ) \s+ pref(?:erence)? \b
       | \b (?: my | the ) \s+ pref(?:erence)? \b

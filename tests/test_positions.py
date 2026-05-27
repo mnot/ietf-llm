@@ -249,6 +249,23 @@ def test_preference_is_hash_n_does_not_yield_choice_is() -> None:
     assert choice != "IS"
 
 
+def test_id_apostrophe_form_is_poll_choice() -> None:
+    # "I'd prefer #2" (no space between I and 'd) was missing from
+    # the earlier regex — fixed by handling the contraction
+    # explicitly.
+    label, _conf, _excerpt, choice = extract_position("I'd prefer #2.\n")
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_id_like_form_is_poll_choice() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "I'd like option 2.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
 def test_marker_without_intent_is_not_a_vote() -> None:
     # A message that mentions an option in prose but doesn't register
     # an opinion must not be classified as a vote. Avoids

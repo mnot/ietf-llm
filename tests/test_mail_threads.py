@@ -503,3 +503,35 @@ def test_participants_line_affiliation_without_role(
     assert "Alice (Author · Mozilla, 1)" in text or "Alice (Mozilla, 1)" in text
     # Critically, no role-less " · Mozilla" form should appear.
     assert "Alice ( · Mozilla" not in text
+
+
+def test_message_date_rendered_in_utc_regardless_of_source_tz(
+    isolated_home: Path,
+) -> None:
+    # Two messages with Date headers in different timezones — both
+    # represent the same wall-clock UTC moment (15:00 PT = 22:00 UTC).
+    # The rendered section headers must show UTC times so the
+    # chunker's re-parse (which assumes UTC) doesn't mis-sort them.
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="TZ test", sender="Alice <a@x>",
+        # Pacific Time: 15:00 -0700 = 22:00 UTC.
+        date="Mon, 01 Jan 2025 15:00:00 -0700",
+        message_id="<a@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="Re: TZ test", sender="Bob <b@x>",
+        # Already UTC: 22:00 +0000 = 22:00 UTC. Same wall-clock as Alice's.
+        date="Mon, 01 Jan 2025 22:00:00 +0000",
+        message_id="<b@x>",
+        in_reply_to="<a@x>",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    # Both messages should render at 22:00 UTC, NOT at their local times.
+    assert "2025-01-01 22:00 — Alice" in text
+    assert "2025-01-01 22:00 — Bob" in text
+    # Specifically, Alice's section MUST NOT carry her 15:00 wall time.
+    assert "15:00 — Alice" not in text
