@@ -246,6 +246,54 @@ def tool_list_labels(wg: str) -> str:
     return _with_freshness(wg, "\n".join(lines))
 
 
+def tool_find_citations(wg: str, draft_name: str) -> str:
+    """Return every thread / issue file that cites the given draft.
+
+    Reads `digests/citations.md` (built at gather time by
+    `gather.citations.scan_citations`). Draft name is normalised the
+    same way the scanner normalises matches (lowercase, version
+    suffix stripped), so `draft-Foo-Bar-07` and `draft-foo-bar` both
+    yield the same result.
+    """
+    # pylint: disable=import-outside-toplevel
+    from .gather.citations import normalize_draft_name
+    cache = get_wg_file_cache_dir(wg)
+    citations_md = digest_path(cache, "citations")
+    if not os.path.isfile(citations_md):
+        return _with_freshness(
+            wg,
+            f"No citations digest for {wg}. Either no thread / issue "
+            "files reference any drafts, or this WG was gathered with "
+            f"an older version. Re-run `ietf-llm {wg}` to rebuild.",
+        )
+    normalised = normalize_draft_name(draft_name)
+    try:
+        with open(citations_md, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return f"Couldn't read citations digest for {wg}."
+    # Find the section for this draft. Sections are
+    # `## `<draft>` (N citation(s))` followed by bullet lines.
+    section_re = re.compile(
+        rf"^## `{re.escape(normalised)}` \([^)]+\)\s*\n+"
+        r"(?P<body>(?:^- .*\n?)*)",
+        re.MULTILINE,
+    )
+    match = section_re.search(text)
+    if match is None:
+        return _with_freshness(
+            wg,
+            f"No citations recorded for `{normalised}` in {wg}. "
+            "(The scanner only sees draft references in cached thread "
+            "and issue files; check `list_files(\""
+            f"{wg}\", pattern=\"drafts/{normalised}*\")` to confirm "
+            "the draft itself is in the corpus.)",
+        )
+    body = match.group("body").strip()
+    out = [f"# Citations for `{normalised}` in {wg}\n", body]
+    return _with_freshness(wg, "\n".join(out))
+
+
 def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     cache = get_wg_file_cache_dir(wg)
     if not os.path.isdir(cache):
@@ -1358,6 +1406,30 @@ def main() -> None:
         (neither) is rare and gets a clear "no vocabulary" message.
         """
         return tool_list_labels(wg)
+
+    @server.tool()
+    def find_citations(wg: str, draft_name: str) -> str:
+        """Find every thread / issue that cites a given Internet-Draft.
+
+        The gather step scans per-thread and per-issue markdown files
+        for `draft-...` references and records them in
+        `digests/citations.md`. This tool reads that digest for the
+        given draft name and returns each citing file plus the
+        chunk_idx and a short context excerpt.
+
+        Use when:
+          - Reading a draft and wanting the surrounding list discussion
+            ("what threads engage with this draft?").
+          - Reading a thread that mentions a draft and wanting to find
+            the *other* threads that engage the same draft.
+          - Triaging "is this draft actually being discussed in the WG"
+            from a count alone (overview's Documents section shows the
+            count inline; this tool drills into the locations).
+
+        `draft_name` accepts any of `draft-foo-bar`, `draft-foo-bar-07`,
+        `draft-foo-bar.txt` — version suffix stripped before lookup.
+        """
+        return tool_find_citations(wg, draft_name)
 
     @server.tool()
     def list_files(wg: str, pattern: Optional[str] = None) -> str:

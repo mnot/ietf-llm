@@ -438,6 +438,25 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # names are already canonical when threads are written).
     write_thread_files(args.wg, cache_dir, registry=registry, verbose=verbosity)
 
+    # Cross-link drafts to threads / issues that cite them. Scans the
+    # per-thread and per-issue .md files we just wrote and emits
+    # digests/citations.md plus a citation count per draft that
+    # overview can surface inline. Has to run AFTER write_thread_files
+    # and write_issue_files; runs BEFORE generate_digests so the
+    # overview's documents section can pick up the counts.
+    # pylint: disable=import-outside-toplevel
+    from .gather.citations import (
+        citation_counts,
+        scan_citations,
+        write_citations_digest,
+    )
+    citations_map = scan_citations(cache_dir, verbose=verbosity)
+    write_citations_digest(cache_dir, citations_map, verbose=verbosity)
+    # citation_counts() is used by overview at tool-call time; nothing
+    # consumes the in-memory map further in the gather pipeline. Kept
+    # imported so a future caller can compute it without re-scanning.
+    _ = citation_counts
+
     # People digest
     write_people_digest(args.wg, cache_dir, registry, verbose=verbosity)
 

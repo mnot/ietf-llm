@@ -95,12 +95,15 @@ def _leadership_summary(cache_dir: str, wg: str) -> str:
 
 
 def _documents_summary(cache_dir: str, wg: str) -> List[str]:
-    """One bullet per active document from the people digest."""
+    """One bullet per active document from the people digest, with
+    citation counts appended when the citations digest knows the
+    draft has been referenced elsewhere in the corpus."""
     rows = _top_n_table_rows(
         _digest_path(cache_dir, wg, "people"),
         "Document authors",
         limit=50,
     )
+    citation_counts = _load_citation_counts(cache_dir)
     # The table is Name | Documents | Email; we want one bullet per
     # distinct document with its authors gathered alongside.
     docs: dict[str, List[str]] = {}
@@ -123,10 +126,40 @@ def _documents_summary(cache_dir: str, wg: str) -> List[str]:
                 else name
             )
             docs.setdefault(doc, []).append(tagged)
-    return [
-        f"- `{doc}` — {', '.join(sorted(authors))}"
-        for doc, authors in sorted(docs.items())
-    ]
+    out: List[str] = []
+    for doc, authors in sorted(docs.items()):
+        cited = citation_counts.get(doc.lower())
+        cite_tag = f"  _(cited in {cited})_" if cited else ""
+        out.append(f"- `{doc}` — {', '.join(sorted(authors))}{cite_tag}")
+    return out
+
+
+def _load_citation_counts(cache_dir: str) -> dict[str, int]:
+    """Read the `citations.md` digest and return `{draft → count}`.
+
+    Parses the `## \\`draft-foo\\` (N citation(s))` headers — cheap
+    regex over the digest's structured headings. Empty dict when no
+    citations digest exists (gather pre-citations or no citations
+    found).
+    """
+    path = _digest_path(cache_dir, "wg", "citations")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    out: dict[str, int] = {}
+    for match in re.finditer(
+        r"^## `(?P<doc>[^`]+)` \((?P<n>\d+) citation",
+        text, re.MULTILINE,
+    ):
+        try:
+            out[match.group("doc").lower()] = int(match.group("n"))
+        except ValueError:
+            continue
+    return out
 
 
 def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:

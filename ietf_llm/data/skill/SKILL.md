@@ -75,6 +75,14 @@ recent-threads section often surface terms worth searching for.
   for this when you want **the file**, not query-anchored hits —
   `read_topic` requires a query and will drop messages that don't
   match it.
+- _"what threads engage with draft X?"_, _"who's been discussing
+  draft Y?"_, _"is this draft actually being talked about?"_ →
+  `find_citations(wg, "draft-...")`. Returns every thread / issue
+  file that mentions the draft, with chunk indices and short
+  context excerpts. The `overview` Documents section also shows
+  the citation count inline (`cited in N`) when it's non-zero.
+  Useful in both directions: from a draft to the discussion, and
+  from a thread mention to the wider conversation.
 - _"what does §N of draft X say?"_, _"quote the Security
   Considerations of draft Y"_, _"what's actually in the draft?"_
   → `read_file_section(wg, "drafts/<draft-name>-NN.txt",
