@@ -10,6 +10,37 @@ from ietf_llm.gather.draft_authors import latest_draft_paths, parse_authors
 # --- parse_authors ---------------------------------------------------------
 
 
+def test_organization_captured_from_line_after_name() -> None:
+    text = """Authors' Addresses
+
+   Mark Nottingham
+   Cloudflare
+   Email: mnot@mnot.net
+
+   Alice Chen
+   Mozilla
+   Email: alice@example.net
+"""
+    authors = parse_authors(text)
+    assert authors[0].name == "Mark Nottingham"
+    assert authors[0].organization == "Cloudflare"
+    assert authors[1].organization == "Mozilla"
+
+
+def test_organization_none_when_only_name_and_email() -> None:
+    # Some author blocks skip the org line entirely (independent
+    # participants, or terse layouts). organization stays None — the
+    # consumer should NOT see a default like "Independent" appear out
+    # of nowhere.
+    text = """Author's Address
+
+   Mark Nottingham
+   Email: mnot@mnot.net
+"""
+    authors = parse_authors(text)
+    assert authors[0].organization is None
+
+
 def test_basic_two_author_layout() -> None:
     text = """Internet-Draft               aipref                       November 2025
 

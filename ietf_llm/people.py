@@ -65,6 +65,15 @@ class Person:
     # `edited_documents` so callers can distinguish.
     authored_documents: Set[str] = field(default_factory=set)
     edited_documents: Set[str] = field(default_factory=set)
+    # Affiliations declared in draft / RFC author blocks, keyed by
+    # document basename. People legitimately ship different
+    # affiliations across drafts (e.g. an author who joined a company
+    # mid-WG, or who lists "Independent" on one draft and an
+    # employer on another). Keeping per-document mapping lets callers
+    # render "Cloudflare (rfc6265bis); Independent (draft-foo)"
+    # rather than collapsing to a possibly-misleading single value.
+    # Empty for people whose only signal is mailing-list or GitHub.
+    affiliations: Dict[str, str] = field(default_factory=dict)
     message_count: int = 0
     issue_count: int = 0
     first_seen: Optional[datetime] = None
@@ -236,6 +245,7 @@ class Registry:
         email_address: Optional[str],
         document: str,
         is_editor: bool = False,
+        organization: Optional[str] = None,
     ) -> Optional[Person]:
         """Record `name` as an author of `document` (a draft/RFC basename).
 
@@ -268,6 +278,10 @@ class Registry:
             person.edited_documents.add(document)
         else:
             person.authored_documents.add(document)
+        if organization:
+            stripped = organization.strip()
+            if stripped:
+                person.affiliations[document] = stripped
         return person
 
     def add_datatracker_role(
@@ -328,6 +342,25 @@ class Registry:
         if not canonical_name:
             return None
         return self._by_name.get(canonical_name.lower())
+
+    def affiliation_tag(self, canonical_name: str) -> Optional[str]:
+        """Single short affiliation tag for inline use (participants
+        line, leadership table). Returns None when no draft-derived
+        affiliation is known — silence beats guessing.
+
+        When a person has shipped under multiple distinct affiliations
+        across different drafts, returns them joined by "; " so the
+        consumer sees the variation rather than an arbitrary pick. The
+        full per-document mapping lives on `Person.affiliations` for
+        callers that want to attribute by document.
+        """
+        person = self.person_for_name(canonical_name)
+        if person is None or not person.affiliations:
+            return None
+        distinct = sorted({org for org in person.affiliations.values() if org})
+        if not distinct:
+            return None
+        return "; ".join(distinct)
 
     def role_tag(self, canonical_name: str) -> Optional[str]:
         """Single short role tag for inline use in chunk titles / outline
@@ -564,6 +597,7 @@ def _ingest_draft_authors(
                 author.email,
                 document=doc_id,
                 is_editor=author.is_editor,
+                organization=author.organization,
             )
             count += 1
     log(
@@ -616,19 +650,34 @@ def write_people_digest(
             "issue authors elsewhere in the corpus use these canonical "
             "names._\n\n"
         )
+        fh.write(
+            "_**Affiliation** is taken from the `Authors' Addresses` "
+            "block of drafts the person has authored. It captures who "
+            "they shipped a draft as — load-bearing for implementer "
+            "signal (the 'running code' part of rough consensus). It is "
+            "NOT a license to claim someone speaks for that organisation: "
+            "people participate as individuals. When the same person has "
+            "shipped under different orgs across drafts, all are listed "
+            "(`A; B`). Blank = no authored draft = no documented "
+            "affiliation; do not infer from email domain._\n\n"
+        )
 
         # Formal WG leadership comes from Datatracker. Surfaced first
         # because "who runs this WG" is usually what the reader wants
         # to know before scrolling through 100+ participants.
         if leaders:
             fh.write(f"## Working Group leadership ({len(leaders)})\n\n")
-            fh.write("| Role | Name | Email |\n|---|---|---|\n")
+            fh.write(
+                "| Role | Name | Affiliation | Email |\n"
+                "|---|---|---|---|\n"
+            )
             for person in leaders:
                 roles_text = ", ".join(sorted(person.roles))
                 primary_email = next(iter(sorted(person.emails)), "")
+                aff = _format_affiliations(person)
                 fh.write(
                     f"| {roles_text} | {person.canonical_name} | "
-                    f"{primary_email} |\n"
+                    f"{aff} | {primary_email} |\n"
                 )
             fh.write("\n")
 
@@ -640,7 +689,10 @@ def write_people_digest(
         ]
         if authors:
             fh.write(f"## Document authors / editors ({len(authors)})\n\n")
-            fh.write("| Name | Documents | Email |\n|---|---|---|\n")
+            fh.write(
+                "| Name | Documents | Affiliation | Email |\n"
+                "|---|---|---|---|\n"
+            )
             authors.sort(key=lambda p: p.canonical_name.lower())
             for person in authors:
                 primary_email = next(iter(sorted(person.emails)), "")
@@ -648,8 +700,10 @@ def write_people_digest(
                     f"{d} (ed.)" for d in sorted(person.edited_documents)
                 ]
                 docs = ", ".join(parts)
+                aff = _format_affiliations(person)
                 fh.write(
-                    f"| {person.canonical_name} | {docs} | {primary_email} |\n"
+                    f"| {person.canonical_name} | {docs} | "
+                    f"{aff} | {primary_email} |\n"
                 )
             fh.write("\n")
 
@@ -660,14 +714,20 @@ def write_people_digest(
             _write_actor_table(
                 fh,
                 linked,
-                columns=("Name", "Roles", "Emails", "GitHub", "Msgs", "Issues"),
+                columns=(
+                    "Name", "Roles", "Affiliation",
+                    "Emails", "GitHub", "Msgs", "Issues",
+                ),
             )
         if mail_only:
             fh.write(f"## Mailing list only ({len(mail_only)})\n\n")
             _write_actor_table(
                 fh,
                 mail_only,
-                columns=("Name", "Roles", "Emails", "Msgs", "First", "Last"),
+                columns=(
+                    "Name", "Roles", "Affiliation",
+                    "Emails", "Msgs", "First", "Last",
+                ),
             )
         if gh_only:
             fh.write(f"## GitHub only ({len(gh_only)})\n\n")
@@ -682,6 +742,20 @@ def write_people_digest(
         level=LogLevel.STATUS,
     )
     return out_path
+
+
+def _format_affiliations(person: Person) -> str:
+    """Render a Person's affiliations for a digest table cell.
+
+    Returns "" (empty cell, not literally "—") when no draft-derived
+    affiliation is known: the column header makes its meaning clear,
+    and a blank cell is honest. When multiple distinct orgs appear
+    across drafts, they're "; "-joined sorted alphabetically.
+    """
+    if not person.affiliations:
+        return ""
+    distinct = sorted({org for org in person.affiliations.values() if org})
+    return "; ".join(distinct).replace("|", "\\|")
 
 
 def _bucket_persons(
@@ -737,4 +811,6 @@ def _format_cell(  # pylint: disable=too-many-return-statements
         return person.last_seen.strftime("%Y-%m-%d") if person.last_seen else ""
     if column == "Roles":
         return ", ".join(sorted(person.roles)).replace("|", "\\|")
+    if column == "Affiliation":
+        return _format_affiliations(person)
     return ""

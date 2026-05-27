@@ -336,6 +336,77 @@ def test_people_digest_includes_document_authors(isolated_home: Path) -> None:
     assert "Paul Keller" in text
 
 
+def test_add_document_author_records_affiliation(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-ietf-foo", organization="Cloudflare",
+    )
+    person = r.persons[0]
+    assert person.affiliations == {"draft-ietf-foo": "Cloudflare"}
+
+
+def test_affiliation_can_vary_across_drafts(isolated_home: Path) -> None:
+    # User-raised case: same person ships under different orgs on
+    # different drafts. The registry must preserve both so the
+    # renderer can show "Cloudflare; Independent" rather than collapse
+    # to whichever happens to be added last.
+    r = Registry()
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-ietf-foo", organization="Cloudflare",
+    )
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-ietf-bar", organization="Independent",
+    )
+    person = r.persons[0]
+    assert person.affiliations == {
+        "draft-ietf-foo": "Cloudflare",
+        "draft-ietf-bar": "Independent",
+    }
+    assert r.affiliation_tag("Mark Nottingham") == "Cloudflare; Independent"
+
+
+def test_affiliation_tag_none_when_no_authorship(isolated_home: Path) -> None:
+    # Mailing-list-only participants have no draft-derived affiliation;
+    # the tag must be None rather than guessed from email domain.
+    r = Registry()
+    r.add_email_message("Alice <alice@example.com>", None)
+    assert r.affiliation_tag("Alice") is None
+
+
+def test_people_digest_renders_affiliation_column(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_document_author(
+        "Paul Keller", "paul@openfuture.eu",
+        document="draft-ietf-aipref-vocab", organization="Open Future",
+    )
+    path = write_people_digest(
+        "wg", get_wg_file_cache_dir("wg"), r, verbose=Verbosity.QUIET,
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    # Affiliation column header AND the rendered value both appear.
+    assert "Affiliation" in text
+    assert "Open Future" in text
+
+
+def test_people_digest_explains_affiliation_caveats(isolated_home: Path) -> None:
+    # The digest preamble should warn the reader off email-domain
+    # inference — affiliation is from the draft author block, not
+    # the From header.
+    r = Registry()
+    r.add_email_message("Alice <alice@example.com>", None)
+    path = write_people_digest(
+        "wg", get_wg_file_cache_dir("wg"), r, verbose=Verbosity.QUIET,
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    assert "Authors' Addresses" in text
+    assert "do not infer from email domain" in text.lower()
+
+
 def test_role_column_appears_in_activity_table(isolated_home: Path) -> None:
     r = Registry()
     r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)

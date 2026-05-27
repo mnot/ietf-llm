@@ -28,6 +28,14 @@ class DraftAuthor:
     name: str
     email: Optional[str]
     is_editor: bool = False
+    # Author's stated organisation, taken from the line immediately
+    # after the name in the Authors' Addresses block. Free-form text
+    # (e.g. "Cloudflare", "Independent", "Mozilla") — author-written,
+    # so a person can ship different orgs across different drafts.
+    # Often missing (line skipped entirely) when an author works as
+    # an individual; surface as None in that case rather than forcing
+    # a placeholder.
+    organization: Optional[str] = None
 
 
 # Match both "Author's Address" (singular possessive) and
@@ -82,8 +90,22 @@ def parse_authors(text: str) -> List[DraftAuthor]:
 
 
 def _commit_block(lines: List[str], out: List[DraftAuthor]) -> None:
-    """Pull (name, email, is_editor) from one indented block."""
+    """Pull (name, organization, email, is_editor) from one indented block.
+
+    Block layout (RFC / I-D convention):
+
+        Mark Nottingham (editor)        ← name (optional editor suffix)
+        Cloudflare                      ← organization (optional)
+        Email: mnot@mnot.net            ← contact line
+        URI:   https://www.mnot.net/    ← skipped
+
+    The organisation is whatever non-metadata line appears between the
+    name and the first `Email:`. We only keep one organisation per
+    block — drafts sometimes wrap addresses across multiple lines but
+    we don't treat trailing address lines (street, city) as the org.
+    """
     name: Optional[str] = None
+    organization: Optional[str] = None
     email: Optional[str] = None
     is_editor = False
     for line in lines:
@@ -102,8 +124,21 @@ def _commit_block(lines: List[str], out: List[DraftAuthor]) -> None:
                 is_editor = True
             else:
                 name = line
+        elif organization is None:
+            # First non-metadata, non-name line is the org. Drafts
+            # vary: some authors include only an org, some include
+            # mailing address lines below that. Take the first; it's
+            # the one that matters for affiliation surfacing.
+            organization = line
     if name:
-        out.append(DraftAuthor(name=name, email=email, is_editor=is_editor))
+        out.append(
+            DraftAuthor(
+                name=name,
+                email=email,
+                is_editor=is_editor,
+                organization=organization,
+            )
+        )
 
 
 # --- WG-cache walker -------------------------------------------------------

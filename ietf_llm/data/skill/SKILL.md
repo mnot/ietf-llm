@@ -231,12 +231,32 @@ in the `people` digest, say so.
 
 A few interpretive norms that shape how to read the corpus:
 
-- **Individuals, not employers.** People participate as
-  individuals, not as representatives of their company. Don't
-  attribute a position to an employer based on the author's email
-  domain or affiliation. Only treat something as a company
-  position when the author explicitly frames it that way
-  ("my company…", "speaking for X…", "as an employee of Y…").
+- **Individuals, not employers — but implementer signal is real.**
+  People participate as individuals, not as company representatives.
+  Don't attribute a position to a company ("Cloudflare opposes X")
+  based on the author's email domain or recorded affiliation. Only
+  treat something as a *company* position when the author explicitly
+  frames it that way ("my company…", "speaking for X…", "as an
+  employee of Y…").
+
+  *That said*: who ships running code matters. "Rough consensus and
+  running code" weighs implementer voices, and clustering of stated
+  affiliations across an argument is itself news — *"every TLS library
+  vendor on the publish-as-is side"* is a substantive observation,
+  even if no single voice claimed to speak for their employer. The
+  `people` digest records affiliation from the **Authors' Addresses**
+  block of drafts each person has authored (the authoritative place);
+  the thread `Participants:` line surfaces it inline. Blank
+  affiliation = no authored draft on record, not "independent."
+
+  Two rules of thumb:
+  1. Aggregate, don't attribute. "8 of 12 stated supporters are from
+     organisations shipping TLS stacks" — fine. "Cloudflare supports
+     X" — not fine, unless they said so.
+  2. Email domain is NOT affiliation. `mnot.net` is Mark
+     Nottingham's personal domain; he ships drafts as Cloudflare,
+     Independent, or other. Use the `affiliations` field on Person /
+     the people digest, not the From-header domain.
 
 - **Decisions happen on the mailing list, not in meetings.** A
   meeting might map out a proposal; the binding move is

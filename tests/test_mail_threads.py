@@ -447,3 +447,57 @@ def test_participants_line_includes_role_tag_when_known(
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
     assert "Mark Nottingham (Chair, 1)" in text
+
+
+def test_participants_line_includes_affiliation_when_known(
+    isolated_home: Path,
+) -> None:
+    # Affiliation from the draft author block surfaces in the
+    # Participants line: `Name (Chair · Cloudflare, 3)`. Implementer
+    # signal at a glance — without claiming the person spoke FOR
+    # their employer in any specific message.
+    from ietf_llm.people import Registry
+
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Mark Nottingham <mnot@mnot.net>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+    )
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-ietf-foo", organization="Cloudflare",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    assert "Mark Nottingham (Chair · Cloudflare, 1)" in text
+
+
+def test_participants_line_affiliation_without_role(
+    isolated_home: Path,
+) -> None:
+    # When affiliation is known but no formal role, just the org +
+    # count: `Name (Cloudflare, 3)`. No "·" separator when there's
+    # nothing on its left.
+    from ietf_llm.people import Registry
+
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Alice <alice@example.com>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+    )
+    r = Registry()
+    r.add_email_message("Alice <alice@example.com>", None)
+    r.add_document_author(
+        "Alice", "alice@example.com",
+        document="draft-ietf-foo", organization="Mozilla",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    assert "Alice (Author · Mozilla, 1)" in text or "Alice (Mozilla, 1)" in text
+    # Critically, no role-less " · Mozilla" form should appear.
+    assert "Alice ( · Mozilla" not in text
