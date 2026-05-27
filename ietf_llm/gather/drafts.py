@@ -1,9 +1,31 @@
 import os
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, log, fetch_resource, get_group_type
+
+
+# `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
+# `draft-foo-bar` all normalise to `draft-foo-bar`. Used by both
+# `--draft` argument parsing and by `process_extra_drafts` so callers
+# can pass whatever form they have without thinking.
+_DRAFT_VERSION_SUFFIX_RE = re.compile(r"-\d{2}(?:\.txt)?$")
+_DRAFT_TXT_SUFFIX_RE = re.compile(r"\.txt$")
+
+
+def normalize_draft_name(name: str) -> str:
+    """Return the version-less base draft name.
+
+    `draft-foo-bar-07.txt` → `draft-foo-bar`
+    `draft-foo-bar-07`     → `draft-foo-bar`
+    `draft-foo-bar.txt`    → `draft-foo-bar`
+    `draft-foo-bar`        → `draft-foo-bar`
+    """
+    cleaned = name.strip()
+    cleaned = _DRAFT_VERSION_SUFFIX_RE.sub("", cleaned)
+    cleaned = _DRAFT_TXT_SUFFIX_RE.sub("", cleaned)
+    return cleaned
 
 
 def get_wg_documents(
@@ -74,6 +96,108 @@ def get_wg_documents(
     }
 
 
+def fetch_current_rev(
+    draft_name: str, verbose: Verbosity = Verbosity.STATUS
+) -> Optional[int]:
+    """Resolve a draft's current revision via the Datatracker JSON API.
+
+    Returns the integer revision (e.g. 7 for `-07`) or None on
+    failure. Used for `--draft` additions where we don't know what
+    revisions exist without asking.
+    """
+    url = (
+        f"https://datatracker.ietf.org/api/v1/doc/document/"
+        f"{draft_name}/?format=json"
+    )
+    res = fetch_resource(url)
+    if not res:
+        return None
+    try:
+        body = res.json()
+    except ValueError:
+        return None
+    rev = body.get("rev") if isinstance(body, dict) else None
+    if not isinstance(rev, str) or not rev.isdigit():
+        return None
+    try:
+        return int(rev)
+    except ValueError:
+        return None
+
+
+def _download_all_revisions(
+    draft_name: str,
+    max_rev: int,
+    out_dir: str,
+    verbose: Verbosity,
+) -> List[str]:
+    """Pull every revision (00..max_rev) of one draft into out_dir.
+    Returns the paths of newly-written files (skips revisions whose
+    .txt is already cached)."""
+    updated: List[str] = []
+    log(
+        f"Processing draft: {draft_name} (revs 00 to {max_rev:02d})",
+        verbose, level=LogLevel.STATUS,
+    )
+    for rev in range(max_rev + 1):
+        rev_str = f"{rev:02d}"
+        filename = f"{draft_name}-{rev_str}.txt"
+        filepath = os.path.join(out_dir, filename)
+        if os.path.exists(filepath):
+            continue
+        url = f"https://www.ietf.org/archive/id/{draft_name}-{rev_str}.txt"
+        log(f"Downloading {filename}...", verbose, level=LogLevel.PROGRESS)
+        res = fetch_resource(url)
+        if res:
+            with open(filepath, "w", encoding="utf-8") as out_fh:
+                out_fh.write(str(res.text))
+            updated.append(filepath)
+    return updated
+
+
+def process_extra_drafts(
+    draft_names: List[str],
+    destination: str,
+    verbose: Verbosity = Verbosity.STATUS,
+) -> List[str]:
+    """Download every revision of each given draft.
+
+    Use for drafts that aren't auto-discovered as WG documents on
+    Datatracker — typically `--draft draft-<author>-<wg>-<topic>`
+    additions where the WG follows but doesn't own the draft (or
+    where the author hasn't yet asked for adoption). Each name is
+    version-stripped first, so `draft-foo-bar`, `draft-foo-bar-07`,
+    and `draft-foo-bar-07.txt` all yield the same result.
+
+    Resolves the current revision via Datatracker so we know how
+    many to fetch. Skips silently for drafts the API can't find —
+    a typoed name shouldn't kill the whole gather.
+    """
+    if not draft_names:
+        return []
+    updated: List[str] = []
+    out_dir = drafts_dir(destination)
+    os.makedirs(out_dir, exist_ok=True)
+    for raw in draft_names:
+        name = normalize_draft_name(raw)
+        if not name.startswith("draft-"):
+            log(
+                f"--draft {raw!r}: doesn't look like a draft name; skipping.",
+                verbose, level=LogLevel.STATUS,
+            )
+            continue
+        max_rev = fetch_current_rev(name, verbose)
+        if max_rev is None:
+            log(
+                f"--draft {name}: Datatracker doesn't know this draft; "
+                "skipping.",
+                verbose, level=LogLevel.STATUS,
+            )
+            continue
+        updated.extend(_download_all_revisions(name, max_rev, out_dir, verbose))
+    return updated
+
+
 def process_documents(
     wg_name: str,
     destination: str,
@@ -96,27 +220,9 @@ def process_documents(
         for draft in drafts:
             name = str(draft["name"])
             max_rev = int(draft["max_rev"])
-            log(
-                f"Processing draft: {name} (revs 00 to {max_rev:02d})",
-                verbose,
-                level=LogLevel.STATUS,
+            updated.extend(
+                _download_all_revisions(name, max_rev, out_dir, verbose)
             )
-
-            for rev in range(max_rev + 1):
-                rev_str = f"{rev:02d}"
-                filename = f"{name}-{rev_str}.txt"
-                filepath = os.path.join(out_dir, filename)
-
-                if os.path.exists(filepath):
-                    continue
-
-                url = f"https://www.ietf.org/archive/id/{name}-{rev_str}.txt"
-                log(f"Downloading {filename}...", verbose, level=LogLevel.PROGRESS)
-                res = fetch_resource(url)
-                if res:
-                    with open(filepath, "w", encoding="utf-8") as out_fh:
-                        out_fh.write(str(res.text))
-                    updated.append(filepath)
     else:
         log(f"No drafts found for {wg_name}.", verbose, level=LogLevel.STATUS)
 

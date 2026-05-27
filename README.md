@@ -313,6 +313,12 @@ ietf-llm [OPTIONS] <wg_shortname>
 ```
 
 - `--github OWNER/REPO` — repeat per GitHub repo whose issues to gather.
+- `--draft DRAFT-NAME` — extra Internet-Draft to track, beyond the
+  WG's auto-discovered documents (repeatable, persisted). Version
+  suffix is stripped; every revision is gathered.
+- `--mailing-list LIST` — extra IETF-hosted mailing list to sync,
+  beyond the WG's auto-discovered one (repeatable, persisted).
+  Accepts `foo` or `foo@ietf.org`.
 - `--github-label LABEL` / `--exclude-github-label LABEL` — filter
   issues by label; repeatable.
 - `--months N` — months of mailing list / meeting history (default 12).

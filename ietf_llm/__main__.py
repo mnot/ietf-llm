@@ -22,7 +22,7 @@ from . import __version__, config, paths
 from .freshness import record_gather
 from .gather.charter import process_charter
 from .digest import generate_digests
-from .gather.drafts import process_documents
+from .gather.drafts import process_documents, process_extra_drafts
 from .gather.github import download_github_issues, process_github_issues
 from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
@@ -129,6 +129,26 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         action="append",
         metavar="OWNER/REPO",
         help="GitHub repo whose issues should be gathered (repeat for multiple).",
+    )
+    parser.add_argument(
+        "--draft",
+        action="append",
+        metavar="DRAFT-NAME",
+        help="Internet-Draft to track in addition to the WG's auto-"
+        "discovered documents (repeat for multiple). Version suffix "
+        "is stripped — pass `draft-foo-bar` or `draft-foo-bar-07` and "
+        "every revision (00..current) is gathered. Persisted; future "
+        "runs without --draft pick up new revisions automatically.",
+    )
+    parser.add_argument(
+        "--mailing-list",
+        action="append",
+        metavar="LIST",
+        dest="mailing_list",
+        help="Mailing list to sync in addition to the WG's auto-"
+        "discovered list (repeat for multiple). Assumes IETF hosting "
+        "(`imap.ietf.org`); accepts either `foo` or `foo@ietf.org`. "
+        "Persisted; future runs without --mailing-list still sync it.",
     )
     parser.add_argument(
         "--github-label",
@@ -280,7 +300,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         wg=args.wg,
         scope=SCOPE,
         scalars=("months", "summarize", "summarize_model", "no_embed", "embed_model"),
-        lists=("github", "github_label", "exclude_github_label"),
+        lists=(
+            "github", "github_label", "exclude_github_label",
+            "draft", "mailing_list",
+        ),
         defaults={"months": DEFAULT_MONTHS, "summarize": False, "no_embed": False},
     )
 
@@ -308,8 +331,15 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     process_meetings(args.wg, cache_dir, verbose=verbosity, months=args.months)
 
     # Mailing list (year-files for grep / NotebookLM, plus per-thread
-    # reconstructions for legible reading by LLM consumers).
-    sync_mailing_list(args.wg, cache_dir, months=args.months, verbose=verbosity)
+    # reconstructions for legible reading by LLM consumers). Extra
+    # lists from --mailing-list are layered in on top of the
+    # auto-discovered one.
+    sync_mailing_list(
+        args.wg, cache_dir,
+        months=args.months,
+        extra_lists=args.mailing_list,
+        verbose=verbosity,
+    )
 
     # Transcripts (download, then prepend a meeting-context header to
     # each so chunks deep in a 200KB transcript carry attribution).
@@ -318,6 +348,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
     # Documents (drafts & RFCs)
     process_documents(args.wg, cache_dir, verbose=verbosity)
+    # Extra drafts added via --draft. These don't appear on the WG's
+    # documents page (often individual / author submissions the WG is
+    # tracking but doesn't own), so they need explicit naming.
+    if args.draft:
+        process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
 
     # Extract text from any PDFs in the cache (slide decks, whiteboards,
     # etc.). Writes a sibling .pdf.txt for each so the chunker picks

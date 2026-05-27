@@ -19,6 +19,23 @@ IMAP_PASS = "mnot+ietf-llm@ietf.org"
 BATCH_SIZE = 50
 
 
+def normalize_list_name(raw: str) -> str:
+    """Return just the list-name portion of an IETF mailing list address.
+
+    `foo@ietf.org`  → `foo`
+    `foo@irtf.org`  → `foo`  (IRTF RGs use the same IMAP server)
+    `foo`           → `foo`  (already bare)
+
+    Whitespace stripped; case lowered to match IMAP folder convention.
+    Used by both `--mailing-list` argument parsing and the sync entry
+    point so callers can pass either form.
+    """
+    cleaned = raw.strip().lower()
+    if "@" in cleaned:
+        cleaned = cleaned.split("@", 1)[0]
+    return cleaned
+
+
 def extract_text_content(msg: EmailMessage) -> str:
     """Extract plain text from an EmailMessage, ignoring attachments and HTML."""
     try:
@@ -164,40 +181,32 @@ def _download_batches(
     return new_count
 
 
-def sync_mailing_list(
+def _sync_one_list(
     wg_name: str,
-    dest_folder: str,
-    months: Optional[int] = None,
-    verbose: Verbosity = Verbosity.STATUS,
+    list_name: str,
+    months: Optional[int],
+    verbose: Verbosity,
 ) -> List[str]:
-    """Sync mailing list via IMAP and cache messages locally. Returns list of updated files."""
-    list_name = get_mailing_list_name(wg_name)
+    """IMAP-sync a single list. Returns the UIDs (as strings) that
+    fall within the search window for downstream processing. Per-list
+    cache lives at `imap-cache/<wg>/<list>/`."""
     log(
         f"Syncing list '{list_name}' for WG {wg_name} via IMAP...",
-        verbose,
-        level=LogLevel.STATUS,
+        verbose, level=LogLevel.STATUS,
     )
-
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir, exist_ok=True)
-
+    os.makedirs(cache_dir, exist_ok=True)
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         mail.login(IMAP_USER, IMAP_PASS)
-
-        # Quote folder name to handle spaces
         folder = f'"Shared Folders/{list_name}"'
         status, _ = mail.select(folder, readonly=True)
         if status != "OK":
             log(
                 f"Error: Could not select IMAP folder '{folder}'",
-                verbose,
-                level=LogLevel.ERROR,
+                verbose, level=LogLevel.ERROR,
             )
             return []
-
-        # Determine search criteria
         search_criteria = "ALL"
         if months:
             since_date = (datetime.now() - timedelta(days=30 * months)).strftime(
@@ -205,64 +214,121 @@ def sync_mailing_list(
             )
             search_criteria = f'(SINCE "{since_date}")'
             log(
-                f"Searching for messages since {since_date}...",
-                verbose,
-                level=LogLevel.PROGRESS,
+                f"  searching for messages since {since_date}...",
+                verbose, level=LogLevel.PROGRESS,
             )
-
         status, data = mail.uid("search", search_criteria)
         if status != "OK":
             log("Error: IMAP search failed.", verbose, level=LogLevel.ERROR)
             return []
-
         uids = data[0].split()
-        log(f"Found {len(uids)} potential messages.", verbose, level=LogLevel.PROGRESS)
-
-        # Filter out what we already have in cache
-        missing_uids = []
-        for uid in uids:
-            uid_str = uid.decode()
-            cache_file = os.path.join(cache_dir, f"{uid_str}.eml")
-            if not os.path.exists(cache_file):
-                missing_uids.append(uid)
-
+        log(
+            f"  found {len(uids)} potential messages on '{list_name}'.",
+            verbose, level=LogLevel.PROGRESS,
+        )
+        missing_uids = [
+            uid for uid in uids
+            if not os.path.exists(
+                os.path.join(cache_dir, f"{uid.decode()}.eml")
+            )
+        ]
         new_count = 0
         if missing_uids:
-            new_count = _download_batches(mail, missing_uids, cache_dir, verbose)
-
+            new_count = _download_batches(
+                mail, missing_uids, cache_dir, verbose
+            )
         mail.logout()
         if new_count > 0:
             log(
-                f"Finished downloading {new_count} new messages.",
-                verbose,
-                level=LogLevel.STATUS,
+                f"  downloaded {new_count} new messages from '{list_name}'.",
+                verbose, level=LogLevel.STATUS,
             )
-        else:
-            log("No new messages to download.", verbose, level=LogLevel.STATUS)
-
-        # Now process all cached messages into the final archive
-        # We only process the UIDs that were found in the search
-        yearly_archives = process_cache(cache_dir, [u.decode() for u in uids], verbose)
-        updated_files = []
-        # Year dumps live under raw/ — not indexed, kept for human grep
-        # and NotebookLM export only.
-        os.makedirs(raw_dir(dest_folder), exist_ok=True)
-        for year, content in yearly_archives.items():
-            output_file = raw_mail_archive_path(dest_folder, year)
-            # Only write and return if content changed
-            if os.path.exists(output_file):
-                with open(output_file, "r", encoding="utf-8") as in_fh:
-                    if in_fh.read() == content:
-                        continue
-
-            with open(output_file, "w", encoding="utf-8") as out_fh:
-                out_fh.write(content)
-            updated_files.append(output_file)
-        return updated_files
-
+        return [u.decode() for u in uids]
     except (imaplib.IMAP4.error, OSError) as err:
-        log(f"IMAP Error: {err}", verbose, level=LogLevel.ERROR)
+        log(
+            f"IMAP error on '{list_name}': {err}",
+            verbose, level=LogLevel.ERROR,
+        )
         return []
+
+
+def sync_mailing_list(
+    wg_name: str,
+    dest_folder: str,
+    months: Optional[int] = None,
+    extra_lists: Optional[List[str]] = None,
+    verbose: Verbosity = Verbosity.STATUS,
+) -> List[str]:
+    """Sync the WG's mailing list(s) via IMAP and cache messages.
+
+    Always includes the auto-discovered list (looked up from
+    Datatracker by WG affinity). `extra_lists` adds further lists
+    the WG follows but Datatracker doesn't attribute to it — passed
+    in via `--mailing-list` on the CLI. Each list keeps its own
+    per-list IMAP cache (`imap-cache/<wg>/<list>/`), and the
+    thread-reconstruction walker already picks up every `.eml`
+    under `imap-cache/<wg>/` regardless of subdir.
+
+    Returns the list of `raw/mail-archive-<year>.txt` files written.
+    Year dumps are merged across all lists — they're for human grep
+    / NotebookLM upload, not for indexed retrieval.
+    """
+    list_names: List[str] = []
+    seen: set[str] = set()
+    auto = get_mailing_list_name(wg_name)
+    if auto:
+        list_names.append(auto)
+        seen.add(auto)
+    for raw in extra_lists or []:
+        norm = normalize_list_name(raw)
+        if norm and norm not in seen:
+            list_names.append(norm)
+            seen.add(norm)
+    if not list_names:
+        log(
+            f"No mailing list configured for {wg_name} (auto-discovery "
+            "failed and no --mailing-list specified); skipping mail sync.",
+            verbose, level=LogLevel.STATUS,
+        )
+        return []
+
+    # Per-list IMAP sync + UID collection.
+    per_list_uids: Dict[str, List[str]] = {}
+    for list_name in list_names:
+        per_list_uids[list_name] = _sync_one_list(
+            wg_name, list_name, months, verbose,
+        )
+
+    # Per-list year archives, then merge across lists into one file
+    # per year so the consumer doesn't have to know which list a
+    # message came from at grep time. (Threading uses the .eml files
+    # directly and naturally interleaves anyway.)
+    combined: Dict[int, List[str]] = {}
+    for list_name, uids in per_list_uids.items():
+        cache_dir = os.path.join(
+            get_cache_dir(), "imap-cache", wg_name, list_name,
+        )
+        if not uids:
+            continue
+        yearly = process_cache(cache_dir, uids, verbose)
+        for year, content in yearly.items():
+            combined.setdefault(year, []).append(content)
+
+    updated_files: List[str] = []
+    os.makedirs(raw_dir(dest_folder), exist_ok=True)
+    for year, parts in combined.items():
+        # Join with the same record separator the per-list processor
+        # uses internally so the merged archive looks uniform.
+        merged = "\n=====\n\n".join(parts)
+        output_file = raw_mail_archive_path(dest_folder, year)
+        if os.path.exists(output_file):
+            with open(output_file, "r", encoding="utf-8") as in_fh:
+                if in_fh.read() == merged:
+                    continue
+        with open(output_file, "w", encoding="utf-8") as out_fh:
+            out_fh.write(merged)
+        updated_files.append(output_file)
+    return updated_files
 
 
 def process_cache(
