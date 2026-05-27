@@ -16,13 +16,6 @@ IRTF Research Groups work the same way — pass the RG's shortname
 (`cfrg`, `hrpc`, `pearg`, …) anywhere `<wg>` appears below. The
 tools don't distinguish, and you don't need to either.
 
-Tools are lazy-loaded by the harness on first `tool_search` match,
-but stay loaded for the rest of the session — discover incrementally
-rather than batching every possible name into one query. The
-discovery tools (`list_labels`, `list_files`, `list_working_groups`)
-print concrete next-call signatures in their output, so reading
-their response is usually enough to know what to fetch next.
-
 ## First call: pick by question shape
 
 **Orienting / structural** ("tell me about `<wg>`", "what's this WG
@@ -143,18 +136,6 @@ saving four follow-up searches. Switch back to the default
 per-chunk view for **depth** questions — *"what did Alice say
 about Y?"* — where you want the actual quotes.
 
-**For "arguments for/against X" or "scope debate" questions, try
-`label=` first.** The WG's own labels (e.g. `"top-level"`,
-`"vocabulary"`, `"ready to close"`) are usually better curation
-than semantic ranking alone, and a label-filtered search lands
-on the canonical issue immediately instead of via a thread reply
-that mentions it.
-
-**For "what did the WG decide about X?"-shaped questions, add
-`state="closed"`.** The chairs' resolution lives in the closed
-issue; older mid-debate threads can be misleading once a decision
-has landed.
-
 ## File types you'll encounter
 
 All paths are relative to the WG's cache root (`<wg>/files/`).
@@ -189,49 +170,29 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
 `list_files(wg)` shows per-file chunk counts so you can bound
 `get_chunk_text` ranges without probing.
 
-## Reading a debate in chronological order
+## Reading the WG's current position
 
-**For "how did this evolve / arc of the debate across files" questions,
-reach for `read_topic` first** — it's purpose-built for the narrative
-read. Semantic match anchors which messages are "about" the topic,
-then the merged set is returned in date order with **full message
-bodies** (not snippets). The unit is a message, not a chunk: each
-matched thread post or issue comment renders with author, date,
-role, and archived-at URL — "who said what when" with no follow-up
-`get_chunk_text` calls. Windowed draft / transcript chunks are
-excluded (they aren't messages). Capped at 60 messages total.
+For *"where does the WG stand right now on X"*: start with the
+chair's most recent statement, then reconstruct the arc. Try
+`read_digest(wg, "issues", state="closed", label="X")` for chair-
+resolved decisions, or `search_corpus(wg, "X consensus|resolution|
+wglc", sort="date")` and scan the latest hits whose chunk title
+carries a `(Chair)` role tag — those are usually the load-bearing
+posts.
 
-`include_replies=True` walks the reply graph in each matched thread
-file and pulls every transitive reply descendant of a matched
-message — even if those replies don't themselves match the query.
-Faithful for sub-threads where the parent matched and the children
-pivot to a related point; can drag in tangents. Off by default.
-Issue files are linear (no reply-to nesting) so this is a no-op
-for them.
+For an *entire* issue or thread end-to-end (not just hits matching
+a query), use `read_file_section(wg, file, start_line=1)` on the
+per-issue / per-thread file — it's already in chronological order
+with an outline of who spoke when, and the 5000-line cap covers
+virtually every issue in one call. Reach for `get_chunks_batch`
+only when you need chunks across *multiple* files in one round-
+trip.
 
-`search_corpus(sort="date")` is the lower-level cousin: same
-chronological re-ordering, but the unit is a chunk (snippet, not
-full text), and there's no reply-expansion. Useful when you want
-relevance hits in date order but don't need the full message
-bodies — e.g. scanning a single issue with
-`file_pattern="issues/…/N.md"` or a time window with `since` /
-`until`.
-
-For "where does the WG stand right now on X" questions, start with
-the chair's most recent statement before reconstructing the arc.
-Try `read_digest(wg, "issues", state="closed", label="X")` for
-chair-resolved decisions, or
-`search_corpus(wg, "X consensus|resolution|wglc", sort="date")` and
-scan the latest hits whose chunk title carries a `(Chair)` role tag —
-those are usually the load-bearing posts.
-
-If you want the *whole* issue or thread end-to-end (not just hits
-matching a query), use `read_file_section(wg, file, start_line=1)`
-on the per-issue / per-thread file — it's already in chronological
-order with an outline of who spoke when, and the line cap is high
-enough to cover virtually every issue in one call. Reach for
-`get_chunks_batch` only when you need chunks from *multiple* files
-in one round-trip.
+`search_corpus(sort="date")` is the lower-level cousin of
+`read_topic`: same chronological re-ordering, but the unit is a
+chunk (snippet, not full text), and there's no reply-expansion.
+Useful when you want relevance hits in date order but don't need
+the full message bodies.
 
 ## Canonical names
 
@@ -248,40 +209,24 @@ A few interpretive norms that shape how to read the corpus:
 - **Individuals, not employers — but implementer signal is real.**
   People participate as individuals, not as company representatives.
   Don't attribute a position to a company ("Cloudflare opposes X")
-  based on the author's email domain or recorded affiliation. Only
-  treat something as a *company* position when the author explicitly
-  frames it that way ("my company…", "speaking for X…", "as an
-  employee of Y…").
+  based on the author's affiliation. Only treat something as a
+  *company* position when the author explicitly frames it that way
+  ("my company…", "speaking for X…", "as an employee of Y…").
 
   *That said*: who ships running code matters. "Rough consensus and
   running code" weighs implementer voices, and clustering of stated
-  affiliations across an argument is itself news — *"every TLS library
-  vendor on the publish-as-is side"* is a substantive observation,
-  even if no single voice claimed to speak for their employer. The
-  `people` digest records affiliation from two sources:
-  - `(draft)` — the **Authors' Addresses** block of drafts each
-    person has authored. Most authoritative: author-curated,
-    chair-reviewed, per-document.
-  - `(github)` — the user's self-reported GitHub `company` field.
-    Weaker on its own; useful as corroboration.
-
-  When the same org appears under multiple sources — rendered as
-  `Cloudflare (draft, github)` in the digest — that's stronger
-  signal than a single source. A `(github)`-only affiliation is
-  worth quoting but worth flagging as self-reported.
-
-  Blank affiliation = no documented signal from either source. NOT
-  the same as "Independent" — the participant may simply have never
-  authored a draft AND never set their GitHub company field.
-
-  Two rules of thumb:
-  1. Aggregate, don't attribute. "8 of 12 stated supporters are from
-     organisations shipping TLS stacks" — fine. "Cloudflare supports
-     X" — not fine, unless they said so.
-  2. Email domain is NOT affiliation. `mnot.net` is Mark
-     Nottingham's personal domain; he ships drafts as Cloudflare,
-     Independent, or other. Use the `affiliations` field on Person /
-     the people digest, not the From-header domain.
+  affiliations across an argument is itself news. The `people`
+  digest records affiliations from drafts and GitHub with source
+  provenance (`Cloudflare (draft, github)` = corroborated; `(github)`
+  alone = self-reported only); blank = no documented signal, NOT
+  "Independent." Two rules of thumb:
+  1. **Aggregate, don't attribute.** "8 of 12 stated supporters are
+     from organisations shipping TLS stacks" — fine. "Cloudflare
+     supports X" — not fine, unless they said so.
+  2. **Email domain ≠ affiliation.** `mnot.net` is Mark Nottingham's
+     personal domain; he ships drafts as Cloudflare or Independent
+     depending on the draft. Use the `affiliations` field on Person
+     / the people digest, never the From-header domain.
 
 - **Decisions happen on the mailing list, not in meetings.** A
   meeting might map out a proposal; the binding move is
@@ -297,8 +242,6 @@ A few interpretive norms that shape how to read the corpus:
   it's a tool the chairs use to gauge the room. Report polls and
   raise-of-hands as *signal*, not outcomes; report chair
   declarations on list as outcomes.
-
-These norms apply equally to IRTF Research Groups.
 
 ## Anti-patterns
 
