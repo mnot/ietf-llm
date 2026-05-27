@@ -144,6 +144,38 @@ def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     return rows[:limit]
 
 
+def _charter_excerpt(
+    cache_dir: str, max_chars: int = 600,
+) -> Optional[str]:
+    """First non-empty paragraph of the WG's charter, capped at
+    `max_chars`. Returns None if the charter file doesn't exist or is
+    empty. Strips leading boilerplate that some charters carry
+    (procedural headers, status lines) by finding the first paragraph
+    that's substantively long enough to be the mission statement.
+    """
+    # pylint: disable=import-outside-toplevel
+    from ..paths import charter_path
+    path = charter_path(cache_dir)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    paragraphs = re.split(r"\n\s*\n", text.strip())
+    for raw in paragraphs:
+        para = " ".join(raw.split())  # collapse whitespace
+        # Skip headers / short procedural lines; the mission paragraph
+        # is typically several sentences.
+        if len(para) < 80:
+            continue
+        if len(para) > max_chars:
+            para = para[: max_chars - 1].rstrip() + "…"
+        return para
+    return None
+
+
 def _subject_prefix_frequencies(cache_dir: str) -> List[tuple[str, int]]:
     """Count `[xxx]`-style subject prefixes across per-thread files.
 
@@ -300,17 +332,19 @@ def build_overview(wg: str, cache_dir: str) -> str:
     out.append(_leadership_summary(cache_dir, wg))
     # Charter is the authoritative statement of scope and goals;
     # consumers answering "is X in scope" or "what does the WG
-    # actually do" need the literal text, not a paraphrase. Link to
-    # it explicitly when present so the consumer doesn't have to
-    # discover it via list_files.
-    # pylint: disable=import-outside-toplevel
-    from ..paths import charter_path
-    if os.path.isfile(charter_path(cache_dir)):
-        out.append(
-            "**Charter:** `charter.txt`  "
-            "_(read in full when the question turns on what's in scope; "
-            "the charter is authoritative.)_"
-        )
+    # actually do" need the literal text. Render an excerpt inline
+    # so the consumer sees the mission statement without a follow-up
+    # read — most scope debates can be answered from the first
+    # paragraph alone. Capped so this stays under the overview's
+    # ~30-line budget.
+    charter = _charter_excerpt(cache_dir)
+    if charter is not None:
+        out.append("**Charter excerpt** (first paragraph; full text in `charter.txt`):")
+        out.append("")
+        # Render as a blockquote so the excerpt is visually distinct
+        # from overview's own narrative copy.
+        for line in charter.splitlines():
+            out.append(f"> {line}")
     out.append("")
 
     docs = _documents_summary(cache_dir, wg)

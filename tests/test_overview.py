@@ -252,10 +252,20 @@ def test_subject_prefix_frequencies_empty_when_no_threads(
 
 def test_overview_links_charter_when_present(tmp_path: Path) -> None:
     _seed_digests(tmp_path)
-    (tmp_path / "charter.txt").write_text("Charter body...")
+    # Charter body needs to be a real paragraph (>= 80 chars) so the
+    # excerpt extractor recognises it as the mission statement rather
+    # than a procedural header.
+    (tmp_path / "charter.txt").write_text(
+        "The Working Group develops protocols for transferring "
+        "structured data between AI agents and origin servers, with "
+        "attention to authentication, scope of use, and privacy of "
+        "end-user signals. Out of scope: payment flows."
+    )
     out = build_overview("wg", str(tmp_path))
     assert "charter.txt" in out
     assert "Charter" in out
+    # The excerpt body is inlined as a blockquote.
+    assert "Out of scope" in out
 
 
 def test_overview_omits_charter_line_when_file_missing(tmp_path: Path) -> None:

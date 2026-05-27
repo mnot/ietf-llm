@@ -52,6 +52,14 @@ recent-threads section often surface terms worth searching for.
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
+- _"read the whole thread X end-to-end"_, _"give me thread X in
+  full"_ (no query, just one file) → `read_file_section(wg,
+  "threads/<file>.md", start_line=1)`. The per-thread file is
+  already in chronological order with an outline header; the
+  5000-line cap covers virtually every thread in one call. Reach
+  for this when you want **the file**, not query-anchored hits —
+  `read_topic` requires a query and will drop messages that don't
+  match it.
 - _"what does §N of draft X say?"_, _"quote the Security
   Considerations of draft Y"_, _"what's actually in the draft?"_
   → `read_file_section(wg, "drafts/<draft-name>-NN.txt",

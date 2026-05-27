@@ -27,32 +27,34 @@ from conftest import write_cache_file
 
 
 def test_bare_plus_one_counts_as_support() -> None:
-    label, conf, excerpt = extract_position("+1\n")
+    label, conf, excerpt, _poll = extract_position("+1\n")
     assert label == "support"
     assert conf == "high"
     assert "+1" in excerpt
 
 
 def test_bare_minus_one_counts_as_oppose() -> None:
-    label, _conf, _excerpt = extract_position("-1\n")
+    label, _conf, _excerpt, _poll = extract_position("-1\n")
     assert label == "oppose"
 
 
 def test_i_support_phrase() -> None:
-    label, conf, _excerpt = extract_position("I support adoption of this draft.\n")
+    label, conf, _excerpt, _poll = extract_position(
+        "I support adoption of this draft.\n"
+    )
     assert label == "support"
     assert conf == "high"
 
 
 def test_i_object_phrase() -> None:
-    label, _conf, _excerpt = extract_position(
+    label, _conf, _excerpt, _poll = extract_position(
         "I object to this draft as written.\n"
     )
     assert label == "oppose"
 
 
 def test_conditional_support_gets_its_own_bucket() -> None:
-    label, conf, _excerpt = extract_position(
+    label, conf, _excerpt, _poll = extract_position(
         "I support this with the change that we remove section 4.\n"
     )
     assert label == "conditional"
@@ -60,21 +62,23 @@ def test_conditional_support_gets_its_own_bucket() -> None:
 
 
 def test_lgtm_counts_as_support() -> None:
-    label, _conf, _excerpt = extract_position("LGTM\n")
+    label, _conf, _excerpt, _poll = extract_position("LGTM\n")
     assert label == "support"
 
 
 def test_discuss_counts_as_oppose() -> None:
     # IESG ballot position. Treated as opposition for tally purposes —
     # a DISCUSS holds publication.
-    label, _conf, _excerpt = extract_position("DISCUSS\n\nThis draft has...\n")
+    label, _conf, _excerpt, _poll = extract_position(
+        "DISCUSS\n\nThis draft has...\n"
+    )
     assert label == "oppose"
 
 
 def test_quoted_plus_one_does_not_count() -> None:
     # The author is quoting someone else's +1, then disagreeing.
     body = "> +1 to publishing as-is\n\nI object — premature.\n"
-    label, _conf, _excerpt = extract_position(body)
+    label, _conf, _excerpt, _poll = extract_position(body)
     assert label == "oppose"
 
 
@@ -88,7 +92,7 @@ def test_subject_metadata_line_not_matched_as_position() -> None:
         "\n"
         "This is a technical question, not a position statement.\n"
     )
-    label, _conf, _excerpt = extract_position(body)
+    label, _conf, _excerpt, _poll = extract_position(body)
     assert label == "no-position"
 
 
@@ -101,14 +105,68 @@ def test_technical_objection_falls_through_to_no_position() -> None:
         "step assumes both peers advertise the extension, which my "
         "implementation can't guarantee.\n"
     )
-    label, _conf, _excerpt = extract_position(body)
+    label, _conf, _excerpt, _poll = extract_position(body)
     assert label == "no-position"
 
 
 def test_no_position_message_returns_empty_excerpt() -> None:
-    _label, conf, excerpt = extract_position("Just a clarifying question.\n")
+    _label, conf, excerpt, _poll = extract_position(
+        "Just a clarifying question.\n"
+    )
     assert conf == ""
     assert excerpt == ""
+
+
+# --- poll-syntax detection ------------------------------------------------
+
+
+def test_option_n_at_line_start_is_poll_choice() -> None:
+    label, _conf, _excerpt, choice = extract_position("Option 2\n")
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_hash_n_line_is_poll_choice() -> None:
+    label, _conf, _excerpt, choice = extract_position("#3\n")
+    assert label == "poll"
+    assert choice == "3"
+
+
+def test_i_prefer_n_is_poll_choice() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "I prefer 2 because it's simpler.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_my_vote_is_poll_choice() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "My vote is option B.\n"
+    )
+    assert label == "poll"
+    assert choice == "B"
+
+
+def test_poll_choice_preferred_over_support_when_both_match() -> None:
+    # The order of precedence puts poll detection BEFORE strong
+    # support, so "I prefer 2" doesn't bucket as support.
+    label, _conf, _excerpt, choice = extract_position(
+        "I prefer option 2.\n"
+    )
+    assert label == "poll"
+    assert choice == "2"
+
+
+def test_long_token_after_prefer_is_not_a_poll_choice() -> None:
+    # "I prefer option" only looks like a poll choice if followed by a
+    # short token. "I prefer brevity" must not register as choice
+    # "BREVITY".
+    label, _conf, _excerpt, choice = extract_position(
+        "I prefer brevity in this discussion.\n"
+    )
+    assert label != "poll"
+    assert choice is None
 
 
 # --- tally_thread + render -------------------------------------------------
@@ -159,7 +217,8 @@ def test_tally_thread_empty_file() -> None:
     positions, summary = tally_thread("# Empty\n\nNo messages here.\n")
     assert positions == []
     assert summary == {
-        "support": 0, "oppose": 0, "conditional": 0, "no-position": 0,
+        "support": 0, "oppose": 0, "conditional": 0,
+        "poll": 0, "no-position": 0,
     }
 
 
