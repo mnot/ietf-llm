@@ -1,10 +1,10 @@
 """Tests for ietf_llm.skill_install — the --install-claude-skill path.
 
-Verifies the four advertised behaviours:
+Verifies the advertised behaviours:
 - fresh install: copies and returns 0
 - already up to date: no-op, returns 0
-- destination modified: refuses, returns 1
-- --force with modification: overwrites, returns 0
+- destination modified: overwritten (the user asked us to install)
+- bundled skill missing from the wheel: clean error, returns 1
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def _redirect_dest(monkeypatch, dest_root: Path) -> Path:
 
 def test_fresh_install_copies_skill(tmp_path: Path, monkeypatch) -> None:
     dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    rc = skill_install.install(force=False)
+    rc = skill_install.install()
     assert rc == 0
     assert dest.is_dir()
     assert (dest / "SKILL.md").exists()
@@ -31,31 +31,21 @@ def test_fresh_install_copies_skill(tmp_path: Path, monkeypatch) -> None:
 
 def test_install_idempotent_when_identical(tmp_path: Path, monkeypatch) -> None:
     _redirect_dest(monkeypatch, tmp_path / "skills")
-    assert skill_install.install(force=False) == 0
+    assert skill_install.install() == 0
     # Second call should detect identical content and no-op cleanly.
-    assert skill_install.install(force=False) == 0
+    assert skill_install.install() == 0
 
 
-def test_install_refuses_when_destination_modified(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    skill_install.install(force=False)
-    # Simulate the user editing the skill.
-    (dest / "SKILL.md").write_text("user-edited content")
-    rc = skill_install.install(force=False)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "--force" in err
-
-
-def test_install_force_overwrites_modification(
+def test_install_overwrites_modified_destination(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # `--install-claude-skill` is an explicit "I want the bundled
+    # version" request; overwrite without ceremony. (The user can back
+    # up their local edits beforehand if they care.)
     dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    skill_install.install(force=False)
+    skill_install.install()
     (dest / "SKILL.md").write_text("user-edited content")
-    rc = skill_install.install(force=True)
+    rc = skill_install.install()
     assert rc == 0
     assert "user-edited content" not in (dest / "SKILL.md").read_text()
 
@@ -65,7 +55,7 @@ def test_install_handles_missing_source(tmp_path: Path, monkeypatch, capsys) -> 
     with patch.object(
         skill_install, "_bundled_root", return_value=tmp_path / "nope"
     ):
-        rc = skill_install.install(force=False)
+        rc = skill_install.install()
     assert rc == 1
     err = capsys.readouterr().err
     assert "bundled skill not found" in err

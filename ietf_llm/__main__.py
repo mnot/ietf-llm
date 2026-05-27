@@ -196,13 +196,8 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "--install-claude-skill",
         action="store_true",
         help="Install the bundled Claude skill into ~/.claude/skills/ietf-llm "
-        "and exit. Does not gather. (Claude Code only.)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="With --install-claude-skill: overwrite an existing skill "
-        "even if it has been locally modified.",
+        "and exit. Always overwrites any existing skill at that path. "
+        "Does not gather. (Claude Code only.)",
     )
     parser.add_argument("--quiet", "-q", action="store_true", help="Only output errors.")
     parser.add_argument(
@@ -214,7 +209,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     if args.install_claude_skill:
         from .skill_install import install  # pylint: disable=import-outside-toplevel
 
-        sys.exit(install(force=args.force))
+        sys.exit(install())
 
     if args.all and args.wg:
         parser.error("--all is mutually exclusive with a positional wg argument")

@@ -39,12 +39,20 @@ def _dirs_identical(left: Path, right: Path) -> bool:
     return True
 
 
-def install(force: bool = False) -> int:
+def install() -> int:
     """Copy the bundled skill into ~/.claude/skills/<SKILL_NAME>/.
+
+    `--install-claude-skill` is an explicit "I want the bundled
+    version here" request from the user, so we always overwrite any
+    existing skill at the destination (other than the no-op case
+    where the bundled version is already there). If a user has been
+    editing the installed skill, they should be backing those edits
+    up before running this — same pattern as `npm install` over a
+    locally-modified package.
 
     Returns a shell-style exit code:
       0 — installed, updated, or already up to date
-      1 — refused because destination has user modifications (no --force)
+      1 — internal error (bundled skill missing from the wheel)
     """
     src = _bundled_root()
     if not src.is_dir():
@@ -61,14 +69,8 @@ def install(force: bool = False) -> int:
         if _dirs_identical(src, dest):
             print(f"Skill already installed and up to date at {dest}.")
             return 0
-        if not force:
-            print(
-                f"Skill at {dest} differs from the bundled version "
-                "(either out of date or locally edited).\n"
-                "Re-run with --force to overwrite, or back it up first.",
-                file=sys.stderr,
-            )
-            return 1
+        # Differs (either out-of-date or locally-edited). Overwrite —
+        # the user explicitly asked for the bundled version.
         shutil.rmtree(dest)
 
     DEST_ROOT.mkdir(parents=True, exist_ok=True)
