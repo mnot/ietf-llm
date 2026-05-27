@@ -192,6 +192,17 @@ def _row_matches(  # pylint: disable=too-many-return-statements
                     return False
             except ValueError:
                 return False
+        # Subject substring filter — case-insensitive. The headline use
+        # case is WGs that don't tag GitHub issues but cluster topics
+        # via mailing-list subject lines (TLS does this with `[mlkem]`,
+        # `[ech]`, etc.). `read_digest("threads", subject="mlkem")`
+        # then surfaces every thread whose subject contains that token.
+        subject_filter = filters.get("subject")
+        if subject_filter:
+            if subject_filter.lower() not in _row_field(
+                row, columns, "subject"
+            ).lower():
+                return False
     elif kind == "people":
         role = filters.get("role")
         if role and role.lower() not in _row_field(row, columns, "roles").lower():

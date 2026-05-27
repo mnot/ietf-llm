@@ -25,6 +25,22 @@ def test_prose_only_chunk_falls_back_to_first_chars() -> None:
     assert "[list" not in out
 
 
+def test_short_chunk_inlined_in_full() -> None:
+    # Consumer pain: snippet got cut mid-sentence on short chunks like
+    # "+1" or "agree with above". Re-fetching to see WAS it a +1 wasted
+    # round-trips. Now short chunks pass through verbatim (single line,
+    # whitespace collapsed) so the consumer can tell at snippet time.
+    out = make_snippet("+1, this looks fine.")
+    assert out == "+1, this looks fine."
+    assert "[truncated]" not in out
+    assert "..." not in out
+
+    # Multi-paragraph short chunks also pass through, with whitespace
+    # collapsed for the single-line display.
+    out2 = make_snippet("Short reply.\n\nWith two paragraphs.")
+    assert out2 == "Short reply. With two paragraphs."
+
+
 def test_empty_chunk_returns_empty_string() -> None:
     assert make_snippet("") == ""
     assert make_snippet("   \n\n\t") == ""

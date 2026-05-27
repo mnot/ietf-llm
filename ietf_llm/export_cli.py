@@ -26,11 +26,12 @@ import sys
 
 from . import __version__, config, export
 from .freshness import staleness_warning
-from .utils import Verbosity, get_config_dir
+from .utils import Verbosity, get_config_dir, graceful_keyboard_interrupt
 
 SCOPE = "export"
 
 
+@graceful_keyboard_interrupt
 def main() -> None:
     default_credentials = os.path.join(get_config_dir(), "client_secrets.json")
     default_token = os.path.join(get_config_dir(), "token.json")

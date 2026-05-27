@@ -110,6 +110,31 @@ def test_threads_since_until() -> None:
     assert sorted(r[0] for r in result.rows) == ["Mid thread", "Old thread"]
 
 
+def test_threads_subject_filter() -> None:
+    # WGs without GitHub labels (TLS does most of its work on the
+    # list) often cluster topics via bracketed subject-line prefixes.
+    # `subject=` lets the consumer pull a topic cluster without having
+    # to read the whole threads digest.
+    section = Section(
+        heading="",
+        columns=["Subject", "Msgs", "Participants", "First", "Last", "File"],
+        rows=[
+            ["[MLKEM] hybrid debate", "8", "5", "2026-01-01", "2026-02-01", "a.md"],
+            ["[ECH] update", "3", "2", "2026-01-15", "2026-01-20", "b.md"],
+            ["mlkem followups", "1", "1", "2026-03-01", "2026-03-01", "c.md"],
+        ],
+    )
+    result = filter_rows(section, "threads", {"subject": "mlkem"})
+    # Case-insensitive substring match across the Subject column.
+    assert sorted(r[0] for r in result.rows) == [
+        "[MLKEM] hybrid debate",
+        "mlkem followups",
+    ]
+    # Non-matching subject filter returns empty.
+    result = filter_rows(section, "threads", {"subject": "tls13"})
+    assert result.rows == []
+
+
 def test_threads_min_messages() -> None:
     section = Section(
         heading="",

@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """
 MCP server for ietf-llm. Exposes the gathered corpus to MCP clients
 (Claude Desktop, Claude Code, etc.) via a small set of tools focused on
@@ -43,7 +44,12 @@ from .embeddings import (
 )
 from .freshness import staleness_warning
 from .paths import digest_kind_from_relpath, digest_path
-from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
+from .utils import (
+    Verbosity,
+    get_cache_dir,
+    get_wg_file_cache_dir,
+    graceful_keyboard_interrupt,
+)
 
 MAX_LINES_DEFAULT = 400
 # Raised from 2000 once consumers reported hitting it on long issue
@@ -185,13 +191,23 @@ def tool_list_labels(wg: str) -> str:
     return _with_freshness(wg, "\n".join(lines))
 
 
-def tool_list_files(wg: str) -> str:
+def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     cache = get_wg_file_cache_dir(wg)
     if not os.path.isdir(cache):
         return f"No cache for {wg}."
     # chunk_counts() is cheap (one GROUP BY) and lets the consumer bound
     # get_chunk_text calls instead of blind-probing chunk_idx=0,1,2,…
     counts = chunk_counts(wg)
+    # If the embedding DB has no chunks at all, the index hasn't been
+    # built yet — distinguish that from "this file genuinely has no
+    # indexable content" so the consumer isn't misled into thinking
+    # there's nothing to search.
+    index_built = bool(counts)
+    # `pattern` is a glob over the relative path. Lets a consumer ask
+    # for `threads/*mlkem*` or `meetings/ietf125/*` instead of grepping
+    # a 600-line inventory dump. Glob is matched against the relpath
+    # (so `threads/*` works), with fnmatch semantics.
+    import fnmatch  # pylint: disable=import-outside-toplevel
     entries = []
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
@@ -199,8 +215,16 @@ def tool_list_files(wg: str) -> str:
             if not os.path.isfile(path):
                 continue
             relpath = os.path.relpath(path, cache)
+            if pattern is not None and not fnmatch.fnmatch(relpath, pattern):
+                continue
             entries.append((relpath, path))
     entries.sort(key=lambda kv: kv[0])
+    if pattern is not None and not entries:
+        return _with_freshness(
+            wg,
+            f"(no files match `{pattern}`. Try a broader glob, e.g. "
+            "`threads/*` or `*mlkem*`.)",
+        )
     rows = []
     for relpath, path in entries:
         size = os.path.getsize(path)
@@ -216,7 +240,11 @@ def tool_list_files(wg: str) -> str:
                 f"-> read_digest(wg, kind='{kind}')"
             )
         else:
-            rows.append(f"{size:>10}  (no chunks)  {relpath}")
+            # "not indexed" when the DB itself is empty (build hasn't
+            # run yet); "no chunks" for the rare case of an indexed
+            # corpus where this specific file produced zero chunks.
+            tag = "(not indexed)" if not index_built else "(no chunks)"
+            rows.append(f"{size:>10}  {tag}  {relpath}")
     body = "\n".join(rows) or "(empty)"
     body += (
         f"\n\n_Next: `read_file_section(\"{wg}\", \"<filename>\", "
@@ -240,6 +268,7 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     min_messages: Optional[int] = None,
     limit: Optional[int] = None,
     include_bodies: bool = False,
+    subject: Optional[str] = None,
 ) -> str:
     path = _digest_path(wg, kind)
     if not path:
@@ -261,6 +290,7 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
         event_kind=event_kind,
         min_messages=min_messages,
         limit=limit,
+        subject=subject,
     )
     if include_bodies and kind == "issues":
         filtered = filtered + _append_issue_bodies(wg, filtered)
@@ -709,6 +739,7 @@ def _prewarm_embedding_model() -> None:
         )
 
 
+@graceful_keyboard_interrupt
 def main() -> None:
     try:
         from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
@@ -778,14 +809,20 @@ def main() -> None:
         return tool_list_labels(wg)
 
     @server.tool()
-    def list_files(wg: str) -> str:
+    def list_files(wg: str, pattern: Optional[str] = None) -> str:
         """Inventory an IETF Working Group's ietf-llm cache: files with
         sizes and chunk counts.
+
+        `pattern` is an optional glob over the relative path (fnmatch
+        semantics), e.g. `"threads/*mlkem*"`, `"meetings/ietf125/*"`,
+        `"issues/*/155.md"`. Use it instead of dumping the whole
+        inventory when you already know roughly what you're after — a
+        long-running WG can have 1000+ files.
 
         `(digest)` rows are the per-WG summary digests — read them via
         `read_digest`, not `get_chunk_text`.
         """
-        return tool_list_files(wg)
+        return tool_list_files(wg, pattern=pattern)
 
     @server.tool()
     def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -801,6 +838,7 @@ def main() -> None:
         min_messages: Optional[int] = None,
         limit: Optional[int] = None,
         include_bodies: bool = False,
+        subject: Optional[str] = None,
     ) -> str:
         """Read filtered catalogue digests of an IETF Working Group's
         ietf-llm corpus: issues, threads, people, timeline, index. The
@@ -824,7 +862,10 @@ def main() -> None:
                             author (substring), limit (int).
              | "threads"  — one row per mailing list thread. Filters:
                             since/until ("YYYY-MM-DD"), min_messages,
-                            limit.
+                            limit, subject (substring on the thread
+                            subject — high-value for WGs that don't
+                            tag GitHub issues but cluster topics on
+                            the list, e.g. TLS with `[mlkem]`, `[ech]`).
              | "people"   — participants. Filters: role (substring,
                             e.g. "Chair"), min_messages, limit.
              | "timeline" — chronological events. Filters: since/until,
@@ -848,7 +889,7 @@ def main() -> None:
             state=state, label=label, author=author, role=role,
             since=since, until=until, event_kind=event_kind,
             min_messages=min_messages, limit=limit,
-            include_bodies=include_bodies,
+            include_bodies=include_bodies, subject=subject,
         )
 
     @server.tool()

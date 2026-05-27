@@ -39,6 +39,7 @@ from .utils import (
     Verbosity,
     get_cache_dir,
     get_wg_file_cache_dir,
+    graceful_keyboard_interrupt,
     log,
 )
 
@@ -95,6 +96,7 @@ def _detect_moved_flags(argv: list[str]) -> None:
     sys.exit(2)
 
 
+@graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     _detect_moved_flags(sys.argv[1:])
 
@@ -424,5 +426,5 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

@@ -67,12 +67,25 @@ def make_snippet(
         return ""
     structured_budget = max_chars if max_chars is not None else STRUCTURED_CHARS
     prose_budget = max_chars if max_chars is not None else PROSE_CHARS
+    # Structure detection wins first: a `[table: N rows × M cols]`
+    # preview is more informative than inlining the same cells, since
+    # it tells the consumer the chunk's shape at a glance.
     table = _table_preview(text, structured_budget)
     if table:
         return table
     listing = _list_preview(text, structured_budget)
     if listing:
         return listing
+    # Plain prose. If the whole thing fits comfortably in the
+    # structured budget, show it verbatim (single-line, whitespace
+    # collapsed). The big consumer pain was peeking at short chunks
+    # just to find out they were "+1" / "agree" / "see thread X"
+    # messages — for those, the full content fits with budget to
+    # spare. Only fall through to truncated-prose preview when the
+    # chunk is too large to inline.
+    flat = re.sub(r"\s+", " ", text.strip())
+    if len(flat) <= structured_budget:
+        return flat
     return _prose_preview(text, prose_budget)
 
 

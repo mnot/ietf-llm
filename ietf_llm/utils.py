@@ -4,7 +4,7 @@ import re
 import shutil
 import filecmp
 from enum import Enum
-from typing import Optional, Dict
+from typing import Callable, Dict, Optional
 import requests
 from bs4 import BeautifulSoup, Tag
 
@@ -120,6 +120,28 @@ def get_group_type(wg_name: str) -> str:
         return "irtf"
 
     return "ietf"
+
+
+def graceful_keyboard_interrupt(
+    entry: "Callable[[], None]",
+) -> "Callable[[], None]":
+    """Decorator that wraps a CLI `main()` so Ctrl-C exits cleanly.
+
+    A bare `ietf-llm` etc. would otherwise dump a KeyboardInterrupt
+    traceback on Ctrl-C — ugly, and looks like a crash. The wrapped
+    entry catches it, prints a one-line "Interrupted." to stderr, and
+    exits with status 130 (the conventional "terminated by Ctrl-C" code).
+    """
+    def runner() -> None:
+        try:
+            entry()
+        except KeyboardInterrupt:
+            # Newline first because Ctrl-C usually lands mid-line.
+            print("\nInterrupted.", file=sys.stderr)
+            sys.exit(130)
+    runner.__name__ = entry.__name__
+    runner.__doc__ = entry.__doc__
+    return runner
 
 
 class Verbosity(Enum):

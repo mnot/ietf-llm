@@ -167,6 +167,45 @@ def test_list_files_annotates_digest_files(isolated_home: Path) -> None:
     assert "kind='issues'" in out
 
 
+def test_list_files_distinguishes_not_indexed_from_no_chunks(
+    isolated_home: Path,
+) -> None:
+    # Without an embedding index, files should show as "(not indexed)"
+    # rather than "(no chunks)" — the latter implied the file was
+    # genuinely empty when really the index just hadn't been built yet.
+    write_cache_file(isolated_home, "wg", "drafts/draft-foo.txt", "body")
+    out = mcp_server.tool_list_files("wg")
+    assert "(not indexed)" in out
+    assert "(no chunks)" not in out
+
+
+def test_list_files_pattern_filter(isolated_home: Path) -> None:
+    # The full inventory dump is unwieldy on large WGs; a glob filter
+    # lets the consumer ask for just the slice they care about
+    # without scrolling 600 lines of file names.
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-01-mlkem-debate.md", "x",
+    )
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-02-mlkem-followup.md", "x",
+    )
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-05-01-unrelated.md", "x",
+    )
+    out = mcp_server.tool_list_files("wg", pattern="threads/*mlkem*")
+    assert "mlkem-debate" in out
+    assert "mlkem-followup" in out
+    assert "unrelated" not in out
+
+
+def test_list_files_pattern_no_match_gives_helpful_message(
+    isolated_home: Path,
+) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "x")
+    out = mcp_server.tool_list_files("wg", pattern="threads/*mlkem*")
+    assert "no files match" in out.lower()
+
+
 # --- get_chunk_text range fetch ------------------------------------------
 
 

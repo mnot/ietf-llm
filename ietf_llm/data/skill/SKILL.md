@@ -64,7 +64,7 @@ ISO (`"2026-05-01"`).
 | kind       | rows                                | filters                                                                |
 |------------|-------------------------------------|------------------------------------------------------------------------|
 | `issues`   | One per GitHub issue                | `state` (`open`/`closed`), `label`, `author`, `limit`, `include_bodies`|
-| `threads`  | One per mailing list thread         | `since`, `until`, `min_messages`, `limit`                              |
+| `threads`  | One per mailing list thread         | `since`, `until`, `min_messages`, `subject` (substring), `limit`       |
 | `people`   | Participants (chairs/authors lead)  | `role` (e.g. `"Chair"`), `min_messages`, `limit`                       |
 | `timeline` | Events in chronological order       | `since`, `until`, `event_kind`, `limit`                                |
 | `index`    | File inventory by category          | (none — small)                                                         |
@@ -160,12 +160,20 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
 
 ## Reading a debate in chronological order
 
-`search_corpus` ranks by relevance, which can hide whether an
-argument is an early objection or a settled position. Add
-`sort="date"` to re-order the top-k hits oldest-first instead — a
-consumer reading the result top-to-bottom sees how the debate
-evolved. Scope to one issue with `file_pattern="%-issue-…-N.md"`
+**For "how did this evolve / arc of the debate" questions, reach
+for `sort="date"` first** — not as a niche option. Relevance ranking
+mixes early objections with late settled positions, which hides the
+*direction* of the debate; sorted-by-date reads top-to-bottom as a
+narrative. Scope to one issue with `file_pattern="issues/…/N.md"`
 or to a time window with `since` / `until`.
+
+For "where does the WG stand right now on X" questions, start with
+the chair's most recent statement before reconstructing the arc.
+Try `read_digest(wg, "issues", state="closed", label="X")` for
+chair-resolved decisions, or
+`search_corpus(wg, "X consensus|resolution|wglc", sort="date")` and
+scan the latest hits whose chunk title carries a `(Chair)` role tag —
+those are usually the load-bearing posts.
 
 If you want the *whole* issue or thread end-to-end (not just hits
 matching a query), use `read_file_section(wg, file, start_line=1)`
