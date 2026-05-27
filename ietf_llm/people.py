@@ -363,29 +363,34 @@ class Registry:
         return "; ".join(distinct)
 
     def role_tag(self, canonical_name: str) -> Optional[str]:
-        """Single short role tag for inline use in chunk titles / outline
-        bullets, or None if the person carries no role we want to surface.
+        """All relevant role tags for inline use, "/"-joined.
 
-        Priority order matches what argument-weight readers care about:
-        formal leadership (Chair > AD > Tech Advisor > Secretary), then
-        document editorship, then authorship. We only ever return ONE
-        tag — chunk titles are dense already, and "(Chair)" reads better
-        than "(Chair, Editor)". The full role set is in the people
-        digest if a caller needs more.
+        Order: formal leadership (Chair > AD > Tech Advisor > Secretary),
+        then document editorship, then authorship. ALL applicable roles
+        are returned, joined with `/`. Multi-hat status is *load-bearing*
+        for IETF interpretation — a Chair who is also an Author of the
+        draft being discussed has a procedural conflict of interest
+        worth surfacing. Collapsing to one tag (the previous behaviour)
+        hid that.
+
+        Returns None when the person carries no role we surface.
         """
         person = self.person_for_name(canonical_name)
         if person is None:
             return None
+        bits: List[str] = []
         # Datatracker labels come in verbose form; map the ones that
         # benefit from shortening, pass others through.
         for label in ("Chair", "Area Director", "Tech Advisor", "Secretary"):
             if label in person.roles:
-                return {"Area Director": "AD"}.get(label, label)
+                bits.append({"Area Director": "AD"}.get(label, label))
         if person.edited_documents:
-            return "Editor"
+            bits.append("Editor")
         if person.authored_documents:
-            return "Author"
-        return None
+            bits.append("Author")
+        if not bits:
+            return None
+        return "/".join(bits)
 
     # ----- iteration -------------------------------------------------------
 

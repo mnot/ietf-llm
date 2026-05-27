@@ -453,10 +453,11 @@ def test_role_tag_shortens_area_director_to_ad(isolated_home: Path) -> None:
     assert r.role_tag("Mike Bishop") == "AD"
 
 
-def test_role_tag_prefers_chair_over_editor(isolated_home: Path) -> None:
-    # Someone with both formal leadership AND a draft editorship should
-    # surface the leadership role — that's the higher-weight attribution
-    # for argument-weighting purposes.
+def test_role_tag_returns_all_hats(isolated_home: Path) -> None:
+    # Multi-hat status is load-bearing: a Chair who is ALSO an Editor
+    # of the draft being discussed has a procedural conflict worth
+    # surfacing inline. role_tag returns all roles joined, leadership
+    # first, then editor/author.
     r = Registry()
     r.add_email_message("Multi Role <multi@example.com>", None)
     r.add_datatracker_role("Multi Role", "multi@example.com", "Chair")
@@ -464,7 +465,15 @@ def test_role_tag_prefers_chair_over_editor(isolated_home: Path) -> None:
         "Multi Role", "multi@example.com",
         document="draft-foo", is_editor=True,
     )
-    assert r.role_tag("Multi Role") == "Chair"
+    assert r.role_tag("Multi Role") == "Chair/Editor"
+
+
+def test_role_tag_orders_leadership_first(isolated_home: Path) -> None:
+    # Within multi-leadership cases, Chair beats AD beats Tech Advisor.
+    r = Registry()
+    r.add_datatracker_role("Person", "p@ex", "Area Director")
+    r.add_datatracker_role("Person", "p@ex", "Chair")
+    assert r.role_tag("Person") == "Chair/AD"
 
 
 def test_role_tag_returns_editor_when_no_formal_role(

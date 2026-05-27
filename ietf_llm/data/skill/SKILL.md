@@ -59,6 +59,12 @@ recent-threads section often surface terms worth searching for.
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
+- _"did anyone refute Alice's claim about X?"_, _"what were the
+  responses to message [N]?"_ → `find_replies(wg, file, chunk_idx)`.
+  Returns every transitive reply to one specific message, full
+  bodies, in date order. Use when you have a known message and
+  want its follow-ups; use `read_topic` instead when you have a
+  query and want anchored matches.
 - _"what's the level of support for X?"_, _"how many people said +1
   on the WGLC?"_, _"who supported and who objected?"_ →
   `tally_positions(wg, "<one thread or issue file>")`. Returns a

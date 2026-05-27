@@ -473,7 +473,9 @@ def test_participants_line_includes_affiliation_when_known(
     cache = get_wg_file_cache_dir("wg")
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
-    assert "Mark Nottingham (Chair · Cloudflare, 1)" in text
+    # Multi-hat: he's a Chair AND has an authored draft, so role_tag
+    # returns "Chair/Author". Affiliation comes after the role bits.
+    assert "Mark Nottingham (Chair/Author · Cloudflare, 1)" in text
 
 
 def test_participants_line_affiliation_without_role(

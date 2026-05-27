@@ -660,6 +660,91 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     return _with_freshness(wg, "\n".join(out))
 
 
+def tool_find_replies(
+    wg: str, file: str, chunk_idx: int, max_messages: int = 20,
+) -> str:
+    """Return every transitive reply to a specific thread message,
+    in chronological order, with full bodies.
+
+    Surfaces "did anyone refute this?"-shaped questions: when an
+    assertion lands in message [N], you want the responses to N, not
+    a semantic search that scatters across the WG. Walks the reply
+    graph in the same file (no cross-file replies — a true reply
+    lives in the same thread by construction).
+    """
+    if not file.lower().startswith("threads/"):
+        return (
+            f"`{file}` is not a thread file. find_replies walks "
+            "(reply to [N]) markers, which only thread files carry. "
+            "For an issue file (`issues/…/N.md`), comments are linear: "
+            "use `get_chunk_text(end_chunk_idx=...)` to read comments "
+            f"after chunk {chunk_idx}."
+        )
+    text = _read_thread_file_text(wg, file)
+    if text is None:
+        return f"File not found in {wg} cache: `{file}`"
+    graph = _parse_reply_graph(text)
+    descendants = _descendants(graph, chunk_idx)
+    if not descendants:
+        return (
+            f"No replies to chunk {chunk_idx} in `{file}`. Either the "
+            "message has no follow-ups in this thread, or replies "
+            "went to a different thread (split subject lines, "
+            "cross-posts, etc.) — try `read_topic` to span threads."
+        )
+    keys = [(file, idx) for idx in descendants]
+    detail = get_messages(wg, keys)
+    rows: List[Tuple[str, int, str, str, Optional[str]]] = []
+    for idx in descendants:
+        info = detail.get((file, idx))
+        if info is None:
+            continue
+        title, body, chunk_date, url = info
+        rows.append((chunk_date or "", idx, title, body, url))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    if 0 < max_messages < len(rows):
+        kept = rows[:max_messages]
+        truncated_note = (
+            f"_(showing {max_messages} of {len(rows)} total descendants; "
+            f"raise `max_messages` to see more.)_"
+        )
+    else:
+        kept = rows
+        truncated_note = ""
+    out: List[str] = []
+    out.append(
+        f"# Replies to chunk {chunk_idx} in `{file}`\n"
+    )
+    out.append(
+        f"_{len(rows)} transitive descendant(s) in the reply graph, "
+        "oldest first. Each row is the full message body — quoted "
+        "blocks already elided at gather time._"
+    )
+    if truncated_note:
+        out.append(truncated_note)
+    out.append("")
+    for _date, idx, title, body, url in kept:
+        out.append("---")
+        out.append("")
+        out.append(f"## {title}  [chunk {idx}]")
+        if url:
+            out.append(f"_url:_ {url}")
+        out.append("")
+        body = body.strip()
+        if len(body) > _READ_TOPIC_MAX_BODY_CHARS:
+            body = body[: _READ_TOPIC_MAX_BODY_CHARS - 1] + "…"
+            out.append(body)
+            out.append("")
+            out.append(
+                f"_[message truncated; full body: "
+                f"`get_chunk_text({wg!r}, {file!r}, {idx})`]_"
+            )
+        else:
+            out.append(body)
+        out.append("")
+    return _with_freshness(wg, "\n".join(out))
+
+
 def tool_tally_positions(wg: str, file: str) -> str:
     """Heuristic position tally for one thread / issue file.
 
@@ -1309,6 +1394,36 @@ def main() -> None:
             since=since, until=until, label=label, state=state, sort=sort,
             group_by=group_by,
         )
+
+    @server.tool()
+    def find_replies(
+        wg: str, file: str, chunk_idx: int, max_messages: int = 20,
+    ) -> str:
+        """Return every transitive reply to a specific thread message,
+        in chronological order, with full bodies.
+
+        Use when an assertion or claim lands in a message and you want
+        to know whether it was challenged, refuted, or extended in the
+        same thread. The reply graph (built from `(reply to [N])`
+        markers in the thread file) is walked transitively — children,
+        grandchildren, and beyond — and each descendant is returned
+        as a full message body, not a snippet.
+
+        Companion to `read_topic(include_replies=True)`:
+          - `read_topic` starts from a *query*, anchors on matched
+            messages, optionally pulls their replies.
+          - `find_replies` starts from a specific *message*. Use this
+            when you know which post you want responses to.
+
+        Thread files only — issue comments are linear, so for an
+        issue file `get_chunk_text(end_chunk_idx=...)` is the right
+        call to read comments after a given index.
+
+        Bounded at 20 messages by default; raise `max_messages` for
+        deep sub-threads. Bodies over 4 KB are truncated with a
+        pointer to `get_chunk_text` for the full text.
+        """
+        return tool_find_replies(wg, file, chunk_idx, max_messages=max_messages)
 
     @server.tool()
     def tally_positions(wg: str, file: str) -> str:

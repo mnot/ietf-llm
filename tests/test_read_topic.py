@@ -238,6 +238,45 @@ def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:
     assert "no" in out.lower() and ("results" in out or "thread" in out)
 
 
+def test_find_replies_returns_descendants_in_order(
+    isolated_home: Path,
+) -> None:
+    # 1 ← 2 ← 3 (linear chain). find_replies(1) returns [2, 3];
+    # find_replies(2) returns [3]; find_replies(3) returns "no replies".
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-10-arc.md",
+        (
+            "# Arc\n\n"
+            "## Messages\n\n"
+            "### [1] 2026-04-10 09:00 — Alice\n\nRoot post.\n\n"
+            "### [2] 2026-04-11 09:00 — Bob (reply to [1])\n\n"
+            "First reply.\n\n"
+            "### [3] 2026-04-12 09:00 — Carol (reply to [2])\n\n"
+            "Reply to reply.\n"
+        ),
+    )
+    _build_with_stub("wg")
+    out_from_root = mcp_server.tool_find_replies(
+        "wg", "threads/2026-04-10-arc.md", chunk_idx=1,
+    )
+    assert "First reply." in out_from_root
+    assert "Reply to reply." in out_from_root
+    assert out_from_root.index("First reply.") < out_from_root.index("Reply to reply.")
+
+    out_from_leaf = mcp_server.tool_find_replies(
+        "wg", "threads/2026-04-10-arc.md", chunk_idx=3,
+    )
+    assert "No replies" in out_from_leaf
+
+
+def test_find_replies_refuses_issue_files(isolated_home: Path) -> None:
+    out = mcp_server.tool_find_replies(
+        "wg", "issues/org-repo/1.md", chunk_idx=1,
+    )
+    assert "issue" in out.lower()
+    assert "get_chunk_text" in out
+
+
 def test_read_topic_clamps_excessive_k(isolated_home: Path) -> None:
     # A misuse like k=500 should not blow up the SQL OR-chain in
     # get_messages or burn context — the tool clamps k internally
