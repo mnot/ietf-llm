@@ -45,6 +45,13 @@ from .embeddings import (
 )
 from .freshness import staleness_warning
 from .paths import digest_kind_from_relpath, digest_path
+from .positions import (
+    file_supports_tally,
+    load_people_context,
+    read_file_text,
+    render_tally,
+    tally_thread,
+)
 from .utils import (
     Verbosity,
     get_cache_dir,
@@ -651,6 +658,39 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         out.append("")
 
     return _with_freshness(wg, "\n".join(out))
+
+
+def tool_tally_positions(wg: str, file: str) -> str:
+    """Heuristic position tally for one thread / issue file.
+
+    Counts canonical position phrasings (`+1`, `-1`, `I support`,
+    `I object`, `LGTM`, conditional support, `DISCUSS`) per message
+    author, with the matching excerpt and a coverage percentage so
+    the consumer can see what fraction of the discussion the
+    heuristic actually classified. Enriches each row with role and
+    affiliation from the people digest when known — exposing the
+    implementer-clustering signal alongside the raw count.
+    """
+    cache_dir = get_wg_file_cache_dir(wg)
+    if not file_supports_tally(file):
+        return (
+            f"`{file}` doesn't have the per-message section structure "
+            "tally_positions needs. Pass a thread file "
+            "(`threads/<date>-<slug>.md`) or issue file "
+            "(`issues/<owner>-<repo>/<N>.md`) instead."
+        )
+    text = read_file_text(cache_dir, file)
+    if text is None:
+        return f"File not found in {wg} cache: `{file}`"
+    positions, summary = tally_thread(text)
+    if not positions:
+        return (
+            f"No messages found in `{file}`. The file may be empty or "
+            "malformed; check with `read_file_section`."
+        )
+    role_lookup, aff_lookup = load_people_context(cache_dir)
+    body = render_tally(file, positions, summary, role_lookup, aff_lookup)
+    return _with_freshness(wg, body)
 
 
 def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
@@ -1269,6 +1309,44 @@ def main() -> None:
             since=since, until=until, label=label, state=state, sort=sort,
             group_by=group_by,
         )
+
+    @server.tool()
+    def tally_positions(wg: str, file: str) -> str:
+        """Count stated positions (`+1`, `-1`, `I support`, `I object`,
+        `LGTM`, conditional support, `DISCUSS`) per message author in
+        ONE thread or issue file. Returns a markdown tally with
+        per-author excerpts, role and affiliation tags (where known),
+        and a coverage percentage so the consumer can see what fraction
+        of messages the heuristic actually classified.
+
+        Use this BEFORE relaying a chair's characterisation of "levels
+        of support" — chair summaries are themselves sometimes the
+        subject of procedural dispute (see appeals at WGLC), and the
+        binding signal in IETF is the actual list traffic. A grounded
+        count beats a relayed claim.
+
+        Pass `file` as a relative path under the WG cache, e.g.
+        `threads/2026-04-12-wglc-mlkem.md` or
+        `issues/org-repo/155.md`. Files outside threads/ and issues/
+        don't have the per-message section structure this tool reads
+        and will be politely refused.
+
+        Heuristic limitations:
+          - Subtle, technical-only objections show as no-position
+            (the heuristic looks for canonical phrasings, not
+            sentiment).
+          - Quoted text is stripped, so a `+1` quoted in someone
+            else's reply doesn't double-count.
+          - Bare `LGTM` / `+1` count as full support; conditional
+            phrasings (`support with…`, `agree but…`) get their own
+            bucket so a tally doesn't conflate yes with yes-if.
+
+        For the *narrative* arc of a debate (full messages,
+        chronological), use `read_topic`. For *catalogue* views of
+        many issues at once, use `read_digest(kind="issues")`. This
+        tool is the counter — one file, one tally, grounded.
+        """
+        return tool_tally_positions(wg, file)
 
     @server.tool()
     def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments

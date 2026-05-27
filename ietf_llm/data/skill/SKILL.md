@@ -59,6 +59,14 @@ recent-threads section often surface terms worth searching for.
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
+- _"what's the level of support for X?"_, _"how many people said +1
+  on the WGLC?"_, _"who supported and who objected?"_ →
+  `tally_positions(wg, "<one thread or issue file>")`. Returns a
+  grounded `+1`/`-1`/`I support`/`I object`/`LGTM`/`DISCUSS` count
+  per author with excerpts and a coverage %. **Always prefer a
+  tally over relaying a chair's characterisation** — chair summaries
+  themselves are sometimes the subject of procedural dispute.
+  Heuristic; coverage is honest about what it couldn't classify.
 
 If you're unsure which shape the question is, `overview` is the
 safe default — it's cheap and points you at the rest.
