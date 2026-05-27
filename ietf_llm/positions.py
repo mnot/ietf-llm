@@ -106,6 +106,40 @@ _WEAK_OPPOSE = re.compile(
     re.IGNORECASE,
 )
 
+# Chair-decision language. When a chair (role tag carries "Chair")
+# posts a message containing one of these phrases, it's likely a
+# procedural declaration — consensus call, adoption call, WGLC
+# announcement, "no rough consensus" outcome, thread closure. The
+# consumer feedback that prompted this surfacing was that a chair's
+# "rough consensus" call was at position 40 of 42 in a 42-message
+# thread and could easily have been missed in scrolling.
+_CHAIR_DECISION_RE = re.compile(
+    r"""\b(
+        (?:no\s+)?rough\s+consensus
+      | consensus\s+call
+      | (?:working\s+group\s+)?last\s+call
+      | WGLC
+      | adoption\s+call
+      | adopt(?:ing|ed)\s+as\s+(?:a\s+)?(?:working\s+group|WG)
+      | the\s+(?:WG|working\s+group)\s+(?:has\s+)?(?:agreed|decided|adopted)
+      | (?:I|we|the\s+chairs?)\s+(?:hereby\s+)?(?:declare|conclude|close|are\s+closing)
+      | (?:has\s+been|is\s+(?:now\s+)?)\s+(?:closed|concluded)
+      | I'?ll?\s+(?:be\s+)?closing\s+(?:this|the)
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+@dataclass
+class ChairStatement:
+    """One chair message that looks like a procedural declaration."""
+
+    sender: str
+    chunk_idx: int
+    excerpt: str  # ~400-char window around the matched phrase
+    matched_phrase: str  # the exact substring that triggered the match
+    role: str  # the role tag from the registry ("Chair", "Chair/Author")
+
 
 # Thread message section header (mirrors chunking.py's _THREAD_MSG_RE,
 # but rewritten here to capture the bits this module cares about: the
@@ -240,6 +274,55 @@ def _split_messages(text: str) -> List[Tuple[int, str, str]]:
     return out
 
 
+def extract_chair_statements(
+    file_text: str, role_lookup: Dict[str, str],
+) -> List[ChairStatement]:
+    """Walk a thread / issue file and return chair messages that look
+    like procedural declarations (consensus calls, WGLC announcements,
+    "rough consensus" outcomes, thread closures).
+
+    Surfaces the highest-signal posts in a long contentious thread:
+    a chair's verdict can live at message 40 of 42 and the consumer
+    must not miss it because they got tired of scrolling. The
+    returned list is in document order, which for thread files is
+    chronological — early procedural moves (adoption call, WGLC
+    announcement) precede later ones (resolution, closure).
+
+    `role_lookup` maps canonical sender names to their role tag (from
+    the people digest). Only messages from senders whose role
+    contains "Chair" are considered.
+    """
+    if not role_lookup:
+        return []
+    out: List[ChairStatement] = []
+    for msg_idx, sender, body in _split_messages(file_text):
+        role = role_lookup.get(sender, "")
+        if "Chair" not in role:
+            continue
+        cleaned = _strip_quoted(_strip_metadata_lines(body))
+        match = _CHAIR_DECISION_RE.search(cleaned)
+        if match is None:
+            continue
+        # ~400-char window centred on the match. Generous because the
+        # surrounding sentence carries context (which draft, what
+        # decision); a strict line excerpt would often clip mid-claim.
+        start = max(0, match.start() - 120)
+        end = min(len(cleaned), match.end() + 300)
+        excerpt = cleaned[start:end].strip()
+        if len(excerpt) > 500:
+            excerpt = excerpt[:499] + "…"
+        out.append(
+            ChairStatement(
+                sender=sender,
+                chunk_idx=msg_idx,
+                excerpt=excerpt,
+                matched_phrase=match.group(0),
+                role=role,
+            )
+        )
+    return out
+
+
 def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
     """Walk one thread / issue file's text and return per-message
     positions plus a label→count summary.
@@ -281,12 +364,13 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
     return positions, summary
 
 
-def render_tally(
+def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     file: str,
     positions: List[Position],
     summary: Dict[str, int],
     role_lookup: Optional[Dict[str, str]] = None,
     affiliation_lookup: Optional[Dict[str, str]] = None,
+    chair_statements: Optional[List[ChairStatement]] = None,
 ) -> str:
     """Render the tally as a markdown response. `role_lookup` and
     `affiliation_lookup` map canonical sender names to inline tags
@@ -325,6 +409,37 @@ def render_tally(
     )
     out.append(f"- **Coverage: {coverage_pct}%** ({total - n_count}/{total} messages classified)")
     out.append("")
+
+    # Chair statements rendered FIRST when present — they're the
+    # load-bearing posts in a contentious thread. A consumer reading
+    # top-down sees the chair's procedural declarations before
+    # scrolling through hundreds of position rows.
+    if chair_statements:
+        out.append(
+            f"## Chair statements ({len(chair_statements)})\n"
+        )
+        out.append(
+            "_Messages from someone tagged as Chair that contain "
+            "procedural language (`rough consensus`, `consensus call`, "
+            "`WGLC`, `adopting`, `closing this thread`, etc.). These "
+            "are the chairs' load-bearing posts — verify the chair's "
+            "declaration against the per-author tally below before "
+            "relaying their characterisation._\n"
+        )
+        for cs in chair_statements:
+            aff = (
+                affiliation_lookup.get(cs.sender)
+                if affiliation_lookup else None
+            )
+            tag_bits = [cs.role]
+            if aff:
+                tag_bits.append(aff)
+            out.append(
+                f"- **{cs.sender} ({' · '.join(tag_bits)})**  "
+                f"[chunk {cs.chunk_idx}]  _matched:_ `{cs.matched_phrase}`"
+            )
+            out.append(f"  > {cs.excerpt}")
+        out.append("")
 
     def _render_section(label: str, title: str) -> None:
         rows = [p for p in positions if p.label == label]

@@ -185,6 +185,70 @@ def test_file_supports_tally_rejects_digests() -> None:
 # --- MCP tool wiring -------------------------------------------------------
 
 
+def test_extract_chair_statements_finds_consensus_call(
+    isolated_home: Path,
+) -> None:
+    from ietf_llm.positions import extract_chair_statements
+    text = (
+        "# WGLC\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice Chen\n\n"
+        "I support adoption.\n\n"
+        "### [2] 2026-04-11 10:00 — Rifaat Smith\n\n"
+        "After reviewing the responses, the chairs conclude that there is "
+        "rough consensus to adopt this draft. Closing this thread.\n\n"
+        "### [3] 2026-04-12 09:00 — Bob\n\n"
+        "Thanks for the call.\n"
+    )
+    # Rifaat is a chair.
+    role_lookup = {"Rifaat Smith": "Chair"}
+    statements = extract_chair_statements(text, role_lookup)
+    assert len(statements) == 1
+    assert statements[0].sender == "Rifaat Smith"
+    # The matched phrase is one of the procedural patterns — either
+    # `the chairs conclude` or `rough consensus` would qualify; the
+    # body carries both. Any decision-language match is correct here.
+    matched = statements[0].matched_phrase.lower()
+    assert (
+        "rough consensus" in matched
+        or "conclude" in matched
+        or "closing" in matched
+    )
+    # The excerpt carries the surrounding sentence either way.
+    assert "rough consensus to adopt" in statements[0].excerpt.lower()
+    # Chunk index is the message number from the section header.
+    assert statements[0].chunk_idx == 2
+
+
+def test_extract_chair_statements_skips_non_chairs(
+    isolated_home: Path,
+) -> None:
+    from ietf_llm.positions import extract_chair_statements
+    # Same procedural phrase but from a non-chair → not a statement.
+    text = (
+        "# T\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Random Participant\n\n"
+        "Is there rough consensus on this?\n"
+    )
+    statements = extract_chair_statements(text, {})
+    assert statements == []
+
+
+def test_extract_chair_statements_skips_chair_without_decision_language(
+    isolated_home: Path,
+) -> None:
+    # Chair posts a technical question without procedural language —
+    # not a chair statement. Avoids flooding the section with every
+    # chair post on the list.
+    from ietf_llm.positions import extract_chair_statements
+    text = (
+        "# T\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice (Chair)\n\n"
+        "What does section 4.2 mean by 'optional'?\n"
+    )
+    statements = extract_chair_statements(text, {"Alice": "Chair"})
+    assert statements == []
+
+
 def test_tool_tally_positions_renders_summary(isolated_home: Path) -> None:
     write_cache_file(
         isolated_home, "wg", "threads/2026-04-10-wglc.md", _wglc_thread(),

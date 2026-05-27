@@ -67,6 +67,7 @@ from .embeddings import (
 from .freshness import staleness_warning
 from .paths import digest_kind_from_relpath, digest_path
 from .positions import (
+    extract_chair_statements,
     file_supports_tally,
     load_people_context,
     read_file_text,
@@ -820,7 +821,15 @@ def tool_tally_positions(wg: str, file: str) -> str:
             "malformed; check with `read_file_section`."
         )
     role_lookup, aff_lookup = load_people_context(cache_dir)
-    body = render_tally(file, positions, summary, role_lookup, aff_lookup)
+    # Chair statements answer the consumer's load-bearing question
+    # — "is the consensus the chair declared actually visible in the
+    # traffic?" — by surfacing the chair's procedural messages at
+    # the top of the tally output, before the per-author counts.
+    chair_statements = extract_chair_statements(text, role_lookup)
+    body = render_tally(
+        file, positions, summary,
+        role_lookup, aff_lookup, chair_statements,
+    )
     return _with_freshness(wg, body)
 
 
@@ -1555,10 +1564,16 @@ def main() -> None:
     def tally_positions(wg: str, file: str) -> str:
         """Count stated positions (`+1`, `-1`, `I support`, `I object`,
         `LGTM`, conditional support, `DISCUSS`) per message author in
-        ONE thread or issue file. Returns a markdown tally with
-        per-author excerpts, role and affiliation tags (where known),
-        and a coverage percentage so the consumer can see what fraction
-        of messages the heuristic actually classified.
+        ONE thread or issue file. Output also includes a **Chair
+        statements** section at the top: any message from a chair
+        containing procedural language (`rough consensus`,
+        `consensus call`, `WGLC`, `adopting`, `closing this thread`,
+        …) rendered prominently with an excerpt. The per-author
+        tally + chair statements together let you ground-truth the
+        chair's declared outcome against the actual list traffic.
+
+        Coverage percentage tells you what fraction of messages the
+        heuristic could classify — read it before quoting the count.
 
         Use this BEFORE relaying a chair's characterisation of "levels
         of support" — chair summaries are themselves sometimes the

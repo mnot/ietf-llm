@@ -298,6 +298,19 @@ def build_overview(wg: str, cache_dir: str) -> str:
 
     out.append("## Working Group")
     out.append(_leadership_summary(cache_dir, wg))
+    # Charter is the authoritative statement of scope and goals;
+    # consumers answering "is X in scope" or "what does the WG
+    # actually do" need the literal text, not a paraphrase. Link to
+    # it explicitly when present so the consumer doesn't have to
+    # discover it via list_files.
+    # pylint: disable=import-outside-toplevel
+    from ..paths import charter_path
+    if os.path.isfile(charter_path(cache_dir)):
+        out.append(
+            "**Charter:** `charter.txt`  "
+            "_(read in full when the question turns on what's in scope; "
+            "the charter is authoritative.)_"
+        )
     out.append("")
 
     docs = _documents_summary(cache_dir, wg)

@@ -248,3 +248,18 @@ def test_subject_prefix_frequencies_empty_when_no_threads(
     from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
     # No threads/ dir at all → empty list, not crash.
     assert _subject_prefix_frequencies(str(tmp_path)) == []
+
+
+def test_overview_links_charter_when_present(tmp_path: Path) -> None:
+    _seed_digests(tmp_path)
+    (tmp_path / "charter.txt").write_text("Charter body...")
+    out = build_overview("wg", str(tmp_path))
+    assert "charter.txt" in out
+    assert "Charter" in out
+
+
+def test_overview_omits_charter_line_when_file_missing(tmp_path: Path) -> None:
+    _seed_digests(tmp_path)
+    # No charter.txt written; overview should not mention it.
+    out = build_overview("wg", str(tmp_path))
+    assert "charter.txt" not in out
