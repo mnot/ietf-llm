@@ -54,8 +54,83 @@ def test_meeting_event_from_minutes_date_line(isolated_home: Path) -> None:
     events = _build()
     meeting_events = [e for e in events if e.kind == "meeting"]
     assert len(meeting_events) == 1
-    assert meeting_events[0].title == "IETF 124 meeting held"
+    # Title is the meeting label; the artefact list goes in the link.
+    assert meeting_events[0].title == "IETF 124 meeting"
     assert meeting_events[0].when.year == 2025
+    # Minutes-only session: link names the minutes file as the sole artefact.
+    assert meeting_events[0].link == "minutes `ietf124-minutes.md`"
+
+
+def test_meeting_event_bundles_transcript_and_slides(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: the user's mental model is "the meeting" as
+    # one event; minutes / slides / transcripts are aspects of it,
+    # not separate timeline rows. Verify all three are surfaced
+    # together on a single event line.
+    write_cache_file(
+        isolated_home, "wg", "ietf125-minutes.md",
+        "# header\nDate: 2026-03-16 03:30\n\n",
+    )
+    # Slide PDFs: we use the .pdf.txt extracted form as the marker.
+    write_cache_file(
+        isolated_home, "wg", "ietf125-slides-foo-00.pdf.txt", "slide content",
+    )
+    write_cache_file(
+        isolated_home, "wg", "ietf125-slides-bar-00.pdf.txt", "slide content",
+    )
+    # Transcript with the same meeting prefix.
+    write_cache_file(
+        isolated_home, "wg", "ietf125-wg-20260316-0330-transcript.md",
+        "WEBVTT\n",
+    )
+    events = _build()
+    meetings = [e for e in events if e.kind == "meeting"]
+    assert len(meetings) == 1
+    link = meetings[0].link or ""
+    assert "minutes `ietf125-minutes.md`" in link
+    assert "transcript `ietf125-wg-20260316-0330-transcript.md`" in link
+    # Plural slide-decks because we have two.
+    assert "2 slide decks" in link
+
+
+def test_orphan_transcript_appears_without_minutes(
+    isolated_home: Path,
+) -> None:
+    # An interim session with a transcript but no matching minutes file
+    # in the cache should still surface on the timeline rather than
+    # being silently dropped — the consumer report was that transcripts
+    # weren't being found at all.
+    write_cache_file(
+        isolated_home, "wg", "ietf-wg-20260414-1645-transcript.md",
+        "WEBVTT\n",
+    )
+    events = _build()
+    meetings = [e for e in events if e.kind == "meeting"]
+    assert len(meetings) == 1
+    link = meetings[0].link or ""
+    assert "transcript `ietf-wg-20260414-1645-transcript.md`" in link
+
+
+def test_transcript_attaches_to_minutes_by_date(isolated_home: Path) -> None:
+    # When a transcript has the generic `ietf-<wg>-…` prefix (no meeting
+    # number), `transcript_context` matches it to a minutes file by date.
+    # The session must show both, not split into two events.
+    write_cache_file(
+        isolated_home, "wg", "interim2026wg01-minutes.md",
+        "# header\nDate: 2026-04-15 13:15\n",
+    )
+    write_cache_file(
+        isolated_home, "wg", "ietf-wg-20260415-1315-transcript.md",
+        "WEBVTT\n",
+    )
+    events = _build()
+    meetings = [e for e in events if e.kind == "meeting"]
+    # ONE session — not one for the minutes and one for the transcript.
+    assert len(meetings) == 1
+    link = meetings[0].link or ""
+    assert "minutes `interim2026wg01-minutes.md`" in link
+    assert "transcript `ietf-wg-20260415-1315-transcript.md`" in link
 
 
 def test_interim_meeting_label(isolated_home: Path) -> None:

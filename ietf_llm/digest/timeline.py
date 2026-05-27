@@ -7,7 +7,11 @@ sources, each contributing dated events:
   - **Draft publications** — every `I-D Action: draft-…` thread is one
     publication event (date = the announcement's date).
   - **GitHub issues** — opened + closed events from the archive JSON.
-  - **Meetings** — minutes files carry a `Date:` line on row 2.
+  - **Meetings** — one event per session. Minutes / slides /
+    transcripts are all aspects of the same meeting, so the event's
+    line surfaces whichever artefacts exist (e.g. "minutes + 4 slide
+    decks + transcript"). Sessions with only a transcript still
+    appear, labelled by date when no minutes file matches.
   - **Session polls** — `<wg>-polls-<meeting>-<datetime>.md` files
     cached from Datatracker materials. Polls aren't formal consensus
     but they signal where a session was leaning.
@@ -31,6 +35,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from ..gather.datatracker_history import (
@@ -40,6 +45,7 @@ from ..gather.datatracker_history import (
 )
 from ..gather.mail_threads import Thread, build_threads, thread_slug
 from ..gather.session_polls import discover_local_polls
+from ..gather.transcript_context import transcript_context
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .events import Event
@@ -131,9 +137,37 @@ _MEETING_DATE_RE = re.compile(
 )
 
 
+@dataclass
+class _Session:
+    """One WG meeting session, with whichever artefacts we have on disk.
+
+    A session may have minutes, slides, and/or a transcript — in any
+    combination. The user's mental model is "the meeting" as a single
+    event; minutes / slides / transcript are different aspects of it,
+    not separate things to track on the timeline. So we collapse them
+    into one event per session and surface all artefacts on its line.
+    """
+
+    when: datetime  # tz-aware UTC
+    code: Optional[str]  # e.g. "ietf125", "interim2026aipref01"; None for orphans
+    label: str  # human label: "IETF 125 meeting", "Interim 2026 #01", or fallback
+    minutes_file: Optional[str] = None
+    transcripts: List[str] = field(default_factory=list)
+    slide_count: int = 0
+
+
 def _meeting_events(cache_dir: str) -> List[Event]:
-    """Each `*-minutes.md` file with a Date: line in its header."""
-    out: List[Event] = []
+    """One event per WG session — meetings are the unit, with minutes /
+    slides / transcript as aspects of that meeting rather than separate
+    rows. A session needs at least one dated artefact (minutes Date:
+    header, or transcript filename) to make the timeline; sessions with
+    only slides are skipped (slides alone don't tell us when the
+    session was).
+    """
+    sessions: Dict[str, _Session] = {}
+
+    # 1. Seed sessions from minutes files. Each minutes file gives us
+    # a definitive session date and a stable meeting code.
     for name in sorted(os.listdir(cache_dir)):
         if not (name.endswith("-minutes.md") or name.endswith("-minutes.txt")):
             continue
@@ -151,16 +185,99 @@ def _meeting_events(cache_dir: str) -> List[Event]:
         except ValueError:
             continue
         when = when.replace(tzinfo=timezone.utc)
-        label = _meeting_label(name)
-        out.append(
-            Event(
-                when=when,
-                kind="meeting",
-                title=f"{label} held",
-                link=f"`{name}`",
-            )
+        code = name.rsplit("-minutes", 1)[0]
+        sessions[code] = _Session(
+            when=when,
+            code=code,
+            label=_meeting_label(name),
+            minutes_file=name,
         )
-    return out
+
+    # 2. Attach slide counts. Slides share the meeting-code prefix,
+    # and we already extract them as `<code>-slides-…pdf.txt`. We
+    # don't list every slide deck individually on the timeline —
+    # a count is enough; the consumer can `list_files` if they want
+    # the full set.
+    for name in os.listdir(cache_dir):
+        if not name.endswith(".pdf.txt"):
+            continue
+        # Match `<code>-slides-...` where `<code>` is a known session.
+        # The code is the part before the first `-slides-`.
+        slides_marker = "-slides-"
+        marker_pos = name.find(slides_marker)
+        if marker_pos == -1:
+            continue
+        code = name[:marker_pos]
+        if code in sessions:
+            sessions[code].slide_count += 1
+
+    # 3. Attach transcripts. Two pathways:
+    # (a) Transcript filename carries a meeting prefix ("ietf125-…") →
+    #     attach to that session directly.
+    # (b) Generic prefix ("ietf-aipref-…") → `transcript_context`
+    #     matches by date against minutes files; attach if matched.
+    # Anything that fails both becomes an orphan session — emitted with
+    # a date-only label so the consumer at least sees the transcript
+    # exists.
+    for name in sorted(os.listdir(cache_dir)):
+        if not name.endswith("-transcript.md"):
+            continue
+        ctx = transcript_context(name, cache_dir)
+        if ctx is None:
+            continue
+        transcript_when = _transcript_datetime(ctx.date, ctx.time)
+        if transcript_when is None:
+            continue
+        if ctx.meeting and ctx.meeting in sessions:
+            sessions[ctx.meeting].transcripts.append(name)
+            continue
+        # Orphan: no minutes file matched. Use the transcript's own
+        # datetime as the session key so multiple orphans don't collide.
+        key = f"_orphan:{ctx.date}-{ctx.time}"
+        if key not in sessions:
+            sessions[key] = _Session(
+                when=transcript_when,
+                code=None,
+                label=ctx.label or f"{ctx.wg} session ({ctx.date} {ctx.time} UTC)",
+                minutes_file=None,
+            )
+        sessions[key].transcripts.append(name)
+
+    # 4. Emit one Event per session, with all artefacts rendered on
+    # the line. Order doesn't matter here — build_events sorts.
+    return [_session_event(session) for session in sessions.values()]
+
+
+def _session_event(session: _Session) -> Event:
+    """Render a session as a single Event with all its artefacts."""
+    parts: List[str] = []
+    if session.minutes_file:
+        parts.append(f"minutes `{session.minutes_file}`")
+    for transcript in session.transcripts:
+        parts.append(f"transcript `{transcript}`")
+    if session.slide_count:
+        word = "deck" if session.slide_count == 1 else "decks"
+        parts.append(f"{session.slide_count} slide {word}")
+    link = " · ".join(parts) if parts else None
+    return Event(
+        when=session.when,
+        kind="meeting",
+        title=session.label,
+        # No detail field: the artefacts list IS the detail. Keeping
+        # detail empty avoids a redundant "— …" segment in the render.
+        detail=None,
+        link=link,
+    )
+
+
+def _transcript_datetime(date_str: str, time_str: str) -> Optional[datetime]:
+    """Combine the transcript-context's date + time strings into a
+    tz-aware UTC datetime. Returns None if either is malformed."""
+    try:
+        parsed = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc)
 
 
 def _meeting_label(filename: str) -> str:
@@ -345,12 +462,14 @@ def write_timeline_digest(
         fh.write(f"# {wg}: timeline\n\n")
         fh.write(
             f"_{len(events)} dated events across {len(by_year)} year(s) — "
-            "drafts published, issues opened and closed, meetings held, "
-            "session polls recorded, charter approvals and chair "
-            "appointments (Datatracker), document adoption / IESG / RFC "
-            "publication (Datatracker), WGLCs and adoption calls "
-            "(Datatracker when available, mailing-list subject-line "
-            "heuristic as fallback). Newest first within each year._\n\n"
+            "drafts published, issues opened and closed, meetings held "
+            "(with minutes / slides / transcripts bundled as aspects of "
+            "the same session), session polls recorded, charter "
+            "approvals and chair appointments (Datatracker), document "
+            "adoption / IESG / RFC publication (Datatracker), WGLCs "
+            "and adoption calls (Datatracker when available, "
+            "mailing-list subject-line heuristic as fallback). "
+            "Newest first within each year._\n\n"
         )
         for year in sorted(by_year, reverse=True):
             fh.write(f"## {year}\n\n")
