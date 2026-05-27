@@ -238,6 +238,19 @@ def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:
     assert "no" in out.lower() and ("results" in out or "thread" in out)
 
 
+def test_read_topic_clamps_excessive_k(isolated_home: Path) -> None:
+    # A misuse like k=500 should not blow up the SQL OR-chain in
+    # get_messages or burn context — the tool clamps k internally
+    # well below the render cap (60 messages) so the cost is bounded.
+    _seed_two_threads(isolated_home)
+    _build_with_stub("wg")
+    # With only 3 dated messages in the corpus, k=500 still works and
+    # returns those 3 — no error, no runaway.
+    out = mcp_server.tool_read_topic("wg", "MLKEM", k=500)
+    assert "Body about MLKEM, opening the topic." in out
+    assert "Later MLKEM discussion from Carol." in out
+
+
 def test_read_topic_summary_line_counts_matched_and_replies(
     isolated_home: Path,
 ) -> None:

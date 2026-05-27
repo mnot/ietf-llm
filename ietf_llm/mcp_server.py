@@ -424,6 +424,12 @@ _THREAD_REPLY_RE = re.compile(
 # blow the context window. Sized at 3× the default k=20, so a typical
 # call stays well under and an unusually deep arc still fits.
 _READ_TOPIC_MAX_MESSAGES = 60
+# Upper bound on caller-provided k. Without this, k=200 widens fetch_k
+# to 600 (an unbounded SQL OR-chain into get_messages), only for the
+# render-cap below to discard most of it. Clamping keeps the cost
+# bounded; the cap is just over `_READ_TOPIC_MAX_MESSAGES` so the
+# matched-vs-reply ratio stays sensible after replies are added.
+_READ_TOPIC_MAX_K = 50
 # Per-message body cap. Chunks are themselves capped at MAX_CHUNK_CHARS
 # (8 KB) but stitching 60 of those is ~480 KB; truncate long messages
 # so total output stays bounded. 4 KB is plenty for a typical post.
@@ -484,6 +490,12 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     k: int = 20,
     include_replies: bool = False,
 ) -> str:
+    # Clamp k before widening, so a misuse (k=500) doesn't generate a
+    # 1500-row SQL OR-chain that gets thrown away by the render cap.
+    if k > _READ_TOPIC_MAX_K:
+        k = _READ_TOPIC_MAX_K
+    elif k < 1:
+        k = 1
     # Widen the fetch so we have enough material to filter to dated
     # thread/issue chunks and still hit k. 3× covers most reasonable
     # WGs; the floor of 60 stops k=5 calls from over-narrowing.
@@ -1087,9 +1099,15 @@ def main() -> None:
           - "what did Alice say about X?" → `search_corpus` (semantic
             search, then pivot via `get_chunk_text` or
             `read_file_section`).
+          - "how did the debate on X evolve?" / "walk me through the
+            discussion of Y, chronologically" → `read_topic(wg, "X")`.
+            Returns full messages (not snippets) across threads and
+            issues in date order; add `include_replies=True` for
+            sub-thread descendants.
 
         Other ietf-llm tools: `read_digest`, `search_corpus`,
-        `get_chunk_text`, `read_file_section`, `list_files`.
+        `read_topic`, `get_chunk_text`, `read_file_section`,
+        `list_files`, `list_labels`.
         """
         return tool_overview(wg)
 
@@ -1325,7 +1343,7 @@ def main() -> None:
         (e.g. an entire short thread). Range size is capped at
         20 chunks per call.
 
-        Note: per-WG digests (`<wg>-_*.md`) are not chunked — use
+        Note: per-WG digests (`digests/*.md`) are not chunked — use
         `read_digest` for those.
         """
         return tool_get_chunk(wg, file, chunk_idx, end_chunk_idx=end_chunk_idx)
@@ -1373,8 +1391,9 @@ def main() -> None:
     ) -> str:
         """Read a bounded section of any file in an IETF Working Group's
         ietf-llm cache (per-thread files, per-issue files, drafts, RFCs,
-        slides, transcripts, minutes). Capped at 2000 lines per call
-        so the context window can't be blown by accident. Prefer
+        slides, transcripts, minutes). Default 400 lines per call; the
+        caller can raise `max_lines` up to a hard cap of 5000 so the
+        context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.
         """
         return tool_read_file_section(wg, file, start_line, max_lines)
