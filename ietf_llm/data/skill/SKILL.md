@@ -52,6 +52,21 @@ recent-threads section often surface terms worth searching for.
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
+
+  **If `read_topic` returns a thread that looks like a chair poll**
+  ("please reply indicating which option you prefer", numbered
+  options, terse one-word replies), follow up with
+  `tally_positions(wg, "<file>")` on that thread. The poll-syntax
+  detection bucket'll show the option counts the consumer is
+  actually asking about.
+- _"what other threads cover this topic?"_, _"what's the broader
+  context for thread X?"_ → `list_labels(wg)` shows the WG's
+  `[xxx]`-style subject prefixes; then
+  `read_digest(wg, kind="threads", subject="[mlkem]")` returns
+  every thread in that cluster. Multiple parallel threads on one
+  topic are common (e.g. "WebBotAuth Direction" + "Reframing the
+  Direction" + "Architectural Limitations" in one week) — the
+  cluster filter pulls them together.
 - _"read the whole thread X end-to-end"_, _"give me thread X in
   full"_ (no query, just one file) → `read_file_section(wg,
   "threads/<file>.md", start_line=1)`. The per-thread file is

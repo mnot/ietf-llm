@@ -273,3 +273,32 @@ def test_overview_omits_charter_line_when_file_missing(tmp_path: Path) -> None:
     # No charter.txt written; overview should not mention it.
     out = build_overview("wg", str(tmp_path))
     assert "charter.txt" not in out
+
+
+def test_overview_shows_last_gathered_when_sentinel_present(
+    tmp_path: Path, monkeypatch: object,
+) -> None:
+    # Stub the freshness lookup to return a known datetime — simpler
+    # than wiring the sentinel through this test's tmp_path layout
+    # (which doesn't match the production cache-root structure).
+    import datetime
+    from ietf_llm import freshness
+    fake = datetime.datetime(2026, 5, 27, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        freshness, "last_gathered", lambda _wg: fake,
+    )
+    _seed_digests(tmp_path)
+    out = build_overview("wg", str(tmp_path))
+    assert "2026-05-27" in out
+    assert "last gathered" in out.lower()
+
+
+def test_overview_omits_gathered_line_when_sentinel_missing(
+    tmp_path: Path,
+) -> None:
+    # No sentinel → silently omit the freshness line. We deliberately
+    # don't warn on missing sentinel; the cache may pre-date the
+    # freshness feature.
+    _seed_digests(tmp_path)
+    out = build_overview("wg", str(tmp_path))
+    assert "last gathered" not in out.lower()

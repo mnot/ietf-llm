@@ -328,6 +328,21 @@ def build_overview(wg: str, cache_dir: str) -> str:
     out: List[str] = []
     out.append(f"# {wg} — overview\n")
 
+    # Freshness signal right under the title. Without this, a
+    # consumer reads dates inside the overview (latest event,
+    # most-recent thread) and can't tell whether the corpus is
+    # current — recent feedback flagged exactly this: "latest events"
+    # was dated 2025-11-02 while threads were from May 2026, and the
+    # consumer didn't know which was the floor on their view.
+    # pylint: disable=import-outside-toplevel
+    from ..freshness import last_gathered
+    gathered_at = last_gathered(wg)
+    if gathered_at is not None:
+        out.append(
+            f"_Corpus last gathered: **{gathered_at.strftime('%Y-%m-%d')}**. "
+            f"Run `ietf-llm {wg}` to refresh._\n"
+        )
+
     out.append("## Working Group")
     out.append(_leadership_summary(cache_dir, wg))
     # Charter is the authoritative statement of scope and goals;
