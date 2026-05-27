@@ -563,3 +563,32 @@ def test_get_chunks_batch_tolerates_single_dict_input(
         {"file": "issues/org-repo/1.md", "chunk_idx": 1},  # type: ignore[arg-type]
     )
     assert "body" in out
+
+
+# --- _load_server_instructions --------------------------------------------
+
+
+def test_load_server_instructions_strips_frontmatter() -> None:
+    # The bundled SKILL.md has a YAML frontmatter block (name + description).
+    # That's skill metadata, not model guidance; the loader must strip it.
+    out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
+    assert out is not None
+    # The opening line of the body is "# ietf-llm" (the markdown heading).
+    # The frontmatter's "---" sentinels must NOT survive.
+    assert out.lstrip().startswith("#")
+    assert "---" not in out.splitlines()[0]
+
+
+def test_load_server_instructions_includes_load_bearing_content() -> None:
+    # Spot-check that the routing rules and IETF norms the skill carries
+    # actually land in the instructions string. If this regresses, the
+    # non-Claude harnesses lose the guidance.
+    out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
+    assert out is not None
+    # Routing rules.
+    assert "overview" in out
+    assert "read_digest" in out
+    assert "search_corpus" in out
+    # IETF norms — the load-bearing interpretive guidance.
+    assert "Consensus is chair-declared" in out
+    assert "Decisions happen on the mailing list" in out

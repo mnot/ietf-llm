@@ -1172,6 +1172,43 @@ def _prewarm_embedding_model_async() -> None:
     ).start()
 
 
+def _load_server_instructions() -> Optional[str]:
+    """Read the bundled SKILL.md and return its body (frontmatter stripped).
+
+    Passed to FastMCP as the server-level `instructions` field, which
+    MCP-compliant clients surface to the model as system-prompt
+    context. Source-of-truth-once: this is the same file
+    `--install-claude-skill` copies into Claude Code, so non-Claude
+    harnesses (Codex, Gemini, Cursor, Zed, opencode, …) see the same
+    routing rules and IETF norms without us maintaining a parallel
+    guidance string.
+
+    YAML frontmatter (the `---` block at the top with `name:` /
+    `description:`) is stripped — it's skill metadata, not guidance.
+    Returns None if the file is missing (shouldn't happen for an
+    installed package, but a defensive None lets the server come up
+    anyway).
+    """
+    # pylint: disable=import-outside-toplevel
+    from importlib import resources
+    try:
+        skill_path = resources.files("ietf_llm").joinpath("data/skill/SKILL.md")
+        text = skill_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    # Strip a leading YAML frontmatter block (--- ... ---). The skill
+    # always starts with one; tolerate its absence to keep the helper
+    # robust to future edits.
+    stripped = text.lstrip()
+    if stripped.startswith("---"):
+        end_marker = stripped.find("\n---", 3)
+        if end_marker != -1:
+            body_start = stripped.find("\n", end_marker + 4)
+            if body_start != -1:
+                return stripped[body_start + 1 :].lstrip()
+    return text
+
+
 @graceful_keyboard_interrupt
 def main() -> None:
     try:
@@ -1186,7 +1223,13 @@ def main() -> None:
         )
         sys.exit(1)
 
-    server = FastMCP("ietf-llm")
+    # `instructions` is the MCP-spec mechanism for server-level
+    # guidance: clients SHOULD surface it as system-prompt context.
+    # Loading SKILL.md here makes the same guidance Claude Code reads
+    # from the installed skill available to Codex / Gemini / Cursor /
+    # Zed / opencode — one source of truth, no parallel maintenance.
+    server_instructions = _load_server_instructions()
+    server = FastMCP("ietf-llm", instructions=server_instructions)
 
     @server.tool()
     def list_working_groups() -> str:
