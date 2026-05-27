@@ -33,7 +33,11 @@ import sqlite3
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from .digest.overview import _label_frequencies, build_overview
+from .digest.overview import (
+    _label_frequencies,
+    _subject_prefix_frequencies,
+    build_overview,
+)
 from .digest.query import query_digest
 from .embeddings import (
     _get_embed_model,
@@ -171,31 +175,56 @@ def tool_overview(wg: str) -> str:
 
 
 def tool_list_labels(wg: str) -> str:
-    """All GitHub issue labels with their frequencies, sorted by count
-    descending. Direct exposure of the same data the overview's
-    "Top issue labels" section samples — but here unbounded, so the
-    consumer can verify the curation vocabulary before picking a
-    `label=` filter for read_digest or search_corpus.
+    """The WG's curation vocabulary — GitHub issue labels AND mailing-
+    list subject-prefix clusters — with their frequencies, sorted by
+    count descending.
+
+    Two sources because two WG-management styles exist: issue-driven
+    groups (httpbis, aipref) tag with GitHub labels; mail-driven
+    groups (TLS, with `[mlkem]` / `[ech]`) cluster on the list. The
+    consumer doesn't have to know which the WG uses — both render.
     """
-    labels = _label_frequencies(get_wg_file_cache_dir(wg), wg)
-    if not labels:
+    cache = get_wg_file_cache_dir(wg)
+    labels = _label_frequencies(cache, wg)
+    prefixes = _subject_prefix_frequencies(cache)
+    if not labels and not prefixes:
         return _with_freshness(
-            wg, f"No labels recorded for {wg}. (No issues, or no labels used.)"
+            wg,
+            f"No curation vocabulary recorded for {wg}. "
+            "(No GitHub issue labels AND no `[xxx]`-style subject "
+            "prefixes seen in mailing list traffic.)",
         )
-    lines = [f"# {wg}: GitHub issue labels ({len(labels)} distinct)\n"]
-    lines.append("| Label | Issues |")
-    lines.append("|-------|--------|")
-    for label, count in labels:
-        lines.append(f"| `{label}` | {count} |")
-    # Concrete next-call signatures so a consuming LLM doesn't have to
-    # round-trip through tool_search to recall how to use a label.
-    lines.append("")
-    lines.append(
-        f'_Next: `read_digest("{wg}", kind="issues", label="X", '
-        'include_bodies=True)` for a labelled-cluster summary in one '
-        f'call, or `search_corpus("{wg}", "...", label="X")` for '
-        "semantic search restricted to a label._"
-    )
+    lines: List[str] = [f"# {wg}: curation vocabulary\n"]
+    if labels:
+        lines.append(f"## GitHub issue labels ({len(labels)} distinct)\n")
+        lines.append("| Label | Issues |")
+        lines.append("|-------|--------|")
+        for label, count in labels:
+            lines.append(f"| `{label}` | {count} |")
+        lines.append("")
+        lines.append(
+            f'_Use with `read_digest("{wg}", kind="issues", '
+            'label="X", include_bodies=True)` or '
+            f'`search_corpus("{wg}", "...", label="X")`._'
+        )
+        lines.append("")
+    if prefixes:
+        lines.append(
+            f"## Mailing list subject prefixes ({len(prefixes)} "
+            "distinct)\n"
+        )
+        lines.append("| Prefix | Messages |")
+        lines.append("|--------|----------|")
+        for prefix, count in prefixes:
+            lines.append(f"| `{prefix}` | {count} |")
+        lines.append("")
+        lines.append(
+            f'_Use with `read_digest("{wg}", kind="threads", '
+            'subject="[mlkem]")` to read every thread carrying the '
+            "prefix, or with subject in `search_corpus` `file_pattern`."
+            "_"
+        )
+        lines.append("")
     return _with_freshness(wg, "\n".join(lines))
 
 
@@ -789,6 +818,9 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     state: Optional[str] = None,
     sort: Optional[str] = None,
     group_by: Optional[str] = None,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
 ) -> str:
     # When the consumer is asking a breadth question ("which threads
     # discuss X?"), the default per-chunk hit list shows the same
@@ -806,6 +838,9 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         label=label,
         state=state,
         sort=sort,
+        author=author,
+        role=role,
+        snippet_chars=snippet_chars,
         verbose=Verbosity.QUIET,
     )
     if not hits:
@@ -1281,12 +1316,20 @@ def main() -> None:
 
     @server.tool()
     def list_labels(wg: str) -> str:
-        """List GitHub issue labels in an IETF Working Group's ietf-llm
-        corpus with frequencies. Call this before picking a `label=`
-        filter for `search_corpus` or `read_digest` — labels are the
-        WG's own curation vocabulary, but you can't guess them; this
-        tool surfaces the actual terms in use, sorted by how many
-        issues each label is attached to.
+        """List the WG's curation vocabulary — GitHub issue labels
+        AND mailing-list `[xxx]`-style subject prefixes — with
+        frequencies. Call this before picking a `label=` filter for
+        `read_digest` / `search_corpus`, or a `subject="[xxx]"`
+        filter for `read_digest(kind="threads")`.
+
+        Two sections because IETF WGs split by management style:
+        - **GitHub issue labels** — used by issue-driven groups
+          (`httpbis`, `aipref`).
+        - **Mailing list subject prefixes** — used by mail-driven
+          groups (`tls` with `[mlkem]` / `[ech]`).
+
+        A WG may have one, the other, or both. The empty case
+        (neither) is rare and gets a clear "no vocabulary" message.
         """
         return tool_list_labels(wg)
 
@@ -1386,6 +1429,9 @@ def main() -> None:
         state: Optional[str] = None,
         sort: Optional[str] = None,
         group_by: Optional[str] = None,
+        author: Optional[str] = None,
+        role: Optional[str] = None,
+        snippet_chars: Optional[int] = None,
     ) -> str:
         """Search an IETF Working Group's ietf-llm corpus semantically
         across mailing list threads, GitHub issues, drafts, RFCs,
@@ -1422,6 +1468,25 @@ def main() -> None:
         fifteen overlapping chunks. Use this when triaging WHERE a
         topic lives; switch back to the default per-chunk view for
         depth questions ("what did Alice say about Y?").
+
+        `author="<substring>"` filters to chunks whose section header
+        contains that name — "what did Rescorla say about X?" /
+        "show me Mattsson's posts on Y" without needing the file path.
+        Matches substrings, so partial / surname-only queries work.
+        Windowed draft / transcript chunks have no author and drop out.
+
+        `role="Chair"` (or `"Author"`, `"Editor"`, `"AD"`) filters to
+        messages from people with that structural role. Useful for
+        "what did the chairs decide" / "did the editor weigh in" —
+        the registry stamps `(Role)` into each section header at
+        gather time, and the filter matches against that tag.
+
+        `snippet_chars=N` raises the snippet budget per hit. Default
+        renders compact snippets that often `[truncated]` for long
+        chunks; raise for long-form synthesis where the snippet
+        itself should carry more context. Tradeoff: bigger budget
+        means more bytes per hit, so dial `k` down accordingly.
+
         Requires `ietf-llm <wg> --embed` to have been run.
 
         Optional facets:
@@ -1435,7 +1500,8 @@ def main() -> None:
         return tool_search(
             wg, query, k=k, file_pattern=file_pattern,
             since=since, until=until, label=label, state=state, sort=sort,
-            group_by=group_by,
+            group_by=group_by, author=author, role=role,
+            snippet_chars=snippet_chars,
         )
 
     @server.tool()

@@ -634,6 +634,68 @@ def test_tool_search_group_by_file_collapses_overlapping_hits(
     assert "hits=" in out
 
 
+def test_search_author_filter_matches_section_header(
+    isolated_home: Path,
+) -> None:
+    # Two messages, one by Alice and one by Bob. author="Alice" must
+    # return only Alice's chunk.
+    write_cache_file(
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
+        (
+            "# Topic\n\n## Messages\n\n"
+            "### [1] 2025-01-01 10:00 — Alice Chen\n\nbody one\n\n"
+            "### [2] 2025-01-02 10:00 — Bob Smith\n\nbody two\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search("wg", "x", k=10, author="Alice", verbose=Verbosity.QUIET)
+    titles = [h.title for h in hits]
+    assert any("Alice" in t for t in titles)
+    assert not any("Bob" in t for t in titles)
+
+
+def test_search_role_filter_uses_parenthesized_tag(
+    isolated_home: Path,
+) -> None:
+    # role="Chair" must match a section header carrying "(Chair)" but
+    # NOT a body that happens to contain the word "Chair".
+    write_cache_file(
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
+        (
+            "# Topic\n\n## Messages\n\n"
+            "### [1] 2025-01-01 10:00 — Alice (Chair)\n\n"
+            "Body one with no role word.\n\n"
+            "### [2] 2025-01-02 10:00 — Bob\n\n"
+            "Bob's body mentions chair but he isn't one.\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    hits = search("wg", "x", k=10, role="Chair", verbose=Verbosity.QUIET)
+    titles = [h.title for h in hits]
+    assert any("Alice" in t for t in titles)
+    assert not any("Bob" in t for t in titles)
+
+
+def test_search_snippet_chars_overrides_default(isolated_home: Path) -> None:
+    # Force a long body; the default snippet truncates it. snippet_chars
+    # large enough to fit the whole body suppresses the [truncated] marker.
+    long_body = "alpha " * 200
+    write_cache_file(
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
+        (
+            "# Topic\n\n## Messages\n\n"
+            "### [1] 2025-01-01 10:00 — Alice\n\n"
+            f"{long_body}\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+    big_hits = search(
+        "wg", "alpha", k=1, snippet_chars=5000, verbose=Verbosity.QUIET,
+    )
+    assert big_hits
+    assert "[truncated]" not in big_hits[0].snippet
+
+
 def test_tool_search_group_by_file_caps_at_k(isolated_home: Path) -> None:
     # Even when many files match, group_by="file" returns at most `k`
     # rows (one per file). The internal fetch is wider so that the

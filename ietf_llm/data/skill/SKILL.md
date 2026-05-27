@@ -52,6 +52,14 @@ recent-threads section often surface terms worth searching for.
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
+- _"what does §N of draft X say?"_, _"quote the Security
+  Considerations of draft Y"_, _"what's actually in the draft?"_
+  → `read_file_section(wg, "drafts/<draft-name>-NN.txt",
+  start_line=1)`. **When the question is about the literal text of
+  a draft, read the draft.** Don't reconstruct it from what people
+  said about it on the list — the document is the artefact, the
+  list traffic is commentary. `list_files(wg, pattern="drafts/*")`
+  shows what's cached.
 - _"what's the IESG saying about draft X?"_, _"is there a DISCUSS
   on this draft?"_, _"why hasn't draft X been published yet?"_ →
   `read_file_section(wg, "ballots/<doc-name>.md", start_line=1)` for
@@ -147,6 +155,24 @@ distinct threads instead of fifteen overlapping chunks, often
 saving four follow-up searches. Switch back to the default
 per-chunk view for **depth** questions — *"what did Alice say
 about Y?"* — where you want the actual quotes.
+
+**`author="<substring>"`** filters to messages by a specific
+person — *"what did Rescorla say about X"* / *"show me Mattsson's
+posts on Y"* without needing the file path. Substring match
+against the chunk's section header. Windowed draft / transcript
+chunks have no author and drop out implicitly.
+
+**`role="Chair"`** (or `"Author"`, `"Editor"`, `"AD"`) filters to
+messages from people with that structural role. *"What did the
+chairs decide about X"* / *"did the editor weigh in"* — the
+registry stamps `(Role)` into each section header at gather time
+and the filter matches it. Combine with `author=` to scope to
+one chair specifically.
+
+**`snippet_chars=N`** raises the per-hit snippet budget. Default
+renders compact snippets that often `[truncated]`; raise for
+long-form synthesis where the inline snippet should carry more
+context. Dial `k` down to compensate.
 
 ## File types you'll encounter
 

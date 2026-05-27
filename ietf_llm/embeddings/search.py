@@ -253,6 +253,9 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     label: Optional[str] = None,
     state: Optional[str] = None,
     sort: Optional[str] = None,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Hit]:
     """Return top-k chunks for a query. Returns [] if no index exists.
@@ -278,6 +281,22 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         what's currently most salient. NULL-dated chunks (drafts,
         transcripts, windowed) are excluded under 'date' since they
         have no place in the chronology.
+      - author: substring match against the chunk title, which for
+        thread / issue chunks contains the sender / commenter name
+        ("Alice Chen"). Lets a consumer ask "what did Alice say
+        about X" without knowing the file. Windowed draft / transcript
+        chunks have no author in the title so the filter drops them.
+      - role: substring match against the chunk title's role tag —
+        the registry renders role-bearing messages as
+        "... — Alice Chen (Chair)" / "(Chair/Author)" / "(Editor)" /
+        etc. `role="Chair"` shortlists messages by people the WG
+        considers procedurally responsible — high-value for "what
+        did the chairs say about X" / "did anyone with formal
+        responsibility weigh in" questions.
+      - snippet_chars: override the default snippet budget. Useful
+        when the default snippet truncates content the consumer
+        wants visible inline. Applies to BOTH structured (table /
+        list) and prose snippet paths.
     """
     if not os.path.exists(_db_path(wg)):
         log(
@@ -346,6 +365,21 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         # Chronological mode excludes undated chunks — a draft windowed
         # chunk has no place in a timeline view of a debate.
         where_clauses.append("chunk_date IS NOT NULL")
+    if author:
+        # Substring match against chunk title — thread / issue
+        # message-section titles carry the sender name. Windowed
+        # draft / transcript chunks have no name in the title so
+        # they implicitly drop out.
+        where_clauses.append("title LIKE ?")
+        where_args.append(f"%{author}%")
+    if role:
+        # Substring match against chunk title's role tag. Role tags
+        # render as "(Chair)" / "(Chair/Author)" / "(Editor)" etc.
+        # in the section header, so wrap the needle in literal
+        # parens to avoid accidentally matching the role text inside
+        # the body of an unrelated chunk.
+        where_clauses.append("title LIKE ?")
+        where_args.append(f"%({role}%")
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, "
@@ -377,7 +411,10 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         ) = rows[i]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
-        snippet = make_snippet(text)
+        # `snippet_chars` lets the caller override the default budget
+        # (consumer feedback: defaults truncate too aggressively for
+        # long-form synthesis).
+        snippet = make_snippet(text, max_chars=snippet_chars)
         hits.append(
             Hit(
                 score=float(scores[i]),

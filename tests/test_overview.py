@@ -190,3 +190,61 @@ def test_overview_works_without_document_authors_section(tmp_path: Path) -> None
     # Leadership still surfaces, documents section absent.
     assert "**Chairs:**" in out
     assert "## Documents" not in out
+
+
+# --- _subject_prefix_frequencies ------------------------------------------
+
+
+def test_subject_prefix_frequencies_counts_bracketed_tokens(
+    tmp_path: Path,
+) -> None:
+    # Build a synthetic threads/ dir with messages carrying TLS-style
+    # subject prefixes; the helper should report the frequency table.
+    from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir()
+    (threads_dir / "2026-04-10-foo.md").write_text(
+        "# Foo\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice\n\n"
+        "_Subject:_ [TLS] [mlkem] consensus call\n\n"
+        "body\n\n"
+        "### [2] 2026-04-11 10:00 — Bob\n\n"
+        "_Subject:_ Re: [TLS] [mlkem] consensus call\n\n"
+        "body\n"
+    )
+    (threads_dir / "2026-04-12-bar.md").write_text(
+        "# Bar\n\n## Messages\n\n"
+        "### [1] 2026-04-12 09:00 — Carol\n\n"
+        "_Subject:_ [TLS] [ech] negotiation\n\n"
+        "body\n"
+    )
+    freqs = _subject_prefix_frequencies(str(tmp_path))
+    by_prefix = dict(freqs)
+    # [tls] appears 3 times (every subject); [mlkem] twice; [ech] once.
+    assert by_prefix.get("[tls]") == 3
+    assert by_prefix.get("[mlkem]") == 2
+    assert by_prefix.get("[ech]") == 1
+
+
+def test_subject_prefix_frequencies_strips_re_fwd(tmp_path: Path) -> None:
+    # `Re: ` / `Fwd:` chrome before the first bracketed prefix must be
+    # stripped so the prefix is still recognised.
+    from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir()
+    (threads_dir / "x.md").write_text(
+        "# x\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice\n\n"
+        "_Subject:_ Re: Re: Fwd: [mlkem] something\n\n"
+        "body\n"
+    )
+    freqs = _subject_prefix_frequencies(str(tmp_path))
+    assert ("[mlkem]", 1) in freqs
+
+
+def test_subject_prefix_frequencies_empty_when_no_threads(
+    tmp_path: Path,
+) -> None:
+    from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
+    # No threads/ dir at all → empty list, not crash.
+    assert _subject_prefix_frequencies(str(tmp_path)) == []

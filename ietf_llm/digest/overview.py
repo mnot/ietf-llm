@@ -144,6 +144,77 @@ def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     return rows[:limit]
 
 
+def _subject_prefix_frequencies(cache_dir: str) -> List[tuple[str, int]]:
+    """Count `[xxx]`-style subject prefixes across per-thread files.
+
+    Many WGs (TLS being the canonical example) don't use GitHub
+    issue labels — they cluster topics on the mailing list via
+    bracketed subject prefixes: `[mlkem] consensus call`,
+    `[ech] negotiation`. This gives consumers the same shape of
+    curation vocabulary `list_labels` provides for GitHub-driven
+    WGs, derived from data the WG actually maintains.
+
+    Walks the per-thread `.md` files under `threads/`, pulls each
+    section header's `_Subject:_` line, strips the standard
+    `Re:` / `Fwd:` chrome plus the WG-name prefix
+    (`[TLS]`, `[httpbis]`, …), then counts remaining `[xxx]`
+    tokens. The WG's own acronym is hard-coded as noise — the
+    *topic-cluster* prefixes are what carry signal.
+
+    Returns `[(prefix, n), ...]` sorted by count descending. The
+    prefix is rendered lowercased and bracket-wrapped (`[mlkem]`)
+    to match how a consumer would type it into
+    `read_digest(kind="threads", subject="[mlkem]")`.
+    """
+    # pylint: disable=import-outside-toplevel
+    from ..paths import threads_dir
+    threads = threads_dir(cache_dir)
+    if not os.path.isdir(threads):
+        return []
+    counts: dict[str, int] = {}
+    # Match `_Subject:_ <text>` lines inside the per-thread files.
+    # The text after the marker is the original (un-normalised)
+    # subject of that specific message section.
+    subj_line_re = re.compile(r"^_Subject:_\s*(.+)$", re.MULTILINE)
+    # The leading-junk pattern from text.py, but capturing the
+    # bracketed tokens instead of stripping them.
+    bracket_re = re.compile(r"\[([^\]]+)\]")
+    re_fwd_re = re.compile(r"^\s*(?:re|fwd|fw|aw|sv)\s*:\s*", re.IGNORECASE)
+    for name in os.listdir(threads):
+        if not name.endswith(".md"):
+            continue
+        try:
+            with open(
+                os.path.join(threads, name), "r", encoding="utf-8",
+                errors="replace",
+            ) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in subj_line_re.finditer(text):
+            subj = match.group(1).strip()
+            # Strip Re:/Fwd: prefixes iteratively (subjects may have
+            # multiple after long threads).
+            while True:
+                stripped = re_fwd_re.sub("", subj)
+                if stripped == subj:
+                    break
+                subj = stripped
+            for token_match in bracket_re.finditer(subj):
+                token = token_match.group(1).strip().lower()
+                if not token:
+                    continue
+                # A bracket past a non-bracket word isn't a prefix —
+                # stop at the first non-bracket span. (We check by
+                # looking at what comes before this match.)
+                pre = subj[: token_match.start()].strip()
+                if pre and not pre.endswith("]"):
+                    break
+                counts[f"[{token}]"] = counts.get(f"[{token}]", 0) + 1
+    # Sort by count desc, then prefix asc.
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def _label_frequencies(cache_dir: str, wg: str) -> List[tuple[str, int]]:
     """Count distinct issue labels across the issues digest.
 

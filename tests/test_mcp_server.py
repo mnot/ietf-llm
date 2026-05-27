@@ -429,11 +429,14 @@ def test_list_labels_returns_frequencies(isolated_home: Path) -> None:
     assert "(2 distinct)" in out
 
 
-def test_list_labels_handles_no_issues(isolated_home: Path) -> None:
-    # No issues digest → friendly empty response, not a crash.
+def test_list_labels_handles_no_vocabulary(isolated_home: Path) -> None:
+    # No issues digest AND no threads dir → friendly empty response,
+    # not a crash. (The "no vocabulary" wording replaced the older
+    # "no labels recorded" when the tool grew its subject-prefix
+    # section.)
     write_cache_file(isolated_home, "wg", "digests/index.md", "# index\n")
     out = mcp_server.tool_list_labels("wg")
-    assert "No labels recorded" in out
+    assert "No curation vocabulary" in out
 
 
 # --- GitHub URL surfacing on search hits ---------------------------------
