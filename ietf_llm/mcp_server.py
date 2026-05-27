@@ -28,6 +28,23 @@ Tools:
 from __future__ import annotations
 
 import os
+
+# Cap native-math thread counts BEFORE any import that touches numpy /
+# torch / sentence-transformers. Each MCP client connection spawns its
+# own ietf-llm-mcp process; left unbounded, every process initialises
+# OpenMP / MKL / OpenBLAS to use all physical cores. Two sessions →
+# 2× cores of contending threads on the same cores → context-switch
+# storms that look like hangs from the client's perspective.
+#
+# Per-query embedding embeds a handful of strings; single-threaded is
+# plenty. The gather pipeline (which runs as a separate `ietf-llm`
+# process) is unaffected because its entry point doesn't import this
+# module. `setdefault` so a user with a different concurrency profile
+# can override via shell env.
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+# pylint: disable=wrong-import-position
 import re
 import sqlite3
 import sys
