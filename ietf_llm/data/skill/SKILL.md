@@ -258,10 +258,21 @@ A few interpretive norms that shape how to read the corpus:
   affiliations across an argument is itself news — *"every TLS library
   vendor on the publish-as-is side"* is a substantive observation,
   even if no single voice claimed to speak for their employer. The
-  `people` digest records affiliation from the **Authors' Addresses**
-  block of drafts each person has authored (the authoritative place);
-  the thread `Participants:` line surfaces it inline. Blank
-  affiliation = no authored draft on record, not "independent."
+  `people` digest records affiliation from two sources:
+  - `(draft)` — the **Authors' Addresses** block of drafts each
+    person has authored. Most authoritative: author-curated,
+    chair-reviewed, per-document.
+  - `(github)` — the user's self-reported GitHub `company` field.
+    Weaker on its own; useful as corroboration.
+
+  When the same org appears under multiple sources — rendered as
+  `Cloudflare (draft, github)` in the digest — that's stronger
+  signal than a single source. A `(github)`-only affiliation is
+  worth quoting but worth flagging as self-reported.
+
+  Blank affiliation = no documented signal from either source. NOT
+  the same as "Independent" — the participant may simply have never
+  authored a draft AND never set their GitHub company field.
 
   Two rules of thumb:
   1. Aggregate, don't attribute. "8 of 12 stated supporters are from

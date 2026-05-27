@@ -65,15 +65,31 @@ class Person:
     # `edited_documents` so callers can distinguish.
     authored_documents: Set[str] = field(default_factory=set)
     edited_documents: Set[str] = field(default_factory=set)
-    # Affiliations declared in draft / RFC author blocks, keyed by
-    # document basename. People legitimately ship different
-    # affiliations across drafts (e.g. an author who joined a company
-    # mid-WG, or who lists "Independent" on one draft and an
-    # employer on another). Keeping per-document mapping lets callers
-    # render "Cloudflare (rfc6265bis); Independent (draft-foo)"
-    # rather than collapsing to a possibly-misleading single value.
-    # Empty for people whose only signal is mailing-list or GitHub.
+    # Affiliations gathered from multiple sources, keyed by source tag.
+    # Tag conventions:
+    #   "draft:<doc-id>"  — Authors' Addresses block of a specific
+    #                       draft / RFC the person has authored. The
+    #                       most authoritative source: author-curated,
+    #                       chair-reviewed, per-document.
+    #   "github"          — GitHub user `company` field, self-reported
+    #                       free text. Useful as a corroborating
+    #                       second signal; sometimes stale or terse.
+    #   (future: "datatracker", "signature")
+    # People legitimately ship different affiliations across drafts
+    # (joined a company mid-WG, "Independent" on one draft and an
+    # employer on another). Per-source keying preserves that. The
+    # renderer aggregates distinct *values* with their source list so
+    # the consumer can see "Cloudflare (draft, github)" — agreement
+    # across independent sources is itself signal.
+    # Empty for people with no documented affiliation.
     affiliations: Dict[str, str] = field(default_factory=dict)
+    # Domains of every email address we've seen for this person.
+    # Stored separately from `affiliations` because email domain is
+    # NOT the same as affiliation (the canonical counter-example:
+    # `mnot.net` is Mark Nottingham's personal domain; he ships
+    # drafts as Cloudflare). Surfaced only on explicit request, with
+    # the framing that it's a fallback signal — not an attribution.
+    email_domains: Set[str] = field(default_factory=set)
     message_count: int = 0
     issue_count: int = 0
     first_seen: Optional[datetime] = None
@@ -201,6 +217,8 @@ class Registry:
         if addr:
             person.emails.add(addr)
             self._by_email[addr] = person
+            if "@" in addr:
+                person.email_domains.add(addr.rsplit("@", 1)[-1])
         if name:
             self._by_name[name.lower()] = person
         if raw_from:
@@ -208,6 +226,24 @@ class Registry:
         person.message_count += 1
         person.touch_date(date)
         return person
+
+    def add_github_company(self, login: str, company: Optional[str]) -> None:
+        """Record a GitHub user's self-reported `company` field as an
+        affiliation hint. The login must already be linked to a Person
+        (call after `add_github_author`); a no-op otherwise.
+
+        Stored under the `"github"` source tag so the renderer can
+        report it with provenance. Empty / None values are silently
+        skipped — GitHub users frequently leave `company` blank.
+        """
+        if not login or not company:
+            return
+        person = self._by_github.get(login.strip())
+        if person is None:
+            return
+        cleaned = company.strip().lstrip("@")
+        if cleaned:
+            person.affiliations["github"] = cleaned
 
     def add_github_author(
         self, login: str, when: Optional[datetime] = None
@@ -281,7 +317,7 @@ class Registry:
         if organization:
             stripped = organization.strip()
             if stripped:
-                person.affiliations[document] = stripped
+                person.affiliations[f"draft:{document}"] = stripped
         return person
 
     def add_datatracker_role(
@@ -344,23 +380,34 @@ class Registry:
         return self._by_name.get(canonical_name.lower())
 
     def affiliation_tag(self, canonical_name: str) -> Optional[str]:
-        """Single short affiliation tag for inline use (participants
-        line, leadership table). Returns None when no draft-derived
-        affiliation is known — silence beats guessing.
+        """Compact affiliation rendering for inline use (participants
+        line). Returns None when no source has produced an affiliation
+        — silence beats guessing.
 
-        When a person has shipped under multiple distinct affiliations
-        across different drafts, returns them joined by "; " so the
-        consumer sees the variation rather than an arbitrary pick. The
-        full per-document mapping lives on `Person.affiliations` for
-        callers that want to attribute by document.
+        Format: distinct organisation values, ordered by source-count
+        descending (Cloudflare-from-2-sources outranks Anthropic-from-
+        1-source); ties broken alphabetically. Source provenance is
+        NOT inlined in this compact rendering — that would make the
+        participants line unreadable. Use `_format_affiliations` for
+        the table rendering that shows sources.
+
+        Cases:
+          - No sources known → None
+          - One distinct value → "Cloudflare"
+          - Multiple distinct values → "Cloudflare; Independent"
         """
         person = self.person_for_name(canonical_name)
         if person is None or not person.affiliations:
             return None
-        distinct = sorted({org for org in person.affiliations.values() if org})
-        if not distinct:
+        counts: Dict[str, int] = {}
+        for org in person.affiliations.values():
+            if not org:
+                continue
+            counts[org] = counts.get(org, 0) + 1
+        if not counts:
             return None
-        return "; ".join(distinct)
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return "; ".join(org for org, _ in ranked)
 
     def role_tag(self, canonical_name: str) -> Optional[str]:
         """All relevant role tags for inline use, "/"-joined.
@@ -515,8 +562,13 @@ def _resolve_github_user_names(
     Logins where we already have a human-readable canonical_name are
     skipped. Logins where the API returns no name (or returns 404)
     stay as the login — but the cache records the absence so we
-    don't re-ask next gather. Names only; affiliation is deliberately
-    NOT pulled, per SKILL.md's "individuals not employers" norm.
+    don't re-ask next gather.
+
+    Also captures the GitHub user's self-reported `company` field as
+    an affiliation signal — stored on Person.affiliations under the
+    "github" source tag, distinct from the draft-derived signal so
+    the renderer can show source agreement when both sources name
+    the same org.
     """
     # Lazy import: keep `requests` out of the people.py top-level so
     # the gather pipeline doesn't drag it in when GitHub isn't gathered.
@@ -542,20 +594,27 @@ def _resolve_github_user_names(
     )
     resolved = resolve_logins(candidates, verbose=verbose)
     n_upgraded = 0
-    for login, name in resolved.items():
-        if not name:
-            continue
+    n_companies = 0
+    for login, info in resolved.items():
         target = by_login.get(login)
         if target is None:
             continue
-        # Keep the by_name index in sync so canonical_for_email
-        # lookups land on this Person now that we have a real name.
-        target.canonical_name = name
-        registry._by_name[name.lower()] = target  # pylint: disable=protected-access
-        n_upgraded += 1
-    if n_upgraded:
+        if info.name:
+            # Keep the by_name index in sync so canonical_for_email
+            # lookups land on this Person now that we have a real name.
+            target.canonical_name = info.name
+            registry._by_name[info.name.lower()] = target  # pylint: disable=protected-access
+            n_upgraded += 1
+        # Record the company field as an affiliation source. We always
+        # try this — even when name resolution didn't upgrade, an
+        # already-named Person may still have a useful `company`.
+        if info.company:
+            registry.add_github_company(login, info.company)
+            n_companies += 1
+    if n_upgraded or n_companies:
         log(
-            f"  upgraded {n_upgraded} login(s) to real names",
+            f"  upgraded {n_upgraded} login(s) to real names; "
+            f"{n_companies} affiliation(s) from GitHub `company`",
             verbose, level=LogLevel.STATUS,
         )
 
@@ -656,15 +715,21 @@ def write_people_digest(
             "names._\n\n"
         )
         fh.write(
-            "_**Affiliation** is taken from the `Authors' Addresses` "
-            "block of drafts the person has authored. It captures who "
-            "they shipped a draft as — load-bearing for implementer "
-            "signal (the 'running code' part of rough consensus). It is "
-            "NOT a license to claim someone speaks for that organisation: "
-            "people participate as individuals. When the same person has "
-            "shipped under different orgs across drafts, all are listed "
-            "(`A; B`). Blank = no authored draft = no documented "
-            "affiliation; do not infer from email domain._\n\n"
+            "_**Affiliation** is gathered from two sources, with "
+            "provenance shown in each cell: `(draft)` = the "
+            "**Authors' Addresses** block of a draft the person has "
+            "authored — the most authoritative source. `(github)` = "
+            "their self-reported GitHub `company` field — weaker, "
+            "but a useful corroborating signal when both sources name "
+            "the same org (`Cloudflare (draft, github)`).\n\n"
+            "Affiliation is implementer signal — load-bearing for "
+            "'rough consensus and running code'. It is NOT a license "
+            "to claim someone speaks for the organisation: people "
+            "participate as individuals. Aggregate, don't attribute.\n\n"
+            "Blank = no documented signal from either source. Do NOT "
+            "infer affiliation from email domain — `mnot.net` is "
+            "Mark Nottingham's personal domain; he ships drafts as "
+            "Cloudflare, not as mnot.net._\n\n"
         )
 
         # Formal WG leadership comes from Datatracker. Surfaced first
@@ -750,17 +815,43 @@ def write_people_digest(
 
 
 def _format_affiliations(person: Person) -> str:
-    """Render a Person's affiliations for a digest table cell.
+    """Render a Person's affiliations for a digest table cell, with
+    source provenance.
 
-    Returns "" (empty cell, not literally "—") when no draft-derived
-    affiliation is known: the column header makes its meaning clear,
-    and a blank cell is honest. When multiple distinct orgs appear
-    across drafts, they're "; "-joined sorted alphabetically.
+    Each distinct organisation value renders as `Org (sources)` where
+    `sources` is a "/"-joined list of source kinds — `draft`, `github`,
+    etc. — sorted with `draft` first (most authoritative). When the
+    same org is corroborated by multiple sources, the cell shows that
+    explicitly: `Cloudflare (draft, github)` is stronger signal than
+    `Cloudflare (github)` alone, and the renderer surfaces it.
+
+    Returns "" (empty cell, not "—") when no source has produced an
+    affiliation — honest blank beats a default.
     """
     if not person.affiliations:
         return ""
-    distinct = sorted({org for org in person.affiliations.values() if org})
-    return "; ".join(distinct).replace("|", "\\|")
+    # Aggregate distinct orgs → set of source kinds. Source kinds
+    # come from the part of the key before the first ":" — so every
+    # "draft:..." key collapses to "draft", every "github" stays.
+    org_sources: Dict[str, Set[str]] = {}
+    for source_key, org in person.affiliations.items():
+        if not org:
+            continue
+        kind = source_key.split(":", 1)[0]
+        org_sources.setdefault(org, set()).add(kind)
+    # Order: most-sourced first (signal), then alphabetical.
+    source_order = {"draft": 0, "datatracker": 1, "github": 2, "signature": 3}
+    ranked = sorted(
+        org_sources.items(),
+        key=lambda kv: (-len(kv[1]), kv[0]),
+    )
+    bits: List[str] = []
+    for org, sources in ranked:
+        ordered_sources = sorted(
+            sources, key=lambda s: (source_order.get(s, 99), s)
+        )
+        bits.append(f"{org} ({', '.join(ordered_sources)})")
+    return "; ".join(bits).replace("|", "\\|")
 
 
 def _bucket_persons(
@@ -818,4 +909,6 @@ def _format_cell(  # pylint: disable=too-many-return-statements
         return ", ".join(sorted(person.roles)).replace("|", "\\|")
     if column == "Affiliation":
         return _format_affiliations(person)
+    if column == "Email domain":
+        return ", ".join(sorted(person.email_domains)).replace("|", "\\|")
     return ""

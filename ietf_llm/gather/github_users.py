@@ -65,29 +65,48 @@ class _Outcome:
     # True if this call hit a 403 rate limit. The caller should stop
     # making further requests this run.
     rate_limited: bool = False
+    # User's self-reported `company` field (free text, often blank).
+    # Captured for affiliation signal: corroborates draft-derived
+    # affiliation when both agree; stands as a weaker independent
+    # signal when no draft authorship exists for this person.
+    company: Optional[str] = None
 
 
 # --- Public entry point ---------------------------------------------------
 
 
+@dataclass
+class _Resolved:
+    """Per-login resolution result returned to the caller."""
+
+    name: Optional[str]
+    company: Optional[str] = None
+
+
 def resolve_logins(
     logins: list[str],
     verbose: Verbosity = Verbosity.STATUS,
-) -> Dict[str, Optional[str]]:
-    """Resolve a batch of GitHub logins to real names.
+) -> Dict[str, _Resolved]:
+    """Resolve a batch of GitHub logins to real names + company strings.
 
-    Returns `{login: name_or_None}`. None means we asked and the user
-    has no name set (or the user doesn't exist). Logins missing from
-    the result are ones we couldn't ask about right now (rate limit /
-    network error); the caller should keep their existing canonical
-    name unchanged for those.
+    Returns `{login: _Resolved(name, company)}`. Either field can be
+    None when GitHub returned no value (cleared by the user, or the
+    user doesn't exist). Logins missing from the result are ones we
+    couldn't ask about right now (rate limit / network error); the
+    caller should keep their existing canonical name unchanged for
+    those.
 
     Strategic about request volume: anything in the on-disk cache is
-    returned from there. Only un-cached logins hit the network. Once a
-    request hits 403, we stop making more this run.
+    returned from there. Only un-cached logins hit the network. Once
+    a request hits 403, we stop making more this run.
+
+    Old cache entries (pre-company) lack `company`; treated as None
+    on read — they'll get refreshed on the next gather when the
+    entry expires (we don't currently expire entries, so practically:
+    on cache file deletion).
     """
     cache = _load_cache()
-    out: Dict[str, Optional[str]] = {}
+    out: Dict[str, _Resolved] = {}
     headers = _build_headers()
     n_requested = 0
     rate_limited = False
@@ -95,7 +114,11 @@ def resolve_logins(
         if not login:
             continue
         if login in cache:
-            out[login] = cache[login].get("name")
+            entry = cache[login]
+            out[login] = _Resolved(
+                name=entry.get("name"),
+                company=entry.get("company"),
+            )
             continue
         if rate_limited:
             # Don't bother trying; the response would just be another
@@ -108,10 +131,13 @@ def resolve_logins(
         if outcome.cacheable:
             cache[login] = {
                 "name": outcome.name,
+                "company": outcome.company,
                 "fetched_at": _now_iso(),
             }
         if outcome.name is not None or outcome.cacheable:
-            out[login] = outcome.name
+            out[login] = _Resolved(
+                name=outcome.name, company=outcome.company,
+            )
     if n_requested:
         # Persist whatever we learned. Best-effort: a write failure
         # just means next run repeats the requests.
@@ -142,7 +168,7 @@ def _build_headers() -> Dict[str, str]:
     return headers
 
 
-def _fetch_one(
+def _fetch_one(  # pylint: disable=too-many-return-statements
     login: str, headers: Dict[str, str], verbose: Verbosity,
 ) -> _Outcome:
     """One `/users/<login>` request. Maps response shapes to outcomes
@@ -162,11 +188,21 @@ def _fetch_one(
             body = response.json()
         except ValueError:
             return _Outcome(name=None, cacheable=False)
-        name = body.get("name") if isinstance(body, dict) else None
-        # Empty-string `name` happens — GitHub returns "" rather than
-        # null when the user clears the field. Normalise to None.
-        cleaned = str(name).strip() if isinstance(name, str) else None
-        return _Outcome(name=cleaned or None, cacheable=True)
+        if not isinstance(body, dict):
+            return _Outcome(name=None, cacheable=False)
+        name = body.get("name")
+        company = body.get("company")
+        # Empty-string fields happen — GitHub returns "" rather than
+        # null when the user clears them. Normalise to None.
+        cleaned_name = str(name).strip() if isinstance(name, str) else None
+        cleaned_company = (
+            str(company).strip() if isinstance(company, str) else None
+        )
+        return _Outcome(
+            name=cleaned_name or None,
+            cacheable=True,
+            company=cleaned_company or None,
+        )
     if response.status_code == 404:
         # User doesn't exist (renamed, deleted, or typo). Cache the
         # miss so we don't re-ask.

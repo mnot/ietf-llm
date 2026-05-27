@@ -62,7 +62,7 @@ def test_cache_hit_skips_http(
 
     out = resolve_logins(["alice"], verbose=Verbosity.QUIET)
 
-    assert out == {"alice": "Alice Wonderland"}
+    assert out["alice"].name == "Alice Wonderland"
     # Crucially, no HTTP call.
     assert called == []
 
@@ -77,7 +77,7 @@ def test_resolved_names_persisted_to_cache(
         "bob": _Outcome(name="Bob Builder", cacheable=True),
     })
     out = resolve_logins(["bob"], verbose=Verbosity.QUIET)
-    assert out["bob"] == "Bob Builder"
+    assert out["bob"].name == "Bob Builder"
     # Re-read by a *fresh* resolve call to prove persistence.
     import json
     saved = json.loads(Path(_cache_path()).read_text())
@@ -97,7 +97,7 @@ def test_second_call_uses_cache(
     # the second call comes entirely from cache.
     called2 = _stub_fetch(monkeypatch, {})
     out = resolve_logins(["carol"], verbose=Verbosity.QUIET)
-    assert out["carol"] == "Carol"
+    assert out["carol"].name == "Carol"
     assert called2 == []
 
 
@@ -113,11 +113,11 @@ def test_404_miss_cached_so_we_dont_retry(
         "ghost": _Outcome(name=None, cacheable=True),
     })
     out1 = resolve_logins(["ghost"], verbose=Verbosity.QUIET)
-    assert out1["ghost"] is None
+    assert out1["ghost"].name is None
     # Second call: cache says None, no HTTP.
     called2 = _stub_fetch(monkeypatch, {})
     out2 = resolve_logins(["ghost"], verbose=Verbosity.QUIET)
-    assert out2["ghost"] is None
+    assert out2["ghost"].name is None
     assert called2 == []
 
 
@@ -157,7 +157,7 @@ def test_rate_limit_doesnt_block_later_runs(
     })
     out = resolve_logins(["first"], verbose=Verbosity.QUIET)
     assert called2 == ["first"]
-    assert out["first"] == "Real Name"
+    assert out["first"].name == "Real Name"
 
 
 # --- Edge cases ----------------------------------------------------------
@@ -196,7 +196,7 @@ def test_corrupt_cache_file_is_ignored(
         "alice": _Outcome(name="Alice", cacheable=True),
     })
     out = resolve_logins(["alice"], verbose=Verbosity.QUIET)
-    assert out["alice"] == "Alice"
+    assert out["alice"].name == "Alice"
 
 
 # --- End-to-end via build_registry ----------------------------------------

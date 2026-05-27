@@ -343,7 +343,9 @@ def test_add_document_author_records_affiliation(isolated_home: Path) -> None:
         document="draft-ietf-foo", organization="Cloudflare",
     )
     person = r.persons[0]
-    assert person.affiliations == {"draft-ietf-foo": "Cloudflare"}
+    # Keys are source-tagged: drafts go under "draft:<doc-id>" so the
+    # renderer can distinguish from "github" / future sources.
+    assert person.affiliations == {"draft:draft-ietf-foo": "Cloudflare"}
 
 
 def test_affiliation_can_vary_across_drafts(isolated_home: Path) -> None:
@@ -362,8 +364,8 @@ def test_affiliation_can_vary_across_drafts(isolated_home: Path) -> None:
     )
     person = r.persons[0]
     assert person.affiliations == {
-        "draft-ietf-foo": "Cloudflare",
-        "draft-ietf-bar": "Independent",
+        "draft:draft-ietf-foo": "Cloudflare",
+        "draft:draft-ietf-bar": "Independent",
     }
     assert r.affiliation_tag("Mark Nottingham") == "Cloudflare; Independent"
 
@@ -404,7 +406,114 @@ def test_people_digest_explains_affiliation_caveats(isolated_home: Path) -> None
     assert path is not None
     text = Path(path).read_text()
     assert "Authors' Addresses" in text
-    assert "do not infer from email domain" in text.lower()
+    assert "do not infer affiliation from email domain" in text.lower()
+
+
+def test_email_domain_populated_from_message_ingestion(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_email_message("Alice <alice@example.com>", None)
+    person = r.persons[0]
+    assert "example.com" in person.email_domains
+
+
+def test_email_domain_distinct_from_affiliation(isolated_home: Path) -> None:
+    # Per the SKILL.md guidance: email domain is NOT affiliation.
+    # A participant with `mnot.net` email and a Cloudflare draft
+    # should have BOTH stored, in separate fields.
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-ietf-foo", organization="Cloudflare",
+    )
+    person = r.persons[0]
+    assert person.email_domains == {"mnot.net"}
+    assert person.affiliations == {"draft:draft-ietf-foo": "Cloudflare"}
+
+
+def test_add_github_company_records_under_github_source(
+    isolated_home: Path,
+) -> None:
+    r = Registry()
+    r.add_github_author("alice")
+    r.add_github_company("alice", "Cloudflare")
+    person = r.persons[0]
+    assert person.affiliations == {"github": "Cloudflare"}
+
+
+def test_add_github_company_strips_at_prefix(isolated_home: Path) -> None:
+    # GitHub users often write `@cloudflare` in the company field.
+    # Strip the leading @ so it matches the cleaner draft form.
+    r = Registry()
+    r.add_github_author("alice")
+    r.add_github_company("alice", "@cloudflare")
+    person = r.persons[0]
+    assert person.affiliations == {"github": "cloudflare"}
+
+
+def test_add_github_company_no_op_for_unknown_login(
+    isolated_home: Path,
+) -> None:
+    # Calling with a login the registry doesn't know about is silently
+    # ignored (don't blindly create a new Person from a company hint).
+    r = Registry()
+    r.add_github_company("nobody", "Cloudflare")
+    assert r.persons == []
+
+
+def test_format_affiliations_shows_source_provenance(
+    isolated_home: Path,
+) -> None:
+    # The digest cell renders org with its sources so a consumer can
+    # see whether 2 independent sources agree (strong signal) or only
+    # 1 weak source claims it (caveat).
+    r = Registry()
+    # Order matters: email first establishes the Person, then the
+    # github author add merges via the email-local-part heuristic.
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_github_author("mnot")
+    r.add_github_company("mnot", "Cloudflare")
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-foo", organization="Cloudflare",
+    )
+    person = r.person_for_name("Mark Nottingham")
+    assert person is not None
+    # The single Person carries both source-tagged affiliations.
+    assert person.affiliations == {
+        "github": "Cloudflare",
+        "draft:draft-foo": "Cloudflare",
+    }
+    # _format_affiliations is the digest-rendering helper.
+    from ietf_llm.people import _format_affiliations  # pylint: disable=import-outside-toplevel
+    rendered = _format_affiliations(person)
+    # Both sources agreed → Cloudflare appears once with both source tags.
+    assert "Cloudflare" in rendered
+    assert "draft" in rendered
+    assert "github" in rendered
+
+
+def test_format_affiliations_shows_disagreement(isolated_home: Path) -> None:
+    # When sources disagree (draft says one org, GitHub another), both
+    # appear so the consumer can see the conflict rather than the
+    # renderer picking one arbitrarily.
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_github_author("mnot")
+    r.add_github_company("mnot", "Anthropic")
+    r.add_document_author(
+        "Mark Nottingham", "mnot@mnot.net",
+        document="draft-foo", organization="Cloudflare",
+    )
+    person = r.person_for_name("Mark Nottingham")
+    assert person is not None
+    from ietf_llm.people import _format_affiliations  # pylint: disable=import-outside-toplevel
+    rendered = _format_affiliations(person)
+    # Both orgs present, each with its own source tag.
+    assert "Cloudflare (draft)" in rendered
+    assert "Anthropic (github)" in rendered
 
 
 def test_role_column_appears_in_activity_table(isolated_home: Path) -> None:
