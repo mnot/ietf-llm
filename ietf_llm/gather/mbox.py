@@ -19,6 +19,42 @@ IMAP_PASS = "mnot+ietf-llm@ietf.org"
 BATCH_SIZE = 50
 
 
+def validate_list_names(
+    names: List[str], verbose: Verbosity = Verbosity.STATUS
+) -> List[str]:
+    """Return the subset of `names` that resolve on mailarchive.ietf.org.
+
+    Used by the CLI to drop typo'd `--mailing-list` values BEFORE
+    `config.merge` persists them. The probe is a GET against the
+    list's browse page (`https://mailarchive.ietf.org/arch/browse/
+    <list>/`), which returns 200 for known lists and 404 otherwise.
+    Names normalised (`foo@ietf.org` → `foo`) for the probe; the
+    returned list keeps the user's original form so the persisted
+    value matches what they typed.
+    """
+    # pylint: disable=import-outside-toplevel
+    from ..utils import fetch_resource
+    valid: List[str] = []
+    for raw in names:
+        norm = normalize_list_name(raw)
+        if not norm:
+            log(
+                f"--mailing-list {raw!r}: empty name; not persisting.",
+                verbose, level=LogLevel.STATUS,
+            )
+            continue
+        url = f"https://mailarchive.ietf.org/arch/browse/{norm}/"
+        if fetch_resource(url) is None:
+            log(
+                f"--mailing-list {raw}: not found on "
+                "mailarchive.ietf.org; not persisting.",
+                verbose, level=LogLevel.STATUS,
+            )
+            continue
+        valid.append(raw)
+    return valid
+
+
 def normalize_list_name(raw: str) -> str:
     """Return just the list-name portion of an IETF mailing list address.
 

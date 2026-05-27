@@ -107,6 +107,47 @@ def test_draft_and_mailing_list_persist_across_runs(isolated_home: Path) -> None
     assert args2.mailing_list == ["foo@ietf.org"]
 
 
+def test_validate_draft_names_drops_unresolved(
+    isolated_home: Path, monkeypatch: object,
+) -> None:
+    # validate_draft_names should drop names that Datatracker doesn't
+    # know, returning only the valid subset.
+    from ietf_llm.gather import drafts  # pylint: disable=import-outside-toplevel
+    from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
+
+    def fake_fetch_current_rev(name: str, _verbose: object) -> object:
+        return 7 if name == "draft-real-thing" else None
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        drafts, "fetch_current_rev", fake_fetch_current_rev,
+    )
+    valid = drafts.validate_draft_names(
+        ["draft-real-thing", "draft-typo-name", "not-a-draft"],
+        verbose=Verbosity.QUIET,
+    )
+    assert valid == ["draft-real-thing"]
+
+
+def test_validate_list_names_drops_unknown(
+    isolated_home: Path, monkeypatch: object,
+) -> None:
+    from ietf_llm.gather import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
+
+    def fake_fetch(url: str, headers: object = None) -> object:
+        # Simulate mailarchive: only `httpbis` exists.
+        return object() if "/arch/browse/httpbis/" in url else None
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "ietf_llm.utils.fetch_resource", fake_fetch,
+    )
+    valid = mbox.validate_list_names(
+        ["httpbis@ietf.org", "ghost@ietf.org"],
+        verbose=Verbosity.QUIET,
+    )
+    assert valid == ["httpbis@ietf.org"]
+
+
 def test_draft_and_mailing_list_union_across_runs(isolated_home: Path) -> None:
     # First call adds one draft; second call adds another. Both persist.
     for value in ("draft-foo-bar", "draft-baz-qux"):

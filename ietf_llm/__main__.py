@@ -22,11 +22,15 @@ from . import __version__, config, paths
 from .freshness import record_gather
 from .gather.charter import process_charter
 from .digest import generate_digests
-from .gather.drafts import process_documents, process_extra_drafts
+from .gather.drafts import (
+    process_documents,
+    process_extra_drafts,
+    validate_draft_names,
+)
 from .gather.github import download_github_issues, process_github_issues
 from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
-from .gather.mbox import sync_mailing_list
+from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
 from .people import build_registry, write_people_digest
@@ -294,6 +298,37 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
             print(f"Cleared configuration for {args.wg}.", file=sys.stderr)
+
+    # Validate the *new* CLI-provided --draft / --mailing-list values
+    # against their authoritative sources before config.merge persists
+    # them. Trust values already in gather.json from prior runs — they
+    # passed validation once, and re-validating means a transient
+    # Datatracker / mailarchive outage would trash working config.
+    # Without this gate, a typo'd name sticks in gather.json and
+    # logs the same skip line every subsequent run.
+    if args.draft or args.mailing_list:
+        persisted = config.load(args.wg, SCOPE)
+        persisted_drafts = set(persisted.get("draft", []))
+        persisted_lists = set(persisted.get("mailing_list", []))
+        if args.draft:
+            new = [d for d in args.draft if d not in persisted_drafts]
+            if new:
+                ok = set(validate_draft_names(new, verbosity))
+                args.draft = [
+                    d for d in args.draft
+                    if d in persisted_drafts or d in ok
+                ] or None
+        if args.mailing_list:
+            new = [
+                lst for lst in args.mailing_list
+                if lst not in persisted_lists
+            ]
+            if new:
+                ok = set(validate_list_names(new, verbosity))
+                args.mailing_list = [
+                    lst for lst in args.mailing_list
+                    if lst in persisted_lists or lst in ok
+                ] or None
 
     config.merge(
         args,

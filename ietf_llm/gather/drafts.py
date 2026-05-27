@@ -125,6 +125,40 @@ def fetch_current_rev(
         return None
 
 
+def validate_draft_names(
+    names: List[str], verbose: Verbosity = Verbosity.STATUS
+) -> List[str]:
+    """Return the subset of `names` that resolve on Datatracker.
+
+    Used by the CLI to drop typo'd `--draft` arguments BEFORE
+    `config.merge` writes them to disk: a bad name shouldn't end up
+    sticky in `gather.json`, where it would re-fail every subsequent
+    run. Names are normalised (version suffix stripped) before
+    lookup; the returned list preserves the user's original casing /
+    form so the persisted value matches what they typed.
+    """
+    valid: List[str] = []
+    for raw in names:
+        normalised = normalize_draft_name(raw)
+        if not normalised.startswith("draft-"):
+            log(
+                f"--draft {raw!r}: doesn't look like a draft name; "
+                "not persisting.",
+                verbose, level=LogLevel.STATUS,
+            )
+            continue
+        rev = fetch_current_rev(normalised, verbose)
+        if rev is None:
+            log(
+                f"--draft {raw}: Datatracker doesn't know this "
+                "draft; not persisting.",
+                verbose, level=LogLevel.STATUS,
+            )
+            continue
+        valid.append(raw)
+    return valid
+
+
 def _download_all_revisions(
     draft_name: str,
     max_rev: int,
