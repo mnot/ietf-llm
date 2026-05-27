@@ -684,14 +684,17 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
 # --- MCP server wiring -------------------------------------------------------
 
 
-def _prewarm_embedding_model() -> None:
-    """Eagerly load the embedding model so the first search_corpus call
-    doesn't take ~10s and look like the server has hung.
+def _prewarm_embedding_model_async() -> None:
+    """Kick off embedding-model pre-warming in a background daemon
+    thread. Returns immediately so the MCP server can register and
+    accept tool calls without blocking on a ~10s sentence-transformers
+    load (Claude startup felt like a hang otherwise).
 
-    Skips if no WG has an embedding index yet (search isn't usable anyway).
-    Picks the model name from the first index found so a non-default
-    --embed-model gets pre-warmed too. Errors are swallowed; pre-warm is
-    best-effort and lazy loading on first call still works as a fallback.
+    If a search_corpus call arrives before the prewarm finishes, the
+    lazy load in `_get_embed_model` runs synchronously on the search
+    thread — same total latency, paid by the call that needs it.
+    The `_MODEL_LOAD_LOCK` in models.py serialises the two paths so
+    we don't load twice.
     """
     root = get_cache_dir()
     if not os.path.isdir(root):
@@ -714,29 +717,24 @@ def _prewarm_embedding_model() -> None:
     if not model_name:
         return
 
-    print(
-        f"ietf-llm-mcp: pre-warming embedding model '{model_name}' "
-        "(one-time, ~10s)...",
-        file=sys.stderr,
-        flush=True,
-    )
-    try:
-        model = _get_embed_model(model_name, Verbosity.QUIET)
-        if model is not None:
-            # llm-sentence-transformers loads weights lazily on first
-            # embed() — force that here.
-            list(model.embed("warmup"))
-        print("ietf-llm-mcp: ready.", file=sys.stderr, flush=True)
-    except Exception as err:  # pylint: disable=broad-except
-        # Best-effort: any failure here means lazy load on first
-        # search_corpus call takes over. Log the exception type so the
-        # symptom ("first search is slow") can be traced if needed.
-        print(
-            f"ietf-llm-mcp: pre-warm failed "
-            f"({type(err).__name__}: {err}); first search may be slow.",
-            file=sys.stderr,
-            flush=True,
-        )
+    def _worker() -> None:
+        try:
+            model = _get_embed_model(model_name, Verbosity.QUIET)
+            if model is not None:
+                # llm-sentence-transformers loads weights lazily on
+                # first embed() — force that here.
+                list(model.embed("warmup"))
+        except Exception:  # pylint: disable=broad-except
+            # Best-effort: any failure here means lazy load on the
+            # first search_corpus call takes over. Stay silent — we're
+            # in the background; the search-path error log will fire
+            # if loading is genuinely broken.
+            pass
+
+    import threading  # pylint: disable=import-outside-toplevel
+    threading.Thread(
+        target=_worker, name="ietf-llm-prewarm", daemon=True,
+    ).start()
 
 
 @graceful_keyboard_interrupt
@@ -1017,7 +1015,7 @@ def main() -> None:
         """
         return tool_read_file_section(wg, file, start_line, max_lines)
 
-    _prewarm_embedding_model()
+    _prewarm_embedding_model_async()
     server.run()
 
 

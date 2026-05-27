@@ -15,6 +15,7 @@ on first embed()) and the agent would appear to hang.
 from __future__ import annotations
 
 import sys
+import threading
 from typing import Any
 
 from ..utils import LogLevel, Verbosity, log
@@ -28,6 +29,10 @@ _ST_PREFIX = "sentence-transformers/"
 
 # Process-level cache of loaded embedding models, keyed by full model id.
 _MODEL_CACHE: dict[str, Any] = {}
+# Serialise concurrent loads of the same model. With background
+# pre-warm now running in a daemon thread, a search call landing
+# during startup would otherwise trigger a second redundant load.
+_MODEL_LOAD_LOCK = threading.Lock()
 
 
 def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
@@ -93,41 +98,48 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
 
 
 def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
+    # Double-checked locking: the unlocked fast-path returns
+    # immediately on warm-cache hits (the common case after first
+    # load). The lock-then-re-check serialises concurrent loaders so
+    # a search arriving mid-prewarm doesn't trigger a duplicate load.
     cached = _MODEL_CACHE.get(model_name)
     if cached is not None:
         return cached
+    with _MODEL_LOAD_LOCK:
+        cached = _MODEL_CACHE.get(model_name)
+        if cached is not None:
+            return cached
+        model: Any = None
+        # Local sentence-transformers path: construct directly, skip
+        # llm's registry (see _load_sentence_transformer docstring).
+        if model_name.startswith(_ST_PREFIX):
+            model = _load_sentence_transformer(model_name, verbose)
+        else:
+            try:
+                import llm  # pylint: disable=import-outside-toplevel,import-error
+            except ImportError:
+                log(
+                    "`llm` package is missing — this should ship with "
+                    "ietf-llm. Try reinstalling: pipx install --force ietf-llm",
+                    verbose,
+                    level=LogLevel.ERROR,
+                )
+                return None
+            try:
+                model = llm.get_embedding_model(  # type: ignore[no-untyped-call]
+                    model_name
+                )
+            except Exception as err:  # pylint: disable=broad-except
+                # `llm.get_embedding_model` and the various provider
+                # plugins don't share a typed exception hierarchy.
+                log(
+                    f"Could not load embedding model '{model_name}': "
+                    f"{type(err).__name__}: {err}",
+                    verbose,
+                    level=LogLevel.ERROR,
+                )
+                return None
 
-    model: Any = None
-    # Local sentence-transformers path: construct directly, skip llm's
-    # registry (see _load_sentence_transformer docstring).
-    if model_name.startswith(_ST_PREFIX):
-        model = _load_sentence_transformer(model_name, verbose)
-    else:
-        try:
-            import llm  # pylint: disable=import-outside-toplevel,import-error
-        except ImportError:
-            log(
-                "`llm` package is missing — this should ship with ietf-llm. "
-                "Try reinstalling: pipx install --force ietf-llm",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            return None
-        try:
-            model = llm.get_embedding_model(  # type: ignore[no-untyped-call]
-                model_name
-            )
-        except Exception as err:  # pylint: disable=broad-except
-            # `llm.get_embedding_model` and the various provider plugins
-            # don't share a typed exception hierarchy.
-            log(
-                f"Could not load embedding model '{model_name}': "
-                f"{type(err).__name__}: {err}",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            return None
-
-    if model is not None:
-        _MODEL_CACHE[model_name] = model
-    return model
+        if model is not None:
+            _MODEL_CACHE[model_name] = model
+        return model
