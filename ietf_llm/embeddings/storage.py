@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -135,8 +135,17 @@ def _pack(vec: Iterable[float]) -> bytes:
     return arr.tobytes()
 
 
-def _unpack_matrix(rows: List[bytes]) -> np.ndarray:
-    """Reshape a list of packed vectors into a single (n, dim) matrix."""
+def _unpack_matrix(
+    rows: List[bytes],
+) -> "np.ndarray[Any, np.dtype[np.float32]]":
+    """Reshape a list of packed vectors into a single (n, dim) matrix.
+
+    Return type is annotated with full generic parameters because
+    NumPy's stub on Python 3.10 (with newer numpy) treats bare
+    `np.ndarray` as a generic-without-args error under strict mypy.
+    The string form keeps it compatible across NumPy versions whose
+    stubs treat the generic differently.
+    """
     if not rows:
         return np.zeros((0, 0), dtype=np.float32)
     dim = len(rows[0]) // 4
