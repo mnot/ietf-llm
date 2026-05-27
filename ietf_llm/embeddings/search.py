@@ -112,20 +112,23 @@ def build_index(
     total_new = 0
     start = time.time()
     for path in files:
-        name = os.path.basename(path)
-        mtime_key = f"mtime:{name}"
+        # Relative path within the WG cache is what we store as
+        # chunks.file, what consumers pass to get_chunk_text /
+        # read_file_section, and what mtime tracking keys on.
+        relpath = os.path.relpath(path, cache_dir)
+        mtime_key = f"mtime:{relpath}"
         file_mtime = os.path.getmtime(path)
         cur.execute("SELECT value FROM meta WHERE key=?", (mtime_key,))
         prev = cur.fetchone()
-        if name in already and prev and float(prev[0]) >= file_mtime:
+        if relpath in already and prev and float(prev[0]) >= file_mtime:
             continue  # unchanged
 
-        chunks = _chunk_file(path)
+        chunks = _chunk_file(path, relpath)
         if not chunks:
             continue
 
         # If we had stale chunks for this file, drop them first.
-        cur.execute("DELETE FROM chunks WHERE file=?", (name,))
+        cur.execute("DELETE FROM chunks WHERE file=?", (relpath,))
 
         # Embed in batches; llm models support embed_multi
         texts = [c.text for c in chunks]
@@ -135,7 +138,7 @@ def build_index(
             # Embedding failures vary by provider (HTTP errors, OOM,
             # rate limits, …) and don't share a typed hierarchy.
             log(
-                f"Embedding failed for {name}: {type(err).__name__}: {err}",
+                f"Embedding failed for {relpath}: {type(err).__name__}: {err}",
                 verbose,
                 level=LogLevel.ERROR,
             )
@@ -170,7 +173,7 @@ def build_index(
         )
         total_new += len(chunks)
         log(
-            f"  embedded {name}: {len(chunks)} chunks",
+            f"  embedded {relpath}: {len(chunks)} chunks",
             verbose,
             level=LogLevel.PROGRESS,
         )

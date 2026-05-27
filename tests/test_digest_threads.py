@@ -18,14 +18,14 @@ from conftest import write_eml
 
 
 def _digest_text(wg: str) -> str:
-    path = Path(get_wg_file_cache_dir(wg)) / f"{wg}-_threads.md"
+    path = Path(get_wg_file_cache_dir(wg)) / "digests" / "threads.md"
     return path.read_text()
 
 
 def test_no_imap_cache_no_digest(isolated_home: Path) -> None:
     paths = generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
-    assert not (Path(get_wg_file_cache_dir("wg")) / "wg-_threads.md").exists()
-    assert all("_threads.md" not in p for p in paths)
+    assert not (Path(get_wg_file_cache_dir("wg")) / "digests/threads.md").exists()
+    assert all("digests/threads.md" not in p for p in paths)
 
 
 def test_imap_cache_at_correct_path_produces_digest(isolated_home: Path) -> None:

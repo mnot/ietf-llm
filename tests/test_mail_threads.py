@@ -233,13 +233,17 @@ def test_per_thread_file_filename_uses_slug(isolated_home: Path) -> None:
     paths = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
     assert len(paths) == 1
     name = Path(paths[0]).name
-    assert name == "wg-thread-2025-01-01-some-topic-with-punctuation.md"
+    assert name == "2025-01-01-some-topic-with-punctuation.md"
+    # And it lives in the threads/ subdir.
+    assert "threads" in Path(paths[0]).parent.parts
 
 
 def test_write_thread_files_clears_stale(isolated_home: Path) -> None:
     cache = Path(get_wg_file_cache_dir("wg"))
+    threads_subdir = cache / "threads"
+    threads_subdir.mkdir(parents=True, exist_ok=True)
     # Plant a stale thread file that no longer corresponds to anything.
-    stale = cache / "wg-thread-2020-01-01-old.md"
+    stale = threads_subdir / "2020-01-01-old.md"
     stale.write_text("stale content")
     # Then build with a fresh thread.
     _write_eml(

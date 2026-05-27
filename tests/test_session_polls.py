@@ -119,7 +119,9 @@ def test_polls_downloaded_to_named_file(
     )
     assert len(written) == 1
     out = Path(written[0])
-    assert out.name == "httpbis-polls-114-202207281330.md"
+    # Post-reorg: under meetings/ietf114/polls/.
+    assert out.name == "202207281330.md"
+    assert "meetings/ietf114/polls" in str(out)
     text = out.read_text()
     # Header carries the load-bearing context.
     assert "IETF 114" in text
@@ -138,7 +140,9 @@ def test_polls_skip_when_already_cached(
     href = "/meeting/114/materials/polls-114-httpbis-202207281330-00"
     cache = Path(get_wg_file_cache_dir("httpbis"))
     cache.mkdir(parents=True, exist_ok=True)
-    pre_existing = cache / "httpbis-polls-114-202207281330.md"
+    polls_subdir = cache / "meetings" / "ietf114" / "polls"
+    polls_subdir.mkdir(parents=True, exist_ok=True)
+    pre_existing = polls_subdir / "202207281330.md"
     pre_existing.write_text("# pre-existing content\n")
 
     called: list[str] = []
@@ -185,7 +189,9 @@ def test_polls_ignores_other_wgs_on_same_hub(
         verbose=Verbosity.QUIET,
     )
     assert written == []
-    assert not (cache / "httpbis-polls-114-202207281530.md").exists()
+    assert not (
+        cache / "meetings" / "ietf114" / "polls" / "202207281530.md"
+    ).exists()
 
 
 def test_polls_version_dedupe(
@@ -263,11 +269,14 @@ def test_discover_local_polls_parses_filename(
     isolated_home: Path,
 ) -> None:
     cache = Path(get_wg_file_cache_dir("httpbis"))
-    cache.mkdir(parents=True, exist_ok=True)
-    (cache / "httpbis-polls-114-202207281330.md").write_text("# polls\n")
-    (cache / "httpbis-polls-115-202211090830.md").write_text("# polls\n")
-    # An unrelated file in the same dir mustn't show up.
-    (cache / "httpbis-thread-2022-07-28-topic.md").write_text("# t\n")
+    for code, dt in [("ietf114", "202207281330"), ("ietf115", "202211090830")]:
+        d = cache / "meetings" / code / "polls"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{dt}.md").write_text("# polls\n")
+    # An unrelated thread file mustn't show up.
+    threads_dir = cache / "threads"
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    (threads_dir / "2022-07-28-topic.md").write_text("# t\n")
     polls = session_polls.discover_local_polls(str(cache))
     assert len(polls) == 2
     by_meeting = {p.meeting: p for p in polls}
@@ -281,9 +290,10 @@ def test_discover_local_polls_skips_malformed_filenames(
     isolated_home: Path,
 ) -> None:
     cache = Path(get_wg_file_cache_dir("httpbis"))
-    cache.mkdir(parents=True, exist_ok=True)
+    polls_dir = cache / "meetings" / "ietf114" / "polls"
+    polls_dir.mkdir(parents=True, exist_ok=True)
     # Filename matches the prefix but the date token is garbage.
-    (cache / "httpbis-polls-114-NOTADATE.md").write_text("# x\n")
+    (polls_dir / "NOTADATE.md").write_text("# x\n")
     # No exception; the bad row is silently skipped.
     assert session_polls.discover_local_polls(str(cache)) == []
 
@@ -307,8 +317,9 @@ def test_timeline_emits_poll_event_per_cached_file(
     from ietf_llm.people import Registry
 
     cache = Path(get_wg_file_cache_dir("httpbis"))
-    cache.mkdir(parents=True, exist_ok=True)
-    (cache / "httpbis-polls-114-202207281330.md").write_text(
+    polls_dir = cache / "meetings" / "ietf114" / "polls"
+    polls_dir.mkdir(parents=True, exist_ok=True)
+    (polls_dir / "202207281330.md").write_text(
         "# httpbis session polls — IETF 114\n\nbody\n"
     )
     events = build_events(
@@ -318,6 +329,7 @@ def test_timeline_emits_poll_event_per_cached_file(
     poll_events = [e for e in events if e.kind == "poll"]
     assert len(poll_events) == 1
     assert "IETF 114" in poll_events[0].title
-    # Link uses backticks so the existing timeline renderer doesn't
-    # need a special case.
-    assert "httpbis-polls-114-202207281330.md" in (poll_events[0].link or "")
+    # Link is the relative path to the cached file.
+    assert "meetings/ietf114/polls/202207281330.md" in (
+        poll_events[0].link or ""
+    )

@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ..paths import meeting_code_for_relpath, minutes_path
 from ..utils import LogLevel, Verbosity, log
 
 #: Files we never try to extract — they're already text or non-PDF.
@@ -33,13 +34,12 @@ _EXCLUDED_SUFFIXES = (".txt", ".md", ".json")
 
 # --- Slide context inference ----------------------------------------------
 
-# Slide file naming: `<meeting>-slides-<session-code>-<topic>-<NN>.pdf`
-#   ietf124-slides-124-aipref-overview-00.pdf
-#   interim2025aipref08-slides-interim-2025-aipref-08-sessa-draft-status-update-00.pdf
-_SLIDE_RE = re.compile(
-    r"^(?P<meeting>(?:ietf\d+|interim\d{4}\w+\d+))-slides-"
-    r"(?P<middle>.+?)"
-    r"-(?P<version>\d+)\.pdf$",
+# Slide file naming (post-reorg): the meeting code lives in the path
+# as `meetings/<code>/slides/<filename>.pdf`, so we no longer need to
+# parse it out of the filename. The filename itself still carries
+# `slides-<session-code>-<topic>-<NN>.pdf` from Datatracker.
+_SLIDE_BASENAME_RE = re.compile(
+    r"^slides-(?P<middle>.+?)-(?P<version>\d+)\.pdf$",
     re.IGNORECASE,
 )
 
@@ -84,17 +84,21 @@ def _clean_topic(middle: str) -> str:
     return stripped or middle
 
 
-def _find_minutes(cache_dir: str, meeting: str) -> Optional[str]:
-    for suffix in ("-minutes.md", "-minutes.txt"):
-        candidate = os.path.join(cache_dir, f"{meeting}{suffix}")
-        if os.path.isfile(candidate):
-            return os.path.basename(candidate)
+def _find_minutes_relpath(cache_dir: str, meeting: str) -> Optional[str]:
+    """Return the relative path to the meeting's minutes file (if any).
+    Returns the path relative to cache_dir so it round-trips through
+    consumers that expect that form."""
+    candidate = minutes_path(cache_dir, meeting)
+    if os.path.isfile(candidate):
+        return os.path.relpath(candidate, cache_dir)
     return None
 
 
-def _read_meeting_date(cache_dir: str, minutes_name: str) -> Optional[str]:
+def _read_meeting_date(cache_dir: str, minutes_relpath: str) -> Optional[str]:
     try:
-        with open(os.path.join(cache_dir, minutes_name), "r", encoding="utf-8") as fh:
+        with open(
+            os.path.join(cache_dir, minutes_relpath), "r", encoding="utf-8",
+        ) as fh:
             head = fh.read(500)
     except OSError:
         return None
@@ -102,24 +106,35 @@ def _read_meeting_date(cache_dir: str, minutes_name: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def slide_context(pdf_name: str, cache_dir: str) -> Optional[SlideContext]:
-    """Infer meeting + topic context for a slide PDF, or None if its
-    filename doesn't follow the IETF slide convention."""
-    match = _SLIDE_RE.match(pdf_name)
+def slide_context(
+    pdf_relpath: str, cache_dir: str,
+) -> Optional[SlideContext]:
+    """Infer meeting + topic context for a slide PDF.
+
+    `pdf_relpath` is the path relative to cache_dir, e.g.
+    `meetings/ietf124/slides/slides-124-aipref-overview-00.pdf`.
+    The meeting code comes from the path; topic + version come from
+    the filename. Returns None if the basename doesn't follow the
+    `slides-…-NN.pdf` convention.
+    """
+    basename = os.path.basename(pdf_relpath)
+    match = _SLIDE_BASENAME_RE.match(basename)
     if not match:
         return None
-    meeting = match.group("meeting").lower()
+    meeting = meeting_code_for_relpath(pdf_relpath)
+    if not meeting:
+        return None
     middle = match.group("middle")
     version = match.group("version")
-    minutes_name = _find_minutes(cache_dir, meeting)
-    date = _read_meeting_date(cache_dir, minutes_name) if minutes_name else None
+    minutes_rel = _find_minutes_relpath(cache_dir, meeting)
+    date = _read_meeting_date(cache_dir, minutes_rel) if minutes_rel else None
     return SlideContext(
         meeting=meeting,
         label=_meeting_label(meeting),
         topic_slug=_clean_topic(middle),
         version=version,
         date=date,
-        minutes_file=minutes_name,
+        minutes_file=minutes_rel,
     )
 
 
@@ -198,50 +213,54 @@ def extract_pdf_text(pdf_path: str) -> str:
 def extract_all_pdfs(
     cache_dir: str, verbose: Verbosity = Verbosity.STATUS
 ) -> List[str]:
-    """Walk the cache, extract every PDF that needs it. Return paths written.
+    """Walk the cache (recursively), extract every PDF that needs it.
 
     Idempotent: re-runs only touch PDFs whose .txt is missing or stale.
+    Walks recursively because slide PDFs now live under
+    `meetings/<code>/slides/`, not flat at the top of the cache.
     """
     if not os.path.isdir(cache_dir):
         return []
     written: List[str] = []
     skipped_empty = 0
-    for name in sorted(os.listdir(cache_dir)):
-        if not name.lower().endswith(".pdf"):
-            continue
-        pdf_path = os.path.join(cache_dir, name)
-        if not os.path.isfile(pdf_path):
-            continue
-        txt_path = _output_path(pdf_path)
-        if not _needs_extraction(pdf_path, txt_path):
-            continue
+    for dirpath, _dirnames, filenames in os.walk(cache_dir):
+        for name in sorted(filenames):
+            if not name.lower().endswith(".pdf"):
+                continue
+            pdf_path = os.path.join(dirpath, name)
+            relpath = os.path.relpath(pdf_path, cache_dir)
+            if not os.path.isfile(pdf_path):
+                continue
+            txt_path = _output_path(pdf_path)
+            if not _needs_extraction(pdf_path, txt_path):
+                continue
 
-        # Slide PDFs get a context header listing the meeting, date
-        # (read from the companion minutes file), and topic slug —
-        # without it, a chunk from page 5 of a deck has no signal as
-        # to which IETF or interim it came from.
-        context = slide_context(name, cache_dir)
-        header = _render_slide_header(name, context)
+            # Slide PDFs get a context header listing the meeting,
+            # date (read from the companion minutes file), and topic
+            # slug — without it, a chunk from page 5 of a deck has no
+            # signal as to which IETF or interim it came from.
+            context = slide_context(relpath, cache_dir)
+            header = _render_slide_header(name, context)
 
-        text = extract_pdf_text(pdf_path)
-        if not text:
-            # Write a tiny stub so we don't retry every gather, and so
-            # the .txt's mtime signals "we tried and there's nothing
-            # useful here". The stub keeps the context header so an
-            # agent reading `_index.md` still knows which meeting the
-            # PDF belongs to.
-            stub_body = (
-                "_No extractable text. The PDF is image-only, encrypted, "
-                "or its content stream couldn't be parsed._\n"
-            )
+            text = extract_pdf_text(pdf_path)
+            if not text:
+                # Write a tiny stub so we don't retry every gather, and so
+                # the .txt's mtime signals "we tried and there's nothing
+                # useful here". The stub keeps the context header so an
+                # agent reading the digests still knows which meeting
+                # the PDF belongs to.
+                stub_body = (
+                    "_No extractable text. The PDF is image-only, encrypted, "
+                    "or its content stream couldn't be parsed._\n"
+                )
+                with open(txt_path, "w", encoding="utf-8") as fh:
+                    fh.write(header + "\n" + stub_body)
+                skipped_empty += 1
+                written.append(txt_path)
+                continue
             with open(txt_path, "w", encoding="utf-8") as fh:
-                fh.write(header + "\n" + stub_body)
-            skipped_empty += 1
+                fh.write(header + "\n" + text)
             written.append(txt_path)
-            continue
-        with open(txt_path, "w", encoding="utf-8") as fh:
-            fh.write(header + "\n" + text)
-        written.append(txt_path)
 
     if written:
         log(

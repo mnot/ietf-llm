@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from ..paths import meeting_dir, minutes_path, slides_dir
 from ..utils import (
     LogLevel,
     Verbosity,
@@ -116,7 +117,9 @@ def process_meetings(
 
     for meeting in meetings:
         safe_num = format_filename(meeting["number"]).replace("_", "").replace("-", "")
-        output_file = os.path.join(destination, f"{safe_num}-minutes.md")
+        # Each meeting gets its own subdir; minutes.md lives at the top.
+        os.makedirs(meeting_dir(destination, safe_num), exist_ok=True)
+        output_file = minutes_path(destination, safe_num)
 
         # Check if we already have files for this meeting to avoid extra requests
         if os.path.exists(output_file):
@@ -186,7 +189,8 @@ def process_meetings(
 
 
 def _handle_pdfs(url: str, dest: str, safe_num: str, verbose: Verbosity) -> List[str]:
-    """Crawl a URL for PDF slide links and download them."""
+    """Crawl a URL for PDF slide links and download them into the
+    meeting's slides/ subdir."""
     log(f"Checking for PDFs at {url}...", verbose, level=LogLevel.PROGRESS)
     res = fetch_resource(url)
     if not res:
@@ -196,6 +200,10 @@ def _handle_pdfs(url: str, dest: str, safe_num: str, verbose: Verbosity) -> List
     soup = BeautifulSoup(res.text, "html.parser")
     # Look for potential slide/PDF links
     potential = soup.find_all("a", href=re.compile(r"slides-|/materials/|\.pdf$", re.I))
+
+    # Slides for this meeting all land under meetings/<code>/slides/.
+    out_dir = slides_dir(dest, safe_num)
+    os.makedirs(out_dir, exist_ok=True)
 
     for p_link in potential:
         href = p_link.get("href")
@@ -217,7 +225,8 @@ def _handle_pdfs(url: str, dest: str, safe_num: str, verbose: Verbosity) -> List
         if not p_base.lower().endswith(".pdf"):
             p_base += ".pdf"
 
-        pdf_dest = os.path.join(dest, f"{safe_num}-{p_base}")
+        # Directory disambiguates the meeting; basename can stand alone.
+        pdf_dest = os.path.join(out_dir, p_base)
         if not os.path.exists(pdf_dest):
             if _download_if_pdf(p_url, pdf_dest, verbose):
                 updated.append(pdf_dest)

@@ -1,7 +1,6 @@
-"""Top-level corpus index: {wg}-_index.md.
+"""Top-level corpus index: `digests/index.md`.
 
-Categorises every file in the cache by kind (charter, drafts, RFCs,
-meetings, transcripts, mailing list, GitHub, other) and writes a
+Categorises every file in the cache by its directory and writes a
 markdown landing page that points readers at the digests and the
 raw files alike.
 """
@@ -9,50 +8,83 @@ raw files alike.
 from __future__ import annotations
 
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
+from ..paths import (
+    DIR_DIGESTS,
+    DIR_DRAFTS,
+    DIR_GITHUB,
+    DIR_ISSUES,
+    DIR_MEETINGS,
+    DIR_RAW,
+    DIR_THREADS,
+    SUBDIR_POLLS,
+    SUBDIR_SLIDES,
+    SUBDIR_TRANSCRIPTS,
+    digest_path,
+)
 from ..utils import LogLevel, Verbosity, get_wg_title, log
 from .helpers import _fmt_size
 
 
-def _inventory(cache_dir: str, wg: str) -> Dict[str, List[str]]:
-    """Group cache files by kind for the index."""
-    buckets: Dict[str, List[str]] = {
+def _inventory(cache_dir: str) -> Dict[str, List[Tuple[str, int]]]:
+    """Walk the cache recursively and bucket files by their location
+    in the layout. Each value is a list of (relpath, size) tuples.
+    """
+    buckets: Dict[str, List[Tuple[str, int]]] = {
         "charter": [],
         "drafts": [],
-        "rfcs": [],
         "meetings": [],
         "transcripts": [],
-        "mailing_list": [],
-        "github": [],
+        "polls": [],
+        "threads": [],
+        "issues": [],
+        "raw": [],
         "other": [],
     }
-    for name in sorted(os.listdir(cache_dir)):
-        if name.startswith(f"{wg}-_"):
-            # Skip digest files themselves
-            continue
-        path = os.path.join(cache_dir, name)
-        if not os.path.isfile(path):
-            continue
-        if name.endswith(".json"):
-            continue  # internal
-        lower = name.lower()
-        if "charter" in lower:
-            buckets["charter"].append(name)
-        elif "transcript" in lower:
-            buckets["transcripts"].append(name)
-        elif "mailing-list" in lower or "mbox" in lower:
-            buckets["mailing_list"].append(name)
-        elif "github" in lower:
-            buckets["github"].append(name)
-        elif lower.startswith("rfc"):
-            buckets["rfcs"].append(name)
-        elif "draft-" in lower:
-            buckets["drafts"].append(name)
-        elif "meeting" in lower or "minutes" in lower or "agenda" in lower or "slides" in lower:
-            buckets["meetings"].append(name)
-        else:
-            buckets["other"].append(name)
+    for dirpath, _dirnames, filenames in os.walk(cache_dir):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            relpath = os.path.relpath(path, cache_dir)
+            # Skip the digest files themselves (they're listed in the
+            # intro, not bucketed as cache content).
+            if relpath.startswith(f"{DIR_DIGESTS}/"):
+                continue
+            # Skip raw github archive JSON (internal data, not corpus).
+            if relpath.startswith(f"{DIR_GITHUB}/"):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            entry = (relpath, size)
+            if relpath == "charter.txt":
+                buckets["charter"].append(entry)
+            elif relpath.startswith(f"{DIR_DRAFTS}/"):
+                buckets["drafts"].append(entry)
+            elif relpath.startswith(f"{DIR_MEETINGS}/"):
+                # Sort within meetings/ by sub-kind.
+                if f"/{SUBDIR_TRANSCRIPTS}/" in relpath:
+                    buckets["transcripts"].append(entry)
+                elif f"/{SUBDIR_POLLS}/" in relpath:
+                    buckets["polls"].append(entry)
+                elif f"/{SUBDIR_SLIDES}/" in relpath and relpath.endswith(".pdf"):
+                    # Skip .pdf; we list the .pdf.txt extracts instead.
+                    continue
+                else:
+                    buckets["meetings"].append(entry)
+            elif relpath.startswith(f"{DIR_THREADS}/"):
+                buckets["threads"].append(entry)
+            elif relpath.startswith(f"{DIR_ISSUES}/"):
+                buckets["issues"].append(entry)
+            elif relpath.startswith(f"{DIR_RAW}/"):
+                buckets["raw"].append(entry)
+            else:
+                buckets["other"].append(entry)
+    for bucket_list in buckets.values():
+        bucket_list.sort()
     return buckets
 
 
@@ -65,9 +97,10 @@ def _build_index(
     has_people_digest: bool = False,
     has_timeline_digest: bool = False,
 ) -> str:
-    """Build {wg}-_index.md as the landing page for the corpus."""
-    out_path = os.path.join(cache_dir, f"{wg}-_index.md")
-    buckets = _inventory(cache_dir, wg)
+    """Write the corpus landing page at `digests/index.md`."""
+    out_path = digest_path(cache_dir, "index")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    buckets = _inventory(cache_dir)
     title = get_wg_title(wg) or wg
 
     with open(out_path, "w", encoding="utf-8") as fh:
@@ -78,43 +111,50 @@ def _build_index(
         fh.write(
             "This directory contains the public record for the IETF "
             f"**{wg}** working group: charter, drafts, meeting materials, "
-            "transcripts, mailing list, and GitHub issues.\n\n"
-            "The corpus is large. Prefer this index and the companion "
-            "digests over reading raw files end-to-end:\n\n"
+            "transcripts, mailing list, and GitHub issues. Files are "
+            "organised by kind (`drafts/`, `meetings/`, `threads/`, "
+            "`issues/`); the `digests/` directory holds the markdown "
+            "tables you should reach for first.\n\n"
+            "The corpus is large. Prefer the digests over reading raw "
+            "files end-to-end:\n\n"
         )
         if has_issues_digest:
-            fh.write(f"- `{wg}-_issues.md` — every GitHub issue, one row each.\n")
+            fh.write("- `digests/issues.md` — every GitHub issue, one row each.\n")
         if has_threads_digest:
             fh.write(
-                f"- `{wg}-_threads.md` — every mailing list thread, one row each. "
-                "Each row links to a per-thread file "
-                f"(`{wg}-thread-<date>-<slug>.md`) with the full conversation.\n"
+                "- `digests/threads.md` — every mailing list thread, "
+                "one row each. Each row links to a per-thread file "
+                "(`threads/<date>-<slug>.md`) with the full conversation.\n"
             )
         if has_people_digest:
             fh.write(
-                f"- `{wg}-_people.md` — participants, with mail addresses "
-                "and GitHub logins consolidated into canonical names; "
-                "leads with WG leadership and document authors.\n"
+                "- `digests/people.md` — participants, with mail "
+                "addresses and GitHub logins consolidated into canonical "
+                "names; leads with WG leadership and document authors.\n"
             )
         if has_timeline_digest:
             fh.write(
-                f"- `{wg}-_timeline.md` — chronological event log "
-                "(drafts published, issues opened/closed, meetings, WGLCs).\n"
+                "- `digests/timeline.md` — chronological event log "
+                "(drafts published, issues opened/closed, meetings, "
+                "WGLCs, chair appointments).\n"
             )
         fh.write(
-            "\nThe per-year `*-mailing-list-YYYY.txt` files and the "
-            "`*-github-<repo>.txt` files are the raw text. They are often "
-            "many MB — grep or targeted reads only.\n\n"
+            "\nThe `raw/` directory holds large unstructured artefacts "
+            "(per-year mailing-list dumps, legacy GitHub text dumps) "
+            "kept only for grep / NotebookLM upload. They're excluded "
+            "from the search index and are usually multi-MB — "
+            "grep or targeted reads only.\n\n"
         )
 
         sections = [
             ("Charter", "charter"),
-            ("Drafts (active)", "drafts"),
-            ("RFCs", "rfcs"),
-            ("Meetings (minutes / slides / agendas)", "meetings"),
+            ("Drafts (active + RFCs)", "drafts"),
+            ("Meetings (minutes / slides)", "meetings"),
             ("Transcripts", "transcripts"),
-            ("Mailing list (per year)", "mailing_list"),
-            ("GitHub issues (full text)", "github"),
+            ("Session polls", "polls"),
+            ("Mailing list threads", "threads"),
+            ("GitHub issues", "issues"),
+            ("Raw artefacts (not indexed)", "raw"),
             ("Other", "other"),
         ]
         for heading, key in sections:
@@ -122,9 +162,8 @@ def _build_index(
             if not files:
                 continue
             fh.write(f"## {heading} ({len(files)})\n\n")
-            for name in files:
-                size = os.path.getsize(os.path.join(cache_dir, name))
-                fh.write(f"- `{name}` ({_fmt_size(size)})\n")
+            for relpath, size in files:
+                fh.write(f"- `{relpath}` ({_fmt_size(size)})\n")
             fh.write("\n")
 
     log(f"Wrote index: {out_path}", verbose, level=LogLevel.STATUS)

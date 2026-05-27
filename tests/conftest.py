@@ -109,14 +109,16 @@ def write_github_archive(
     repo: str,
     issues: Iterable[dict[str, Any]],
 ) -> Path:
-    """Create a GitHub archive JSON in the files-cache layout:
+    """Create a GitHub archive JSON in the post-reorg cache layout:
 
-        <cache_root>/.cache/ietf-llm/<wg>/files/<wg>-github-<slug>.json
+        <cache_root>/.cache/ietf-llm/<wg>/files/github/<slug>.json
     """
-    files_dir = cache_root / ".cache" / "ietf-llm" / wg / "files"
-    files_dir.mkdir(parents=True, exist_ok=True)
-    slug = repo.replace("/", "-")
-    path = files_dir / f"{wg}-github-{slug}.json"
+    archives_dir = (
+        cache_root / ".cache" / "ietf-llm" / wg / "files" / "github"
+    )
+    archives_dir.mkdir(parents=True, exist_ok=True)
+    slug = repo.replace("/", "-").lower()
+    path = archives_dir / f"{slug}.json"
     path.write_text(
         json.dumps(
             {
@@ -132,10 +134,15 @@ def write_github_archive(
 def write_cache_file(
     cache_root: Path, wg: str, name: str, content: str = "x"
 ) -> Path:
-    """Drop a file into <cache_root>/.cache/ietf-llm/<wg>/files/<name>."""
+    """Drop a file into <cache_root>/.cache/ietf-llm/<wg>/files/<name>.
+
+    `name` can include subdirectories (e.g. `digests/issues.md`); any
+    parent directories needed for the target path are created.
+    """
     files_dir = cache_root / ".cache" / "ietf-llm" / wg / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
     path = files_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return path
 

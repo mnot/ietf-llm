@@ -1,7 +1,9 @@
 import os
+import re
 import subprocess
 from datetime import datetime, timedelta
 from typing import List, Optional
+from ..paths import transcripts_dir, transcript_path
 from ..utils import LogLevel, Verbosity, log, get_cache_dir
 
 
@@ -59,45 +61,56 @@ def process_transcripts(
         datetime.now() - timedelta(days=months * 30) if months is not None else None
     )
 
+    # Source filenames look like `IETF125-AIPREF-20260316-0330.md` (a
+    # numbered IETF meeting) or `IETF-AIPREF-20260415-1315.md` (an
+    # interim — no meeting number). The destination layout puts each
+    # transcript under `meetings/<code>/transcripts/<datetime>.md`,
+    # using the meeting number as the code when present and the
+    # `_orphans` directory when not. (Meetings.py and transcript_context
+    # both handle the orphan case downstream.)
+    src_pattern = re.compile(
+        r"^IETF(?P<meeting_num>\d+)?-"
+        + re.escape(wg_upper)
+        + r"-(?P<date>\d{8})-(?P<time>\d{4})\.md$",
+        re.IGNORECASE,
+    )
     for file in os.listdir(transcripts_path):
-        # Pattern: IETF{num}-{WG}-{date}-{time}.md
-        # Example: IETF125-AIPREF-20260316-0330.md
-        if file.startswith("IETF") and f"-{wg_upper}-" in file and file.endswith(".md"):
-            # Filtering by date if requested
-            if cutoff_date:
-                try:
-                    parts = file.split("-")
-                    # parts[2] should be the date YYYYMMDD
-                    date_str = parts[2]
-                    file_date = datetime.strptime(date_str, "%Y%m%d")
-                    if file_date < cutoff_date:
-                        continue
-                except (IndexError, ValueError):
-                    # If parsing fails, fall back to including it
-                    pass
+        match = src_pattern.match(file)
+        if not match:
+            continue
+        meeting_num = match.group("meeting_num")
+        date_str = match.group("date")
+        time_str = match.group("time")
+        # Filtering by date if requested
+        if cutoff_date:
+            try:
+                file_date = datetime.strptime(date_str, "%Y%m%d")
+                if file_date < cutoff_date:
+                    continue
+            except ValueError:
+                pass
 
-            src_path = os.path.join(transcripts_path, file)
+        src_path = os.path.join(transcripts_path, file)
+        code = f"ietf{meeting_num}" if meeting_num else None
+        datetime_token = f"{date_str}{time_str}"
+        out_dir = transcripts_dir(destination, code)
+        os.makedirs(out_dir, exist_ok=True)
+        dest_path = transcript_path(destination, code, datetime_token)
 
-            # Destination filename: lowercase and append -transcript
-            # Example: ietf125-aipref-20260316-0330-transcript.md
-            name, ext = os.path.splitext(file)
-            dest_filename = f"{name.lower()}-transcript{ext}"
-            dest_path = os.path.join(destination, dest_filename)
-
-            if not os.path.exists(dest_path):
-                log(
-                    f"Copying transcript: {dest_filename}...",
-                    verbose,
-                    level=LogLevel.PROGRESS,
-                )
-                try:
-                    with open(src_path, "r", encoding="utf-8") as f_in:
-                        content = f_in.read()
-                    with open(dest_path, "w", encoding="utf-8") as f_out:
-                        f_out.write(content)
-                    updated_files.append(dest_path)
-                except OSError as err:
-                    log(f"Error copying transcript {file}: {err}", level=LogLevel.ERROR)
+        if not os.path.exists(dest_path):
+            log(
+                f"Copying transcript: {os.path.relpath(dest_path, destination)}...",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            try:
+                with open(src_path, "r", encoding="utf-8") as f_in:
+                    content = f_in.read()
+                with open(dest_path, "w", encoding="utf-8") as f_out:
+                    f_out.write(content)
+                updated_files.append(dest_path)
+            except OSError as err:
+                log(f"Error copying transcript {file}: {err}", level=LogLevel.ERROR)
 
     if not updated_files:
         log(

@@ -104,7 +104,7 @@ def test_list_working_groups_empty_message(isolated_home: Path) -> None:
 def test_read_digest_people_kind_is_valid(isolated_home: Path) -> None:
     # "people" is one of the recognised kinds. With no file present
     # we get the not-found message; with the file present we get content.
-    write_cache_file(isolated_home, "wg", "wg-_people.md", "# people\n")
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
     out = mcp_server.tool_read_digest("wg", "people")
     assert "# people" in out
 
@@ -125,8 +125,8 @@ def test_get_chunk_on_digest_file_redirects_to_read_digest(
     # The consuming-LLM gap: get_chunk_text("aipref-_people.md", 0) used
     # to return an opaque "Chunk not found." Now it should name the
     # right tool to call.
-    write_cache_file(isolated_home, "wg", "wg-_people.md", "# people\n")
-    out = mcp_server.tool_get_chunk("wg", "wg-_people.md", 0)
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
+    out = mcp_server.tool_get_chunk("wg", "digests/people.md", 0)
     assert "digest" in out.lower()
     assert "read_digest" in out
     assert "kind='people'" in out
@@ -144,8 +144,8 @@ def test_get_chunk_unknown_file_explains_what_to_do(
 def test_read_file_section_on_digest_includes_hint(
     isolated_home: Path,
 ) -> None:
-    write_cache_file(isolated_home, "wg", "wg-_issues.md", "# issues\n\nbody\n")
-    out = mcp_server.tool_read_file_section("wg", "wg-_issues.md")
+    write_cache_file(isolated_home, "wg", "digests/issues.md", "# issues\n\nbody\n")
+    out = mcp_server.tool_read_file_section("wg", "digests/issues.md")
     assert "read_digest" in out
     assert "kind='issues'" in out
     # And it still serves the content (just prefixed with the hint).
@@ -156,12 +156,12 @@ def test_read_file_section_on_digest_includes_hint(
 
 
 def test_list_files_annotates_digest_files(isolated_home: Path) -> None:
-    write_cache_file(isolated_home, "wg", "wg-_people.md", "x")
-    write_cache_file(isolated_home, "wg", "wg-_issues.md", "x")
+    write_cache_file(isolated_home, "wg", "digests/people.md", "x")
+    write_cache_file(isolated_home, "wg", "digests/issues.md", "x")
     write_cache_file(isolated_home, "wg", "other.txt", "x")
     out = mcp_server.tool_list_files("wg")
     # Digest files should be flagged + redirect to read_digest.
-    assert "wg-_people.md" in out
+    assert "digests/people.md" in out
     assert "read_digest" in out
     assert "kind='people'" in out
     assert "kind='issues'" in out
@@ -200,7 +200,7 @@ def _make_stale(wg: str, days: int) -> None:
 def test_overview_prepends_staleness_warning_when_stale(
     isolated_home: Path,
 ) -> None:
-    write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg index\n")
+    write_cache_file(isolated_home, "wg", "digests/index.md", "# wg index\n")
     _make_stale("wg", days=30)
     out = mcp_server.tool_overview("wg")
     assert out.startswith("⚠")
@@ -210,7 +210,7 @@ def test_overview_prepends_staleness_warning_when_stale(
 
 
 def test_overview_omits_banner_when_fresh(isolated_home: Path) -> None:
-    write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg index\n")
+    write_cache_file(isolated_home, "wg", "digests/index.md", "# wg index\n")
     from ietf_llm.freshness import record_gather
 
     record_gather("wg")
@@ -219,7 +219,7 @@ def test_overview_omits_banner_when_fresh(isolated_home: Path) -> None:
 
 
 def test_read_digest_prepends_staleness_warning(isolated_home: Path) -> None:
-    write_cache_file(isolated_home, "wg", "wg-_people.md", "# people\n")
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
     _make_stale("wg", days=14)
     out = mcp_server.tool_read_digest("wg", "people")
     assert out.startswith("⚠")
@@ -244,7 +244,7 @@ def test_read_digest_include_bodies_appends_issue_files(
     # AND the issues' opening descriptions in ONE call, replacing N
     # follow-up read_file_section calls.
     write_cache_file(
-        isolated_home, "wg", "wg-_issues.md",
+        isolated_home, "wg", "digests/issues.md",
         (
             "# wg: issues\n\n## org/repo\n\n"
             "| # | State | Title | Labels | Comments | Updated | "
@@ -252,13 +252,13 @@ def test_read_digest_include_bodies_appends_issue_files(
             "|---|-------|-------|--------|----------|---------|"
             "--------|--------------|--------|------|\n"
             "| 1 | OPEN | T1 | top-level | 0 | 2026-05-01 | "
-            "Alice | | | `wg-issue-org-repo-1.md` |\n"
+            "Alice | | | `issues/org-repo/1.md` |\n"
             "| 2 | OPEN | T2 | top-level | 0 | 2026-05-02 | "
-            "Bob | | | `wg-issue-org-repo-2.md` |\n"
+            "Bob | | | `issues/org-repo/2.md` |\n"
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1: T1\n\n"
             "**State:** OPEN  \n\n"
@@ -271,7 +271,7 @@ def test_read_digest_include_bodies_appends_issue_files(
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        isolated_home, "wg", "issues/org-repo/2.md",
         (
             "# Issue #2: T2\n\n"
             "**State:** OPEN  \n\n"
@@ -297,7 +297,7 @@ def test_read_digest_include_bodies_only_for_issues_kind(
     # `include_bodies` is a no-op on non-issues kinds — it doesn't
     # error, it just doesn't add a Bodies section.
     write_cache_file(
-        isolated_home, "wg", "wg-_threads.md", "# threads\n\nbody\n",
+        isolated_home, "wg", "digests/threads.md", "# threads\n\nbody\n",
     )
     out = mcp_server.tool_read_digest(
         "wg", "threads", include_bodies=True,
@@ -310,10 +310,10 @@ def test_read_digest_without_include_bodies_unchanged(
 ) -> None:
     # Default behaviour (include_bodies=False) is unchanged.
     write_cache_file(
-        isolated_home, "wg", "wg-_issues.md",
+        isolated_home, "wg", "digests/issues.md",
         "# wg: issues\n\n## org/repo\n\n"
         "| # | State | Title | File |\n|---|-------|-------|------|\n"
-        "| 1 | OPEN | T | `wg-issue-org-repo-1.md` |\n",
+        "| 1 | OPEN | T | `issues/org-repo/1.md` |\n",
     )
     out = mcp_server.tool_read_digest("wg", "issues")
     assert "Issue bodies" not in out
@@ -331,7 +331,7 @@ def test_list_labels_includes_next_call_signatures(
     # output gives the consuming LLM the names it needs for the next
     # tool_search query.
     write_cache_file(
-        isolated_home, "wg", "wg-_issues.md",
+        isolated_home, "wg", "digests/issues.md",
         (
             "# wg: issues\n\n## org/repo\n\n"
             "| # | State | Title | Labels | Comments | Updated | Author |\n"
@@ -372,7 +372,7 @@ def test_list_labels_returns_frequencies(isolated_home: Path) -> None:
     # had to guess label="top-level". Expose the same data the overview
     # samples, but unbounded and as a dedicated tool.
     write_cache_file(
-        isolated_home, "wg", "wg-_issues.md",
+        isolated_home, "wg", "digests/issues.md",
         (
             "# wg: issues\n\n## org/repo\n\n"
             "| # | State | Title | Labels | Comments | Updated | Author |\n"
@@ -392,7 +392,7 @@ def test_list_labels_returns_frequencies(isolated_home: Path) -> None:
 
 def test_list_labels_handles_no_issues(isolated_home: Path) -> None:
     # No issues digest → friendly empty response, not a crash.
-    write_cache_file(isolated_home, "wg", "wg-_index.md", "# index\n")
+    write_cache_file(isolated_home, "wg", "digests/index.md", "# index\n")
     out = mcp_server.tool_list_labels("wg")
     assert "No labels recorded" in out
 
@@ -403,7 +403,7 @@ def test_list_labels_handles_no_issues(isolated_home: Path) -> None:
 def test_no_banner_when_sentinel_absent(isolated_home: Path) -> None:
     # Cache exists but freshness sentinel doesn't (legacy / pre-feature).
     # Per design we stay silent, not nag.
-    write_cache_file(isolated_home, "wg", "wg-_index.md", "# wg\n")
+    write_cache_file(isolated_home, "wg", "digests/index.md", "# wg\n")
     out = mcp_server.tool_overview("wg")
     assert not out.startswith("⚠")
 
@@ -419,7 +419,7 @@ def test_fetch_by_url_returns_chunk_when_url_matches(
     # chunker stamps the file-level URL onto every chunk; fetch_by_url
     # rounds-trips through that column.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1: T\n\n"
             "**Repository:** org/repo  \n"
@@ -439,7 +439,7 @@ def test_fetch_by_url_returns_chunk_when_url_matches(
     )
     assert "the actual chunk body here" in out
     # Header carries enough metadata for the caller to pivot.
-    assert "wg-issue-org-repo-1.md" in out
+    assert "issues/org-repo/1.md" in out
 
 
 def test_fetch_by_url_returns_helpful_miss_message(
@@ -461,13 +461,13 @@ def test_get_chunks_batch_concatenates_multiple_files(
     # Seed two per-issue files; verify a single batch call returns
     # chunks from both, separated by per-file headers.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         "# Issue #1: T1\n\n## Description\n\n"
         "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\n"
         "first issue body.\n",
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        isolated_home, "wg", "issues/org-repo/2.md",
         "# Issue #2: T2\n\n## Description\n\n"
         "### [1] 2026-01-02 10:00 — Bob _(opened issue)_\n\n"
         "second issue body.\n",
@@ -476,14 +476,14 @@ def test_get_chunks_batch_concatenates_multiple_files(
 
     _build_with_stub("wg", isolated_home)
     out = mcp_server.tool_get_chunks_batch("wg", [
-        {"file": "wg-issue-org-repo-1.md", "chunk_idx": 1},
-        {"file": "wg-issue-org-repo-2.md", "chunk_idx": 1},
+        {"file": "issues/org-repo/1.md", "chunk_idx": 1},
+        {"file": "issues/org-repo/2.md", "chunk_idx": 1},
     ])
     assert "first issue body" in out
     assert "second issue body" in out
     # Per-file headers so the consumer can tell hits apart.
-    assert "wg-issue-org-repo-1.md @ chunk 1" in out
-    assert "wg-issue-org-repo-2.md @ chunk 1" in out
+    assert "issues/org-repo/1.md @ chunk 1" in out
+    assert "issues/org-repo/2.md @ chunk 1" in out
 
 
 def test_get_chunks_batch_caps_total_chunks(isolated_home: Path) -> None:
@@ -512,7 +512,7 @@ def test_get_chunks_batch_tolerates_single_dict_input(
     # Defensive: if the MCP serialiser passes a lone dict instead of
     # a 1-element list, treat as length-1 batch rather than erroring.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         "# Issue #1: T\n\n## Description\n\n"
         "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n",
     )
@@ -521,6 +521,6 @@ def test_get_chunks_batch_tolerates_single_dict_input(
     _build_with_stub("wg", isolated_home)
     out = mcp_server.tool_get_chunks_batch(
         "wg",
-        {"file": "wg-issue-org-repo-1.md", "chunk_idx": 1},  # type: ignore[arg-type]
+        {"file": "issues/org-repo/1.md", "chunk_idx": 1},  # type: ignore[arg-type]
     )
     assert "body" in out

@@ -108,9 +108,9 @@ Pivot to the source with:
   cheaper than searching, and the citation isn't always faithful.
 
 `search_corpus` also takes `since` / `until`, `file_pattern` (SQL
-LIKE: `"%-thread-%"`, `"%-issue-%"`, `"draft-%"`), `label`
-(substring against an issue's GitHub labels), and `state`
-(`"open"` / `"closed"`).
+LIKE on the file's relative path under the WG cache: `"threads/%"`,
+`"issues/%"`, `"meetings/%"`, `"drafts/%"`), `label` (substring
+against an issue's GitHub labels), and `state` (`"open"` / `"closed"`).
 
 **For "arguments for/against X" or "scope debate" questions, try
 `label=` first.** The WG's own labels (e.g. `"top-level"`,
@@ -126,22 +126,34 @@ has landed.
 
 ## File types you'll encounter
 
-- **`<wg>-thread-<date>-<slug>.md`** — one reconstructed mailing
-  list conversation. Read in full when the user wants the thread.
-- **`<wg>-issue-<owner>-<repo>-<N>.md`** — one GitHub issue with
+All paths are relative to the WG's cache root (`<wg>/files/`).
+
+- **`threads/<date>-<slug>.md`** — one reconstructed mailing list
+  conversation. Read in full when the user wants the thread.
+- **`issues/<owner>-<repo>/<N>.md`** — one GitHub issue with
   full comment history. Same shape as thread files. Frontmatter
   includes `**Duplicate of:** #N` when a comment calls out a
   duplicate, and `**Closing rationale:**` (last comment) when the
   issue is closed — both are load-bearing for "what did the WG
   decide" questions.
-- **`draft-…-NN.txt`, `rfc<N>.txt`** — large documents. Use
-  `read_file_section` by line range, not whole-file reads.
-- **`<name>.pdf.txt`, `*-transcript.md`** — slides and transcripts;
-  both carry a meeting-context header at the top so chunks deep
-  inside still have attribution.
-- **`<wg>-polls-<meeting>-<datetime>.md`** — session poll records
-  from Datatracker. Read in full when answering "where was the
-  room leaning on X?" — polls aren't consensus but they're signal.
+- **`drafts/draft-…-NN.txt`, `drafts/rfc<N>.txt`** — large
+  documents. Use `read_file_section` by line range, not whole-file
+  reads.
+- **`meetings/<code>/minutes.md`** — meeting minutes, e.g.
+  `meetings/ietf125/minutes.md` or
+  `meetings/interim2026aipref01/minutes.md`.
+- **`meetings/<code>/slides/<name>.pdf.txt`** — extracted slide
+  text. The `.pdf.txt` carries a meeting-context header so chunks
+  deep inside still have attribution.
+- **`meetings/<code>/transcripts/<YYYYMMDDHHmm>.md`** — session
+  transcripts (with meeting-context header).
+- **`meetings/<code>/polls/<YYYYMMDDHHmm>.md`** — session poll
+  records from Datatracker. Read in full when answering "where was
+  the room leaning on X?" — polls aren't consensus but they're
+  signal.
+- **`digests/<kind>.md`** — the catalogue digests (`index`,
+  `issues`, `threads`, `people`, `timeline`). Read via `read_digest`,
+  not `get_chunk_text`.
 
 `list_files(wg)` shows per-file chunk counts so you can bound
 `get_chunk_text` ranges without probing.

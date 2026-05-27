@@ -80,7 +80,7 @@ def _build_with_stub(wg: str, isolated_home: Path) -> None:
 def test_thread_chunks_get_chunk_date(isolated_home: Path) -> None:
     # Thread-file message sections carry per-message chunk_date.
     write_cache_file(
-        isolated_home, "wg", "wg-thread-2025-01-01-topic-a.md",
+        isolated_home, "wg", "threads/2025-01-01-topic-a.md",
         (
             "# Topic A\n\n"
             "**Span:** 2025-01-01 → 2025-01-01\n"
@@ -130,7 +130,7 @@ def _seed_two_files(isolated_home: Path) -> None:
     no longer indexed — per-issue .md files cover its content with
     proper per-message chunking."""
     write_cache_file(
-        isolated_home, "wg", "wg-thread-2025-01-01-mail-topic.md",
+        isolated_home, "wg", "threads/2025-01-01-mail-topic.md",
         (
             "# Mail topic\n\n"
             "**Span:** 2025-01-01 → 2025-01-01\n\n"
@@ -139,7 +139,7 @@ def _seed_two_files(isolated_home: Path) -> None:
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1: Issue topic\n\n"
             "**Repository:** org/repo  \n"
@@ -157,9 +157,9 @@ def test_file_pattern_filter_restricts_to_thread_files(
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-thread-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="threads/%", verbose=Verbosity.QUIET,
     )
-    assert all("-thread-" in h.file for h in hits)
+    assert all(h.file.startswith("threads/") for h in hits)
     assert len(hits) >= 1
 
 
@@ -167,9 +167,9 @@ def test_file_pattern_filter_restricts_to_github(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="issues/%", verbose=Verbosity.QUIET,
     )
-    assert all("-issue-" in h.file for h in hits)
+    assert all(h.file.startswith("issues/") for h in hits)
     assert hits
 
 
@@ -181,7 +181,7 @@ def test_since_filter_includes_only_newer_chunks(isolated_home: Path) -> None:
     hits = search(
         "wg", "x", k=10, since="2026-01-01T00:00:00Z", verbose=Verbosity.QUIET,
     )
-    assert all("-issue-" in h.file for h in hits)
+    assert all(h.file.startswith("issues/") for h in hits)
     assert hits
 
 
@@ -191,7 +191,7 @@ def test_until_filter_includes_only_older_chunks(isolated_home: Path) -> None:
     hits = search(
         "wg", "x", k=10, until="2026-01-01T00:00:00Z", verbose=Verbosity.QUIET,
     )
-    assert all("-thread-" in h.file for h in hits)
+    assert all(h.file.startswith("threads/") for h in hits)
     assert hits
 
 
@@ -215,7 +215,7 @@ def test_issue_chunks_carry_lowercased_labels(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="issues/%", verbose=Verbosity.QUIET,
     )
     # Every chunk in the issue file inherits the same file-level labels.
     assert hits
@@ -227,7 +227,7 @@ def test_thread_chunks_have_no_labels(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-thread-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="threads/%", verbose=Verbosity.QUIET,
     )
     assert hits
     assert all(h.labels is None for h in hits)
@@ -245,7 +245,7 @@ def test_label_filter_matches_substring_case_insensitively(
     assert hits
     assert all("top-level" in (h.labels or "") for h in hits)
     # Thread file (no labels at all) must NOT come back.
-    assert all("-thread-" not in h.file for h in hits)
+    assert all(not h.file.startswith("threads/") for h in hits)
 
 
 def test_label_filter_excludes_unlabelled_chunks(isolated_home: Path) -> None:
@@ -266,7 +266,7 @@ def test_issue_chunks_carry_normalised_state(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="issues/%", verbose=Verbosity.QUIET,
     )
     assert hits
     for hit in hits:
@@ -277,7 +277,7 @@ def test_thread_chunks_have_no_state(isolated_home: Path) -> None:
     _seed_two_files(isolated_home)
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-thread-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="threads/%", verbose=Verbosity.QUIET,
     )
     assert hits
     assert all(h.state is None for h in hits)
@@ -287,7 +287,7 @@ def test_state_filter_excludes_other_states(isolated_home: Path) -> None:
     # Seed two issues: one OPEN, one CLOSED. state="closed" should
     # return only the closed one.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1: Open question\n\n"
             "**State:** OPEN  \n\n"
@@ -296,7 +296,7 @@ def test_state_filter_excludes_other_states(isolated_home: Path) -> None:
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        isolated_home, "wg", "issues/org-repo/2.md",
         (
             "# Issue #2: Resolved question\n\n"
             "**State:** CLOSED  \n\n"
@@ -310,7 +310,7 @@ def test_state_filter_excludes_other_states(isolated_home: Path) -> None:
     )
     assert hits
     assert all(h.state == "closed" for h in hits)
-    assert all("org-repo-2" in h.file for h in hits)
+    assert all(h.file.endswith("/2.md") for h in hits)
 
 
 def test_state_filter_excludes_unstated_chunks(isolated_home: Path) -> None:
@@ -322,12 +322,12 @@ def test_state_filter_excludes_unstated_chunks(isolated_home: Path) -> None:
         "wg", "x", k=20, state="open", verbose=Verbosity.QUIET,
     )
     assert hits
-    assert all("-thread-" not in h.file for h in hits)
+    assert all(not h.file.startswith("threads/") for h in hits)
 
 
 def test_state_and_label_filters_compose(isolated_home: Path) -> None:
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-3.md",
+        isolated_home, "wg", "issues/org-repo/3.md",
         (
             "# Issue #3: Closed top-level\n\n"
             "**State:** CLOSED  \n"
@@ -337,7 +337,7 @@ def test_state_and_label_filters_compose(isolated_home: Path) -> None:
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-4.md",
+        isolated_home, "wg", "issues/org-repo/4.md",
         (
             "# Issue #4: Closed unrelated\n\n"
             "**State:** CLOSED  \n"
@@ -353,14 +353,14 @@ def test_state_and_label_filters_compose(isolated_home: Path) -> None:
         verbose=Verbosity.QUIET,
     )
     assert hits
-    assert all("org-repo-3" in h.file for h in hits)
+    assert all(h.file.endswith("/3.md") for h in hits)
 
 
 def test_issue_file_without_labels_line_gets_null_labels(
     isolated_home: Path,
 ) -> None:
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        isolated_home, "wg", "issues/org-repo/2.md",
         (
             "# Issue #2: No labels here\n\n"
             "**Repository:** org/repo  \n"
@@ -371,7 +371,7 @@ def test_issue_file_without_labels_line_gets_null_labels(
     )
     _build_with_stub("wg", isolated_home)
     hits = search(
-        "wg", "x", k=10, file_pattern="%-issue-%", verbose=Verbosity.QUIET,
+        "wg", "x", k=10, file_pattern="issues/%", verbose=Verbosity.QUIET,
     )
     assert hits
     assert all(h.labels is None for h in hits)
@@ -387,7 +387,7 @@ def _seed_chronological_issue(isolated_home: Path) -> None:
     """One issue file with four dated messages spanning Sept-Nov 2025,
     written out of order so a chronological sort has to do real work."""
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-155.md",
+        isolated_home, "wg", "issues/org-repo/155.md",
         (
             "# Issue #155: Category for RAG\n\n"
             "**State:** CLOSED  \n"
@@ -465,7 +465,7 @@ def test_sort_date_composes_with_file_pattern(isolated_home: Path) -> None:
     _seed_chronological_issue(isolated_home)
     # Another issue we DON'T want in the result.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-99.md",
+        isolated_home, "wg", "issues/org-repo/99.md",
         (
             "# Issue #99: Unrelated\n\n"
             "## Description\n\n"
@@ -475,11 +475,11 @@ def test_sort_date_composes_with_file_pattern(isolated_home: Path) -> None:
     _build_with_stub("wg", isolated_home)
     hits = search(
         "wg", "x", k=20, sort="date",
-        file_pattern="%-issue-org-repo-155.md",
+        file_pattern="issues/org-repo/155.md",
         verbose=Verbosity.QUIET,
     )
     assert hits
-    assert all("org-repo-155" in h.file for h in hits)
+    assert all(h.file.endswith("/155.md") for h in hits)
 
 
 def test_tool_search_summarises_uniform_closed_state(
@@ -491,7 +491,7 @@ def test_tool_search_summarises_uniform_closed_state(
     from ietf_llm import mcp_server
 
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1\n\n"
             "**State:** CLOSED  \n\n"
@@ -500,7 +500,7 @@ def test_tool_search_summarises_uniform_closed_state(
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        isolated_home, "wg", "issues/org-repo/2.md",
         (
             "# Issue #2\n\n"
             "**State:** CLOSED  \n\n"
@@ -521,14 +521,14 @@ def test_tool_search_no_summary_when_states_mixed(isolated_home: Path) -> None:
     from ietf_llm import mcp_server
 
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1\n\n**State:** OPEN  \n\n## Description\n\n"
             "### [1] 2026-01-01 10:00 — Alice _(opened issue)_\n\nbody\n"
         ),
     )
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-2.md",
+        isolated_home, "wg", "issues/org-repo/2.md",
         (
             "# Issue #2\n\n**State:** CLOSED  \n\n## Description\n\n"
             "### [1] 2026-01-02 10:00 — Bob _(opened issue)_\n\nbody\n"
@@ -549,7 +549,7 @@ def test_tool_search_surfaces_github_url_for_issue_hits(
     from ietf_llm import mcp_server
 
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-1.md",
+        isolated_home, "wg", "issues/org-repo/1.md",
         (
             "# Issue #1: T\n\n"
             "**Repository:** org/repo  \n"
@@ -574,7 +574,7 @@ def test_tool_search_surfaces_archived_at_for_thread_hits(
     from ietf_llm import mcp_server
 
     write_cache_file(
-        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
         (
             "# Topic\n\n"
             "## Messages\n\n"
@@ -602,7 +602,7 @@ def test_tool_search_omits_url_for_unurled_chunks(isolated_home: Path) -> None:
     from ietf_llm import mcp_server
 
     write_cache_file(
-        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
         "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody (no archived-at)\n",
     )
     _build_with_stub("wg", isolated_home)
@@ -615,7 +615,7 @@ def test_search_hits_surface_duplicate_of(isolated_home: Path) -> None:
     # but not in search hits. An LLM scanning hits should see "this
     # is a dup of #155" inline so they can skip the duplicate issues.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-169.md",
+        isolated_home, "wg", "issues/org-repo/169.md",
         (
             "# Issue #169: Duplicate one\n\n"
             "**Repository:** org/repo  \n"
@@ -637,7 +637,7 @@ def test_search_hits_surface_closing_rationale(isolated_home: Path) -> None:
     # WHY the issue closed. The preview strips blockquote chrome and
     # the metadata byline so the substance fits on one line.
     write_cache_file(
-        isolated_home, "wg", "wg-issue-org-repo-155.md",
+        isolated_home, "wg", "issues/org-repo/155.md",
         (
             "# Issue #155: Vocab decision\n\n"
             "**Repository:** org/repo  \n"
@@ -675,7 +675,7 @@ def test_search_hits_for_thread_chunks_omit_issue_signals(
     # Thread chunks don't have dup-of / closing-rationale columns
     # populated — the per-hit renderer must NOT emit those lines.
     write_cache_file(
-        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
         "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
     )
     _build_with_stub("wg", isolated_home)
@@ -690,11 +690,11 @@ def test_mail_archive_year_dump_is_not_indexed(isolated_home: Path) -> None:
     # already covered by per-thread .md files. It must be excluded
     # from indexing so search hits are de-duplicated.
     write_cache_file(
-        isolated_home, "wg", "wg-mail-archive-2025.txt",
+        isolated_home, "wg", "raw/mail-archive-2025.txt",
         "Subject: legacy\nFrom: a\nDate: 2025-01-01\n\nbody\n",
     )
     write_cache_file(
-        isolated_home, "wg", "wg-thread-2025-01-01-topic.md",
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
         "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
     )
     _build_with_stub("wg", isolated_home)

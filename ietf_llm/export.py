@@ -14,6 +14,14 @@ source of truth, and both exports read from it.
       recommended workflow is to create a *new* NotebookLM notebook per
       update rather than try to diff into an existing one.
 
+      The cache stores files in a directory hierarchy
+      (`meetings/ietf125/minutes.md`, `threads/<slug>.md`, etc.) but
+      NotebookLM expects flat filenames as separate sources. We flatten
+      on the way out by joining the cache's relative path with `-`
+      (e.g. `meetings/ietf125/minutes.md` → `meetings-ietf125-minutes.md`).
+      That keeps the on-disk cache organised while preserving the flat
+      shape NotebookLM uploads expect.
+
   notebooklm(wg, gcp_project, credentials_file, token_file, ...)
       Create a fresh notebook in NotebookLM Enterprise on the given GCP
       project and upload every relevant cached file as a source. Requires
@@ -37,18 +45,31 @@ from .utils import (
 )
 
 
-# Files we mirror / upload. JSON archives are internal and excluded.
+# Files we mirror / upload. JSON archives are internal and excluded;
+# PDFs aren't supported by the downstream sinks (NotebookLM wants text).
 _TEXT_SUFFIXES = (".txt", ".md")
 
 
-def _exportable_files(cache_dir: str) -> List[str]:
-    out = []
-    for name in sorted(os.listdir(cache_dir)):
-        path = os.path.join(cache_dir, name)
-        if not os.path.isfile(path):
-            continue
-        if name.endswith(_TEXT_SUFFIXES):
-            out.append(path)
+def _exportable_files(cache_dir: str) -> List[tuple[str, str]]:
+    """Walk the cache recursively and return (absolute path, flat name)
+    tuples for every exportable file.
+
+    The flat name is derived from the relative path under the cache by
+    replacing `/` with `-`, giving NotebookLM a flat set of distinctly-
+    named sources that still encode their cache location.
+    """
+    out: List[tuple[str, str]] = []
+    for dirpath, _dirnames, filenames in os.walk(cache_dir):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            if not name.endswith(_TEXT_SUFFIXES):
+                continue
+            relpath = os.path.relpath(path, cache_dir)
+            flat = relpath.replace(os.sep, "-").replace("/", "-")
+            out.append((path, flat))
+    out.sort(key=lambda kv: kv[1])
     return out
 
 
@@ -75,14 +96,13 @@ def directory(
 
     os.makedirs(destination, exist_ok=True)
     sources = _exportable_files(cache_dir)
-    source_names = {os.path.basename(p) for p in sources}
+    source_names = {flat for _src, flat in sources}
 
     changes = 0
 
     # Add / update.
-    for src in sources:
-        name = os.path.basename(src)
-        dst = os.path.join(destination, name)
+    for src, flat in sources:
+        dst = os.path.join(destination, flat)
         if os.path.exists(dst) and _same_bytes(src, dst):
             continue
         shutil.copy2(src, dst)
@@ -153,8 +173,11 @@ def notebooklm(
         return 0
 
     success = 0
-    for path in _exportable_files(cache_dir):
-        if upload_source(gcp_project, notebook_id, path, creds, verbose=verbose):
+    for path, flat in _exportable_files(cache_dir):
+        if upload_source(
+            gcp_project, notebook_id, path, creds,
+            display_name=flat, verbose=verbose,
+        ):
             success += 1
 
     if success > 0:

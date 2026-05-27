@@ -21,8 +21,10 @@ from typing import List, Optional
 from .query import parse_md_tables, query_digest
 
 
-def _digest_path(cache_dir: str, wg: str, kind: str) -> str:
-    return os.path.join(cache_dir, f"{wg}-_{kind}.md")
+def _digest_path(cache_dir: str, wg: str, kind: str) -> str:  # noqa: ARG001
+    # Post-reorg: digests live at `digests/<kind>.md` under cache_dir,
+    # with no per-WG prefix (the cache dir is already WG-specific).
+    return os.path.join(cache_dir, "digests", f"{kind}.md")
 
 
 def _section_lines(path: str, heading_prefix: str) -> List[str]:

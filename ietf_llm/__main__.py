@@ -18,7 +18,7 @@ import shutil
 import sys
 from typing import Any, List
 
-from . import __version__, config
+from . import __version__, config, paths
 from .freshness import record_gather
 from .gather.charter import process_charter
 from .digest import generate_digests
@@ -300,7 +300,8 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         print("-" * 40, file=sys.stderr)
 
     # Charter
-    charter_file = os.path.join(cache_dir, f"{args.wg}-charter.txt")
+    charter_file = paths.charter_path(cache_dir)
+    os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
     process_charter(args.wg, charter_file, verbose=verbosity)
 
     # Meetings
@@ -329,13 +330,17 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Author / Comment-by lines can use canonical names.
     gh_pending: List[tuple[str, str]] = []
     if args.github:
+        # Ensure parent dirs exist for the new layout (github/ and raw/).
+        os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
+        os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
         for repo_short in args.github:
             if repo_short.startswith("http"):
-                repo_slug = repo_short.split("/")[-1].replace(".json", "")
-            else:
-                repo_slug = repo_short.replace("/", "-")
-            gh_json = os.path.join(cache_dir, f"{args.wg}-github-{repo_slug}.json")
-            gh_txt = os.path.join(cache_dir, f"{args.wg}-github-{repo_slug}.txt")
+                # URL form — the last path segment is the repo name.
+                # repo_short normalises to "<owner>/<repo>" for the slug.
+                repo_short = repo_short.rstrip("/").split("/")[-2:]
+                repo_short = "/".join(repo_short)
+            gh_json = paths.github_archive_path(cache_dir, repo_short)
+            gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
             if download_github_issues(repo_short, gh_json, verbose=verbosity):
                 gh_pending.append((gh_json, gh_txt))
 

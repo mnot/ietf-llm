@@ -41,6 +41,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .mbox import clean_email_text, extract_text_content
+from ..paths import thread_path, threads_dir
 from ..people import Registry
 from ..text import _normalize_subject, _parse_date, _short_addr
 from ..utils import LogLevel, Verbosity, get_cache_dir, log
@@ -445,12 +446,13 @@ def write_thread_files(
     if not threads:
         return []
 
-    # Wipe stale thread files before writing.
-    prefix = f"{wg}-thread-"
-    for name in os.listdir(cache_dir):
-        if name.startswith(prefix) and name.endswith(".md"):
+    out_dir = threads_dir(cache_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    # Wipe stale thread files before writing (clean slate).
+    for name in os.listdir(out_dir):
+        if name.endswith(".md"):
             try:
-                os.remove(os.path.join(cache_dir, name))
+                os.remove(os.path.join(out_dir, name))
             except OSError:
                 pass
 
@@ -462,7 +464,7 @@ def write_thread_files(
         used_slugs[slug] = used_slugs.get(slug, 0) + 1
         if used_slugs[slug] > 1:
             slug = f"{slug}-{used_slugs[slug]}"
-        path = os.path.join(cache_dir, f"{wg}-thread-{slug}.md")
+        path = thread_path(cache_dir, slug)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(_render_thread(thread, registry))
         written.append(path)

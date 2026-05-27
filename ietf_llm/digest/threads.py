@@ -13,6 +13,7 @@ import os
 from typing import Optional
 
 from ..gather.mail_threads import build_threads, thread_slug
+from ..paths import digest_path, thread_path
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .summarizer import _Summarizer
@@ -42,7 +43,8 @@ def _build_threads_digest(
         reverse=True,
     )
 
-    out_path = os.path.join(cache_dir, f"{wg}-_threads.md")
+    out_path = digest_path(cache_dir, "threads")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     total_msgs = sum(len(t.members) for t in threads)
 
     with open(out_path, "w", encoding="utf-8") as fh:
@@ -50,7 +52,7 @@ def _build_threads_digest(
         fh.write(
             f"_{len(threads)} threads across {total_msgs} messages, "
             "reconstructed via In-Reply-To / References headers. "
-            f"Each row links to its full thread file (`{wg}-thread-*.md`); "
+            "Each row links to its full thread file under `threads/`; "
             "open one to read the conversation in date order with quotes "
             "elided._\n\n"
         )
@@ -77,7 +79,10 @@ def _build_threads_digest(
             n_p = len(participants)
 
             slug = thread_slug(thread.subject, first_s if first else None)
-            link = f"`{wg}-thread-{slug}.md`"
+            relpath = os.path.relpath(
+                thread_path(cache_dir, slug), cache_dir,
+            )
+            link = f"`{relpath}`"
 
             if summarizer.active():
                 body_source = thread.root.body or ""

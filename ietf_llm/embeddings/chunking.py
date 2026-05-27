@@ -391,7 +391,8 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     # thread files don't. Stamping the file-level values onto every
     # chunk lets search-time filters (label="top-level", state="closed")
     # shortlist by curation + resolution before semantic ranking.
-    is_issue = "-issue-" in filename.lower()
+    # Post-reorg, issue files live under `issues/<repo>/<N>.md`.
+    is_issue = filename.lower().startswith("issues/")
     labels = _extract_issue_labels(text) if is_issue else None
     state = _extract_issue_state(text) if is_issue else None
     # Citation URL: for issue files the URL is file-level (every chunk
@@ -463,61 +464,55 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     return chunks
 
 
-def _chunk_file(path: str) -> List[Chunk]:
-    """Read a cache file and dispatch to the right chunker based on its name."""
-    filename = os.path.basename(path)
+def _chunk_file(path: str, relpath: str) -> List[Chunk]:
+    """Read a cache file and dispatch to the right chunker based on its
+    location in the cache layout.
+
+    `relpath` is the path relative to the WG cache dir; that's what
+    chunks store as `file` and what dispatch keys off (post-reorg).
+    """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
         return []
-    lower = filename.lower()
+    lower = relpath.lower()
     # Per-thread reconstructions are the LLM-legible mailing-list form.
-    # Match before "mailing-list" so order doesn't matter.
-    if "-thread-" in lower and lower.endswith(".md"):
-        return _chunk_thread_file(text, filename)
-    # Per-issue reconstructions share the thread file format (### [N] DATE — Author),
-    # so the same chunker applies.
-    if "-issue-" in lower and lower.endswith(".md"):
-        return _chunk_thread_file(text, filename)
-    if "mailing-list" in lower:
-        return _chunk_message_file(text, filename)
-    if "-github-" in lower and lower.endswith(".txt"):
-        return _chunk_issues_file(text, filename)
-    return _chunk_windowed(text, filename)
+    if lower.startswith("threads/") and lower.endswith(".md"):
+        return _chunk_thread_file(text, relpath)
+    # Per-issue reconstructions share the thread file format.
+    if lower.startswith("issues/") and lower.endswith(".md"):
+        return _chunk_thread_file(text, relpath)
+    return _chunk_windowed(text, relpath)
 
 
-def _eligible_files(cache_dir: str, wg: str) -> List[str]:
-    """Files worth embedding; skip digests, JSON, binaries, and the
-    legacy mailing-list-YYYY year-dumps.
+def _eligible_files(cache_dir: str, wg: str) -> List[str]:  # noqa: ARG001
+    """Return absolute paths of files worth embedding.
 
-    The year-files are kept on disk for grep / NotebookLM upload but
-    excluded from the embedding index because the per-thread
-    reconstructions (`<wg>-thread-*.md`) cover exactly the same
-    message content in a structured form. Indexing both would
-    double-count every message and pollute search rankings.
+    Walks the WG cache recursively. Skips:
+      - `digests/` (those are the catalogue surface, not indexed)
+      - `github/` (raw archive JSON)
+      - `raw/` (legacy text dumps kept for grep / NotebookLM)
+      - `meetings/<code>/slides/*.pdf` (binaries — we index the
+        sibling `.pdf.txt` extracts instead)
     """
     out = []
-    for name in sorted(os.listdir(cache_dir)):
-        if name.startswith(f"{wg}-_"):
-            continue
-        if name.endswith(".json") or name.endswith(".pdf"):
-            continue
-        # Legacy mail year-dumps duplicate content now in per-thread files.
-        # Real filename is "<wg>-mail-archive-YYYY.txt" (note: the older
-        # comment said "mailing-list" but the actual gather writes
-        # "mail-archive", and the windowed-chunker fallback was indexing
-        # them — producing duplicate hits with every per-thread message).
-        if "-mail-archive-" in name.lower() and name.endswith(".txt"):
-            continue
-        # Per-issue .md files duplicate the content of the github-<repo>.txt
-        # blob; skip the big blob in favour of the structured per-issue files.
-        if "-github-" in name.lower() and name.endswith(".txt"):
-            continue
-        path = os.path.join(cache_dir, name)
-        if not os.path.isfile(path):
-            continue
-        if not (name.endswith(".txt") or name.endswith(".md")):
-            continue
-        out.append(path)
+    for dirpath, _dirnames, filenames in os.walk(cache_dir):
+        for name in sorted(filenames):
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            relpath = os.path.relpath(path, cache_dir)
+            relpath_lower = relpath.lower()
+            if relpath_lower.startswith("digests/"):
+                continue
+            if relpath_lower.startswith("github/"):
+                continue
+            if relpath_lower.startswith("raw/"):
+                continue
+            if name.endswith(".pdf") or name.endswith(".json"):
+                continue
+            if not (name.endswith(".txt") or name.endswith(".md")):
+                continue
+            out.append(path)
     return out

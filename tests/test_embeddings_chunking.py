@@ -145,29 +145,35 @@ def test_windowed_chunking_empty_text() -> None:
     assert _chunk_windowed("   \n\n  ", "anything.txt") == []
 
 
-def test_chunk_file_dispatches_by_filename(isolated_home: Path) -> None:
+def test_chunk_file_dispatches_by_relpath(isolated_home: Path) -> None:
+    # Post-reorg: dispatch keys off the relative path (under cache_dir),
+    # not the basename. Thread files live in `threads/`, issue files
+    # in `issues/`, everything else uses the windowed chunker.
     files_dir = isolated_home / "files"
     files_dir.mkdir()
+    (files_dir / "threads").mkdir()
+    (files_dir / "issues" / "org-repo").mkdir(parents=True)
 
-    ml = files_dir / "wg-mailing-list-2025.txt"
-    ml.write_text(_ml_text([
-        ("Mon, 01 Jan 2025 10:00:00 +0000", "A <a@x>", "S1", "B1"),
-    ]))
-    chunks_ml = _chunk_file(str(ml))
-    assert len(chunks_ml) == 1
-    assert "S1" in chunks_ml[0].title
-
-    gh = files_dir / "wg-github-org-repo.txt"
-    gh.write_text(
-        "Repository: org/repo\n" + "=" * 80 + "\n\n"
-        + "Issue #1: Title here\n\nbody\n\n" + "=" * 80 + "\n"
+    thread = files_dir / "threads" / "2025-01-01-topic.md"
+    thread.write_text(
+        "# Topic\n\n## Messages\n\n"
+        "### [1] 2025-01-01 10:00 — Alice\n\nbody\n"
     )
-    chunks_gh = _chunk_file(str(gh))
-    assert any("#1: Title here" in c.title for c in chunks_gh)
+    chunks_t = _chunk_file(str(thread), "threads/2025-01-01-topic.md")
+    assert any("Alice" in c.title for c in chunks_t)
 
-    draft = files_dir / "draft-foo-00.txt"
+    issue = files_dir / "issues" / "org-repo" / "1.md"
+    issue.write_text(
+        "# Issue #1\n\n**State:** OPEN\n\n## Description\n\n"
+        "### [1] 2026-01-01 10:00 — Bob _(opened issue)_\n\nbody\n"
+    )
+    chunks_i = _chunk_file(str(issue), "issues/org-repo/1.md")
+    assert any("Bob" in c.title for c in chunks_i)
+
+    draft = files_dir / "drafts" / "draft-foo-00.txt"
+    draft.parent.mkdir(parents=True)
     draft.write_text("Some draft content.\n" + ("x " * 100))
-    chunks_d = _chunk_file(str(draft))
+    chunks_d = _chunk_file(str(draft), "drafts/draft-foo-00.txt")
     assert len(chunks_d) == 1
     assert chunks_d[0].title.startswith("Some draft content")
 
@@ -178,24 +184,39 @@ def test_chunk_file_dispatches_by_filename(isolated_home: Path) -> None:
 def test_eligible_files_includes_txt_and_md(isolated_home: Path) -> None:
     files_dir = isolated_home / ".cache" / "ietf-llm" / "wg" / "files"
     files_dir.mkdir(parents=True)
-    for name in ["wg-charter.txt", "ietf124-minutes.md", "draft-foo-00.txt"]:
-        (files_dir / name).write_text("x")
+    (files_dir / "charter.txt").write_text("x")
+    (files_dir / "meetings" / "ietf124").mkdir(parents=True)
+    (files_dir / "meetings" / "ietf124" / "minutes.md").write_text("x")
+    (files_dir / "drafts").mkdir()
+    (files_dir / "drafts" / "draft-foo-00.txt").write_text("x")
     eligible = _eligible_files(str(files_dir), "wg")
-    bases = [os.path.basename(p) for p in eligible]
-    assert sorted(bases) == ["draft-foo-00.txt", "ietf124-minutes.md", "wg-charter.txt"]
+    relpaths = sorted(os.path.relpath(p, str(files_dir)) for p in eligible)
+    assert relpaths == [
+        "charter.txt",
+        "drafts/draft-foo-00.txt",
+        "meetings/ietf124/minutes.md",
+    ]
 
 
-def test_eligible_files_excludes_digests_json_and_pdf(isolated_home: Path) -> None:
+def test_eligible_files_excludes_digests_json_pdf_and_raw(
+    isolated_home: Path,
+) -> None:
     files_dir = isolated_home / ".cache" / "ietf-llm" / "wg" / "files"
     files_dir.mkdir(parents=True)
-    (files_dir / "wg-_index.md").write_text("# digest")
-    (files_dir / "wg-_issues.md").write_text("# digest")
-    (files_dir / "wg-github-x.json").write_text("{}")
-    (files_dir / "wg-slides.pdf").write_bytes(b"pdf")
-    (files_dir / "wg-charter.txt").write_text("real")
+    # Digests, github archives, PDFs, and raw/ are all excluded.
+    (files_dir / "digests").mkdir()
+    (files_dir / "digests" / "index.md").write_text("# digest")
+    (files_dir / "digests" / "issues.md").write_text("# digest")
+    (files_dir / "github").mkdir()
+    (files_dir / "github" / "x.json").write_text("{}")
+    (files_dir / "raw").mkdir()
+    (files_dir / "raw" / "mail-archive-2025.txt").write_text("legacy")
+    (files_dir / "meetings" / "ietf124" / "slides").mkdir(parents=True)
+    (files_dir / "meetings" / "ietf124" / "slides" / "foo.pdf").write_bytes(b"pdf")
+    (files_dir / "charter.txt").write_text("real")
     eligible = _eligible_files(str(files_dir), "wg")
-    bases = [os.path.basename(p) for p in eligible]
-    assert bases == ["wg-charter.txt"]
+    relpaths = sorted(os.path.relpath(p, str(files_dir)) for p in eligible)
+    assert relpaths == ["charter.txt"]
 
 
 # --- chunker resilience to role-tagged section headers --------------------

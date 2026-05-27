@@ -30,6 +30,12 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from ..paths import (
+    github_dir,
+    issue_path,
+    issue_repo_dir,
+    issues_dir,
+)
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 
@@ -267,42 +273,55 @@ def _render_issue(
 
 
 def issue_slug(repo: str, number: Any) -> str:
-    """Filename stem for an issue: `<repo-slug>-<NNN>` with repo
-    slug matching the github JSON archive convention."""
+    """Legacy filename stem for an issue (pre-reorg): `<repo-slug>-<NNN>`.
+    Kept for compatibility with anywhere that still composes the old
+    flat name (currently nothing in the gather pipeline)."""
     repo_slug = repo.replace("/", "-").lower()
     return f"{repo_slug}-{number}"
 
 
 def write_issue_files(
-    wg: str,
+    wg: str,  # noqa: ARG001  (kept for API stability; wg is implicit in cache_dir)
     cache_dir: str,
     registry: Optional[Registry] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[str]:
-    """For each cached `<wg>-github-<repo>.json`, write per-issue .md files.
+    """For each cached `github/<repo-slug>.json`, write per-issue .md files
+    under `issues/<repo-slug>/<NNN>.md`.
 
-    Files are named `<wg>-issue-<repo>-<NNN>.md`. Pre-existing files
-    matching the prefix are cleared before writing, so a re-gather
+    The whole `issues/` subtree is wiped before writing so a re-gather
     cleanly reflects the current archive (no stale issues lying around).
     """
     if not os.path.isdir(cache_dir):
         return []
 
-    # Wipe any stale per-issue files for this WG.
-    prefix = f"{wg}-issue-"
-    for name in os.listdir(cache_dir):
-        if name.startswith(prefix) and name.endswith(".md"):
-            try:
-                os.remove(os.path.join(cache_dir, name))
-            except OSError:
-                pass
+    archives_dir = github_dir(cache_dir)
+    if not os.path.isdir(archives_dir):
+        return []
+
+    # Wipe stale per-issue files for this WG by clearing the whole
+    # issues/ subtree.
+    out_root = issues_dir(cache_dir)
+    if os.path.isdir(out_root):
+        for repo_subdir in os.listdir(out_root):
+            sub_path = os.path.join(out_root, repo_subdir)
+            if not os.path.isdir(sub_path):
+                continue
+            for name in os.listdir(sub_path):
+                if name.endswith(".md"):
+                    try:
+                        os.remove(os.path.join(sub_path, name))
+                    except OSError:
+                        pass
 
     written: List[str] = []
-    for name in sorted(os.listdir(cache_dir)):
-        if not (name.startswith(f"{wg}-github-") and name.endswith(".json")):
+    for name in sorted(os.listdir(archives_dir)):
+        if not name.endswith(".json"):
             continue
         try:
-            with open(os.path.join(cache_dir, name), "r", encoding="utf-8") as fh:
+            with open(
+                os.path.join(archives_dir, name), "r", encoding="utf-8",
+            ) as fh:
                 data = json.load(fh)
         except (OSError, json.JSONDecodeError) as err:
             log(
@@ -313,13 +332,13 @@ def write_issue_files(
             continue
 
         repo = data.get("repo", "")
+        # Ensure the per-repo subdirectory exists before writing.
+        os.makedirs(issue_repo_dir(cache_dir, repo), exist_ok=True)
         for issue in data.get("issues") or []:
             number = issue.get("number")
             if number is None:
                 continue
-            path = os.path.join(
-                cache_dir, f"{wg}-issue-{issue_slug(repo, number)}.md"
-            )
+            path = issue_path(cache_dir, repo, number)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(_render_issue(repo, issue, registry))
             written.append(path)

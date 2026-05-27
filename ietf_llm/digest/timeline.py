@@ -46,6 +46,12 @@ from ..gather.datatracker_history import (
 from ..gather.mail_threads import Thread, build_threads, thread_slug
 from ..gather.session_polls import discover_local_polls
 from ..gather.transcript_context import transcript_context
+from ..paths import (
+    DIR_MEETINGS,
+    digest_path,
+    github_dir,
+    minutes_path,
+)
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .events import Event
@@ -165,83 +171,86 @@ def _meeting_events(cache_dir: str) -> List[Event]:
     session was).
     """
     sessions: Dict[str, _Session] = {}
+    meetings_root = os.path.join(cache_dir, DIR_MEETINGS)
 
-    # 1. Seed sessions from minutes files. Each minutes file gives us
-    # a definitive session date and a stable meeting code.
-    for name in sorted(os.listdir(cache_dir)):
-        if not (name.endswith("-minutes.md") or name.endswith("-minutes.txt")):
-            continue
-        path = os.path.join(cache_dir, name)
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                head = fh.read(500)
-        except OSError:
-            continue
-        date_match = _MEETING_DATE_RE.search(head)
-        if not date_match:
-            continue
-        try:
-            when = datetime.strptime(date_match.group(1), "%Y-%m-%d")
-        except ValueError:
-            continue
-        when = when.replace(tzinfo=timezone.utc)
-        code = name.rsplit("-minutes", 1)[0]
-        sessions[code] = _Session(
-            when=when,
-            code=code,
-            label=_meeting_label(name),
-            minutes_file=name,
-        )
-
-    # 2. Attach slide counts. Slides share the meeting-code prefix,
-    # and we already extract them as `<code>-slides-…pdf.txt`. We
-    # don't list every slide deck individually on the timeline —
-    # a count is enough; the consumer can `list_files` if they want
-    # the full set.
-    for name in os.listdir(cache_dir):
-        if not name.endswith(".pdf.txt"):
-            continue
-        # Match `<code>-slides-...` where `<code>` is a known session.
-        # The code is the part before the first `-slides-`.
-        slides_marker = "-slides-"
-        marker_pos = name.find(slides_marker)
-        if marker_pos == -1:
-            continue
-        code = name[:marker_pos]
-        if code in sessions:
-            sessions[code].slide_count += 1
-
-    # 3. Attach transcripts. Two pathways:
-    # (a) Transcript filename carries a meeting prefix ("ietf125-…") →
-    #     attach to that session directly.
-    # (b) Generic prefix ("ietf-aipref-…") → `transcript_context`
-    #     matches by date against minutes files; attach if matched.
-    # Anything that fails both becomes an orphan session — emitted with
-    # a date-only label so the consumer at least sees the transcript
-    # exists.
-    for name in sorted(os.listdir(cache_dir)):
-        if not name.endswith("-transcript.md"):
-            continue
-        ctx = transcript_context(name, cache_dir)
-        if ctx is None:
-            continue
-        transcript_when = _transcript_datetime(ctx.date, ctx.time)
-        if transcript_when is None:
-            continue
-        if ctx.meeting and ctx.meeting in sessions:
-            sessions[ctx.meeting].transcripts.append(name)
-            continue
-        # Orphan: no minutes file matched. Use the transcript's own
-        # datetime as the session key so multiple orphans don't collide.
-        key = f"_orphan:{ctx.date}-{ctx.time}"
-        if key not in sessions:
-            sessions[key] = _Session(
-                when=transcript_when,
-                code=None,
-                label=ctx.label or f"{ctx.wg} session ({ctx.date} {ctx.time} UTC)",
-                minutes_file=None,
+    # 1. Seed sessions from `meetings/<code>/minutes.md`. Each minutes
+    # file gives us a definitive session date and a stable meeting code.
+    if os.path.isdir(meetings_root):
+        for code in sorted(os.listdir(meetings_root)):
+            if code == "_orphans":
+                continue  # not a real meeting code; handled with transcripts
+            path = minutes_path(cache_dir, code)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    head = fh.read(500)
+            except OSError:
+                continue
+            date_match = _MEETING_DATE_RE.search(head)
+            if not date_match:
+                continue
+            try:
+                when = datetime.strptime(date_match.group(1), "%Y-%m-%d")
+            except ValueError:
+                continue
+            when = when.replace(tzinfo=timezone.utc)
+            relpath = os.path.relpath(path, cache_dir)
+            sessions[code] = _Session(
+                when=when,
+                code=code,
+                label=_meeting_label(code),
+                minutes_file=relpath,
             )
-        sessions[key].transcripts.append(name)
+
+    # 2. Attach slide counts by walking `meetings/<code>/slides/*.pdf.txt`.
+    # A count is enough on the timeline; consumers can `list_files` if
+    # they want the full deck list.
+    if os.path.isdir(meetings_root):
+        for code in os.listdir(meetings_root):
+            slides_subdir = os.path.join(meetings_root, code, "slides")
+            if not os.path.isdir(slides_subdir):
+                continue
+            for name in os.listdir(slides_subdir):
+                if name.endswith(".pdf.txt") and code in sessions:
+                    sessions[code].slide_count += 1
+
+    # 3. Attach transcripts by walking
+    # `meetings/<code>/transcripts/*.md`. `transcript_context` reads
+    # the meeting code from the path; orphan transcripts live under
+    # `meetings/_orphans/transcripts/`.
+    if os.path.isdir(meetings_root):
+        for code in sorted(os.listdir(meetings_root)):
+            t_subdir = os.path.join(meetings_root, code, "transcripts")
+            if not os.path.isdir(t_subdir):
+                continue
+            for name in sorted(os.listdir(t_subdir)):
+                if not name.endswith(".md"):
+                    continue
+                t_path = os.path.join(t_subdir, name)
+                relpath = os.path.relpath(t_path, cache_dir)
+                ctx = transcript_context(relpath, cache_dir)
+                if ctx is None:
+                    continue
+                transcript_when = _transcript_datetime(ctx.date, ctx.time)
+                if transcript_when is None:
+                    continue
+                if ctx.meeting and ctx.meeting in sessions:
+                    sessions[ctx.meeting].transcripts.append(relpath)
+                    continue
+                # Orphan: no minutes file matched. Key by datetime so
+                # multiple orphans on different days don't collide.
+                key = f"_orphan:{ctx.date}-{ctx.time}"
+                if key not in sessions:
+                    sessions[key] = _Session(
+                        when=transcript_when,
+                        code=None,
+                        label=ctx.label or (
+                            f"session ({ctx.date} {ctx.time} UTC)"
+                        ),
+                        minutes_file=None,
+                    )
+                sessions[key].transcripts.append(relpath)
 
     # 4. Emit one Event per session, with all artefacts rendered on
     # the line. Order doesn't matter here — build_events sorts.
@@ -308,11 +317,16 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
     consistent.
     """
     out: List[Event] = []
-    for name in os.listdir(cache_dir):
-        if not (name.startswith(f"{wg}-github-") and name.endswith(".json")):
+    archives_dir = github_dir(cache_dir)
+    if not os.path.isdir(archives_dir):
+        return out
+    for name in os.listdir(archives_dir):
+        if not name.endswith(".json"):
             continue
         try:
-            with open(os.path.join(cache_dir, name), "r", encoding="utf-8") as fh:
+            with open(
+                os.path.join(archives_dir, name), "r", encoding="utf-8",
+            ) as fh:
                 data = json.load(fh)
         except (OSError, json.JSONDecodeError):
             continue
@@ -386,7 +400,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 def _thread_link(thread: Thread) -> str:
     first = thread.span[0]
     iso = first.strftime("%Y-%m-%d") if first else None
-    return f"`<wg>-thread-{thread_slug(thread.root.subject, iso)}.md`"
+    return f"`threads/{thread_slug(thread.root.subject, iso)}.md`"
 
 
 # --- Public entry point ----------------------------------------------------
@@ -457,7 +471,8 @@ def write_timeline_digest(
     for event in events:
         by_year.setdefault(event.when.year, []).append(event)
 
-    out_path = os.path.join(cache_dir, f"{wg}-_timeline.md")
+    out_path = digest_path(cache_dir, "timeline")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(f"# {wg}: timeline\n\n")
         fh.write(
@@ -479,8 +494,7 @@ def write_timeline_digest(
                 if event.detail:
                     line += f" — {event.detail}"
                 if event.link:
-                    # Resolve <wg> placeholder for thread links.
-                    line += f" · {event.link.replace('<wg>', wg)}"
+                    line += f" · {event.link}"
                 fh.write(line + "\n")
             fh.write("\n")
 

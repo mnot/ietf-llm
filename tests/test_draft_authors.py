@@ -125,25 +125,35 @@ def test_block_without_email_skipped_or_kept() -> None:
 # --- latest_draft_paths ----------------------------------------------------
 
 
+def _make_drafts_dir(tmp_path: Path) -> Path:
+    drafts = tmp_path / "drafts"
+    drafts.mkdir()
+    return drafts
+
+
 def test_latest_draft_paths_picks_highest_version(tmp_path: Path) -> None:
+    drafts = _make_drafts_dir(tmp_path)
     for v in ("00", "01", "02", "05"):
-        (tmp_path / f"draft-ietf-wg-foo-{v}.txt").write_text("x")
+        (drafts / f"draft-ietf-wg-foo-{v}.txt").write_text("x")
     paths = latest_draft_paths(str(tmp_path))
     names = [p.rsplit("/", 1)[-1] for p in paths]
     assert names == ["draft-ietf-wg-foo-05.txt"]
 
 
 def test_latest_draft_paths_includes_rfcs(tmp_path: Path) -> None:
-    (tmp_path / "rfc9111.txt").write_text("x")
-    (tmp_path / "draft-ietf-wg-foo-01.txt").write_text("x")
+    drafts = _make_drafts_dir(tmp_path)
+    (drafts / "rfc9111.txt").write_text("x")
+    (drafts / "draft-ietf-wg-foo-01.txt").write_text("x")
     paths = latest_draft_paths(str(tmp_path))
     names = sorted(p.rsplit("/", 1)[-1] for p in paths)
     assert names == ["draft-ietf-wg-foo-01.txt", "rfc9111.txt"]
 
 
 def test_latest_draft_paths_ignores_non_drafts(tmp_path: Path) -> None:
-    (tmp_path / "wg-charter.txt").write_text("x")
-    (tmp_path / "draft-ietf-wg-foo-01.txt").write_text("x")
+    drafts = _make_drafts_dir(tmp_path)
+    # A non-draft file in drafts/ that's not an RFC is ignored.
+    (drafts / "charter.txt").write_text("x")
+    (drafts / "draft-ietf-wg-foo-01.txt").write_text("x")
     paths = latest_draft_paths(str(tmp_path))
     names = [p.rsplit("/", 1)[-1] for p in paths]
     assert names == ["draft-ietf-wg-foo-01.txt"]

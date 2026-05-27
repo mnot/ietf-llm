@@ -96,15 +96,14 @@ def generate_digests(
         generated.append(threads_path)
 
     # Index last so it can reference the others.
-    # _people.md is written by ietf_llm.people.write_people_digest from
+    # people.md is written by ietf_llm.people.write_people_digest from
     # the gather pipeline (it needs a Registry); we just detect its
     # presence on disk here.
     import os  # pylint: disable=import-outside-toplevel
+    from ..paths import digest_path  # pylint: disable=import-outside-toplevel
 
-    has_people = os.path.exists(os.path.join(cache_dir, f"{wg}-_people.md"))
-    has_timeline = os.path.exists(
-        os.path.join(cache_dir, f"{wg}-_timeline.md")
-    )
+    has_people = os.path.exists(digest_path(cache_dir, "people"))
+    has_timeline = os.path.exists(digest_path(cache_dir, "timeline"))
     index_path = _build_index(
         wg,
         cache_dir,

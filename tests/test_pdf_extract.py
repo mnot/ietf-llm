@@ -126,49 +126,61 @@ def test_extract_all_pdfs_handles_empty_cache(tmp_path: Path) -> None:
 # --- Slide context inference ---------------------------------------------
 
 
+def _seed_meeting(cache: Path, code: str, date_line: str) -> None:
+    """Create `meetings/<code>/minutes.md` with a Date: header and
+    the empty slides/ subdir ready for slide PDFs."""
+    d = cache / "meetings" / code
+    (d / "slides").mkdir(parents=True, exist_ok=True)
+    (d / "minutes.md").write_text(f"# header\n{date_line}\n")
+
+
 def test_slide_context_ietf_meeting(tmp_path: Path) -> None:
-    (tmp_path / "ietf124-minutes.md").write_text(
-        "# Meeting Materials for IETF IETF 124 (aipref)\n"
-        "Date: 2025-11-05 21:00\n\n"
+    _seed_meeting(tmp_path, "ietf124", "Date: 2025-11-05 21:00")
+    # Post-reorg: `meetings/<code>/slides/<basename>.pdf`. The meeting
+    # code is read from the path, not the filename.
+    relpath = (
+        "meetings/ietf124/slides/"
+        "slides-124-aipref-vocabulary-status-update-01.pdf"
     )
-    ctx = slide_context(
-        "ietf124-slides-124-aipref-vocabulary-status-update-01.pdf",
-        str(tmp_path),
-    )
+    ctx = slide_context(relpath, str(tmp_path))
     assert ctx is not None
     assert ctx.meeting == "ietf124"
     assert ctx.label == "IETF 124 meeting"
     assert ctx.topic_slug == "vocabulary-status-update"
     assert ctx.version == "01"
     assert ctx.date == "2025-11-05"
-    assert ctx.minutes_file == "ietf124-minutes.md"
+    assert ctx.minutes_file == "meetings/ietf124/minutes.md"
 
 
 def test_slide_context_interim(tmp_path: Path) -> None:
-    (tmp_path / "interim2025aipref08-minutes.md").write_text(
-        "# header\nDate: 2025-06-23 13:00\n"
+    _seed_meeting(
+        tmp_path, "interim2025aipref08", "Date: 2025-06-23 13:00",
     )
-    ctx = slide_context(
-        "interim2025aipref08-slides-interim-2025-aipref-08-sessa-draft-status-update-00.pdf",
-        str(tmp_path),
+    relpath = (
+        "meetings/interim2025aipref08/slides/"
+        "slides-interim-2025-aipref-08-sessa-draft-status-update-00.pdf"
     )
+    ctx = slide_context(relpath, str(tmp_path))
     assert ctx is not None
     assert ctx.meeting == "interim2025aipref08"
     assert ctx.label == "Interim 2025 #08"
-    # The session prefix ("interim-2025-aipref-08-sessa-") gets stripped.
+    # The session prefix gets stripped.
     assert ctx.topic_slug == "draft-status-update"
     assert ctx.date == "2025-06-23"
 
 
 def test_slide_context_returns_none_for_non_slide_pdf(tmp_path: Path) -> None:
-    assert slide_context("draft-foo-00.pdf", str(tmp_path)) is None
+    # Path not under meetings/<code>/slides/ → no context inferable.
+    assert slide_context("drafts/draft-foo-00.pdf", str(tmp_path)) is None
     assert slide_context("random.pdf", str(tmp_path)) is None
 
 
 def test_slide_context_handles_missing_minutes(tmp_path: Path) -> None:
-    ctx = slide_context(
-        "ietf124-slides-124-aipref-overview-00.pdf", str(tmp_path)
-    )
+    # The meeting dir exists but minutes.md doesn't — code is still
+    # extracted from the path.
+    (tmp_path / "meetings" / "ietf124" / "slides").mkdir(parents=True)
+    relpath = "meetings/ietf124/slides/slides-124-aipref-overview-00.pdf"
+    ctx = slide_context(relpath, str(tmp_path))
     assert ctx is not None
     assert ctx.label == "IETF 124 meeting"
     assert ctx.date is None
@@ -176,34 +188,30 @@ def test_slide_context_handles_missing_minutes(tmp_path: Path) -> None:
 
 
 def test_extracted_txt_includes_meeting_context_header(tmp_path: Path) -> None:
-    (tmp_path / "ietf124-minutes.md").write_text(
-        "# Meeting Materials\nDate: 2025-11-05 21:00\n"
+    _seed_meeting(tmp_path, "ietf124", "Date: 2025-11-05 21:00")
+    pdf_path = (
+        tmp_path / "meetings" / "ietf124" / "slides"
+        / "slides-124-aipref-overview-00.pdf"
     )
-    (tmp_path / "ietf124-slides-124-aipref-overview-00.pdf").write_bytes(
-        MINIMAL_PDF
-    )
+    pdf_path.write_bytes(MINIMAL_PDF)
     extract_all_pdfs(str(tmp_path))
-    txt = (
-        tmp_path / "ietf124-slides-124-aipref-overview-00.pdf.txt"
-    ).read_text()
+    txt = pdf_path.with_suffix(".pdf.txt").read_text()
     assert "**Meeting:** IETF 124 meeting (2025-11-05)" in txt
     assert "**Topic slug:** `overview`" in txt
-    assert "**Minutes:** `ietf124-minutes.md`" in txt
+    assert "**Minutes:** `meetings/ietf124/minutes.md`" in txt
     # The actual slide content still follows.
     assert "Hello AIPREF" in txt
 
 
 def test_stubbed_unextractable_still_carries_context(tmp_path: Path) -> None:
-    (tmp_path / "ietf124-minutes.md").write_text(
-        "Date: 2025-11-05\n"
+    _seed_meeting(tmp_path, "ietf124", "Date: 2025-11-05")
+    pdf_path = (
+        tmp_path / "meetings" / "ietf124" / "slides"
+        / "slides-124-aipref-whiteboard-00.pdf"
     )
-    (tmp_path / "ietf124-slides-124-aipref-whiteboard-00.pdf").write_bytes(
-        b"\x00 not a valid pdf"
-    )
+    pdf_path.write_bytes(b"\x00 not a valid pdf")
     extract_all_pdfs(str(tmp_path))
-    txt = (
-        tmp_path / "ietf124-slides-124-aipref-whiteboard-00.pdf.txt"
-    ).read_text()
+    txt = pdf_path.with_suffix(".pdf.txt").read_text()
     # The stub gets the context header so the agent still knows which
     # meeting it would have come from.
     assert "**Meeting:** IETF 124 meeting" in txt

@@ -20,19 +20,25 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ..paths import (
+    DIR_MEETINGS,
+    SUBDIR_TRANSCRIPTS,
+    is_transcript_relpath,
+    meeting_code_for_relpath,
+    minutes_path,
+)
 from ..utils import LogLevel, Verbosity, log
 
 
 _SENTINEL = "<!-- ietf-llm:context-header -->"
 
-# Two filename forms we recognise:
-#   ietf-aipref-20260415-1315-transcript.md          (general / interim)
-#   ietf125-aipref-20260316-0330-transcript.md       (specific IETF meeting)
-_TRANSCRIPT_RE = re.compile(
-    r"^(?P<prefix>ietf(?P<meeting_num>\d+)?)-"
-    r"(?P<wg>[a-z0-9]+)-"
-    r"(?P<date>\d{8})-"
-    r"(?P<time>\d{4})-transcript\.md$",
+# Post-reorg layout: transcripts live at
+# `meetings/<code>/transcripts/<YYYYMMDDHHmm>.md` (or under
+# `meetings/_orphans/transcripts/…` when there's no matching meeting
+# code). The basename is the session datetime; the meeting code
+# comes from the path.
+_TRANSCRIPT_BASENAME_RE = re.compile(
+    r"^(?P<date>\d{8})(?P<time>\d{4})\.md$",
     re.IGNORECASE,
 )
 
@@ -62,49 +68,68 @@ def _meeting_label(meeting_code: str) -> str:
 
 
 def _build_date_index(cache_dir: str) -> Dict[str, str]:
-    """Return YYYY-MM-DD → meeting-name for every minutes file in the cache."""
+    """Return YYYY-MM-DD → meeting-code for every minutes file in the cache.
+
+    Walks `meetings/<code>/minutes.md` recursively (post-reorg layout).
+    """
     index: Dict[str, str] = {}
-    for name in os.listdir(cache_dir):
-        if not (name.endswith("-minutes.md") or name.endswith("-minutes.txt")):
+    meetings_root = os.path.join(cache_dir, DIR_MEETINGS)
+    if not os.path.isdir(meetings_root):
+        return index
+    for code in os.listdir(meetings_root):
+        candidate = minutes_path(cache_dir, code)
+        if not os.path.isfile(candidate):
             continue
-        meeting = name.rsplit("-minutes", 1)[0]
         try:
-            with open(os.path.join(cache_dir, name), "r", encoding="utf-8") as fh:
+            with open(candidate, "r", encoding="utf-8") as fh:
                 head = fh.read(500)
         except OSError:
             continue
         match = _MEETING_DATE_RE.search(head)
         if match:
-            index[match.group(1)] = meeting
+            index[match.group(1)] = code
     return index
 
 
 def transcript_context(
-    filename: str, cache_dir: str, date_index: Optional[Dict[str, str]] = None
+    relpath: str,
+    cache_dir: str,
+    date_index: Optional[Dict[str, str]] = None,
+    wg: Optional[str] = None,
 ) -> Optional[TranscriptContext]:
     """Infer (wg, date, meeting) for a transcript file.
+
+    `relpath` is the path relative to cache_dir, e.g.
+    `meetings/ietf125/transcripts/202603160330.md`. The meeting code
+    is read directly from the path; the date/time come from the
+    basename. `wg` is the WG shortname — passed in by callers that
+    know it (the gather pipeline) since post-reorg filenames don't
+    carry it.
 
     `date_index` is the result of `_build_date_index`; passed in as
     an optimisation so we don't re-scan minutes for every transcript.
     """
-    match = _TRANSCRIPT_RE.match(filename)
+    if not is_transcript_relpath(relpath):
+        return None
+    basename = os.path.basename(relpath)
+    match = _TRANSCRIPT_BASENAME_RE.match(basename)
     if not match:
         return None
-    wg = match.group("wg").lower()
     raw_date = match.group("date")
     raw_time = match.group("time")
     date_str = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
     time_str = f"{raw_time[:2]}:{raw_time[2:4]}"
 
-    ctx = TranscriptContext(wg=wg, date=date_str, time=time_str)
+    ctx = TranscriptContext(wg=wg or "", date=date_str, time=time_str)
 
-    # Direct meeting prefix wins (e.g. "ietf125-aipref-…").
-    meeting_num = match.group("meeting_num")
-    if meeting_num:
-        ctx.meeting = f"ietf{meeting_num}"
-        ctx.label = _meeting_label(ctx.meeting)
+    # Meeting code comes from the path (post-reorg). "_orphans" is the
+    # synthetic dir for transcripts without a matching meeting code.
+    path_code = meeting_code_for_relpath(relpath)
+    if path_code and path_code != "_orphans":
+        ctx.meeting = path_code
+        ctx.label = _meeting_label(path_code)
     else:
-        # Fall back to date-matching against any minutes file we know.
+        # Orphan: fall back to date-matching against minutes we know.
         if date_index is None:
             date_index = _build_date_index(cache_dir)
         meeting = date_index.get(date_str)
@@ -113,9 +138,9 @@ def transcript_context(
             ctx.label = _meeting_label(meeting)
 
     if ctx.meeting:
-        candidate = os.path.join(cache_dir, f"{ctx.meeting}-minutes.md")
+        candidate = minutes_path(cache_dir, ctx.meeting)
         if os.path.isfile(candidate):
-            ctx.minutes_file = os.path.basename(candidate)
+            ctx.minutes_file = os.path.relpath(candidate, cache_dir)
 
     return ctx
 
@@ -139,38 +164,49 @@ def _render_header(filename: str, ctx: TranscriptContext) -> str:
 
 
 def enrich_transcripts(
-    cache_dir: str, verbose: Verbosity = Verbosity.STATUS
+    cache_dir: str,
+    verbose: Verbosity = Verbosity.STATUS,
+    wg: Optional[str] = None,
 ) -> List[str]:
-    """Prepend a context header to every `*-transcript.md` that doesn't
-    already have one. Returns the list of files modified."""
+    """Prepend a context header to every transcript that doesn't already
+    have one. Walks `meetings/<code>/transcripts/*.md` recursively.
+    Returns the list of files modified.
+    """
     if not os.path.isdir(cache_dir):
         return []
     date_index = _build_date_index(cache_dir)
     modified: List[str] = []
-    for name in sorted(os.listdir(cache_dir)):
-        if not name.endswith("-transcript.md"):
+    for dirpath, _dirnames, filenames in os.walk(cache_dir):
+        # Only walk transcripts subdirs to keep this cheap.
+        if not dirpath.endswith(f"/{SUBDIR_TRANSCRIPTS}"):
             continue
-        path = os.path.join(cache_dir, name)
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                first_chunk = fh.read(256)
-        except OSError:
-            continue
-        if _SENTINEL in first_chunk:
-            continue  # already enriched
-        ctx = transcript_context(name, cache_dir, date_index=date_index)
-        if ctx is None:
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                body = fh.read()
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(_render_header(name, ctx))
-                fh.write("\n")
-                fh.write(body)
-        except OSError:
-            continue
-        modified.append(path)
+        for name in sorted(filenames):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(dirpath, name)
+            relpath = os.path.relpath(path, cache_dir)
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    first_chunk = fh.read(256)
+            except OSError:
+                continue
+            if _SENTINEL in first_chunk:
+                continue  # already enriched
+            ctx = transcript_context(
+                relpath, cache_dir, date_index=date_index, wg=wg,
+            )
+            if ctx is None:
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    body = fh.read()
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(_render_header(relpath, ctx))
+                    fh.write("\n")
+                    fh.write(body)
+            except OSError:
+                continue
+            modified.append(path)
     if modified:
         log(
             f"Enriched {len(modified)} transcript(s) with meeting context",

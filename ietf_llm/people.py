@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from .paths import digest_path
 from .text import _parse_date
 from .utils import LogLevel, Verbosity, get_cache_dir, log
 
@@ -436,16 +437,19 @@ def _ingest_mail(wg: str, registry: Registry, verbose: Verbosity) -> None:
 
 
 def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
-    """Read each <wg>-github-*.json archive and feed issue authors."""
+    """Read each `github/<repo-slug>.json` archive and feed issue authors."""
     cache_dir = os.path.join(get_cache_dir(), wg, "files")
-    if not os.path.isdir(cache_dir):
+    archives_dir = os.path.join(cache_dir, "github")
+    if not os.path.isdir(archives_dir):
         return
     count = 0
-    for name in os.listdir(cache_dir):
-        if not (name.startswith(f"{wg}-github-") and name.endswith(".json")):
+    for name in os.listdir(archives_dir):
+        if not name.endswith(".json"):
             continue
         try:
-            with open(os.path.join(cache_dir, name), "r", encoding="utf-8") as fh:
+            with open(
+                os.path.join(archives_dir, name), "r", encoding="utf-8",
+            ) as fh:
                 data = json.load(fh)
         except (OSError, json.JSONDecodeError):
             continue
@@ -600,7 +604,8 @@ def write_people_digest(
 
     linked, mail_only, gh_only = _bucket_persons(persons)
 
-    out_path = os.path.join(cache_dir, f"{wg}-_people.md")
+    out_path = digest_path(cache_dir, "people")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     leaders = registry.leadership()
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(f"# {wg}: participants\n\n")

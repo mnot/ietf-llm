@@ -31,7 +31,8 @@ from conftest import make_issue, write_github_archive
 
 def _issue_text(wg: str, repo: str, number: int) -> str:
     cache = Path(get_wg_file_cache_dir(wg))
-    return (cache / f"{wg}-issue-{issue_slug(repo, number)}.md").read_text()
+    repo_slug = repo.replace("/", "-").lower()
+    return (cache / "issues" / repo_slug / f"{number}.md").read_text()
 
 
 # --- pure helpers ---------------------------------------------------------
@@ -88,8 +89,8 @@ def test_write_issue_files_creates_one_per_issue(isolated_home: Path) -> None:
     cache = get_wg_file_cache_dir("wg")
     written = write_issue_files("wg", cache, verbose=Verbosity.QUIET)
     assert len(written) == 2
-    assert (Path(cache) / "wg-issue-org-repo-1.md").exists()
-    assert (Path(cache) / "wg-issue-org-repo-2.md").exists()
+    assert (Path(cache) / "issues" / "org-repo" / "1.md").exists()
+    assert (Path(cache) / "issues" / "org-repo" / "2.md").exists()
 
 
 def test_issue_file_has_expected_structure(isolated_home: Path) -> None:
@@ -187,9 +188,10 @@ def test_empty_body_and_empty_comments_render_placeholder(
 
 def test_stale_issue_files_are_wiped(isolated_home: Path) -> None:
     cache = Path(get_wg_file_cache_dir("wg"))
-    cache.mkdir(parents=True, exist_ok=True)
+    repo_subdir = cache / "issues" / "org-repo"
+    repo_subdir.mkdir(parents=True, exist_ok=True)
     # An old file that no longer corresponds to any current issue.
-    stale = cache / "wg-issue-org-repo-999.md"
+    stale = repo_subdir / "999.md"
     stale.write_text("stale content")
     write_github_archive(
         isolated_home,
@@ -199,13 +201,14 @@ def test_stale_issue_files_are_wiped(isolated_home: Path) -> None:
     )
     write_issue_files("wg", str(cache), verbose=Verbosity.QUIET)
     assert not stale.exists()
-    assert (cache / "wg-issue-org-repo-1.md").exists()
+    assert (repo_subdir / "1.md").exists()
 
 
 def test_malformed_json_is_skipped(isolated_home: Path) -> None:
     cache = Path(get_wg_file_cache_dir("wg"))
-    cache.mkdir(parents=True, exist_ok=True)
-    (cache / "wg-github-bad-repo.json").write_text("{not json")
+    archives = cache / "github"
+    archives.mkdir(parents=True, exist_ok=True)
+    (archives / "bad-repo.json").write_text("{not json")
     # Should not raise.
     written = write_issue_files("wg", str(cache), verbose=Verbosity.QUIET)
     assert written == []

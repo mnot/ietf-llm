@@ -14,7 +14,8 @@ from ietf_llm.digest.overview import build_overview
 
 def _seed_digests(cache: Path, *, with_authors: bool = True) -> None:
     cache.mkdir(parents=True, exist_ok=True)
-    (cache / "wg-_people.md").write_text(
+    (cache / "digests").mkdir(exist_ok=True)
+    (cache / "digests/people.md").write_text(
         "# wg: participants\n\n"
         "_Preamble._\n\n"
         "## Working Group leadership (3)\n\n"
@@ -31,7 +32,7 @@ def _seed_digests(cache: Path, *, with_authors: bool = True) -> None:
             else ""
         )
     )
-    (cache / "wg-_issues.md").write_text(
+    (cache / "digests/issues.md").write_text(
         "# wg: issues\n\n"
         "## org/repo\n\n"
         "| # | State | Title | Labels | Comments | Updated | Author |\n"
@@ -44,7 +45,7 @@ def _seed_digests(cache: Path, *, with_authors: bool = True) -> None:
         "| 6 | OPEN | Fifth open | c | 5 | 2026-05-09 | Faye |\n"
         "| 7 | OPEN | Sixth open | d | 6 | 2026-05-08 | Greg |\n"
     )
-    (cache / "wg-_threads.md").write_text(
+    (cache / "digests/threads.md").write_text(
         "# wg: threads\n\n"
         "| Subject | Msgs | Participants | First | Last | File |\n"
         "|---------|------|--------------|-------|------|------|\n"
@@ -52,7 +53,7 @@ def _seed_digests(cache: Path, *, with_authors: bool = True) -> None:
         "| Middle | 5 | 3 | 2026-04-01 | 2026-05-15 | `t2.md` |\n"
         "| Old | 1 | 1 | 2025-01-01 | 2025-01-01 | `t3.md` |\n"
     )
-    (cache / "wg-_timeline.md").write_text(
+    (cache / "digests/timeline.md").write_text(
         "# wg: timeline\n\n"
         "## 2026\n\n"
         "- **2026-04-27** — `draft-ietf-wg-vocab-06` published\n"
@@ -144,7 +145,8 @@ def test_overview_top_labels_aggregates_repeats(tmp_path: Path) -> None:
     # Seed issues with a label that appears multiple times so the
     # count is non-trivial.
     cache = tmp_path
-    (cache / "wg-_issues.md").write_text(
+    (cache / "digests").mkdir(exist_ok=True)
+    (cache / "digests/issues.md").write_text(
         "# wg: issues\n\n"
         "## org/repo\n\n"
         "| # | State | Title | Labels | Comments | Updated | Author |\n"
@@ -162,11 +164,8 @@ def test_overview_top_labels_aggregates_repeats(tmp_path: Path) -> None:
 def test_overview_footer_baking_in_wg_name(tmp_path: Path) -> None:
     # Different WG name should produce different copy-pasteable calls.
     _seed_digests(tmp_path)
-    # Reuse the same digest files by passing a WG name whose digest
-    # paths happen to exist… simplest: write digests under the alias.
-    (tmp_path / "other-_people.md").write_text(
-        (tmp_path / "wg-_people.md").read_text()
-    )
+    # Different WG name → different copy-pasteable calls. The cache
+    # layout is the same; only the rendered WG name differs.
     out = build_overview("other", str(tmp_path))
     assert 'search_corpus("other"' in out
 

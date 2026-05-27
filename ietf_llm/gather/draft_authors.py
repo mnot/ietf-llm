@@ -118,19 +118,25 @@ def latest_draft_paths(cache_dir: str) -> List[str]:
     """Return one path per draft (the highest-numbered version), plus RFCs.
 
     `draft-ietf-aipref-vocab-{00..06}.txt` collapses to just the -06
-    file. RFCs (`rfc1234.txt`) appear unchanged. Non-draft files are
-    ignored.
+    file. RFCs (`rfc1234.txt`) appear unchanged. Looks in `drafts/`
+    (post-reorg) and falls back to the cache root for older layouts.
     """
     by_base: dict[str, "tuple[int, str]"] = {}
     extras: List[str] = []
     if not os.path.isdir(cache_dir):
         return []
-    for name in sorted(os.listdir(cache_dir)):
+    # Lazy import to avoid a hard dep from the gather layer on paths.
+    from ..paths import drafts_dir  # pylint: disable=import-outside-toplevel
+
+    scan_dir = drafts_dir(cache_dir)
+    if not os.path.isdir(scan_dir):
+        return []
+    for name in sorted(os.listdir(scan_dir)):
         lower = name.lower()
         if not lower.endswith(".txt"):
             continue
         if lower.startswith("rfc"):
-            extras.append(os.path.join(cache_dir, name))
+            extras.append(os.path.join(scan_dir, name))
             continue
         match = _DRAFT_FILE_RE.match(lower)
         if not match:
@@ -139,5 +145,5 @@ def latest_draft_paths(cache_dir: str) -> List[str]:
         base = match.group("base")
         prev = by_base.get(base)
         if prev is None or prev[0] < version:
-            by_base[base] = (version, os.path.join(cache_dir, name))
+            by_base[base] = (version, os.path.join(scan_dir, name))
     return [path for _, path in by_base.values()] + extras

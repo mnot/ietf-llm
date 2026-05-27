@@ -10,7 +10,8 @@ import json
 import os
 from typing import Optional
 
-from ..gather.issue_files import _detect_duplicate_of, _participants, issue_slug
+from ..gather.issue_files import _detect_duplicate_of, _participants
+from ..paths import digest_path, github_dir, issue_path
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
 from .helpers import _state_is_open
@@ -23,22 +24,25 @@ _ISSUE_PROMPT = (
 )
 
 
-def _build_issues_digest(
+def _build_issues_digest(  # pylint: disable=too-many-locals
     cache_dir: str,
     wg: str,
     summarizer: _Summarizer,
     verbose: Verbosity,
     registry: Optional[Registry] = None,
 ) -> Optional[str]:
-    """Build {wg}-_issues.md from cached GitHub JSON archives."""
+    """Build `digests/issues.md` from cached GitHub JSON archives."""
+    archives_dir = github_dir(cache_dir)
+    if not os.path.isdir(archives_dir):
+        return None
     gh_files = sorted(
-        f for f in os.listdir(cache_dir)
-        if f.startswith(f"{wg}-github-") and f.endswith(".json")
+        f for f in os.listdir(archives_dir) if f.endswith(".json")
     )
     if not gh_files:
         return None
 
-    out_path = os.path.join(cache_dir, f"{wg}-_issues.md")
+    out_path = digest_path(cache_dir, "issues")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     total_open = 0
     total_closed = 0
 
@@ -46,12 +50,11 @@ def _build_issues_digest(
         fh.write(f"# {wg}: GitHub issues digest\n\n")
         fh.write(
             "One row per issue across all tracked repos. For full discussion, "
-            f"open the matching `{wg}-github-<repo>.txt` file and search for "
-            "`Issue #N:`.\n\n"
+            "open the matching per-issue file (see the File column).\n\n"
         )
 
         for gh_file in gh_files:
-            path = os.path.join(cache_dir, gh_file)
+            path = os.path.join(archives_dir, gh_file)
             try:
                 with open(path, "r", encoding="utf-8") as jf:
                     data = json.load(jf)
@@ -61,11 +64,11 @@ def _build_issues_digest(
 
             repo = data.get("repo", gh_file)
             issues = data.get("issues", []) or []
+            repo_slug = repo.replace("/", "-").lower()
 
             fh.write(f"## {repo}\n\n")
             fh.write(
-                f"_Per-issue files: "
-                f"`{wg}-issue-{repo.replace('/', '-').lower()}-*.md` "
+                f"_Per-issue files: `issues/{repo_slug}/*.md` "
                 f"({len(issues)} issues)_\n\n"
             )
 
@@ -120,7 +123,11 @@ def _build_issues_digest(
                 # Drop the author since it's already in its own column.
                 others = [p for p in participants if p != raw_author]
                 participants_cell = ", ".join(others).replace("|", "\\|")
-                file_cell = f"`{wg}-issue-{issue_slug(repo, number)}.md`"
+                # Relative path is what the chunker and MCP tools speak.
+                relpath = os.path.relpath(
+                    issue_path(cache_dir, repo, number), cache_dir,
+                )
+                file_cell = f"`{relpath}`"
                 # Surface "duplicate of #N" when detected. Empty for
                 # the common case; the column header keeps the
                 # affordance discoverable.

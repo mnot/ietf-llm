@@ -42,6 +42,7 @@ from .embeddings import (
     search,
 )
 from .freshness import staleness_warning
+from .paths import digest_kind_from_relpath, digest_path
 from .utils import Verbosity, get_cache_dir, get_wg_file_cache_dir
 
 MAX_LINES_DEFAULT = 400
@@ -88,7 +89,7 @@ def _digest_path(wg: str, kind: str) -> Optional[str]:
     if kind not in _DIGEST_KINDS:
         return None
     cache = get_wg_file_cache_dir(wg)
-    path = os.path.join(cache, f"{wg}-_{kind}.md")
+    path = digest_path(cache, kind)
     return path if os.path.isfile(path) else None
 
 
@@ -191,25 +192,31 @@ def tool_list_files(wg: str) -> str:
     # chunk_counts() is cheap (one GROUP BY) and lets the consumer bound
     # get_chunk_text calls instead of blind-probing chunk_idx=0,1,2,…
     counts = chunk_counts(wg)
+    entries = []
+    for dirpath, _dirnames, filenames in os.walk(cache):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            relpath = os.path.relpath(path, cache)
+            entries.append((relpath, path))
+    entries.sort(key=lambda kv: kv[0])
     rows = []
-    for name in sorted(os.listdir(cache)):
-        path = os.path.join(cache, name)
-        if not os.path.isfile(path):
-            continue
+    for relpath, path in entries:
         size = os.path.getsize(path)
-        n_chunks = counts.get(name)
+        n_chunks = counts.get(relpath)
+        kind = digest_kind_from_relpath(relpath)
         if n_chunks is not None:
-            rows.append(f"{size:>10}  chunks={n_chunks:<4}  {name}")
-        elif name.startswith(f"{wg}-_") and name.endswith(".md"):
-            # _-prefixed digests are intentionally NOT chunked; flag them
-            # so consumers know to use read_digest, not get_chunk_text.
-            kind = name[len(f"{wg}-_"):-len(".md")]
+            rows.append(f"{size:>10}  chunks={n_chunks:<4}  {relpath}")
+        elif kind is not None and kind in _DIGEST_KINDS:
+            # Digests are intentionally NOT chunked; flag them so
+            # consumers know to use read_digest, not get_chunk_text.
             rows.append(
-                f"{size:>10}  (digest)     {name}  "
+                f"{size:>10}  (digest)     {relpath}  "
                 f"-> read_digest(wg, kind='{kind}')"
             )
         else:
-            rows.append(f"{size:>10}  (no chunks)  {name}")
+            rows.append(f"{size:>10}  (no chunks)  {relpath}")
     body = "\n".join(rows) or "(empty)"
     body += (
         f"\n\n_Next: `read_file_section(\"{wg}\", \"<filename>\", "
@@ -261,10 +268,11 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
 
 
 # Regex tuned to the issues-digest schema: the File column carries a
-# backtick-wrapped filename. Picking it up from the rendered markdown is
-# more robust than re-parsing the table — this works whether or not
-# `summarize` is active (which would shift column positions).
-_ISSUE_FILE_CELL_RE = re.compile(r"`(\S+-issue-\S+\.md)`")
+# backtick-wrapped relative path under `issues/<repo>/<N>.md`. Picking
+# it up from the rendered markdown is more robust than re-parsing the
+# table — this works whether or not `summarize` is active (which would
+# shift column positions).
+_ISSUE_FILE_CELL_RE = re.compile(r"`(issues/\S+\.md)`")
 
 
 def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
@@ -398,19 +406,17 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     return _with_freshness(wg, "\n".join(lines))
 
 
-def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:
-    """If `file` is one of the per-WG digests (`<wg>-_<kind>.md`),
+def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
+    """If `file` identifies a per-WG digest (`digests/<kind>.md`),
     return the digest `kind`; otherwise None.
 
     Used so chunk-fetch / file-section calls on a digest file can
     return a working hint instead of an opaque "not found" — these
     files exist but aren't in the embedding index by design.
     """
-    prefix = f"{wg}-_"
-    if file.startswith(prefix) and file.endswith(".md"):
-        kind = file[len(prefix):-len(".md")]
-        if kind in _DIGEST_KINDS:
-            return kind
+    kind = digest_kind_from_relpath(file)
+    if kind is not None and kind in _DIGEST_KINDS:
+        return kind
     return None
 
 

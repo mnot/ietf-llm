@@ -19,7 +19,7 @@ from conftest import make_issue, write_github_archive
 
 
 def _digest_text(wg: str) -> str:
-    path = Path(get_wg_file_cache_dir(wg)) / f"{wg}-_issues.md"
+    path = Path(get_wg_file_cache_dir(wg)) / "digests" / "issues.md"
     return path.read_text()
 
 
@@ -27,8 +27,8 @@ def test_no_archives_no_digest_written(isolated_home: Path) -> None:
     # A WG with no github JSON archives should not get an issues digest.
     cache = Path(get_wg_file_cache_dir("wg"))
     paths = generate_digests("wg", str(cache), summarize_model=None)
-    assert not (cache / "wg-_issues.md").exists()
-    assert all("_issues.md" not in p for p in paths)
+    assert not (cache / "digests/issues.md").exists()
+    assert all("digests/issues.md" not in p for p in paths)
 
 
 def test_lowercase_state_counted_correctly(isolated_home: Path) -> None:

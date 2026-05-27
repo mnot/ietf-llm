@@ -116,9 +116,15 @@ def upload_source(
     notebook_id: str,
     file_path: str,
     creds: Credentials,
+    display_name: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> bool:
-    """Upload a file as a source to the notebook."""
+    """Upload a file as a source to the notebook.
+
+    `display_name` overrides the source's name in NotebookLM (the
+    directory exporter uses this to preserve the flattened path —
+    `meetings-ietf125-minutes.md` rather than just `minutes.md`).
+    """
     location = "us"
     parent = f"projects/{project_id}/locations/{location}/notebooks/{notebook_id}"
     url = f"{BASE_URL}/{parent}/sources:uploadFile"
@@ -127,7 +133,8 @@ def upload_source(
         log(f"Error: File not found {file_path}", verbose, level=LogLevel.ERROR)
         return False
 
-    display_name = os.path.basename(file_path)
+    if display_name is None:
+        display_name = os.path.basename(file_path)
     try:
         with open(file_path, "rb") as file_fh:
             content = file_fh.read()

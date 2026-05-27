@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
 from typing import List, Optional, Dict
 
+from ..paths import raw_dir, raw_mail_archive_path
 from ..utils import LogLevel, Verbosity, get_mailing_list_name, log, get_cache_dir
 
 IMAP_SERVER = "imap.ietf.org"
@@ -243,10 +244,11 @@ def sync_mailing_list(
         # We only process the UIDs that were found in the search
         yearly_archives = process_cache(cache_dir, [u.decode() for u in uids], verbose)
         updated_files = []
+        # Year dumps live under raw/ — not indexed, kept for human grep
+        # and NotebookLM export only.
+        os.makedirs(raw_dir(dest_folder), exist_ok=True)
         for year, content in yearly_archives.items():
-            output_file = os.path.join(
-                dest_folder, f"{wg_name}-mail-archive-{year}.txt"
-            )
+            output_file = raw_mail_archive_path(dest_folder, year)
             # Only write and return if content changed
             if os.path.exists(output_file):
                 with open(output_file, "r", encoding="utf-8") as in_fh:

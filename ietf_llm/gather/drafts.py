@@ -2,6 +2,7 @@ import os
 import re
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
+from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, log, fetch_resource, get_group_type
 
 
@@ -78,9 +79,16 @@ def process_documents(
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[str]:
-    """Download all revisions of WG drafts and RFCs as text."""
+    """Download all revisions of WG drafts and RFCs as text.
+
+    Drafts and RFCs live under `drafts/` in the WG cache. The
+    `destination` argument is the WG's `files/` dir; we materialise
+    the `drafts/` subdir as needed.
+    """
     updated = []
     docs = get_wg_documents(wg_name, verbose)
+    out_dir = drafts_dir(destination)
+    os.makedirs(out_dir, exist_ok=True)
 
     # 1. Process Drafts
     drafts = docs["drafts"]
@@ -97,7 +105,7 @@ def process_documents(
             for rev in range(max_rev + 1):
                 rev_str = f"{rev:02d}"
                 filename = f"{name}-{rev_str}.txt"
-                filepath = os.path.join(destination, filename)
+                filepath = os.path.join(out_dir, filename)
 
                 if os.path.exists(filepath):
                     continue
@@ -119,7 +127,7 @@ def process_documents(
             r_name = str(rfc["name"])
             r_num = str(rfc["number"])
             filename = f"{r_name}.txt"
-            filepath = os.path.join(destination, filename)
+            filepath = os.path.join(out_dir, filename)
 
             if os.path.exists(filepath):
                 continue
