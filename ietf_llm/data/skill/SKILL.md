@@ -31,7 +31,10 @@ active drafts, top-5 open issues, top-5 recent threads, latest
 meeting + latest draft. Often enough on its own.
 
 **Topical / decision** (specific subject matter or chair rulings)
-→ skip `overview` and go straight to:
+→ usually go straight to the tool below. `overview` is also cheap
+(~30 lines) and can still help you pick a better search query when
+the topic is unfamiliar — the active drafts, chair list, and
+recent-threads section often surface terms worth searching for.
 
 - _"arguments for/against X"_, _"scope debate"_ →
   `read_digest(wg, kind="issues", label="...", include_bodies=True)`.
@@ -52,8 +55,7 @@ meeting + latest draft. Often enough on its own.
   `get_chunk_text` / `read_file_section` to read hits.
 
 If you're unsure which shape the question is, `overview` is the
-safe default — it's cheap and points you at the rest. But for
-specific-topic questions, calling `overview` first wastes a turn.
+safe default — it's cheap and points you at the rest.
 
 ## Catalogue queries: `read_digest(wg, kind, ...filters)`
 
@@ -110,7 +112,16 @@ Pivot to the source with:
 `search_corpus` also takes `since` / `until`, `file_pattern` (SQL
 LIKE on the file's relative path under the WG cache: `"threads/%"`,
 `"issues/%"`, `"meetings/%"`, `"drafts/%"`), `label` (substring
-against an issue's GitHub labels), and `state` (`"open"` / `"closed"`).
+against an issue's GitHub labels), `state` (`"open"` / `"closed"`),
+and `group_by="file"`.
+
+**`group_by="file"`** collapses the per-chunk hit list to one row
+per file with a hit count. Use this for **breadth** questions —
+*"which threads discuss the MLKEM controversy?"* returns four
+distinct threads instead of fifteen overlapping chunks, often
+saving four follow-up searches. Switch back to the default
+per-chunk view for **depth** questions — *"what did Alice say
+about Y?"* — where you want the actual quotes.
 
 **For "arguments for/against X" or "scope debate" questions, try
 `label=` first.** The WG's own labels (e.g. `"top-level"`,

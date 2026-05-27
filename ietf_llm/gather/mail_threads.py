@@ -387,10 +387,26 @@ def _render_thread(
     parts.append(f"# {_normalize_subject(thread.root.subject)}\n")
     parts.append(f"**Span:** {span_text}  ")
     parts.append(f"**Messages:** {len(thread.members)}  ")
-    participants = thread.participants
+    # Per-participant message counts + role tags. Lets a consumer see
+    # "plurality vs vocal minority" at a glance: who's posting how
+    # much, weighted by their structural role. Format: `Name (12)`,
+    # or `Name (Chair, 12)` when the registry knows a role.
+    msg_counts: Dict[str, int] = {}
+    for msg in thread.members:
+        msg_counts[msg.sender] = msg_counts.get(msg.sender, 0) + 1
+    # Sort by message count descending, then name for stability.
+    participants_detail: List[str] = []
+    for sender, count in sorted(
+        msg_counts.items(), key=lambda kv: (-kv[1], kv[0])
+    ):
+        tag = (registry.role_tag(sender) if registry else None)
+        if tag:
+            participants_detail.append(f"{sender} ({tag}, {count})")
+        else:
+            participants_detail.append(f"{sender} ({count})")
     parts.append(
-        f"**Participants ({len(participants)}):** "
-        + ", ".join(participants)
+        f"**Participants ({len(msg_counts)}):** "
+        + ", ".join(participants_detail)
     )
     parts.append("")
     parts.append("## Outline\n")

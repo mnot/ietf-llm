@@ -596,6 +596,65 @@ def test_tool_search_surfaces_archived_at_for_thread_hits(
     assert "url: https://mailarchive.ietf.org/arch/msg/wg/bbb/" in out
 
 
+def test_tool_search_group_by_file_collapses_overlapping_hits(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: a breadth query ("which threads discuss X")
+    # used to return 15 chunks across 4 threads — 4× redundancy and
+    # a lot of context burn. `group_by="file"` collapses to one row
+    # per file with a hit count, so the consumer sees the four
+    # distinct threads directly.
+    from ietf_llm import mcp_server
+
+    # Three threads, each contributing multiple chunks (multiple
+    # message sections). The thread file format produces a chunk per
+    # message header.
+    for slug, n_msgs in [
+        ("topic-a", 3),
+        ("topic-b", 4),
+        ("topic-c", 2),
+    ]:
+        body = "# Topic\n\n## Messages\n\n"
+        for i in range(1, n_msgs + 1):
+            body += (
+                f"### [{i}] 2025-01-{i:02d} 10:00 — Person{i}\n\n"
+                f"body of message {i}\n\n"
+            )
+        write_cache_file(isolated_home, "wg", f"threads/{slug}.md", body)
+    _build_with_stub("wg", isolated_home)
+
+    out = mcp_server.tool_search("wg", "anything", k=3, group_by="file")
+    # Top-level summary line names the rollup.
+    assert "collapsed" in out
+    # All three threads appear once (no duplicates).
+    assert out.count("threads/topic-a.md") == 1
+    assert out.count("threads/topic-b.md") == 1
+    assert out.count("threads/topic-c.md") == 1
+    # And hit counts reflect message-chunk counts per thread.
+    assert "hits=" in out
+
+
+def test_tool_search_group_by_file_caps_at_k(isolated_home: Path) -> None:
+    # Even when many files match, group_by="file" returns at most `k`
+    # rows (one per file). The internal fetch is wider so that the
+    # rollup has enough material to rank from, but the visible output
+    # respects k.
+    from ietf_llm import mcp_server
+
+    for i in range(8):
+        write_cache_file(
+            isolated_home, "wg",
+            f"threads/2025-01-{i + 1:02d}-topic-{i}.md",
+            f"# T{i}\n\n## Messages\n\n### [1] 2025-01-01 10:00 — P\n\nbody\n",
+        )
+    _build_with_stub("wg", isolated_home)
+
+    out = mcp_server.tool_search("wg", "x", k=3, group_by="file")
+    # Count file references — should be at most 3.
+    n_files = sum(1 for line in out.splitlines() if "file=threads/" in line)
+    assert n_files <= 3
+
+
 def test_tool_search_omits_url_for_unurled_chunks(isolated_home: Path) -> None:
     # Drafts / threads without Archived-At have no url — the `url:`
     # line must NOT appear.

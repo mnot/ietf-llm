@@ -299,7 +299,11 @@ def test_thread_file_decorates_chair_with_role(isolated_home: Path) -> None:
 
 
 def test_thread_file_no_role_for_unaffiliated(isolated_home: Path) -> None:
-    # A sender the registry has but who carries no role gets no tag.
+    # A sender the registry has but who carries no role gets no role
+    # tag in the message section header (the section header has the
+    # role-only form like `— Alice Wonderland (Chair)`). The
+    # Participants header line uses a different format (`(count)`)
+    # that we don't constrain here.
     from ietf_llm.people import Registry
 
     _write_eml(
@@ -314,8 +318,8 @@ def test_thread_file_no_role_for_unaffiliated(isolated_home: Path) -> None:
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
     assert "Alice Wonderland" in text
-    # No parenthesised role tag added.
-    assert "Alice Wonderland (" not in text
+    # No role tag on the message section header.
+    assert "— Alice Wonderland (" not in text
 
 
 # --- Archived-At extraction + rendering -----------------------------------
@@ -383,3 +387,63 @@ def test_thread_file_includes_archived_at_per_message(
         "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/wg/abc/"
         in text
     )
+
+
+# --- Per-participant counts + role flags in the thread header -------------
+
+
+def test_participants_line_shows_message_counts(
+    isolated_home: Path,
+) -> None:
+    # Consumer feedback: characterising "levels of support" needed a
+    # per-thread message-count view. The Participants header now shows
+    # `Name (count)` per author, sorted by count desc, so a reader can
+    # see plurality vs vocal minority at a glance.
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="Re: Topic", sender="Alice <a@x>",
+        date="Tue, 02 Jan 2025 10:00:00 +0000", message_id="<a2@x>",
+        in_reply_to="<a@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 3,
+        subject="Re: Topic", sender="Bob <b@x>",
+        date="Wed, 03 Jan 2025 10:00:00 +0000", message_id="<b@x>",
+        in_reply_to="<a@x>",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    # Alice posted twice, Bob once. Counts shown in parens; Alice
+    # first because higher count.
+    assert "Alice (2)" in text
+    assert "Bob (1)" in text
+    # And Alice comes BEFORE Bob in the line (most-active-first).
+    assert text.index("Alice (2)") < text.index("Bob (1)")
+
+
+def test_participants_line_includes_role_tag_when_known(
+    isolated_home: Path,
+) -> None:
+    # When the registry has a chair / editor / etc. tag for a
+    # participant, show it inline: `Name (Chair, 3)`. Lets a consuming
+    # LLM weight argumentative authority right in the thread header.
+    from ietf_llm.people import Registry
+
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Mark Nottingham <mnot@mnot.net>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+    )
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_datatracker_role("Mark Nottingham", "mnot@mnot.net", "Chair")
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
+    text = Path(paths[0]).read_text()
+    assert "Mark Nottingham (Chair, 1)" in text

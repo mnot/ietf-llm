@@ -352,7 +352,47 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
     return "".join(chunks)
 
 
-def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _render_file_grouped(hits: List[Any], limit: int) -> str:
+    """Collapse a flat hit list to one row per file.
+
+    Best (highest-scoring) chunk wins as the representative; the row
+    carries the hit count so the consumer sees which threads are
+    *consistently* relevant vs hit once on a stray keyword. Capped at
+    `limit` files so the output stays bounded.
+    """
+    by_file: Dict[str, Any] = {}
+    counts: Dict[str, int] = {}
+    for hit in hits:
+        counts[hit.file] = counts.get(hit.file, 0) + 1
+        prev = by_file.get(hit.file)
+        if prev is None or hit.score > prev.score:
+            by_file[hit.file] = hit
+    # Rank files by best-chunk score; tie-break on hit count.
+    ranked = sorted(
+        by_file.values(),
+        key=lambda h: (h.score, counts[h.file]),
+        reverse=True,
+    )[:limit]
+    out: List[str] = []
+    out.append(
+        f"_{len(ranked)} files (collapsed from {len(hits)} chunks). "
+        "Per-file rollup: best chunk shown; hit count = matching "
+        "chunks per file._"
+    )
+    out.append("")
+    for i, hit in enumerate(ranked, 1):
+        hit_count = counts[hit.file]
+        out.append(
+            f"[{i}] score={hit.score:.3f}  hits={hit_count}  file={hit.file}"
+        )
+        out.append(f"     best chunk {hit.chunk_idx}: {hit.title}")
+        if hit.url:
+            out.append(f"     url: {hit.url}")
+        out.append(f"     {hit.snippet}")
+    return "\n".join(out)
+
+
+def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
     wg: str,
     query: str,
     k: int = 10,
@@ -362,11 +402,18 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     label: Optional[str] = None,
     state: Optional[str] = None,
     sort: Optional[str] = None,
+    group_by: Optional[str] = None,
 ) -> str:
+    # When the consumer is asking a breadth question ("which threads
+    # discuss X?"), the default per-chunk hit list shows the same
+    # thread five times — wasting context. group_by="file" collapses
+    # to one row per file with hit count + best chunk; the per-chunk
+    # view stays the default for depth questions.
+    fetch_k = k if group_by != "file" else max(k * 4, 20)
     hits = search(
         wg,
         query,
-        k=k,
+        k=fetch_k,
         file_pattern=file_pattern,
         since=since,
         until=until,
@@ -380,6 +427,8 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
             wg,
             f"(no results — has `ietf-llm {wg} --embed` been run?)",
         )
+    if group_by == "file":
+        return _with_freshness(wg, _render_file_grouped(hits, k))
     lines = []
     # Result-set state summary. When every hit comes from a closed issue,
     # the answer the consumer cares about is "this debate is resolved"
@@ -901,6 +950,7 @@ def main() -> None:
         label: Optional[str] = None,
         state: Optional[str] = None,
         sort: Optional[str] = None,
+        group_by: Optional[str] = None,
     ) -> str:
         """Search an IETF Working Group's ietf-llm corpus semantically
         across mailing list threads, GitHub issues, drafts, RFCs,
@@ -930,6 +980,13 @@ def main() -> None:
         arc. Combine with `file_pattern="%-issue-…-N.md"` to scope to
         one issue, or `since`/`until` for a time window. NULL-dated
         chunks (drafts, transcripts) are excluded under `sort="date"`.
+
+        `group_by="file"` collapses the per-chunk hit list to one row
+        per file with a hit count, so a breadth question ("which
+        threads discuss X?") returns four distinct threads instead of
+        fifteen overlapping chunks. Use this when triaging WHERE a
+        topic lives; switch back to the default per-chunk view for
+        depth questions ("what did Alice say about Y?").
         Requires `ietf-llm <wg> --embed` to have been run.
 
         Optional facets:
@@ -943,6 +1000,7 @@ def main() -> None:
         return tool_search(
             wg, query, k=k, file_pattern=file_pattern,
             since=since, until=until, label=label, state=state, sort=sort,
+            group_by=group_by,
         )
 
     @server.tool()
