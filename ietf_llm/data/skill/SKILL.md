@@ -52,6 +52,12 @@ recent-threads section often surface terms worth searching for.
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
+- _"what's the IESG saying about draft X?"_, _"is there a DISCUSS
+  on this draft?"_, _"why hasn't draft X been published yet?"_ →
+  `read_file_section(wg, "ballots/<doc-name>.md", start_line=1)` for
+  the full ballot, or `read_digest(wg, "timeline",
+  event_kind="ballot")` for chronology of position changes. A
+  DISCUSS holds publication; report it as such.
 - _"did anyone refute Alice's claim about X?"_, _"what were the
   responses to message [N]?"_ → `find_replies(wg, file, chunk_idx)`.
   Returns every transitive reply to one specific message, full
@@ -87,12 +93,18 @@ ISO (`"2026-05-01"`).
 `event_kind` ∈ {`draft-published`, `issue-opened`, `issue-closed`,
 `meeting`, `poll`, `wglc`, `adoption-call`, `charter-approved`,
 `chair-appointed`, `group-state`, `doc-adopted`, `doc-iesg`,
-`doc-rfc`, `doc-wglc`}. The Datatracker-sourced group (charter,
+`doc-rfc`, `doc-wglc`, `ballot`}. The Datatracker-sourced group (charter,
 chair, doc-*) spans the WG's full history regardless of the
 `--months` window; charter approvals and chair appointments are
 always included. `poll` events point at cached
 `<wg>-polls-<meeting>-<datetime>.md` files — session polls aren't
 formal consensus but signal where a session was leaning.
+`ballot` events are IESG position changes (DISCUSS / Yes / No
+Objection / Abstain / Recuse) for drafts active in the window;
+each event links to `ballots/<draft-name>.md`, which has the full
+current ballot (latest position per AD) with DISCUSS text inline.
+A standing DISCUSS holds publication; report it as such rather
+than treating the draft as "approved" because most ADs cleared.
 `label` / `author` / `role`
 are substring matches.
 
@@ -163,6 +175,12 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
   records from Datatracker. Read in full when answering "where was
   the room leaning on X?" — polls aren't consensus but they're
   signal.
+- **`ballots/<draft-name>.md`** — IESG ballot for a draft, with the
+  latest position per Area Director (DISCUSS / Yes / No Objection /
+  Abstain / Recuse) and full DISCUSS text inline. Present only for
+  drafts with ballot activity in the `--months` window. Read in full
+  when answering "what's the IESG saying about draft X" — these are
+  load-bearing for "is this draft moving / blocked / done."
 - **`digests/<kind>.md`** — the catalogue digests (`index`,
   `issues`, `threads`, `people`, `timeline`). Read via `read_digest`,
   not `get_chunk_text`.

@@ -44,6 +44,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
     from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
+        ballots,
         datatracker_history,
         github_users,
     )
@@ -58,6 +59,14 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     # monkeypatch this same attribute to supply canned responses.
     monkeypatch.setattr(
         datatracker_history, "_get_json",
+        lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
+    # Same treatment for the ballot fetcher — the timeline build calls
+    # into it now, and we don't want any test that builds a timeline
+    # to hit datatracker.ietf.org. Tests exercising ballot parsing
+    # monkeypatch this attribute to supply canned ballot responses.
+    monkeypatch.setattr(
+        ballots, "_get_json",
         lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
     )
     # Block GitHub user lookups too — tests that want to exercise the

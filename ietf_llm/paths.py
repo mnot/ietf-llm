@@ -30,6 +30,8 @@ WG's cache directory.
         <N>.md                     (was <wg>-issue-<repo-slug>-<N>.md)
     github/
       <repo-slug>.json             (raw archive)
+    ballots/
+      <draft-name>.md              (IESG ballot positions per draft)
     raw/                           (NOT indexed; grep / NotebookLM only)
       mail-archive-<YYYY>.txt      (was <wg>-mail-archive-<YYYY>.txt)
       github-<repo-slug>.txt       (was <wg>-github-<repo-slug>.txt)
@@ -56,6 +58,7 @@ DIR_THREADS = "threads"
 DIR_ISSUES = "issues"
 DIR_GITHUB = "github"
 DIR_RAW = "raw"
+DIR_BALLOTS = "ballots"
 
 # Per-meeting subdirs.
 SUBDIR_SLIDES = "slides"
@@ -150,6 +153,16 @@ def polls_dir(cache_dir: str, code: str) -> str:
 
 def poll_path(cache_dir: str, code: str, datetime_token: str) -> str:
     return os.path.join(polls_dir(cache_dir, code), f"{datetime_token}.md")
+
+
+def ballots_dir(cache_dir: str) -> str:
+    return os.path.join(cache_dir, DIR_BALLOTS)
+
+
+def ballot_path(cache_dir: str, doc_name: str) -> str:
+    """Per-draft IESG ballot file. `doc_name` is the canonical draft
+    basename without revision suffix (e.g. `draft-ietf-tls-rfc8446bis`)."""
+    return os.path.join(cache_dir, DIR_BALLOTS, f"{doc_name}.md")
 
 
 def github_dir(cache_dir: str) -> str:
