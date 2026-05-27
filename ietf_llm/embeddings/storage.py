@@ -198,6 +198,49 @@ def find_chunks_by_url(
         conn.close()
 
 
+def get_messages(
+    wg: str, items: Iterable[Tuple[str, int]]
+) -> Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]]:
+    """Batch fetch (title, text, chunk_date, url) for a list of
+    (file, chunk_idx) pairs.
+
+    Returns a dict keyed by (file, chunk_idx); missing rows are simply
+    absent from the result. Used by `tool_read_topic` to render a
+    chronological topic timeline without one SQL round-trip per message.
+    """
+    keys = list(items)
+    if not keys:
+        return {}
+    if not os.path.exists(_db_path(wg)):
+        return {}
+    conn = sqlite3.connect(_db_path(wg))
+    try:
+        # SQLite has no native (a,b) IN ((...),(...)) shortcut for many
+        # pairs, but the chunks table is small enough that a single
+        # SELECT with a per-pair WHERE OR chain is fine — and we cap
+        # the caller (k≤40-ish) so the IN-list never explodes.
+        clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(keys))
+        args: List[object] = []
+        for file, idx in keys:
+            args.extend([file, idx])
+        cur = conn.execute(
+            "SELECT file, chunk_idx, title, text, chunk_date, url "
+            f"FROM chunks WHERE {clauses}",
+            args,
+        )
+        out: Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]] = {}
+        for row in cur.fetchall():
+            out[(str(row[0]), int(row[1]))] = (
+                str(row[2]),
+                str(row[3]),
+                str(row[4]) if row[4] is not None else None,
+                str(row[5]) if row[5] is not None else None,
+            )
+        return out
+    finally:
+        conn.close()
+
+
 def get_chunk(
     wg: str, file: str, chunk_idx: int
 ) -> Optional[Tuple[str, str, Optional[int], Optional[int]]]:

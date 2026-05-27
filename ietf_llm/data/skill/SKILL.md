@@ -53,6 +53,12 @@ recent-threads section often surface terms worth searching for.
   _"what happened in May?"_ → `read_digest(wg, kind=..., filters)`.
 - _"what was said about X?"_ → `search_corpus(wg, "X")` plus
   `get_chunk_text` / `read_file_section` to read hits.
+- _"how did the debate on X evolve?"_, _"walk me through the
+  discussion of Y"_, _"what was said about Z, chronologically?"_
+  → `read_topic(wg, "X")`. Returns full messages (not snippets) in
+  date order across threads and issues. Add `include_replies=True`
+  when you want sub-thread descendants pulled in even if they don't
+  themselves match the query.
 
 If you're unsure which shape the question is, `overview` is the
 safe default — it's cheap and points you at the rest.
@@ -171,12 +177,31 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
 
 ## Reading a debate in chronological order
 
-**For "how did this evolve / arc of the debate" questions, reach
-for `sort="date"` first** — not as a niche option. Relevance ranking
-mixes early objections with late settled positions, which hides the
-*direction* of the debate; sorted-by-date reads top-to-bottom as a
-narrative. Scope to one issue with `file_pattern="issues/…/N.md"`
-or to a time window with `since` / `until`.
+**For "how did this evolve / arc of the debate across files" questions,
+reach for `read_topic` first** — it's purpose-built for the narrative
+read. Semantic match anchors which messages are "about" the topic,
+then the merged set is returned in date order with **full message
+bodies** (not snippets). The unit is a message, not a chunk: each
+matched thread post or issue comment renders with author, date,
+role, and archived-at URL — "who said what when" with no follow-up
+`get_chunk_text` calls. Windowed draft / transcript chunks are
+excluded (they aren't messages). Capped at 60 messages total.
+
+`include_replies=True` walks the reply graph in each matched thread
+file and pulls every transitive reply descendant of a matched
+message — even if those replies don't themselves match the query.
+Faithful for sub-threads where the parent matched and the children
+pivot to a related point; can drag in tangents. Off by default.
+Issue files are linear (no reply-to nesting) so this is a no-op
+for them.
+
+`search_corpus(sort="date")` is the lower-level cousin: same
+chronological re-ordering, but the unit is a chunk (snippet, not
+full text), and there's no reply-expansion. Useful when you want
+relevance hits in date order but don't need the full message
+bodies — e.g. scanning a single issue with
+`file_pattern="issues/…/N.md"` or a time window with `since` /
+`until`.
 
 For "where does the WG stand right now on X" questions, start with
 the chair's most recent statement before reconstructing the arc.

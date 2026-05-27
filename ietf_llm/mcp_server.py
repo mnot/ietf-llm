@@ -31,7 +31,7 @@ import os
 import re
 import sqlite3
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .digest.overview import _label_frequencies, build_overview
 from .digest.query import query_digest
@@ -40,6 +40,7 @@ from .embeddings import (
     chunk_counts,
     find_chunks_by_url,
     get_chunk,
+    get_messages,
     search,
 )
 from .freshness import staleness_warning
@@ -390,6 +391,254 @@ def _render_file_grouped(hits: List[Any], limit: int) -> str:
             out.append(f"     url: {hit.url}")
         out.append(f"     {hit.snippet}")
     return "\n".join(out)
+
+
+# --- read_topic --------------------------------------------------------------
+#
+# Cross-file chronological view for one topic. The mailing-list / GitHub
+# corpus fragments a debate across many thread + issue files (subject lines
+# fork, parallel issues open, replies branch). `search_corpus` is great
+# for "which chunks match X" but reading 15 overlapping chunks doesn't
+# reconstruct the *arc* of the debate. read_topic does:
+#
+#   1. semantic match against the query (widened fetch_k)
+#   2. restrict to thread / issue chunks with a chunk_date (drafts and
+#      transcripts have no place in a debate timeline)
+#   3. top-k by relevance
+#   4. optionally walk reply descendants in the same thread file
+#   5. fetch full chunk text (NOT a snippet — the unit is a message)
+#   6. sort merged set by chunk_date and render
+#
+# The output unit is a message, not a chunk: full body, attribution
+# header, archived-at URL. A reading LLM gets "who said what when" with
+# no follow-up tool calls.
+
+# Matches the thread message section header so we can build the reply
+# graph for include_replies. Mirrors `_THREAD_MSG_RE` in chunking.py but
+# captures the parent index instead of stripping it.
+_THREAD_REPLY_RE = re.compile(
+    r"^### \[(\d+)\] \S+(?:\s+\S+)? — .+? \(reply to \[(\d+)\]\)$",
+    re.MULTILINE,
+)
+# Cap on rendered messages so a runaway include_replies expansion can't
+# blow the context window. Sized at 3× the default k=20, so a typical
+# call stays well under and an unusually deep arc still fits.
+_READ_TOPIC_MAX_MESSAGES = 60
+# Per-message body cap. Chunks are themselves capped at MAX_CHUNK_CHARS
+# (8 KB) but stitching 60 of those is ~480 KB; truncate long messages
+# so total output stays bounded. 4 KB is plenty for a typical post.
+_READ_TOPIC_MAX_BODY_CHARS = 4000
+
+
+def _parse_reply_graph(text: str) -> Dict[int, List[int]]:
+    """Walk a thread file's text once and return {parent_idx: [child_idx, ...]}.
+
+    Message section headers are `### [N] DATE — Sender (reply to [P])`.
+    Message number N corresponds to chunk_idx N in the indexed file
+    (chunk 0 is the thread header). Children are listed in document
+    order (= chronological order, since the file is written that way).
+    """
+    graph: Dict[int, List[int]] = {}
+    for match in _THREAD_REPLY_RE.finditer(text):
+        child = int(match.group(1))
+        parent = int(match.group(2))
+        graph.setdefault(parent, []).append(child)
+    return graph
+
+
+def _descendants(graph: Dict[int, List[int]], root: int) -> List[int]:
+    """All transitive children of `root` in the reply graph, BFS order."""
+    out: List[int] = []
+    queue = list(graph.get(root, []))
+    seen = set(queue)
+    while queue:
+        node = queue.pop(0)
+        out.append(node)
+        for child in graph.get(node, []):
+            if child not in seen:
+                seen.add(child)
+                queue.append(child)
+    return out
+
+
+def _read_thread_file_text(wg: str, file: str) -> Optional[str]:
+    """Read a thread file's raw text. Returns None if the file isn't in
+    the WG cache (so include_replies degrades gracefully — we just skip
+    the expansion rather than erroring the whole call)."""
+    path = _safe_path(wg, file)
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+    wg: str,
+    query: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    file_pattern: Optional[str] = None,
+    k: int = 20,
+    include_replies: bool = False,
+) -> str:
+    # Widen the fetch so we have enough material to filter to dated
+    # thread/issue chunks and still hit k. 3× covers most reasonable
+    # WGs; the floor of 60 stops k=5 calls from over-narrowing.
+    fetch_k = max(k * 3, 60)
+    hits = search(
+        wg, query, k=fetch_k,
+        file_pattern=file_pattern,
+        since=since, until=until,
+        # sort="date" both excludes undated chunks (drafts, transcripts,
+        # thread header chunks) and orders the survivors chronologically.
+        # We re-sort after merging replies anyway, but the undated-filter
+        # is load-bearing — it's the only way to drop the thread header
+        # chunk (chunk_idx=0) from the relevance shortlist.
+        sort="date",
+        verbose=Verbosity.QUIET,
+    )
+    if not hits:
+        return _with_freshness(
+            wg,
+            f"(no results for {query!r} — has `ietf-llm {wg} --embed` "
+            "been run?)",
+        )
+
+    # Keep only chunks from thread/issue files that have a date — those
+    # are the only chunks that represent a "message" in a debate.
+    # Windowed draft / transcript chunks may match a query but they
+    # aren't messages, so the chronological view skips them.
+    matched: List[Any] = []
+    for hit in hits:
+        if not hit.file.lower().startswith(("threads/", "issues/")):
+            continue
+        matched.append(hit)
+        if len(matched) >= k:
+            break
+    if not matched:
+        return _with_freshness(
+            wg,
+            f"(no thread / issue messages match {query!r}. "
+            "Try `search_corpus` to see whether the topic lives in "
+            "drafts or transcripts instead.)",
+        )
+
+    # Build the merged (file, chunk_idx) set: matched chunks plus, if
+    # requested, every reply descendant in the same thread file. Issue
+    # files are linear (no reply-to nesting) so include_replies is a
+    # no-op for them — documented in the tool's docstring.
+    matched_keys: set[Tuple[str, int]] = {(h.file, h.chunk_idx) for h in matched}
+    reply_keys: set[Tuple[str, int]] = set()
+    if include_replies:
+        # One graph per thread file, parsed once.
+        graphs: Dict[str, Dict[int, List[int]]] = {}
+        for hit in matched:
+            if not hit.file.lower().startswith("threads/"):
+                continue
+            if hit.file not in graphs:
+                text = _read_thread_file_text(wg, hit.file)
+                graphs[hit.file] = _parse_reply_graph(text) if text else {}
+            for child in _descendants(graphs[hit.file], hit.chunk_idx):
+                key = (hit.file, child)
+                if key not in matched_keys:
+                    reply_keys.add(key)
+
+    all_keys = matched_keys | reply_keys
+    # Cap total messages — a deeply-replied matched message can pull in
+    # dozens of descendants. Render the most-recent N if we exceed the
+    # cap (matched messages are guaranteed in; replies are dropped
+    # oldest-first since the chair's arc-closing post is typically late).
+    detail = get_messages(wg, all_keys)
+    rows: List[Tuple[str, str, int, str, str, Optional[str], bool]] = []
+    # Tuple: (date_iso, file, chunk_idx, title, text, url, is_matched)
+    for key, vals in detail.items():
+        title, text, chunk_date, url = vals
+        if chunk_date is None:
+            # Defensive: matched set already filtered for chunk_date in
+            # search results, but include_replies pulls by chunk_idx so
+            # a parent header (chunk 0) could sneak in. Skip undated.
+            continue
+        rows.append((
+            chunk_date, key[0], key[1], title, text, url,
+            key in matched_keys,
+        ))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+
+    if len(rows) > _READ_TOPIC_MAX_MESSAGES:
+        # Drop replies (not matched) from the OLD end first, preserving
+        # all matched messages and the most-recent replies — those
+        # carry the resolution and the arc's conclusion.
+        keep_matched = [r for r in rows if r[6]]
+        replies = [r for r in rows if not r[6]]
+        budget = _READ_TOPIC_MAX_MESSAGES - len(keep_matched)
+        if budget < 0:
+            # k > _READ_TOPIC_MAX_MESSAGES: keep the most recent matched
+            # set rather than truncating arbitrarily.
+            rows = keep_matched[-_READ_TOPIC_MAX_MESSAGES:]
+            truncated_note = (
+                f"_(capped at {_READ_TOPIC_MAX_MESSAGES} most-recent "
+                f"matched messages; full set had {len(keep_matched)}.)_"
+            )
+        else:
+            keep_replies = replies[-budget:] if budget > 0 else []
+            rows = sorted(
+                keep_matched + keep_replies,
+                key=lambda r: (r[0], r[1], r[2]),
+            )
+            truncated_note = (
+                f"_(capped at {_READ_TOPIC_MAX_MESSAGES} messages; "
+                f"dropped {len(replies) - len(keep_replies)} older "
+                "reply-only message(s) to fit.)_"
+            )
+    else:
+        truncated_note = ""
+
+    n_matched = sum(1 for r in rows if r[6])
+    n_replies = len(rows) - n_matched
+    files = sorted({r[1] for r in rows})
+    out: List[str] = []
+    out.append(f"# Topic timeline: {query!r} in {wg}\n")
+    summary = (
+        f"_{len(rows)} message(s) across {len(files)} file(s), "
+        f"oldest first. {n_matched} matched the query"
+    )
+    if include_replies:
+        summary += f"; {n_replies} pulled in as reply descendants"
+    summary += "._"
+    out.append(summary)
+    if truncated_note:
+        out.append(truncated_note)
+    out.append("")
+
+    for row in rows:
+        chunk_date, file, chunk_idx, title, text, url, is_matched = row
+        tag = "matched" if is_matched else "reply"
+        out.append("---")
+        out.append("")
+        out.append(f"## [{tag}] {title}")
+        meta_bits = [f"_file:_ `{file}`", f"_chunk:_ {chunk_idx}"]
+        if url:
+            meta_bits.append(f"_url:_ {url}")
+        out.append("  ·  ".join(meta_bits))
+        out.append("")
+        body = text.strip()
+        if len(body) > _READ_TOPIC_MAX_BODY_CHARS:
+            body = body[: _READ_TOPIC_MAX_BODY_CHARS - 1] + "…"
+            out.append(body)
+            out.append("")
+            out.append(
+                f"_[message truncated at {_READ_TOPIC_MAX_BODY_CHARS} "
+                f"chars; full body: `get_chunk_text({wg!r}, {file!r}, "
+                f"{chunk_idx})`]_"
+            )
+        else:
+            out.append(body)
+        out.append("")
+
+    return _with_freshness(wg, "\n".join(out))
 
 
 def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
@@ -1001,6 +1250,63 @@ def main() -> None:
             wg, query, k=k, file_pattern=file_pattern,
             since=since, until=until, label=label, state=state, sort=sort,
             group_by=group_by,
+        )
+
+    @server.tool()
+    def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        wg: str,
+        query: str,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        file_pattern: Optional[str] = None,
+        k: int = 20,
+        include_replies: bool = False,
+    ) -> str:
+        """Read an IETF Working Group debate as a chronological narrative
+        across mailing list threads and GitHub issues. Returns the full
+        text of every matched message — author, date, role, archived-at
+        URL, body — in date order, oldest first.
+
+        Use this when the user wants the **arc** of a debate, not the
+        ranked hits. The unit is a message, not a chunk: each matched
+        thread message or issue comment appears in full, so you get
+        "who said what when" without N follow-up `get_chunk_text` calls.
+
+        Best fit for "how did the debate on X evolve?", "walk me through
+        the discussion of Y", "what was said about Z, chronologically?"
+        — anything where the *direction* of the conversation matters.
+        For "which threads discuss X?" use `search_corpus(group_by="file")`;
+        for "what did the chairs decide?" use
+        `search_corpus(state="closed")`.
+
+        Mailing-list threads and GitHub issues only — windowed draft /
+        transcript chunks are excluded since they aren't "messages" in
+        a debate. The output is capped at 60 messages total; if the
+        cap fires, the response says so.
+
+        `include_replies=True` walks the reply graph in each matched
+        thread file and pulls every transitive reply descendant of a
+        matched message — even if those replies don't themselves match
+        the query. Faithfully reconstructs sub-threads, but can
+        drag in tangents; off by default. GitHub issue files are
+        linear (no reply-to nesting), so `include_replies` is a no-op
+        there.
+
+        Filters compose with the semantic match:
+          - `since` / `until` (ISO dates): time-window the candidates
+          - `file_pattern` (SQL LIKE on the relative path): scope to
+            one issue (`issues/org-repo/155.md`) or one thread cluster
+            (`threads/2026-04-%mlkem%`)
+          - `k`: how many top-relevance messages to anchor on (default
+            20; replies expand this further). The fetch is widened
+            internally so the candidate pool is roomy.
+
+        Requires `ietf-llm <wg> --embed` to have been run.
+        """
+        return tool_read_topic(
+            wg, query,
+            since=since, until=until, file_pattern=file_pattern,
+            k=k, include_replies=include_replies,
         )
 
     @server.tool()
