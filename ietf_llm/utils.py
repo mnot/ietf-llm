@@ -12,6 +12,25 @@ DEFAULT_HEADERS = {"User-Agent": "ietf-llm/0.1.0"}
 DEFAULT_MONTHS = 12
 
 
+def is_synthetic_wg(name: str) -> bool:
+    """True for synthetic / non-WG corpora (the `x-` prefix convention).
+
+    Some collections of drafts and mailing lists predate (or sit
+    parallel to) any formal WG, but it's still useful to gather them
+    into the same corpus shape so the MCP server and search tools
+    can answer questions about them. The `x-` prefix opts out of
+    every Datatracker / WG-page lookup (no charter, no leadership,
+    no auto-discovered drafts or mailing list, no transcripts) while
+    leaving everything else — mail thread reconstruction, GitHub
+    issue gathering, the explicit `--draft` / `--mailing-list`
+    additions, indexing — working as normal.
+
+    Naming convention chosen for brevity and zero risk of colliding
+    with a real IETF WG shortname (none start with `x-`).
+    """
+    return name.startswith("x-")
+
+
 def get_config_dir() -> str:
     """Return the configuration directory, creating it if necessary."""
     config_dir = os.path.expanduser("~/.config/ietf-llm")

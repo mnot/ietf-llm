@@ -461,12 +461,18 @@ def _looks_like_email(name: str) -> bool:
 # --- Builders --------------------------------------------------------------
 
 
-def build_registry(wg: str, verbose: Verbosity = Verbosity.STATUS) -> Registry:
+def build_registry(
+    wg: str,
+    verbose: Verbosity = Verbosity.STATUS,
+    with_datatracker_roles: bool = True,
+) -> Registry:
     """Build a Registry by scanning IMAP, GitHub, Datatracker, and drafts.
 
     The Datatracker step is best-effort: if the network call fails or
     the WG isn't recognised, roles are silently omitted and the rest
-    of the registry stands.
+    of the registry stands. Pass `with_datatracker_roles=False` to
+    skip it entirely (used for synthetic / `x-` corpora that have no
+    WG record at Datatracker).
     """
     registry = Registry()
     _ingest_mail(wg, registry, verbose)
@@ -476,7 +482,8 @@ def build_registry(wg: str, verbose: Verbosity = Verbosity.STATUS) -> Registry:
     # find them) via the GitHub users API. Best-effort; no-op if there
     # are no unresolved logins or the API isn't reachable.
     _resolve_github_user_names(registry, verbose)
-    _ingest_datatracker_roles(wg, registry, verbose)
+    if with_datatracker_roles:
+        _ingest_datatracker_roles(wg, registry, verbose)
     _ingest_draft_authors(wg, registry, verbose)
     log(
         f"Identity registry: {len(registry.persons)} distinct actors "

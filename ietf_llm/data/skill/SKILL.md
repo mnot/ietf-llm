@@ -16,6 +16,14 @@ IRTF Research Groups work the same way — pass the RG's shortname
 (`cfrg`, `hrpc`, `pearg`, …) anywhere `<wg>` appears below. The
 tools don't distinguish, and you don't need to either.
 
+Synthetic / pre-WG corpora use the `x-` prefix (`x-webbotauth`,
+`x-aipref-precursor`, …). These are collections of drafts and
+mailing lists that pre-date or sit parallel to a formal WG —
+useful when the work hasn't yet been chartered. They behave like
+any other shortname in every MCP tool; the only difference is they
+have no charter, no formal leadership, no auto-discovered draft
+list, and no Datatracker timeline events.
+
 ## First call: pick by question shape
 
 **Orienting / structural** ("tell me about `<wg>`", "what's this WG

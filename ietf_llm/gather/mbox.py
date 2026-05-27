@@ -293,17 +293,20 @@ def sync_mailing_list(
     dest_folder: str,
     months: Optional[int] = None,
     extra_lists: Optional[List[str]] = None,
+    auto_discover: bool = True,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[str]:
     """Sync the WG's mailing list(s) via IMAP and cache messages.
 
-    Always includes the auto-discovered list (looked up from
+    By default, includes the auto-discovered list (looked up from
     Datatracker by WG affinity). `extra_lists` adds further lists
     the WG follows but Datatracker doesn't attribute to it — passed
-    in via `--mailing-list` on the CLI. Each list keeps its own
-    per-list IMAP cache (`imap-cache/<wg>/<list>/`), and the
-    thread-reconstruction walker already picks up every `.eml`
-    under `imap-cache/<wg>/` regardless of subdir.
+    in via `--mailing-list` on the CLI. Set `auto_discover=False` to
+    skip the Datatracker lookup entirely (used for synthetic / `x-`
+    corpora, which have no WG record to look up against). Each list
+    keeps its own per-list IMAP cache (`imap-cache/<wg>/<list>/`),
+    and the thread-reconstruction walker already picks up every
+    `.eml` under `imap-cache/<wg>/` regardless of subdir.
 
     Returns the list of `raw/mail-archive-<year>.txt` files written.
     Year dumps are merged across all lists — they're for human grep
@@ -311,10 +314,11 @@ def sync_mailing_list(
     """
     list_names: List[str] = []
     seen: set[str] = set()
-    auto = get_mailing_list_name(wg_name)
-    if auto:
-        list_names.append(auto)
-        seen.add(auto)
+    if auto_discover:
+        auto = get_mailing_list_name(wg_name)
+        if auto:
+            list_names.append(auto)
+            seen.add(auto)
     for raw in extra_lists or []:
         norm = normalize_list_name(raw)
         if norm and norm not in seen:

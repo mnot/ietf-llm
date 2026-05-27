@@ -44,6 +44,7 @@ from .utils import (
     get_cache_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
+    is_synthetic_wg,
     log,
 )
 
@@ -350,42 +351,60 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             shutil.rmtree(wg_cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
+    # `x-`-prefixed shortnames are synthetic / non-WG corpora — drafts
+    # and mailing lists that predate (or sit parallel to) any formal
+    # WG. Every Datatracker / WG-page lookup is skipped; only the
+    # explicit --draft / --mailing-list / --github extras drive
+    # content.
+    synth = is_synthetic_wg(args.wg)
+    if synth and not (args.draft or args.mailing_list or args.github):
+        log(
+            f"{args.wg}: synthetic (`x-`) corpus with no --draft / "
+            "--mailing-list / --github configured. Gather will produce "
+            "no content. Add sources and re-run.",
+            verbosity, level=LogLevel.STATUS,
+        )
+
     if verbosity != Verbosity.QUIET:
-        print(f"Processing WG: {args.wg}", file=sys.stderr)
+        label = "Processing synthetic corpus" if synth else "Processing WG"
+        print(f"{label}: {args.wg}", file=sys.stderr)
         print(f"Cache: {cache_dir}", file=sys.stderr)
         if args.clear_cache:
             print("Clear cache: re-downloading all materials.", file=sys.stderr)
         print("-" * 40, file=sys.stderr)
 
-    # Charter
-    charter_file = paths.charter_path(cache_dir)
-    os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
-    process_charter(args.wg, charter_file, verbose=verbosity)
+    # Charter / meetings / WG document list / transcripts — all
+    # Datatracker-sourced. Skipped entirely for synthetic corpora;
+    # there's no charter to fetch, no WG meetings, no auto-
+    # discoverable document set.
+    if not synth:
+        charter_file = paths.charter_path(cache_dir)
+        os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
+        process_charter(args.wg, charter_file, verbose=verbosity)
+        process_meetings(args.wg, cache_dir, verbose=verbosity, months=args.months)
 
-    # Meetings
-    process_meetings(args.wg, cache_dir, verbose=verbosity, months=args.months)
-
-    # Mailing list (year-files for grep / NotebookLM, plus per-thread
-    # reconstructions for legible reading by LLM consumers). Extra
-    # lists from --mailing-list are layered in on top of the
-    # auto-discovered one.
+    # Mailing list. Auto-discovery (Datatracker → list name) skipped
+    # for synthetic corpora; --mailing-list extras still work.
     sync_mailing_list(
         args.wg, cache_dir,
         months=args.months,
         extra_lists=args.mailing_list,
+        auto_discover=not synth,
         verbose=verbosity,
     )
 
-    # Transcripts (download, then prepend a meeting-context header to
-    # each so chunks deep in a 200KB transcript carry attribution).
-    process_transcripts(args.wg, cache_dir, verbose=verbosity, months=args.months)
-    enrich_transcripts(cache_dir, verbose=verbosity)
+    if not synth:
+        # Transcripts: download, then prepend a meeting-context header
+        # to each so chunks deep in a 200KB transcript carry attribution.
+        process_transcripts(args.wg, cache_dir, verbose=verbosity, months=args.months)
+        enrich_transcripts(cache_dir, verbose=verbosity)
 
-    # Documents (drafts & RFCs)
-    process_documents(args.wg, cache_dir, verbose=verbosity)
+        # Documents (drafts & RFCs) — only auto-discoverable for real WGs.
+        process_documents(args.wg, cache_dir, verbose=verbosity)
     # Extra drafts added via --draft. These don't appear on the WG's
     # documents page (often individual / author submissions the WG is
-    # tracking but doesn't own), so they need explicit naming.
+    # tracking but doesn't own), so they need explicit naming. For
+    # synthetic corpora, this is the ONLY draft source.
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
 
@@ -417,7 +436,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Identity registry — consolidates mail/GitHub/Datatracker/draft
     # surface forms into canonical actors. Built BEFORE the github .txt
     # files are rendered so author lines come out canonical.
-    registry = build_registry(args.wg, verbose=verbosity)
+    registry = build_registry(
+        args.wg,
+        verbose=verbosity,
+        with_datatracker_roles=not synth,
+    )
 
     for gh_json, gh_txt in gh_pending:
         process_github_issues(

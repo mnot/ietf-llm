@@ -429,28 +429,32 @@ def build_events(
 
     # Datatracker is the authoritative source for governance and
     # document-lifecycle events. If those calls succeed we prefer them
-    # over the mail-subject heuristic for WGLC / adoption.
-    dt_events: List[Event] = []
-    dt_events.extend(fetch_group_events(wg, months, verbose))
-    dt_events.extend(fetch_role_history(wg, verbose))
-    dt_events.extend(fetch_doc_events(wg, months, verbose))
-    # IESG ballot positions for drafts active in the window. Each
-    # in-window position change becomes an event linked to the
-    # per-draft ballot file — read_digest(event_kind="ballot") makes
-    # the IESG activity directly addressable.
+    # over the mail-subject heuristic for WGLC / adoption. Skipped
+    # entirely for synthetic / `x-` corpora — there's no WG record
+    # to query.
     # pylint: disable=import-outside-toplevel
-    from ..gather.ballots import (
-        _cutoff as _ballot_cutoff,
-        ballot_events,
-        fetch_ballots,
-        write_ballot_files,
-    )
-    ballots = fetch_ballots(wg, months, verbose=verbose)
-    write_ballot_files(cache_dir, ballots, verbose=verbose)
-    dt_events.extend(
-        ballot_events(ballots, cache_dir, _ballot_cutoff(months))
-    )
-    events.extend(dt_events)
+    from ..utils import is_synthetic_wg
+    if not is_synthetic_wg(wg):
+        dt_events: List[Event] = []
+        dt_events.extend(fetch_group_events(wg, months, verbose))
+        dt_events.extend(fetch_role_history(wg, verbose))
+        dt_events.extend(fetch_doc_events(wg, months, verbose))
+        # IESG ballot positions for drafts active in the window. Each
+        # in-window position change becomes an event linked to the
+        # per-draft ballot file — read_digest(event_kind="ballot") makes
+        # the IESG activity directly addressable.
+        from ..gather.ballots import (
+            _cutoff as _ballot_cutoff,
+            ballot_events,
+            fetch_ballots,
+            write_ballot_files,
+        )
+        ballots = fetch_ballots(wg, months, verbose=verbose)
+        write_ballot_files(cache_dir, ballots, verbose=verbose)
+        dt_events.extend(
+            ballot_events(ballots, cache_dir, _ballot_cutoff(months))
+        )
+        events.extend(dt_events)
 
     # Heuristic WGLC / adoption from mailing list subjects. Datatracker
     # ought to cover these authoritatively, but we keep the fallback for
