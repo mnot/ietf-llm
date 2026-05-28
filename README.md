@@ -319,15 +319,6 @@ ietf-llm [OPTIONS] <wg_shortname>
 - `--mailing-list LIST` — extra IETF-hosted mailing list to sync,
   beyond the WG's auto-discovered one (repeatable, persisted).
   Accepts `foo` or `foo@ietf.org`.
-
-> **Synthetic / pre-WG corpora.** Prefix the shortname with `x-`
-> (e.g. `ietf-llm x-webbotauth --draft draft-... --mailing-list
-> foo@ietf.org`) to gather a collection of drafts and mailing lists
-> that don't have a formal WG yet. The `x-` prefix opts out of every
-> Datatracker / WG-page lookup (no charter, no leadership, no
-> auto-discovered drafts, no Datatracker timeline / ballot events)
-> while leaving the rest of the pipeline working as normal —
-> `--draft` and `--mailing-list` become the only content sources.
 - `--github-label LABEL` / `--exclude-github-label LABEL` — filter
   issues by label; repeatable.
 - `--months N` — months of mailing list / meeting history (default 12).
@@ -340,9 +331,19 @@ ietf-llm [OPTIONS] <wg_shortname>
   of incremental update.
 - `--clear-cache` — wipe the cache for this WG and re-download.
 - `--clear-config` — clear persisted config for this WG.
+- `--list` — list cached WGs (with last-gathered date) and exit.
 - `--quiet` / `--verbose`.
 
 Per-WG settings are persisted at `~/.config/ietf-llm/<wg>/gather.json`.
+
+**Synthetic / pre-WG corpora.** Prefix the shortname with `x-`
+(e.g. `ietf-llm x-webbotauth --draft draft-... --mailing-list
+foo@ietf.org`) to gather a collection of drafts and mailing lists
+that don't have a formal WG yet. The `x-` prefix opts out of every
+Datatracker / WG-page lookup (no charter, no leadership, no
+auto-discovered drafts, no Datatracker timeline / ballot events)
+while leaving the rest of the pipeline working as normal —
+`--draft` and `--mailing-list` become the only content sources.
 
 **GitHub auth.** Set `GITHUB_TOKEN` on the gather invocation (a fine-
 scoped read-only token is plenty); without one you'll hit anonymous
