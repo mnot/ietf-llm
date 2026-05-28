@@ -122,6 +122,14 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "Optional when using --install-claude-skill or --all.",
     )
     parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_wgs",
+        help="List the working groups already cached under "
+        "~/.cache/ietf-llm/ (with last-gathered date), then exit. "
+        "Does not gather.",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Refresh every WG that already has a cache directory under "
@@ -236,6 +244,9 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
         sys.exit(install())
 
+    if args.list_wgs:
+        sys.exit(_print_cached_wgs())
+
     if args.all and args.wg:
         parser.error("--all is mutually exclusive with a positional wg argument")
     if args.all and args.clear_config:
@@ -286,6 +297,34 @@ def _discover_gathered_wgs() -> List[str]:
         if os.path.isdir(os.path.join(root, name, "files")):
             out.append(name)
     return out
+
+
+def _print_cached_wgs() -> int:
+    """Print the cached WGs (with last-gathered date + a synthetic
+    marker) to stdout. Returns an exit code: 0 if any were found,
+    1 if the cache is empty.
+    """
+    from .freshness import last_gathered  # pylint: disable=import-outside-toplevel
+
+    wgs = _discover_gathered_wgs()
+    if not wgs:
+        print(
+            "No working groups cached yet. Run `ietf-llm <wg>` "
+            "(e.g. `ietf-llm httpbis`) to gather one.",
+            file=sys.stderr,
+        )
+        return 1
+    width = max(len(w) for w in wgs)
+    for wg in wgs:
+        when = last_gathered(wg)
+        date_str = (
+            f"last gathered {when.strftime('%Y-%m-%d')}"
+            if when is not None
+            else "last gathered: unknown"
+        )
+        synthetic = "  (synthetic)" if is_synthetic_wg(wg) else ""
+        print(f"{wg.ljust(width)}  {date_str}{synthetic}")
+    return 0
 
 
 def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
