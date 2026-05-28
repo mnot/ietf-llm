@@ -8,21 +8,29 @@ description: Query an IETF Working Group's public record (charter, drafts, RFCs,
 A queryable local corpus of an IETF Working Group's public record,
 exposed via `mcp__ietf-llm__*` tools. `<wg>` is always a shortname
 (`httpbis`, `aipref`, `tls`, …). If the user names a WG without a
-shortname, **ask** — don't guess. If `overview` returns nothing,
-the WG hasn't been gathered yet; tell the user to run
-`ietf-llm <wg>` from their shell.
+shortname, **ask** — don't guess.
 
-IRTF Research Groups work the same way — pass the RG's shortname
-(`cfrg`, `hrpc`, `pearg`, …) anywhere `<wg>` appears below. The
-tools don't distinguish, and you don't need to either.
+**Default to this corpus; don't reflexively crawl IETF sites.**
+If a WG isn't here (`overview` returns nothing, or it's missing
+from `list_working_groups`), the usual answer is NOT to go scrape
+the data yourself — it's to tell the user to gather it: `ietf-llm
+<wg>` from their shell (e.g. `ietf-llm httpbis`). They can see
+what's already cached with `ietf-llm --list`.
 
-Synthetic / pre-WG corpora use the `x-` prefix (`x-webbotauth`,
-`x-aipref-precursor`, …). These are collections of drafts and
-mailing lists that pre-date or sit parallel to a formal WG —
-useful when the work hasn't yet been chartered. They behave like
-any other shortname in every MCP tool; the only difference is they
-have no charter, no formal leadership, no auto-discovered draft
-list, and no Datatracker timeline events.
+Reaching out to a live IETF resource (datatracker.ietf.org,
+mailarchive.ietf.org, a draft URL, GitHub) is occasionally
+necessary — e.g. to confirm a draft's *current* state, which the
+snapshot can't know. When you do, **tell the user you're going
+outside the corpus, and flag it if you're making more than a
+couple of requests** so they can decide whether to re-gather
+instead. Prefer the corpus for anything it can answer.
+
+IRTF Research Groups use the same shortname convention (`cfrg`,
+`hrpc`, `pearg`, …); the tools don't distinguish. Synthetic /
+pre-WG corpora use an `x-` prefix (`x-webbotauth`) — collections
+of drafts and mailing lists with no formal WG yet, so they have no
+charter, leadership, auto-discovered drafts, or Datatracker
+timeline events. Otherwise they behave like any other shortname.
 
 ## First call: pick by question shape
 
@@ -32,21 +40,17 @@ active drafts, top-5 open issues, top-5 recent threads, latest
 meeting + latest draft. Often enough on its own.
 
 **Topical / decision** (specific subject matter or chair rulings)
-→ usually go straight to the tool below. `overview` is also cheap
-(~30 lines) and can still help you pick a better search query when
-the topic is unfamiliar — the active drafts, chair list, and
-recent-threads section often surface terms worth searching for.
+→ go straight to the tool below. `overview` is still cheap if the
+topic is unfamiliar and you want terms to search for.
 
 - _"arguments for/against X"_, _"scope debate"_ →
-  `read_digest(wg, kind="issues", label="...", include_bodies=True)`.
-  This returns the catalogue PLUS each issue's opening description
-  in one call — usually enough to answer the question without
-  follow-up file reads. `list_labels(wg)` first if you don't know
-  the vocabulary. `search_corpus(wg, "X", label="...")` is a
-  back-up for when you want semantic ranking inside the cluster
-  (e.g. "the part of these issues that argues Y"), but for
-  *coverage* — every distinct argument across the cluster — the
-  `include_bodies` digest is the right primitive.
+  `read_digest(wg, kind="issues", label="...", include_bodies=True)`
+  — catalogue PLUS each issue's opening description in one call,
+  usually enough without follow-up reads. `list_labels(wg)` first
+  if you don't know the vocabulary. For *coverage* (every distinct
+  argument) the `include_bodies` digest beats semantic search;
+  reach for `search_corpus(wg, "X", label="...")` only when you
+  want ranking *inside* the cluster.
 - _"what did the WG decide about X?"_, _"position on X"_ →
   `search_corpus(wg, "X", state="closed")`. The chairs' resolution
   lives in closed issues; open threads can be mid-debate noise.
@@ -111,20 +115,15 @@ recent-threads section often surface terms worth searching for.
   bodies, in date order. Use when you have a known message and
   want its follow-ups; use `read_topic` instead when you have a
   query and want anchored matches.
-- _"what's the level of support for X?"_, _"how many people said +1
-  on the WGLC?"_, _"who supported and who objected?"_, _"did the
-  chair call consensus, and is it visible in the traffic?"_ →
-  `tally_positions(wg, "<one thread or issue file>")`. Returns a
-  grounded `+1`/`-1`/`I support`/`I object`/`LGTM`/`DISCUSS` count
-  per author with excerpts AND a **Chair statements** section
-  surfacing any chair messages with procedural language (`rough
-  consensus`, `consensus call`, `WGLC`, `adopting`, `closing this
-  thread`). Together they answer "is the chair's declaration
-  visible in the list traffic?" in one call. **Always prefer this
-  tally + chair-statements view over relaying a chair's
-  characterisation** — chair summaries are themselves sometimes the
-  subject of procedural dispute. Heuristic; coverage is honest
-  about what it couldn't classify.
+- _"level of support for X?"_, _"how many said +1?"_, _"who
+  supported / objected?"_, _"did the chair call consensus, and is
+  it visible in the traffic?"_ →
+  `tally_positions(wg, "<one thread or issue file>")`. Grounded
+  per-author count (`+1`/`-1`/poll-option/`DISCUSS`) plus a **Chair
+  statements** section surfacing procedural messages (`rough
+  consensus`, `WGLC`, `adopting`, …). **Prefer this over relaying a
+  chair's characterisation** — chair summaries are themselves
+  sometimes disputed. Heuristic; coverage % is honest about misses.
 
 If you're unsure which shape the question is, `overview` is the
 safe default — it's cheap and points you at the rest.
@@ -179,13 +178,11 @@ Pivot to the source with:
   search hits span several files and you want all of them.
 - `read_file_section(wg, file, start_line, max_lines)` — bounded
   read for surrounding context or whole-file reading.
-- `fetch_by_url(wg, url)` — when the user pastes a GitHub issue
-  URL or an IETF mail-archive permalink, this resolves it to the
-  cached chunk content without you needing to know the file name.
-  Also reach for it when a chunk you're reading **cites** a URL
-  inline (a quoted message link, a referenced issue) and you want
-  the underlying content rather than the cited paraphrase —
-  cheaper than searching, and the citation isn't always faithful.
+- `fetch_by_url(wg, url)` — resolves a pasted GitHub issue URL or
+  IETF mail-archive permalink to cached content without you knowing
+  the file name. Also use it when a chunk **cites** a URL inline
+  and you want the source, not the paraphrase. (Resolves only URLs
+  already in the corpus — it does NOT fetch from the live web.)
 
 `search_corpus` also takes `since` / `until`, `file_pattern` (SQL
 LIKE on the file's relative path under the WG cache: `"threads/%"`,
@@ -342,6 +339,12 @@ A few interpretive norms that shape how to read the corpus:
 
 ## Anti-patterns
 
+- **Don't reflexively crawl IETF sites.** Default to the corpus; if
+  something's missing, the user re-gathers (`ietf-llm <wg>`). Live
+  fetches (datatracker, mail archive, draft URLs, GitHub) are fine
+  when genuinely needed — e.g. a draft's current state — but say
+  you're going outside the corpus, and flag heavy use (more than a
+  couple of requests) so the user can re-gather instead.
 - **Don't read whole digests** when you want a slice — use filters.
 - **Don't read anything under `raw/`** — multi-MB per-year mailing-
   list dumps and legacy GitHub text blobs, kept only for grep /
