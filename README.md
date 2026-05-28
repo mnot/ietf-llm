@@ -5,6 +5,28 @@ Working Group's public record — charter, drafts, RFCs, meeting minutes,
 slides, transcripts, mailing list archives, and GitHub issues — for use
 with LLM-based tools.
 
+> **Note:** This package was previously published as `ietf-notebook`.
+> That distribution is deprecated. See
+> [Migrating from `ietf-notebook`](#migrating-from-ietf-notebook).
+
+## What it's for
+
+A working group's history is spread across mailing list archives,
+Datatracker, GitHub, and meeting materials — too much to hold in your
+head, and too scattered to search well by hand. With the record
+gathered into one queryable corpus, an LLM can help you:
+
+- **Get up to date with the state of discussions** — what's open,
+  what was recently decided, where a debate currently stands.
+- **Summarise the arguments already made** about an issue — every
+  distinct position on a topic, who holds it, and how the chairs
+  ruled.
+- **Formulate a new proposal** — surface the objections raised
+  against similar ideas before, so you can anticipate them.
+- **Fact-check assertions** about what's happened so far —
+  grounded in the actual list traffic and chair statements, not
+  someone's recollection.
+
 Two supported workflows:
 
 1. **[Use it as an MCP server](#1-use-as-an-mcp-server)** — register
@@ -18,12 +40,9 @@ Two supported workflows:
 > RG's shortname (e.g. `cfrg`, `hrpc`, `pearg`) anywhere this README
 > says `<wg>`.
 
-> **Note:** This package was previously published as `ietf-notebook`.
-> That distribution is deprecated. See
-> [Migrating from `ietf-notebook`](#migrating-from-ietf-notebook).
-
 ## Table of contents
 
+- [What it's for](#what-its-for)
 - [Installation](#installation)
 - [1. Use as an MCP server](#1-use-as-an-mcp-server)
   - [Register the server](#register-the-server)
