@@ -28,6 +28,8 @@ dependencies = [
     "llm-sentence-transformers",
     "numpy",
     "mcp",
+    # Shell tab-completion (completes cached WG shortnames)
+    "argcomplete",
 ]
 
 [project.optional-dependencies]

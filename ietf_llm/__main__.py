@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
 """`ietf-llm` — gather and index an IETF Working Group's public record.
 
 Populates ~/.cache/ietf-llm/<wg>/ with the charter, drafts, meeting
@@ -41,11 +43,14 @@ from .utils import (
     DEFAULT_MONTHS,
     LogLevel,
     Verbosity,
+    cached_wg_names,
     get_cache_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
     is_synthetic_wg,
     log,
+    maybe_autocomplete,
+    wg_completer,
 )
 
 SCOPE = "gather"
@@ -115,12 +120,14 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    parser.add_argument(
+    wg_arg = parser.add_argument(
         "wg",
         nargs="?",
         help="IETF Working Group short name (e.g. 'httpbis'). "
         "Optional when using --install-claude-skill or --all.",
     )
+    # Tab-completes already-gathered WG shortnames from the cache.
+    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     parser.add_argument(
         "--list",
         action="store_true",
@@ -128,6 +135,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         help="List the working groups already cached under "
         "~/.cache/ietf-llm/ (with last-gathered date), then exit. "
         "Does not gather.",
+    )
+    parser.add_argument(
+        "--completion",
+        choices=("bash", "zsh", "fish"),
+        metavar="SHELL",
+        help="Print a shell tab-completion script for all ietf-llm "
+        "commands (bash | zsh | fish), then exit. Enable with "
+        'e.g. `eval "$(ietf-llm --completion zsh)"` in your shell rc. '
+        "Completes cached WG shortnames for the `wg` argument.",
     )
     parser.add_argument(
         "--all",
@@ -237,7 +253,11 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "--verbose", "-v", action="store_true", help="Detailed progress reporting."
     )
 
+    maybe_autocomplete(parser)
     args = parser.parse_args()
+
+    if args.completion:
+        sys.exit(_print_completion(args.completion))
 
     if args.install_claude_skill:
         from .skill_install import install  # pylint: disable=import-outside-toplevel
@@ -286,17 +306,40 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
 
 def _discover_gathered_wgs() -> List[str]:
-    """Return acronyms of every WG that has a files/ subdir in the cache."""
-    root = get_cache_dir()
-    if not os.path.isdir(root):
-        return []
-    out: List[str] = []
-    for name in sorted(os.listdir(root)):
-        if name.startswith(".") or name.startswith("_"):
-            continue
-        if os.path.isdir(os.path.join(root, name, "files")):
-            out.append(name)
-    return out
+    """Acronyms of every WG with a files/ subdir in the cache.
+
+    Thin alias for `utils.cached_wg_names()` — kept as a local name
+    because `--all` and `--list` read naturally with it.
+    """
+    return cached_wg_names()
+
+
+def _print_completion(shell: str) -> int:
+    """Print the argcomplete registration snippet for every ietf-llm
+    command, for the given shell. Returns an exit code.
+
+    Routed through `ietf-llm` itself (not argcomplete's own
+    `register-python-argcomplete` script) because under `pipx` only
+    this package's declared entry points are on PATH — a dependency's
+    scripts aren't exposed. `eval "$(ietf-llm --completion zsh)"`
+    works regardless of how the package was installed.
+    """
+    try:
+        import argcomplete  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        print(
+            "argcomplete is not installed (it ships with ietf-llm; "
+            "try reinstalling).",
+            file=sys.stderr,
+        )
+        return 1
+    commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
+    # argcomplete ships no type stubs; shellcode isn't in its __all__.
+    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
+        commands, shell=shell,
+    )
+    print(snippet)
+    return 0
 
 
 def _print_cached_wgs() -> int:

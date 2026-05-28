@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
 """`ietf-llm-search <wg> <query>` — query the embedding index."""
 
 from __future__ import annotations
@@ -7,7 +9,12 @@ import sys
 
 from . import __version__
 from .embeddings import search
-from .utils import Verbosity, graceful_keyboard_interrupt
+from .utils import (
+    Verbosity,
+    graceful_keyboard_interrupt,
+    maybe_autocomplete,
+    wg_completer,
+)
 
 
 @graceful_keyboard_interrupt
@@ -18,7 +25,10 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
+    wg_arg = parser.add_argument(
+        "wg", help="Working Group short name (e.g. 'httpbis')"
+    )
+    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     parser.add_argument("query", help="Search query (natural language)")
     parser.add_argument(
         "-k", "--top", type=int, default=10, help="Number of hits (default: 10)"
@@ -48,6 +58,7 @@ def main() -> None:
         help="Only consider chunks dated on or before this date.",
     )
     parser.add_argument("--quiet", "-q", action="store_true")
+    maybe_autocomplete(parser)
     args = parser.parse_args()
 
     verbosity = Verbosity.QUIET if args.quiet else Verbosity.STATUS

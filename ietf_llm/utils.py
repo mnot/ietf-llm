@@ -4,12 +4,54 @@ import re
 import shutil
 import filecmp
 from enum import Enum
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup, Tag
 
 DEFAULT_HEADERS = {"User-Agent": "ietf-llm/0.1.0"}
 DEFAULT_MONTHS = 12
+
+
+def cached_wg_names() -> List[str]:
+    """Shortnames of every gathered WG / corpus — directories with a
+    `files/` subdir under the cache root, sorted. Skips dot- and
+    underscore-prefixed entries (machinery like `_github-users.json`).
+
+    Shared by `ietf-llm --all` / `--list` and the shell-completion
+    completer for the `wg` positional, so they can't drift.
+    """
+    root = get_cache_dir()
+    if not os.path.isdir(root):
+        return []
+    out: List[str] = []
+    for name in sorted(os.listdir(root)):
+        if name.startswith(".") or name.startswith("_"):
+            continue
+        if os.path.isdir(os.path.join(root, name, "files")):
+            out.append(name)
+    return out
+
+
+def wg_completer(prefix: str, **_kwargs: Any) -> List[str]:
+    """argcomplete completer for a `wg` positional: cached shortnames
+    matching `prefix`. Keep it fast — argcomplete spins a fresh
+    interpreter per <TAB>, so this is just a directory listing.
+    """
+    return [w for w in cached_wg_names() if w.startswith(prefix)]
+
+
+def maybe_autocomplete(parser: Any) -> None:
+    """Wire argcomplete into `parser` if the package is installed.
+
+    Called right before `parse_args()`. A no-op (not an error) when
+    argcomplete isn't present, so a minimal / editable install
+    without the dependency still runs the CLI normally.
+    """
+    try:
+        import argcomplete  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return
+    argcomplete.autocomplete(parser)
 
 
 def is_synthetic_wg(name: str) -> bool:

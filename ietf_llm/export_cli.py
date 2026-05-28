@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
 """`ietf-llm-export` — emit a gathered WG cache as a NotebookLM-ready sink.
 
 Two output modes, mutually exclusive:
@@ -26,7 +28,13 @@ import sys
 
 from . import __version__, config, export
 from .freshness import staleness_warning
-from .utils import Verbosity, get_config_dir, graceful_keyboard_interrupt
+from .utils import (
+    Verbosity,
+    get_config_dir,
+    graceful_keyboard_interrupt,
+    maybe_autocomplete,
+    wg_completer,
+)
 
 SCOPE = "export"
 
@@ -45,7 +53,10 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
+    wg_arg = parser.add_argument(
+        "wg", help="Working Group short name (e.g. 'httpbis')"
+    )
+    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     sink = parser.add_mutually_exclusive_group()
     sink.add_argument(
         "--destination",
@@ -81,6 +92,7 @@ def main() -> None:
     )
     parser.add_argument("--quiet", "-q", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
+    maybe_autocomplete(parser)
     args = parser.parse_args()
 
     config.merge(

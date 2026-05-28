@@ -44,6 +44,7 @@ Two supported workflows:
 
 - [What it's for](#what-its-for)
 - [Installation](#installation)
+  - [Shell completion](#shell-completion)
 - [1. Use as an MCP server](#1-use-as-an-mcp-server)
   - [Register the server](#register-the-server)
   - [Gather a Working Group](#gather-a-working-group)
@@ -73,6 +74,26 @@ Behind a corporate firewall with TLS interception? Install with the
 
 ```bash
 pipx install ietf-llm[certs]
+```
+
+### Shell completion
+
+Optional. Add the line for your shell to its rc file to tab-complete
+commands, flags, and cached WG names:
+
+```bash
+# bash — in ~/.bashrc
+eval "$(ietf-llm --completion bash)"
+```
+
+```bash
+# zsh — in ~/.zshrc
+eval "$(ietf-llm --completion zsh)"
+```
+
+```fish
+# fish — in ~/.config/fish/config.fish
+ietf-llm --completion fish | source
 ```
 
 ---
