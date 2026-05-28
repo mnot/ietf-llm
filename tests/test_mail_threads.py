@@ -535,3 +535,80 @@ def test_message_date_rendered_in_utc_regardless_of_source_tz(
     assert "2025-01-01 22:00 — Bob" in text
     # Specifically, Alice's section MUST NOT carry her 15:00 wall time.
     assert "15:00 — Alice" not in text
+
+
+def test_unchanged_thread_rewrite_preserves_mtime(isolated_home: Path) -> None:
+    # The bug this guards against: a re-gather that produces byte-
+    # identical thread files used to wipe-and-rewrite, bumping every
+    # file's mtime and forcing the incremental embedder to re-embed
+    # the whole corpus. write_if_changed must leave unchanged files
+    # (and their mtimes) alone.
+    import os
+    import time
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+        body="Body.",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths1 = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    assert paths1
+    mtimes_before = {p: os.path.getmtime(p) for p in paths1}
+    time.sleep(0.05)
+
+    # Re-run with identical inputs → identical render → no rewrite.
+    paths2 = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    assert set(paths2) == set(paths1)  # same files reported as current
+    for p in paths2:
+        assert os.path.getmtime(p) == mtimes_before[p], (
+            f"{p} mtime changed despite identical content"
+        )
+
+
+def test_changed_thread_is_rewritten(isolated_home: Path) -> None:
+    # Sanity counterpart: when the underlying content DOES change, the
+    # file is rewritten (mtime advances).
+    import os
+    import time
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+        body="Body.",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths1 = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    mtime_before = os.path.getmtime(paths1[0])
+    time.sleep(0.05)
+
+    # Add a second message to the same thread → content changes.
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="Re: Topic", sender="Bob <b@x>",
+        date="Tue, 02 Jan 2025 10:00:00 +0000", message_id="<b@x>",
+        in_reply_to="<a@x>", body="Reply.",
+    )
+    paths2 = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    assert os.path.getmtime(paths2[0]) > mtime_before
+
+
+def test_orphan_thread_file_removed(isolated_home: Path) -> None:
+    # A thread file from a prior gather whose thread no longer exists
+    # must be cleaned up.
+    import os
+    cache = get_wg_file_cache_dir("wg")
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
+        body="Body.",
+    )
+    write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    from ietf_llm.paths import threads_dir
+    orphan = os.path.join(threads_dir(cache), "2099-12-31-ghost.md")
+    with open(orphan, "w", encoding="utf-8") as fh:
+        fh.write("# stale thread\n")
+    # Re-gather: the orphan (not part of the current thread set) goes.
+    write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    assert not os.path.exists(orphan)

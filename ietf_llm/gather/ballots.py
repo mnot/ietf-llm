@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..digest.events import Event
 from ..paths import ballot_path, ballots_dir
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, log, write_if_changed
 from .datatracker import _get_json  # pylint: disable=protected-access
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
@@ -361,29 +361,42 @@ def write_ballot_files(
     """Write per-draft ballot files to `<cache_dir>/ballots/`. Returns
     the list of paths written (relative to cache_dir).
     """
-    if not ballots:
-        return []
     out_dir = ballots_dir(cache_dir)
+    if not ballots and not os.path.isdir(out_dir):
+        return []
     os.makedirs(out_dir, exist_ok=True)
-    # Wipe stale ballot files first — drafts that fall out of the
-    # window should disappear, not linger as misleading staleness.
-    for name in os.listdir(out_dir):
-        if name.endswith(".md"):
-            try:
-                os.remove(os.path.join(out_dir, name))
-            except OSError:
-                pass
-    written: List[str] = []
+
+    # Write-if-changed so a byte-identical ballot doesn't bump mtime
+    # and trigger a re-embed. `expected` drives orphan cleanup —
+    # drafts that fall out of the window must have their stale ballot
+    # files removed (even when `ballots` is now empty), or they'd
+    # linger as misleading current state.
+    all_paths: List[str] = []
+    changed = 0
+    expected: set[str] = set()
     for ballot in ballots:
         path = ballot_path(cache_dir, ballot.doc_name)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(render_ballot(ballot))
-        written.append(path)
-    log(
-        f"Wrote {len(written)} IESG ballot file(s)",
-        verbose, level=LogLevel.STATUS,
-    )
-    return written
+        expected.add(os.path.basename(path))
+        all_paths.append(path)
+        if write_if_changed(path, render_ballot(ballot)):
+            changed += 1
+
+    removed = 0
+    for name in os.listdir(out_dir):
+        if name.endswith(".md") and name not in expected:
+            try:
+                os.remove(os.path.join(out_dir, name))
+                removed += 1
+            except OSError:
+                pass
+
+    if all_paths or removed:
+        log(
+            f"IESG ballot files: {len(all_paths)} current "
+            f"({changed} written / changed, {removed} removed)",
+            verbose, level=LogLevel.STATUS,
+        )
+    return all_paths
 
 
 def ballot_events(

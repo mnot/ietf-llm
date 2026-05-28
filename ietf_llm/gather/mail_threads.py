@@ -44,7 +44,7 @@ from .mbox import clean_email_text, extract_text_content
 from ..paths import thread_path, threads_dir
 from ..people import Registry
 from ..text import _normalize_subject, _parse_date, _short_addr
-from ..utils import LogLevel, Verbosity, get_cache_dir, log
+from ..utils import LogLevel, Verbosity, get_cache_dir, log, write_if_changed
 
 
 @dataclass
@@ -493,15 +493,13 @@ def write_thread_files(
 
     out_dir = threads_dir(cache_dir)
     os.makedirs(out_dir, exist_ok=True)
-    # Wipe stale thread files before writing (clean slate).
-    for name in os.listdir(out_dir):
-        if name.endswith(".md"):
-            try:
-                os.remove(os.path.join(out_dir, name))
-            except OSError:
-                pass
 
-    written: List[str] = []
+    # Write-if-changed (NOT wipe-and-rewrite): a byte-identical
+    # re-render must leave the file's mtime untouched, or the
+    # incremental embedder re-embeds every thread on every gather.
+    all_paths: List[str] = []
+    changed: List[str] = []
+    expected: set[str] = set()
     used_slugs: Dict[str, int] = {}
     for thread in threads:
         slug = _thread_slug_for(thread)
@@ -510,13 +508,26 @@ def write_thread_files(
         if used_slugs[slug] > 1:
             slug = f"{slug}-{used_slugs[slug]}"
         path = thread_path(cache_dir, slug)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(_render_thread(thread, registry))
-        written.append(path)
+        expected.add(os.path.basename(path))
+        all_paths.append(path)
+        if write_if_changed(path, _render_thread(thread, registry)):
+            changed.append(path)
+
+    # Remove orphans — thread files from a previous gather whose thread
+    # no longer exists (e.g. fell out of the --months window).
+    removed = 0
+    for name in os.listdir(out_dir):
+        if name.endswith(".md") and name not in expected:
+            try:
+                os.remove(os.path.join(out_dir, name))
+                removed += 1
+            except OSError:
+                pass
 
     log(
-        f"Wrote {len(written)} thread files",
+        f"Thread files: {len(all_paths)} current "
+        f"({len(changed)} written / changed, {removed} removed)",
         verbose,
         level=LogLevel.STATUS,
     )
-    return written
+    return all_paths

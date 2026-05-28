@@ -71,6 +71,27 @@ def copy_if_updated(src_path: str, dest_path: str) -> bool:
     return True
 
 
+def write_if_changed(path: str, content: str) -> bool:
+    """Write `content` to `path` only if it differs from what's there
+    (or the file is missing). Returns True if a write happened.
+
+    Load-bearing for the incremental embedder, which re-embeds any
+    file whose mtime advanced. The per-thread / per-issue writers
+    regenerate every file each gather; without this guard a byte-
+    identical re-render would still bump mtime and force a full
+    re-embed of the whole corpus on every update.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            if fh.read() == content:
+                return False
+    except OSError:
+        pass  # missing / unreadable → fall through and write
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return True
+
+
 def get_mailing_list_name(wg_name: str) -> str:
     """
     Find the mailing list name from the group 'about' page.

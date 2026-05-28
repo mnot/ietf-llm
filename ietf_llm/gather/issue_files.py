@@ -37,7 +37,7 @@ from ..paths import (
     issues_dir,
 )
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, log, write_if_changed
 
 
 # Lightweight HTML→Markdown normalisation for issue bodies and comments.
@@ -299,22 +299,14 @@ def write_issue_files(
     if not os.path.isdir(archives_dir):
         return []
 
-    # Wipe stale per-issue files for this WG by clearing the whole
-    # issues/ subtree.
+    # Write-if-changed (NOT wipe-and-rewrite): a byte-identical
+    # re-render must leave the file's mtime untouched so the
+    # incremental embedder doesn't re-embed every issue each gather.
+    # `expected` (relative path under issues/) drives orphan cleanup.
     out_root = issues_dir(cache_dir)
-    if os.path.isdir(out_root):
-        for repo_subdir in os.listdir(out_root):
-            sub_path = os.path.join(out_root, repo_subdir)
-            if not os.path.isdir(sub_path):
-                continue
-            for name in os.listdir(sub_path):
-                if name.endswith(".md"):
-                    try:
-                        os.remove(os.path.join(sub_path, name))
-                    except OSError:
-                        pass
-
-    written: List[str] = []
+    all_paths: List[str] = []
+    changed: List[str] = []
+    expected: set[str] = set()
     for name in sorted(os.listdir(archives_dir)):
         if not name.endswith(".json"):
             continue
@@ -339,14 +331,34 @@ def write_issue_files(
             if number is None:
                 continue
             path = issue_path(cache_dir, repo, number)
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(_render_issue(repo, issue, registry))
-            written.append(path)
+            expected.add(os.path.relpath(path, out_root))
+            all_paths.append(path)
+            if write_if_changed(path, _render_issue(repo, issue, registry)):
+                changed.append(path)
 
-    if written:
+    # Remove orphan per-issue files (issues no longer in any archive).
+    removed = 0
+    if os.path.isdir(out_root):
+        for repo_subdir in os.listdir(out_root):
+            sub_path = os.path.join(out_root, repo_subdir)
+            if not os.path.isdir(sub_path):
+                continue
+            for name in os.listdir(sub_path):
+                if not name.endswith(".md"):
+                    continue
+                rel = os.path.join(repo_subdir, name)
+                if rel not in expected:
+                    try:
+                        os.remove(os.path.join(sub_path, name))
+                        removed += 1
+                    except OSError:
+                        pass
+
+    if all_paths or removed:
         log(
-            f"Wrote {len(written)} per-issue files",
+            f"Per-issue files: {len(all_paths)} current "
+            f"({len(changed)} written / changed, {removed} removed)",
             verbose,
             level=LogLevel.STATUS,
         )
-    return written
+    return all_paths
