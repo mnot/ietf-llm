@@ -4,10 +4,11 @@ import re
 import shutil
 import sys
 from enum import Enum
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 DEFAULT_HEADERS = {"User-Agent": "ietf-llm/0.1.0"}
 DEFAULT_MONTHS = 12
@@ -135,73 +136,58 @@ def write_if_changed(path: str, content: str) -> bool:
     return True
 
 
-def get_mailing_list_name(wg_name: str) -> str:
+@lru_cache(maxsize=128)
+def _fetch_group_object(wg_name: str) -> Optional[Dict[str, Any]]:
+    """Fetch a group's Datatracker record by acronym, or None.
+
+    One JSON call to `/api/v1/group/group/?acronym=<wg>` backs all the
+    group-metadata helpers (type, title, mailing list) so we read
+    structured fields instead of scraping the group's About page.
+    Cached per process, so a single gather resolves each group once
+    across charter / drafts / mbox / index / export.
+
+    Synthetic (`x-`) corpora have no Datatracker record, so the lookup
+    is skipped entirely (returns None; callers fall back to defaults).
     """
-    Find the mailing list name from the group 'about' page.
-    """
-    url = f"https://datatracker.ietf.org/group/{wg_name}/about/"
+    if is_synthetic_wg(wg_name):
+        return None
+    url = (
+        "https://datatracker.ietf.org/api/v1/group/group/"
+        f"?acronym={wg_name}&format=json"
+    )
     res = fetch_resource(url)
     if not res:
-        return wg_name
+        return None
+    try:
+        objects = res.json().get("objects") or []
+    except ValueError:
+        return None
+    return objects[0] if objects else None
 
-    bs_soup = BeautifulSoup(res.text, "html.parser")
 
-    # Strategy 1: Look for "List archive »" link
-    archive_link = None
-    for a_tag in bs_soup.find_all("a"):
-        if "List archive" in a_tag.get_text():
-            archive_link = a_tag
-            break
-
-    if archive_link:
-        href_val = archive_link.get("href")
-        if isinstance(href_val, str) and (
-            "mailarchive.ietf.org/arch/browse/" in href_val
-            or "mailman.irtf.org" in href_val
-        ):
-            parts = href_val.strip("/").split("/")
-            return parts[-1]
-
-    # Strategy 2: Look for "Address" row in mailing list table
-    rows = bs_soup.find_all("tr")
-    for row in rows:
-        th = row.find("th")
-        if th and "Address" in th.get_text():
-            td = row.find("td")
-            if td:
-                email = td.get_text(strip=True)
-                if "@" in email:
-                    return str(email.split("@")[0])
-
+def get_mailing_list_name(wg_name: str) -> str:
+    """Return the WG's primary mailing list name — the local part of its
+    Datatracker `list_email` (e.g. `ietf-http-wg` for httpbis) — or the
+    WG shortname as a fallback when no record / address is found."""
+    group = _fetch_group_object(wg_name)
+    if group:
+        list_email = group.get("list_email") or ""
+        if "@" in list_email:
+            return str(list_email.split("@", 1)[0])
     return wg_name
 
 
 def get_group_type(wg_name: str) -> str:
+    """'ietf' for a Working Group, 'irtf' for a Research Group.
+
+    Read from the group's `type` field on Datatracker
+    (`.../grouptypename/wg|rg/`). Defaults to 'ietf'.
     """
-    Identify if the acronym is for a Working Group ('ietf') or Research Group ('irtf').
-    """
-    url = f"https://datatracker.ietf.org/group/{wg_name}/about/"
-    res = fetch_resource(url)
-    if not res:
-        return "ietf"  # Default to ietf
-
-    bs_soup = BeautifulSoup(res.text, "html.parser")
-    # Strategy: look for 'WG' or 'RG' in the summary table
-    table = bs_soup.find("table", class_="table-sm")
-    if isinstance(table, Tag):
-        first_td = table.find("td")
-        if isinstance(first_td, Tag):
-            text = first_td.get_text(strip=True)
-            if text == "RG":
-                return "irtf"
-            if text == "WG":
-                return "ietf"
-
-    # Fallback: check for charter link pattern if table strategy fails
-    charter_link = bs_soup.find("a", href=re.compile(r"/doc/charter-irtf-"))
-    if charter_link:
-        return "irtf"
-
+    group = _fetch_group_object(wg_name)
+    if group:
+        type_uri = (group.get("type") or "").rstrip("/")
+        if type_uri.endswith("/rg"):
+            return "irtf"
     return "ietf"
 
 
@@ -367,16 +353,9 @@ def format_filename(name: str) -> str:
 
 
 def get_wg_title(wg_name: str) -> str:
-    """Fetch the full WG title from the IETF Datatracker."""
-    url = f"https://datatracker.ietf.org/group/{wg_name}/about/"
-    res = fetch_resource(url)
-    if res:
-        soup = BeautifulSoup(res.text, "html.parser")
-        h1 = soup.find("h1")
-        if h1:
-            title = h1.get_text(strip=True)
-            # Clean up title if it contains the short name in parens
-            if "(" in title and wg_name.lower() in title.lower():
-                title = title.split("(")[0].strip()
-            return title
+    """Full group name from the IETF Datatracker (e.g. 'Transport Layer
+    Security'), or a generic fallback when no record is found."""
+    group = _fetch_group_object(wg_name)
+    if group and group.get("name"):
+        return str(group["name"])
     return f"{wg_name.upper()} Working Group"
