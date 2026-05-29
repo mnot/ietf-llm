@@ -13,13 +13,16 @@ with the Registry.
 
 from __future__ import annotations
 
+import atexit
+import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
+from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, get_cache_dir, log
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
 
@@ -65,24 +68,113 @@ _EMAIL_FROM_URL = re.compile(r"/api/v1/person/email/([^/]+)/?$")
 _ROLE_NAME_FROM_URL = re.compile(r"/api/v1/name/rolename/([^/]+)/?$")
 
 
+# --- Conditional-GET cache -------------------------------------------------
+#
+# The Datatracker JSON API returns ETags and honours If-None-Match (304).
+# We persist {url: {"etag", "body"}} so re-gathers revalidate cheaply: an
+# unchanged endpoint comes back as an empty 304 and we reuse the cached
+# body. This is the bulk of the per-gather metadata chatter (document
+# lists, material revisions, the meeting batch, roles). The cache is
+# machinery: one shared file at ~/.cache/ietf-llm/.http-cache.json,
+# loaded once and flushed atomically at exit.
+
+class _HttpCache:
+    """Lazy, process-wide ETag store. Loaded from disk on first use and
+    flushed once atomically at interpreter exit (so a gather does one
+    write, not one per cached URL)."""
+
+    def __init__(self) -> None:
+        self._entries: Optional[Dict[str, Dict[str, str]]] = None
+        self._dirty = False
+
+    @staticmethod
+    def _path() -> str:
+        return os.path.join(get_cache_dir(), ".http-cache.json")
+
+    def _load(self) -> Dict[str, Dict[str, str]]:
+        if self._entries is None:
+            try:
+                with open(self._path(), "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                self._entries = data if isinstance(data, dict) else {}
+            except (OSError, ValueError):
+                self._entries = {}
+        return self._entries
+
+    def get(self, url: str) -> Optional[Dict[str, str]]:
+        return self._load().get(url)
+
+    def store(self, url: str, etag: str, body: str) -> None:
+        self._load()[url] = {"etag": etag, "body": body}
+        if not self._dirty:
+            self._dirty = True
+            atexit.register(self.flush)
+
+    def flush(self) -> None:
+        if self._entries is None or not self._dirty:
+            return
+        path = self._path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._entries, fh)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+
+_HTTP_CACHE = _HttpCache()
+
+
 def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-    """GET a Datatracker JSON endpoint. Returns the decoded body or None."""
+    """GET a Datatracker JSON endpoint, revalidating via ETag.
+
+    Returns the decoded body or None. On a 304 (or a network error with a
+    cached entry) the previously-stored body is reused, so re-gathers
+    transfer almost nothing for unchanged endpoints.
+    """
     url = (
         path_or_url
         if path_or_url.startswith("http")
         else f"https://datatracker.ietf.org{path_or_url}"
     )
-    if "?" in url:
-        url = url + "&format=json"
-    else:
-        url = url + "?format=json"
+    url = url + ("&format=json" if "?" in url else "?format=json")
+
+    entry = _HTTP_CACHE.get(url)
+    headers = dict(DEFAULT_HEADERS)
+    if entry and entry.get("etag"):
+        headers["If-None-Match"] = entry["etag"]
+
     try:
-        response = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
+        response = requests.get(url, headers=headers, timeout=timeout)
+    except requests.RequestException:
+        return _decode_cached(entry)
+
+    if response.status_code == 304:
+        return _decode_cached(entry)
+    try:
         response.raise_for_status()
         result = response.json()
-        return result if isinstance(result, dict) else None
     except (requests.RequestException, ValueError):
+        return _decode_cached(entry)
+    if not isinstance(result, dict):
         return None
+    etag = response.headers.get("ETag")
+    if etag:
+        _HTTP_CACHE.store(url, etag, response.text)
+    return result
+
+
+def _decode_cached(entry: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """Decode a cached response body to a dict, or None."""
+    if not entry:
+        return None
+    try:
+        body = json.loads(entry.get("body") or "")
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def iter_group_documents(wg_name: str, doc_type: str) -> Iterator[Dict[str, Any]]:
