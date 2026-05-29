@@ -5,7 +5,7 @@ import shutil
 import sys
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -167,16 +167,71 @@ def _fetch_group_object(wg_name: str) -> Optional[Dict[str, Any]]:
     return objects[0] if objects else None
 
 
-def get_mailing_list_name(wg_name: str) -> str:
-    """Return the WG's primary mailing list name — the local part of its
-    Datatracker `list_email` (e.g. `ietf-http-wg` for httpbis) — or the
-    WG shortname as a fallback when no record / address is found."""
+@lru_cache(maxsize=128)
+def get_group_resources(wg_name: str) -> Tuple[Tuple[str, str], ...]:
+    """A group's "Additional Resources" as `((slug, value), …)`.
+
+    `slug` is the resource type from the extresourcename URI
+    (`github_org`, `webpage`, `zulip`, `mailing_list_archive`, …);
+    `value` is its URL / string. Empty for synthetic corpora or groups
+    with no resources. Read from `/api/v1/group/groupextresource/`,
+    cached per run. Returns a tuple so it stays hashable for the cache.
+    """
     group = _fetch_group_object(wg_name)
-    if group:
-        list_email = group.get("list_email") or ""
-        if "@" in list_email:
-            return str(list_email.split("@", 1)[0])
-    return wg_name
+    if not group or group.get("id") is None:
+        return ()
+    url = (
+        "https://datatracker.ietf.org/api/v1/group/groupextresource/"
+        f"?group={group['id']}&format=json&limit=200"
+    )
+    res = fetch_resource(url)
+    if not res:
+        return ()
+    try:
+        objects = res.json().get("objects") or []
+    except ValueError:
+        return ()
+    out: List[Tuple[str, str]] = []
+    for obj in objects:
+        slug = (obj.get("name") or "").rstrip("/").rsplit("/", 1)[-1]
+        value = obj.get("value") or ""
+        if slug and value:
+            out.append((slug, value))
+    return tuple(out)
+
+
+#: List name embedded in a mailarchive.ietf.org browse URL.
+_MAILARCHIVE_BROWSE_RE = re.compile(
+    r"mailarchive\.ietf\.org/arch/browse/([^/?#]+)", re.IGNORECASE
+)
+
+
+def get_mailing_list_name(wg_name: str) -> str:
+    """Return the WG's mailing list name for the IMAP archive.
+
+    Normally the local part of the Datatracker `list_email` (e.g.
+    `tls` for tls@ietf.org). When the list is hosted off the IETF
+    infrastructure — httpbis runs at w3.org — the IETF keeps a mirror
+    under a different name; the "alternate list archives" Additional
+    Resource points at `mailarchive.ietf.org/arch/browse/<name>/`,
+    which is what the IMAP server exposes, so we prefer that `<name>`
+    (httpbis → `httpbisa`). Falls back to the WG shortname when no
+    record / address is found.
+    """
+    group = _fetch_group_object(wg_name)
+    if not group:
+        return wg_name
+    list_email = group.get("list_email") or ""
+    if "@" not in list_email:
+        return wg_name
+    primary, domain = list_email.split("@", 1)
+    if domain.lower() not in ("ietf.org", "irtf.org"):
+        for slug, value in get_group_resources(wg_name):
+            if slug == "mailing_list_archive":
+                match = _MAILARCHIVE_BROWSE_RE.search(value)
+                if match:
+                    return match.group(1)
+    return primary or wg_name
 
 
 def get_group_type(wg_name: str) -> str:
