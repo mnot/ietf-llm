@@ -1,9 +1,16 @@
 import os
-from typing import List
+from typing import List, Optional
 
-from bs4 import BeautifulSoup
+from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
+from .datatracker import _get_json
 
-from ..utils import LogLevel, Verbosity, clean_html, fetch_resource, get_group_type, log
+
+def _charter_rev(doc_name: str) -> Optional[str]:
+    """Current charter revision (e.g. '09', '05-05') from the document
+    API, or None if there's no charter document for the group."""
+    doc = _get_json(f"/api/v1/doc/document/{doc_name}/")
+    rev = doc.get("rev") if doc else None
+    return rev if isinstance(rev, str) and rev else None
 
 
 def process_charter(
@@ -11,53 +18,32 @@ def process_charter(
     output_file: str,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[str]:
-    """Fetch the WG charter and write to output_file. Returns list of updated files."""
-    group_type = get_group_type(wg_name)
-    url = f"https://datatracker.ietf.org/doc/charter-{group_type}-{wg_name}/"
-    log(f"Fetching charter for {wg_name}...", verbose, level=LogLevel.STATUS)
+    """Fetch the WG charter and write to output_file. Returns list of updated files.
 
-    # Try fetching as markdown first
-    res = fetch_resource(url, headers={"Accept": "text/markdown"})
+    The canonical charter text is a plain-text artifact published at
+    www.ietf.org/charter/<doc>-<rev>.txt; the revision comes from the
+    Datatracker document API. (The datatracker doc page is HTML-only,
+    so we go straight to the published text rather than scraping it.)
+    """
+    group_type = get_group_type(wg_name)
+    doc_name = f"charter-{group_type}-{wg_name}"
+    rev = _charter_rev(doc_name)
+    if not rev:
+        log(
+            f"Error: no charter document for {wg_name}.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return []
+
+    url = f"https://www.ietf.org/charter/{doc_name}-{rev}.txt"
+    log(f"Fetching charter for {wg_name}...", verbose, level=LogLevel.STATUS)
+    res = fetch_resource(url)
     if not res:
         log(f"Error: Could not fetch charter from {url}", verbose, level=LogLevel.ERROR)
         return []
 
-    charter_text = ""
-    if "text/markdown" in res.headers.get("Content-Type", ""):
-        charter_text = res.text
-    else:
-        # Fallback to HTML cleaning
-        html = res.text
-        bs_soup = BeautifulSoup(html, "html.parser")
-
-        # The charter text is usually in a div with class 'card-body' on the datatracker.
-        charter_div = bs_soup.find("div", class_="card-body")
-
-        if not charter_div:
-            # Fallback to charter-text or similar
-            charter_div = bs_soup.find("div", class_="charter-text")
-
-        if not charter_div:
-            # Fallback to looking for the "Charter" heading
-            heading = None
-            for h2 in bs_soup.find_all("h2"):
-                if h2.string and "Charter" in h2.string:
-                    heading = h2
-                    break
-            if heading:
-                charter_div = heading.find_next("div")
-
-        if charter_div:
-            charter_text = clean_html(str(charter_div))
-        else:
-            # Last resort: clean the whole page but it might be noisy
-            log(
-                "Warning: Could not isolate charter text, cleaning entire page.",
-                verbose,
-                level=LogLevel.PROGRESS,
-            )
-            charter_text = clean_html(html)
-
+    charter_text = res.text
     if charter_text:
         # Check if the content is different from the existing file
         new_content = f"Working Group Charter: {wg_name}\n"
