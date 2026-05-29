@@ -1,12 +1,14 @@
 """Tests for IETF session-polls discovery and rendering.
 
-We stub `fetch_resource` at the module boundary in
-`gather.session_polls` so no HTTP is hit. Tests cover:
+Polls are gathered via the Datatracker polls doctype. We stub
+`iter_group_documents` (the API doc lister) and `fetch_resource` at the
+`gather.session_polls` module boundary so no HTTP is hit. Tests cover:
 
-- The materials-page link extractor picks up `polls-…` hrefs and
-  ignores unrelated ones (slides, agendas, other WGs' polls).
+- The poll doc-name pattern matches `polls-<n>-<wg>-<dt>` and ignores
+  slides / agenda names.
+- The JSON poll payload renders to markdown (question + tallies), with
+  a raw fallback for unexpected shapes.
 - Already-cached polls files aren't re-downloaded.
-- The on-disk format includes meeting / session-datetime / source URL.
 - `discover_local_polls` parses filenames back to (wg, meeting, when).
 - Timeline integration emits a `poll` event per cached file.
 - Malformed filenames are skipped, not crashed on.
@@ -14,9 +16,10 @@ We stub `fetch_resource` at the module boundary in
 
 from __future__ import annotations
 
+import json
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -27,95 +30,95 @@ from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 class _FakeResponse:
     """Minimal `requests.Response`-like object for stubbing."""
 
-    def __init__(self, text: str, content_type: str = "text/html") -> None:
+    def __init__(self, text: str, content_type: str = "application/json") -> None:
         self.text = text
         self.headers: Dict[str, str] = {"Content-Type": content_type}
         self.status_code = 200
 
 
-def _stub_fetch(
+#: A realistic poll payload as Datatracker serves it.
+_POLL_JSON = json.dumps([
+    {
+        "start_time": "2022-07-28T13:30:00Z",
+        "end_time": "2022-07-28T13:31:00Z",
+        "text": "Adopt draft-foo?",
+        "raise_hand": 28,
+        "do_not_raise_hand": 4,
+    },
+])
+
+
+def _stub(
     monkeypatch: pytest.MonkeyPatch,
-    responses: Dict[str, Optional[_FakeResponse]],
-) -> None:
-    """Patch session_polls.fetch_resource with a URL-substring lookup."""
+    doc_names: List[str],
+    content: Optional[_FakeResponse],
+) -> List[str]:
+    """Stub iter_group_documents to yield `doc_names` and fetch_resource
+    to return `content`. Returns a list recording fetched URLs."""
+    fetched: List[str] = []
+
+    def fake_iter(wg: str, doc_type: str) -> Any:  # noqa: ARG001
+        for name in doc_names:
+            yield {"name": name}
+
     def fake_fetch(
         url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
     ) -> Optional[_FakeResponse]:
-        for key, body in responses.items():
-            if key in url:
-                return body
-        return None
+        fetched.append(url)
+        return content
 
+    monkeypatch.setattr(session_polls, "iter_group_documents", fake_iter)
     monkeypatch.setattr(session_polls, "fetch_resource", fake_fetch)
+    return fetched
 
 
-# --- _POLLS_HREF_RE pattern -----------------------------------------------
+# --- _POLLS_NAME_RE pattern -----------------------------------------------
 
 
-def test_polls_url_pattern_matches_canonical_form() -> None:
-    # The URL the user pointed at:
-    #   /meeting/114/materials/polls-114-httpbis-202207281330-00
-    href = "/meeting/114/materials/polls-114-httpbis-202207281330-00"
-    match = session_polls._POLLS_HREF_RE.search(href)
+def test_polls_name_pattern_matches_canonical_form() -> None:
+    match = session_polls._POLLS_NAME_RE.match("polls-114-httpbis-202207281330")
     assert match is not None
-    assert match.group(1) == "114"   # meeting number
-    assert match.group(2) == "httpbis"
-    assert match.group(3) == "202207281330"
-    assert match.group(4) == "00"    # version
+    assert match.group(1) == "114"           # meeting number
+    assert match.group(2) == "202207281330"  # session datetime
 
 
-def test_polls_url_pattern_rejects_slide_or_agenda_links() -> None:
-    # The materials hub also lists slides and agendas; their hrefs
-    # follow different patterns and must NOT be picked up as polls.
-    assert session_polls._POLLS_HREF_RE.search(
-        "/meeting/114/materials/slides-114-httpbis-something"
-    ) is None
-    assert session_polls._POLLS_HREF_RE.search(
-        "/meeting/114/materials/agenda-114-httpbis"
-    ) is None
+def test_polls_name_pattern_rejects_slide_or_agenda_names() -> None:
+    assert session_polls._POLLS_NAME_RE.match("slides-114-httpbis-something") is None
+    assert session_polls._POLLS_NAME_RE.match("agenda-114-httpbis") is None
 
 
-# --- end-to-end download -------------------------------------------------
+# --- JSON rendering -------------------------------------------------------
 
 
-def _materials_hub_html(href: str) -> str:
-    return f"""
-    <html><body>
-      <a href='/meeting/114/materials/slides-114-httpbis-foo'>Slides</a>
-      <a href='{href}'>Polls</a>
-      <a href='/meeting/114/materials/agenda-114-httpbis'>Agenda</a>
-    </body></html>
-    """
+def test_render_polls_body_formats_questions_and_tallies() -> None:
+    body = session_polls._render_polls_body(_POLL_JSON)
+    assert body is not None
+    assert "### Poll 1: Adopt draft-foo?" in body
+    assert "- Raise hand: 28" in body
+    assert "- Do not raise hand: 4" in body
+    # Timestamps are not surfaced as tallies.
+    assert "start_time" not in body
 
 
-def _poll_doc_html(body_text: str) -> str:
-    return f"""
-    <html><body>
-      <div class='card-body'>
-        <h3>Adopt draft-foo?</h3>
-        <p>Yes: 28 / No: 4 / Abstain: 9</p>
-        <p>{body_text}</p>
-      </div>
-    </body></html>
-    """
+def test_render_polls_body_falls_back_on_non_json() -> None:
+    # An unexpected (non-JSON) payload is preserved verbatim rather
+    # than dropped.
+    assert session_polls._render_polls_body("plain text poll") == "plain text poll"
+    assert session_polls._render_polls_body("") is None
+
+
+# --- end-to-end gather ----------------------------------------------------
 
 
 def test_polls_downloaded_to_named_file(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    href = "/meeting/114/materials/polls-114-httpbis-202207281330-00"
-    _stub_fetch(monkeypatch, {
-        "materials.html": _FakeResponse(_materials_hub_html(href)),
-        "polls-114-httpbis": _FakeResponse(_poll_doc_html("Discussion.")),
-    })
+    _stub(monkeypatch, ["polls-114-httpbis-202207281330"], _FakeResponse(_POLL_JSON))
     cache = Path(get_wg_file_cache_dir("httpbis"))
     cache.mkdir(parents=True, exist_ok=True)
-    written = session_polls.fetch_polls_from_materials_page(
-        "https://datatracker.ietf.org/meeting/114/materials.html",
-        str(cache),
-        "httpbis",
-        verbose=Verbosity.QUIET,
+    written = session_polls.process_session_polls(
+        "httpbis", str(cache), verbose=Verbosity.QUIET,
     )
     assert len(written) == 1
     out = Path(written[0])
@@ -126,9 +129,10 @@ def test_polls_downloaded_to_named_file(
     # Header carries the load-bearing context.
     assert "IETF 114" in text
     assert "2022-07-28 13:30 UTC" in text
-    assert "polls-114-httpbis-202207281330-00" in text  # source URL
-    # Body content survives the HTML cleaning.
+    assert "polls-114-httpbis-202207281330" in text  # source URL
+    # Rendered tallies survive.
     assert "Adopt draft-foo?" in text
+    assert "Raise hand: 28" in text
 
 
 def test_polls_skip_when_already_cached(
@@ -137,7 +141,6 @@ def test_polls_skip_when_already_cached(
 ) -> None:
     # Re-running gather mustn't re-fetch a polls document we already
     # have. Saves bandwidth and matches existing minutes behaviour.
-    href = "/meeting/114/materials/polls-114-httpbis-202207281330-00"
     cache = Path(get_wg_file_cache_dir("httpbis"))
     cache.mkdir(parents=True, exist_ok=True)
     polls_subdir = cache / "meetings" / "ietf114" / "polls"
@@ -145,120 +148,62 @@ def test_polls_skip_when_already_cached(
     pre_existing = polls_subdir / "202207281330.md"
     pre_existing.write_text("# pre-existing content\n")
 
-    called: list[str] = []
-
-    def tracking_fetch(
-        url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
-    ) -> Optional[_FakeResponse]:
-        called.append(url)
-        if "materials.html" in url:
-            return _FakeResponse(_materials_hub_html(href))
-        return _FakeResponse(_poll_doc_html("fresh content"))
-
-    monkeypatch.setattr(session_polls, "fetch_resource", tracking_fetch)
-    written = session_polls.fetch_polls_from_materials_page(
-        "https://datatracker.ietf.org/meeting/114/materials.html",
-        str(cache),
-        "httpbis",
-        verbose=Verbosity.QUIET,
+    fetched = _stub(
+        monkeypatch, ["polls-114-httpbis-202207281330"], _FakeResponse(_POLL_JSON),
+    )
+    written = session_polls.process_session_polls(
+        "httpbis", str(cache), verbose=Verbosity.QUIET,
     )
     # Pre-existing file unchanged, no new files reported, and the
-    # poll-doc URL was never fetched.
+    # poll content URL was never fetched.
     assert written == []
     assert pre_existing.read_text() == "# pre-existing content\n"
-    assert not any("polls-114-httpbis" in u for u in called)
+    assert fetched == []
 
 
-def test_polls_ignores_other_wgs_on_same_hub(
+def test_polls_skips_unparseable_doc_names(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A joint or back-to-back session might render polls for a
-    # different WG on the same materials hub. We mustn't pull those.
-    other_href = "/meeting/114/materials/polls-114-tls-202207281530-00"
-    _stub_fetch(monkeypatch, {
-        "materials.html": _FakeResponse(_materials_hub_html(other_href)),
-        "polls-114-tls": _FakeResponse(_poll_doc_html("tls content")),
-    })
+    # A polls doctype doc whose name doesn't match the canonical shape
+    # (e.g. an interim, which the numbered-meeting regex skips) is
+    # ignored without error.
+    _stub(
+        monkeypatch,
+        ["polls-interim-2023-httpbis-01-httpbis-202301011200"],
+        _FakeResponse(_POLL_JSON),
+    )
     cache = Path(get_wg_file_cache_dir("httpbis"))
     cache.mkdir(parents=True, exist_ok=True)
-    written = session_polls.fetch_polls_from_materials_page(
-        "https://datatracker.ietf.org/meeting/114/materials.html",
-        str(cache),
-        "httpbis",
-        verbose=Verbosity.QUIET,
-    )
-    assert written == []
-    assert not (
-        cache / "meetings" / "ietf114" / "polls" / "202207281530.md"
-    ).exists()
+    assert session_polls.process_session_polls(
+        "httpbis", str(cache), verbose=Verbosity.QUIET,
+    ) == []
 
 
-def test_polls_version_dedupe(
+def test_polls_no_docs_no_files(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # If the hub lists -00 and -01 for the same session, we take one
-    # (the first encountered) — not both, which would duplicate.
-    html = """
-    <html><body>
-      <a href='/meeting/114/materials/polls-114-httpbis-202207281330-00'>v0</a>
-      <a href='/meeting/114/materials/polls-114-httpbis-202207281330-01'>v1</a>
-    </body></html>
-    """
-    _stub_fetch(monkeypatch, {
-        "materials.html": _FakeResponse(html),
-        "polls-114-httpbis": _FakeResponse(_poll_doc_html("body")),
-    })
+    # No polls docs for the group → no writes, no errors.
+    _stub(monkeypatch, [], None)
     cache = Path(get_wg_file_cache_dir("httpbis"))
     cache.mkdir(parents=True, exist_ok=True)
-    written = session_polls.fetch_polls_from_materials_page(
-        "https://datatracker.ietf.org/meeting/114/materials.html",
-        str(cache),
-        "httpbis",
-        verbose=Verbosity.QUIET,
-    )
-    assert len(written) == 1
-
-
-def test_polls_no_links_no_files(
-    isolated_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Hub page has no polls links → no writes, no errors.
-    _stub_fetch(monkeypatch, {
-        "materials.html": _FakeResponse(
-            "<html><body><a href='/foo'>Foo</a></body></html>"
-        ),
-    })
-    cache = Path(get_wg_file_cache_dir("httpbis"))
-    cache.mkdir(parents=True, exist_ok=True)
-    written = session_polls.fetch_polls_from_materials_page(
-        "https://datatracker.ietf.org/meeting/114/materials.html",
-        str(cache),
-        "httpbis",
-        verbose=Verbosity.QUIET,
-    )
-    assert written == []
+    assert session_polls.process_session_polls(
+        "httpbis", str(cache), verbose=Verbosity.QUIET,
+    ) == []
 
 
 def test_polls_fetch_failure_is_swallowed(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Materials hub unreachable → empty result, no crash. Same
+    # Poll content unreachable → empty result, no crash. Same
     # philosophy as the rest of the Datatracker integration.
-    monkeypatch.setattr(
-        session_polls, "fetch_resource",
-        lambda url, headers=None: None,
-    )
+    _stub(monkeypatch, ["polls-114-httpbis-202207281330"], None)
     cache = Path(get_wg_file_cache_dir("httpbis"))
     cache.mkdir(parents=True, exist_ok=True)
-    assert session_polls.fetch_polls_from_materials_page(
-        "https://datatracker.ietf.org/meeting/114/materials.html",
-        str(cache),
-        "httpbis",
-        verbose=Verbosity.QUIET,
+    assert session_polls.process_session_polls(
+        "httpbis", str(cache), verbose=Verbosity.QUIET,
     ) == []
 
 

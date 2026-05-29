@@ -1,9 +1,10 @@
 import os
 import re
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
+from .datatracker import iter_group_documents
 
 # `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
 # `draft-foo-bar` all normalise to `draft-foo-bar`. Used by both
@@ -27,31 +28,6 @@ def normalize_draft_name(name: str) -> str:
     return cleaned
 
 
-#: Datatracker document API. We page through `meta.next` so WGs with
-#: hundreds of documents aren't silently truncated.
-_DOC_API = "https://datatracker.ietf.org/api/v1/doc/document/"
-
-
-def _iter_group_docs(wg_name: str, doc_type: str) -> Iterator[Dict[str, Any]]:
-    """Yield every Datatracker document object of `doc_type` (`draft`,
-    `rfc`, …) whose responsible group is `wg_name`, following pagination."""
-    url: Optional[str] = (
-        f"{_DOC_API}?group__acronym={wg_name}&type={doc_type}"
-        "&format=json&limit=200"
-    )
-    while url:
-        res = fetch_resource(url)
-        if not res:
-            return
-        try:
-            body = res.json()
-        except ValueError:
-            return
-        yield from body.get("objects") or []
-        nxt = (body.get("meta") or {}).get("next")
-        url = f"https://datatracker.ietf.org{nxt}" if nxt else None
-
-
 def get_wg_documents(
     wg_name: str, verbose: Verbosity = Verbosity.STATUS
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -70,7 +46,7 @@ def get_wg_documents(
     prefix = f"draft-{group_type}-{wg_name}-"
 
     drafts: Dict[str, int] = {}
-    for obj in _iter_group_docs(wg_name, "draft"):
+    for obj in iter_group_documents(wg_name, "draft"):
         name = obj.get("name") or ""
         if not name.startswith(prefix):
             continue
@@ -82,7 +58,7 @@ def get_wg_documents(
             drafts[name] = rev_int
 
     rfcs: Dict[str, str] = {}
-    for obj in _iter_group_docs(wg_name, "rfc"):
+    for obj in iter_group_documents(wg_name, "rfc"):
         name = obj.get("name") or ""
         match = re.match(r"rfc(\d+)$", name)
         if match:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
@@ -83,6 +83,27 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         return result if isinstance(result, dict) else None
     except (requests.RequestException, ValueError):
         return None
+
+
+def iter_group_documents(wg_name: str, doc_type: str) -> Iterator[Dict[str, Any]]:
+    """Yield every Datatracker document object of `doc_type` (`draft`,
+    `rfc`, `polls`, …) whose responsible group is `wg_name`.
+
+    Pages through `meta.next` so a group with hundreds of documents is
+    never silently truncated. Empty if the API is unreachable or the
+    group has no documents of that type. Canonical document lister for
+    the gather layer (drafts, RFCs, session polls all use it).
+    """
+    path: Optional[str] = (
+        f"{_API_BASE}/doc/document/?group__acronym={wg_name}"
+        f"&type={doc_type}&limit=200"
+    )
+    while path:
+        body = _get_json(path)
+        if not body:
+            return
+        yield from body.get("objects") or []
+        path = (body.get("meta") or {}).get("next") or None
 
 
 def fetch_wg_roles(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Role]:

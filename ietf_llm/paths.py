@@ -122,6 +122,10 @@ def minutes_path(cache_dir: str, code: str) -> str:
     return os.path.join(meeting_dir(cache_dir, code), "minutes.md")
 
 
+def agenda_path(cache_dir: str, code: str) -> str:
+    return os.path.join(meeting_dir(cache_dir, code), "agenda.md")
+
+
 def slides_dir(cache_dir: str, code: str) -> str:
     return os.path.join(meeting_dir(cache_dir, code), SUBDIR_SLIDES)
 

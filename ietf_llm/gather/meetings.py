@@ -3,14 +3,13 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from bs4 import BeautifulSoup, Tag
 
 from ..paths import (
     ORPHAN_MEETING_CODE,
+    agenda_path,
     meeting_dir,
     meetings_dir,
     minutes_path,
@@ -19,14 +18,13 @@ from ..paths import (
 from ..utils import (
     LogLevel,
     Verbosity,
-    clean_html,
     fetch_resource,
-    fetch_url,
     format_filename,
     log,
     write_if_changed,
 )
-from .session_polls import fetch_polls_from_materials_page
+from .datatracker import _get_json
+from .session_polls import process_session_polls
 
 
 @dataclass
@@ -66,75 +64,111 @@ def _is_interim(number: str) -> bool:
     return "interim" in number.lower()
 
 
+# Datatracker doc-name prefixes we ingest as meeting materials. Other
+# prefixes (recording, chatlog, bluesheets) are skipped; polls are
+# gathered separately via the polls doctype (see session_polls).
+_MATERIAL_KINDS = ("minutes", "agenda", "slides")
+
+_SESSION_API = (
+    "https://datatracker.ietf.org/api/v1/meeting/session/"
+    "?group__acronym={wg}&limit=100"
+)
+
+
+def _material_kind(docname: str) -> Optional[str]:
+    """Map a Datatracker material doc name to the kind we ingest, or None.
+
+    Doc names are `<kind>-<meeting>-<wg>[-…]`, so the leading token is
+    the material kind (`agenda-125-httpbis`, `slides-125-httpbis-…`)."""
+    head = docname.split("-", 1)[0].lower()
+    return head if head in _MATERIAL_KINDS else None
+
+
+def _material_url(meeting_number: str, docname: str) -> str:
+    """Direct content URL for a material doc. Resolves to the latest
+    rendered file (markdown / text / PDF) — no revision or extension
+    needed, Datatracker redirects to the current version."""
+    return (
+        "https://datatracker.ietf.org/meeting/"
+        f"{meeting_number}/materials/{docname}"
+    )
+
+
+def _meeting_meta(
+    meeting_uri: str, cache: Dict[str, Tuple[Optional[str], str, str]]
+) -> Tuple[Optional[str], str, str]:
+    """Resolve a meeting URI to `(display_number, raw_number, date)`.
+
+    `raw_number` ("125" / "interim-2026-httpbis-01") builds content
+    URLs; `display_number` ("IETF 125" / the raw interim) is what
+    `_safe_meeting_code` / `_is_interim` / `_parse_meeting_date`
+    consume downstream. Cached so a multi-session meeting resolves once.
+    """
+    if meeting_uri in cache:
+        return cache[meeting_uri]
+    body = _get_json(meeting_uri) or {}
+    number = body.get("number")
+    if number is None:
+        result: Tuple[Optional[str], str, str] = (None, "", "")
+    else:
+        raw = str(number)
+        mtype = (body.get("type") or "").rstrip("/")
+        display = f"IETF {raw}" if mtype.endswith("/ietf") else raw
+        result = (display, raw, str(body.get("date") or ""))
+    cache[meeting_uri] = result
+    return result
+
+
 def get_meeting_links(
     wg_name: str, verbose: Verbosity = Verbosity.STATUS
 ) -> List[Dict[str, Any]]:
-    """Crawl meeting materials page and return list of primary links to minutes and materials."""
-    url = f"https://datatracker.ietf.org/group/{wg_name}/meetings/"
-    log(f"Crawling meeting materials for {wg_name}...", verbose, level=LogLevel.STATUS)
-    html = fetch_url(url)
-    if not html:
-        return []
+    """List a WG's meetings and their materials via the Datatracker API.
 
-    bs_soup = BeautifulSoup(html, "html.parser")
-    meetings = []
+    Walks `/api/v1/meeting/session/?group__acronym=<wg>`, resolves each
+    session's meeting (number, date) and materials (agenda / minutes /
+    slides), and returns one entry per meeting:
 
-    # The datatracker uses id='pastmeets' for the header section
-    header = bs_soup.find(id="pastmeets")
-    if not header:
-        return []
+        {"number": "IETF 125" | "interim-…",
+         "date": "YYYY-MM-DD",
+         "links": [{"type": "minutes"|"agenda"|"slides", "url": <content>}]}
 
-    # Find the first table after this header
-    if not isinstance(header, Tag):
-        return []
-    table = header.find_next("table")
-    if not isinstance(table, Tag):
-        return []
-
-    for row in table.find_all("tr"):
-        cells = row.find_all("td")
-        if not cells:
-            continue
-
-        # Extraction: Use 'data-start-utc' if available in a span, otherwise text
-        date_cell = cells[1]
-        date_text = date_cell.get_text(strip=True)
-        if not date_text:
-            # Fallback to data-start-utc attribute if present (common for JS-populated fields)
-            span = date_cell.find("span", attrs={"data-start-utc": True})
-            if isinstance(span, Tag):
-                attr_val = span.get("data-start-utc")
-                if isinstance(attr_val, str):
-                    date_text = attr_val
-
-        meeting_info: Dict[str, Any] = {
-            "number": cells[0].get_text(strip=True),
-            "date": date_text,
-            "links": [],
-        }
-
-        # Refinement: only return links that exactly match 'Minutes' or 'Materials'
-        # in a link with class btn-primary
-        links = row.find_all("a", class_="btn-primary")
-        for link in links:
-            href_attr = link.get("href")
-            if not href_attr or isinstance(href_attr, list):
+    Content URLs are built from the document name and resolve to the
+    latest rendered file — no HTML scraping. Meetings are merged across
+    their sessions so a multi-session meeting is one entry.
+    """
+    log(
+        f"Fetching meetings for {wg_name} via Datatracker API...",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    meetings_by_num: Dict[str, Dict[str, Any]] = {}
+    meeting_cache: Dict[str, Tuple[Optional[str], str, str]] = {}
+    path: Optional[str] = _SESSION_API.format(wg=wg_name)
+    while path:
+        body = _get_json(path)
+        if not body:
+            break
+        for sess in body.get("objects") or []:
+            meeting_uri = sess.get("meeting")
+            if not meeting_uri:
                 continue
-            href = str(href_attr)
-            text = link.get_text(strip=True)
+            display, raw, date_str = _meeting_meta(meeting_uri, meeting_cache)
+            if not display:
+                continue
+            entry = meetings_by_num.setdefault(
+                display, {"number": display, "date": date_str, "links": []}
+            )
+            for muri in sess.get("materials") or []:
+                docname = str(muri).rstrip("/").rsplit("/", maxsplit=1)[-1]
+                kind = _material_kind(docname)
+                if kind is None:
+                    continue
+                entry["links"].append(
+                    {"type": kind, "url": _material_url(raw, docname)}
+                )
+        path = (body.get("meta") or {}).get("next") or None
 
-            # Resolve relative URLs
-            href = urljoin(url, href)
-
-            if text == "Minutes":
-                meeting_info["links"].append({"type": "minutes", "url": href})
-            elif text == "Materials":
-                meeting_info["links"].append({"type": "material", "url": href})
-
-        if meeting_info["links"]:
-            meetings.append(meeting_info)
-
-    return meetings
+    return [m for m in meetings_by_num.values() if m["links"]]
 
 
 def cluster_meetings(meetings: List[Dict[str, Any]]) -> List[MeetingCluster]:
@@ -281,6 +315,11 @@ def process_meetings(
     for cluster in clusters:
         _process_cluster(cluster, wg_name, destination, verbose)
 
+    # Session polls are their own Datatracker doctype, gathered directly
+    # by group rather than per-meeting (they don't ride the materials
+    # walk any more).
+    process_session_polls(wg_name, destination, verbose)
+
     # Migration / cleanup: an interim dir from a previous (un-clustered)
     # gather whose code was absorbed into a canonical cluster is folded
     # in and removed. Numbered-meeting and orphan dirs are left alone.
@@ -332,41 +371,47 @@ def _process_cluster(
         if cluster.start.date() == cluster.end.date()
         else f"{cluster.start.strftime('%Y-%m-%d')} → {cluster.end.strftime('%Y-%m-%d')}"
     )
-    parts: List[str] = [
-        f"# Meeting Materials: {code} ({wg_name})\n",
-        f"Date: {span}\n",
-        f"Sessions: {len(cluster.sessions)}\n\n",
-    ]
+
+    def _header(title: str) -> List[str]:
+        return [
+            f"# {title}: {code} ({wg_name})\n",
+            f"Date: {span}\n",
+            f"Sessions: {len(cluster.sessions)}\n\n",
+        ]
+
+    # "Meeting Materials" is the historical minutes-file title; keep it
+    # verbatim so existing minutes.md files don't churn / re-embed.
+    minutes_parts: List[str] = _header("Meeting Materials")
+    agenda_parts: List[str] = _header("Meeting Agenda")
+    slides_out = slides_dir(destination, code)
     for session in cluster.sessions:
         session_date = session.get("date", "")
         for link in session["links"]:
-            # Slides / PDFs → canonical slides dir.
-            _handle_pdfs(link["url"], destination, code, verbose)
-            # Session polls (same materials-page walk).
-            if link["type"] == "material":
-                fetch_polls_from_materials_page(
-                    link["url"],
-                    destination,
-                    wg_name,
-                    verbose,
-                )
-            # Minutes text, headed per-session so multi-session
-            # clusters stay legible (same-day sessions get the
-            # number to disambiguate the date).
-            if link["type"] == "minutes":
-                content = _extract_minutes_content(link["url"], verbose)
-                if content:
-                    parts.append(f"## Session {session_date} ({session['number']})\n")
-                    parts.append(f"URL: {link['url']}\n\n")
-                    parts.append(content + "\n\n---\n\n")
+            kind = link["type"]
+            if kind == "slides":
+                _download_slide(link["url"], slides_out, verbose)
+                continue
+            # Minutes / agenda text, headed per-session so multi-session
+            # clusters stay legible (same-day sessions get the number to
+            # disambiguate the date).
+            content = _fetch_text(link["url"], verbose)
+            if content:
+                bucket = minutes_parts if kind == "minutes" else agenda_parts
+                bucket.append(f"## Session {session_date} ({session['number']})\n")
+                bucket.append(f"URL: {link['url']}\n\n")
+                bucket.append(content.strip() + "\n\n---\n\n")
 
-    total_text = "".join(parts)
-    # Only write minutes if a session actually contributed content
-    # (header alone is ~3 short lines); otherwise this is a slides-only
-    # cluster and we leave no minutes.md.
-    if len(total_text.strip()) > 150:
-        if write_if_changed(output_file, total_text):
-            log(f"Wrote {output_file}", verbose, level=LogLevel.PROGRESS)
+    # Only write a file if a session actually contributed content (the
+    # header alone is ~3 short lines); otherwise this is a slides-only
+    # cluster, or the meeting has no agenda / no minutes yet, and we
+    # leave that file absent.
+    for path, parts in (
+        (output_file, minutes_parts),
+        (agenda_path(destination, code), agenda_parts),
+    ):
+        text = "".join(parts)
+        if len(text.strip()) > 150 and write_if_changed(path, text):
+            log(f"Wrote {path}", verbose, level=LogLevel.PROGRESS)
 
 
 def _cleanup_absorbed_dirs(
@@ -391,49 +436,18 @@ def _cleanup_absorbed_dirs(
             shutil.rmtree(full, ignore_errors=True)
 
 
-def _handle_pdfs(url: str, dest: str, safe_num: str, verbose: Verbosity) -> List[str]:
-    """Crawl a URL for PDF slide links and download them into the
-    meeting's slides/ subdir."""
-    log(f"Checking for PDFs at {url}...", verbose, level=LogLevel.PROGRESS)
-    res = fetch_resource(url)
-    if not res:
-        return []
-
-    updated = []
-    soup = BeautifulSoup(res.text, "html.parser")
-    # Look for potential slide/PDF links
-    potential = soup.find_all("a", href=re.compile(r"slides-|/materials/|\.pdf$", re.I))
-
-    # Slides for this meeting all land under meetings/<code>/slides/.
-    out_dir = slides_dir(dest, safe_num)
+def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
+    """Download one slide deck (a material content URL that resolves to
+    a PDF) into the meeting's slides/ subdir. The doc name is the
+    filename; existing files are left alone so re-gathers are cheap."""
     os.makedirs(out_dir, exist_ok=True)
-
-    for p_link in potential:
-        href = p_link.get("href")
-        if not href or isinstance(href, list):
-            continue
-        p_url = str(href)
-        p_text = p_link.get_text(strip=True).lower()
-
-        # Skip non-slide links
-        if (
-            "slides" not in p_text
-            and "slides-" not in p_url
-            and not p_url.lower().endswith(".pdf")
-        ):
-            continue
-
-        p_url = urljoin(url, p_url)
-        p_base = os.path.basename(p_url)
-        if not p_base.lower().endswith(".pdf"):
-            p_base += ".pdf"
-
-        # Directory disambiguates the meeting; basename can stand alone.
-        pdf_dest = os.path.join(out_dir, p_base)
-        if not os.path.exists(pdf_dest):
-            if _download_if_pdf(p_url, pdf_dest, verbose):
-                updated.append(pdf_dest)
-    return updated
+    base = url.rstrip("/").rsplit("/", maxsplit=1)[-1]
+    if not base.lower().endswith(".pdf"):
+        base += ".pdf"
+    pdf_dest = os.path.join(out_dir, base)
+    if os.path.exists(pdf_dest):
+        return False
+    return _download_if_pdf(url, pdf_dest, verbose)
 
 
 def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
@@ -459,49 +473,15 @@ def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
     return False
 
 
-def _extract_minutes_content(url: str, verbose: Verbosity) -> Optional[str]:
-    """Find and return markdown/text minutes from a meeting minutes page."""
-    log(f"Fetching minutes content from {url}...", verbose, level=LogLevel.PROGRESS)
+def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
+    """Fetch a minutes / agenda material content URL and return its body.
+
+    The Datatracker materials endpoint serves the rendered source
+    directly (markdown for recent docs, plain text for older ones), so
+    we take the body as-is — no HTML wrapper to strip."""
+    log(f"Fetching {url}...", verbose, level=LogLevel.PROGRESS)
     res = fetch_resource(url)
-    if not res:
-        return None
-
-    # Already markdown?
-    if "text/markdown" in res.headers.get("Content-Type", "").lower():
-        return str(res.text)
-
-    soup = BeautifulSoup(res.text, "html.parser")
-    # Check for explicit markdown links
-    md_link = None
-    for a_tag in soup.find_all("a"):
-        a_text = a_tag.get_text(strip=True).lower()
-        a_href_attr = a_tag.get("href", "")
-        if not a_href_attr or isinstance(a_href_attr, list):
-            continue
-        a_href = str(a_href_attr)
-        if (
-            "markdown" in a_text
-            or a_href.lower().endswith(".md")
-            or ".md?" in a_href.lower()
-        ):
-            md_link = a_tag
-            break
-
-    if md_link:
-        md_url_attr = md_link.get("href")
-        if md_url_attr and not isinstance(md_url_attr, list):
-            md_url = urljoin(url, str(md_url_attr))
-            md_res = fetch_resource(md_url, headers={"Accept": "text/markdown"})
-            if (
-                md_res
-                and "text/markdown" in md_res.headers.get("Content-Type", "").lower()
-            ):
-                return str(md_res.text)
-
-    # Final fallback: clean card-body or full text
-    body_div = soup.find("div", class_="card-body")
-    final_text = clean_html(str(body_div)) if body_div else clean_html(res.text)
-    return str(final_text) if final_text else None
+    return str(res.text) if res else None
 
 
 def _parse_meeting_date(date_str: str, meeting_num: str) -> Optional[datetime]:
