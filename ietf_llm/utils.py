@@ -199,7 +199,10 @@ def get_group_resources(wg_name: str) -> Tuple[Tuple[str, str, str], ...]:
         value = obj.get("value") or ""
         if slug and value:
             out.append((slug, obj.get("display_name") or slug, value))
-    return tuple(out)
+    # Sort for deterministic output: group.md is write-if-changed, so a
+    # non-deterministic API ordering would churn the file (and re-embed)
+    # on every gather.
+    return tuple(sorted(out))
 
 
 #: List name embedded in a mailarchive.ietf.org browse URL.
