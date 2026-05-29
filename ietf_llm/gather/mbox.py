@@ -24,6 +24,10 @@ IMAP_PORT = 993
 IMAP_USER = "anonymous"
 IMAP_PASS = "mnot+ietf-llm@ietf.org"
 BATCH_SIZE = 50
+# Socket timeout (seconds) so a stalled server can't hang a gather
+# indefinitely. Applies per blocking read, so it bounds stalls without
+# capping the total transfer time of a large (chunked) response.
+IMAP_TIMEOUT = 60
 
 
 def validate_list_names(
@@ -241,7 +245,7 @@ def _sync_one_list(
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT)
         mail.login(IMAP_USER, IMAP_PASS)
         folder = f'"Shared Folders/{list_name}"'
         status, _ = mail.select(folder, readonly=True)
@@ -273,11 +277,10 @@ def _sync_one_list(
             verbose,
             level=LogLevel.PROGRESS,
         )
-        missing_uids = [
-            uid
-            for uid in uids
-            if not os.path.exists(os.path.join(cache_dir, f"{uid.decode()}.eml"))
-        ]
+        # One directory listing beats a stat() per UID when the search
+        # window holds thousands of already-cached messages.
+        cached = {n for n in os.listdir(cache_dir) if n.endswith(".eml")}
+        missing_uids = [uid for uid in uids if f"{uid.decode()}.eml" not in cached]
         new_count = 0
         if missing_uids:
             new_count = _download_batches(mail, missing_uids, cache_dir, verbose)
