@@ -1,8 +1,6 @@
 import os
 import re
-from typing import Any, Dict, List, Optional
-
-from bs4 import BeautifulSoup
+from typing import Any, Dict, Iterator, List, Optional
 
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
@@ -29,71 +27,70 @@ def normalize_draft_name(name: str) -> str:
     return cleaned
 
 
+#: Datatracker document API. We page through `meta.next` so WGs with
+#: hundreds of documents aren't silently truncated.
+_DOC_API = "https://datatracker.ietf.org/api/v1/doc/document/"
+
+
+def _iter_group_docs(wg_name: str, doc_type: str) -> Iterator[Dict[str, Any]]:
+    """Yield every Datatracker document object of `doc_type` (`draft`,
+    `rfc`, …) whose responsible group is `wg_name`, following pagination."""
+    url: Optional[str] = (
+        f"{_DOC_API}?group__acronym={wg_name}&type={doc_type}"
+        "&format=json&limit=200"
+    )
+    while url:
+        res = fetch_resource(url)
+        if not res:
+            return
+        try:
+            body = res.json()
+        except ValueError:
+            return
+        yield from body.get("objects") or []
+        nxt = (body.get("meta") or {}).get("next")
+        url = f"https://datatracker.ietf.org{nxt}" if nxt else None
+
+
 def get_wg_documents(
     wg_name: str, verbose: Verbosity = Verbosity.STATUS
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Scrape WG documents page for drafts and RFCs."""
-    url = f"https://datatracker.ietf.org/group/{wg_name}/documents/"
+    """List the WG's adopted drafts and published RFCs via the
+    Datatracker JSON API (`/api/v1/doc/document/?group__acronym=<wg>`).
+
+    Drafts are filtered to the `draft-<type>-<wg>-` adoption naming
+    convention, so individual submissions merely associated with the
+    group are skipped (matching what the old documents-page view
+    surfaced). RFCs come from the group's `rfc` documents. Returns
+    `{"drafts": [...], "rfcs": [...]}` in the shape
+    `process_documents` consumes.
+    """
     log(f"Finding documents for {wg_name}...", verbose, level=LogLevel.STATUS)
-    res = fetch_resource(url)
-    if not res:
-        return {"drafts": [], "rfcs": []}
-
-    soup = BeautifulSoup(res.text, "html.parser")
-    drafts: List[Dict[str, Any]] = []
-    rfcs: List[Dict[str, Any]] = []
-
-    # Patterns
     group_type = get_group_type(wg_name)
     prefix = f"draft-{group_type}-{wg_name}-"
-    draft_pattern = f"/doc/{prefix}"
 
-    for a_tag in soup.find_all("a", href=True):
-        href = a_tag.get("href")
-        if not isinstance(href, str):
+    drafts: Dict[str, int] = {}
+    for obj in _iter_group_docs(wg_name, "draft"):
+        name = obj.get("name") or ""
+        if not name.startswith(prefix):
             continue
+        rev = obj.get("rev")
+        if not isinstance(rev, str) or not rev.isdigit():
+            continue
+        rev_int = int(rev)
+        if name not in drafts or rev_int > drafts[name]:
+            drafts[name] = rev_int
 
-        # Check for RFCs
-        if "/doc/rfc" in href:
-            rfc_match = re.search(r"/doc/rfc(\d+)/", href)
-            if rfc_match:
-                rfc_num = rfc_match.group(1).lstrip("0")
-                rfcs.append({"name": f"rfc{rfc_num}", "number": rfc_num})
-                continue
-
-        # Check for Drafts
-        if draft_pattern in href:
-            text = a_tag.get_text(strip=True)
-            # Text usually looks like "draft-ietf-wg-name-something-05"
-            match = re.search(r"(" + re.escape(prefix) + r".*?)-(\d+)$", text)
-            if match:
-                draft_name = match.group(1)
-                try:
-                    current_rev = int(match.group(2))
-                    drafts.append({"name": draft_name, "max_rev": current_rev})
-                except ValueError:
-                    continue
-
-    # De-duplicate drafts and keep the highest revision found
-    unique_drafts: Dict[str, int] = {}
-    for draft_entry in drafts:
-        d_name = str(draft_entry["name"])
-        d_rev = int(draft_entry["max_rev"])
-        if d_name not in unique_drafts or d_rev > unique_drafts[d_name]:
-            unique_drafts[d_name] = d_rev
-
-    # De-duplicate RFCs
-    unique_rfcs: Dict[str, str] = {}
-    for rfc_entry in rfcs:
-        r_name = str(rfc_entry["name"])
-        r_num = str(rfc_entry["number"])
-        unique_rfcs[r_name] = r_num
+    rfcs: Dict[str, str] = {}
+    for obj in _iter_group_docs(wg_name, "rfc"):
+        name = obj.get("name") or ""
+        match = re.match(r"rfc(\d+)$", name)
+        if match:
+            rfcs[name] = match.group(1)
 
     return {
-        "drafts": [
-            {"name": name, "max_rev": rev} for name, rev in unique_drafts.items()
-        ],
-        "rfcs": [{"name": name, "number": num} for name, num in unique_rfcs.items()],
+        "drafts": [{"name": n, "max_rev": r} for n, r in drafts.items()],
+        "rfcs": [{"name": n, "number": num} for n, num in rfcs.items()],
     }
 
 
