@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, List, Optional
 
 from ..paths import transcript_path, transcripts_dir
-from ..utils import LogLevel, Verbosity, get_cache_dir, log
+from ..utils import LogLevel, Verbosity, file_lock, get_cache_dir, log
 
 if TYPE_CHECKING:
     from .meetings import MeetingCluster
@@ -25,31 +25,44 @@ def process_transcripts(
     repo_dir = os.path.join(get_cache_dir(), "transcripts-repo")
     branch = "cache"
 
-    # 1. Sync the repo
-    if not os.path.exists(repo_dir):
-        log(f"Cloning {repo_url} (branch {branch})...", verbose, level=LogLevel.STATUS)
-        try:
-            subprocess.run(
-                ["git", "clone", "-b", branch, "--depth", "1", repo_url, repo_dir],
-                check=True,
-                capture_output=True,
-                text=True,
+    # 1. Sync the repo. The clone is shared across all WGs, so serialise
+    # clone/pull across concurrent gathers — two git processes mutating
+    # one working tree collide on index.lock and corrupt it.
+    with file_lock(f"{repo_dir}.lock"):
+        if not os.path.exists(repo_dir):
+            log(
+                f"Cloning {repo_url} (branch {branch})...",
+                verbose,
+                level=LogLevel.STATUS,
             )
-        except subprocess.CalledProcessError as err:
-            log(f"Error cloning transcripts repo: {err.stderr}", level=LogLevel.ERROR)
-            return []
-    else:
-        log("Updating transcripts repo...", verbose, level=LogLevel.PROGRESS)
-        try:
-            subprocess.run(
-                ["git", "-C", repo_dir, "pull", "origin", branch],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as err:
-            log(f"Error updating transcripts repo: {err.stderr}", level=LogLevel.ERROR)
-            # Continue anyway, maybe the cache is usable
+            try:
+                subprocess.run(
+                    ["git", "clone", "-b", branch, "--depth", "1", repo_url, repo_dir],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as err:
+                log(
+                    f"Error cloning transcripts repo: {err.stderr}",
+                    level=LogLevel.ERROR,
+                )
+                return []
+        else:
+            log("Updating transcripts repo...", verbose, level=LogLevel.PROGRESS)
+            try:
+                subprocess.run(
+                    ["git", "-C", repo_dir, "pull", "origin", branch],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as err:
+                log(
+                    f"Error updating transcripts repo: {err.stderr}",
+                    level=LogLevel.ERROR,
+                )
+                # Continue anyway, maybe the cache is usable
 
     # 2. Find transcripts for the WG
     # The repo structure is: transcripts/IETF{num}-{WG}-{date}-{time}.md

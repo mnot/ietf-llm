@@ -11,6 +11,11 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
+    _fcntl = None  # type: ignore[assignment]
+
 from . import __version__
 
 DEFAULT_HEADERS = {"User-Agent": f"ietf-llm/{__version__}"}
@@ -116,6 +121,29 @@ def copy_if_updated(src_path: str, dest_path: str) -> bool:
 
     shutil.copy2(src_path, dest_path)
     return True
+
+
+@contextmanager
+def file_lock(lock_path: str) -> "Iterator[None]":
+    """Best-effort cross-process exclusive lock (flock) held for the
+    `with` body. Used to serialise access to a shared resource across
+    concurrent gathers — notably the single transcripts git clone, where
+    two simultaneous clone/pull operations would collide on git's
+    index.lock and corrupt the tree.
+
+    A no-op where `fcntl` is unavailable (non-POSIX); the lock file
+    itself is just a handle and is left in place between runs.
+    """
+    if _fcntl is None:
+        yield
+        return
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as handle:
+        _fcntl.flock(handle, _fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            _fcntl.flock(handle, _fcntl.LOCK_UN)
 
 
 @contextmanager
