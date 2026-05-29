@@ -1249,7 +1249,9 @@ def _prewarm_embedding_model_async() -> None:
         if not os.path.isfile(db_path):
             continue
         try:
-            with sqlite3.connect(db_path) as conn:
+            # Busy timeout so this read waits out a concurrent gather
+            # write instead of erroring with "database is locked".
+            with sqlite3.connect(db_path, timeout=30.0) as conn:
                 row = conn.execute(
                     "SELECT value FROM meta WHERE key='model'"
                 ).fetchone()

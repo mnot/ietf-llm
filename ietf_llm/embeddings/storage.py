@@ -34,10 +34,30 @@ def _db_path(wg: str) -> str:
     return os.path.join(get_cache_dir(), wg, "embeddings.db")
 
 
+# Wait up to this long for a lock instead of failing immediately, so a
+# reader (e.g. an MCP query) and a writer (a gather rebuilding the
+# index) can overlap on the same WG without "database is locked".
+_BUSY_TIMEOUT_S = 30.0
+
+
+def _connect(path: str, *, write: bool = False) -> sqlite3.Connection:
+    """Open the index DB with a busy timeout. Writers also switch the DB
+    to WAL (persistent), which lets readers proceed during a write."""
+    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S)
+    if write:
+        conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _connect_ro(wg: str) -> sqlite3.Connection:
+    """Read-only connection to a WG index (busy timeout, no schema work)."""
+    return _connect(_db_path(wg))
+
+
 def _open_db(wg: str) -> sqlite3.Connection:
     path = _db_path(wg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = _connect(path, write=True)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             id         INTEGER PRIMARY KEY,
@@ -157,7 +177,7 @@ def chunk_counts(wg: str) -> Dict[str, int]:
     """
     if not os.path.exists(_db_path(wg)):
         return {}
-    conn = sqlite3.connect(_db_path(wg))
+    conn = _connect_ro(wg)
     try:
         cur = conn.execute("SELECT file, COUNT(*) FROM chunks GROUP BY file")
         return {str(row[0]): int(row[1]) for row in cur.fetchall()}
@@ -179,7 +199,7 @@ def find_chunks_by_url(
     """
     if not os.path.exists(_db_path(wg)):
         return []
-    conn = sqlite3.connect(_db_path(wg))
+    conn = _connect_ro(wg)
     try:
         cur = conn.execute(
             "SELECT file, chunk_idx, title, text, start_line, end_line "
@@ -218,7 +238,7 @@ def get_messages(
         return {}
     if not os.path.exists(_db_path(wg)):
         return {}
-    conn = sqlite3.connect(_db_path(wg))
+    conn = _connect_ro(wg)
     try:
         # SQLite has no native (a,b) IN ((...),(...)) shortcut for many
         # pairs, but the chunks table is small enough that a single
@@ -257,7 +277,7 @@ def get_chunk(
     """
     if not os.path.exists(_db_path(wg)):
         return None
-    conn = sqlite3.connect(_db_path(wg))
+    conn = _connect_ro(wg)
     try:
         cur = conn.execute(
             "SELECT title, text, start_line, end_line FROM chunks "
