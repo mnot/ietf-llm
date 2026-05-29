@@ -10,6 +10,7 @@ Additional Resource (`httpbisa`), not the list_email local part.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -33,7 +34,7 @@ def _stub_api(
 ) -> None:
     """Stub utils.fetch_resource: group record by acronym, extresources
     by group id. Clears the per-process caches first."""
-    utils._fetch_group_object.cache_clear()
+    utils.fetch_group_object.cache_clear()
     utils.get_group_resources.cache_clear()
 
     def fake_fetch(
@@ -93,7 +94,7 @@ def test_mailing_list_name_no_record_uses_shortname(
     assert utils.get_mailing_list_name("ghostwg") == "ghostwg"
 
 
-def test_group_resources_parses_slug_and_value(
+def test_group_resources_parses_slug_label_and_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_api(
@@ -102,14 +103,99 @@ def test_group_resources_parses_slug_and_value(
         [
             {
                 "name": "/api/v1/name/extresourcename/webpage/",
+                "display_name": "home page",
                 "value": "https://httpwg.org/",
             },
             {
                 "name": "/api/v1/name/extresourcename/zulip/",
+                # No display_name → falls back to slug.
                 "value": "https://zulip.ietf.org/#narrow/stream/225-httpbis",
             },
         ],
     )
-    resources = dict(utils.get_group_resources("httpbis"))
-    assert resources["webpage"] == "https://httpwg.org/"
-    assert resources["zulip"].endswith("225-httpbis")
+    by_slug = {slug: (label, value) for slug, label, value in
+               utils.get_group_resources("httpbis")}
+    assert by_slug["webpage"] == ("home page", "https://httpwg.org/")
+    assert by_slug["zulip"][0] == "zulip"  # slug fallback
+    assert by_slug["zulip"][1].endswith("225-httpbis")
+
+
+def test_group_state_and_area(monkeypatch: pytest.MonkeyPatch) -> None:
+    # State comes off the group record; area resolves the parent link.
+    utils.fetch_group_object.cache_clear()
+
+    def fake_fetch(
+        url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
+    ) -> Optional[_FakeResp]:
+        if "/group/group/?acronym=" in url:
+            return _FakeResp({"objects": [{
+                "id": 1718,
+                "state": "/api/v1/name/groupstatename/active/",
+                "parent": "/api/v1/group/group/2412/",
+            }]})
+        if "/group/group/2412/" in url:
+            return _FakeResp({"acronym": "wit", "name": "Web and Internet Transport"})
+        return None
+
+    monkeypatch.setattr(utils, "fetch_resource", fake_fetch)
+    assert utils.get_group_state("httpbis") == "active"
+    assert utils.get_group_area("httpbis") == ("wit", "Web and Internet Transport")
+
+
+# --- group.md writer + overview surfacing --------------------------------
+
+
+def test_write_group_info_renders_file(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ietf_llm.gather import group_info
+    from ietf_llm.paths import group_path
+
+    monkeypatch.setattr(group_info, "get_group_state", lambda wg: "active")
+    monkeypatch.setattr(
+        group_info, "get_group_area", lambda wg: ("wit", "Web and Internet Transport")
+    )
+    monkeypatch.setattr(
+        group_info, "get_group_resources",
+        lambda wg: (("github_org", "repositories", "https://github.com/httpwg/"),),
+    )
+    written = group_info.write_group_info("httpbis", str(tmp_path), utils.Verbosity.QUIET)
+    assert written
+    text = open(group_path(str(tmp_path)), encoding="utf-8").read()
+    assert "**Status:** active" in text
+    assert "**Area:** Web and Internet Transport (wit)" in text
+    assert "- repositories: https://github.com/httpwg/" in text
+
+
+def test_write_group_info_noop_when_empty(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ietf_llm.gather import group_info
+    from ietf_llm.paths import group_path
+
+    monkeypatch.setattr(group_info, "get_group_state", lambda wg: None)
+    monkeypatch.setattr(group_info, "get_group_area", lambda wg: None)
+    monkeypatch.setattr(group_info, "get_group_resources", lambda wg: ())
+    assert group_info.write_group_info("x-foo", str(tmp_path), utils.Verbosity.QUIET) == []
+    assert not os.path.exists(group_path(str(tmp_path)))
+
+
+def test_overview_surfaces_group_facts(tmp_path: Any) -> None:
+    from ietf_llm.digest.overview import build_overview
+    from ietf_llm.paths import group_path
+
+    # A cache with just group.md still surfaces status / area / resources.
+    gpath = group_path(str(tmp_path))
+    with open(gpath, "w", encoding="utf-8") as fh:
+        fh.write(
+            "# httpbis — working group metadata\n\n"
+            "**Status:** active\n"
+            "**Area:** Web and Internet Transport (wit)\n\n"
+            "## Resources\n"
+            "- home page: https://httpwg.org/\n"
+        )
+    out = build_overview("httpbis", str(tmp_path))
+    assert "**Status:** active" in out
+    assert "**Area:** Web and Internet Transport (wit)" in out
+    assert "## Resources" in out
+    assert "- home page: https://httpwg.org/" in out

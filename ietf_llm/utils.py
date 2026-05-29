@@ -139,7 +139,7 @@ def write_if_changed(path: str, content: str) -> bool:
 
 
 @lru_cache(maxsize=128)
-def _fetch_group_object(wg_name: str) -> Optional[Dict[str, Any]]:
+def fetch_group_object(wg_name: str) -> Optional[Dict[str, Any]]:
     """Fetch a group's Datatracker record by acronym, or None.
 
     One JSON call to `/api/v1/group/group/?acronym=<wg>` backs all the
@@ -168,16 +168,18 @@ def _fetch_group_object(wg_name: str) -> Optional[Dict[str, Any]]:
 
 
 @lru_cache(maxsize=128)
-def get_group_resources(wg_name: str) -> Tuple[Tuple[str, str], ...]:
-    """A group's "Additional Resources" as `((slug, value), …)`.
+def get_group_resources(wg_name: str) -> Tuple[Tuple[str, str, str], ...]:
+    """A group's "Additional Resources" as `((slug, label, value), …)`.
 
     `slug` is the resource type from the extresourcename URI
     (`github_org`, `webpage`, `zulip`, `mailing_list_archive`, …);
-    `value` is its URL / string. Empty for synthetic corpora or groups
-    with no resources. Read from `/api/v1/group/groupextresource/`,
-    cached per run. Returns a tuple so it stays hashable for the cache.
+    `label` is the human display name ("repositories", "alternate
+    list archives", …), falling back to the slug; `value` is its
+    URL / string. Empty for synthetic corpora or groups with no
+    resources. Read from `/api/v1/group/groupextresource/`, cached
+    per run. Returns a tuple so it stays hashable for the cache.
     """
-    group = _fetch_group_object(wg_name)
+    group = fetch_group_object(wg_name)
     if not group or group.get("id") is None:
         return ()
     url = (
@@ -191,12 +193,12 @@ def get_group_resources(wg_name: str) -> Tuple[Tuple[str, str], ...]:
         objects = res.json().get("objects") or []
     except ValueError:
         return ()
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[str, str, str]] = []
     for obj in objects:
         slug = (obj.get("name") or "").rstrip("/").rsplit("/", 1)[-1]
         value = obj.get("value") or ""
         if slug and value:
-            out.append((slug, value))
+            out.append((slug, obj.get("display_name") or slug, value))
     return tuple(out)
 
 
@@ -218,7 +220,7 @@ def get_mailing_list_name(wg_name: str) -> str:
     (httpbis → `httpbisa`). Falls back to the WG shortname when no
     record / address is found.
     """
-    group = _fetch_group_object(wg_name)
+    group = fetch_group_object(wg_name)
     if not group:
         return wg_name
     list_email = group.get("list_email") or ""
@@ -226,7 +228,7 @@ def get_mailing_list_name(wg_name: str) -> str:
         return wg_name
     primary, domain = list_email.split("@", 1)
     if domain.lower() not in ("ietf.org", "irtf.org"):
-        for slug, value in get_group_resources(wg_name):
+        for slug, _label, value in get_group_resources(wg_name):
             if slug == "mailing_list_archive":
                 match = _MAILARCHIVE_BROWSE_RE.search(value)
                 if match:
@@ -240,12 +242,52 @@ def get_group_type(wg_name: str) -> str:
     Read from the group's `type` field on Datatracker
     (`.../grouptypename/wg|rg/`). Defaults to 'ietf'.
     """
-    group = _fetch_group_object(wg_name)
+    group = fetch_group_object(wg_name)
     if group:
         type_uri = (group.get("type") or "").rstrip("/")
         if type_uri.endswith("/rg"):
             return "irtf"
     return "ietf"
+
+
+def get_group_state(wg_name: str) -> Optional[str]:
+    """Group state slug — `active`, `concluded`, `replaced`, … — from
+    the Datatracker `state` field, or None when there's no record.
+
+    Worth surfacing because it changes how a consumer reads the
+    corpus: a concluded WG won't see new activity, so 'latest thread'
+    being old is expected rather than a staleness signal.
+    """
+    group = fetch_group_object(wg_name)
+    if not group:
+        return None
+    state_uri = (group.get("state") or "").rstrip("/")
+    return state_uri.rsplit("/", 1)[-1] or None if state_uri else None
+
+
+def get_group_area(wg_name: str) -> Optional[Tuple[str, str]]:
+    """The group's parent area as `(acronym, name)`, or None.
+
+    Resolves the `parent` link on the group record (e.g. httpbis →
+    `('wit', 'Web and Internet Transport')`). Returns None for groups
+    with no parent or when the lookup fails.
+    """
+    group = fetch_group_object(wg_name)
+    if not group:
+        return None
+    parent_uri = group.get("parent")
+    if not parent_uri:
+        return None
+    res = fetch_resource(f"https://datatracker.ietf.org{parent_uri}?format=json")
+    if not res:
+        return None
+    try:
+        parent = res.json()
+    except ValueError:
+        return None
+    acronym = parent.get("acronym") or ""
+    name = parent.get("name") or ""
+    return (acronym, name) if (acronym or name) else None
 
 
 def graceful_keyboard_interrupt(
@@ -412,7 +454,7 @@ def format_filename(name: str) -> str:
 def get_wg_title(wg_name: str) -> str:
     """Full group name from the IETF Datatracker (e.g. 'Transport Layer
     Security'), or a generic fallback when no record is found."""
-    group = _fetch_group_object(wg_name)
+    group = fetch_group_object(wg_name)
     if group and group.get("name"):
         return str(group["name"])
     return f"{wg_name.upper()} Working Group"

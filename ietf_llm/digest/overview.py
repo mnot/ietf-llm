@@ -19,7 +19,7 @@ import re
 from typing import List, Optional
 
 from ..freshness import last_gathered
-from ..paths import charter_path, threads_dir
+from ..paths import charter_path, group_path, threads_dir
 from .query import parse_md_tables, query_digest
 
 
@@ -176,6 +176,28 @@ def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
         if len(rows) >= limit:
             break
     return rows[:limit]
+
+
+def _group_facts(cache_dir: str) -> "tuple[Optional[str], Optional[str], List[str]]":
+    """Read `group.md`: `(status_line, area_line, resource_bullets)`.
+
+    status / area are the literal `**Status:** …` / `**Area:** …`
+    lines (or None); resource_bullets are the `- label: url` lines from
+    the Resources section. Everything empty when group.md is absent.
+    """
+    path = group_path(cache_dir)
+    status: Optional[str] = None
+    area: Optional[str] = None
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("**Status:**"):
+                    status = line.strip()
+                elif line.startswith("**Area:**"):
+                    area = line.strip()
+                elif line.startswith("## "):
+                    break
+    return status, area, _section_lines(path, "Resources")
 
 
 def _charter_excerpt(
@@ -369,6 +391,13 @@ def build_overview(wg: str, cache_dir: str) -> str:
 
     out.append("## Working Group")
     out.append(_leadership_summary(cache_dir, wg))
+    # Status / area give the consumer orientation: a concluded WG
+    # won't see new activity; the area says where it sits in the org.
+    status, area, resources = _group_facts(cache_dir)
+    if status:
+        out.append(status)
+    if area:
+        out.append(area)
     # Charter is the authoritative statement of scope and goals;
     # consumers answering "is X in scope" or "what does the WG
     # actually do" need the literal text. Render an excerpt inline
@@ -385,6 +414,13 @@ def build_overview(wg: str, cache_dir: str) -> str:
         for line in charter.splitlines():
             out.append(f"> {line}")
     out.append("")
+
+    # Additional Resources (repos / home page / chat / archives) —
+    # the "where do I go next" links, straight from the group record.
+    if resources:
+        out.append("## Resources")
+        out.extend(resources)
+        out.append("")
 
     docs = _documents_summary(cache_dir, wg)
     if docs:

@@ -78,6 +78,11 @@ def charter_path(cache_dir: str) -> str:
     return os.path.join(cache_dir, "charter.txt")
 
 
+def group_path(cache_dir: str) -> str:
+    """WG-level metadata (status, area, Additional Resources)."""
+    return os.path.join(cache_dir, "group.md")
+
+
 def digest_path(cache_dir: str, kind: str) -> str:
     """Path to a digest file. `kind` is `index`, `issues`, etc."""
     return os.path.join(cache_dir, DIR_DIGESTS, f"{kind}.md")

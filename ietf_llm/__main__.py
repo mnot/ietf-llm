@@ -26,6 +26,7 @@ from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
 from .freshness import last_gathered, record_gather
 from .gather.charter import process_charter
+from .gather.group_info import write_group_info
 from .gather.citations import (
     citation_counts,
     scan_citations,
@@ -475,6 +476,8 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         charter_file = paths.charter_path(cache_dir)
         os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
         process_charter(args.wg, charter_file, verbose=verbosity)
+        # WG-level metadata (status / area / Additional Resources).
+        write_group_info(args.wg, cache_dir, verbose=verbosity)
         # Returns the meeting clusters (date-spans → canonical codes)
         # so transcripts can match interim transcripts to the right
         # clustered meeting rather than orphaning them.
