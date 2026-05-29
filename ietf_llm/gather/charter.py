@@ -36,10 +36,14 @@ def process_charter(
     doc_name = f"charter-{group_type}-{wg_name}"
     rev = _charter_rev(doc_name)
     if not rev:
+        # Not every group has a charter document — editorial groups
+        # (e.g. RSWG), BoFs, and some non-WG/RG groups operate without
+        # one. That's expected, not an error; the rest of the corpus
+        # (mailing list, meetings, metadata) still gathers.
         log(
-            f"Error: no charter document for {wg_name}.",
+            f"No charter document for {wg_name}; skipping charter.",
             verbose,
-            level=LogLevel.ERROR,
+            level=LogLevel.PROGRESS,
         )
         return []
 
