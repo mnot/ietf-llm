@@ -18,6 +18,7 @@ from ..paths import (
 from ..utils import (
     LogLevel,
     Verbosity,
+    clean_html,
     fetch_resource,
     format_filename,
     log,
@@ -474,14 +475,22 @@ def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
 
 
 def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
-    """Fetch a minutes / agenda material content URL and return its body.
+    """Fetch a minutes / agenda material and return its body as text.
 
-    The Datatracker materials endpoint serves the rendered source
-    directly (markdown for recent docs, plain text for older ones), so
-    we take the body as-is — no HTML wrapper to strip."""
+    The materials endpoint serves markdown when we ask for it
+    (`Accept: text/markdown`) for recent docs and plain text for some
+    older ones — both pass through untouched. Without the header it
+    would serve the HTML doc-viewer page; a few older minutes are also
+    authored directly in HTML even with the header. We clean any HTML
+    response down to readable text so the corpus stays LLM-friendly."""
     log(f"Fetching {url}...", verbose, level=LogLevel.PROGRESS)
-    res = fetch_resource(url)
-    return str(res.text) if res else None
+    res = fetch_resource(url, headers={"Accept": "text/markdown"})
+    if not res:
+        return None
+    if "text/html" in res.headers.get("Content-Type", "").lower():
+        cleaned = clean_html(res.text)
+        return cleaned or None
+    return str(res.text)
 
 
 def _parse_meeting_date(date_str: str, meeting_num: str) -> Optional[datetime]:
