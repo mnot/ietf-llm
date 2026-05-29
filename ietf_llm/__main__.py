@@ -459,11 +459,17 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Datatracker-sourced. Skipped entirely for synthetic corpora;
     # there's no charter to fetch, no WG meetings, no auto-
     # discoverable document set.
+    meeting_clusters: List[Any] = []
     if not synth:
         charter_file = paths.charter_path(cache_dir)
         os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
         process_charter(args.wg, charter_file, verbose=verbosity)
-        process_meetings(args.wg, cache_dir, verbose=verbosity, months=args.months)
+        # Returns the meeting clusters (date-spans → canonical codes)
+        # so transcripts can match interim transcripts to the right
+        # clustered meeting rather than orphaning them.
+        meeting_clusters = process_meetings(
+            args.wg, cache_dir, verbose=verbosity, months=args.months,
+        )
 
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.
@@ -478,7 +484,12 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     if not synth:
         # Transcripts: download, then prepend a meeting-context header
         # to each so chunks deep in a 200KB transcript carry attribution.
-        process_transcripts(args.wg, cache_dir, verbose=verbosity, months=args.months)
+        # Interim transcripts (no meeting number) are matched to a
+        # meeting cluster by date span; only truly unmatched ones orphan.
+        process_transcripts(
+            args.wg, cache_dir, verbose=verbosity, months=args.months,
+            meeting_clusters=meeting_clusters,
+        )
         enrich_transcripts(cache_dir, verbose=verbosity)
 
         # Documents (drafts & RFCs) — only auto-discoverable for real WGs.

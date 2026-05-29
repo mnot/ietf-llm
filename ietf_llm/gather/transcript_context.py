@@ -25,6 +25,7 @@ from ..paths import (
     SUBDIR_TRANSCRIPTS,
     is_transcript_relpath,
     meeting_code_for_relpath,
+    meeting_label,
     minutes_path,
 )
 from ..utils import LogLevel, Verbosity, log
@@ -56,15 +57,9 @@ class TranscriptContext:
 
 
 def _meeting_label(meeting_code: str) -> str:
-    match = re.match(r"^ietf(\d+)$", meeting_code, re.IGNORECASE)
-    if match:
-        return f"IETF {match.group(1)} meeting"
-    match = re.match(
-        r"^interim(\d{4})\w*?(\d+)$", meeting_code, re.IGNORECASE
-    )
-    if match:
-        return f"Interim {match.group(1)} #{match.group(2)}"
-    return meeting_code
+    # Shared parser in paths.py — handles ietf<N>, date-coded
+    # clustered interims, and legacy per-session interim codes.
+    return meeting_label(meeting_code)
 
 
 def _build_date_index(cache_dir: str) -> Dict[str, str]:

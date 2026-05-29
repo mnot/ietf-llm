@@ -2,9 +2,12 @@ import os
 import re
 import subprocess
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 from ..paths import transcripts_dir, transcript_path
 from ..utils import LogLevel, Verbosity, log, get_cache_dir
+
+if TYPE_CHECKING:
+    from .meetings import MeetingCluster
 
 
 def process_transcripts(
@@ -12,6 +15,7 @@ def process_transcripts(
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
     months: Optional[int] = None,
+    meeting_clusters: "Optional[List[MeetingCluster]]" = None,
 ) -> List[str]:
     """
     Fetch transcripts for a WG from the ietf-minutes-data repo and write to destination.
@@ -91,11 +95,29 @@ def process_transcripts(
                 pass
 
         src_path = os.path.join(transcripts_path, file)
-        code = f"ietf{meeting_num}" if meeting_num else None
+        # Numbered meetings map straight to `ietf<N>`. Interim
+        # transcripts carry no number; match them to a meeting cluster
+        # whose date span contains the transcript's date, so they land
+        # under the (clustered) interim's dir instead of `_orphans`.
+        if meeting_num:
+            code: Optional[str] = f"ietf{meeting_num}"
+        else:
+            code = _match_interim_cluster(date_str, meeting_clusters)
         datetime_token = f"{date_str}{time_str}"
         out_dir = transcripts_dir(destination, code)
         os.makedirs(out_dir, exist_ok=True)
         dest_path = transcript_path(destination, code, datetime_token)
+
+        # Migration: if this transcript previously orphaned (no
+        # cluster match before) and now resolves to a real meeting
+        # code, drop the stale `_orphans/` copy so it isn't duplicated.
+        if code is not None:
+            orphan_copy = transcript_path(destination, None, datetime_token)
+            if orphan_copy != dest_path and os.path.exists(orphan_copy):
+                try:
+                    os.remove(orphan_copy)
+                except OSError:
+                    pass
 
         if not os.path.exists(dest_path):
             log(
@@ -120,3 +142,23 @@ def process_transcripts(
         )
 
     return updated_files
+
+
+def _match_interim_cluster(
+    date_str: str,
+    clusters: "Optional[List[MeetingCluster]]",
+) -> Optional[str]:
+    """Return the canonical code of the meeting cluster whose date span
+    contains `date_str` (YYYYMMDD), or None if there's no cluster /
+    no match — in which case the transcript orphans as before.
+    """
+    if not clusters:
+        return None
+    try:
+        when = datetime.strptime(date_str, "%Y%m%d")
+    except ValueError:
+        return None
+    for cluster in clusters:
+        if cluster.covers(when):
+            return cluster.code
+    return None

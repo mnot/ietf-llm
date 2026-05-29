@@ -48,6 +48,7 @@ Relative paths from `files/` are what the chunker stores in
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Optional
 
 # Top-level subdirectories under <wg>/files/.
@@ -250,3 +251,33 @@ def meeting_code_for_relpath(relpath: str) -> Optional[str]:
     if "/" not in rest:
         return rest if rest else None
     return rest.split("/", 1)[0]
+
+
+# Meeting-code label parsers, shared by slide / transcript context
+# headers. Three recognised shapes:
+#   ietf<N>             → "IETF N meeting"
+#   interim<YYYYMMDD>   → "Interim YYYY-MM-DD"   (clustered interims,
+#                         coded by start date; WG is implicit in path)
+#   interim<year>…<seq> → "Interim <year> #<seq>"  (legacy per-session
+#                         codes in older caches)
+# Anything else is returned verbatim. The date branch is tried before
+# the legacy one — `interim20260414` is 8 pure digits and matches the
+# date shape; `interim2026aipref05` has letters and falls through.
+_LABEL_IETF_RE = re.compile(r"^ietf(\d+)$", re.IGNORECASE)
+_LABEL_INTERIM_DATE_RE = re.compile(r"^interim(\d{8})$", re.IGNORECASE)
+_LABEL_INTERIM_SEQ_RE = re.compile(r"^interim(\d{4})\w*?(\d+)$", re.IGNORECASE)
+
+
+def meeting_label(code: str) -> str:
+    """Human-readable label for a meeting `<code>` (for context headers)."""
+    match = _LABEL_IETF_RE.match(code)
+    if match:
+        return f"IETF {match.group(1)} meeting"
+    match = _LABEL_INTERIM_DATE_RE.match(code)
+    if match:
+        ymd = match.group(1)
+        return f"Interim {ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+    match = _LABEL_INTERIM_SEQ_RE.match(code)
+    if match:
+        return f"Interim {match.group(1)} #{match.group(2)}"
+    return code

@@ -1,5 +1,7 @@
 import os
 import re
+import shutil
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
@@ -7,7 +9,13 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from ..paths import meeting_dir, minutes_path, slides_dir
+from ..paths import (
+    ORPHAN_MEETING_CODE,
+    meeting_dir,
+    meetings_dir,
+    minutes_path,
+    slides_dir,
+)
 from ..utils import (
     LogLevel,
     Verbosity,
@@ -16,7 +24,45 @@ from ..utils import (
     fetch_url,
     format_filename,
     log,
+    write_if_changed,
 )
+
+
+@dataclass
+class MeetingCluster:
+    """One logical meeting, possibly spanning several Datatracker rows.
+
+    Datatracker lists each interim *session* as its own row. A
+    multi-day interim event (or several sessions on one day) is one
+    meeting; we cluster contiguous-date interim rows into a single
+    `MeetingCluster` with one canonical `code` (the earliest
+    session's) and a date span. Numbered IETF meetings are never
+    clustered — each is already one event, in its own singleton
+    cluster.
+
+    `start` / `end` are date-level (time stripped) so transcript
+    matching can ask "does this transcript's date fall in the span?".
+    """
+
+    code: str  # canonical safe-code, e.g. "interim2026aipref05"
+    start: datetime
+    end: datetime
+    sessions: List[Dict[str, Any]] = field(default_factory=list)
+
+    def covers(self, when: datetime) -> bool:
+        """True if `when`'s date falls within [start, end] inclusive."""
+        return self.start.date() <= when.date() <= self.end.date()
+
+
+def _safe_meeting_code(number: str) -> str:
+    """Datatracker meeting number → filesystem-safe code.
+    `IETF 125` → `ietf125`; `interim-2026-aipref-05` →
+    `interim2026aipref05`."""
+    return format_filename(number).replace("_", "").replace("-", "")
+
+
+def _is_interim(number: str) -> bool:
+    return "interim" in number.lower()
 
 
 def get_meeting_links(
@@ -90,14 +136,120 @@ def get_meeting_links(
     return meetings
 
 
+def cluster_meetings(meetings: List[Dict[str, Any]]) -> List[MeetingCluster]:
+    """Group Datatracker meeting rows into logical meetings.
+
+    Numbered IETF meetings (and interims with no parseable date)
+    become singleton clusters keyed by their Datatracker number.
+    Interims with dates are sorted and greedily merged whenever
+    consecutive dates are ≤ 1 day apart, so a multi-day interim — or
+    several sessions on one day — collapses into one cluster. Each
+    dated-interim cluster is keyed by its **start date**
+    (`interim<YYYYMMDD>`), which is stable and meaningful regardless
+    of how Datatracker numbers the underlying sessions. (The WG is
+    implicit in the cache path, so it's not repeated in the code.)
+    """
+    singletons: List[MeetingCluster] = []
+    dated_interims: List[tuple[Dict[str, Any], datetime]] = []
+    for meeting in meetings:
+        when = _parse_meeting_date(meeting["date"], meeting["number"])
+        if _is_interim(meeting["number"]) and when is not None:
+            dated_interims.append((meeting, when))
+        else:
+            # Numbered IETF meeting, or an interim we couldn't date —
+            # either way it stands alone. Use `now` as a placeholder
+            # span for the undated case; it won't match transcripts.
+            span = when or datetime.now()
+            singletons.append(
+                MeetingCluster(
+                    code=_safe_meeting_code(meeting["number"]),
+                    start=span, end=span, sessions=[meeting],
+                )
+            )
+
+    # Sort by date, then number for a deterministic earliest-first
+    # order, then sweep merging contiguous (≤ 1 day) neighbours.
+    dated_interims.sort(key=lambda md: (md[1], md[0]["number"]))
+    clustered: List[MeetingCluster] = []
+    run: List[tuple[Dict[str, Any], datetime]] = []
+    for meeting, when in dated_interims:
+        if run and (when.date() - run[-1][1].date()).days <= 1:
+            run.append((meeting, when))
+        else:
+            if run:
+                clustered.append(_cluster_from_run(run))
+            run = [(meeting, when)]
+    if run:
+        clustered.append(_cluster_from_run(run))
+
+    return singletons + clustered
+
+
+def _cluster_from_run(
+    run: List[tuple[Dict[str, Any], datetime]],
+) -> MeetingCluster:
+    sessions = [m for m, _ in run]
+    dates = [d for _, d in run]
+    start = min(dates)
+    # Key the clustered interim by its start date — stable and
+    # meaningful, vs. the arbitrary Datatracker session sequence.
+    # WG is implicit in the cache path, so it's not in the code.
+    code = _safe_meeting_code(f"interim-{start.strftime('%Y%m%d')}")
+    return MeetingCluster(
+        code=code, start=start, end=max(dates), sessions=sessions,
+    )
+
+
+def _collision_free_path(path: str) -> str:
+    """Return `path`, or `path` with a `-2`/`-3`/… suffix before the
+    extension if it already exists. Used when absorbing one meeting
+    dir's files into another so a same-named slide isn't clobbered."""
+    if not os.path.exists(path):
+        return path
+    root, ext = os.path.splitext(path)
+    idx = 2
+    while os.path.exists(f"{root}-{idx}{ext}"):
+        idx += 1
+    return f"{root}-{idx}{ext}"
+
+
+def _absorb_meeting_dir(src_dir: str, dst_dir: str) -> None:
+    """Move slides / polls / transcripts from `src_dir` into `dst_dir`
+    (collision-renaming), then remove `src_dir`.
+
+    Migration path: a prior gather wrote each interim session to its
+    own dir (`interim…06/`, `…07/`); clustering now folds them into
+    the canonical dir. Moving (not re-downloading) keeps it lossless
+    even when the canonical minutes already exist and the network
+    re-crawl is skipped.
+    """
+    if not os.path.isdir(src_dir) or os.path.realpath(src_dir) == os.path.realpath(dst_dir):
+        return
+    for sub in ("slides", "polls", "transcripts"):
+        src_sub = os.path.join(src_dir, sub)
+        if not os.path.isdir(src_sub):
+            continue
+        dst_sub = os.path.join(dst_dir, sub)
+        os.makedirs(dst_sub, exist_ok=True)
+        for name in os.listdir(src_sub):
+            shutil.move(
+                os.path.join(src_sub, name),
+                _collision_free_path(os.path.join(dst_sub, name)),
+            )
+    shutil.rmtree(src_dir, ignore_errors=True)
+
+
 def process_meetings(
     wg_name: str,
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
     months: Optional[int] = None,
-) -> List[str]:
-    """Fetch meeting minutes and materials and write to destination."""
-    updated_files = []
+) -> List[MeetingCluster]:
+    """Fetch meeting minutes and materials and write to destination.
+
+    Returns the meeting clusters (so the caller can hand date-spans
+    to `process_transcripts` for matching interim transcripts).
+    """
     meetings = get_meeting_links(wg_name, verbose)
     if not meetings:
         log(
@@ -105,87 +257,132 @@ def process_meetings(
         )
         return []
 
-    # Filter meetings by date if months is specified
+    # Filter meetings by date if months is specified.
     if months is not None:
         cutoff_date = datetime.now() - timedelta(days=months * 30)
-        filtered_meetings = []
+        filtered = []
         for meeting in meetings:
             m_date = _parse_meeting_date(meeting["date"], meeting["number"])
             if m_date and m_date >= cutoff_date:
-                filtered_meetings.append(meeting)
-        meetings = filtered_meetings
+                filtered.append(meeting)
+        meetings = filtered
 
-    for meeting in meetings:
-        safe_num = format_filename(meeting["number"]).replace("_", "").replace("-", "")
-        # Each meeting gets its own subdir; minutes.md lives at the top.
-        os.makedirs(meeting_dir(destination, safe_num), exist_ok=True)
-        output_file = minutes_path(destination, safe_num)
+    clusters = cluster_meetings(meetings)
+    canonical_codes = {c.code for c in clusters}
 
-        # Check if we already have files for this meeting to avoid extra requests
-        if os.path.exists(output_file):
-            log(
-                f"Skipping meeting {meeting['number']}: already downloaded.",
-                verbose,
-                level=LogLevel.PROGRESS,
-            )
-            continue
+    for cluster in clusters:
+        _process_cluster(cluster, wg_name, destination, verbose)
 
-        meeting_text_parts = []
-        meeting_text_parts.append(
-            f"# Meeting Materials for IETF {meeting['number']} ({wg_name})\n"
+    # Migration / cleanup: an interim dir from a previous (un-clustered)
+    # gather whose code was absorbed into a canonical cluster is folded
+    # in and removed. Numbered-meeting and orphan dirs are left alone.
+    _cleanup_absorbed_dirs(destination, clusters, canonical_codes)
+
+    log(
+        f"Done! {len(clusters)} meeting(s) processed into {destination}.",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    return clusters
+
+
+def _process_cluster(
+    cluster: MeetingCluster,
+    wg_name: str,
+    destination: str,
+    verbose: Verbosity,
+) -> None:
+    """Download all sessions' materials into the cluster's canonical
+    dir and write a combined minutes.md."""
+    code = cluster.code
+    canonical = meeting_dir(destination, code)
+    os.makedirs(canonical, exist_ok=True)
+
+    # Fold in any pre-existing per-session dirs (migration from the
+    # old one-dir-per-row layout) BEFORE the skip check, so absorbed
+    # materials survive even when we skip the re-crawl.
+    for session in cluster.sessions[1:]:
+        _absorb_meeting_dir(
+            meeting_dir(destination, _safe_meeting_code(session["number"])),
+            canonical,
         )
-        if meeting.get("date"):
-            meeting_text_parts.append(f"Date: {meeting['date']}\n")
-        meeting_text_parts.append("\n")
 
-        for link in meeting["links"]:
-            # 1. Look for and download PDFs from any meeting pages
-            updated_files.extend(
-                _handle_pdfs(link["url"], destination, safe_num, verbose)
-            )
+    output_file = minutes_path(destination, code)
+    if os.path.exists(output_file):
+        # Already have this cluster's minutes — skip the re-crawl
+        # (matches the historical per-meeting skip). Per-file PDF
+        # existence checks still make slides-only clusters incremental.
+        log(
+            f"Skipping meeting {code}: minutes already present.",
+            verbose, level=LogLevel.PROGRESS,
+        )
+        return
 
-            # 2. Look for and download session poll records (same hub
-            # walk as #1; no extra Datatracker endpoint involved).
-            # Lazy import so meetings.py stays the entry point and
-            # session_polls.py can grow without circular concerns.
+    span = (
+        cluster.start.strftime("%Y-%m-%d")
+        if cluster.start.date() == cluster.end.date()
+        else f"{cluster.start.strftime('%Y-%m-%d')} → {cluster.end.strftime('%Y-%m-%d')}"
+    )
+    parts: List[str] = [
+        f"# Meeting Materials: {code} ({wg_name})\n",
+        f"Date: {span}\n",
+        f"Sessions: {len(cluster.sessions)}\n\n",
+    ]
+    for session in cluster.sessions:
+        session_date = session.get("date", "")
+        for link in session["links"]:
+            # Slides / PDFs → canonical slides dir.
+            _handle_pdfs(link["url"], destination, code, verbose)
+            # Session polls (same materials-page walk).
             if link["type"] == "material":
                 from .session_polls import (  # pylint: disable=import-outside-toplevel
                     fetch_polls_from_materials_page,
                 )
-                updated_files.extend(
-                    fetch_polls_from_materials_page(
-                        link["url"], destination, wg_name, verbose,
-                    )
+                fetch_polls_from_materials_page(
+                    link["url"], destination, wg_name, verbose,
                 )
-
-            # 3. Extract minutes text
+            # Minutes text, headed per-session so multi-session
+            # clusters stay legible (same-day sessions get the
+            # number to disambiguate the date).
             if link["type"] == "minutes":
                 content = _extract_minutes_content(link["url"], verbose)
                 if content:
-                    meeting_text_parts.append(f"## {link['type'].capitalize()}\n")
-                    meeting_text_parts.append(f"URL: {link['url']}\n\n")
-                    meeting_text_parts.append(content + "\n\n---\n\n")
+                    parts.append(
+                        f"## Session {session_date} ({session['number']})\n"
+                    )
+                    parts.append(f"URL: {link['url']}\n\n")
+                    parts.append(content + "\n\n---\n\n")
 
-        if len(meeting_text_parts) > 1:
-            total_text = "".join(meeting_text_parts)
-            if len(total_text.strip()) > 150:
-                log(f"Writing {output_file}...", verbose, level=LogLevel.PROGRESS)
-                with open(output_file, "w", encoding="utf-8") as out_fh:
-                    out_fh.write(total_text)
-                updated_files.append(output_file)
-            else:
-                log(
-                    f"Skipping nearly empty minutes for {safe_num}.",
-                    verbose,
-                    level=LogLevel.PROGRESS,
-                )
+    total_text = "".join(parts)
+    # Only write minutes if a session actually contributed content
+    # (header alone is ~3 short lines); otherwise this is a slides-only
+    # cluster and we leave no minutes.md.
+    if len(total_text.strip()) > 150:
+        if write_if_changed(output_file, total_text):
+            log(f"Wrote {output_file}", verbose, level=LogLevel.PROGRESS)
 
-    log(
-        f"Done! Extracted materials from meetings into {destination}.",
-        verbose,
-        level=LogLevel.STATUS,
-    )
-    return updated_files
+
+def _cleanup_absorbed_dirs(
+    destination: str,
+    clusters: List[MeetingCluster],
+    canonical_codes: "set[str]",
+) -> None:
+    """Remove interim meeting dirs that were absorbed into a cluster
+    (any prior-gather interim dir whose code isn't a canonical code).
+    """
+    absorbed = {
+        _safe_meeting_code(s["number"])
+        for c in clusters for s in c.sessions
+    } - canonical_codes
+    root = meetings_dir(destination)
+    if not os.path.isdir(root):
+        return
+    for name in os.listdir(root):
+        full = os.path.join(root, name)
+        if not os.path.isdir(full) or name == ORPHAN_MEETING_CODE:
+            continue
+        if name in absorbed:
+            shutil.rmtree(full, ignore_errors=True)
 
 
 def _handle_pdfs(url: str, dest: str, safe_num: str, verbose: Verbosity) -> List[str]:
