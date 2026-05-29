@@ -18,7 +18,7 @@ import email.utils
 import os
 import re
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import List, Optional
 
 CHUNK_SIZE = 2000  # characters
@@ -88,12 +88,9 @@ def _normalize_to_utc_iso(date_text: str) -> Optional[str]:
         parsed = None
     # Fall back to the two "YYYY-MM-DD HH:MM[:SS] [TZ]" forms.
     if parsed is None:
-        # pylint: disable=import-outside-toplevel
-        from datetime import datetime as _dt
-
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
             try:
-                parsed = _dt.strptime(date_text[: len(fmt) + 2], fmt)
+                parsed = datetime.strptime(date_text[: len(fmt) + 2], fmt)
                 break
             except ValueError:
                 continue

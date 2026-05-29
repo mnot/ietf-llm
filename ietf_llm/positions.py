@@ -37,6 +37,9 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from .digest.query import parse_md_tables
+from .paths import digest_path
+
 # Number of leading non-quoted lines we scan for the strong patterns.
 # Long messages bury their position under preamble; a real declaration
 # normally lives in the first few lines. 12 is enough for a greeting
@@ -766,12 +769,6 @@ def load_people_context(
     doesn't carry a registry — and rebuilding one would walk the IMAP
     cache. The digest is the durable, fast-to-read projection.
     """
-    # Local import: digest/__init__.py is a heavy module (pulls all the
-    # builder submodules) and only mail-thread tally_positions needs it.
-    # pylint: disable=import-outside-toplevel
-    from .digest.query import parse_md_tables
-    from .paths import digest_path
-
     role_by_name: Dict[str, str] = {}
     aff_by_name: Dict[str, str] = {}
     path = digest_path(cache_dir, "people")

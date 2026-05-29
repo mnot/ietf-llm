@@ -28,8 +28,10 @@ directly), every externally-used symbol is re-exported here.
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
+from ..paths import digest_path
 from ..utils import LogLevel, Verbosity, log
 from .helpers import (
     _fmt_size,
@@ -99,9 +101,6 @@ def generate_digests(
     # people.md is written by ietf_llm.people.write_people_digest from
     # the gather pipeline (it needs a Registry); we just detect its
     # presence on disk here.
-    import os  # pylint: disable=import-outside-toplevel
-    from ..paths import digest_path  # pylint: disable=import-outside-toplevel
-
     has_people = os.path.exists(digest_path(cache_dir, "people"))
     has_timeline = os.path.exists(digest_path(cache_dir, "timeline"))
     index_path = _build_index(

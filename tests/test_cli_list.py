@@ -47,11 +47,13 @@ def test_print_cached_wgs_shows_last_gathered(
     isolated_home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: object,
 ) -> None:
     import datetime
-    from ietf_llm import freshness
+    from ietf_llm import __main__ as main_mod
     write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
     fake = datetime.datetime(2026, 5, 27, tzinfo=datetime.timezone.utc)
+    # `__main__` binds `last_gathered` at import time (from .freshness
+    # import last_gathered), so patch the name where it's looked up.
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        freshness, "last_gathered", lambda _wg: fake,
+        main_mod, "last_gathered", lambda _wg: fake,
     )
     _print_cached_wgs()
     out = capsys.readouterr().out

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from typing import Dict, List, Tuple
 
 from .notebooklm import create_notebook, get_credentials, upload_source
@@ -330,8 +331,6 @@ def notebooklm(
     # Stage bundle contents to temp files so upload_source's existing
     # file-based path keeps working without growing a bytes-uploading
     # cousin. Each upload reads from the staged file, then we clean up.
-    import tempfile  # pylint: disable=import-outside-toplevel
-
     success = 0
     with tempfile.TemporaryDirectory(prefix="ietf-llm-export-") as staging:
         for content, flat, _kind in sources:

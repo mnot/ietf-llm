@@ -45,10 +45,13 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
 # pylint: disable=wrong-import-position
+import fnmatch
 import functools
 import re
 import sqlite3
 import sys
+import threading
+from importlib import resources
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
@@ -68,6 +71,7 @@ from .embeddings import (
     search,
 )
 from .freshness import staleness_warning
+from .gather.citations import normalize_draft_name
 from .paths import digest_kind_from_relpath, digest_path
 from .positions import (
     extract_chair_statements,
@@ -258,8 +262,6 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     suffix stripped), so `draft-Foo-Bar-07` and `draft-foo-bar` both
     yield the same result.
     """
-    # pylint: disable=import-outside-toplevel
-    from .gather.citations import normalize_draft_name
     cache = get_wg_file_cache_dir(wg)
     citations_md = digest_path(cache, "citations")
     if not os.path.isfile(citations_md):
@@ -313,7 +315,6 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     # for `threads/*mlkem*` or `meetings/ietf125/*` instead of grepping
     # a 600-line inventory dump. Glob is matched against the relpath
     # (so `threads/*` works), with fnmatch semantics.
-    import fnmatch  # pylint: disable=import-outside-toplevel
     entries = []
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
@@ -1278,7 +1279,6 @@ def _prewarm_embedding_model_async() -> None:
             # if loading is genuinely broken.
             pass
 
-    import threading  # pylint: disable=import-outside-toplevel
     threading.Thread(
         target=_worker, name="ietf-llm-prewarm", daemon=True,
     ).start()
@@ -1301,8 +1301,6 @@ def _load_server_instructions() -> Optional[str]:
     installed package, but a defensive None lets the server come up
     anyway).
     """
-    # pylint: disable=import-outside-toplevel
-    from importlib import resources
     try:
         skill_path = resources.files("ietf_llm").joinpath("data/skill/SKILL.md")
         text = skill_path.read_text(encoding="utf-8")

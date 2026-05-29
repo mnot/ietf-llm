@@ -18,6 +18,8 @@ import os
 import re
 from typing import List, Optional
 
+from ..freshness import last_gathered
+from ..paths import charter_path, threads_dir
 from .query import parse_md_tables, query_digest
 
 
@@ -186,8 +188,6 @@ def _charter_excerpt(
     (procedural headers, status lines) by finding the first paragraph
     that's substantively long enough to be the mission statement.
     """
-    # pylint: disable=import-outside-toplevel
-    from ..paths import charter_path
     path = charter_path(cache_dir)
     if not os.path.isfile(path):
         return None
@@ -231,8 +231,6 @@ def _subject_prefix_frequencies(cache_dir: str) -> List[tuple[str, int]]:
     to match how a consumer would type it into
     `read_digest(kind="threads", subject="[mlkem]")`.
     """
-    # pylint: disable=import-outside-toplevel
-    from ..paths import threads_dir
     threads = threads_dir(cache_dir)
     if not os.path.isdir(threads):
         return []
@@ -367,8 +365,6 @@ def build_overview(wg: str, cache_dir: str) -> str:
     # current — recent feedback flagged exactly this: "latest events"
     # was dated 2025-11-02 while threads were from May 2026, and the
     # consumer didn't know which was the floor on their view.
-    # pylint: disable=import-outside-toplevel
-    from ..freshness import last_gathered
     gathered_at = last_gathered(wg)
     if gathered_at is not None:
         out.append(

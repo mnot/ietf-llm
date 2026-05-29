@@ -282,10 +282,12 @@ def test_overview_shows_last_gathered_when_sentinel_present(
     # than wiring the sentinel through this test's tmp_path layout
     # (which doesn't match the production cache-root structure).
     import datetime
-    from ietf_llm import freshness
+    from ietf_llm.digest import overview as overview_mod
     fake = datetime.datetime(2026, 5, 27, tzinfo=datetime.timezone.utc)
+    # overview binds `last_gathered` at import time (from ..freshness
+    # import last_gathered), so patch the name where it's looked up.
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        freshness, "last_gathered", lambda _wg: fake,
+        overview_mod, "last_gathered", lambda _wg: fake,
     )
     _seed_digests(tmp_path)
     out = build_overview("wg", str(tmp_path))

@@ -32,6 +32,7 @@ What we don't do (yet):
 
 from __future__ import annotations
 
+import email.policy
 import email.utils
 import json
 import os
@@ -40,9 +41,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from .gather.datatracker import fetch_wg_roles
+from .gather.draft_authors import latest_draft_paths, parse_authors
+from .gather.github_users import resolve_logins
 from .paths import digest_path
 from .text import _parse_date
-from .utils import LogLevel, Verbosity, get_cache_dir, log
+from .utils import (
+    LogLevel,
+    Verbosity,
+    get_cache_dir,
+    get_wg_file_cache_dir,
+    log,
+)
 
 
 # --- Person model ----------------------------------------------------------
@@ -501,10 +511,6 @@ def _ingest_mail(wg: str, registry: Registry, verbose: Verbosity) -> None:
     # Done inline (not via mail_threads.parse_eml) because we need every
     # message — not just ones that thread cleanly — and we want minimal
     # parsing (no body extraction).
-    # pylint: disable=import-outside-toplevel,redefined-outer-name
-    import email as _email_mod
-    import email.policy
-
     imap = os.path.join(get_cache_dir(), "imap-cache", wg)
     if not os.path.isdir(imap):
         return
@@ -516,7 +522,7 @@ def _ingest_mail(wg: str, registry: Registry, verbose: Verbosity) -> None:
             path = os.path.join(dirpath, name)
             try:
                 with open(path, "rb") as fh:
-                    msg = _email_mod.message_from_binary_file(
+                    msg = email.message_from_binary_file(
                         fh, policy=email.policy.default
                     )
             except Exception:  # pylint: disable=broad-except
@@ -577,10 +583,6 @@ def _resolve_github_user_names(
     the renderer can show source agreement when both sources name
     the same org.
     """
-    # Lazy import: keep `requests` out of the people.py top-level so
-    # the gather pipeline doesn't drag it in when GitHub isn't gathered.
-    from .gather.github_users import resolve_logins  # pylint: disable=import-outside-toplevel
-
     candidates: List[str] = []
     by_login: Dict[str, Person] = {}
     for person in registry.persons:
@@ -630,10 +632,6 @@ def _ingest_datatracker_roles(
     wg: str, registry: Registry, verbose: Verbosity
 ) -> None:
     """Fetch chairs/ADs/advisors from Datatracker and add to the registry."""
-    # Lazy import: datatracker.py pulls `requests`; keep it out of the
-    # cold-path hot loop and isolate failure to this stage.
-    from .gather.datatracker import fetch_wg_roles  # pylint: disable=import-outside-toplevel
-
     for role in fetch_wg_roles(wg, verbose=verbose):
         registry.add_datatracker_role(role.name, role.email, role.label)
 
@@ -646,10 +644,6 @@ def _ingest_draft_authors(
     Stable name spellings (taken from the document front-matter that
     the chairs review) override any earlier mailing-list-derived form.
     """
-    # pylint: disable=import-outside-toplevel
-    from .gather.draft_authors import latest_draft_paths, parse_authors
-    from .utils import get_wg_file_cache_dir
-
     cache_dir = get_wg_file_cache_dir(wg)
     count = 0
     for path in latest_draft_paths(cache_dir):

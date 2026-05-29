@@ -21,9 +21,15 @@ import sys
 from typing import Any, List
 
 from . import __version__, config, paths
-from .freshness import record_gather
+from .embeddings import DEFAULT_EMBED_MODEL, build_index
+from .freshness import last_gathered, record_gather
 from .gather.charter import process_charter
 from .digest import generate_digests
+from .gather.citations import (
+    citation_counts,
+    scan_citations,
+    write_citations_digest,
+)
 from .gather.drafts import (
     process_documents,
     process_extra_drafts,
@@ -39,6 +45,7 @@ from .people import build_registry, write_people_digest
 from .digest.timeline import write_timeline_digest
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
+from .skill_install import install
 from .utils import (
     DEFAULT_MONTHS,
     LogLevel,
@@ -260,8 +267,6 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         sys.exit(_print_completion(args.completion))
 
     if args.install_claude_skill:
-        from .skill_install import install  # pylint: disable=import-outside-toplevel
-
         sys.exit(install())
 
     if args.list_wgs:
@@ -347,8 +352,6 @@ def _print_cached_wgs() -> int:
     marker) to stdout. Returns an exit code: 0 if any were found,
     1 if the cache is empty.
     """
-    from .freshness import last_gathered  # pylint: disable=import-outside-toplevel
-
     wgs = _discover_gathered_wgs()
     if not wgs:
         print(
@@ -560,12 +563,6 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # overview can surface inline. Has to run AFTER write_thread_files
     # and write_issue_files; runs BEFORE generate_digests so the
     # overview's documents section can pick up the counts.
-    # pylint: disable=import-outside-toplevel
-    from .gather.citations import (
-        citation_counts,
-        scan_citations,
-        write_citations_digest,
-    )
     citations_map = scan_citations(cache_dir, verbose=verbosity)
     write_citations_digest(cache_dir, citations_map, verbose=verbosity)
     # citation_counts() is used by overview at tool-call time; nothing
@@ -598,11 +595,6 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # the rare case (long-running first gather where the user wants
     # to defer the embed cost).
     if not args.no_embed:
-        from .embeddings import (  # pylint: disable=import-outside-toplevel
-            DEFAULT_EMBED_MODEL,
-            build_index,
-        )
-
         build_index(
             args.wg,
             cache_dir,

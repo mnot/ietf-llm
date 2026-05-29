@@ -38,6 +38,12 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from ..gather.ballots import (
+    _cutoff as _ballot_cutoff,
+    ballot_events,
+    fetch_ballots,
+    write_ballot_files,
+)
 from ..gather.datatracker_history import (
     fetch_doc_events,
     fetch_group_events,
@@ -53,7 +59,7 @@ from ..paths import (
     minutes_path,
 )
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, is_synthetic_wg, log
 from .events import Event
 
 
@@ -432,8 +438,6 @@ def build_events(
     # over the mail-subject heuristic for WGLC / adoption. Skipped
     # entirely for synthetic / `x-` corpora — there's no WG record
     # to query.
-    # pylint: disable=import-outside-toplevel
-    from ..utils import is_synthetic_wg
     if not is_synthetic_wg(wg):
         dt_events: List[Event] = []
         dt_events.extend(fetch_group_events(wg, months, verbose))
@@ -443,12 +447,6 @@ def build_events(
         # in-window position change becomes an event linked to the
         # per-draft ballot file — read_digest(event_kind="ballot") makes
         # the IESG activity directly addressable.
-        from ..gather.ballots import (
-            _cutoff as _ballot_cutoff,
-            ballot_events,
-            fetch_ballots,
-            write_ballot_files,
-        )
         ballots = fetch_ballots(wg, months, verbose=verbose)
         write_ballot_files(cache_dir, ballots, verbose=verbose)
         dt_events.extend(

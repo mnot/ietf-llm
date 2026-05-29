@@ -10,7 +10,14 @@ from email.message import EmailMessage, MIMEPart
 from typing import List, Optional, Dict
 
 from ..paths import raw_dir, raw_mail_archive_path
-from ..utils import LogLevel, Verbosity, get_mailing_list_name, log, get_cache_dir
+from ..utils import (
+    LogLevel,
+    Verbosity,
+    fetch_resource,
+    get_cache_dir,
+    get_mailing_list_name,
+    log,
+)
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993
@@ -32,8 +39,6 @@ def validate_list_names(
     returned list keeps the user's original form so the persisted
     value matches what they typed.
     """
-    # pylint: disable=import-outside-toplevel
-    from ..utils import fetch_resource
     valid: List[str] = []
     for raw in names:
         norm = normalize_list_name(raw)

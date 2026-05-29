@@ -26,6 +26,7 @@ from ..utils import (
     log,
     write_if_changed,
 )
+from .session_polls import fetch_polls_from_materials_page
 
 
 @dataclass
@@ -335,9 +336,6 @@ def _process_cluster(
             _handle_pdfs(link["url"], destination, code, verbose)
             # Session polls (same materials-page walk).
             if link["type"] == "material":
-                from .session_polls import (  # pylint: disable=import-outside-toplevel
-                    fetch_polls_from_materials_page,
-                )
                 fetch_polls_from_materials_page(
                     link["url"], destination, wg_name, verbose,
                 )

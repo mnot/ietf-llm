@@ -138,8 +138,10 @@ def test_validate_list_names_drops_unknown(
         # Simulate mailarchive: only `httpbis` exists.
         return object() if "/arch/browse/httpbis/" in url else None
 
+    # mbox binds `fetch_resource` at import time (from ..utils import
+    # fetch_resource), so patch the name where it's looked up.
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "ietf_llm.utils.fetch_resource", fake_fetch,
+        "ietf_llm.gather.mbox.fetch_resource", fake_fetch,
     )
     valid = mbox.validate_list_names(
         ["httpbis@ietf.org", "ghost@ietf.org"],

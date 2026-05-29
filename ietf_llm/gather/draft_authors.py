@@ -22,6 +22,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ..paths import drafts_dir
+
 
 @dataclass
 class DraftAuthor:
@@ -160,9 +162,6 @@ def latest_draft_paths(cache_dir: str) -> List[str]:
     extras: List[str] = []
     if not os.path.isdir(cache_dir):
         return []
-    # Lazy import to avoid a hard dep from the gather layer on paths.
-    from ..paths import drafts_dir  # pylint: disable=import-outside-toplevel
-
     scan_dir = drafts_dir(cache_dir)
     if not os.path.isdir(scan_dir):
         return []
