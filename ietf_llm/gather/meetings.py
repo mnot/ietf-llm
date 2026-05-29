@@ -95,29 +95,45 @@ def _material_url(meeting_number: str, docname: str) -> str:
     )
 
 
-def _meeting_meta(
-    meeting_uri: str, cache: Dict[str, Tuple[Optional[str], str, str]]
-) -> Tuple[Optional[str], str, str]:
-    """Resolve a meeting URI to `(display_number, raw_number, date)`.
+def _uri_id(uri: str) -> str:
+    """Trailing numeric id of an API resource URI (`/…/meeting/4278/` → `4278`)."""
+    return uri.rstrip("/").rsplit("/", maxsplit=1)[-1]
 
-    `raw_number` ("125" / "interim-2026-httpbis-01") builds content
-    URLs; `display_number` ("IETF 125" / the raw interim) is what
-    `_safe_meeting_code` / `_is_interim` / `_parse_meeting_date`
-    consume downstream. Cached so a multi-session meeting resolves once.
+
+def _batch_fetch_meetings(
+    meeting_ids: "set[str]",
+) -> Dict[str, Tuple[str, str, str]]:
+    """Resolve many meetings at once → `{id: (display, raw, date)}`.
+
+    Uses the `id__in` filter so a WG's ~dozens of meetings come back in
+    a couple of requests instead of one GET per session's meeting URI.
+    `raw` ("125" / "interim-2026-httpbis-01") builds content URLs;
+    `display` ("IETF 125" / the raw interim) is what the clustering /
+    label / date helpers consume downstream.
     """
-    if meeting_uri in cache:
-        return cache[meeting_uri]
-    body = _get_json(meeting_uri) or {}
-    number = body.get("number")
-    if number is None:
-        result: Tuple[Optional[str], str, str] = (None, "", "")
-    else:
-        raw = str(number)
-        mtype = (body.get("type") or "").rstrip("/")
-        display = f"IETF {raw}" if mtype.endswith("/ietf") else raw
-        result = (display, raw, str(body.get("date") or ""))
-    cache[meeting_uri] = result
-    return result
+    out: Dict[str, Tuple[str, str, str]] = {}
+    ordered = sorted(meeting_ids)
+    for start in range(0, len(ordered), 100):
+        chunk = ordered[start : start + 100]
+        body = _get_json(
+            "https://datatracker.ietf.org/api/v1/meeting/meeting/"
+            f"?id__in={','.join(chunk)}&limit=100"
+        )
+        if not body:
+            continue
+        for meeting in body.get("objects") or []:
+            number = meeting.get("number")
+            if number is None:
+                continue
+            raw = str(number)
+            mtype = (meeting.get("type") or "").rstrip("/")
+            display = f"IETF {raw}" if mtype.endswith("/ietf") else raw
+            out[_uri_id(meeting.get("resource_uri") or "")] = (
+                display,
+                raw,
+                str(meeting.get("date") or ""),
+            )
+    return out
 
 
 def get_meeting_links(
@@ -125,9 +141,9 @@ def get_meeting_links(
 ) -> List[Dict[str, Any]]:
     """List a WG's meetings and their materials via the Datatracker API.
 
-    Walks `/api/v1/meeting/session/?group__acronym=<wg>`, resolves each
-    session's meeting (number, date) and materials (agenda / minutes /
-    slides), and returns one entry per meeting:
+    Walks `/api/v1/meeting/session/?group__acronym=<wg>`, batch-resolves
+    the referenced meetings (number, date), and returns one entry per
+    meeting:
 
         {"number": "IETF 125" | "interim-…",
          "date": "YYYY-MM-DD",
@@ -142,8 +158,9 @@ def get_meeting_links(
         verbose,
         level=LogLevel.STATUS,
     )
-    meetings_by_num: Dict[str, Dict[str, Any]] = {}
-    meeting_cache: Dict[str, Tuple[Optional[str], str, str]] = {}
+    # Pass 1: page through sessions, collecting (meeting id, materials).
+    sessions: List[Tuple[str, List[str]]] = []
+    meeting_ids: set[str] = set()
     path: Optional[str] = _SESSION_API.format(wg=wg_name)
     while path:
         body = _get_json(path)
@@ -153,21 +170,30 @@ def get_meeting_links(
             meeting_uri = sess.get("meeting")
             if not meeting_uri:
                 continue
-            display, raw, date_str = _meeting_meta(meeting_uri, meeting_cache)
-            if not display:
-                continue
-            entry = meetings_by_num.setdefault(
-                display, {"number": display, "date": date_str, "links": []}
-            )
-            for muri in sess.get("materials") or []:
-                docname = str(muri).rstrip("/").rsplit("/", maxsplit=1)[-1]
-                kind = _material_kind(docname)
-                if kind is None:
-                    continue
-                entry["links"].append(
-                    {"type": kind, "url": _material_url(raw, docname)}
-                )
+            mid = _uri_id(meeting_uri)
+            meeting_ids.add(mid)
+            sessions.append((mid, sess.get("materials") or []))
         path = (body.get("meta") or {}).get("next") or None
+
+    # One batched lookup for every referenced meeting.
+    meta = _batch_fetch_meetings(meeting_ids)
+
+    # Pass 2: assemble per-meeting entries from the resolved metadata.
+    meetings_by_num: Dict[str, Dict[str, Any]] = {}
+    for mid, materials in sessions:
+        info = meta.get(mid)
+        if not info:
+            continue
+        display, raw, date_str = info
+        entry = meetings_by_num.setdefault(
+            display, {"number": display, "date": date_str, "links": []}
+        )
+        for muri in materials:
+            docname = _uri_id(str(muri))
+            kind = _material_kind(docname)
+            if kind is None:
+                continue
+            entry["links"].append({"type": kind, "url": _material_url(raw, docname)})
 
     return [m for m in meetings_by_num.values() if m["links"]]
 
