@@ -45,10 +45,13 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
 # pylint: disable=wrong-import-position
+import functools
 import re
 import sqlite3
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+
+import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
 from .digest.overview import (
     _label_frequencies,
@@ -1318,6 +1321,35 @@ def _load_server_instructions() -> Optional[str]:
     return text
 
 
+async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
+    """Run a blocking `tool_*` function in a worker thread.
+
+    FastMCP invokes sync tool functions directly on the asyncio event
+    loop, so any blocking work (embedding-model load, a numpy matmul
+    over every chunk, a large file read, a heavy tally) freezes the
+    whole server for its duration — it can't read stdin or answer
+    other requests, which the client experiences as a hang/timeout.
+    Registering each tool as `async def` that awaits this helper keeps
+    the loop responsive: the blocking body runs off-loop, and even
+    GIL-bound Python work yields between handoffs so the protocol
+    stays alive.
+
+    `abandon_on_cancel=True`: if the client cancels (its own tool
+    timeout fired, say), stop waiting immediately rather than blocking
+    the loop until the thread finishes; the thread completes and frees
+    its slot on its own.
+    """
+    # run_sync loses the return type through functools.partial; the
+    # tool_* functions all return str, so cast.
+    return cast(
+        str,
+        await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs),
+            abandon_on_cancel=True,
+        ),
+    )
+
+
 @graceful_keyboard_interrupt
 def main() -> None:
     try:
@@ -1341,17 +1373,17 @@ def main() -> None:
     server = FastMCP("ietf-llm", instructions=server_instructions)
 
     @server.tool()
-    def list_working_groups() -> str:
+    async def list_working_groups() -> str:
         """List IETF Working Groups (and IRTF Research Groups) gathered
         in the local ietf-llm corpus. Use this first when you don't
         know the `<wg>` shortname the user means. IRTF RGs use the
         same shortname convention (e.g. `cfrg`, `hrpc`) and are first-
         class — every other tool accepts them too.
         """
-        return tool_list_working_groups()
+        return await _offload(tool_list_working_groups)
 
     @server.tool()
-    def overview(wg: str) -> str:
+    async def overview(wg: str) -> str:
         """Orient on an IETF Working Group via ietf-llm: chairs/ADs,
         active drafts, top open issues, recent mailing list threads,
         latest meeting and latest draft publication — one call.
@@ -1386,10 +1418,10 @@ def main() -> None:
         `read_topic`, `get_chunk_text`, `read_file_section`,
         `list_files`, `list_labels`.
         """
-        return tool_overview(wg)
+        return await _offload(tool_overview, wg)
 
     @server.tool()
-    def list_labels(wg: str) -> str:
+    async def list_labels(wg: str) -> str:
         """List the WG's curation vocabulary — GitHub issue labels
         AND mailing-list `[xxx]`-style subject prefixes — with
         frequencies. Call this before picking a `label=` filter for
@@ -1405,10 +1437,10 @@ def main() -> None:
         A WG may have one, the other, or both. The empty case
         (neither) is rare and gets a clear "no vocabulary" message.
         """
-        return tool_list_labels(wg)
+        return await _offload(tool_list_labels, wg)
 
     @server.tool()
-    def find_citations(wg: str, draft_name: str) -> str:
+    async def find_citations(wg: str, draft_name: str) -> str:
         """Find every thread / issue that cites a given Internet-Draft.
 
         The gather step scans per-thread and per-issue markdown files
@@ -1429,10 +1461,10 @@ def main() -> None:
         `draft_name` accepts any of `draft-foo-bar`, `draft-foo-bar-07`,
         `draft-foo-bar.txt` — version suffix stripped before lookup.
         """
-        return tool_find_citations(wg, draft_name)
+        return await _offload(tool_find_citations, wg, draft_name)
 
     @server.tool()
-    def list_files(wg: str, pattern: Optional[str] = None) -> str:
+    async def list_files(wg: str, pattern: Optional[str] = None) -> str:
         """Inventory an IETF Working Group's ietf-llm cache: files with
         sizes and chunk counts.
 
@@ -1445,10 +1477,10 @@ def main() -> None:
         `(digest)` rows are the per-WG summary digests — read them via
         `read_digest`, not `get_chunk_text`.
         """
-        return tool_list_files(wg, pattern=pattern)
+        return await _offload(tool_list_files, wg, pattern=pattern)
 
     @server.tool()
-    def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         wg: str,
         kind: str = "index",
         state: Optional[str] = None,
@@ -1507,7 +1539,7 @@ def main() -> None:
         always use filters rather than reading the full digest and
         scanning — both faster and easier on context.
         """
-        return tool_read_digest(
+        return await _offload(tool_read_digest,
             wg, kind,
             state=state, label=label, author=author, role=role,
             since=since, until=until, event_kind=event_kind,
@@ -1516,7 +1548,7 @@ def main() -> None:
         )
 
     @server.tool()
-    def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         wg: str,
         query: str,
         k: int = 10,
@@ -1595,7 +1627,7 @@ def main() -> None:
             mailing-list and GitHub chunks have dates; windowed draft
             chunks are excluded when either bound is set.
         """
-        return tool_search(
+        return await _offload(tool_search,
             wg, query, k=k, file_pattern=file_pattern,
             since=since, until=until, label=label, state=state, sort=sort,
             group_by=group_by, author=author, role=role,
@@ -1603,7 +1635,7 @@ def main() -> None:
         )
 
     @server.tool()
-    def find_replies(
+    async def find_replies(
         wg: str, file: str, chunk_idx: int, max_messages: int = 20,
     ) -> str:
         """Return every transitive reply to a specific thread message,
@@ -1630,10 +1662,10 @@ def main() -> None:
         deep sub-threads. Bodies over 4 KB are truncated with a
         pointer to `get_chunk_text` for the full text.
         """
-        return tool_find_replies(wg, file, chunk_idx, max_messages=max_messages)
+        return await _offload(tool_find_replies, wg, file, chunk_idx, max_messages=max_messages)
 
     @server.tool()
-    def tally_positions(wg: str, file: str) -> str:
+    async def tally_positions(wg: str, file: str) -> str:
         """Count stated positions (`+1`, `-1`, `I support`, `I object`,
         `LGTM`, conditional support, `DISCUSS`) per message author in
         ONE thread or issue file. Output also includes a **Chair
@@ -1674,10 +1706,10 @@ def main() -> None:
         many issues at once, use `read_digest(kind="issues")`. This
         tool is the counter — one file, one tally, grounded.
         """
-        return tool_tally_positions(wg, file)
+        return await _offload(tool_tally_positions, wg, file)
 
     @server.tool()
-    def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         wg: str,
         query: str,
         since: Optional[str] = None,
@@ -1727,14 +1759,14 @@ def main() -> None:
 
         Requires `ietf-llm <wg> --embed` to have been run.
         """
-        return tool_read_topic(
+        return await _offload(tool_read_topic,
             wg, query,
             since=since, until=until, file_pattern=file_pattern,
             k=k, include_replies=include_replies,
         )
 
     @server.tool()
-    def get_chunk_text(
+    async def get_chunk_text(
         wg: str,
         file: str,
         chunk_idx: int,
@@ -1752,10 +1784,10 @@ def main() -> None:
         Note: per-WG digests (`digests/*.md`) are not chunked — use
         `read_digest` for those.
         """
-        return tool_get_chunk(wg, file, chunk_idx, end_chunk_idx=end_chunk_idx)
+        return await _offload(tool_get_chunk, wg, file, chunk_idx, end_chunk_idx=end_chunk_idx)
 
     @server.tool()
-    def get_chunks_batch(
+    async def get_chunks_batch(
         wg: str, requests: List[Dict[str, Any]],
     ) -> str:
         """Fetch multiple chunks from an IETF Working Group's ietf-llm
@@ -1769,10 +1801,10 @@ def main() -> None:
         you want all of them in one round-trip rather than N calls.
         Total chunks across all requests are capped at 20.
         """
-        return tool_get_chunks_batch(wg, requests)
+        return await _offload(tool_get_chunks_batch, wg, requests)
 
     @server.tool()
-    def fetch_by_url(wg: str, url: str) -> str:
+    async def fetch_by_url(wg: str, url: str) -> str:
         """Resolve an external citation URL to its cached chunk in an
         IETF Working Group's ietf-llm corpus. Accepts:
 
@@ -1786,10 +1818,10 @@ def main() -> None:
         backs the URL. Use this when the user pastes (or you've
         already cited) a URL and you need the underlying content.
         """
-        return tool_fetch_by_url(wg, url)
+        return await _offload(tool_fetch_by_url, wg, url)
 
     @server.tool()
-    def read_file_section(
+    async def read_file_section(
         wg: str,
         file: str,
         start_line: int = 1,
@@ -1802,7 +1834,7 @@ def main() -> None:
         context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.
         """
-        return tool_read_file_section(wg, file, start_line, max_lines)
+        return await _offload(tool_read_file_section, wg, file, start_line, max_lines)
 
     _prewarm_embedding_model_async()
     server.run()
