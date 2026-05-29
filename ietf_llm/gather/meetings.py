@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -189,7 +188,7 @@ def cluster_meetings(meetings: List[Dict[str, Any]]) -> List[MeetingCluster]:
     singletons: List[MeetingCluster] = []
     dated_interims: List[tuple[Dict[str, Any], datetime]] = []
     for meeting in meetings:
-        when = _parse_meeting_date(meeting["date"], meeting["number"])
+        when = _parse_meeting_date(meeting["date"])
         if _is_interim(meeting["number"]) and when is not None:
             dated_interims.append((meeting, when))
         else:
@@ -263,7 +262,7 @@ def _absorb_meeting_dir(src_dir: str, dst_dir: str) -> None:
     own dir (`interim…06/`, `…07/`); clustering now folds them into
     the canonical dir. Moving (not re-downloading) keeps it lossless
     even when the canonical minutes already exist and the network
-    re-crawl is skipped.
+    re-fetch is skipped.
     """
     if not os.path.isdir(src_dir) or os.path.realpath(src_dir) == os.path.realpath(
         dst_dir
@@ -306,7 +305,7 @@ def process_meetings(
         cutoff_date = datetime.now() - timedelta(days=months * 30)
         filtered = []
         for meeting in meetings:
-            m_date = _parse_meeting_date(meeting["date"], meeting["number"])
+            m_date = _parse_meeting_date(meeting["date"])
             if m_date and m_date >= cutoff_date:
                 filtered.append(meeting)
         meetings = filtered
@@ -349,7 +348,7 @@ def _process_cluster(
 
     # Fold in any pre-existing per-session dirs (migration from the
     # old one-dir-per-row layout) BEFORE the skip check, so absorbed
-    # materials survive even when we skip the re-crawl.
+    # materials survive even when we skip the re-fetch.
     for session in cluster.sessions[1:]:
         _absorb_meeting_dir(
             meeting_dir(destination, _safe_meeting_code(session["number"])),
@@ -358,7 +357,7 @@ def _process_cluster(
 
     output_file = minutes_path(destination, code)
     if os.path.exists(output_file):
-        # Already have this cluster's minutes — skip the re-crawl
+        # Already have this cluster's minutes — skip the re-fetch
         # (matches the historical per-meeting skip). Per-file PDF
         # existence checks still make slides-only clusters incremental.
         log(
@@ -494,33 +493,15 @@ def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
     return str(res.text)
 
 
-def _parse_meeting_date(date_str: str, meeting_num: str) -> Optional[datetime]:
-    """Parse meeting date from string or estimate based on meeting number."""
-    if date_str:
-        try:
-            # Example: 2026-03-20 12:00-14:00 AEDT
-            # We only care about YYYY-MM-DD
-            ymd = date_str.split(" ")[0]
-            return datetime.strptime(ymd, "%Y-%m-%d")
-        except (ValueError, IndexError):
-            pass
+def _parse_meeting_date(date_str: str) -> Optional[datetime]:
+    """Parse a meeting's `YYYY-MM-DD` date (the API always supplies one).
 
-    # Fallback to estimation based on IETF meeting number
-    # IETF 125 is March 2026
-    # IETF 124 is Nov 2025
-    match = re.search(r"IETF\s*(\d+)", meeting_num, re.I)
-    if match:
-        num = int(match.group(1))
-        # Base: IETF 125 = March 2026
-        diff = num - 125
-        # 3 meetings per year
-        # 125: year 2026, month 3
-        # 124: year 2025, month 11 (3 - 4 = -1 -> 11)
-        # 123: year 2025, month 7 (11 - 4 = 7)
-        # 122: year 2025, month 3 (7 - 4 = 3)
-        total_months = diff * 4
-        year_diff = (3 + total_months - 1) // 12
-        new_month = (3 + total_months - 1) % 12 + 1
-        return datetime(2026 + year_diff, new_month, 1)
-
-    return None
+    The date may carry a trailing time / timezone (`2026-03-20
+    12:00-14:00 AEDT`); we keep only the date. Returns None if absent
+    or unparseable."""
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str.split(" ")[0], "%Y-%m-%d")
+    except (ValueError, IndexError):
+        return None

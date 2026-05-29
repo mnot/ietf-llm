@@ -515,9 +515,9 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
         # Documents (drafts & RFCs) — only auto-discoverable for real WGs.
         process_documents(args.wg, cache_dir, verbose=verbosity)
-    # Extra drafts added via --draft. These don't appear on the WG's
-    # documents page (often individual / author submissions the WG is
-    # tracking but doesn't own), so they need explicit naming. For
+    # Extra drafts added via --draft. These aren't attributed to the WG
+    # in the document API (often individual / author submissions the WG
+    # is tracking but doesn't own), so they need explicit naming. For
     # synthetic corpora, this is the ONLY draft source.
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)

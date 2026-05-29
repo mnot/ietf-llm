@@ -374,12 +374,6 @@ def fetch_resource(
         return None
 
 
-def fetch_url(url: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
-    """Fetch content from a URL."""
-    res = fetch_resource(url, headers=headers)
-    return str(res.text) if res else None
-
-
 def clean_html(html_content: str) -> str:
     """Simple HTML to text conversion using BeautifulSoup with aggressive cleaning."""
     if not html_content:
