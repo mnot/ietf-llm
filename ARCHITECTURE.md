@@ -184,14 +184,15 @@ ietf_llm/
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP
-│                           # defaults, is_synthetic_wg, cached_wg_names,
+│                           # defaults, group metadata via API (type/title/list),
+│                           # is_synthetic_wg, cached_wg_names,
 │                           # write_if_changed, argcomplete helpers
 ├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
 │
 ├── gather/                 # content acquisition + per-source post-processing
-│   ├── charter.py              # charter from Datatracker
-│   ├── drafts.py               # WG drafts + RFCs; --draft extras; validation
-│   ├── meetings.py             # minutes/slides/polls; interim clustering
+│   ├── charter.py              # charter from Datatracker (markdown)
+│   ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
+│   ├── meetings.py             # minutes/agenda/slides via meeting API; clustering
 │   ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │   ├── transcript_context.py   # prepend meeting-context header to transcripts
 │   ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
@@ -199,13 +200,13 @@ ietf_llm/
 │   ├── github.py               # archive.json (gh-pages) or REST API
 │   ├── github_users.py         # resolve logins → real name + company
 │   ├── issue_files.py          # per-issue .md files
-│   ├── datatracker.py          # chairs/ADs/advisors via JSON API
+│   ├── datatracker.py          # roles + paginated document listing via JSON API
 │   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
 │   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
 │   ├── ballots.py              # IESG ballot positions (scoped to --months)
 │   ├── citations.py            # draft → citing thread/issue cross-reference
 │   ├── pdf_extract.py          # extract text from slide PDFs
-│   └── session_polls.py        # session poll records from materials pages
+│   └── session_polls.py        # session polls (polls doctype) → JSON tallies
 │
 ├── digest/                 # corpus-level digest builders + consumers
 │   ├── __init__.py             # generate_digests() + re-exports
@@ -260,6 +261,38 @@ These are the ones worth knowing before you make changes.
 Every consumer reads from the cache. The cache is the contract. Adding
 a consumer never requires touching gather; gather never has to know
 who reads its output. This is the project's main architectural lever.
+
+### Use the Datatracker API; do not scrape HTML
+
+**When the data is available from the Datatracker REST API, the gather
+layer MUST use it rather than parsing a rendered HTML page.** The API
+([https://datatracker.ietf.org/api/](https://datatracker.ietf.org/api/),
+browsable under `/api/v1/`) returns structured, stable fields and
+canonical IDs; the HTML layout changes without notice and silent
+scrape breakage ("gather suddenly returns nothing") is the failure
+mode this rule exists to prevent.
+
+Concretely, the gather layer reads from the API for:
+
+- **Group metadata** — type (WG/RG), title, mailing-list address —
+  via `/api/v1/group/group/?acronym=<wg>` (`utils._fetch_group_object`).
+- **Documents** — WG drafts, RFCs, session polls — via
+  `/api/v1/doc/document/?group__acronym=<wg>&type=…`, paginated through
+  `datatracker.iter_group_documents`.
+- **Meetings & materials** — sessions, dates, and per-session
+  minutes/agenda/slides — via `/api/v1/meeting/session/?group__acronym=<wg>`
+  and the linked meeting/material objects (`meetings.get_meeting_links`).
+  Material *content* is fetched from its canonical URL
+  (`/meeting/<n>/materials/<docname>`), which resolves to the latest
+  rendered markdown / text / PDF.
+- **Roles, ballots, governance events** — the `group/role`, `iesg`,
+  and document-event endpoints (`datatracker.py`, `ballots.py`,
+  `datatracker_history.py`).
+
+`BeautifulSoup` survives only where there is no structured source:
+`utils.clean_html` for the MCP `fetch_by_url` tool (arbitrary
+user-supplied pages) and one-off text extraction. New gather code that
+reaches for an HTML page should first confirm the API can't answer.
 
 ### Writers are write-if-changed, not wipe-and-rewrite
 
