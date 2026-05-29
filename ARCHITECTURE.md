@@ -74,10 +74,12 @@ helpers.
 │   │       ├── mail-archive-<YYYY>.txt
 │   │       └── github-<repo-slug>.txt
 │   ├── embeddings.db                      # per-WG semantic index
+│   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
 │   └── last-gathered                      # ISO-8601 sentinel (freshness)
 │
 ├── imap-cache/<wg>/<list>/<uid>.eml       # raw fetched messages
 ├── transcripts-repo/                      # shallow clone of ietf-minutes-data
+├── .http-cache.json                       # shared ETag store (conditional GET)
 └── _github-users.json                     # shared login → name / company cache
 ```
 
@@ -307,6 +309,27 @@ user-supplied pages and the handful of older minutes authored directly
 in HTML (served as a fragment when markdown is requested). New gather
 code that reaches for an HTML page should first confirm the API can't
 answer.
+
+### Network is minimised three ways
+
+Re-gathers should transfer as little as possible. The API exposes the
+affordances; we use all three:
+
+- **Conditional GET.** `datatracker._get_json` persists each endpoint's
+  ETag (`.http-cache.json`) and revalidates with `If-None-Match`; an
+  unchanged endpoint returns an empty 304 and we reuse the cached body.
+  Covers the bulk of per-gather metadata (document lists, the meeting
+  batch, roles). The materials *content* endpoint ignores conditional
+  GET, so it is gated differently (below).
+- **Batch filtering.** Meetings are resolved in one `id__in` call
+  rather than one GET per session (`get_meeting_links`); document
+  listings page through `meta.next`.
+- **Revision-gated content.** Material content can't be conditionally
+  fetched, but each material's document `rev` is cheap metadata. We
+  record the rev last written per material (`<wg>/materials.json`) and
+  re-fetch minutes/agenda content only when the rev changes — fixing
+  the old skip-if-exists that froze minutes forever. Slides (large
+  metadata, rarely revised) and polls (immutable) stay skip-if-exists.
 
 ### Writers are write-if-changed, not wipe-and-rewrite
 
