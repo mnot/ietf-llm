@@ -331,7 +331,7 @@ affordances; we use all three:
   the old skip-if-exists that froze minutes forever. Slides (large
   metadata, rarely revised) and polls (immutable) stay skip-if-exists.
 
-### Writers are write-if-changed, not wipe-and-rewrite
+### Writers are write-if-changed and atomic
 
 `mail_threads`, `issue_files`, `ballots`, and the digest/minutes
 writers regenerate content every gather but write a file only when its
@@ -339,6 +339,34 @@ bytes actually changed (`utils.write_if_changed`). A byte-identical
 re-render leaves mtime untouched — load-bearing because the embedder
 re-embeds any file whose mtime advanced. Orphans (a thread/issue that
 no longer exists) are deleted in a separate cleanup pass.
+
+Every-gather corpus writes also go through `utils.atomic_open` (temp +
+`os.replace`), so the write is atomic — see the concurrency note below.
+
+### Concurrency: gathers and servers can overlap
+
+The corpus is shared mutable state: an MCP server may be answering
+queries while a gather rewrites the same WG, and several gathers (or
+servers) can run at once. The safety model:
+
+- **The MCP server is read-only.** `search` only ever SELECTs;
+  `build_index` (the sole writer) runs only from the gather CLI. So
+  multiple servers never conflict — readers don't block readers.
+- **Index DB.** Connections use WAL + a 30 s busy timeout
+  (`storage._connect`), so an MCP query during a same-WG index rebuild
+  reads the last committed snapshot instead of erroring with "database
+  is locked".
+- **Corpus files.** Atomic writes (above) mean a reader sees the old
+  bytes or the new, never a truncated file. Skip-if-exists files
+  (drafts, RFCs, transcripts, slide text) are written once and not
+  listed until indexed, so their first-write window isn't observable.
+- **Shared single-clone / shared caches.** The one transcripts git
+  clone is guarded by `utils.file_lock` (flock) so concurrent gathers
+  serialise their clone/pull. The JSON side-caches
+  (`.http-cache.json`, `materials.json`, `_github-users.json`,
+  config) are written temp + rename; concurrent writers are
+  last-writer-wins, which at worst costs a redundant re-fetch, never a
+  corrupt file.
 
 ### `ietf-llm` (gather) has no `--update` flag
 
