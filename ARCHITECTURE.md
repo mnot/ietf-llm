@@ -28,76 +28,103 @@ cache, three independent readers.** Any consumer can come and go
 without touching the gather pipeline. Conversely, the gather pipeline
 doesn't know or care which consumers are downstream.
 
+`ietf-llm --list` prints the cached WGs; `ietf-llm --completion <shell>`
+prints a shell tab-completion script.
+
+## WG shortnames
+
+`<wg>` is always a shortname (`httpbis`, `tls`, `aipref`). IRTF
+Research Groups use the same convention (`cfrg`, `hrpc`). A shortname
+prefixed with **`x-`** (`x-webbotauth`) is a *synthetic / pre-WG
+corpus*: a collection of drafts and mailing lists with no formal WG
+yet. Synthetic corpora skip every Datatracker / WG-page lookup (no
+charter, leadership, auto-discovered drafts, or Datatracker timeline /
+ballot events); only the explicit `--draft` / `--mailing-list` /
+`--github` inputs drive content. `utils.is_synthetic_wg()` is the
+single predicate; the prefix is the only signal (no side-table state).
+
 ## Cache layout
 
-Everything the gather produces lands under `~/.cache/ietf-llm/`:
+Everything the gather produces lands under `~/.cache/ietf-llm/`. The
+layout is the responsibility of `paths.py` — the single source of
+truth for where files live. Don't hardcode paths elsewhere; call the
+helpers.
 
 ```
 ~/.cache/ietf-llm/
-├── <wg>/                                   # one directory per WG
-│   ├── files/                              # human-readable corpus
-│   │   ├── <wg>-charter.txt
-│   │   ├── <wg>-mailing-list-<year>.txt
-│   │   ├── <wg>-github-<owner>-<repo>.json   # internal (not exported)
-│   │   ├── <wg>-github-<owner>-<repo>.txt
-│   │   ├── draft-ietf-<wg>-<name>-NN.txt
-│   │   ├── rfc<N>.txt
-│   │   ├── ietf<N>-minutes.md
-│   │   ├── ietf<N>-slides-*.pdf
-│   │   ├── interim<YY><wg><N>-minutes.md
-│   │   ├── ietf-<wg>-<date>-transcript.md
-│   │   ├── <wg>-_index.md                  # digest: landing page
-│   │   ├── <wg>-_issues.md                 # digest: GitHub issues
-│   │   └── <wg>-_threads.md                # digest: mailing list threads
-│   └── embeddings.db                       # semantic search index
+├── <wg>/                                 # one dir per WG / corpus
+│   ├── files/                            # the corpus consumers read
+│   │   ├── charter.txt
+│   │   ├── digests/                      # index.md issues.md threads.md
+│   │   │                                 # people.md timeline.md citations.md
+│   │   ├── drafts/                       # draft-*.txt, rfc*.txt
+│   │   ├── meetings/<code>/
+│   │   │   ├── minutes.md
+│   │   │   ├── slides/<slug>.pdf(.txt)
+│   │   │   ├── transcripts/<YYYYMMDDHHmm>.md
+│   │   │   └── polls/<YYYYMMDDHHmm>.md
+│   │   │   └── …  (meetings/_orphans/ holds unmatched transcripts)
+│   │   ├── threads/<date>-<slug>.md       # one reconstructed thread each
+│   │   ├── issues/<repo-slug>/<N>.md      # one GitHub issue each
+│   │   ├── ballots/<draft-name>.md        # IESG ballot positions per draft
+│   │   ├── github/<repo-slug>.json        # raw archive (internal; not exported)
+│   │   └── raw/                           # NOT indexed; grep / NotebookLM only
+│   │       ├── mail-archive-<YYYY>.txt
+│   │       └── github-<repo-slug>.txt
+│   ├── embeddings.db                      # per-WG semantic index
+│   └── last-gathered                      # ISO-8601 sentinel (freshness)
 │
-├── imap-cache/<wg>/<list_name>/
-│   └── <uid>.eml                           # raw fetched messages
-│
-└── transcripts-repo/                       # shallow git clone of upstream
+├── imap-cache/<wg>/<list>/<uid>.eml       # raw fetched messages
+├── transcripts-repo/                      # shallow clone of ietf-minutes-data
+└── _github-users.json                     # shared login → name / company cache
 ```
 
 Key invariants:
 
 - **`<wg>/files/` is what consumers read.** Anything an MCP tool, the
-  search CLI, or the exporter can see lives there. Everything else
-  in the cache is intermediate state owned by the gather pipeline.
-- **The mailing list is materialised in two shapes.** `<wg>-mailing-list-YYYY.txt`
-  is the legacy flat year-dump (kept around for grep and NotebookLM
-  upload, but excluded from the embedding index). `<wg>-thread-<date>-<slug>.md`
-  is one file per reconstructed thread, built via RFC 5322
-  In-Reply-To / References headers with a normalised-subject safety
-  net, with quoted runs collapsed and an outline at the top. The
-  thread files are the form an LLM should actually read; the year
-  files are there for human/external tools.
-- **Identities are consolidated up front.** `ietf_llm.people.Registry`
-  scans four sources — mailing list From headers, GitHub author logins,
-  Datatracker role assignments, and IETF-draft Authors' Addresses
-  sections — and merges the surface forms of one actor (DMARC-rewritten
-  variants, Datatracker / mailman relay addresses, multiple email
-  accounts, GitHub logins matching an email local-part) into a single
-  canonical Person carrying their formal WG roles and authored / edited
-  documents. The `<wg>-_people.md` digest leads with "Working Group
-  leadership" and "Document authors / editors" tables so the agent
-  reading the file gets the structural picture in the first 25 lines.
-  Threads, the issues digest, and the `<wg>-github-<repo>.txt` body
-  all render authorship using canonical names too — so a search hit
-  in any of them reads "Mark Nottingham" rather than "mnot" /
-  "Mark Nottingham via Datatracker" / "mnot=40mnot.net@dmarc.ietf.org".
-- **The `_*.md` files are digests** — small, deterministic, LLM-friendly
-  summaries of what's in `files/`. They're regenerated on every gather.
-- **`embeddings.db` is per-WG.** Different WGs can use different
-  embedding models if you want; the model id is recorded in the DB's
-  `meta` table and the search code reads it back at query time. The
-  `chunks` table also carries `start_line` / `end_line` (1-indexed,
-  inclusive) so the agent can cite "lines 342-358 of vocab-06.txt",
-  and `chunk_date` (ISO 8601 UTC, NULL for windowed draft chunks)
-  for faceted-by-date search. Schema is versioned; `_open_db`
-  migrates older DBs forward via ALTER TABLE.
-- **`imap-cache/<wg>/<list_name>/`** is the *only* place that holds raw
-  per-message `.eml` files. The threads digest walks that tree directly;
-  the per-year `*-mailing-list-*.txt` files are a flattened text export
-  for consumers that can't deal with eml.
+  search CLI, or the exporter can see lives there. Everything else in
+  the cache is intermediate state owned by the gather pipeline.
+- **The mailing list is materialised in two shapes.** `raw/mail-archive-YYYY.txt`
+  is a flat year-dump (kept for grep / NotebookLM upload, excluded
+  from the embedding index). `threads/<date>-<slug>.md` is one file
+  per reconstructed thread, built from RFC 5322 In-Reply-To /
+  References headers with a normalised-subject safety net, quoted runs
+  collapsed, an outline at the top, and per-message section headers
+  rendered in **UTC** (so the chunker's date re-parse sorts correctly).
+  The thread files are what an LLM should read; the year files are for
+  humans / external tools.
+- **Per-issue files mirror per-thread files.** `issues/<repo>/<N>.md`
+  is one GitHub issue with full comment history, same shape as a
+  thread file (frontmatter carries duplicate-of and closing-rationale).
+- **Identities are consolidated up front.** `people.Registry` scans
+  mailing-list From headers, GitHub author logins (+ the shared
+  `_github-users.json` name/company cache), Datatracker role
+  assignments, and draft Authors' Addresses sections, and merges the
+  surface forms of one actor (DMARC-rewritten variants, relay
+  addresses, multiple emails, GitHub logins matching an email
+  local-part) into one canonical `Person`. A Person also carries
+  **affiliations** (keyed by source: `draft:<doc>` and `github`) and
+  the set of **email domains** seen — distinct fields, because email
+  domain ≠ affiliation. The `digests/people.md` digest leads with
+  leadership and document-author tables. Threads, issues, and the raw
+  github text all render authorship with canonical names.
+- **`digests/*.md` are deterministic, regenerated every gather.**
+  `index`, `issues`, `threads`, `people`, `timeline`, `citations`.
+  Read them via the MCP `read_digest` / `overview` tools, not raw.
+  `citations.md` is the draft → citing-thread/issue cross-reference.
+- **`ballots/<draft>.md`** holds the current IESG ballot (latest
+  position per AD, DISCUSS text inline) for drafts with ballot
+  activity in the `--months` window.
+- **`embeddings.db` is per-WG.** The model id is recorded in the DB's
+  `meta` table and read back at query time. The `chunks` table carries
+  `start_line`/`end_line`, `chunk_date`, `labels`, `state`, `url`,
+  `duplicate_of`, `closing_rationale` for faceted search. Schema is
+  versioned; `_open_db` migrates older DBs forward via ALTER TABLE.
+- **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
+  files. Thread reconstruction walks that tree (two levels — one
+  subdir per list, since a WG can follow several).
+- **`last-gathered`** is an ISO-8601 sentinel `freshness.py` writes at
+  the end of each gather; consumers surface staleness from it.
 
 ## Config layout
 
@@ -112,30 +139,22 @@ Per-WG, per-tool persistent flags live under `~/.config/ietf-llm/`:
     └── export.json                         # ietf-llm-export flags
 ```
 
-The split into two scoped files is deliberate: the gather tool and the
-export tool have non-overlapping flag sets, and a user reasoning about
-"how is this WG configured" should be able to read one or the other
-without seeing irrelevant settings.
-
-`ietf-llm <wg> --clear-config` wipes the entire `<wg>/` config dir
-(both scopes).
+The split into two scoped files is deliberate: the gather and export
+tools have non-overlapping flag sets, and a user reasoning about "how
+is this WG configured" should read one or the other without seeing
+irrelevant settings. `ietf-llm <wg> --clear-config` wipes the whole
+`<wg>/` config dir.
 
 ## Data flow
 
 ```
-                                  ┌─────────────────────────────┐
-                                  │  ~/.cache/ietf-llm/<wg>/    │
-                                  │                             │
-   Datatracker ──┐                │   files/                    │
-   IMAP archive ─┤                │     ├── *.txt, *.md         │
-   GitHub API   ─┼──> ietf-llm ──>│     ├── _index.md           │
-   transcripts  ─┘   (gather)     │     ├── _issues.md          │
-                                  │     └── _threads.md         │
-                                  │   embeddings.db             │
-                                  └──────────────┬──────────────┘
+   Datatracker ──┐                ┌─────────────────────────────┐
+   IMAP archive ─┤                │  ~/.cache/ietf-llm/<wg>/     │
+   GitHub API   ─┼──> ietf-llm ──>│   files/  (corpus + digests) │
+   minutes repo ─┤   (gather)     │   embeddings.db              │
+   (drafts, …)  ─┘                └──────────────┬──────────────┘
                                                  │
                 ┌────────────────────────────────┼──────────────────────────┐
-                │                                │                          │
                 ▼                                ▼                          ▼
         ietf-llm-search               ietf-llm-mcp                 ietf-llm-export
         (CLI, stdout)                 (stdio MCP server)           (local dir / NotebookLM)
@@ -148,47 +167,55 @@ is a matter of writing code that reads the cache; no change to gather.
 
 ```
 ietf_llm/
-├── __main__.py             # `ietf-llm` (gather) — argparse, persisted config,
+├── __main__.py             # `ietf-llm` (gather): argparse, persisted config,
 │                           # orchestration: charter → meetings → mailing list →
-│                           # transcripts → drafts → github → digests → embed
-├── export_cli.py           # `ietf-llm-export` entry point
-├── export.py               # the actual mirror + NotebookLM logic
+│                           # transcripts → drafts → github → registry → per-thread
+│                           # / per-issue files → citations → digests → embed.
+│                           # Also --list / --completion / --install-claude-skill.
+├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
 ├── search_cli.py           # `ietf-llm-search` entry point
-├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + pre-warm)
+├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + tools)
 ├── skill_install.py        # --install-claude-skill helper
-├── config.py               # generic per-WG, per-scope JSON config
-├── people.py               # actor model (cross-cutting: used by both
-│                           # gather and digest pipelines)
+├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
+├── paths.py                # cache-layout single source of truth; meeting_label()
+├── freshness.py            # last-gathered sentinel + staleness warnings
+├── people.py               # actor/identity registry (roles, affiliations, domains)
+├── positions.py            # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
-├── text.py                 # generic text helpers (subject normalisation,
-│                           # date parsing, address formatting)
-├── utils.py                # log(), Verbosity/LogLevel enums,
-│                           # cache/config dir helpers, HTTP defaults
-├── data/skill/             # bundled Claude skill (package data)
+├── text.py                 # generic text helpers (subject norm, date, addr)
+├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP
+│                           # defaults, is_synthetic_wg, cached_wg_names,
+│                           # write_if_changed, argcomplete helpers
+├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
 │
 ├── gather/                 # content acquisition + per-source post-processing
-│   ├── charter.py              # fetch + clean charter from Datatracker
-│   ├── drafts.py               # fetch active drafts + RFCs
-│   ├── meetings.py             # fetch minutes/slides/agendas
-│   ├── transcripts.py          # fetch from ietf-minutes-data repo
-│   ├── mbox.py                 # IMAP fetch + per-year .txt export
-│   ├── github.py               # archive.json (gh-pages) or REST API
-│   ├── datatracker.py          # chairs/ADs/advisors via JSON API
-│   ├── draft_authors.py        # parse Authors' Addresses sections
+│   ├── charter.py              # charter from Datatracker
+│   ├── drafts.py               # WG drafts + RFCs; --draft extras; validation
+│   ├── meetings.py             # minutes/slides/polls; interim clustering
+│   ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
+│   ├── transcript_context.py   # prepend meeting-context header to transcripts
+│   ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
 │   ├── mail_threads.py         # reconstruct per-thread .md files
+│   ├── github.py               # archive.json (gh-pages) or REST API
+│   ├── github_users.py         # resolve logins → real name + company
+│   ├── issue_files.py          # per-issue .md files
+│   ├── datatracker.py          # chairs/ADs/advisors via JSON API
+│   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
+│   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
+│   ├── ballots.py              # IESG ballot positions (scoped to --months)
+│   ├── citations.py            # draft → citing thread/issue cross-reference
 │   ├── pdf_extract.py          # extract text from slide PDFs
-│   └── transcript_context.py   # prepend meeting context to transcripts
+│   └── session_polls.py        # session poll records from materials pages
 │
 ├── digest/                 # corpus-level digest builders + consumers
 │   ├── __init__.py             # generate_digests() + re-exports
-│   ├── helpers.py              # re-exports of generic helpers, state
-│   │                           # case-folding, size formatting
+│   ├── events.py               # shared Event dataclass (gather ↔ digest seam)
+│   ├── helpers.py              # state case-folding, size formatting, re-exports
 │   ├── summarizer.py           # optional LLM-backed one-liner wrapper
-│   ├── issues.py               # GitHub issues digest builder
-│   ├── threads.py              # mailing list threads digest builder
-│   ├── index.py                # corpus index + file categorisation
-│   ├── timeline.py             # chronological event log
-│   ├── overview.py             # one-call composed summary
+│   ├── issues.py / threads.py / index.py   # per-kind digest builders
+│   ├── timeline.py             # chronological event log (incl. Datatracker, ballots)
+│   ├── overview.py             # one-call composed summary (+ charter excerpt,
+│   │                           # citation counts, freshness line)
 │   └── query.py                # filtered / paginated digest reads
 │
 └── embeddings/             # semantic search (split for legibility)
@@ -196,8 +223,33 @@ ietf_llm/
     ├── chunking.py             # per-message / per-issue / windowed chunkers
     ├── storage.py              # sqlite schema, vector packing, lookup
     ├── models.py               # embedding-model loading + process-level cache
+    ├── snippet.py              # structure-aware snippet rendering for hits
     └── search.py               # build_index() and search()
 ```
+
+## MCP tool surface
+
+`mcp_server.py` registers each tool as a thin wrapper over a pure
+`tool_*` function (so the logic is testable without MCP). Grouped by
+job:
+
+- **Orient:** `list_working_groups`, `overview`, `list_labels`,
+  `list_files`.
+- **Catalogue:** `read_digest(kind=…, …filters)` over
+  issues/threads/people/timeline/index.
+- **Search:** `search_corpus(query, …)` with `label`/`state`/`author`/
+  `role`/`file_pattern`/`since`/`until`/`sort="date"`/`group_by="file"`/
+  `snippet_chars` facets.
+- **Narrative:** `read_topic` (full messages, chronological, across
+  files), `find_replies` (reply tree of one message), `tally_positions`
+  (grounded support/oppose/poll count + chair-statements section),
+  `find_citations` (threads citing a draft).
+- **Pivot / read:** `get_chunk_text`, `get_chunks_batch`,
+  `fetch_by_url`, `read_file_section`.
+
+The full SKILL.md guidance is also handed to compliant clients via the
+MCP server's `instructions` field, so non-Claude harnesses get the same
+routing rules without the Claude-specific skill install.
 
 ## Key design decisions
 
@@ -205,153 +257,126 @@ These are the ones worth knowing before you make changes.
 
 ### Cache is the only durable state
 
-Every consumer reads from the cache. The cache is the contract.
-Adding a consumer never requires touching the gather pipeline; gather
-never has to know who reads its output. This is the project's main
-architectural lever.
+Every consumer reads from the cache. The cache is the contract. Adding
+a consumer never requires touching gather; gather never has to know
+who reads its output. This is the project's main architectural lever.
+
+### Writers are write-if-changed, not wipe-and-rewrite
+
+`mail_threads`, `issue_files`, `ballots`, and the digest/minutes
+writers regenerate content every gather but write a file only when its
+bytes actually changed (`utils.write_if_changed`). A byte-identical
+re-render leaves mtime untouched — load-bearing because the embedder
+re-embeds any file whose mtime advanced. Orphans (a thread/issue that
+no longer exists) are deleted in a separate cleanup pass.
 
 ### `ietf-llm` (gather) has no `--update` flag
 
-Re-running `ietf-llm <wg>` is idempotent: it fetches what's missing,
-re-fetches what's changed, regenerates digests, and incrementally
-updates the embedding index. There's no separate "update" mode
-because there's no separate "first run" mode either.
+Re-running is idempotent: fetch what's missing, re-fetch what changed,
+regenerate digests, incrementally update the embedding index. No
+separate "update" mode because there's no separate "first run" mode.
+
+### Interim sessions are clustered into one meeting
+
+Datatracker lists each interim *session* as its own row. `meetings.py`
+clusters interim rows whose dates are contiguous (≤ 1 day apart) into
+one `MeetingCluster` keyed by its start date (`interim<YYYYMMDD>`);
+materials merge into the canonical dir and interim transcripts (which
+carry no meeting number) are matched to a cluster by date span instead
+of orphaning. Numbered IETF meetings are never clustered.
 
 ### `ietf-llm-export` always does a full export
 
 When the cache changes, the next export produces a complete fresh
-output. No delta tracking, no sidecar state file recording "what we
-sent last time." For NotebookLM the recommended workflow is to create
-a new notebook each update rather than try to merge changes into an
-existing one — this is the simplest contract that doesn't lie about
-what was uploaded.
+output — no delta tracking. For NotebookLM the workflow is to create a
+new notebook each update rather than merge into an existing one.
 
 ### The default embedding model is local
 
-`sentence-transformers/BAAI/bge-small-en-v1.5` ships as the default.
-~130 MB, MPS-accelerated on Apple Silicon, no API key. Auto-downloaded
-on first `--embed` use. Means `pipx install ietf-llm` plus `ietf-llm
-<wg> --embed` is a zero-config path to working semantic search.
-
-The user can override with `--embed-model <id>` for any model `llm`
-knows about; the model id is persisted in the embeddings DB so the
-search side picks it up automatically.
+`sentence-transformers/BAAI/bge-small-en-v1.5` ships as the default
+(~130 MB, MPS-accelerated, no API key, auto-downloaded on first use).
+Override with `--embed-model <id>`; the id is persisted in the
+embeddings DB so search picks it up automatically.
 
 ### `--summarize` requires explicit setup; `--embed` doesn't
 
-Embeddings tolerate a small local model fine. Summarisation doesn't:
-a bad summary is worse than no summary because the digest's value is
-that you can trust it at a glance. So summarisation defers to
-whatever LLM the user has configured via the `llm` package; if they
-haven't configured one, we emit a multi-line setup help instead of
-limping along with a too-small model. Deterministic digests still
-ship without setup.
+Embeddings tolerate a small local model fine; a bad summary is worse
+than none. Summarisation defers to whatever LLM the user configured via
+the `llm` package; without one, we print setup help rather than limp
+along. Deterministic digests ship without any setup.
 
-### The MCP server pre-warms the embedding model at startup
+### The MCP server reads exclusively from the cache, off a daemon prewarm
 
-Without pre-warming, the first `search_corpus` MCP tool call takes
-~10s for the lazy weight-load, which looks like a hang to the user.
-The server inspects the cache at startup, finds the model id from
-the first WG's embeddings DB, and triggers a dummy embed before
-entering the protocol loop. Failure is non-fatal (lazy load still
-works as a fallback).
-
-### MCP server reads exclusively from the cache
-
-The server has no network paths. Everything an MCP client can do
-amounts to reading files or sqlite rows from `~/.cache/ietf-llm/`.
-This means the MCP server is safe to run anywhere; the gather side
-is the only part that needs network access and outbound credentials.
-
-### MCP `read_file_section` is hard-capped at 2000 lines per call
-
-The MCP server enforces a maximum number of lines returned from any
-`read_file_section` call. This is deliberate context hygiene: an
-LLM client shouldn't be able to accidentally slurp a 20 MB mbox into
-its context window with one tool call. Search returns chunks (≤8000
-chars each); `get_chunk_text` returns one chunk in full; raw file
-reads are bounded.
+No network paths: everything an MCP client can do is read files or
+sqlite rows under `~/.cache/ietf-llm/`. On startup the server kicks off
+embedding-model prewarming in a **daemon thread** (so registration
+isn't blocked by the ~10 s weight load) and caps native-math threads
+(`OMP_NUM_THREADS=1` etc.) so concurrent MCP sessions don't oversubscribe
+cores. `read_file_section` is hard-capped (default 400 lines, max 5000)
+as context hygiene — an LLM client can't slurp a multi-MB file in one
+call.
 
 ### IMAP cache lives outside the per-WG directory
 
-`~/.cache/ietf-llm/imap-cache/<wg>/<list_name>/` rather than under
-`<wg>/`. Reason: the IMAP cache is shared across runs in a way the
-per-WG `files/` directory isn't — clearing one WG's exported files
-shouldn't blow away thousands of fetched messages. The threads
-digest walks two levels deep here (per-list subdirectories).
+`imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
+store is expensive to refetch and shouldn't be lost when a WG's
+exported `files/` are cleared. Thread reconstruction walks it directly.
 
 ### Persisted config is two files per WG, not one
 
-`gather.json` and `export.json`. The two CLIs have disjoint flag
-sets, and persisting them in one file would make `--clear-config`
-either too broad ("nuke everything") or too narrow ("clear which
-key?"). Two files keeps the model clean.
+`gather.json` and `export.json`. Disjoint flag sets; one file would
+make `--clear-config` either too broad or too narrow.
 
-### Subject normalisation collapses Re:/Fwd:/[list] iteratively
+### Other normalisation invariants
 
-The regex strips one prefix at a time until the subject is stable.
-Real-world list traffic includes things like `Re: [wg] Re: Fwd:
-[wg] Subject` and a one-shot regex misses the inner prefixes.
-
-### Issue state comparisons are case-insensitive
-
-GitHub's `archive.json` ships state values in two forms: `open` /
-`closed` (REST API convention) and `OPEN` / `CLOSED` (GraphQL
-convention). The digest passes every state value through
-`_state_is_open()` which case-folds. Don't compare states directly
-to string literals anywhere.
-
-### Dates are normalised to tz-aware on parse
-
-IETF mailing list traffic includes both tz-aware and tz-naive
-`Date:` headers; comparing them at sort time raises TypeError.
-`_parse_date()` always returns aware (assumes UTC if naive) so the
-rest of the code can compare freely.
+- **Subject normalisation** strips `Re:`/`Fwd:`/`[list]` iteratively
+  until stable (real traffic nests them).
+- **Issue state** is always compared via `_state_is_open()` —
+  `archive.json` ships both `open`/`closed` and `OPEN`/`CLOSED`.
+- **Dates** are normalised to tz-aware on parse (`_parse_date` assumes
+  UTC if naive) so mixed-tz `Date:` headers sort without TypeError.
+- **`--draft` / `--mailing-list`** values are validated against
+  Datatracker / mailarchive *before* `config.merge` persists them, so a
+  typo doesn't stick in `gather.json`.
 
 ## Testing strategy
 
-```
-tests/
-├── conftest.py             # `isolated_home` fixture: monkeypatches $HOME
-│                           # to a tmp dir so tests never touch the real
-│                           # ~/.cache or ~/.config. Plus tiny helpers for
-│                           # synthesising eml files, GitHub archives, etc.
-├── test_config.py          # per-WG scoped config: load/save/merge/clear
-├── test_digest_helpers.py  # subject normalisation, date parsing,
-│                           # state case-folding, addr formatting
-├── test_digest_index.py    # file categorisation
-├── test_digest_issues.py   # end-to-end issues digest (both case styles)
-├── test_digest_threads.py  # end-to-end threads digest (IMAP path layout,
-│                           # subject grouping, mixed-tz dates)
-├── test_embeddings_chunking.py  # chunkers + eligibility filter
-├── test_export.py          # mirror: fresh / no-op / prune / propagate
-├── test_mcp_server.py      # _safe_path, line caps, list filter
-└── test_skill_install.py   # fresh / idempotent / refuse-edit / --force
-```
+`tests/conftest.py` provides the `isolated_home` fixture (monkeypatches
+`$HOME` to a tmp dir so tests never touch the real `~/.cache` /
+`~/.config`) and an autouse `_no_datatracker` fixture that stubs every
+network seam (`datatracker`, `datatracker_history`, `ballots`,
+`github_users`). Helpers synthesise `.eml` files, GitHub archives, and
+cache files.
 
-What's tested: every pure helper, every file-IO path, every
-case-folding / sort / dispatch decision.
+Coverage spans: config; the digest builders and `query` filters;
+people/identity consolidation and affiliations; embeddings chunking and
+faceted search (with a stub model); the MCP tools (`overview`,
+`read_topic`, `find_replies`, `tally_positions`, `find_citations`,
+search facets, `read_file_section` caps); positions/poll heuristics;
+ballots; citations; meeting clustering; synthetic-WG routing; the
+`--list` and `--completion` CLIs; export mirroring; freshness; PDF
+extraction; transcript context; skill install.
 
-What's *not* tested: network paths (`charter`, `drafts`, `meetings`,
-`transcripts`, `mbox`'s IMAP side, `github`'s REST side,
-`notebooklm`), and anything that needs a real embedding model loaded
-(`embeddings.search` / `build_index` / `_get_embed_model`). Those
-get manual smoke tests against real corpora.
+What's *not* unit-tested: live network paths and anything needing a
+real embedding model loaded — those get manual smoke tests against real
+corpora.
 
-Tests run via `make test` (which invokes pytest in the project venv).
-CI runs `make lint && make typecheck && make test` on every push and
-PR across Python 3.10–3.14.
+Run via `make test`. CI runs `make lint && make typecheck && make test`
+on every push/PR across Python 3.10–3.14.
 
 ## Where to make changes
 
-- **New gather source** → add a module like `meetings.py`, hook into
-  `__main__.py`'s pipeline before the digest step.
+- **New gather source** → add a module under `gather/`, hook into
+  `__main__.py`'s pipeline before the digest step. Skip it for
+  synthetic (`x-`) WGs if it's Datatracker-backed.
 - **New digest** → add a builder under `digest/`, call it from
-  `digest/__init__.py:generate_digests()`, export from `__init__`.
-- **New MCP tool** → add to `mcp_server.py`'s `main()`, calling a pure
-  function defined alongside (so it can be tested without MCP).
+  `generate_digests()`, export from `__init__`.
+- **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
+  then a thin `@server.tool()` wrapper in `main()`. Document the
+  routing in `data/skill/SKILL.md`.
 - **New chunker** → add to `embeddings/chunking.py`, dispatch in
   `_chunk_file()`.
 - **New persisted flag** → add it to the right scope's `scalars` or
-  `lists` tuple in `__main__.py` or `export_cli.py`'s call to
-  `config.merge()`. The config module handles the rest.
+  `lists` tuple in the `config.merge()` call.
+- **New cache path** → add a helper in `paths.py`; never hardcode the
+  layout elsewhere.
