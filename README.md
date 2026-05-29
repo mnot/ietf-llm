@@ -1,9 +1,9 @@
 # ietf-llm
 
 Maintain a local, queryable corpus of an [IETF](https://www.ietf.org/)
-Working Group's public record — charter, drafts, RFCs, meeting minutes,
-slides, transcripts, mailing list archives, and GitHub issues — for use
-with LLM-based tools.
+Working Group's public record — charter, drafts, RFCs, meeting agendas,
+minutes, slides, transcripts, mailing list archives, and GitHub issues —
+for use with LLM-based tools.
 
 > **Note:** This package was previously published as `ietf-notebook`.
 > That distribution is deprecated. See
@@ -436,8 +436,10 @@ also include LLM-generated one-liners per row.
 `ietf-llm-mcp` exposes:
 
 - `list_working_groups()` — WGs gathered locally.
-- `overview(wg)` — chairs, active drafts, top open issues, recent
-  threads, latest meeting. First call for "tell me about X."
+- `overview(wg)` — chairs, status/area, charter excerpt, key
+  resources (repo / home page / chat), active drafts, top open
+  issues, recent threads, latest meeting. First call for "tell me
+  about X."
 - `list_labels(wg)` — GitHub issue labels with frequencies.
 - `list_files(wg, pattern?)` — file inventory with chunk counts.
 - `read_digest(wg, kind, ...filters)` — `index` / `issues` /

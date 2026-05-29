@@ -36,7 +36,8 @@ timeline events. Otherwise they behave like any other shortname.
 
 **Orienting / structural** ("tell me about `<wg>`", "what's this WG
 up to?", "who's on it?") → `overview(wg)`. ~30 lines: chairs/ADs,
-active drafts, top-5 open issues, top-5 recent threads, latest
+status + area, charter excerpt, key resources (repo / home page /
+chat), active drafts, top-5 open issues, top-5 recent threads, latest
 meeting + latest draft. Often enough on its own.
 
 **Topical / decision** (specific subject matter or chair rulings)
@@ -149,7 +150,7 @@ ISO (`"2026-05-01"`).
 chair, doc-*) spans the WG's full history regardless of the
 `--months` window; charter approvals and chair appointments are
 always included. `poll` events point at cached
-`<wg>-polls-<meeting>-<datetime>.md` files — session polls aren't
+`meetings/<code>/polls/<datetime>.md` files — session polls aren't
 formal consensus but signal where a session was leaning.
 `ballot` events are IESG position changes (DISCUSS / Yes / No
 Objection / Abstain / Recuse) for drafts active in the window;
@@ -234,6 +235,8 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
 - **`meetings/<code>/minutes.md`** — meeting minutes, e.g.
   `meetings/ietf125/minutes.md` or
   `meetings/interim2026aipref01/minutes.md`.
+- **`meetings/<code>/agenda.md`** — the session agenda (what the
+  chairs *planned* to cover; minutes are what happened).
 - **`meetings/<code>/slides/<name>.pdf.txt`** — extracted slide
   text. The `.pdf.txt` carries a meeting-context header so chunks
   deep inside still have attribution.
@@ -249,6 +252,10 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
   drafts with ballot activity in the `--months` window. Read in full
   when answering "what's the IESG saying about draft X" — these are
   load-bearing for "is this draft moving / blocked / done."
+- **`group.md`** — WG-level metadata: status (active / concluded),
+  parent area, and "Additional Resources" (repositories, home page,
+  chat, alternate list archives). The `overview` surfaces these; read
+  the file for the raw links.
 - **`digests/<kind>.md`** — the catalogue digests (`index`,
   `issues`, `threads`, `people`, `timeline`). Read via `read_digest`,
   not `get_chunk_text`.

@@ -55,11 +55,13 @@ helpers.
 ├── <wg>/                                 # one dir per WG / corpus
 │   ├── files/                            # the corpus consumers read
 │   │   ├── charter.txt
+│   │   ├── group.md                      # status, parent area, Additional Resources
 │   │   ├── digests/                      # index.md issues.md threads.md
 │   │   │                                 # people.md timeline.md citations.md
 │   │   ├── drafts/                       # draft-*.txt, rfc*.txt
 │   │   ├── meetings/<code>/
 │   │   │   ├── minutes.md
+│   │   │   ├── agenda.md
 │   │   │   ├── slides/<slug>.pdf(.txt)
 │   │   │   ├── transcripts/<YYYYMMDDHHmm>.md
 │   │   │   └── polls/<YYYYMMDDHHmm>.md
@@ -168,7 +170,8 @@ is a matter of writing code that reads the cache; no change to gather.
 ```
 ietf_llm/
 ├── __main__.py             # `ietf-llm` (gather): argparse, persisted config,
-│                           # orchestration: charter → meetings → mailing list →
+│                           # orchestration: charter → group info → meetings →
+│                           # mailing list →
 │                           # transcripts → drafts → github → registry → per-thread
 │                           # / per-issue files → citations → digests → embed.
 │                           # Also --list / --completion / --install-claude-skill.
@@ -190,7 +193,8 @@ ietf_llm/
 ├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
 │
 ├── gather/                 # content acquisition + per-source post-processing
-│   ├── charter.py              # charter from Datatracker (markdown)
+│   ├── charter.py              # charter text artifact (rev from doc API)
+│   ├── group_info.py           # group.md: status / area / Additional Resources
 │   ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │   ├── meetings.py             # minutes/agenda/slides via meeting API; clustering
 │   ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
@@ -274,8 +278,16 @@ mode this rule exists to prevent.
 
 Concretely, the gather layer reads from the API for:
 
-- **Group metadata** — type (WG/RG), title, mailing-list address —
-  via `/api/v1/group/group/?acronym=<wg>` (`utils._fetch_group_object`).
+- **Group metadata** — type (WG/RG), title, mailing-list address,
+  state, and parent area — via `/api/v1/group/group/?acronym=<wg>`
+  (`utils.fetch_group_object`), plus the "Additional Resources"
+  (repos / home page / chat / alternate archives) from
+  `/api/v1/group/groupextresource/` (`utils.get_group_resources`).
+  The off-IETF mailing-list fallback (httpbis → `httpbisa`) reads the
+  alternate-archive resource here.
+- **Charter** — revision from the document API, then the published
+  plain-text artifact at `www.ietf.org/charter/<doc>-<rev>.txt`
+  (the datatracker doc page is HTML-only).
 - **Documents** — WG drafts, RFCs, session polls — via
   `/api/v1/doc/document/?group__acronym=<wg>&type=…`, paginated through
   `datatracker.iter_group_documents`.
@@ -283,16 +295,18 @@ Concretely, the gather layer reads from the API for:
   minutes/agenda/slides — via `/api/v1/meeting/session/?group__acronym=<wg>`
   and the linked meeting/material objects (`meetings.get_meeting_links`).
   Material *content* is fetched from its canonical URL
-  (`/meeting/<n>/materials/<docname>`), which resolves to the latest
-  rendered markdown / text / PDF.
+  (`/meeting/<n>/materials/<docname>`) with `Accept: text/markdown`,
+  resolving to the latest rendered markdown / text / PDF.
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
   `datatracker_history.py`).
 
 `BeautifulSoup` survives only where there is no structured source:
-`utils.clean_html` for the MCP `fetch_by_url` tool (arbitrary
-user-supplied pages) and one-off text extraction. New gather code that
-reaches for an HTML page should first confirm the API can't answer.
+`utils.clean_html` cleans the MCP `fetch_by_url` tool's arbitrary
+user-supplied pages and the handful of older minutes authored directly
+in HTML (served as a fragment when markdown is requested). New gather
+code that reaches for an HTML page should first confirm the API can't
+answer.
 
 ### Writers are write-if-changed, not wipe-and-rewrite
 
