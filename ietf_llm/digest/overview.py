@@ -123,9 +123,7 @@ def _documents_summary(cache_dir: str, wg: str) -> List[str]:
                 continue
             doc = match.group("doc")
             tagged = (
-                f"{name} {match.group('role')}".strip()
-                if match.group("role")
-                else name
+                f"{name} {match.group('role')}".strip() if match.group("role") else name
             )
             docs.setdefault(doc, []).append(tagged)
     out: List[str] = []
@@ -155,7 +153,8 @@ def _load_citation_counts(cache_dir: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for match in re.finditer(
         r"^## `(?P<doc>[^`]+)` \((?P<n>\d+) citation",
-        text, re.MULTILINE,
+        text,
+        re.MULTILINE,
     ):
         try:
             out[match.group("doc").lower()] = int(match.group("n"))
@@ -180,7 +179,8 @@ def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
 
 
 def _charter_excerpt(
-    cache_dir: str, max_chars: int = 600,
+    cache_dir: str,
+    max_chars: int = 600,
 ) -> Optional[str]:
     """First non-empty paragraph of the WG's charter, capped at
     `max_chars`. Returns None if the charter file doesn't exist or is
@@ -248,7 +248,9 @@ def _subject_prefix_frequencies(cache_dir: str) -> List[tuple[str, int]]:
             continue
         try:
             with open(
-                os.path.join(threads, name), "r", encoding="utf-8",
+                os.path.join(threads, name),
+                "r",
+                encoding="utf-8",
                 errors="replace",
             ) as fh:
                 text = fh.read()
@@ -325,16 +327,12 @@ def _recent_threads(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     return rows[:limit]
 
 
-def _latest_event(
-    cache_dir: str, wg: str, event_kind: str
-) -> Optional[str]:
+def _latest_event(cache_dir: str, wg: str, event_kind: str) -> Optional[str]:
     """Return the most recent bullet of the given event kind, or None."""
     timeline_path = _digest_path(cache_dir, wg, "timeline")
     if not os.path.isfile(timeline_path):
         return None
-    filtered = query_digest(
-        timeline_path, "timeline", event_kind=event_kind, limit=1
-    )
+    filtered = query_digest(timeline_path, "timeline", event_kind=event_kind, limit=1)
     for line in filtered.splitlines():
         if line.startswith("- **"):
             return line[2:].strip()
@@ -351,10 +349,7 @@ def build_overview(wg: str, cache_dir: str) -> str:
     Cheap to call.
     """
     if not os.path.isdir(cache_dir):
-        return (
-            f"No cache for {wg}. "
-            f"Run `ietf-llm {wg}` first to gather materials."
-        )
+        return f"No cache for {wg}. " f"Run `ietf-llm {wg}` first to gather materials."
 
     out: List[str] = []
     out.append(f"# {wg} — overview\n")
@@ -452,7 +447,7 @@ def build_overview(wg: str, cache_dir: str) -> str:
     out.append(
         '- _"arguments for/against X"_ / _"scope debate about X"_ → '
         f'`search_corpus("{wg}", "X", label="...")` '
-        f"(labels are the WG's own curation; call `list_labels(\"{wg}\")` "
+        f'(labels are the WG\'s own curation; call `list_labels("{wg}")` '
         "first if you don't know the vocabulary)."
     )
     out.append(

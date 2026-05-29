@@ -136,7 +136,8 @@ def resolve_logins(
             }
         if outcome.name is not None or outcome.cacheable:
             out[login] = _Resolved(
-                name=outcome.name, company=outcome.company,
+                name=outcome.name,
+                company=outcome.company,
             )
     if n_requested:
         # Persist whatever we learned. Best-effort: a write failure
@@ -144,8 +145,7 @@ def resolve_logins(
         _save_cache(cache)
         log(
             f"GitHub user lookups: {n_requested} requested, "
-            f"{len(cache)} now cached"
-            + (" (rate limited)" if rate_limited else ""),
+            f"{len(cache)} now cached" + (" (rate limited)" if rate_limited else ""),
             verbose,
             level=LogLevel.STATUS,
         )
@@ -169,7 +169,9 @@ def _build_headers() -> Dict[str, str]:
 
 
 def _fetch_one(  # pylint: disable=too-many-return-statements
-    login: str, headers: Dict[str, str], verbose: Verbosity,
+    login: str,
+    headers: Dict[str, str],
+    verbose: Verbosity,
 ) -> _Outcome:
     """One `/users/<login>` request. Maps response shapes to outcomes
     rather than raising — see _Outcome docstring."""
@@ -180,7 +182,8 @@ def _fetch_one(  # pylint: disable=too-many-return-statements
         log(
             f"GitHub user lookup transient error for {login}: "
             f"{type(err).__name__}: {err}",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return _Outcome(name=None, cacheable=False)
     if response.status_code == 200:
@@ -195,9 +198,7 @@ def _fetch_one(  # pylint: disable=too-many-return-statements
         # Empty-string fields happen — GitHub returns "" rather than
         # null when the user clears them. Normalise to None.
         cleaned_name = str(name).strip() if isinstance(name, str) else None
-        cleaned_company = (
-            str(company).strip() if isinstance(company, str) else None
-        )
+        cleaned_company = str(company).strip() if isinstance(company, str) else None
         return _Outcome(
             name=cleaned_name or None,
             cacheable=True,
@@ -212,14 +213,15 @@ def _fetch_one(  # pylint: disable=too-many-return-statements
         log(
             f"GitHub API rate limited at user lookup for {login}; "
             "remaining lookups skipped this run.",
-            verbose, level=LogLevel.STATUS,
+            verbose,
+            level=LogLevel.STATUS,
         )
         return _Outcome(name=None, cacheable=False, rate_limited=True)
     # 5xx and the long tail of weird responses. Treat as transient.
     log(
-        f"GitHub user lookup unexpected status {response.status_code} "
-        f"for {login}.",
-        verbose, level=LogLevel.PROGRESS,
+        f"GitHub user lookup unexpected status {response.status_code} " f"for {login}.",
+        verbose,
+        level=LogLevel.PROGRESS,
     )
     return _Outcome(name=None, cacheable=False)
 
@@ -245,11 +247,7 @@ def _load_cache() -> Dict[str, Dict[str, Any]]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {
-        login: entry
-        for login, entry in data.items()
-        if isinstance(entry, dict)
-    }
+    return {login: entry for login, entry in data.items() if isinstance(entry, dict)}
 
 
 def _save_cache(cache: Dict[str, Dict[str, Any]]) -> None:

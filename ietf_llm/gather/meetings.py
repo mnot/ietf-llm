@@ -164,7 +164,9 @@ def cluster_meetings(meetings: List[Dict[str, Any]]) -> List[MeetingCluster]:
             singletons.append(
                 MeetingCluster(
                     code=_safe_meeting_code(meeting["number"]),
-                    start=span, end=span, sessions=[meeting],
+                    start=span,
+                    end=span,
+                    sessions=[meeting],
                 )
             )
 
@@ -197,7 +199,10 @@ def _cluster_from_run(
     # WG is implicit in the cache path, so it's not in the code.
     code = _safe_meeting_code(f"interim-{start.strftime('%Y%m%d')}")
     return MeetingCluster(
-        code=code, start=start, end=max(dates), sessions=sessions,
+        code=code,
+        start=start,
+        end=max(dates),
+        sessions=sessions,
     )
 
 
@@ -224,7 +229,9 @@ def _absorb_meeting_dir(src_dir: str, dst_dir: str) -> None:
     even when the canonical minutes already exist and the network
     re-crawl is skipped.
     """
-    if not os.path.isdir(src_dir) or os.path.realpath(src_dir) == os.path.realpath(dst_dir):
+    if not os.path.isdir(src_dir) or os.path.realpath(src_dir) == os.path.realpath(
+        dst_dir
+    ):
         return
     for sub in ("slides", "polls", "transcripts"):
         src_sub = os.path.join(src_dir, sub)
@@ -315,7 +322,8 @@ def _process_cluster(
         # existence checks still make slides-only clusters incremental.
         log(
             f"Skipping meeting {code}: minutes already present.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return
 
@@ -337,7 +345,10 @@ def _process_cluster(
             # Session polls (same materials-page walk).
             if link["type"] == "material":
                 fetch_polls_from_materials_page(
-                    link["url"], destination, wg_name, verbose,
+                    link["url"],
+                    destination,
+                    wg_name,
+                    verbose,
                 )
             # Minutes text, headed per-session so multi-session
             # clusters stay legible (same-day sessions get the
@@ -345,9 +356,7 @@ def _process_cluster(
             if link["type"] == "minutes":
                 content = _extract_minutes_content(link["url"], verbose)
                 if content:
-                    parts.append(
-                        f"## Session {session_date} ({session['number']})\n"
-                    )
+                    parts.append(f"## Session {session_date} ({session['number']})\n")
                     parts.append(f"URL: {link['url']}\n\n")
                     parts.append(content + "\n\n---\n\n")
 
@@ -369,8 +378,7 @@ def _cleanup_absorbed_dirs(
     (any prior-gather interim dir whose code isn't a canonical code).
     """
     absorbed = {
-        _safe_meeting_code(s["number"])
-        for c in clusters for s in c.sessions
+        _safe_meeting_code(s["number"]) for c in clusters for s in c.sessions
     } - canonical_codes
     root = meetings_dir(destination)
     if not os.path.isdir(root):

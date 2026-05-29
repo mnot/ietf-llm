@@ -25,9 +25,7 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    wg_arg = parser.add_argument(
-        "wg", help="Working Group short name (e.g. 'httpbis')"
-    )
+    wg_arg = parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
     wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     parser.add_argument("query", help="Search query (natural language)")
     parser.add_argument(

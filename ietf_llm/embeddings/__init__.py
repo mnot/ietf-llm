@@ -25,7 +25,7 @@ from .chunking import (
     _chunk_windowed,
     _eligible_files,
 )
-from .models import DEFAULT_EMBED_MODEL, _MODEL_CACHE, _get_embed_model
+from .models import _MODEL_CACHE, DEFAULT_EMBED_MODEL, _get_embed_model
 from .search import Hit, build_index, search
 from .storage import chunk_counts, find_chunks_by_url, get_chunk, get_messages
 

@@ -80,9 +80,7 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
             models.append({"name": bare, "trust_remote_code": False})
             write_models(models)
         # Constructing the model triggers the HF download on first use.
-        return SentenceTransformerModel(
-            f"{_ST_PREFIX}{bare}", bare, False
-        )
+        return SentenceTransformerModel(f"{_ST_PREFIX}{bare}", bare, False)
     except Exception as err:  # pylint: disable=broad-except
         # The underlying stack (huggingface_hub, sentence-transformers,
         # torch) doesn't expose a stable exception hierarchy, so we

@@ -53,9 +53,7 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    wg_arg = parser.add_argument(
-        "wg", help="Working Group short name (e.g. 'httpbis')"
-    )
+    wg_arg = parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
     wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     sink = parser.add_mutually_exclusive_group()
     sink.add_argument(
@@ -142,7 +140,10 @@ def main() -> None:
     bundle = not args.no_bundle
     if args.destination:
         export.directory(
-            args.wg, args.destination, verbose=verbosity, bundle=bundle,
+            args.wg,
+            args.destination,
+            verbose=verbosity,
+            bundle=bundle,
         )
     else:
         export.notebooklm(

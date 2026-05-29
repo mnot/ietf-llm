@@ -39,7 +39,6 @@ from ..paths import (
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log, write_if_changed
 
-
 # Lightweight HTML→Markdown normalisation for issue bodies and comments.
 # GitHub renders HTML inline (especially in tables, where Markdown lists
 # don't work), so authors paste `<ul><li>...</li></ul>` and similar. The
@@ -185,9 +184,7 @@ def _format_iso_to_minute(value: Any) -> str:
     return value
 
 
-def _participants(
-    issue: Dict[str, Any], registry: Optional[Registry]
-) -> List[str]:
+def _participants(issue: Dict[str, Any], registry: Optional[Registry]) -> List[str]:
     """Canonical names of every author + commenter on the issue."""
     seen: List[str] = []
     seen_set: set[str] = set()
@@ -232,8 +229,7 @@ def _render_issue(
         out.append(f"**Labels:** {labels}  ")
     out.append(
         f"**Comments:** {len(comments)}  ·  "
-        f"**Participants ({len(participants)}):** "
-        + ", ".join(participants)
+        f"**Participants ({len(participants)}):** " + ", ".join(participants)
     )
     duplicate_of = _detect_duplicate_of(issue)
     if duplicate_of is not None:
@@ -312,7 +308,9 @@ def write_issue_files(
             continue
         try:
             with open(
-                os.path.join(archives_dir, name), "r", encoding="utf-8",
+                os.path.join(archives_dir, name),
+                "r",
+                encoding="utf-8",
             ) as fh:
                 data = json.load(fh)
         except (OSError, json.JSONDecodeError) as err:

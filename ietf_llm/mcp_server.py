@@ -235,8 +235,7 @@ def tool_list_labels(wg: str) -> str:
         lines.append("")
     if prefixes:
         lines.append(
-            f"## Mailing list subject prefixes ({len(prefixes)} "
-            "distinct)\n"
+            f"## Mailing list subject prefixes ({len(prefixes)} " "distinct)\n"
         )
         lines.append("| Prefix | Messages |")
         lines.append("|--------|----------|")
@@ -280,8 +279,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     # Find the section for this draft. Sections are
     # `## `<draft>` (N citation(s))` followed by bullet lines.
     section_re = re.compile(
-        rf"^## `{re.escape(normalised)}` \([^)]+\)\s*\n+"
-        r"(?P<body>(?:^- .*\n?)*)",
+        rf"^## `{re.escape(normalised)}` \([^)]+\)\s*\n+" r"(?P<body>(?:^- .*\n?)*)",
         re.MULTILINE,
     )
     match = section_re.search(text)
@@ -290,8 +288,8 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
             wg,
             f"No citations recorded for `{normalised}` in {wg}. "
             "(The scanner only sees draft references in cached thread "
-            "and issue files; check `list_files(\""
-            f"{wg}\", pattern=\"drafts/{normalised}*\")` to confirm "
+            'and issue files; check `list_files("'
+            f'{wg}", pattern="drafts/{normalised}*")` to confirm '
             "the draft itself is in the corpus.)",
         )
     body = match.group("body").strip()
@@ -354,7 +352,7 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
             rows.append(f"{size:>10}  {tag}  {relpath}")
     body = "\n".join(rows) or "(empty)"
     body += (
-        f"\n\n_Next: `read_file_section(\"{wg}\", \"<filename>\", "
+        f'\n\n_Next: `read_file_section("{wg}", "<filename>", '
         "start_line=1)` for a bounded read · "
         f'`get_chunk_text("{wg}", "<filename>", chunk_idx, end_chunk_idx)` '
         "for one (or a range of) indexed chunks._"
@@ -489,9 +487,7 @@ def _render_file_grouped(hits: List[Any], limit: int) -> str:
     out.append("")
     for i, hit in enumerate(ranked, 1):
         hit_count = counts[hit.file]
-        out.append(
-            f"[{i}] score={hit.score:.3f}  hits={hit_count}  file={hit.file}"
-        )
+        out.append(f"[{i}] score={hit.score:.3f}  hits={hit_count}  file={hit.file}")
         out.append(f"     best chunk {hit.chunk_idx}: {hit.title}")
         if hit.url:
             out.append(f"     url: {hit.url}")
@@ -607,9 +603,12 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     # WGs; the floor of 60 stops k=5 calls from over-narrowing.
     fetch_k = max(k * 3, 60)
     hits = search(
-        wg, query, k=fetch_k,
+        wg,
+        query,
+        k=fetch_k,
         file_pattern=file_pattern,
-        since=since, until=until,
+        since=since,
+        until=until,
         # sort="date" both excludes undated chunks (drafts, transcripts,
         # thread header chunks) and orders the survivors chronologically.
         # We re-sort after merging replies anyway, but the undated-filter
@@ -621,8 +620,7 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     if not hits:
         return _with_freshness(
             wg,
-            f"(no results for {query!r} — has `ietf-llm {wg} --embed` "
-            "been run?)",
+            f"(no results for {query!r} — has `ietf-llm {wg} --embed` " "been run?)",
         )
 
     # Keep only chunks from thread/issue files that have a date — those
@@ -679,10 +677,17 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
             # search results, but include_replies pulls by chunk_idx so
             # a parent header (chunk 0) could sneak in. Skip undated.
             continue
-        rows.append((
-            chunk_date, key[0], key[1], title, text, url,
-            key in matched_keys,
-        ))
+        rows.append(
+            (
+                chunk_date,
+                key[0],
+                key[1],
+                title,
+                text,
+                url,
+                key in matched_keys,
+            )
+        )
     rows.sort(key=lambda r: (r[0], r[1], r[2]))
 
     if len(rows) > _READ_TOPIC_MAX_MESSAGES:
@@ -760,7 +765,10 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
 
 
 def tool_find_replies(
-    wg: str, file: str, chunk_idx: int, max_messages: int = 20,
+    wg: str,
+    file: str,
+    chunk_idx: int,
+    max_messages: int = 20,
 ) -> str:
     """Return every transitive reply to a specific thread message,
     in chronological order, with full bodies.
@@ -811,9 +819,7 @@ def tool_find_replies(
         kept = rows
         truncated_note = ""
     out: List[str] = []
-    out.append(
-        f"# Replies to chunk {chunk_idx} in `{file}`\n"
-    )
+    out.append(f"# Replies to chunk {chunk_idx} in `{file}`\n")
     out.append(
         f"_{len(rows)} transitive descendant(s) in the reply graph, "
         "oldest first. Each row is the full message body — quoted "
@@ -879,8 +885,12 @@ def tool_tally_positions(wg: str, file: str) -> str:
     # the top of the tally output, before the per-author counts.
     chair_statements = extract_chair_statements(text, role_lookup)
     body = render_tally(
-        file, positions, summary,
-        role_lookup, aff_lookup, chair_statements,
+        file,
+        positions,
+        summary,
+        role_lookup,
+        aff_lookup,
+        chair_statements,
     )
     return _with_freshness(wg, body)
 
@@ -998,9 +1008,7 @@ def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
     return None
 
 
-def tool_get_chunks_batch(
-    wg: str, requests: List[Dict[str, Any]]
-) -> str:
+def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
     """Fetch multiple (file, chunk_idx [, end_chunk_idx]) chunks in one
     call. Returns the concatenated chunk texts, each prefixed with its
     file + chunk-index header. Total chunks across all requests are
@@ -1075,13 +1083,8 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
         )
     if len(matches) == 1:
         file, chunk_idx, title, text, start_line, end_line = matches[0]
-        where = (
-            f" (lines {start_line}-{end_line})" if start_line is not None else ""
-        )
-        header = (
-            f"# {title}{where}\n"
-            f"_file:_ `{file}`  ·  _chunk:_ {chunk_idx}\n\n"
-        )
+        where = f" (lines {start_line}-{end_line})" if start_line is not None else ""
+        header = f"# {title}{where}\n" f"_file:_ `{file}`  ·  _chunk:_ {chunk_idx}\n\n"
         return _with_freshness(wg, header + text)
     # Multiple chunks → file-level URL. Concatenate by chunk order.
     file = matches[0][0]
@@ -1120,8 +1123,7 @@ def tool_get_chunk(  # pylint: disable=too-many-return-statements
     if end_chunk_idx is not None:
         if end_chunk_idx < chunk_idx:
             return (
-                f"end_chunk_idx={end_chunk_idx} is less than "
-                f"chunk_idx={chunk_idx}."
+                f"end_chunk_idx={end_chunk_idx} is less than " f"chunk_idx={chunk_idx}."
             )
         span = end_chunk_idx - chunk_idx + 1
         if span > MAX_CHUNK_RANGE:
@@ -1138,9 +1140,7 @@ def tool_get_chunk(  # pylint: disable=too-many-return-statements
             any_found = True
             title, text, start_line, end_line = result
             where = (
-                f" (lines {start_line}-{end_line})"
-                if start_line is not None
-                else ""
+                f" (lines {start_line}-{end_line})" if start_line is not None else ""
             )
             parts.append(f"## chunk {idx}: {title}{where}\n\n{text}")
         if not any_found:
@@ -1151,9 +1151,7 @@ def tool_get_chunk(  # pylint: disable=too-many-return-statements
     if result is None:
         return _chunk_not_found_hint(wg, file, chunk_idx)
     title, text, start_line, end_line = result
-    where = (
-        f" (lines {start_line}-{end_line})" if start_line is not None else ""
-    )
+    where = f" (lines {start_line}-{end_line})" if start_line is not None else ""
     return f"# {title}{where}\n\n{text}"
 
 
@@ -1221,9 +1219,7 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
             if idx < start_line:
                 continue
             if idx >= start_line + max_lines:
-                out.append(
-                    f"... [truncated at line {idx}; use start_line to continue]"
-                )
+                out.append(f"... [truncated at line {idx}; use start_line to continue]")
                 break
             out.append(line.rstrip("\n"))
     return "\n".join(out)
@@ -1280,7 +1276,9 @@ def _prewarm_embedding_model_async() -> None:
             pass
 
     threading.Thread(
-        target=_worker, name="ietf-llm-prewarm", daemon=True,
+        target=_worker,
+        name="ietf-llm-prewarm",
+        daemon=True,
     ).start()
 
 
@@ -1537,12 +1535,21 @@ def main() -> None:
         always use filters rather than reading the full digest and
         scanning — both faster and easier on context.
         """
-        return await _offload(tool_read_digest,
-            wg, kind,
-            state=state, label=label, author=author, role=role,
-            since=since, until=until, event_kind=event_kind,
-            min_messages=min_messages, limit=limit,
-            include_bodies=include_bodies, subject=subject,
+        return await _offload(
+            tool_read_digest,
+            wg,
+            kind,
+            state=state,
+            label=label,
+            author=author,
+            role=role,
+            since=since,
+            until=until,
+            event_kind=event_kind,
+            min_messages=min_messages,
+            limit=limit,
+            include_bodies=include_bodies,
+            subject=subject,
         )
 
     @server.tool()
@@ -1625,16 +1632,29 @@ def main() -> None:
             mailing-list and GitHub chunks have dates; windowed draft
             chunks are excluded when either bound is set.
         """
-        return await _offload(tool_search,
-            wg, query, k=k, file_pattern=file_pattern,
-            since=since, until=until, label=label, state=state, sort=sort,
-            group_by=group_by, author=author, role=role,
+        return await _offload(
+            tool_search,
+            wg,
+            query,
+            k=k,
+            file_pattern=file_pattern,
+            since=since,
+            until=until,
+            label=label,
+            state=state,
+            sort=sort,
+            group_by=group_by,
+            author=author,
+            role=role,
             snippet_chars=snippet_chars,
         )
 
     @server.tool()
     async def find_replies(
-        wg: str, file: str, chunk_idx: int, max_messages: int = 20,
+        wg: str,
+        file: str,
+        chunk_idx: int,
+        max_messages: int = 20,
     ) -> str:
         """Return every transitive reply to a specific thread message,
         in chronological order, with full bodies.
@@ -1660,7 +1680,9 @@ def main() -> None:
         deep sub-threads. Bodies over 4 KB are truncated with a
         pointer to `get_chunk_text` for the full text.
         """
-        return await _offload(tool_find_replies, wg, file, chunk_idx, max_messages=max_messages)
+        return await _offload(
+            tool_find_replies, wg, file, chunk_idx, max_messages=max_messages
+        )
 
     @server.tool()
     async def tally_positions(wg: str, file: str) -> str:
@@ -1757,10 +1779,15 @@ def main() -> None:
 
         Requires `ietf-llm <wg> --embed` to have been run.
         """
-        return await _offload(tool_read_topic,
-            wg, query,
-            since=since, until=until, file_pattern=file_pattern,
-            k=k, include_replies=include_replies,
+        return await _offload(
+            tool_read_topic,
+            wg,
+            query,
+            since=since,
+            until=until,
+            file_pattern=file_pattern,
+            k=k,
+            include_replies=include_replies,
         )
 
     @server.tool()
@@ -1782,11 +1809,14 @@ def main() -> None:
         Note: per-WG digests (`digests/*.md`) are not chunked — use
         `read_digest` for those.
         """
-        return await _offload(tool_get_chunk, wg, file, chunk_idx, end_chunk_idx=end_chunk_idx)
+        return await _offload(
+            tool_get_chunk, wg, file, chunk_idx, end_chunk_idx=end_chunk_idx
+        )
 
     @server.tool()
     async def get_chunks_batch(
-        wg: str, requests: List[Dict[str, Any]],
+        wg: str,
+        requests: List[Dict[str, Any]],
     ) -> str:
         """Fetch multiple chunks from an IETF Working Group's ietf-llm
         corpus in one call. `requests` is a list of dicts, each with:

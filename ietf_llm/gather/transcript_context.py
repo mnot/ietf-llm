@@ -30,7 +30,6 @@ from ..paths import (
 )
 from ..utils import LogLevel, Verbosity, log
 
-
 _SENTINEL = "<!-- ietf-llm:context-header -->"
 
 # Post-reorg layout: transcripts live at
@@ -188,7 +187,10 @@ def enrich_transcripts(
             if _SENTINEL in first_chunk:
                 continue  # already enriched
             ctx = transcript_context(
-                relpath, cache_dir, date_index=date_index, wg=wg,
+                relpath,
+                cache_dir,
+                date_index=date_index,
+                wg=wg,
             )
             if ctx is None:
                 continue

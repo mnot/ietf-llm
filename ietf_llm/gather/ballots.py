@@ -171,7 +171,8 @@ def fetch_ballots(
     if not body or "objects" not in body:
         log(
             f"No ballot data for {wg} from Datatracker.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return []
     in_window = body["objects"]
@@ -186,13 +187,15 @@ def fetch_ballots(
     if not doc_names:
         log(
             f"No drafts with ballot activity in the last {months} months.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return []
     log(
         f"Fetching IESG ballots for {len(doc_names)} draft(s) "
         f"with in-window activity: {', '.join(doc_names)}",
-        verbose, level=LogLevel.STATUS,
+        verbose,
+        level=LogLevel.STATUS,
     )
     person_cache: Dict[str, str] = {}
     ballots: List[Ballot] = []
@@ -212,9 +215,7 @@ def _fetch_full_ballot(
     """Fetch every position event for one doc and collapse to the
     current ballot (latest event per balloter wins)."""
     body = _get_json(
-        f"{_API_BASE}/doc/ballotpositiondocevent/"
-        f"?doc__name={doc_name}"
-        "&limit=500"
+        f"{_API_BASE}/doc/ballotpositiondocevent/" f"?doc__name={doc_name}" "&limit=500"
     )
     if not body or "objects" not in body:
         return None
@@ -355,7 +356,8 @@ def render_ballot(ballot: Ballot) -> str:
 
 
 def write_ballot_files(
-    cache_dir: str, ballots: List[Ballot],
+    cache_dir: str,
+    ballots: List[Ballot],
     verbose: Verbosity = Verbosity.STATUS,
 ) -> List[str]:
     """Write per-draft ballot files to `<cache_dir>/ballots/`. Returns
@@ -394,13 +396,16 @@ def write_ballot_files(
         log(
             f"IESG ballot files: {len(all_paths)} current "
             f"({changed} written / changed, {removed} removed)",
-            verbose, level=LogLevel.STATUS,
+            verbose,
+            level=LogLevel.STATUS,
         )
     return all_paths
 
 
 def ballot_events(
-    ballots: List[Ballot], cache_dir: str, cutoff: datetime,
+    ballots: List[Ballot],
+    cache_dir: str,
+    cutoff: datetime,
 ) -> List[Event]:
     """Build timeline Event records for each in-window ballot
     position. One Event per (doc, AD, latest-in-window position).
@@ -411,16 +416,15 @@ def ballot_events(
     events: List[Event] = []
     for ballot in ballots:
         link = os.path.relpath(
-            ballot_path(cache_dir, ballot.doc_name), cache_dir,
+            ballot_path(cache_dir, ballot.doc_name),
+            cache_dir,
         )
         for pos in ballot.positions:
             # Render in-window position events only — the historical
             # tail belongs in the ballot file, not the timeline.
             if pos.when < cutoff:
                 continue
-            title = (
-                f"`{ballot.doc_name}`: {pos.name} → {pos.pos_label}"
-            )
+            title = f"`{ballot.doc_name}`: {pos.name} → {pos.pos_label}"
             events.append(
                 Event(
                     when=pos.when,

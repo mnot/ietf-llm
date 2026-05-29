@@ -79,9 +79,7 @@ def last_gathered(wg: str) -> Optional[datetime]:
     return when.astimezone(timezone.utc)
 
 
-def staleness_warning(
-    wg: str, threshold_days: int = STALE_AFTER_DAYS
-) -> Optional[str]:
+def staleness_warning(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[str]:
     """Return a one-line warning if the cache is older than the threshold.
 
     Returns None when the cache is fresh, or when we have no record of

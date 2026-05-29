@@ -1,10 +1,11 @@
 import os
 import re
-from typing import List, Dict, Any, Optional
-from bs4 import BeautifulSoup
-from ..paths import drafts_dir
-from ..utils import LogLevel, Verbosity, log, fetch_resource, get_group_type
+from typing import Any, Dict, List, Optional
 
+from bs4 import BeautifulSoup
+
+from ..paths import drafts_dir
+from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
 
 # `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
 # `draft-foo-bar` all normalise to `draft-foo-bar`. Used by both
@@ -142,9 +143,9 @@ def validate_draft_names(
         normalised = normalize_draft_name(raw)
         if not normalised.startswith("draft-"):
             log(
-                f"--draft {raw!r}: doesn't look like a draft name; "
-                "not persisting.",
-                verbose, level=LogLevel.STATUS,
+                f"--draft {raw!r}: doesn't look like a draft name; " "not persisting.",
+                verbose,
+                level=LogLevel.STATUS,
             )
             continue
         rev = fetch_current_rev(normalised, verbose)
@@ -152,7 +153,8 @@ def validate_draft_names(
             log(
                 f"--draft {raw}: Datatracker doesn't know this "
                 "draft; not persisting.",
-                verbose, level=LogLevel.STATUS,
+                verbose,
+                level=LogLevel.STATUS,
             )
             continue
         valid.append(raw)
@@ -171,7 +173,8 @@ def _download_all_revisions(
     updated: List[str] = []
     log(
         f"Processing draft: {draft_name} (revs 00 to {max_rev:02d})",
-        verbose, level=LogLevel.STATUS,
+        verbose,
+        level=LogLevel.STATUS,
     )
     for rev in range(max_rev + 1):
         rev_str = f"{rev:02d}"
@@ -217,15 +220,16 @@ def process_extra_drafts(
         if not name.startswith("draft-"):
             log(
                 f"--draft {raw!r}: doesn't look like a draft name; skipping.",
-                verbose, level=LogLevel.STATUS,
+                verbose,
+                level=LogLevel.STATUS,
             )
             continue
         max_rev = fetch_current_rev(name, verbose)
         if max_rev is None:
             log(
-                f"--draft {name}: Datatracker doesn't know this draft; "
-                "skipping.",
-                verbose, level=LogLevel.STATUS,
+                f"--draft {name}: Datatracker doesn't know this draft; " "skipping.",
+                verbose,
+                level=LogLevel.STATUS,
             )
             continue
         updated.extend(_download_all_revisions(name, max_rev, out_dir, verbose))
@@ -254,9 +258,7 @@ def process_documents(
         for draft in drafts:
             name = str(draft["name"])
             max_rev = int(draft["max_rev"])
-            updated.extend(
-                _download_all_revisions(name, max_rev, out_dir, verbose)
-            )
+            updated.extend(_download_all_revisions(name, max_rev, out_dir, verbose))
     else:
         log(f"No drafts found for {wg_name}.", verbose, level=LogLevel.STATUS)
 

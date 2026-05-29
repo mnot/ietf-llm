@@ -75,9 +75,7 @@ class _Summarizer:
             # llm and its provider plugins don't share a typed exception
             # hierarchy, so we catch broadly.
             log(
-                _llm_setup_help(
-                    model_name, f"{type(err).__name__}: {err}"
-                ),
+                _llm_setup_help(model_name, f"{type(err).__name__}: {err}"),
                 verbose,
                 level=LogLevel.ERROR,
             )

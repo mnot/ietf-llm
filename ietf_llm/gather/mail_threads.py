@@ -40,11 +40,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from .mbox import clean_email_text, extract_text_content
 from ..paths import thread_path, threads_dir
 from ..people import Registry
 from ..text import _normalize_subject, _parse_date, _short_addr
 from ..utils import LogLevel, Verbosity, get_cache_dir, log, write_if_changed
+from .mbox import clean_email_text, extract_text_content
 
 
 @dataclass
@@ -119,9 +119,7 @@ def _extract_references(value: Optional[str]) -> List[str]:
     return _MSGID_RE.findall(value)
 
 
-def parse_eml(
-    path: str, registry: Optional[Registry] = None
-) -> Optional[Message]:
+def parse_eml(path: str, registry: Optional[Registry] = None) -> Optional[Message]:
     """Parse one .eml file. Returns None on unrecoverable read errors.
 
     If `registry` is supplied, the sender field is set to the canonical
@@ -241,9 +239,7 @@ def _walk_imap_cache(wg: str) -> List[str]:
     return out
 
 
-def build_threads(
-    wg: str, registry: Optional[Registry] = None
-) -> List[Thread]:
+def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
     """Reconstruct threads from the WG's IMAP cache.
 
     Pass `registry` (from `people.build_registry()`) to render senders
@@ -302,9 +298,7 @@ def build_threads(
     for root in subject_root.values():
         members = _collect_subtree(root, children)
         # Order chronologically; messages without a date sink to the end.
-        members.sort(
-            key=lambda mm: mm.date.timestamp() if mm.date else float("inf")
-        )
+        members.sort(key=lambda mm: mm.date.timestamp() if mm.date else float("inf"))
         threads.append(Thread(root=root, members=members))
     return threads
 
@@ -384,15 +378,11 @@ def _build_outline(thread: Thread, registry: Optional["Registry"] = None) -> str
     lines = []
     for idx, msg in enumerate(thread.members, 1):
         when = _format_msg_date(msg)
-        lines.append(
-            f"- **[{idx}]** {when} — {_name_with_role(msg.sender, registry)}"
-        )
+        lines.append(f"- **[{idx}]** {when} — {_name_with_role(msg.sender, registry)}")
     return "\n".join(lines)
 
 
-def _render_thread(
-    thread: Thread, registry: Optional["Registry"] = None
-) -> str:
+def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str:
     """Build the per-thread markdown document."""
     first, last = thread.span
     span_text = (
@@ -419,9 +409,7 @@ def _render_thread(
         msg_counts[msg.sender] = msg_counts.get(msg.sender, 0) + 1
     # Sort by message count descending, then name for stability.
     participants_detail: List[str] = []
-    for sender, count in sorted(
-        msg_counts.items(), key=lambda kv: (-kv[1], kv[0])
-    ):
+    for sender, count in sorted(msg_counts.items(), key=lambda kv: (-kv[1], kv[0])):
         role = registry.role_tag(sender) if registry else None
         aff = registry.affiliation_tag(sender) if registry else None
         bits: List[str] = []
@@ -434,8 +422,7 @@ def _render_thread(
         bits.append(str(count))
         participants_detail.append(f"{sender} ({', '.join(bits)})")
     parts.append(
-        f"**Participants ({len(msg_counts)}):** "
-        + ", ".join(participants_detail)
+        f"**Participants ({len(msg_counts)}):** " + ", ".join(participants_detail)
     )
     parts.append("")
     parts.append("## Outline\n")
@@ -444,9 +431,7 @@ def _render_thread(
     parts.append("## Messages\n")
     for idx, msg in enumerate(thread.members, 1):
         when = _format_msg_date(msg)
-        header = (
-            f"### [{idx}] {when} — {_name_with_role(msg.sender, registry)}"
-        )
+        header = f"### [{idx}] {when} — {_name_with_role(msg.sender, registry)}"
         # Note reply linkage when available.
         if msg.parent_id:
             for p_idx, candidate in enumerate(thread.members, 1):

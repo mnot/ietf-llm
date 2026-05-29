@@ -68,13 +68,12 @@ def fetch_group_events(
     Charter events are returned regardless of `months` (foundational);
     other event kinds are filtered to the last `months` months.
     """
-    body = _get_json(
-        f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=200"
-    )
+    body = _get_json(f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=200")
     if not body or "objects" not in body:
         log(
             f"No groupevent data for {wg} from Datatracker.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return []
 
@@ -103,21 +102,18 @@ def fetch_group_events(
     return out
 
 
-def fetch_role_history(
-    wg: str, verbose: Verbosity = Verbosity.STATUS
-) -> List[Event]:
+def fetch_role_history(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Event]:
     """Chair (and other leadership) appointments through history.
 
     Always returns the full history — chair appointments are permanent
     context, and there are usually only a handful per WG.
     """
-    body = _get_json(
-        f"{_API_BASE}/group/rolehistory/?group__acronym={wg}&limit=200"
-    )
+    body = _get_json(f"{_API_BASE}/group/rolehistory/?group__acronym={wg}&limit=200")
     if not body or "objects" not in body:
         log(
             f"No rolehistory data for {wg} from Datatracker.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return []
 
@@ -169,7 +165,8 @@ def fetch_doc_events(
     if not body or "objects" not in body:
         log(
             f"No docevent data for {wg} from Datatracker.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         return []
 
@@ -228,7 +225,11 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     if type_slug == "published_rfc":
         return ("doc-rfc", f"`{doc_name}` published as RFC")
     if type_slug in ("started_iesg_process", "iesg_approved"):
-        action = "submitted to IESG" if type_slug == "started_iesg_process" else "approved by IESG"
+        action = (
+            "submitted to IESG"
+            if type_slug == "started_iesg_process"
+            else "approved by IESG"
+        )
         return ("doc-iesg", f"`{doc_name}` {action}")
     # Adoption by WG is recorded as a state change with a recognisable
     # description; pattern-match defensively.
@@ -238,7 +239,11 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     # WGLC announcement event (some Datatracker eras use this slug, some
     # surface it via desc). Prefer Datatracker over the mailing-list
     # heuristic when we find it here.
-    if type_slug == "sent_last_call" or "last call" in desc_lower and "issued" in desc_lower:
+    if (
+        type_slug == "sent_last_call"
+        or "last call" in desc_lower
+        and "issued" in desc_lower
+    ):
         return ("doc-wglc", f"`{doc_name}`: WG Last Call issued")
     return (None, "")
 

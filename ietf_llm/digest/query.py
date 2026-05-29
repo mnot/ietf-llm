@@ -144,9 +144,7 @@ def _parse_date_cell(value: str) -> str:
     return match.group(0) if match else ""
 
 
-def filter_rows(
-    section: Section, kind: str, filters: Dict[str, Any]
-) -> Section:
+def filter_rows(section: Section, kind: str, filters: Dict[str, Any]) -> Section:
     """Return a new Section with rows filtered per kind-specific rules."""
     keep: List[List[str]] = []
     for row in section.rows:
@@ -199,9 +197,10 @@ def _row_matches(  # pylint: disable=too-many-return-statements
         # then surfaces every thread whose subject contains that token.
         subject_filter = filters.get("subject")
         if subject_filter:
-            if subject_filter.lower() not in _row_field(
-                row, columns, "subject"
-            ).lower():
+            if (
+                subject_filter.lower()
+                not in _row_field(row, columns, "subject").lower()
+            ):
                 return False
     elif kind == "people":
         role = filters.get("role")
@@ -330,9 +329,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
 # --- Public entry point ----------------------------------------------------
 
 
-def query_digest(
-    path: str, kind: str, **filters: Any
-) -> str:
+def query_digest(path: str, kind: str, **filters: Any) -> str:
     """Read a digest file from `path` and return a filtered markdown view.
 
     If no filters are supplied the file is returned verbatim — same

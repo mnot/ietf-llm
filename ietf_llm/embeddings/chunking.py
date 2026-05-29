@@ -135,16 +135,12 @@ _THREAD_MSG_RE = re.compile(
 
 # Per-issue file labels line (issue_files._render_issue):
 #   "**Labels:** vocabulary, top-level, ready to close  "
-_ISSUE_LABELS_RE = re.compile(
-    r"^\*\*Labels:\*\*\s*(.+?)\s*$", re.MULTILINE
-)
+_ISSUE_LABELS_RE = re.compile(r"^\*\*Labels:\*\*\s*(.+?)\s*$", re.MULTILINE)
 
 # Per-issue file state line (issue_files._render_issue renders uppercase
 # "OPEN" / "CLOSED" but tolerate any case in case the format ever shifts):
 #   "**State:** OPEN  "
-_ISSUE_STATE_RE = re.compile(
-    r"^\*\*State:\*\*\s*(\S+)", re.MULTILINE
-)
+_ISSUE_STATE_RE = re.compile(r"^\*\*State:\*\*\s*(\S+)", re.MULTILINE)
 
 # Per-issue file URL line (issue_files._render_issue):
 #   "**URL:** https://github.com/<owner>/<repo>/issues/<N>  "
@@ -166,9 +162,7 @@ _ISSUE_RATIONALE_RE = re.compile(
 # Per-thread message Archived-At line (mail_threads._render_thread).
 # One per message section, italicised inline form:
 #   "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/<list>/<tok>/"
-_THREAD_ARCHIVED_AT_RE = re.compile(
-    r"^_Archived-At:_\s*(\S+)", re.MULTILINE
-)
+_THREAD_ARCHIVED_AT_RE = re.compile(r"^_Archived-At:_\s*(\S+)", re.MULTILINE)
 
 
 def _extract_issue_labels(text: str) -> Optional[str]:
@@ -291,9 +285,7 @@ def _chunk_message_file(text: str, filename: str) -> List[Chunk]:
                 start_line=_line_at(line_starts, start_off),
                 # max(end_off - 1, 0): byte at end_off is past the part
                 end_line=_line_at(line_starts, max(end_off - 1, 0)),
-                chunk_date=(
-                    _normalize_to_utc_iso(date_m.group(1)) if date_m else None
-                ),
+                chunk_date=(_normalize_to_utc_iso(date_m.group(1)) if date_m else None),
             )
         )
     return chunks
@@ -321,9 +313,7 @@ def _chunk_issues_file(text: str, filename: str) -> List[Chunk]:
                 text=part[:MAX_CHUNK_CHARS],
                 start_line=_line_at(line_starts, start_off),
                 end_line=_line_at(line_starts, max(end_off - 1, 0)),
-                chunk_date=(
-                    _normalize_to_utc_iso(date_m.group(1)) if date_m else None
-                ),
+                chunk_date=(_normalize_to_utc_iso(date_m.group(1)) if date_m else None),
             )
         )
     return chunks
@@ -400,12 +390,8 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     # Issue-cluster signals: duplicate-of marker and closing rationale.
     # File-level: every chunk from this issue inherits them, so a
     # search hit reveals "this is a dup" or "closed because…" inline.
-    duplicate_of = (
-        _extract_issue_duplicate_of(text) if is_issue else None
-    )
-    closing_rationale = (
-        _extract_issue_rationale(text) if is_issue else None
-    )
+    duplicate_of = _extract_issue_duplicate_of(text) if is_issue else None
+    closing_rationale = _extract_issue_rationale(text) if is_issue else None
 
     # Header (subject + outline) is everything before the first message.
     header_end = matches[0].start()
@@ -439,9 +425,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         chunk_date = _normalize_to_utc_iso(match.group(2))
         # Per-chunk URL: issue chunks inherit the file-level URL;
         # thread chunks have their own per-message Archived-At line.
-        chunk_url = (
-            file_url if is_issue else _extract_thread_archived_at(body)
-        )
+        chunk_url = file_url if is_issue else _extract_thread_archived_at(body)
         chunks.append(
             Chunk(
                 file=filename,

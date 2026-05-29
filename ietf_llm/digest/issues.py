@@ -35,9 +35,7 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
     archives_dir = github_dir(cache_dir)
     if not os.path.isdir(archives_dir):
         return None
-    gh_files = sorted(
-        f for f in os.listdir(archives_dir) if f.endswith(".json")
-    )
+    gh_files = sorted(f for f in os.listdir(archives_dir) if f.endswith(".json"))
     if not gh_files:
         return None
 
@@ -97,9 +95,7 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
                 key=lambda i: i.get("updatedAt") or i.get("createdAt") or "",
                 reverse=True,
             )
-            issues_sorted.sort(
-                key=lambda i: 0 if _state_is_open(i.get("state")) else 1
-            )
+            issues_sorted.sort(key=lambda i: 0 if _state_is_open(i.get("state")) else 1)
 
             for issue in issues_sorted:
                 number = issue.get("number", "?")
@@ -125,7 +121,8 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
                 participants_cell = ", ".join(others).replace("|", "\\|")
                 # Relative path is what the chunker and MCP tools speak.
                 relpath = os.path.relpath(
-                    issue_path(cache_dir, repo, number), cache_dir,
+                    issue_path(cache_dir, repo, number),
+                    cache_dir,
                 )
                 file_cell = f"`{relpath}`"
                 # Surface "duplicate of #N" when detected. Empty for
@@ -136,9 +133,12 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
 
                 if summarizer.active():
                     body = (issue.get("body") or "").strip()
-                    summary = summarizer.summarize(
-                        _ISSUE_PROMPT.format(title=title, body=body or "(no body)")
-                    ) or ""
+                    summary = (
+                        summarizer.summarize(
+                            _ISSUE_PROMPT.format(title=title, body=body or "(no body)")
+                        )
+                        or ""
+                    )
                     summary = summary.replace("|", "\\|")
                     fh.write(
                         f"| {number} | {state} | {title} | {labels} | "
@@ -155,9 +155,7 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
                     )
             fh.write("\n")
 
-        fh.write(
-            f"\n_Totals: {total_open} open, {total_closed} closed_\n"
-        )
+        fh.write(f"\n_Totals: {total_open} open, {total_closed} closed_\n")
 
     log(
         f"Wrote issues digest: {total_open} open, {total_closed} closed",

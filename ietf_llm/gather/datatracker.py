@@ -85,9 +85,7 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         return None
 
 
-def fetch_wg_roles(
-    wg: str, verbose: Verbosity = Verbosity.STATUS
-) -> List[Role]:
+def fetch_wg_roles(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Role]:
     """Return the role assignments for a WG (chairs, ADs, advisors, …).
 
     Returns an empty list if Datatracker is unreachable or the WG
@@ -95,9 +93,7 @@ def fetch_wg_roles(
     a Role with the raw email local-part as the name; we never block
     the gather pipeline on this.
     """
-    roles_body = _get_json(
-        f"{_API_BASE}/group/role/?group__acronym={wg}"
-    )
+    roles_body = _get_json(f"{_API_BASE}/group/role/?group__acronym={wg}")
     if not roles_body or "objects" not in roles_body:
         log(
             f"Could not fetch Datatracker roles for {wg}; skipping.",
@@ -129,11 +125,7 @@ def fetch_wg_roles(
             person_body = _get_json(person_url)
             name = ""
             if person_body:
-                name = (
-                    person_body.get("name")
-                    or person_body.get("ascii")
-                    or ""
-                )
+                name = person_body.get("name") or person_body.get("ascii") or ""
             if not name and email:
                 name = email.split("@", 1)[0]
             person_cache[person_url] = name
@@ -148,8 +140,7 @@ def fetch_wg_roles(
         )
 
     log(
-        f"Datatracker roles for {wg}: "
-        + ", ".join(f"{r.label} {r.name}" for r in out),
+        f"Datatracker roles for {wg}: " + ", ".join(f"{r.label} {r.name}" for r in out),
         verbose,
         level=LogLevel.STATUS,
     )

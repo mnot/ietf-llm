@@ -138,14 +138,10 @@ def transcripts_dir(cache_dir: str, code: Optional[str]) -> str:
     return os.path.join(meeting_dir(cache_dir, real_code), SUBDIR_TRANSCRIPTS)
 
 
-def transcript_path(
-    cache_dir: str, code: Optional[str], datetime_token: str
-) -> str:
+def transcript_path(cache_dir: str, code: Optional[str], datetime_token: str) -> str:
     """Per-session transcript. `datetime_token` is the
     `YYYYMMDDHHmm` form from the source filename."""
-    return os.path.join(
-        transcripts_dir(cache_dir, code), f"{datetime_token}.md"
-    )
+    return os.path.join(transcripts_dir(cache_dir, code), f"{datetime_token}.md")
 
 
 def polls_dir(cache_dir: str, code: str) -> str:

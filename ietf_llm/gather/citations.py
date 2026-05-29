@@ -84,8 +84,7 @@ def _strip_quoted(text: str) -> str:
     double-count the original.
     """
     return "\n".join(
-        line for line in text.splitlines()
-        if not line.lstrip().startswith(">")
+        line for line in text.splitlines() if not line.lstrip().startswith(">")
     )
 
 
@@ -137,15 +136,21 @@ def _scan_file(path: str, relpath: str) -> List[tuple[str, Citation]]:
         end = min(len(cleaned), match.end() + 80)
         context = " ".join(cleaned[start:end].split())
         out.append(
-            (draft, Citation(
-                file=relpath, chunk_idx=chunk_idx, context=context,
-            )),
+            (
+                draft,
+                Citation(
+                    file=relpath,
+                    chunk_idx=chunk_idx,
+                    context=context,
+                ),
+            ),
         )
     return out
 
 
 def scan_citations(
-    cache_dir: str, verbose: Verbosity = Verbosity.STATUS,
+    cache_dir: str,
+    verbose: Verbosity = Verbosity.STATUS,
 ) -> Dict[str, List[Citation]]:
     """Walk threads/ and issues/ in a WG cache. Return draft → list
     of citations (in stable order by file + chunk_idx).
@@ -171,7 +176,8 @@ def scan_citations(
     log(
         f"Scanned {n_files} thread / issue file(s); "
         f"found {len(out)} distinct draft citation(s)",
-        verbose, level=LogLevel.STATUS,
+        verbose,
+        level=LogLevel.STATUS,
     )
     return out
 
@@ -214,7 +220,8 @@ def write_citations_digest(
             fh.write("\n")
     log(
         f"Wrote citations digest: {len(citations)} draft(s)",
-        verbose, level=LogLevel.STATUS,
+        verbose,
+        level=LogLevel.STATUS,
     )
     return out_path
 

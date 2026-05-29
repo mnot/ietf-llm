@@ -3,8 +3,9 @@ import re
 import subprocess
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, List, Optional
-from ..paths import transcripts_dir, transcript_path
-from ..utils import LogLevel, Verbosity, log, get_cache_dir
+
+from ..paths import transcript_path, transcripts_dir
+from ..utils import LogLevel, Verbosity, get_cache_dir, log
 
 if TYPE_CHECKING:
     from .meetings import MeetingCluster

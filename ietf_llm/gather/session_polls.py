@@ -73,7 +73,8 @@ def fetch_polls_from_materials_page(
     """
     log(
         f"Checking for poll records at {materials_url}...",
-        verbose, level=LogLevel.PROGRESS,
+        verbose,
+        level=LogLevel.PROGRESS,
     )
     res = fetch_resource(materials_url)
     if not res:
@@ -114,7 +115,8 @@ def fetch_polls_from_materials_page(
         if os.path.exists(path):
             log(
                 f"Skipping polls {os.path.relpath(path, dest)}: already cached.",
-                verbose, level=LogLevel.PROGRESS,
+                verbose,
+                level=LogLevel.PROGRESS,
             )
             continue
 
@@ -132,7 +134,8 @@ def fetch_polls_from_materials_page(
             fh.write(markdown)
         log(
             f"Wrote {os.path.relpath(path, dest)}",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         written.append(path)
 
@@ -155,7 +158,7 @@ def discover_local_polls(cache_dir: str) -> List["LocalPoll"]:
         # Extract the numeric meeting number from codes like "ietf114"
         # (the LocalPoll model carries it as the display value); for
         # interims we just use the code.
-        meeting_label = code[len("ietf"):] if code.startswith("ietf") else code
+        meeting_label = code[len("ietf") :] if code.startswith("ietf") else code
         for name in sorted(os.listdir(polls_subdir)):
             match = _LOCAL_POLLS_BASENAME_RE.match(name)
             if not match:
@@ -164,7 +167,8 @@ def discover_local_polls(cache_dir: str) -> List["LocalPoll"]:
             if when is None:
                 continue
             relpath = os.path.relpath(
-                os.path.join(polls_subdir, name), cache_dir,
+                os.path.join(polls_subdir, name),
+                cache_dir,
             )
             out.append(
                 LocalPoll(
@@ -187,9 +191,7 @@ class LocalPoll:
 
     __slots__ = ("filename", "wg", "meeting", "when")
 
-    def __init__(
-        self, filename: str, wg: str, meeting: str, when: datetime
-    ) -> None:
+    def __init__(self, filename: str, wg: str, meeting: str, when: datetime) -> None:
         self.filename = filename
         self.wg = wg
         self.meeting = meeting

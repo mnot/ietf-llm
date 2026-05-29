@@ -1,13 +1,14 @@
-import os
 import base64
+import os
 from typing import Optional
+
 import requests
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 
-from .utils import log, Verbosity, LogLevel
+from .utils import LogLevel, Verbosity, log
 
 # Scopes required for Discovery Engine API
 SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]

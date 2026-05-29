@@ -52,7 +52,6 @@ from .utils import (
     log,
 )
 
-
 # Files we mirror / upload. JSON archives are internal and excluded;
 # PDFs aren't supported by the downstream sinks (NotebookLM wants text).
 _TEXT_SUFFIXES = (".txt", ".md")
@@ -62,7 +61,8 @@ _THREAD_YEAR_RE = re.compile(r"^(\d{4})-\d{2}-\d{2}-")
 
 
 def _exportable_files(
-    cache_dir: str, bundle: bool = True,
+    cache_dir: str,
+    bundle: bool = True,
 ) -> List[Tuple[str, str, str]]:
     """Walk the cache and return `(content, flat_name, kind)` for every
     exportable source.
@@ -130,20 +130,14 @@ def _exportable_files(
     return out
 
 
-def _classify_relpath(relpath: str) -> str:  # pylint: disable=too-many-return-statements
+_RELPATH_KINDS = ("threads", "issues", "drafts", "meetings", "digests", "raw")
+
+
+def _classify_relpath(relpath: str) -> str:
     """Coarse kind tag based on the cache layout."""
-    if relpath.startswith("threads/"):
-        return "threads"
-    if relpath.startswith("issues/"):
-        return "issues"
-    if relpath.startswith("drafts/"):
-        return "drafts"
-    if relpath.startswith("meetings/"):
-        return "meetings"
-    if relpath.startswith("digests/"):
-        return "digests"
-    if relpath.startswith("raw/"):
-        return "raw"
+    for kind in _RELPATH_KINDS:
+        if relpath.startswith(f"{kind}/"):
+            return kind
     return "other"
 
 
@@ -186,6 +180,7 @@ def _bundle_issues(paths: List[str]) -> str:
     order rather than alphabetic-string order (which would put #100
     before #2).
     """
+
     def _num(path: str) -> int:
         stem = os.path.splitext(os.path.basename(path))[0]
         try:
@@ -196,8 +191,7 @@ def _bundle_issues(paths: List[str]) -> str:
     sorted_paths = sorted(paths, key=_num)
     parts: List[str] = [
         f"# GitHub issues ({len(sorted_paths)} issues)\n\n",
-        "_One section per issue, separated by `---`. Sorted by issue "
-        "number._\n",
+        "_One section per issue, separated by `---`. Sorted by issue number._\n",
     ]
     for issue_path in sorted_paths:
         try:
@@ -320,9 +314,7 @@ def notebooklm(
 
     wg_title = get_wg_title(wg)
     notebook_title = f"IETF {wg_title} Working Group"
-    notebook_id = create_notebook(
-        gcp_project, notebook_title, creds, verbose=verbose
-    )
+    notebook_id = create_notebook(gcp_project, notebook_title, creds, verbose=verbose)
     if not notebook_id:
         log("Failed to create notebook.", verbose, level=LogLevel.ERROR)
         return 0
@@ -338,8 +330,12 @@ def notebooklm(
             with open(staged, "w", encoding="utf-8") as fh:
                 fh.write(content)
             if upload_source(
-                gcp_project, notebook_id, staged, creds,
-                display_name=flat, verbose=verbose,
+                gcp_project,
+                notebook_id,
+                staged,
+                creds,
+                display_name=flat,
+                verbose=verbose,
             ):
                 success += 1
 

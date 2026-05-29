@@ -7,7 +7,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
 from ..paths import raw_dir, raw_mail_archive_path
 from ..utils import (
@@ -45,7 +45,8 @@ def validate_list_names(
         if not norm:
             log(
                 f"--mailing-list {raw!r}: empty name; not persisting.",
-                verbose, level=LogLevel.STATUS,
+                verbose,
+                level=LogLevel.STATUS,
             )
             continue
         url = f"https://mailarchive.ietf.org/arch/browse/{norm}/"
@@ -53,7 +54,8 @@ def validate_list_names(
             log(
                 f"--mailing-list {raw}: not found on "
                 "mailarchive.ietf.org; not persisting.",
-                verbose, level=LogLevel.STATUS,
+                verbose,
+                level=LogLevel.STATUS,
             )
             continue
         valid.append(raw)
@@ -233,7 +235,8 @@ def _sync_one_list(
     cache lives at `imap-cache/<wg>/<list>/`."""
     log(
         f"Syncing list '{list_name}' for WG {wg_name} via IMAP...",
-        verbose, level=LogLevel.STATUS,
+        verbose,
+        level=LogLevel.STATUS,
     )
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
@@ -245,7 +248,8 @@ def _sync_one_list(
         if status != "OK":
             log(
                 f"Error: Could not select IMAP folder '{folder}'",
-                verbose, level=LogLevel.ERROR,
+                verbose,
+                level=LogLevel.ERROR,
             )
             return []
         search_criteria = "ALL"
@@ -256,7 +260,8 @@ def _sync_one_list(
             search_criteria = f'(SINCE "{since_date}")'
             log(
                 f"  searching for messages since {since_date}...",
-                verbose, level=LogLevel.PROGRESS,
+                verbose,
+                level=LogLevel.PROGRESS,
             )
         status, data = mail.uid("search", search_criteria)
         if status != "OK":
@@ -265,30 +270,30 @@ def _sync_one_list(
         uids = data[0].split()
         log(
             f"  found {len(uids)} potential messages on '{list_name}'.",
-            verbose, level=LogLevel.PROGRESS,
+            verbose,
+            level=LogLevel.PROGRESS,
         )
         missing_uids = [
-            uid for uid in uids
-            if not os.path.exists(
-                os.path.join(cache_dir, f"{uid.decode()}.eml")
-            )
+            uid
+            for uid in uids
+            if not os.path.exists(os.path.join(cache_dir, f"{uid.decode()}.eml"))
         ]
         new_count = 0
         if missing_uids:
-            new_count = _download_batches(
-                mail, missing_uids, cache_dir, verbose
-            )
+            new_count = _download_batches(mail, missing_uids, cache_dir, verbose)
         mail.logout()
         if new_count > 0:
             log(
                 f"  downloaded {new_count} new messages from '{list_name}'.",
-                verbose, level=LogLevel.STATUS,
+                verbose,
+                level=LogLevel.STATUS,
             )
         return [u.decode() for u in uids]
     except (imaplib.IMAP4.error, OSError) as err:
         log(
             f"IMAP error on '{list_name}': {err}",
-            verbose, level=LogLevel.ERROR,
+            verbose,
+            level=LogLevel.ERROR,
         )
         return []
 
@@ -333,7 +338,8 @@ def sync_mailing_list(
         log(
             f"No mailing list configured for {wg_name} (auto-discovery "
             "failed and no --mailing-list specified); skipping mail sync.",
-            verbose, level=LogLevel.STATUS,
+            verbose,
+            level=LogLevel.STATUS,
         )
         return []
 
@@ -341,7 +347,10 @@ def sync_mailing_list(
     per_list_uids: Dict[str, List[str]] = {}
     for list_name in list_names:
         per_list_uids[list_name] = _sync_one_list(
-            wg_name, list_name, months, verbose,
+            wg_name,
+            list_name,
+            months,
+            verbose,
         )
 
     # Per-list year archives, then merge across lists into one file
@@ -351,7 +360,10 @@ def sync_mailing_list(
     combined: Dict[int, List[str]] = {}
     for list_name, uids in per_list_uids.items():
         cache_dir = os.path.join(
-            get_cache_dir(), "imap-cache", wg_name, list_name,
+            get_cache_dir(),
+            "imap-cache",
+            wg_name,
+            list_name,
         )
         if not uids:
             continue

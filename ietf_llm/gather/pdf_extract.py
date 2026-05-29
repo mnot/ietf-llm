@@ -100,7 +100,9 @@ def _find_minutes_relpath(cache_dir: str, meeting: str) -> Optional[str]:
 def _read_meeting_date(cache_dir: str, minutes_relpath: str) -> Optional[str]:
     try:
         with open(
-            os.path.join(cache_dir, minutes_relpath), "r", encoding="utf-8",
+            os.path.join(cache_dir, minutes_relpath),
+            "r",
+            encoding="utf-8",
         ) as fh:
             head = fh.read(500)
     except OSError:
@@ -110,7 +112,8 @@ def _read_meeting_date(cache_dir: str, minutes_relpath: str) -> Optional[str]:
 
 
 def slide_context(
-    pdf_relpath: str, cache_dir: str,
+    pdf_relpath: str,
+    cache_dir: str,
 ) -> Optional[SlideContext]:
     """Infer meeting + topic context for a slide PDF.
 

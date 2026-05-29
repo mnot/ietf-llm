@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import email.policy
 import email.utils
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -43,6 +42,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .gather.datatracker import fetch_wg_roles
 from .gather.draft_authors import latest_draft_paths, parse_authors
+from .gather.github import iter_issue_archives
 from .gather.github_users import resolve_logins
 from .paths import digest_path
 from .text import _parse_date
@@ -53,7 +53,6 @@ from .utils import (
     get_wg_file_cache_dir,
     log,
 )
-
 
 # --- Person model ----------------------------------------------------------
 
@@ -117,9 +116,7 @@ class Person:
 # --- Normalisation helpers -------------------------------------------------
 
 
-_DMARC_RE = re.compile(
-    r"^([^@\s]+)=40([^@\s]+)@dmarc\.ietf\.org$", re.IGNORECASE
-)
+_DMARC_RE = re.compile(r"^([^@\s]+)=40([^@\s]+)@dmarc\.ietf\.org$", re.IGNORECASE)
 
 _RELAY_DOMAINS = {
     "datatracker.ietf.org",
@@ -139,7 +136,6 @@ _LEADERSHIP_ROLE_ORDER = {
     "Tech Advisor": 2,
     "Secretary": 3,
 }
-
 
 
 def _normalise_email(address: str) -> Optional[str]:
@@ -219,7 +215,10 @@ class Registry:
         if name and not _looks_like_email(person.canonical_name):
             # If we previously only had an email-ish "name", and now have
             # a real human name, upgrade.
-            if _looks_like_email(person.canonical_name) or person.canonical_name == addr:
+            if (
+                _looks_like_email(person.canonical_name)
+                or person.canonical_name == addr
+            ):
                 person.canonical_name = name
         elif name and _looks_like_email(person.canonical_name):
             person.canonical_name = name
@@ -458,9 +457,10 @@ class Registry:
         """Persons holding any formal WG role, sorted by role then name."""
         return sorted(
             (p for p in self.persons if p.roles),
-            key=lambda p: (_LEADERSHIP_ROLE_ORDER.get(
-                next(iter(sorted(p.roles))), 99
-            ), p.canonical_name),
+            key=lambda p: (
+                _LEADERSHIP_ROLE_ORDER.get(next(iter(sorted(p.roles))), 99),
+                p.canonical_name,
+            ),
         )
 
 
@@ -538,19 +538,8 @@ def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
     """Read each `github/<repo-slug>.json` archive and feed issue authors."""
     cache_dir = os.path.join(get_cache_dir(), wg, "files")
     archives_dir = os.path.join(cache_dir, "github")
-    if not os.path.isdir(archives_dir):
-        return
     count = 0
-    for name in os.listdir(archives_dir):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(
-                os.path.join(archives_dir, name), "r", encoding="utf-8",
-            ) as fh:
-                data = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            continue
+    for data in iter_issue_archives(archives_dir):
         for issue in data.get("issues") or []:
             registry.add_github_author(
                 issue.get("author") or "",
@@ -566,7 +555,8 @@ def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
 
 
 def _resolve_github_user_names(
-    registry: Registry, verbose: Verbosity,
+    registry: Registry,
+    verbose: Verbosity,
 ) -> None:
     """For each Person whose canonical_name is just their GitHub login
     (heuristic linking didn't find them in the mail registry), look up
@@ -599,7 +589,8 @@ def _resolve_github_user_names(
 
     log(
         f"Resolving {len(candidates)} GitHub login(s) to real names...",
-        verbose, level=LogLevel.STATUS,
+        verbose,
+        level=LogLevel.STATUS,
     )
     resolved = resolve_logins(candidates, verbose=verbose)
     n_upgraded = 0
@@ -612,7 +603,8 @@ def _resolve_github_user_names(
             # Keep the by_name index in sync so canonical_for_email
             # lookups land on this Person now that we have a real name.
             target.canonical_name = info.name
-            registry._by_name[info.name.lower()] = target  # pylint: disable=protected-access
+            key = info.name.lower()
+            registry._by_name[key] = target  # pylint: disable=protected-access
             n_upgraded += 1
         # Record the company field as an affiliation source. We always
         # try this — even when name resolution didn't upgrade, an
@@ -624,21 +616,18 @@ def _resolve_github_user_names(
         log(
             f"  upgraded {n_upgraded} login(s) to real names; "
             f"{n_companies} affiliation(s) from GitHub `company`",
-            verbose, level=LogLevel.STATUS,
+            verbose,
+            level=LogLevel.STATUS,
         )
 
 
-def _ingest_datatracker_roles(
-    wg: str, registry: Registry, verbose: Verbosity
-) -> None:
+def _ingest_datatracker_roles(wg: str, registry: Registry, verbose: Verbosity) -> None:
     """Fetch chairs/ADs/advisors from Datatracker and add to the registry."""
     for role in fetch_wg_roles(wg, verbose=verbose):
         registry.add_datatracker_role(role.name, role.email, role.label)
 
 
-def _ingest_draft_authors(
-    wg: str, registry: Registry, verbose: Verbosity
-) -> None:
+def _ingest_draft_authors(wg: str, registry: Registry, verbose: Verbosity) -> None:
     """Parse the Authors' Addresses section of each draft / RFC in the cache.
 
     Stable name spellings (taken from the document front-matter that
@@ -738,10 +727,7 @@ def write_people_digest(
         # to know before scrolling through 100+ participants.
         if leaders:
             fh.write(f"## Working Group leadership ({len(leaders)})\n\n")
-            fh.write(
-                "| Role | Name | Affiliation | Email |\n"
-                "|---|---|---|---|\n"
-            )
+            fh.write("| Role | Name | Affiliation | Email |\n|---|---|---|---|\n")
             for person in leaders:
                 roles_text = ", ".join(sorted(person.roles))
                 primary_email = next(iter(sorted(person.emails)), "")
@@ -754,16 +740,10 @@ def write_people_digest(
 
         # Document authors — surfaced next because "who wrote this
         # draft" is the second question after "who runs the WG".
-        authors = [
-            p for p in persons
-            if p.authored_documents or p.edited_documents
-        ]
+        authors = [p for p in persons if p.authored_documents or p.edited_documents]
         if authors:
             fh.write(f"## Document authors / editors ({len(authors)})\n\n")
-            fh.write(
-                "| Name | Documents | Affiliation | Email |\n"
-                "|---|---|---|---|\n"
-            )
+            fh.write("| Name | Documents | Affiliation | Email |\n|---|---|---|---|\n")
             authors.sort(key=lambda p: p.canonical_name.lower())
             for person in authors:
                 primary_email = next(iter(sorted(person.emails)), "")
@@ -779,15 +759,18 @@ def write_people_digest(
             fh.write("\n")
 
         if linked:
-            fh.write(
-                f"## Active on both mailing list and GitHub ({len(linked)})\n\n"
-            )
+            fh.write(f"## Active on both mailing list and GitHub ({len(linked)})\n\n")
             _write_actor_table(
                 fh,
                 linked,
                 columns=(
-                    "Name", "Roles", "Affiliation",
-                    "Emails", "GitHub", "Msgs", "Issues",
+                    "Name",
+                    "Roles",
+                    "Affiliation",
+                    "Emails",
+                    "GitHub",
+                    "Msgs",
+                    "Issues",
                 ),
             )
         if mail_only:
@@ -796,14 +779,21 @@ def write_people_digest(
                 fh,
                 mail_only,
                 columns=(
-                    "Name", "Roles", "Affiliation",
-                    "Emails", "Msgs", "First", "Last",
+                    "Name",
+                    "Roles",
+                    "Affiliation",
+                    "Emails",
+                    "Msgs",
+                    "First",
+                    "Last",
                 ),
             )
         if gh_only:
             fh.write(f"## GitHub only ({len(gh_only)})\n\n")
             _write_actor_table(
-                fh, gh_only, columns=("Name", "GitHub", "Issues"),
+                fh,
+                gh_only,
+                columns=("Name", "GitHub", "Issues"),
             )
 
     log(
@@ -848,9 +838,7 @@ def _format_affiliations(person: Person) -> str:
     )
     bits: List[str] = []
     for org, sources in ranked:
-        ordered_sources = sorted(
-            sources, key=lambda s: (source_order.get(s, 99), s)
-        )
+        ordered_sources = sorted(sources, key=lambda s: (source_order.get(s, 99), s))
         bits.append(f"{org} ({', '.join(ordered_sources)})")
     return "; ".join(bits).replace("|", "\\|")
 
@@ -877,9 +865,7 @@ def _bucket_persons(
     return linked, mail_only, gh_only
 
 
-def _write_actor_table(
-    fh: Any, persons: List[Person], columns: Iterable[str]
-) -> None:
+def _write_actor_table(fh: Any, persons: List[Person], columns: Iterable[str]) -> None:
     columns = list(columns)
     fh.write("| " + " | ".join(columns) + " |\n")
     fh.write("|" + "|".join("---" for _ in columns) + "|\n")

@@ -47,13 +47,9 @@ class DraftAuthor:
 # deliberate: stacking `?` quantifiers on adjacent tokens before `\s*$`
 # produces a backtracking pathology in Python's `re` that silently
 # fails to match. Using an explicit non-capturing group avoids it.
-_HEADER_RE = re.compile(
-    r"^Author(?:'s|s')?\s+Address(?:es)?\s*$", re.MULTILINE
-)
+_HEADER_RE = re.compile(r"^Author(?:'s|s')?\s+Address(?:es)?\s*$", re.MULTILINE)
 _PAGE_FOOTER_RE = re.compile(r"\[Page\s+\d+\]|Expires?\s+\w+\s+\d{4}")
-_EDITOR_SUFFIX_RE = re.compile(
-    r"^(.+?)\s*\((?:editor|ed\.?)\)\s*$", re.IGNORECASE
-)
+_EDITOR_SUFFIX_RE = re.compile(r"^(.+?)\s*\((?:editor|ed\.?)\)\s*$", re.IGNORECASE)
 _EMAIL_LINE_RE = re.compile(r"^Email:\s*(\S+@\S+)", re.IGNORECASE)
 
 
@@ -146,9 +142,7 @@ def _commit_block(lines: List[str], out: List[DraftAuthor]) -> None:
 # --- WG-cache walker -------------------------------------------------------
 
 
-_DRAFT_FILE_RE = re.compile(
-    r"^(?P<base>(?:draft|rfc)-[^/]+?)-(?P<version>\d+)\.txt$"
-)
+_DRAFT_FILE_RE = re.compile(r"^(?P<base>(?:draft|rfc)-[^/]+?)-(?P<version>\d+)\.txt$")
 
 
 def latest_draft_paths(cache_dir: str) -> List[str]:

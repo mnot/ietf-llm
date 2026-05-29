@@ -42,7 +42,7 @@ from .helpers import (
 )
 from .index import _build_index, _inventory
 from .issues import _build_issues_digest
-from .summarizer import _Summarizer, _llm_setup_help
+from .summarizer import _llm_setup_help, _Summarizer
 from .threads import _build_threads_digest
 
 __all__ = [

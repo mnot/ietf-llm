@@ -109,9 +109,7 @@ def _looks_table_row(line: str) -> bool:
     """
     stripped = line.strip()
     return (
-        stripped.startswith("|")
-        and stripped.endswith("|")
-        and stripped.count("|") >= 3
+        stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3
     )
 
 

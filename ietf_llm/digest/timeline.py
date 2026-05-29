@@ -31,15 +31,14 @@ can grep down to the period it cares about.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from ..gather.ballots import _cutoff as _ballot_cutoff
 from ..gather.ballots import (
-    _cutoff as _ballot_cutoff,
     ballot_events,
     fetch_ballots,
     write_ballot_files,
@@ -49,6 +48,7 @@ from ..gather.datatracker_history import (
     fetch_group_events,
     fetch_role_history,
 )
+from ..gather.github import iter_issue_archives
 from ..gather.mail_threads import Thread, build_threads, thread_slug
 from ..gather.session_polls import discover_local_polls
 from ..gather.transcript_context import transcript_context
@@ -61,7 +61,6 @@ from ..paths import (
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, is_synthetic_wg, log
 from .events import Event
-
 
 # --- Sources ---------------------------------------------------------------
 
@@ -119,7 +118,7 @@ def _procedural_events(threads: List[Thread]) -> List[Event]:
                 Event(
                     when=when,
                     kind="adoption-call",
-                    title=f"Call for adoption thread starts: \"{subject}\"",
+                    title=f'Call for adoption thread starts: "{subject}"',
                     detail=(
                         f"{len(thread.members)} messages, "
                         f"{len(thread.participants)} participants"
@@ -133,7 +132,7 @@ def _procedural_events(threads: List[Thread]) -> List[Event]:
                 Event(
                     when=when,
                     kind="wglc",
-                    title=f"WG Last Call thread: \"{subject}\"",
+                    title=f'WG Last Call thread: "{subject}"',
                     detail=(
                         f"{len(thread.members)} messages, "
                         f"{len(thread.participants)} participants"
@@ -144,9 +143,7 @@ def _procedural_events(threads: List[Thread]) -> List[Event]:
     return out
 
 
-_MEETING_DATE_RE = re.compile(
-    r"^Date:\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE
-)
+_MEETING_DATE_RE = re.compile(r"^Date:\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE)
 
 
 @dataclass
@@ -251,9 +248,7 @@ def _meeting_events(cache_dir: str) -> List[Event]:
                     sessions[key] = _Session(
                         when=transcript_when,
                         code=None,
-                        label=ctx.label or (
-                            f"session ({ctx.date} {ctx.time} UTC)"
-                        ),
+                        label=ctx.label or (f"session ({ctx.date} {ctx.time} UTC)"),
                         minutes_file=None,
                     )
                 sessions[key].transcripts.append(relpath)
@@ -305,13 +300,9 @@ def _meeting_label(filename: str) -> str:
     ietf_match = re.match(r"^ietf(\d+)$", base, re.IGNORECASE)
     if ietf_match:
         return f"IETF {ietf_match.group(1)} meeting"
-    interim_match = re.match(
-        r"^interim(\d{4})\w*?(\d+)$", base, re.IGNORECASE
-    )
+    interim_match = re.match(r"^interim(\d{4})\w*?(\d+)$", base, re.IGNORECASE)
     if interim_match:
-        return (
-            f"Interim {interim_match.group(1)} #{interim_match.group(2)}"
-        )
+        return f"Interim {interim_match.group(1)} #{interim_match.group(2)}"
     return base
 
 
@@ -324,18 +315,7 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
     """
     out: List[Event] = []
     archives_dir = github_dir(cache_dir)
-    if not os.path.isdir(archives_dir):
-        return out
-    for name in os.listdir(archives_dir):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(
-                os.path.join(archives_dir, name), "r", encoding="utf-8",
-            ) as fh:
-                data = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            continue
+    for data in iter_issue_archives(archives_dir):
         repo = data.get("repo", "")
         for issue in data.get("issues") or []:
             number = issue.get("number")
@@ -348,9 +328,7 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
                     Event(
                         when=created,
                         kind="issue-opened",
-                        title=(
-                            f"Issue #{number} opened: \"{title}\""
-                        ),
+                        title=(f'Issue #{number} opened: "{title}"'),
                         detail=f"by {canonical_author} ({repo})",
                     )
                 )
@@ -361,7 +339,7 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
                         Event(
                             when=closed,
                             kind="issue-closed",
-                            title=f"Issue #{number} closed: \"{title}\"",
+                            title=f'Issue #{number} closed: "{title}"',
                             detail=f"({repo})",
                         )
                     )
@@ -449,9 +427,7 @@ def build_events(
         # the IESG activity directly addressable.
         ballots = fetch_ballots(wg, months, verbose=verbose)
         write_ballot_files(cache_dir, ballots, verbose=verbose)
-        dt_events.extend(
-            ballot_events(ballots, cache_dir, _ballot_cutoff(months))
-        )
+        dt_events.extend(ballot_events(ballots, cache_dir, _ballot_cutoff(months)))
         events.extend(dt_events)
 
     # Heuristic WGLC / adoption from mailing list subjects. Datatracker

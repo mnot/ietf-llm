@@ -24,6 +24,7 @@ _THREAD_PROMPT = (
     "it. No preamble.\n\nSubject: {subject}\n\nFirst message:\n{body}"
 )
 
+
 def _build_threads_digest(
     wg: str,
     cache_dir: str,
@@ -80,18 +81,22 @@ def _build_threads_digest(
 
             slug = thread_slug(thread.subject, first_s if first else None)
             relpath = os.path.relpath(
-                thread_path(cache_dir, slug), cache_dir,
+                thread_path(cache_dir, slug),
+                cache_dir,
             )
             link = f"`{relpath}`"
 
             if summarizer.active():
                 body_source = thread.root.body or ""
-                summary = summarizer.summarize(
-                    _THREAD_PROMPT.format(
-                        subject=subj,
-                        body=body_source[:4000] or "(no body cached)",
+                summary = (
+                    summarizer.summarize(
+                        _THREAD_PROMPT.format(
+                            subject=subj,
+                            body=body_source[:4000] or "(no body cached)",
+                        )
                     )
-                ) or ""
+                    or ""
+                )
                 summary = summary.replace("|", "\\|")
                 fh.write(
                     f"| {subj} | {len(thread.members)} | {n_p} | "

@@ -38,8 +38,7 @@ def _open_db(wg: str) -> sqlite3.Connection:
     path = _db_path(wg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             id         INTEGER PRIMARY KEY,
             file       TEXT NOT NULL,
@@ -57,16 +56,13 @@ def _open_db(wg: str) -> sqlite3.Connection:
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
             UNIQUE (file, chunk_idx)
         )
-        """
-    )
-    conn.execute(
-        """
+        """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
-        """
-    )
+        """)
     _migrate(conn)
     return conn
 
@@ -163,9 +159,7 @@ def chunk_counts(wg: str) -> Dict[str, int]:
         return {}
     conn = sqlite3.connect(_db_path(wg))
     try:
-        cur = conn.execute(
-            "SELECT file, COUNT(*) FROM chunks GROUP BY file"
-        )
+        cur = conn.execute("SELECT file, COUNT(*) FROM chunks GROUP BY file")
         return {str(row[0]): int(row[1]) for row in cur.fetchall()}
     finally:
         conn.close()
@@ -194,14 +188,16 @@ def find_chunks_by_url(
         )
         out: List[Tuple[str, int, str, str, Optional[int], Optional[int]]] = []
         for row in cur.fetchall():
-            out.append((
-                str(row[0]),
-                int(row[1]),
-                str(row[2]),
-                str(row[3]),
-                int(row[4]) if row[4] is not None else None,
-                int(row[5]) if row[5] is not None else None,
-            ))
+            out.append(
+                (
+                    str(row[0]),
+                    int(row[1]),
+                    str(row[2]),
+                    str(row[3]),
+                    int(row[4]) if row[4] is not None else None,
+                    int(row[5]) if row[5] is not None else None,
+                )
+            )
         return out
     finally:
         conn.close()

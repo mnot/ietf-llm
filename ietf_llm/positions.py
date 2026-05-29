@@ -243,14 +243,13 @@ def _extract_poll_choice(text: str) -> Optional[Tuple[str, re.Match[str]]]:
 
     for marker in _POLL_MARKER_RE.finditer(text):
         window_start = max(0, marker.start() - _POLL_INTENT_WINDOW)
-        preceding = text[window_start:marker.start()]
+        preceding = text[window_start : marker.start()]
         if _POLL_INTENT_RE.search(preceding) is not None:
-            choice = (
-                marker.group("m_word") or marker.group("m_hash") or ""
-            ).upper()
+            choice = (marker.group("m_word") or marker.group("m_hash") or "").upper()
             if choice:
                 return (choice, marker)
     return None
+
 
 # Chair-decision language. When a chair (role tag carries "Chair")
 # posts a message containing one of these phrases, it's likely a
@@ -381,8 +380,10 @@ def extract_position(  # pylint: disable=too-many-return-statements
     cond_match = _STRONG_CONDITIONAL.search(leading_text)
     if cond_match:
         return (
-            "conditional", "high",
-            _excerpt_for(cond_match, leading_text), None,
+            "conditional",
+            "high",
+            _excerpt_for(cond_match, leading_text),
+            None,
         )
 
     poll = _extract_poll_choice(leading_text)
@@ -397,22 +398,30 @@ def extract_position(  # pylint: disable=too-many-return-statements
     if support_match and oppose_match:
         if support_match.start() < oppose_match.start():
             return (
-                "support", "high",
-                _excerpt_for(support_match, leading_text), None,
+                "support",
+                "high",
+                _excerpt_for(support_match, leading_text),
+                None,
             )
         return (
-            "oppose", "high",
-            _excerpt_for(oppose_match, leading_text), None,
+            "oppose",
+            "high",
+            _excerpt_for(oppose_match, leading_text),
+            None,
         )
     if support_match:
         return (
-            "support", "high",
-            _excerpt_for(support_match, leading_text), None,
+            "support",
+            "high",
+            _excerpt_for(support_match, leading_text),
+            None,
         )
     if oppose_match:
         return (
-            "oppose", "high",
-            _excerpt_for(oppose_match, leading_text), None,
+            "oppose",
+            "high",
+            _excerpt_for(oppose_match, leading_text),
+            None,
         )
 
     # Weak patterns — scan a bigger window in the body proper, marked
@@ -451,7 +460,8 @@ def _split_messages(text: str) -> List[Tuple[int, str, str]]:
 
 
 def extract_chair_statements(
-    file_text: str, role_lookup: Dict[str, str],
+    file_text: str,
+    role_lookup: Dict[str, str],
 ) -> List[ChairStatement]:
     """Walk a thread / issue file and return chair messages that look
     like procedural declarations (consensus calls, WGLC announcements,
@@ -534,7 +544,10 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
             )
         )
     summary: Dict[str, int] = {
-        "support": 0, "oppose": 0, "conditional": 0, "poll": 0,
+        "support": 0,
+        "oppose": 0,
+        "conditional": 0,
+        "poll": 0,
         "no-position": 0,
     }
     for pos in positions:
@@ -560,9 +573,7 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
     o_count = summary.get("oppose", 0)
     c_count = summary.get("conditional", 0)
     n_count = summary.get("no-position", 0)
-    coverage_pct = (
-        int(100 * (total - n_count) / total) if total else 0
-    )
+    coverage_pct = int(100 * (total - n_count) / total) if total else 0
 
     out: List[str] = []
     out.append(f"# Position tally: `{file}`\n")
@@ -591,7 +602,9 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
         "may include technical clarifications, questions, or non-standard "
         "phrasings)"
     )
-    out.append(f"- **Coverage: {coverage_pct}%** ({total - n_count}/{total} messages classified)")
+    out.append(
+        f"- **Coverage: {coverage_pct}%** ({total - n_count}/{total} messages classified)"
+    )
     out.append("")
 
     # Chair statements rendered FIRST when present — they're the
@@ -599,9 +612,7 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
     # top-down sees the chair's procedural declarations before
     # scrolling through hundreds of position rows.
     if chair_statements:
-        out.append(
-            f"## Chair statements ({len(chair_statements)})\n"
-        )
+        out.append(f"## Chair statements ({len(chair_statements)})\n")
         out.append(
             "_Messages from someone tagged as Chair that contain "
             "procedural language (`rough consensus`, `consensus call`, "
@@ -611,10 +622,7 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             "relaying their characterisation._\n"
         )
         for cs in chair_statements:
-            aff = (
-                affiliation_lookup.get(cs.sender)
-                if affiliation_lookup else None
-            )
+            aff = affiliation_lookup.get(cs.sender) if affiliation_lookup else None
             tag_bits = [cs.role]
             if aff:
                 tag_bits.append(aff)
@@ -637,13 +645,9 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             if affiliation_lookup and pos.sender in affiliation_lookup:
                 tag_bits.append(affiliation_lookup[pos.sender])
             tag = f" ({' · '.join(tag_bits)})" if tag_bits else ""
-            conf_tag = (
-                f" — *{pos.confidence} confidence*"
-                if pos.confidence else ""
-            )
+            conf_tag = f" — *{pos.confidence} confidence*" if pos.confidence else ""
             out.append(
-                f"- **{pos.sender}{tag}**{conf_tag}  "
-                f"[chunk {pos.chunk_idx}]"
+                f"- **{pos.sender}{tag}**{conf_tag}  " f"[chunk {pos.chunk_idx}]"
             )
             if pos.excerpt:
                 out.append(f"  > {pos.excerpt}")
@@ -664,17 +668,16 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             "multiple choices if they voted more than once — the most "
             "recent message wins for the by-author rollup below._\n"
         )
+
         # Sort by choice key: numerics ascending, then alphabetic.
         def _choice_sort(k: str) -> Tuple[int, str]:
             return (0, k.zfill(8)) if k.isdigit() else (1, k)
+
         for choice in sorted(by_choice, key=_choice_sort):
             voters = by_choice[choice]
-            names = ", ".join(
-                sorted({p.sender for p in voters})
-            )
+            names = ", ".join(sorted({p.sender for p in voters}))
             out.append(
-                f"- **Option {choice}** — {len(voters)} response(s): "
-                f"{names}"
+                f"- **Option {choice}** — {len(voters)} response(s): " f"{names}"
             )
         out.append("")
 
@@ -750,9 +753,8 @@ def file_supports_tally(relpath: str) -> bool:
     """
     lower = relpath.lower()
     return (
-        (lower.startswith("threads/") or lower.startswith("issues/"))
-        and lower.endswith(".md")
-    )
+        lower.startswith("threads/") or lower.startswith("issues/")
+    ) and lower.endswith(".md")
 
 
 def load_people_context(
@@ -787,13 +789,12 @@ def load_people_context(
         except ValueError:
             continue
         role_idx = (
-            cols_lower.index("roles") if "roles" in cols_lower else
-            cols_lower.index("role") if "role" in cols_lower else
-            None
+            cols_lower.index("roles")
+            if "roles" in cols_lower
+            else cols_lower.index("role") if "role" in cols_lower else None
         )
         aff_idx = (
-            cols_lower.index("affiliation") if "affiliation" in cols_lower
-            else None
+            cols_lower.index("affiliation") if "affiliation" in cols_lower else None
         )
         for row in section.rows:
             if name_idx >= len(row):

@@ -1,10 +1,11 @@
+import filecmp
 import os
-import sys
 import re
 import shutil
-import filecmp
+import sys
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
+
 import requests
 from bs4 import BeautifulSoup, Tag
 
@@ -214,6 +215,7 @@ def graceful_keyboard_interrupt(
     entry catches it, prints a one-line "Interrupted." to stderr, and
     exits with status 130 (the conventional "terminated by Ctrl-C" code).
     """
+
     def runner() -> None:
         try:
             entry()
@@ -221,6 +223,7 @@ def graceful_keyboard_interrupt(
             # Newline first because Ctrl-C usually lands mid-line.
             print("\nInterrupted.", file=sys.stderr)
             sys.exit(130)
+
     runner.__name__ = entry.__name__
     runner.__doc__ = entry.__doc__
     return runner

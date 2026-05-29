@@ -21,10 +21,11 @@ import sys
 from typing import Any, List
 
 from . import __version__, config, paths
+from .digest import generate_digests
+from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
 from .freshness import last_gathered, record_gather
 from .gather.charter import process_charter
-from .digest import generate_digests
 from .gather.citations import (
     citation_counts,
     scan_citations,
@@ -41,10 +42,9 @@ from .gather.mail_threads import write_thread_files
 from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
-from .people import build_registry, write_people_digest
-from .digest.timeline import write_timeline_digest
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
+from .people import build_registry, write_people_digest
 from .skill_install import install
 from .utils import (
     DEFAULT_MONTHS,
@@ -97,7 +97,9 @@ def _default_llm_model(verbose: Verbosity) -> str:
 
 def _detect_moved_flags(argv: list[str]) -> None:
     """If the user passed a now-moved flag, print a redirect and exit."""
-    used = [a for a in argv if any(a == f or a.startswith(f + "=") for f in _MOVED_FLAGS)]
+    used = [
+        a for a in argv if any(a == f or a.startswith(f + "=") for f in _MOVED_FLAGS)
+    ]
     if not used:
         return
     print(
@@ -255,7 +257,9 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "and exit. Always overwrites any existing skill at that path. "
         "Does not gather. (Claude Code only.)",
     )
-    parser.add_argument("--quiet", "-q", action="store_true", help="Only output errors.")
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="Only output errors."
+    )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Detailed progress reporting."
     )
@@ -275,8 +279,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     if args.all and args.wg:
         parser.error("--all is mutually exclusive with a positional wg argument")
     if args.all and args.clear_config:
-        parser.error("--clear-config is refused with --all (too easy to nuke "
-                     "every WG's config by accident); clear one WG at a time")
+        parser.error(
+            "--clear-config is refused with --all (too easy to nuke "
+            "every WG's config by accident); clear one WG at a time"
+        )
     if not args.all and not args.wg:
         parser.error(
             "wg argument is required (unless using --install-claude-skill or --all)"
@@ -341,7 +347,8 @@ def _print_completion(shell: str) -> int:
     commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
     # argcomplete ships no type stubs; shellcode isn't in its __all__.
     snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
-        commands, shell=shell,
+        commands,
+        shell=shell,
     )
     print(snippet)
     return 0
@@ -401,18 +408,15 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             if new:
                 ok = set(validate_draft_names(new, verbosity))
                 args.draft = [
-                    d for d in args.draft
-                    if d in persisted_drafts or d in ok
+                    d for d in args.draft if d in persisted_drafts or d in ok
                 ] or None
         if args.mailing_list:
-            new = [
-                lst for lst in args.mailing_list
-                if lst not in persisted_lists
-            ]
+            new = [lst for lst in args.mailing_list if lst not in persisted_lists]
             if new:
                 ok = set(validate_list_names(new, verbosity))
                 args.mailing_list = [
-                    lst for lst in args.mailing_list
+                    lst
+                    for lst in args.mailing_list
                     if lst in persisted_lists or lst in ok
                 ] or None
 
@@ -422,8 +426,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         scope=SCOPE,
         scalars=("months", "summarize", "summarize_model", "no_embed", "embed_model"),
         lists=(
-            "github", "github_label", "exclude_github_label",
-            "draft", "mailing_list",
+            "github",
+            "github_label",
+            "exclude_github_label",
+            "draft",
+            "mailing_list",
         ),
         defaults={"months": DEFAULT_MONTHS, "summarize": False, "no_embed": False},
     )
@@ -447,7 +454,8 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             f"{args.wg}: synthetic (`x-`) corpus with no --draft / "
             "--mailing-list / --github configured. Gather will produce "
             "no content. Add sources and re-run.",
-            verbosity, level=LogLevel.STATUS,
+            verbosity,
+            level=LogLevel.STATUS,
         )
 
     if verbosity != Verbosity.QUIET:
@@ -471,13 +479,17 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         # so transcripts can match interim transcripts to the right
         # clustered meeting rather than orphaning them.
         meeting_clusters = process_meetings(
-            args.wg, cache_dir, verbose=verbosity, months=args.months,
+            args.wg,
+            cache_dir,
+            verbose=verbosity,
+            months=args.months,
         )
 
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.
     sync_mailing_list(
-        args.wg, cache_dir,
+        args.wg,
+        cache_dir,
         months=args.months,
         extra_lists=args.mailing_list,
         auto_discover=not synth,
@@ -490,7 +502,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         # Interim transcripts (no meeting number) are matched to a
         # meeting cluster by date span; only truly unmatched ones orphan.
         process_transcripts(
-            args.wg, cache_dir, verbose=verbosity, months=args.months,
+            args.wg,
+            cache_dir,
+            verbose=verbosity,
+            months=args.months,
             meeting_clusters=meeting_clusters,
         )
         enrich_transcripts(cache_dir, verbose=verbosity)
@@ -575,8 +590,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
     # Timeline digest
     write_timeline_digest(
-        args.wg, cache_dir, registry,
-        months=args.months, verbose=verbosity,
+        args.wg,
+        cache_dir,
+        registry,
+        months=args.months,
+        verbose=verbosity,
     )
 
     # Digests

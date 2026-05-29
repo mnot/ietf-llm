@@ -1,9 +1,30 @@
 import json
 import os
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, Iterator, List, Optional
+
 import requests
+
 from ..utils import LogLevel, Verbosity, log
+
+
+def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
+    """Yield each parsed `<repo>.json` issue archive under `archives_dir`.
+
+    Skips non-JSON files and any archive that fails to read / parse.
+    Shared by the people registry and the timeline builder so they
+    don't each re-implement the walk-and-load loop.
+    """
+    if not os.path.isdir(archives_dir):
+        return
+    for name in sorted(os.listdir(archives_dir)):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(archives_dir, name), "r", encoding="utf-8") as fh:
+                yield json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
 
 
 def format_date(iso_date: Optional[str]) -> str:
@@ -38,6 +59,7 @@ def process_github_issues(
             return login
         resolved = registry.canonical_for_github(login)  # type: ignore[attr-defined]
         return resolved or login
+
     log(f"Opening {input_file}...", verbose, level=LogLevel.PROGRESS)
     try:
         with open(input_file, "r", encoding="utf-8") as json_fh:
@@ -98,9 +120,7 @@ def process_github_issues(
                     c_date = format_date(comment.get("createdAt"))
                     c_body = (comment.get("body") or "").strip()
 
-                    out_fh.write(
-                        f"--- Comment by {_canon(c_author)} on {c_date} ---\n"
-                    )
+                    out_fh.write(f"--- Comment by {_canon(c_author)} on {c_date} ---\n")
                     out_fh.write(c_body + "\n\n")
 
             out_fh.write("=" * 80 + "\n\n")

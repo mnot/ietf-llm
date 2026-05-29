@@ -133,12 +133,14 @@ def build_index(
     if pending == 0:
         log(
             "Embedding index already up to date.",
-            verbose, level=LogLevel.STATUS,
+            verbose,
+            level=LogLevel.STATUS,
         )
     else:
         log(
             f"Embedding {pending} new / changed file(s)...",
-            verbose, level=LogLevel.STATUS,
+            verbose,
+            level=LogLevel.STATUS,
         )
 
     total_new = 0
@@ -405,9 +407,19 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     hits: List[Hit] = []
     for i in top:
         (
-            file, chunk_idx, title, text, _,
-            start_line, end_line, labels, state_val, _chunk_date, url,
-            duplicate_of, closing_rationale,
+            file,
+            chunk_idx,
+            title,
+            text,
+            _,
+            start_line,
+            end_line,
+            labels,
+            state_val,
+            _chunk_date,
+            url,
+            duplicate_of,
+            closing_rationale,
         ) = rows[i]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
@@ -427,9 +439,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
                 labels=labels if labels else None,
                 state=state_val if state_val else None,
                 url=url if url else None,
-                duplicate_of=(
-                    int(duplicate_of) if duplicate_of is not None else None
-                ),
+                duplicate_of=(int(duplicate_of) if duplicate_of is not None else None),
                 closing_rationale=closing_rationale if closing_rationale else None,
             )
         )
