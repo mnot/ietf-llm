@@ -147,7 +147,9 @@ def file_lock(lock_path: str) -> "Iterator[None]":
 
 
 @contextmanager
-def atomic_open(path: str, encoding: str = "utf-8") -> "Iterator[Any]":
+def atomic_open(
+    path: str, encoding: str = "utf-8", newline: Optional[str] = None
+) -> "Iterator[Any]":
     """Open a text file for writing such that readers never see a
     partial result: writes go to a temp file in the same directory and
     are `os.replace`d into place (atomic on POSIX) only on clean close.
@@ -156,9 +158,14 @@ def atomic_open(path: str, encoding: str = "utf-8") -> "Iterator[Any]":
     gathers, or a gather while an MCP server reads) don't clobber each
     other's temp. On error the temp is removed and the original left
     intact. Load-bearing for the MCP-reads-during-gather case.
+
+    `newline` is passed through to `open` — `write_if_changed` uses
+    `"\n"` so the bytes written match its LF-normalised comparison.
     """
     tmp = f"{path}.{os.getpid()}.tmp"
-    handle = open(tmp, "w", encoding=encoding)  # pylint: disable=consider-using-with
+    handle = open(  # pylint: disable=consider-using-with
+        tmp, "w", encoding=encoding, newline=newline
+    )
     try:
         yield handle
         handle.close()
@@ -185,15 +192,25 @@ def write_if_changed(path: str, content: str) -> bool:
     regenerate every file each gather; without this guard a byte-
     identical re-render would still bump mtime and force a full
     re-embed of the whole corpus on every update.
+
+    Line endings are normalised to LF. Source data carries CRLF (GitHub
+    comment bodies, RFC 5322 mail) which would otherwise re-trigger a
+    write every gather: the file is stored with CRLF, but reading it
+    back in text mode translates CRLF→LF (universal newlines), so a
+    naive `read() == content` never matched and the file churned (and
+    re-embedded) forever. Normalising both the stored bytes and the
+    comparison to LF fixes that and keeps the corpus single-newline.
     """
+    normalised = content.replace("\r\n", "\n").replace("\r", "\n")
+    data = normalised.encode("utf-8")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            if fh.read() == content:
+        with open(path, "rb") as fh:
+            if fh.read() == data:
                 return False
     except OSError:
         pass  # missing / unreadable → fall through and write
-    with atomic_open(path) as fh:
-        fh.write(content)
+    with atomic_open(path, newline="\n") as fh:
+        fh.write(normalised)
     return True
 
 
