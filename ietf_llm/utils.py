@@ -10,7 +10,9 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
-DEFAULT_HEADERS = {"User-Agent": "ietf-llm/0.1.0"}
+from . import __version__
+
+DEFAULT_HEADERS = {"User-Agent": f"ietf-llm/{__version__}"}
 DEFAULT_MONTHS = 12
 
 

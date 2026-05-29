@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from ..utils import LogLevel, Verbosity, log
+from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
@@ -147,7 +147,7 @@ def download_github_issues(
             level=LogLevel.STATUS,
         )
         try:
-            response = requests.get(repo_short, timeout=60)
+            response = requests.get(repo_short, headers=DEFAULT_HEADERS, timeout=60)
             response.raise_for_status()
             with open(dest_path, "w", encoding="utf-8") as json_file:
                 json_file.write(response.text)
@@ -175,7 +175,7 @@ def download_github_issues(
         level=LogLevel.STATUS,
     )
     try:
-        response = requests.get(archive_url, timeout=30)
+        response = requests.get(archive_url, headers=DEFAULT_HEADERS, timeout=30)
         if response.status_code == 200:
             log("Archive found; downloading...", verbose, level=LogLevel.STATUS)
             try:
@@ -218,7 +218,7 @@ def download_github_issues(
         verbose,
         level=LogLevel.STATUS,
     )
-    headers = {"Accept": "application/vnd.github.v3+json"}
+    headers = {**DEFAULT_HEADERS, "Accept": "application/vnd.github.v3+json"}
     github_token = token or os.environ.get("GITHUB_TOKEN")
     if github_token:
         headers["Authorization"] = f"token {github_token}"
