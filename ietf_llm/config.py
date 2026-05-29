@@ -26,7 +26,7 @@ import os
 import shutil
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from .utils import LogLevel, get_config_dir, log
+from .utils import LogLevel, atomic_open, get_config_dir, log
 
 
 def _config_path(wg: str, scope: str) -> str:
@@ -51,7 +51,7 @@ def save(wg: str, scope: str, data: Mapping[str, Any]) -> None:
     os.makedirs(wg_dir, exist_ok=True)
     path = _config_path(wg, scope)
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        with atomic_open(path) as fh:
             json.dump(dict(data), fh, indent=2, sort_keys=True)
     except OSError as err:
         log(f"Error saving config ({path}): {err}", level=LogLevel.ERROR)
