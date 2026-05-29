@@ -24,8 +24,15 @@ from ..utils import (
     log,
     write_if_changed,
 )
-from .datatracker import _get_json
+from .datatracker import _get_json, iter_group_documents
+from .materials_manifest import load_manifest, save_manifest
 from .session_polls import process_session_polls
+
+# Material kinds we rev-gate (re-fetch content only when the document
+# revision changes). Slides are large and rarely revised, polls are
+# immutable — both stay skip-if-exists, so we don't pay to list their
+# (numerous) revisions every gather.
+_REV_GATED_KINDS = ("minutes", "agenda")
 
 
 @dataclass
@@ -193,9 +200,29 @@ def get_meeting_links(
             kind = _material_kind(docname)
             if kind is None:
                 continue
-            entry["links"].append({"type": kind, "url": _material_url(raw, docname)})
+            entry["links"].append(
+                {
+                    "type": kind,
+                    "url": _material_url(raw, docname),
+                    "docname": docname,
+                }
+            )
 
     return [m for m in meetings_by_num.values() if m["links"]]
+
+
+def _material_revs(wg_name: str) -> Dict[str, str]:
+    """Map `<doc-name> → rev` for the rev-gated material kinds, read from
+    the document API (a few paginated calls, ETag-cached). Used to decide
+    whether a cached minutes / agenda file needs re-fetching."""
+    revs: Dict[str, str] = {}
+    for kind in _REV_GATED_KINDS:
+        for doc in iter_group_documents(wg_name, kind):
+            name = doc.get("name")
+            rev = doc.get("rev")
+            if name and rev is not None:
+                revs[name] = str(rev)
+    return revs
 
 
 def cluster_meetings(meetings: List[Dict[str, Any]]) -> List[MeetingCluster]:
@@ -339,8 +366,12 @@ def process_meetings(
     clusters = cluster_meetings(meetings)
     canonical_codes = {c.code for c in clusters}
 
+    # Rev-gating: current revisions from the API vs. what we last wrote.
+    revs = _material_revs(wg_name)
+    manifest = load_manifest(wg_name)
     for cluster in clusters:
-        _process_cluster(cluster, wg_name, destination, verbose)
+        _process_cluster(cluster, wg_name, destination, verbose, revs, manifest)
+    save_manifest(wg_name, manifest)
 
     # Session polls are their own Datatracker doctype, gathered directly
     # by group rather than per-meeting (they don't ride the materials
@@ -360,38 +391,63 @@ def process_meetings(
     return clusters
 
 
+def _needs_rebuild(
+    out_file: str,
+    links: List[Dict[str, Any]],
+    revs: Dict[str, str],
+    manifest: Dict[str, str],
+) -> bool:
+    """Whether a minutes / agenda aggregate must be re-fetched & rebuilt.
+
+    True if the output file is missing, or any constituent document's
+    current revision differs from what we last wrote (manifest). A doc
+    with no known current rev (not in `revs`) is treated as changed so
+    we don't silently freeze it."""
+    if not os.path.isfile(out_file):
+        return True
+    for link in links:
+        docname = link["docname"]
+        # Only docs with a known current rev gate freshness; a doc we
+        # can't get a rev for (e.g. a cross-group joint-session material)
+        # falls back to the file-exists check rather than rebuilding
+        # forever.
+        if docname in revs and revs[docname] != manifest.get(docname):
+            return True
+    return False
+
+
 def _process_cluster(
     cluster: MeetingCluster,
     wg_name: str,
     destination: str,
     verbose: Verbosity,
+    revs: Dict[str, str],
+    manifest: Dict[str, str],
 ) -> None:
-    """Download all sessions' materials into the cluster's canonical
-    dir and write a combined minutes.md."""
+    """Download a cluster's materials into its canonical dir.
+
+    Minutes / agenda are rev-gated: rebuilt only when a constituent
+    document's revision changed (or the file is missing), so revised
+    minutes get picked up while unchanged ones aren't re-fetched.
+    Slides download per-file (skip-if-exists)."""
     code = cluster.code
     canonical = meeting_dir(destination, code)
     os.makedirs(canonical, exist_ok=True)
 
     # Fold in any pre-existing per-session dirs (migration from the
-    # old one-dir-per-row layout) BEFORE the skip check, so absorbed
-    # materials survive even when we skip the re-fetch.
+    # old one-dir-per-row layout).
     for session in cluster.sessions[1:]:
         _absorb_meeting_dir(
             meeting_dir(destination, _safe_meeting_code(session["number"])),
             canonical,
         )
 
-    output_file = minutes_path(destination, code)
-    if os.path.exists(output_file):
-        # Already have this cluster's minutes — skip the re-fetch
-        # (matches the historical per-meeting skip). Per-file PDF
-        # existence checks still make slides-only clusters incremental.
-        log(
-            f"Skipping meeting {code}: minutes already present.",
-            verbose,
-            level=LogLevel.PROGRESS,
-        )
-        return
+    # Slides: download each deck once (skip-if-exists).
+    slides_out = slides_dir(destination, code)
+    for session in cluster.sessions:
+        for link in session["links"]:
+            if link["type"] == "slides":
+                _download_slide(link["url"], slides_out, verbose)
 
     span = (
         cluster.start.strftime("%Y-%m-%d")
@@ -408,37 +464,55 @@ def _process_cluster(
 
     # "Meeting Materials" is the historical minutes-file title; keep it
     # verbatim so existing minutes.md files don't churn / re-embed.
-    minutes_parts: List[str] = _header("Meeting Materials")
-    agenda_parts: List[str] = _header("Meeting Agenda")
-    slides_out = slides_dir(destination, code)
-    for session in cluster.sessions:
-        session_date = session.get("date", "")
-        for link in session["links"]:
-            kind = link["type"]
-            if kind == "slides":
-                _download_slide(link["url"], slides_out, verbose)
-                continue
-            # Minutes / agenda text, headed per-session so multi-session
-            # clusters stay legible (same-day sessions get the number to
-            # disambiguate the date).
-            content = _fetch_text(link["url"], verbose)
-            if content:
-                bucket = minutes_parts if kind == "minutes" else agenda_parts
-                bucket.append(f"## Session {session_date} ({session['number']})\n")
-                bucket.append(f"URL: {link['url']}\n\n")
-                bucket.append(content.strip() + "\n\n---\n\n")
-
-    # Only write a file if a session actually contributed content (the
-    # header alone is ~3 short lines); otherwise this is a slides-only
-    # cluster, or the meeting has no agenda / no minutes yet, and we
-    # leave that file absent.
-    for path, parts in (
-        (output_file, minutes_parts),
-        (agenda_path(destination, code), agenda_parts),
+    for kind, out_file, title in (
+        ("minutes", minutes_path(destination, code), "Meeting Materials"),
+        ("agenda", agenda_path(destination, code), "Meeting Agenda"),
     ):
+        links = [
+            link
+            for session in cluster.sessions
+            for link in session["links"]
+            if link["type"] == kind
+        ]
+        if not links:
+            continue
+        if not _needs_rebuild(out_file, links, revs, manifest):
+            log(
+                f"Skipping {code} {kind}: unchanged.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            continue
+
+        parts: List[str] = _header(title)
+        fetched: List[Dict[str, Any]] = []
+        for session in cluster.sessions:
+            session_date = session.get("date", "")
+            for link in session["links"]:
+                if link["type"] != kind:
+                    continue
+                content = _fetch_text(link["url"], verbose)
+                if content:
+                    # Headed per-session so multi-session clusters stay
+                    # legible (same-day sessions get the number too).
+                    parts.append(f"## Session {session_date} ({session['number']})\n")
+                    parts.append(f"URL: {link['url']}\n\n")
+                    parts.append(content.strip() + "\n\n---\n\n")
+                    fetched.append(link)
+
+        # Only write if a session actually contributed content (the header
+        # alone is ~3 short lines); otherwise the meeting has no agenda /
+        # no minutes yet and we leave the file absent.
         text = "".join(parts)
-        if len(text.strip()) > 150 and write_if_changed(path, text):
-            log(f"Wrote {path}", verbose, level=LogLevel.PROGRESS)
+        if len(text.strip()) > 150:
+            if write_if_changed(out_file, text):
+                log(f"Wrote {out_file}", verbose, level=LogLevel.PROGRESS)
+            # Record the revs we successfully captured so a future gather
+            # skips them; docs whose content failed stay stale and retry.
+            for link in fetched:
+                docname = link["docname"]
+                if docname in revs:
+                    manifest[docname] = revs[docname]
 
 
 def _cleanup_absorbed_dirs(
