@@ -59,7 +59,7 @@ from ..paths import (
     minutes_path,
 )
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, is_synthetic_wg, log
+from ..utils import LogLevel, Verbosity, atomic_open, is_synthetic_wg, log
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------
@@ -467,7 +467,7 @@ def write_timeline_digest(
 
     out_path = digest_path(cache_dir, "timeline")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
+    with atomic_open(out_path) as fh:
         fh.write(f"# {wg}: timeline\n\n")
         fh.write(
             f"_{len(events)} dated events across {len(by_year)} year(s) — "

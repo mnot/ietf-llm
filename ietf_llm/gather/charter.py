@@ -1,7 +1,14 @@
 import os
 from typing import List, Optional
 
-from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
+from ..utils import (
+    LogLevel,
+    Verbosity,
+    atomic_open,
+    fetch_resource,
+    get_group_type,
+    log,
+)
 from .datatracker import _get_json
 
 
@@ -61,7 +68,7 @@ def process_charter(
                     )
                     return []
 
-        with open(output_file, "w", encoding="utf-8") as out_fh:
+        with atomic_open(output_file) as out_fh:
             out_fh.write(new_content)
 
         log(f"Done! Charter written to {output_file}.", verbose, level=LogLevel.STATUS)

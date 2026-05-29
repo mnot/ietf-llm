@@ -3,9 +3,10 @@ import os
 import re
 import shutil
 import sys
+from contextlib import contextmanager
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -117,11 +118,41 @@ def copy_if_updated(src_path: str, dest_path: str) -> bool:
     return True
 
 
+@contextmanager
+def atomic_open(path: str, encoding: str = "utf-8") -> "Iterator[Any]":
+    """Open a text file for writing such that readers never see a
+    partial result: writes go to a temp file in the same directory and
+    are `os.replace`d into place (atomic on POSIX) only on clean close.
+
+    The temp name carries the pid so concurrent writers (e.g. two
+    gathers, or a gather while an MCP server reads) don't clobber each
+    other's temp. On error the temp is removed and the original left
+    intact. Load-bearing for the MCP-reads-during-gather case.
+    """
+    tmp = f"{path}.{os.getpid()}.tmp"
+    handle = open(tmp, "w", encoding=encoding)  # pylint: disable=consider-using-with
+    try:
+        yield handle
+        handle.close()
+        os.replace(tmp, path)
+    except BaseException:
+        handle.close()
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_if_changed(path: str, content: str) -> bool:
     """Write `content` to `path` only if it differs from what's there
     (or the file is missing). Returns True if a write happened.
 
-    Load-bearing for the incremental embedder, which re-embeds any
+    The write is atomic (temp + rename), so a concurrent reader — an
+    MCP tool reading the corpus while a gather runs — sees either the
+    old bytes or the new, never a truncated file.
+
+    Also load-bearing for the incremental embedder, which re-embeds any
     file whose mtime advanced. The per-thread / per-issue writers
     regenerate every file each gather; without this guard a byte-
     identical re-render would still bump mtime and force a full
@@ -133,7 +164,7 @@ def write_if_changed(path: str, content: str) -> bool:
                 return False
     except OSError:
         pass  # missing / unreadable → fall through and write
-    with open(path, "w", encoding="utf-8") as fh:
+    with atomic_open(path) as fh:
         fh.write(content)
     return True
 

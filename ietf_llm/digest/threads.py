@@ -15,7 +15,7 @@ from typing import Optional
 from ..gather.mail_threads import build_threads, thread_slug
 from ..paths import digest_path, thread_path
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, atomic_open, log
 from .summarizer import _Summarizer
 
 _THREAD_PROMPT = (
@@ -48,7 +48,7 @@ def _build_threads_digest(
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     total_msgs = sum(len(t.members) for t in threads)
 
-    with open(out_path, "w", encoding="utf-8") as fh:
+    with atomic_open(out_path) as fh:
         fh.write(f"# {wg}: mailing list threads digest\n\n")
         fh.write(
             f"_{len(threads)} threads across {total_msgs} messages, "

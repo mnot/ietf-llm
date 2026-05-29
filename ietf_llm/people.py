@@ -49,6 +49,7 @@ from .text import _parse_date
 from .utils import (
     LogLevel,
     Verbosity,
+    atomic_open,
     get_cache_dir,
     get_wg_file_cache_dir,
     log,
@@ -695,7 +696,7 @@ def write_people_digest(
     out_path = digest_path(cache_dir, "people")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     leaders = registry.leadership()
-    with open(out_path, "w", encoding="utf-8") as fh:
+    with atomic_open(out_path) as fh:
         fh.write(f"# {wg}: participants\n\n")
         fh.write(
             f"_{len(persons)} distinct actors. Multiple surface forms "

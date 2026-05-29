@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from ..paths import digest_path, issues_dir, threads_dir
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, atomic_open, log
 
 
 @dataclass
@@ -193,7 +193,7 @@ def write_citations_digest(
         return None
     out_path = digest_path(cache_dir, "citations")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
+    with atomic_open(out_path) as fh:
         fh.write("# Draft citations\n\n")
         fh.write(
             f"_{len(citations)} distinct draft(s) cited across "

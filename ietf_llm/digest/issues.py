@@ -13,7 +13,7 @@ from typing import Optional
 from ..gather.issue_files import _detect_duplicate_of, _participants
 from ..paths import digest_path, github_dir, issue_path
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, atomic_open, log
 from .helpers import _state_is_open
 from .summarizer import _Summarizer
 
@@ -44,7 +44,7 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
     total_open = 0
     total_closed = 0
 
-    with open(out_path, "w", encoding="utf-8") as fh:
+    with atomic_open(out_path) as fh:
         fh.write(f"# {wg}: GitHub issues digest\n\n")
         fh.write(
             "One row per issue across all tracked repos. For full discussion, "
