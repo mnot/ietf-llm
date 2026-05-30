@@ -221,6 +221,12 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or
 }
 ```
 
+**Tuning.** Each tool call has a server-side deadline so a stuck call
+fails fast with a clear message rather than hanging to the client's
+timeout. It defaults to 120 seconds; override (or disable, with `0`) by
+setting `IETF_LLM_TOOL_TIMEOUT` in the server's environment — e.g. add
+`"env": {"IETF_LLM_TOOL_TIMEOUT": "180"}` to the JSON config above.
+
 ### Gather a corpus
 
 Gather from the CLI, once per corpus. Settings persist, so refreshing

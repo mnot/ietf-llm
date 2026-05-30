@@ -290,16 +290,30 @@ job:
 - **Orient:** `list_corpora`, `overview`, `list_labels`,
   `list_files`.
 - **Catalogue:** `read_digest(kind=…, …filters)` over
-  issues/threads/people/timeline/index.
+  issues/threads/people/timeline/index. Beyond the per-kind filters,
+  `sort="activity"` ranks threads/issues by message/comment count (heat,
+  not recency) and `exclude_mechanical=True` drops routine timeline
+  events (I-D Action publications, individual ballot positions) — the
+  same signals the `overview` "most active threads" and folded
+  "recent activity" sections reuse.
 - **Search:** `search_corpus(query, …)` with `label`/`state`/`author`/
   `role`/`file_pattern`/`since`/`until`/`sort="date"`/`group_by="file"`/
-  `snippet_chars` facets.
+  `snippet_chars`/`collapse_versions` facets (`collapse_versions`,
+  default on, hides older draft revisions of a matched draft).
 - **Narrative:** `read_topic` (full messages, chronological, across
-  files), `find_replies` (reply tree of one message), `tally_positions`
+  files; numbered globally, mechanical headers de-duplicated),
+  `find_replies` (reply tree of one message), `tally_positions`
   (grounded support/oppose/poll count + chair-statements section),
   `find_citations` (threads citing a draft).
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`,
-  `fetch_by_url`, `read_file_section`.
+  `fetch_by_url` (resolves the `w3.org/mid` Archived-At permalinks and
+  GitHub issue URLs the corpus actually stores), `read_file_section`.
+
+Every wrapper offloads its blocking `tool_*` body to a worker thread
+with a per-call deadline (`IETF_LLM_TOOL_TIMEOUT`, default 120s) so a
+stuck call fails fast instead of hanging to the client ceiling, and
+guards against an unknown corpus name (a read-only existence check, so a
+typo neither creates a cache dir nor returns a hollow result).
 
 The full SKILL.md guidance is also handed to compliant clients via the
 MCP server's `instructions` field, so non-Claude harnesses get the same

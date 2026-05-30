@@ -155,10 +155,19 @@ ISO (`"2026-05-01"`).
 | kind       | rows                                | filters                                                                |
 |------------|-------------------------------------|------------------------------------------------------------------------|
 | `issues`   | One per GitHub issue                | `state` (`open`/`closed`), `label`, `author`, `limit`, `include_bodies`|
-| `threads`  | One per mailing list thread         | `since`, `until`, `min_messages`, `subject` (substring), `limit`       |
+| `threads`  | One per mailing list thread         | `since`, `until`, `min_messages`, `subject`, `sort="activity"`, `limit`|
 | `people`   | Participants (chairs/authors lead)  | `role` (e.g. `"Chair"`), `min_messages`, `limit`                       |
-| `timeline` | Events in chronological order       | `since`, `until`, `event_kind`, `limit`                                |
+| `timeline` | Events in chronological order       | `since`, `until`, `event_kind`, `exclude_mechanical`, `limit`          |
 | `index`    | File inventory by category          | (none — small)                                                         |
+
+- **`sort="activity"`** (threads) ranks by message count instead of
+  recency — *where the back-and-forth is*. Pair with `since` +
+  `min_messages` for *"most contested lately"*. (The `overview` "most
+  active threads" section is exactly this.)
+- **`exclude_mechanical=True`** (timeline) drops the routine machine
+  events — automated I-D Action publications and individual IESG ballot
+  positions — leaving human discussion / decisions. Good for *"what's
+  actually been happening"* without the publication-log noise.
 
 `event_kind` ∈ {`draft-published`, `issue-opened`, `issue-closed`,
 `meeting`, `poll`, `wglc`, `adoption-call`, `charter-approved`,
@@ -173,9 +182,10 @@ report it as such, not as "approved" because most ADs cleared.
 Returns top-k chunks with a snippet (ending `[truncated]` when the
 chunk has more). Pivot to the source with `get_chunk_text` /
 `get_chunks_batch` (pass `end_chunk_idx` for a ≤20-chunk range),
-`read_file_section`, or `fetch_by_url` (resolve a pasted or cited
-GitHub / mail-archive URL to cached content — corpus only, never the
-live web).
+`read_file_section`, or `fetch_by_url` (resolve a cited URL to cached
+content — a `https://www.w3.org/mid/<id>` mail permalink, which is the
+`Archived-At:` link on every thread message, or a GitHub issue URL;
+corpus only, never the live web).
 
 Filters beyond the obvious `since`/`until`/`label`/`state`/
 `file_pattern` (`"threads/%"`, `"drafts/%"`, …):
@@ -184,6 +194,10 @@ Filters beyond the obvious `since`/`until`/`label`/`state`/
   **breadth** (*"which threads discuss MLKEM?"* → four threads, not
   fifteen overlapping chunks). Drop it for **depth**, where you want
   the actual quotes.
+- **`collapse_versions`** (default `True`) hides older draft revisions
+  when a newer one of the same draft also matched, so you do not get the
+  same section as `…-04`, `-02`, `-22`. Pass `False`, or a versioned
+  `file_pattern` (`"drafts/%-04.txt"`), to reach a specific revision.
 - **`author="<substring>"`** / **`role="Chair"`** (or `Author` /
   `Editor` / `AD`) — scope to a person or a structural role, matched
   against the chunk's section header (*"what did Rescorla say"*, *"what
