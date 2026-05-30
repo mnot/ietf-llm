@@ -36,6 +36,13 @@ hence no charter, leadership, or Datatracker timeline). **Every tool
 takes any kind** — the `corpus` argument is the corpus name, not
 specifically a WG.
 
+**Loading the tools.** Every tool is named `ietf-llm__…`. If your
+client loads MCP tools lazily — you have to search for a tool before
+you can call it — load the core set in one search rather than
+discovering them one at a time: `overview`, `read_digest`,
+`search_corpus`, `read_topic`, `tally_positions`, `find_replies`,
+`find_citations`, `list_corpora`, `list_labels`, `list_files`.
+
 ## First call: pick by question shape
 
 **Orienting / structural** ("tell me about `<corpus>`", "what's this WG

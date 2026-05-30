@@ -1692,8 +1692,9 @@ def main() -> None:
         chunk_idx: int,
         max_messages: int = 20,
     ) -> str:
-        """Return every transitive reply to a specific thread message,
-        in chronological order, with full bodies.
+        """Return every transitive reply to a specific mailing-list
+        thread message in an ietf-llm corpus, in chronological order,
+        with full bodies.
 
         Use when an assertion or claim lands in a message and you want
         to know whether it was challenged, refuted, or extended in the
@@ -1724,7 +1725,8 @@ def main() -> None:
     async def tally_positions(corpus: str, file: str) -> str:
         """Count stated positions (`+1`, `-1`, `I support`, `I object`,
         `LGTM`, conditional support, `DISCUSS`) per message author in
-        ONE thread or issue file. Output also includes a **Chair
+        ONE thread or issue file of an ietf-llm corpus. Output also
+        includes a **Chair
         statements** section at the top: any message from a chair
         containing procedural language (`rough consensus`,
         `consensus call`, `WGLC`, `adopting`, `closing this thread`,
