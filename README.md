@@ -237,6 +237,13 @@ incrementally each time.
 ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
 ```
 
+**First run:** gathering a corpus also builds a local semantic-search
+index, which downloads an embedding model (~130 MB) from
+[Hugging Face](https://huggingface.co/BAAI/bge-small-en-v1.5).
+Subsequent gathers reuse the cached model. Pass `--no-embed` to skip
+the index (and the download) — useful for
+[NotebookLM export](#2-use-with-notebooklm) or offline gathers.
+
 A corpus doesn't have to be a Working Group — the name is classified
 automatically:
 
@@ -418,9 +425,11 @@ index lives at `~/.cache/ietf-llm/<wg>/embeddings.db` and updates
 incrementally on each gather.
 
 Default model: **`sentence-transformers/BAAI/bge-small-en-v1.5`** —
-small (~33M params), MPS-accelerated, runs entirely on your machine.
-Override with `--embed-model <id>` for any model the `llm` package
-recognises.
+~130 MB on disk (~33M params), MPS-accelerated, runs entirely on your
+machine. Downloaded from
+[Hugging Face](https://huggingface.co/BAAI/bge-small-en-v1.5) on first
+use and cached. Skip with `--no-embed` at gather time. Override with
+`--embed-model <id>` for any model the `llm` package recognises.
 
 ---
 
