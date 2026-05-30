@@ -1,5 +1,5 @@
 """Corpus identity helpers shared by the CLI (`--list`) and the MCP
-server (`list_working_groups`).
+server (`list_corpora`).
 
 A cached corpus is one of:
 

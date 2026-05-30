@@ -3,7 +3,7 @@
 Only the no-network pieces:
 - _safe_path: must reject path traversal and absolute paths
 - tool_read_file_section: must enforce its line cap
-- tool_list_working_groups: only WGs with a files/ subdir
+- tool_list_corpora: only WGs with a files/ subdir
 """
 
 from __future__ import annotations
@@ -76,22 +76,22 @@ def test_read_file_section_rejects_path_traversal(isolated_home: Path) -> None:
     assert "not found" in out.lower()
 
 
-# --- tool_list_working_groups ---------------------------------------------
+# --- tool_list_corpora ---------------------------------------------
 
 
-def test_list_working_groups_only_wgs_with_files_dir(isolated_home: Path) -> None:
+def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "wg1", "x.txt")
     write_cache_file(isolated_home, "wg2", "x.txt")
     # A bare directory without files/ underneath shouldn't count.
     (isolated_home / ".cache" / "ietf-llm" / "stray").mkdir(parents=True)
-    out = mcp_server.tool_list_working_groups()
+    out = mcp_server.tool_list_corpora()
     assert "wg1" in out
     assert "wg2" in out
     assert "stray" not in out
 
 
-def test_list_working_groups_empty_message(isolated_home: Path) -> None:
-    out = mcp_server.tool_list_working_groups()
+def test_list_corpora_empty_message(isolated_home: Path) -> None:
+    out = mcp_server.tool_list_corpora()
     # Corpus-oriented empty message points the user at the gather CLI.
     assert "no corpora" in out.lower()
     assert "ietf-llm" in out.lower()
@@ -392,11 +392,11 @@ def test_list_files_includes_next_call_signatures(
     assert "get_chunk_text" in out
 
 
-def test_list_working_groups_includes_next_call_signatures(
+def test_list_corpora_includes_next_call_signatures(
     isolated_home: Path,
 ) -> None:
     write_cache_file(isolated_home, "wg", "x.txt", "hi")
-    out = mcp_server.tool_list_working_groups()
+    out = mcp_server.tool_list_corpora()
     assert "overview" in out
     assert "read_digest" in out
     assert "search_corpus" in out

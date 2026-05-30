@@ -1,20 +1,21 @@
 ---
 name: ietf-llm
-description: Query an IETF Working Group's public record (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues) via the `ietf-llm-mcp` MCP server. Use whenever the user asks about a named WG by shortname (`httpbis`, `quic`, `tls`, `aipref`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology.
+description: Query the gathered public record of an IETF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology.
 ---
 
 # ietf-llm
 
-A queryable local corpus of an IETF Working Group's public record,
-exposed via `mcp__ietf-llm__*` tools. `<wg>` is always a shortname
-(`httpbis`, `aipref`, `tls`, …). If the user names a WG without a
-shortname, **ask** — don't guess.
+A queryable local record of an IETF effort — a Working Group, a
+mailing list, a set of drafts — exposed via `mcp__ietf-llm__*` tools.
+`<corpus>` is the corpus name: often a WG / RG shortname (`httpbis`,
+`tls`, `cfrg`), but see the kinds below. If the user names something
+and you can't tell which corpus they mean, **ask** — don't guess.
 
 **Default to this corpus; don't reflexively crawl IETF sites.**
 If a WG isn't here (`overview` returns nothing, or it's missing
-from `list_working_groups`), the usual answer is NOT to go scrape
+from `list_corpora`), the usual answer is NOT to go scrape
 the data yourself — it's to tell the user to gather it: `ietf-llm
-<wg>` from their shell (e.g. `ietf-llm httpbis`). They can see
+<corpus>` from their shell (e.g. `ietf-llm httpbis`). They can see
 what's already cached with `ietf-llm --list`.
 
 Reaching out to a live IETF resource (datatracker.ietf.org,
@@ -25,19 +26,20 @@ outside the corpus, and flag it if you're making more than a
 couple of requests** so they can decide whether to re-gather
 instead. Prefer the corpus for anything it can answer.
 
-Not every corpus is a Working Group. `list_working_groups` tags each
+Not every corpus is a Working Group. `list_corpora` tags each
 one with a **kind**: `group` (a WG / IRTF RG / editorial WG / BoF —
 shortname convention `cfrg`, `hrpc`, …, with a `status` of `active` /
 `concluded` / `bof`), `list` (a standalone mailing list like
 `last-call`), `custom` (an explicit draft / repo set), or `synthetic`
 (an `x-` corpus, e.g. `x-webbotauth` — drafts/lists with no formal WG,
 hence no charter, leadership, or Datatracker timeline). **Every tool
-accepts any of them** — the `<wg>` argument is really a corpus name.
+takes any kind** — the `corpus` argument is the corpus name, not
+specifically a WG.
 
 ## First call: pick by question shape
 
-**Orienting / structural** ("tell me about `<wg>`", "what's this WG
-up to?", "who's on it?") → `overview(wg)`. ~30 lines: chairs/ADs,
+**Orienting / structural** ("tell me about `<corpus>`", "what's this WG
+up to?", "who's on it?") → `overview(corpus)`. ~30 lines: chairs/ADs,
 status + area, charter excerpt, key resources (repo / home page /
 chat), active drafts, top-5 open issues, top-5 recent threads, latest
 meeting + latest draft. Often enough on its own.
@@ -47,23 +49,23 @@ meeting + latest draft. Often enough on its own.
 topic is unfamiliar and you want terms to search for.
 
 - _"arguments for/against X"_, _"scope debate"_ →
-  `read_digest(wg, kind="issues", label="...", include_bodies=True)`
+  `read_digest(corpus, kind="issues", label="...", include_bodies=True)`
   — catalogue PLUS each issue's opening description in one call,
-  usually enough without follow-up reads. `list_labels(wg)` first
+  usually enough without follow-up reads. `list_labels(corpus)` first
   if you don't know the vocabulary. For *coverage* (every distinct
   argument) the `include_bodies` digest beats semantic search;
-  reach for `search_corpus(wg, "X", label="...")` only when you
+  reach for `search_corpus(corpus, "X", label="...")` only when you
   want ranking *inside* the cluster.
 - _"what did the WG decide about X?"_, _"position on X"_ →
-  `search_corpus(wg, "X", state="closed")`. The chairs' resolution
+  `search_corpus(corpus, "X", state="closed")`. The chairs' resolution
   lives in closed issues; open threads can be mid-debate noise.
 - _"what's open / closed / labelled X?"_, _"who's a chair?"_,
-  _"what happened in May?"_ → `read_digest(wg, kind=..., filters)`.
-- _"what was said about X?"_ → `search_corpus(wg, "X")` plus
+  _"what happened in May?"_ → `read_digest(corpus, kind=..., filters)`.
+- _"what was said about X?"_ → `search_corpus(corpus, "X")` plus
   `get_chunk_text` / `read_file_section` to read hits.
 - _"how did the debate on X evolve?"_, _"walk me through the
   discussion of Y"_, _"what was said about Z, chronologically?"_
-  → `read_topic(wg, "X")`. Returns full messages (not snippets) in
+  → `read_topic(corpus, "X")`. Returns full messages (not snippets) in
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
@@ -71,19 +73,19 @@ topic is unfamiliar and you want terms to search for.
   **If `read_topic` returns a thread that looks like a chair poll**
   ("please reply indicating which option you prefer", numbered
   options, terse one-word replies), follow up with
-  `tally_positions(wg, "<file>")` on that thread. The poll-syntax
+  `tally_positions(corpus, "<file>")` on that thread. The poll-syntax
   detection bucket'll show the option counts the consumer is
   actually asking about.
 - _"what other threads cover this topic?"_, _"what's the broader
-  context for thread X?"_ → `list_labels(wg)` shows the WG's
+  context for thread X?"_ → `list_labels(corpus)` shows the WG's
   `[xxx]`-style subject prefixes; then
-  `read_digest(wg, kind="threads", subject="[mlkem]")` returns
+  `read_digest(corpus, kind="threads", subject="[mlkem]")` returns
   every thread in that cluster. Multiple parallel threads on one
   topic are common (e.g. "WebBotAuth Direction" + "Reframing the
   Direction" + "Architectural Limitations" in one week) — the
   cluster filter pulls them together.
 - _"read the whole thread X end-to-end"_, _"give me thread X in
-  full"_ (no query, just one file) → `read_file_section(wg,
+  full"_ (no query, just one file) → `read_file_section(corpus,
   "threads/<file>.md", start_line=1)`. The per-thread file is
   already in chronological order with an outline header; the
   5000-line cap covers virtually every thread in one call. Reach
@@ -92,7 +94,7 @@ topic is unfamiliar and you want terms to search for.
   match it.
 - _"what threads engage with draft X?"_, _"who's been discussing
   draft Y?"_, _"is this draft actually being talked about?"_ →
-  `find_citations(wg, "draft-...")`. Returns every thread / issue
+  `find_citations(corpus, "draft-...")`. Returns every thread / issue
   file that mentions the draft, with chunk indices and short
   context excerpts. The `overview` Documents section also shows
   the citation count inline (`cited in N`) when it's non-zero.
@@ -100,20 +102,20 @@ topic is unfamiliar and you want terms to search for.
   from a thread mention to the wider conversation.
 - _"what does §N of draft X say?"_, _"quote the Security
   Considerations of draft Y"_, _"what's actually in the draft?"_
-  → `read_file_section(wg, "drafts/<draft-name>-NN.txt",
+  → `read_file_section(corpus, "drafts/<draft-name>-NN.txt",
   start_line=1)`. **When the question is about the literal text of
   a draft, read the draft.** Don't reconstruct it from what people
   said about it on the list — the document is the artefact, the
-  list traffic is commentary. `list_files(wg, pattern="drafts/*")`
+  list traffic is commentary. `list_files(corpus, pattern="drafts/*")`
   shows what's cached.
 - _"what's the IESG saying about draft X?"_, _"is there a DISCUSS
   on this draft?"_, _"why hasn't draft X been published yet?"_ →
-  `read_file_section(wg, "ballots/<doc-name>.md", start_line=1)` for
-  the full ballot, or `read_digest(wg, "timeline",
+  `read_file_section(corpus, "ballots/<doc-name>.md", start_line=1)` for
+  the full ballot, or `read_digest(corpus, "timeline",
   event_kind="ballot")` for chronology of position changes. A
   DISCUSS holds publication; report it as such.
 - _"did anyone refute Alice's claim about X?"_, _"what were the
-  responses to message [N]?"_ → `find_replies(wg, file, chunk_idx)`.
+  responses to message [N]?"_ → `find_replies(corpus, file, chunk_idx)`.
   Returns every transitive reply to one specific message, full
   bodies, in date order. Use when you have a known message and
   want its follow-ups; use `read_topic` instead when you have a
@@ -121,7 +123,7 @@ topic is unfamiliar and you want terms to search for.
 - _"level of support for X?"_, _"how many said +1?"_, _"who
   supported / objected?"_, _"did the chair call consensus, and is
   it visible in the traffic?"_ →
-  `tally_positions(wg, "<one thread or issue file>")`. Grounded
+  `tally_positions(corpus, "<one thread or issue file>")`. Grounded
   per-author count (`+1`/`-1`/poll-option/`DISCUSS`) plus a **Chair
   statements** section surfacing procedural messages (`rough
   consensus`, `WGLC`, `adopting`, …). **Prefer this over relaying a
@@ -131,7 +133,7 @@ topic is unfamiliar and you want terms to search for.
 If you're unsure which shape the question is, `overview` is the
 safe default — it's cheap and points you at the rest.
 
-## Catalogue queries: `read_digest(wg, kind, ...filters)`
+## Catalogue queries: `read_digest(corpus, kind, ...filters)`
 
 Always pass filters — unfiltered digests run 15–30 KB; filtered
 reads are typically under 2 KB. All filters AND-combine; dates are
@@ -163,7 +165,7 @@ than treating the draft as "approved" because most ADs cleared.
 `label` / `author` / `role`
 are substring matches.
 
-## Substantive questions: `search_corpus(wg, query, k=8)`
+## Substantive questions: `search_corpus(corpus, query, k=8)`
 
 Returns top-k chunks with `file`, `chunk_idx`, `line_range`,
 snippet, and — for issue chunks — the issue's GitHub `labels`,
@@ -173,15 +175,15 @@ with `[truncated]` when the chunk has more content than what's
 shown; absence of the marker means the snippet is the whole chunk.
 Pivot to the source with:
 
-- `get_chunk_text(wg, file, chunk_idx)` — full text of one chunk.
+- `get_chunk_text(corpus, file, chunk_idx)` — full text of one chunk.
   Pass `end_chunk_idx=N` to fetch a consecutive range (≤20 chunks)
   in one call — use this to read a short thread / issue end-to-end.
-- `get_chunks_batch(wg, [{file, chunk_idx, end_chunk_idx?}, …])` —
+- `get_chunks_batch(corpus, [{file, chunk_idx, end_chunk_idx?}, …])` —
   the same, but across multiple files in one round-trip. Use when
   search hits span several files and you want all of them.
-- `read_file_section(wg, file, start_line, max_lines)` — bounded
+- `read_file_section(corpus, file, start_line, max_lines)` — bounded
   read for surrounding context or whole-file reading.
-- `fetch_by_url(wg, url)` — resolves a pasted GitHub issue URL or
+- `fetch_by_url(corpus, url)` — resolves a pasted GitHub issue URL or
   IETF mail-archive permalink to cached content without you knowing
   the file name. Also use it when a chunk **cites** a URL inline
   and you want the source, not the paraphrase. (Resolves only URLs
@@ -221,7 +223,7 @@ context. Dial `k` down to compensate.
 
 ## File types you'll encounter
 
-All paths are relative to the WG's cache root (`<wg>/files/`).
+All paths are relative to the WG's cache root (`<corpus>/files/`).
 
 - **`threads/<date>-<slug>.md`** — one reconstructed mailing list
   conversation. Read in full when the user wants the thread.
@@ -262,21 +264,21 @@ All paths are relative to the WG's cache root (`<wg>/files/`).
   `issues`, `threads`, `people`, `timeline`). Read via `read_digest`,
   not `get_chunk_text`.
 
-`list_files(wg)` shows per-file chunk counts so you can bound
+`list_files(corpus)` shows per-file chunk counts so you can bound
 `get_chunk_text` ranges without probing.
 
 ## Reading the WG's current position
 
 For *"where does the WG stand right now on X"*: start with the
 chair's most recent statement, then reconstruct the arc. Try
-`read_digest(wg, "issues", state="closed", label="X")` for chair-
-resolved decisions, or `search_corpus(wg, "X consensus|resolution|
+`read_digest(corpus, "issues", state="closed", label="X")` for chair-
+resolved decisions, or `search_corpus(corpus, "X consensus|resolution|
 wglc", sort="date")` and scan the latest hits whose chunk title
 carries a `(Chair)` role tag — those are usually the load-bearing
 posts.
 
 For an *entire* issue or thread end-to-end (not just hits matching
-a query), use `read_file_section(wg, file, start_line=1)` on the
+a query), use `read_file_section(corpus, file, start_line=1)` on the
 per-issue / per-thread file — it's already in chronological order
 with an outline of who spoke when, and the 5000-line cap covers
 virtually every issue in one call. Reach for `get_chunks_batch`
@@ -349,7 +351,7 @@ A few interpretive norms that shape how to read the corpus:
 ## Anti-patterns
 
 - **Don't reflexively crawl IETF sites.** Default to the corpus; if
-  something's missing, the user re-gathers (`ietf-llm <wg>`). Live
+  something's missing, the user re-gathers (`ietf-llm <corpus>`). Live
   fetches (datatracker, mail archive, draft URLs, GitHub) are fine
   when genuinely needed — e.g. a draft's current state — but say
   you're going outside the corpus, and flag heavy use (more than a

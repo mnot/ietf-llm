@@ -5,8 +5,8 @@ MCP server for ietf-llm. Exposes the gathered corpus to MCP clients
 context-safe retrieval.
 
 Tools:
-  list_working_groups()
-      -> the WGs that have been gathered locally.
+  list_corpora()
+      -> the corpora that have been gathered locally.
   read_digest(wg, kind="index"|"issues"|"threads")
       -> contents of one of the small digest files. Start here.
   search(wg, query, k=10)
@@ -56,7 +56,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import corpus
+from .corpus import kind_status
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -186,7 +186,7 @@ _NEXT_TOOLS_HINT = (
 )
 
 
-def tool_list_working_groups() -> str:
+def tool_list_corpora() -> str:
     wgs = _list_wgs()
     if not wgs:
         return (
@@ -194,7 +194,7 @@ def tool_list_working_groups() -> str:
         )
     rows = []
     for wg in wgs:
-        kind, status = corpus.kind_status(wg)
+        kind, status = kind_status(wg)
         tag = f"{kind} · {status}" if status else kind
         rows.append((wg, tag))
     width = max(len(w) for w, _ in rows)
@@ -1386,25 +1386,25 @@ def main() -> None:
     server = FastMCP("ietf-llm", instructions=server_instructions)
 
     @server.tool()
-    async def list_working_groups() -> str:
+    async def list_corpora() -> str:
         """List the corpora gathered locally by ietf-llm, each tagged with
         its **kind** and **status**. Use this first when you don't know
-        the `<wg>` name the user means.
+        the `corpus` name the user means.
 
-        Most corpora are IETF Working Groups / IRTF Research Groups by
-        shortname (`httpbis`, `cfrg`, …), but a corpus can also be a
-        standalone mailing list (`list`, e.g. `last-call`), an explicit
-        draft/repo set (`custom`), or a synthetic `x-` corpus. **Every
-        tool here takes any of them** — the `wg` parameter is really a
-        corpus name. `status` flags group state (`active` / `concluded`
-        / `bof`), so you can tell a wound-down WG or finished BoF at a
-        glance.
+        A corpus is whatever someone gathered. Most are IETF Working
+        Groups / IRTF Research Groups by shortname (`httpbis`, `cfrg`,
+        …), but a corpus can also be a standalone mailing list (`list`,
+        e.g. `last-call`), an explicit draft/repo set (`custom`), or a
+        synthetic `x-` corpus. **Every tool here takes any kind** — the
+        `corpus` argument is the corpus name, not specifically a WG.
+        `status` flags group state (`active` / `concluded` / `bof`), so
+        you can tell a wound-down WG or finished BoF at a glance.
         """
-        return await _offload(tool_list_working_groups)
+        return await _offload(tool_list_corpora)
 
     @server.tool()
-    async def overview(wg: str) -> str:
-        """Orient on an IETF Working Group via ietf-llm: chairs/ADs,
+    async def overview(corpus: str) -> str:
+        """Orient on a corpus via ietf-llm: chairs/ADs,
         active drafts, top open issues, recent mailing list threads,
         latest meeting and latest draft publication — one call.
 
@@ -1418,18 +1418,18 @@ def main() -> None:
         **Skip overview and go straight to the specialised tool for
         TOPICAL questions:**
           - "arguments for/against X" / "scope debate about X" →
-            `search_corpus(wg, "X", label="...")` — issue labels are
+            `search_corpus(corpus, "X", label="...")` — issue labels are
             the WG's own curation.
           - "what did the WG decide about X?" / "what's the WG's
-            position on X?" → `search_corpus(wg, "X", state="closed")`
+            position on X?" → `search_corpus(corpus, "X", state="closed")`
             — the chairs' resolution lives in closed issues.
           - "what's open?" / "who chairs this?" / "what happened in
-            May?" → `read_digest(wg, kind=..., ...filters)`.
+            May?" → `read_digest(corpus, kind=..., ...filters)`.
           - "what did Alice say about X?" → `search_corpus` (semantic
             search, then pivot via `get_chunk_text` or
             `read_file_section`).
           - "how did the debate on X evolve?" / "walk me through the
-            discussion of Y, chronologically" → `read_topic(wg, "X")`.
+            discussion of Y, chronologically" → `read_topic(corpus, "X")`.
             Returns full messages (not snippets) across threads and
             issues in date order; add `include_replies=True` for
             sub-thread descendants.
@@ -1438,10 +1438,10 @@ def main() -> None:
         `read_topic`, `get_chunk_text`, `read_file_section`,
         `list_files`, `list_labels`.
         """
-        return await _offload(tool_overview, wg)
+        return await _offload(tool_overview, corpus)
 
     @server.tool()
-    async def list_labels(wg: str) -> str:
+    async def list_labels(corpus: str) -> str:
         """List the WG's curation vocabulary — GitHub issue labels
         AND mailing-list `[xxx]`-style subject prefixes — with
         frequencies. Call this before picking a `label=` filter for
@@ -1457,10 +1457,10 @@ def main() -> None:
         A WG may have one, the other, or both. The empty case
         (neither) is rare and gets a clear "no vocabulary" message.
         """
-        return await _offload(tool_list_labels, wg)
+        return await _offload(tool_list_labels, corpus)
 
     @server.tool()
-    async def find_citations(wg: str, draft_name: str) -> str:
+    async def find_citations(corpus: str, draft_name: str) -> str:
         """Find every thread / issue that cites a given Internet-Draft.
 
         The gather step scans per-thread and per-issue markdown files
@@ -1481,11 +1481,11 @@ def main() -> None:
         `draft_name` accepts any of `draft-foo-bar`, `draft-foo-bar-07`,
         `draft-foo-bar.txt` — version suffix stripped before lookup.
         """
-        return await _offload(tool_find_citations, wg, draft_name)
+        return await _offload(tool_find_citations, corpus, draft_name)
 
     @server.tool()
-    async def list_files(wg: str, pattern: Optional[str] = None) -> str:
-        """Inventory an IETF Working Group's ietf-llm cache: files with
+    async def list_files(corpus: str, pattern: Optional[str] = None) -> str:
+        """Inventory a corpus's ietf-llm cache: files with
         sizes and chunk counts.
 
         `pattern` is an optional glob over the relative path (fnmatch
@@ -1497,11 +1497,11 @@ def main() -> None:
         `(digest)` rows are the per-WG summary digests — read them via
         `read_digest`, not `get_chunk_text`.
         """
-        return await _offload(tool_list_files, wg, pattern=pattern)
+        return await _offload(tool_list_files, corpus, pattern=pattern)
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        wg: str,
+        corpus: str,
         kind: str = "index",
         state: Optional[str] = None,
         label: Optional[str] = None,
@@ -1515,8 +1515,8 @@ def main() -> None:
         include_bodies: bool = False,
         subject: Optional[str] = None,
     ) -> str:
-        """Read filtered catalogue digests of an IETF Working Group's
-        ietf-llm corpus: issues, threads, people, timeline, index. The
+        """Read filtered catalogue digests of a corpus:
+        issues, threads, people, timeline, index. The
         high-value catalogue tool — pair with `overview` for "tell me
         about this WG"-shaped questions, and use `label=` here to get
         every issue tagged with a topic in one call (e.g. `kind="issues",
@@ -1561,7 +1561,7 @@ def main() -> None:
         """
         return await _offload(
             tool_read_digest,
-            wg,
+            corpus,
             kind,
             state=state,
             label=label,
@@ -1578,7 +1578,7 @@ def main() -> None:
 
     @server.tool()
     async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        wg: str,
+        corpus: str,
         query: str,
         k: int = 10,
         file_pattern: Optional[str] = None,
@@ -1592,7 +1592,7 @@ def main() -> None:
         role: Optional[str] = None,
         snippet_chars: Optional[int] = None,
     ) -> str:
-        """Search an IETF Working Group's ietf-llm corpus semantically
+        """Search a corpus semantically
         across mailing list threads, GitHub issues, drafts, RFCs,
         slides, transcripts, and minutes. Returns top-k chunks with
         file, chunk_idx, title, score, snippet, line range, GitHub
@@ -1646,7 +1646,8 @@ def main() -> None:
         itself should carry more context. Tradeoff: bigger budget
         means more bytes per hit, so dial `k` down accordingly.
 
-        Requires `ietf-llm <wg> --embed` to have been run.
+        Requires the embedding index (built by default on gather;
+        skipped only with `--no-embed`).
 
         Optional facets:
           - file_pattern: SQL LIKE pattern (e.g. "%mailing-list%" to
@@ -1658,7 +1659,7 @@ def main() -> None:
         """
         return await _offload(
             tool_search,
-            wg,
+            corpus,
             query,
             k=k,
             file_pattern=file_pattern,
@@ -1675,7 +1676,7 @@ def main() -> None:
 
     @server.tool()
     async def find_replies(
-        wg: str,
+        corpus: str,
         file: str,
         chunk_idx: int,
         max_messages: int = 20,
@@ -1705,11 +1706,11 @@ def main() -> None:
         pointer to `get_chunk_text` for the full text.
         """
         return await _offload(
-            tool_find_replies, wg, file, chunk_idx, max_messages=max_messages
+            tool_find_replies, corpus, file, chunk_idx, max_messages=max_messages
         )
 
     @server.tool()
-    async def tally_positions(wg: str, file: str) -> str:
+    async def tally_positions(corpus: str, file: str) -> str:
         """Count stated positions (`+1`, `-1`, `I support`, `I object`,
         `LGTM`, conditional support, `DISCUSS`) per message author in
         ONE thread or issue file. Output also includes a **Chair
@@ -1750,11 +1751,11 @@ def main() -> None:
         many issues at once, use `read_digest(kind="issues")`. This
         tool is the counter — one file, one tally, grounded.
         """
-        return await _offload(tool_tally_positions, wg, file)
+        return await _offload(tool_tally_positions, corpus, file)
 
     @server.tool()
     async def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        wg: str,
+        corpus: str,
         query: str,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -1762,7 +1763,7 @@ def main() -> None:
         k: int = 20,
         include_replies: bool = False,
     ) -> str:
-        """Read an IETF Working Group debate as a chronological narrative
+        """Read a corpus's debate as a chronological narrative
         across mailing list threads and GitHub issues. Returns the full
         text of every matched message — author, date, role, archived-at
         URL, body — in date order, oldest first.
@@ -1801,11 +1802,12 @@ def main() -> None:
             20; replies expand this further). The fetch is widened
             internally so the candidate pool is roomy.
 
-        Requires `ietf-llm <wg> --embed` to have been run.
+        Requires the embedding index (built by default on gather;
+        skipped only with `--no-embed`).
         """
         return await _offload(
             tool_read_topic,
-            wg,
+            corpus,
             query,
             since=since,
             until=until,
@@ -1816,13 +1818,13 @@ def main() -> None:
 
     @server.tool()
     async def get_chunk_text(
-        wg: str,
+        corpus: str,
         file: str,
         chunk_idx: int,
         end_chunk_idx: Optional[int] = None,
     ) -> str:
-        """Get full text of a chunk (or a consecutive range) from an
-        IETF Working Group's ietf-llm corpus — typically a single
+        """Get full text of a chunk (or a consecutive range) from a
+        corpus — typically a single
         mailing list message, an issue comment, or a draft section,
         as returned by `search_corpus`.
 
@@ -1834,16 +1836,16 @@ def main() -> None:
         `read_digest` for those.
         """
         return await _offload(
-            tool_get_chunk, wg, file, chunk_idx, end_chunk_idx=end_chunk_idx
+            tool_get_chunk, corpus, file, chunk_idx, end_chunk_idx=end_chunk_idx
         )
 
     @server.tool()
     async def get_chunks_batch(
-        wg: str,
+        corpus: str,
         requests: List[Dict[str, Any]],
     ) -> str:
-        """Fetch multiple chunks from an IETF Working Group's ietf-llm
-        corpus in one call. `requests` is a list of dicts, each with:
+        """Fetch multiple chunks from a corpus in one call.
+        `requests` is a list of dicts, each with:
           - `file` (str): chunk's source file
           - `chunk_idx` (int): first chunk index
           - `end_chunk_idx` (int, optional): last chunk index (inclusive)
@@ -1853,12 +1855,12 @@ def main() -> None:
         you want all of them in one round-trip rather than N calls.
         Total chunks across all requests are capped at 20.
         """
-        return await _offload(tool_get_chunks_batch, wg, requests)
+        return await _offload(tool_get_chunks_batch, corpus, requests)
 
     @server.tool()
-    async def fetch_by_url(wg: str, url: str) -> str:
-        """Resolve an external citation URL to its cached chunk in an
-        IETF Working Group's ietf-llm corpus. Accepts:
+    async def fetch_by_url(corpus: str, url: str) -> str:
+        """Resolve an external citation URL to its cached chunk in a
+        corpus. Accepts:
 
         - GitHub issue URLs (e.g.
           `https://github.com/<owner>/<repo>/issues/<N>`)
@@ -1870,23 +1872,23 @@ def main() -> None:
         backs the URL. Use this when the user pastes (or you've
         already cited) a URL and you need the underlying content.
         """
-        return await _offload(tool_fetch_by_url, wg, url)
+        return await _offload(tool_fetch_by_url, corpus, url)
 
     @server.tool()
     async def read_file_section(
-        wg: str,
+        corpus: str,
         file: str,
         start_line: int = 1,
         max_lines: int = MAX_LINES_DEFAULT,
     ) -> str:
-        """Read a bounded section of any file in an IETF Working Group's
+        """Read a bounded section of any file in a corpus's
         ietf-llm cache (per-thread files, per-issue files, drafts, RFCs,
         slides, transcripts, minutes). Default 400 lines per call; the
         caller can raise `max_lines` up to a hard cap of 5000 so the
         context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.
         """
-        return await _offload(tool_read_file_section, wg, file, start_line, max_lines)
+        return await _offload(tool_read_file_section, corpus, file, start_line, max_lines)
 
     _prewarm_embedding_model_async()
     server.run()
