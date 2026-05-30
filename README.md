@@ -359,9 +359,17 @@ ietf-llm [OPTIONS] <wg_shortname>
 - `--mailing-list LIST` — extra IETF-hosted mailing list to sync,
   beyond the WG's auto-discovered one (repeatable, persisted).
   Accepts `foo` or `foo@ietf.org`.
+- `--new-drafts` — make this a subscription to *new* Internet-Drafts:
+  every draft whose `-00` was submitted within `--months` (a rolling
+  window; drafts that age out are pruned). The name is a label.
+- `--author PERSON` — make this a 'follow an author' corpus: every
+  draft `PERSON` has authored. `PERSON` is an email
+  (`mnot@mnot.net`, recommended), a Datatracker person id, or an exact
+  full name. Drafts only.
 - `--github-label LABEL` / `--exclude-github-label LABEL` — filter
   issues by label; repeatable.
-- `--months N` — months of mailing list / meeting history (default 12).
+- `--months N` — months of mailing list / meeting / new-draft history
+  (default 12).
 - `--summarize` / `--summarize-model MODEL` — add LLM-generated
   one-liners to digests via the `llm` package.
 - `--embed` / `--embed-model MODEL` — build / refresh the semantic

@@ -54,6 +54,14 @@ There is **no `--list-only` flag** — the kind is inferred. A name that
 is neither a group, a known list, nor configured with sources is
 rejected as a likely typo rather than producing an empty corpus.
 
+**Generative source flags** (`--new-drafts`, `--author`) populate a
+custom corpus dynamically — a rolling `-00` window from the submission
+API, or a person's authored drafts from the documentauthor table.
+They short-circuit shape inference to `custom` (the name is a label, no
+group lookup) and persist, so a bare re-run re-evaluates the source.
+Explicit sources (`--draft` / `--mailing-list` / `--github`) compose
+onto any kind.
+
 The gather pipeline gates Datatracker-sourced steps on a single
 `group_backed` boolean (true only for the `group` kind). `corpus.py`
 derives `(kind, status)` from on-disk artifacts for `ietf-llm --list`
@@ -217,6 +225,8 @@ ietf_llm/
 │   ├── charter.py              # charter text artifact (rev from doc API)
 │   ├── group_info.py           # group.md: status / area / Additional Resources
 │   ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
+│   ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
+│   ├── author.py               # --author: a person's authored drafts
 │   ├── meetings.py             # minutes/agenda/slides via meeting API; clustering
 │   ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │   ├── transcript_context.py   # prepend meeting-context header to transcripts
