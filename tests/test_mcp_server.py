@@ -130,6 +130,33 @@ def test_read_digest_absent_kind_reports_what_corpus_has(isolated_home: Path) ->
     assert "GitHub" in out  # explains why issues are absent
 
 
+def test_read_digest_sort_activity_wired(isolated_home: Path) -> None:
+    # The sort="activity" heat ranking is reachable through the tool, not
+    # just inside overview.
+    write_cache_file(
+        isolated_home, "wg", "digests/threads.md",
+        "# wg: threads\n\n"
+        "| Subject | Msgs | Participants | First | Last | File |\n"
+        "|---|---|---|---|---|---|\n"
+        "| Quiet | 2 | 1 | 2026-01-01 | 2026-01-02 | a.md |\n"
+        "| Loud | 20 | 5 | 2026-01-01 | 2026-01-03 | b.md |\n",
+    )
+    out = mcp_server.tool_read_digest("wg", "threads", sort="activity")
+    assert out.index("Loud") < out.index("Quiet")
+
+
+def test_read_digest_exclude_mechanical_wired(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, "wg", "digests/timeline.md",
+        "# wg: timeline\n\n## 2026\n\n"
+        '- **2026-05-20** — WG Last Call thread: "x"\n'
+        "- **2026-05-18** — `draft-x`: Alice → No Objection · ballots/x\n",
+    )
+    out = mcp_server.tool_read_digest("wg", "timeline", exclude_mechanical=True)
+    assert "WG Last Call" in out
+    assert "No Objection" not in out
+
+
 def test_read_digest_no_digests_at_all(isolated_home: Path) -> None:
     # Corpus exists (has a files dir) but no digests were generated.
     write_cache_file(isolated_home, "wg", "charter.txt", "x")

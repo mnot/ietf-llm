@@ -490,6 +490,8 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     limit: Optional[int] = None,
     include_bodies: bool = False,
     subject: Optional[str] = None,
+    sort: Optional[str] = None,
+    exclude_mechanical: bool = False,
 ) -> str:
     path = _digest_path(wg, kind)
     if not path:
@@ -511,6 +513,8 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
         min_messages=min_messages,
         limit=limit,
         subject=subject,
+        sort=sort or None,
+        exclude_mechanical=exclude_mechanical or None,
     )
     if include_bodies and kind == "issues":
         filtered = filtered + _append_issue_bodies(wg, filtered)
@@ -1764,6 +1768,8 @@ def main() -> None:
         limit: Optional[int] = None,
         include_bodies: bool = False,
         subject: Optional[str] = None,
+        sort: Optional[str] = None,
+        exclude_mechanical: bool = False,
     ) -> str:
         """Read filtered catalogue digests of a corpus:
         issues, threads, people, timeline, index. The
@@ -1791,6 +1797,10 @@ def main() -> None:
                             subject — high-value for WGs that don't
                             tag GitHub issues but cluster topics on
                             the list, e.g. TLS with `[mlkem]`, `[ech]`).
+                            `sort="activity"` ranks by message count
+                            (where the back-and-forth is) instead of
+                            recency — pair with `since=` + `min_messages=`
+                            for "most contested lately".
              | "people"   — participants. Filters: role (substring,
                             e.g. "Chair"), min_messages, limit.
              | "timeline" — chronological events. Filters: since/until,
@@ -1802,6 +1812,10 @@ def main() -> None:
                             "chair-appointed" / "group-state" /
                             "doc-adopted" / "doc-iesg" / "doc-rfc" /
                             "doc-wglc"), limit.
+                            `exclude_mechanical=True` drops the routine
+                            machine events (I-D Action publications and
+                            individual IESG ballot positions) so the human
+                            discussion / decision events stand out.
 
         Pass no filters to get the full digest (same bytes as before).
         Filters compose (AND); `limit` truncates after filtering.
@@ -1824,6 +1838,8 @@ def main() -> None:
             limit=limit,
             include_bodies=include_bodies,
             subject=subject,
+            sort=sort,
+            exclude_mechanical=exclude_mechanical,
         )
 
     @server.tool()

@@ -7,6 +7,9 @@ from pathlib import Path
 from ietf_llm.digest.query import (
     Section,
     filter_rows,
+    is_ballot_position,
+    is_idaction_publication,
+    is_mechanical_timeline_event,
     parse_md_tables,
     query_digest,
     render_section,
@@ -108,6 +111,59 @@ def test_threads_since_until() -> None:
     assert [r[0] for r in result.rows] == ["New thread"]
     result = filter_rows(section, "threads", {"until": "2025-12-31"})
     assert sorted(r[0] for r in result.rows) == ["Mid thread", "Old thread"]
+
+
+def test_threads_sort_by_activity() -> None:
+    # sort="activity" ranks threads by message count (heat), not recency.
+    section = Section(
+        heading="",
+        columns=["Subject", "Msgs", "Participants", "First", "Last", "File"],
+        rows=[
+            ["Quiet", "2", "2", "2026-04-01", "2026-04-10", "a.md"],
+            ["Loud", "30", "9", "2026-04-01", "2026-04-05", "b.md"],
+            ["Medium", "7", "4", "2026-04-01", "2026-04-08", "c.md"],
+        ],
+    )
+    result = filter_rows(section, "threads", {"sort": "activity"})
+    assert [r[0] for r in result.rows] == ["Loud", "Medium", "Quiet"]
+    # Composes with limit (top-N busiest).
+    top = filter_rows(section, "threads", {"sort": "activity", "limit": 1})
+    assert [r[0] for r in top.rows] == ["Loud"]
+
+
+def test_mechanical_event_predicates() -> None:
+    assert is_idaction_publication("`draft-x` published · `threads/t.md`")
+    assert is_ballot_position("`draft-x`: Alice → No Objection · ballots/x")
+    assert is_mechanical_timeline_event("`draft-x` published · `threads/t.md`")
+    assert is_mechanical_timeline_event("`draft-x`: Bob → DISCUSS · ballots/x")
+    # A milestone / discussion event is not mechanical.
+    assert not is_mechanical_timeline_event("`rfc9931` published as RFC")
+    assert not is_mechanical_timeline_event('WG Last Call thread: "..."')
+
+
+def test_timeline_exclude_mechanical() -> None:
+    text = (
+        "# wg: timeline\n\n## 2026\n\n"
+        "- **2026-05-20** — WG Last Call thread: \"WGLC for draft-x\"\n"
+        "- **2026-05-18** — `draft-x`: Alice → No Objection · ballots/x\n"
+        "- **2026-05-15** — `draft-x-03` published · `threads/t.md`\n"
+        "- **2026-05-10** — `rfc9931` published as RFC\n"
+    )
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        out = query_digest(path, "timeline", exclude_mechanical=True)
+        assert "WG Last Call" in out
+        assert "published as RFC" in out  # milestone kept
+        assert "No Objection" not in out  # ballot position dropped
+        assert "published · " not in out  # I-D Action publication dropped
+    finally:
+        os.remove(path)
 
 
 def test_threads_subject_filter() -> None:

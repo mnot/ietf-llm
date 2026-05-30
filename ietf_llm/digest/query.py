@@ -144,6 +144,40 @@ def _parse_date_cell(value: str) -> str:
     return match.group(0) if match else ""
 
 
+def is_idaction_publication(rest: str) -> bool:
+    """An automated I-D Action draft-publication timeline event
+    (`… published · threads/…`)."""
+    return " published · " in rest
+
+
+def is_ballot_position(rest: str) -> bool:
+    """An individual IESG ballot-position timeline event (`… → …`)."""
+    return " → " in rest
+
+
+def is_mechanical_timeline_event(rest: str) -> bool:
+    """True for a routine, machine-shaped timeline event — an I-D Action
+    publication or a single IESG ballot position. Lets callers fold or
+    exclude them so human discussion / decision events stand out. One
+    definition, shared by the timeline `exclude_mechanical` filter and the
+    overview recent-activity fold."""
+    return is_idaction_publication(rest) or is_ballot_position(rest)
+
+
+#: Which column carries the per-row "activity" count, by digest kind.
+_ACTIVITY_COLUMN = {"threads": "msgs", "issues": "comments"}
+
+
+def _activity_count(row: List[str], columns: List[str], kind: str) -> int:
+    """The activity count for `sort="activity"` (thread messages / issue
+    comments), or -1 when absent so it sorts last."""
+    col = _ACTIVITY_COLUMN.get(kind)
+    if col is None:
+        return -1
+    match = re.search(r"\d+", _row_field(row, columns, col))
+    return int(match.group(0)) if match else -1
+
+
 def filter_rows(section: Section, kind: str, filters: Dict[str, Any]) -> Section:
     """Return a new Section with rows filtered per kind-specific rules."""
     keep: List[List[str]] = []
@@ -151,6 +185,15 @@ def filter_rows(section: Section, kind: str, filters: Dict[str, Any]) -> Section
         if not _row_matches(row, section.columns, kind, filters):
             continue
         keep.append(row)
+    # `sort="activity"` ranks by message / comment count (heat) instead of
+    # the digest's default recency order — applied before the limit so the
+    # top-N are the busiest, not the newest. Stable, so ties keep recency.
+    if filters.get("sort") == "activity":
+        keep = sorted(
+            keep,
+            key=lambda r: _activity_count(r, section.columns, kind),
+            reverse=True,
+        )
     limit = filters.get("limit")
     if isinstance(limit, int) and limit >= 0:
         keep = keep[:limit]
@@ -261,6 +304,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
     since = filters.get("since")
     until = filters.get("until")
     event_kind = filters.get("event_kind")
+    exclude_mechanical = filters.get("exclude_mechanical")
     limit = filters.get("limit")
 
     lines: List[str] = []
@@ -289,6 +333,8 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
         if since and date < since:
             continue
         if until and date > until:
+            continue
+        if exclude_mechanical and is_mechanical_timeline_event(rest):
             continue
         if event_kind:
             # Map our event kinds to substrings that distinguish them.
