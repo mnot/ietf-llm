@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
 from .datatracker import iter_group_documents
+from .documents_manifest import save_documents_manifest
 
 # `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
 # `draft-foo-bar` all normalise to `draft-foo-bar`. Used by both
@@ -46,6 +47,7 @@ def get_wg_documents(
     prefix = f"draft-{group_type}-{wg_name}-"
 
     drafts: Dict[str, int] = {}
+    expires: Dict[str, str] = {}
     for obj in iter_group_documents(wg_name, "draft"):
         name = obj.get("name") or ""
         if not name.startswith(prefix):
@@ -56,6 +58,13 @@ def get_wg_documents(
         rev_int = int(rev)
         if name not in drafts or rev_int > drafts[name]:
             drafts[name] = rev_int
+        # `expires` distinguishes a live draft (future expiry) from an
+        # expired / replaced / published one (past); the overview uses
+        # it to show active drafts without burying them under finished
+        # work. Absent for some docs — left out of the manifest then.
+        exp = obj.get("expires")
+        if isinstance(exp, str) and exp:
+            expires[name] = exp
 
     rfcs: Dict[str, str] = {}
     for obj in iter_group_documents(wg_name, "rfc"):
@@ -65,7 +74,10 @@ def get_wg_documents(
             rfcs[name] = match.group(1)
 
     return {
-        "drafts": [{"name": n, "max_rev": r} for n, r in drafts.items()],
+        "drafts": [
+            {"name": n, "max_rev": r, "expires": expires.get(n, "")}
+            for n, r in drafts.items()
+        ],
         "rfcs": [{"name": n, "number": num} for n, num in rfcs.items()],
     }
 
@@ -228,6 +240,10 @@ def process_documents(
     # 1. Process Drafts
     drafts = docs["drafts"]
     if drafts:
+        save_documents_manifest(
+            wg_name,
+            {str(d["name"]): str(d["expires"]) for d in drafts if d.get("expires")},
+        )
         for draft in drafts:
             name = str(draft["name"])
             max_rev = int(draft["max_rev"])

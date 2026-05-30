@@ -118,6 +118,7 @@ helpers.
 │   │       └── github-<repo-slug>.txt
 │   ├── embeddings.db                      # per-WG semantic index
 │   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
+│   ├── documents.json                     # draft-name → expiry (active vs concluded)
 │   └── last-gathered                      # ISO-8601 sentinel (freshness)
 │
 ├── imap-cache/<wg>/<list>/<uid>.eml       # raw fetched messages

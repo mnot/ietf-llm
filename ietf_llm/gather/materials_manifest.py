@@ -15,11 +15,11 @@ It maps `<doc-name> → <rev>`, e.g. `{"minutes-125-httpbis": "01"}`.
 
 from __future__ import annotations
 
-import json
 import os
-from typing import Dict
+from typing import Dict, Mapping
 
 from ..utils import get_cache_dir
+from .json_store import load_json_dict, save_json_dict
 
 
 def _manifest_path(wg: str) -> str:
@@ -28,20 +28,9 @@ def _manifest_path(wg: str) -> str:
 
 def load_manifest(wg: str) -> Dict[str, str]:
     """Return the `<doc-name> → rev` map, or {} if absent / unreadable."""
-    try:
-        with open(_manifest_path(wg), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_json_dict(_manifest_path(wg))
 
 
-def save_manifest(wg: str, manifest: Dict[str, str]) -> None:
-    """Persist the manifest atomically (tmp + rename, so a concurrent
-    reader never sees a half-written file)."""
-    path = _manifest_path(wg)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+def save_manifest(wg: str, manifest: Mapping[str, str]) -> None:
+    """Persist the `<doc-name> → rev` map atomically."""
+    save_json_dict(_manifest_path(wg), manifest)

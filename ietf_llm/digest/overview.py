@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional
 
+from ..gather.documents_manifest import load_documents_manifest
 from ..paths import charter_path, group_path, threads_dir
 from .query import parse_md_tables, query_digest
 
@@ -102,20 +104,23 @@ _RFC_RE = re.compile(r"^rfc\d+$", re.IGNORECASE)
 class _DocSummary(NamedTuple):
     """Split view of a WG's documents for the overview."""
 
-    drafts: List[str]  # one full author/citation bullet each
+    active_drafts: List[str]  # one full author/citation bullet each
+    concluded_draft_count: int  # expired / replaced / published drafts
     rfc_count: int
     rfc_lines: List[str]  # compact published-RFC body
 
 
 def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
-    """Split the WG's documents into Internet-Draft bullets and a compact
-    published-RFC summary.
+    """Split the WG's documents into active Internet-Draft bullets,
+    a count of concluded drafts, and a compact published-RFC summary.
 
-    Drafts get one bullet each (authors + citation count). RFCs — usually
-    the bulk of a mature WG's document list and low-signal for orientation
-    — collapse to a count plus only those currently cited in corpus
-    discussion, so a publication-heavy WG (httpbis carries ~50 RFCs) does
-    not bury its live drafts under finished work.
+    Active drafts (a future Datatracker expiry, from `documents.json`) get
+    one bullet each (authors + citation count). Concluded drafts (expired /
+    replaced / published — a past expiry) and RFCs are finished work and
+    low-signal for orientation, so they collapse to counts rather than
+    burying the live drafts. Drafts absent from the manifest (individual or
+    freshly-added drafts, or a cache gathered before expiry was recorded)
+    default to active, so nothing tracked is ever silently hidden.
     """
     rows = _top_n_table_rows(
         _digest_path(cache_dir, wg, "people"),
@@ -123,6 +128,8 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
         limit=50,
     )
     citation_counts = _load_citation_counts(cache_dir)
+    expiries = load_documents_manifest(wg)
+    now = datetime.now(timezone.utc)
     # The table is Name | Documents | Email; we want one entry per
     # distinct document with its authors gathered alongside.
     docs: dict[str, List[str]] = {}
@@ -144,16 +151,38 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
             )
             docs.setdefault(doc, []).append(tagged)
 
-    draft_bullets: List[str] = []
+    active_drafts: List[str] = []
+    concluded_drafts = 0
     rfcs: List[tuple[str, int]] = []
     for doc, authors in sorted(docs.items()):
         cited = citation_counts.get(doc.lower()) or 0
         if _RFC_RE.match(doc):
             rfcs.append((doc, cited))
             continue
+        if _draft_concluded(doc, expiries, now):
+            concluded_drafts += 1
+            continue
         cite_tag = f"  _(cited in {cited})_" if cited else ""
-        draft_bullets.append(f"- `{doc}` — {', '.join(sorted(authors))}{cite_tag}")
-    return _DocSummary(draft_bullets, len(rfcs), _rfc_summary_lines(rfcs))
+        active_drafts.append(f"- `{doc}` — {', '.join(sorted(authors))}{cite_tag}")
+    return _DocSummary(
+        active_drafts, concluded_drafts, len(rfcs), _rfc_summary_lines(rfcs)
+    )
+
+
+def _draft_concluded(doc: str, expiries: "dict[str, str]", now: datetime) -> bool:
+    """True when the manifest records a *past* expiry for `doc` (expired /
+    replaced / published). Unknown drafts (not in the manifest) are treated
+    as active, so individual or freshly-added drafts are never hidden."""
+    raw = expiries.get(doc)
+    if not raw:
+        return False
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when < now
 
 
 def _rfc_summary_lines(rfcs: "List[tuple[str, int]]") -> List[str]:
@@ -473,9 +502,14 @@ def build_overview(wg: str, cache_dir: str) -> str:
         out.append("")
 
     docs = _documents_summary(cache_dir, wg)
-    if docs.drafts:
-        out.append(f"## Internet-Drafts ({len(docs.drafts)})")
-        out.extend(docs.drafts)
+    if docs.active_drafts or docs.concluded_draft_count:
+        out.append(f"## Internet-Drafts ({len(docs.active_drafts)} active)")
+        out.extend(docs.active_drafts)
+        if docs.concluded_draft_count:
+            out.append(
+                f"_+ {docs.concluded_draft_count} expired or concluded "
+                f"draft(s), in `drafts/`._"
+            )
         out.append("")
     if docs.rfc_count:
         out.append(f"## Published RFCs ({docs.rfc_count})")

@@ -226,7 +226,7 @@ def test_overview_splits_drafts_from_rfcs(tmp_path: Path) -> None:
     out = build_overview("wg", str(tmp_path))
 
     # Drafts section has the draft, not the RFCs.
-    assert "## Internet-Drafts (1)" in out
+    assert "## Internet-Drafts (1 active)" in out
     assert "`draft-ietf-wg-live`" in out
     # RFCs section: 3 total, the cited one inline, the other two collapsed.
     assert "## Published RFCs (3)" in out
@@ -235,6 +235,52 @@ def test_overview_splits_drafts_from_rfcs(tmp_path: Path) -> None:
     # An uncited RFC is NOT given its own bullet line.
     assert "`rfc7230` —" not in out
     assert "`rfc9111` —" not in out
+
+
+def test_draft_concluded_by_expiry() -> None:
+    import datetime
+    from ietf_llm.digest.overview import _draft_concluded
+
+    now = datetime.datetime(2026, 5, 30, tzinfo=datetime.timezone.utc)
+    exp = {
+        "draft-old": "2014-08-10T00:00:00Z",   # past → concluded
+        "draft-live": "2026-11-14T00:00:00Z",  # future → active
+        "draft-bad": "not-a-date",             # unparseable → active
+    }
+    assert _draft_concluded("draft-old", exp, now) is True
+    assert _draft_concluded("draft-live", exp, now) is False
+    assert _draft_concluded("draft-bad", exp, now) is False
+    assert _draft_concluded("draft-unknown", exp, now) is False  # not in manifest
+
+
+def test_overview_splits_active_from_concluded_drafts(
+    tmp_path: Path, monkeypatch: object,
+) -> None:
+    # A WG draft with a past expiry collapses into the concluded count;
+    # the future-expiry one stays an active bullet.
+    from ietf_llm.digest import overview as overview_mod
+
+    _seed_digests(tmp_path, with_authors=False)
+    (tmp_path / "digests/people.md").write_text(
+        "# wg: participants\n\n"
+        "## Document authors / editors (1)\n\n"
+        "| Name | Documents | Email |\n|---|---|---|\n"
+        "| Jane Doe | draft-ietf-wg-live, draft-ietf-wg-old | jane@x |\n"
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        overview_mod,
+        "load_documents_manifest",
+        lambda _wg: {
+            "draft-ietf-wg-live": "2099-01-01T00:00:00Z",
+            "draft-ietf-wg-old": "2014-01-01T00:00:00Z",
+        },
+    )
+    out = build_overview("wg", str(tmp_path))
+    assert "## Internet-Drafts (1 active)" in out
+    assert "`draft-ietf-wg-live`" in out
+    assert "1 expired or concluded draft(s), in `drafts/`" in out
+    # The concluded draft is not given its own active bullet.
+    assert "`draft-ietf-wg-old` —" not in out
 
 
 def test_overview_works_without_document_authors_section(tmp_path: Path) -> None:
