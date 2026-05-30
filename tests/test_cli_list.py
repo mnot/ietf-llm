@@ -25,22 +25,22 @@ def test_discover_skips_dotted_and_underscore_dirs(isolated_home: Path) -> None:
     assert _discover_gathered_wgs() == ["tls"]
 
 
-def test_print_cached_wgs_lists_with_marker(
+def test_print_cached_wgs_lists_with_kind(
     isolated_home: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # A group corpus (charter.txt present) vs a synthetic one.
     write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    write_cache_file(isolated_home, "httpbis", "charter.txt", "charter\n")
     write_cache_file(isolated_home, "x-foo", "digests/index.md", "# x\n")
     rc = _print_cached_wgs()
     assert rc == 0
     out = capsys.readouterr().out
-    assert "httpbis" in out
-    assert "x-foo" in out
-    # The synthetic corpus is flagged; the real WG is not.
-    assert "(synthetic)" in out
     synthetic_line = next(ln for ln in out.splitlines() if ln.startswith("x-foo"))
     httpbis_line = next(ln for ln in out.splitlines() if ln.startswith("httpbis"))
-    assert "(synthetic)" in synthetic_line
-    assert "(synthetic)" not in httpbis_line
+    # The kind column distinguishes them.
+    assert "synthetic" in synthetic_line
+    assert "group" in httpbis_line
+    assert "synthetic" not in httpbis_line
 
 
 def test_print_cached_wgs_shows_last_gathered(
@@ -66,4 +66,4 @@ def test_print_cached_wgs_empty(
     rc = _print_cached_wgs()
     assert rc == 1
     err = capsys.readouterr().err
-    assert "No working groups cached" in err
+    assert "No corpora cached" in err

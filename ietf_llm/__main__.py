@@ -356,29 +356,69 @@ def _print_completion(shell: str) -> int:
     return 0
 
 
+def _corpus_kind_status(wg: str) -> "tuple[str, str]":
+    """Best-effort `(kind, status)` for a cached corpus, read from disk
+    only (no network). `status` is the group state (`active` /
+    `concluded` / `bof` / …) for group corpora — so a glance shows which
+    WGs wound down and which BoFs are done — and empty otherwise.
+    """
+    if is_synthetic_wg(wg):
+        return ("synthetic", "")
+    cache = get_wg_file_cache_dir(wg)
+    gpath = paths.group_path(cache)
+    if os.path.isfile(gpath):
+        status = ""
+        with open(gpath, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("**Status:**"):
+                    status = line.split("**Status:**", 1)[1].strip()
+                    break
+        return ("group", status)
+    # group.md is absent on caches gathered before it existed; other
+    # Datatracker-sourced artifacts still mark a group corpus (status
+    # is only known once group.md is rewritten on the next gather).
+    if os.path.isfile(paths.charter_path(cache)) or os.path.isdir(
+        paths.meetings_dir(cache)
+    ):
+        return ("group", "")
+    cfg = config.load(wg, SCOPE)
+    if cfg.get("mailing_list") and not cfg.get("draft") and not cfg.get("github"):
+        return ("list", "")
+    return ("custom", "")
+
+
 def _print_cached_wgs() -> int:
-    """Print the cached WGs (with last-gathered date + a synthetic
-    marker) to stdout. Returns an exit code: 0 if any were found,
-    1 if the cache is empty.
+    """Print the cached corpora — name, kind, status, last-gathered —
+    to stdout. Returns 0 if any were found, 1 if the cache is empty.
     """
     wgs = _discover_gathered_wgs()
     if not wgs:
         print(
-            "No working groups cached yet. Run `ietf-llm <wg>` "
+            "No corpora cached yet. Run `ietf-llm <name>` "
             "(e.g. `ietf-llm httpbis`) to gather one.",
             file=sys.stderr,
         )
         return 1
-    width = max(len(w) for w in wgs)
+    rows = []
     for wg in wgs:
+        kind, status = _corpus_kind_status(wg)
         when = last_gathered(wg)
-        date_str = (
-            f"last gathered {when.strftime('%Y-%m-%d')}"
-            if when is not None
-            else "last gathered: unknown"
+        date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
+        rows.append((wg, kind, status or "—", date_str))
+    name_w = max(len(r[0]) for r in rows + [("corpus",)])
+    kind_w = max(len(r[1]) for r in rows + [("", "kind")])
+    status_w = max(len(r[2]) for r in rows + [("", "", "status")])
+    header = (
+        f"{'corpus'.ljust(name_w)}  {'kind'.ljust(kind_w)}  "
+        f"{'status'.ljust(status_w)}  last gathered"
+    )
+    print(header)
+    print("-" * len(header))
+    for name, kind, status, date_str in rows:
+        print(
+            f"{name.ljust(name_w)}  {kind.ljust(kind_w)}  "
+            f"{status.ljust(status_w)}  {date_str}"
         )
-        synthetic = "  (synthetic)" if is_synthetic_wg(wg) else ""
-        print(f"{wg.ljust(width)}  {date_str}{synthetic}")
     return 0
 
 
