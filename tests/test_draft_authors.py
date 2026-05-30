@@ -153,6 +153,35 @@ def test_block_without_email_skipped_or_kept() -> None:
         assert authors[0].email is None
 
 
+def test_additional_contact_information_subheading_skipped() -> None:
+    # Some drafts (e.g. draft-ietf-httpbis-incremental) carry an
+    # "Additional contact information:" sub-heading inside an author block,
+    # followed by the author's name in their native script indented one
+    # level deeper. Neither the label nor its deeper-indented body is a
+    # separate author — both must be dropped.
+    text = """Authors' Addresses
+
+   Kazuho Oku
+   Fastly
+   Email: kazuhooku@gmail.com
+
+   Additional contact information:
+
+      奥 一穂
+      Fastly
+
+
+   Martin Thomson
+   Mozilla
+   Email: mt@lowentropy.net
+"""
+    authors = parse_authors(text)
+    names = [a.name for a in authors]
+    assert names == ["Kazuho Oku", "Martin Thomson"]
+    assert "Additional contact information:" not in names
+    assert "奥 一穂" not in names
+
+
 # --- latest_draft_paths ----------------------------------------------------
 
 

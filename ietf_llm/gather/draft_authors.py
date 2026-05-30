@@ -51,6 +51,11 @@ _HEADER_RE = re.compile(r"^Author(?:'s|s')?\s+Address(?:es)?\s*$", re.MULTILINE)
 _PAGE_FOOTER_RE = re.compile(r"\[Page\s+\d+\]|Expires?\s+\w+\s+\d{4}")
 _EDITOR_SUFFIX_RE = re.compile(r"^(.+?)\s*\((?:editor|ed\.?)\)\s*$", re.IGNORECASE)
 _EMAIL_LINE_RE = re.compile(r"^Email:\s*(\S+@\S+)", re.IGNORECASE)
+# A trailing-colon label rather than a name — e.g. the "Additional contact
+# information:" sub-heading some drafts place inside an author block to
+# introduce the author's name in their native script. Real names and
+# organisations never end in a colon, so this is safe to treat as a marker.
+_LABEL_LINE_RE = re.compile(r"^.*\S:\s*$")
 
 
 def parse_authors(text: str) -> List[DraftAuthor]:
@@ -62,6 +67,13 @@ def parse_authors(text: str) -> List[DraftAuthor]:
     tail = text[match.end() :]
     authors: List[DraftAuthor] = []
     block: List[str] = []
+    block_indent = 0
+    # When an "Additional contact information:" sub-heading appears, its
+    # body is indented one level deeper than the surrounding author blocks
+    # and belongs to the author above it — not a new person. Remember that
+    # label's indent here and skip any block nested deeper than it until
+    # indentation returns to the author level.
+    skip_below: Optional[int] = None
     for raw in tail.splitlines():
         # Form-feed / page boundaries — keep scanning across pages.
         if raw.startswith("\f") or _PAGE_FOOTER_RE.search(raw):
@@ -69,22 +81,48 @@ def parse_authors(text: str) -> List[DraftAuthor]:
         # The next major section heading (rare in RFCs, more common in
         # earlier I-Ds with appendices after addresses).
         if raw and not raw.startswith(" ") and not raw.startswith("\t"):
-            if block:
-                _commit_block(block, authors)
-                block = []
+            skip_below = _flush_block(block, block_indent, skip_below, authors)
+            block = []
             # A non-indented, non-blank line at this point is a section
             # boundary; stop.
             break
         stripped = raw.strip()
         if not stripped:
-            if block:
-                _commit_block(block, authors)
-                block = []
+            skip_below = _flush_block(block, block_indent, skip_below, authors)
+            block = []
             continue
+        if not block:
+            block_indent = len(raw) - len(raw.lstrip())
         block.append(stripped)
-    if block:
-        _commit_block(block, authors)
+    _flush_block(block, block_indent, skip_below, authors)
     return authors
+
+
+def _flush_block(
+    lines: List[str],
+    indent: int,
+    skip_below: Optional[int],
+    out: List[DraftAuthor],
+) -> Optional[int]:
+    """Commit one block as an author, or skip it as additional contact info.
+
+    Returns the updated `skip_below` threshold (see `parse_authors`). A
+    block is skipped — rather than turned into a `DraftAuthor` — when it is
+    either an "Additional contact information:" label or a block nested
+    deeper than such a label (the label's body, which restates the
+    preceding author in another script).
+    """
+    if not lines:
+        return skip_below
+    if skip_below is not None and indent > skip_below:
+        # Deeper-indented body of an "Additional contact information:"
+        # group — it belongs to the author above, so drop it.
+        return skip_below
+    if _LABEL_LINE_RE.match(lines[0]):
+        # The label itself: skip it and anything indented beneath it.
+        return indent
+    _commit_block(lines, out)
+    return None
 
 
 def _commit_block(lines: List[str], out: List[DraftAuthor]) -> None:
