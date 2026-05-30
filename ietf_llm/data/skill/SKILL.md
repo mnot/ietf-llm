@@ -267,11 +267,16 @@ full text) with no reply-expansion — relevance hits in date order.
 
 ## Message numbering and `chunk_idx`
 
-In per-thread and per-issue files, the `### [N]` heading number IS
-the chunk_idx — message `[3]` in the file is `chunk_idx=3` in the
-embedding index. `get_chunk_text`, `find_replies`, `read_topic`'s
-output all use the same number. When the user asks about
-"message 3", either reference is correct.
+In per-thread and per-issue files, the `### [N]` heading number IS the
+chunk_idx — message `[3]` in the file is `chunk_idx=3` in the embedding
+index, and `get_chunk_text` / `find_replies` use that number directly.
+
+`read_topic` is the exception: it merges messages from several files
+into one chronological narrative, so it numbers them `[1..N]` **globally**
+(a "reply to [k]" there points to that global number, not a per-file
+one) and prints each message's per-file `chunk` separately. When pivoting
+from a `read_topic` result, call `get_chunk_text` with the `chunk` value,
+not the leading `[N]`.
 
 ## Canonical names
 
