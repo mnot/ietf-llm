@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 from ..freshness import last_gathered
 from ..paths import charter_path, group_path, threads_dir
@@ -96,17 +96,35 @@ def _leadership_summary(cache_dir: str, wg: str) -> str:
     return " · ".join(parts) if parts else "_(no leadership recorded)_"
 
 
-def _documents_summary(cache_dir: str, wg: str) -> List[str]:
-    """One bullet per active document from the people digest, with
-    citation counts appended when the citations digest knows the
-    draft has been referenced elsewhere in the corpus."""
+#: Matches a published-RFC document name (`rfc9110`), case-insensitive.
+_RFC_RE = re.compile(r"^rfc\d+$", re.IGNORECASE)
+
+
+class _DocSummary(NamedTuple):
+    """Split view of a WG's documents for the overview."""
+
+    drafts: List[str]  # one full author/citation bullet each
+    rfc_count: int
+    rfc_lines: List[str]  # compact published-RFC body
+
+
+def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
+    """Split the WG's documents into Internet-Draft bullets and a compact
+    published-RFC summary.
+
+    Drafts get one bullet each (authors + citation count). RFCs — usually
+    the bulk of a mature WG's document list and low-signal for orientation
+    — collapse to a count plus only those currently cited in corpus
+    discussion, so a publication-heavy WG (httpbis carries ~50 RFCs) does
+    not bury its live drafts under finished work.
+    """
     rows = _top_n_table_rows(
         _digest_path(cache_dir, wg, "people"),
         "Document authors",
         limit=50,
     )
     citation_counts = _load_citation_counts(cache_dir)
-    # The table is Name | Documents | Email; we want one bullet per
+    # The table is Name | Documents | Email; we want one entry per
     # distinct document with its authors gathered alongside.
     docs: dict[str, List[str]] = {}
     for row in rows:
@@ -126,12 +144,32 @@ def _documents_summary(cache_dir: str, wg: str) -> List[str]:
                 f"{name} {match.group('role')}".strip() if match.group("role") else name
             )
             docs.setdefault(doc, []).append(tagged)
-    out: List[str] = []
+
+    draft_bullets: List[str] = []
+    rfcs: List[tuple[str, int]] = []
     for doc, authors in sorted(docs.items()):
-        cited = citation_counts.get(doc.lower())
+        cited = citation_counts.get(doc.lower()) or 0
+        if _RFC_RE.match(doc):
+            rfcs.append((doc, cited))
+            continue
         cite_tag = f"  _(cited in {cited})_" if cited else ""
-        out.append(f"- `{doc}` — {', '.join(sorted(authors))}{cite_tag}")
-    return out
+        draft_bullets.append(f"- `{doc}` — {', '.join(sorted(authors))}{cite_tag}")
+    return _DocSummary(draft_bullets, len(rfcs), _rfc_summary_lines(rfcs))
+
+
+def _rfc_summary_lines(rfcs: "List[tuple[str, int]]") -> List[str]:
+    """Compact body for the published-RFC section: the currently-cited
+    RFCs inline (with counts), the dormant rest as a count + pointer.
+    Empty when there are no RFCs."""
+    if not rfcs:
+        return []
+    cited = sorted((r for r in rfcs if r[1]), key=lambda r: (-r[1], r[0]))
+    if cited:
+        rendered = ", ".join(f"`{doc}` _(cited in {n})_" for doc, n in cited)
+        rest = len(rfcs) - len(cited)
+        tail = f" {rest} more in `drafts/` (see `list_files`)." if rest else ""
+        return [f"Cited in current discussion: {rendered}.{tail}"]
+    return ["_None currently cited in corpus discussion; all in `drafts/`._"]
 
 
 def _load_citation_counts(cache_dir: str) -> dict[str, int]:
@@ -441,9 +479,13 @@ def build_overview(wg: str, cache_dir: str) -> str:
         out.append("")
 
     docs = _documents_summary(cache_dir, wg)
-    if docs:
-        out.append(f"## Documents ({len(docs)})")
-        out.extend(docs)
+    if docs.drafts:
+        out.append(f"## Internet-Drafts ({len(docs.drafts)})")
+        out.extend(docs.drafts)
+        out.append("")
+    if docs.rfc_count:
+        out.append(f"## Published RFCs ({docs.rfc_count})")
+        out.extend(docs.rfc_lines)
         out.append("")
 
     labels = _label_frequencies(cache_dir, wg)

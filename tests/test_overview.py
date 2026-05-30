@@ -71,7 +71,7 @@ def test_overview_includes_leadership(tmp_path: Path) -> None:
 def test_overview_includes_documents(tmp_path: Path) -> None:
     _seed_digests(tmp_path)
     out = build_overview("wg", str(tmp_path))
-    assert "## Documents" in out
+    assert "## Internet-Drafts" in out
     assert "`draft-ietf-wg-vocab`" in out
     assert "Martin Thomson" in out
     assert "(ed.)" in out
@@ -184,12 +184,43 @@ def test_overview_size_is_modest(tmp_path: Path) -> None:
     assert len(out) < 4000
 
 
+def test_overview_splits_drafts_from_rfcs(tmp_path: Path) -> None:
+    # Documents partition into an Internet-Drafts section (full bullets)
+    # and a compact Published RFCs section. Cited RFCs surface inline with
+    # their count; uncited RFCs collapse to a count + pointer.
+    _seed_digests(tmp_path, with_authors=False)
+    (tmp_path / "digests/people.md").write_text(
+        "# wg: participants\n\n"
+        "## Document authors / editors (1)\n\n"
+        "| Name | Documents | Email |\n|---|---|---|\n"
+        "| Jane Doe | draft-ietf-wg-live, rfc9110, rfc9111, rfc7230 | jane@x |\n"
+    )
+    (tmp_path / "digests/citations.md").write_text(
+        "# wg: citations\n\n"
+        "## `rfc9110` (12 citations)\n\n"
+        "- thread/a.md\n"
+    )
+    out = build_overview("wg", str(tmp_path))
+
+    # Drafts section has the draft, not the RFCs.
+    assert "## Internet-Drafts (1)" in out
+    assert "`draft-ietf-wg-live`" in out
+    # RFCs section: 3 total, the cited one inline, the other two collapsed.
+    assert "## Published RFCs (3)" in out
+    assert "`rfc9110` _(cited in 12)_" in out
+    assert "2 more in `drafts/`" in out
+    # An uncited RFC is NOT given its own bullet line.
+    assert "`rfc7230` —" not in out
+    assert "`rfc9111` —" not in out
+
+
 def test_overview_works_without_document_authors_section(tmp_path: Path) -> None:
     _seed_digests(tmp_path, with_authors=False)
     out = build_overview("wg", str(tmp_path))
-    # Leadership still surfaces, documents section absent.
+    # Leadership still surfaces, documents sections absent.
     assert "**Chairs:**" in out
-    assert "## Documents" not in out
+    assert "## Internet-Drafts" not in out
+    assert "## Published RFCs" not in out
 
 
 # --- _subject_prefix_frequencies ------------------------------------------

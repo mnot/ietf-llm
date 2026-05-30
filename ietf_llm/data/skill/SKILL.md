@@ -96,7 +96,7 @@ topic is unfamiliar and you want terms to search for.
   draft Y?"_, _"is this draft actually being talked about?"_ →
   `find_citations(corpus, "draft-...")`. Returns every thread / issue
   file that mentions the draft, with chunk indices and short
-  context excerpts. The `overview` Documents section also shows
+  context excerpts. The `overview` Internet-Drafts section also shows
   the citation count inline (`cited in N`) when it's non-zero.
   Useful in both directions: from a draft to the discussion, and
   from a thread mention to the wider conversation.
