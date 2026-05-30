@@ -310,6 +310,22 @@ def test_overview_no_blocked_section_without_discuss(tmp_path: Path) -> None:
     assert "Blocked on IESG DISCUSS" not in out
 
 
+def test_overview_explains_citation_counts_when_present(tmp_path: Path) -> None:
+    # When a draft carries a "cited in N" tag, the overview includes a
+    # one-line legend defining the figure. Absent any citations, no legend.
+    _seed_digests(tmp_path)
+    out_no_cites = build_overview("wg", str(tmp_path))
+    assert '"cited in N"' not in out_no_cites
+
+    (tmp_path / "digests/citations.md").write_text(
+        "# wg: citations\n\n## `draft-ietf-wg-vocab` (4 citations)\n\n- t.md\n"
+    )
+    out = build_overview("wg", str(tmp_path))
+    assert "cited in 4" in out  # the count on the draft bullet
+    assert '"cited in N"' in out  # the explaining legend
+    assert "not weighted by recency" in out
+
+
 def test_overview_works_without_document_authors_section(tmp_path: Path) -> None:
     _seed_digests(tmp_path, with_authors=False)
     out = build_overview("wg", str(tmp_path))

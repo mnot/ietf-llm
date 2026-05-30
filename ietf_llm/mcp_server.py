@@ -362,6 +362,13 @@ def tool_list_labels(wg: str) -> str:
 def tool_find_citations(wg: str, draft_name: str) -> str:
     """Return every thread / issue file that cites the given draft.
 
+    A "citation" is one distinct source (thread or issue) that references
+    the draft, de-duplicated per source — a thread mentioning it three
+    times counts once. So the `cited in N` figure in `overview` is the
+    cumulative count of such sources across the gathered corpus; it is not
+    weighted by recency, so read it as accumulated attention, not
+    necessarily current activity.
+
     Reads `digests/citations.md` (built at gather time by
     `gather.citations.scan_citations`). Draft name is normalised the
     same way the scanner normalises matches (lowercase, version

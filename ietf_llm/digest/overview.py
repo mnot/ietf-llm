@@ -535,6 +535,13 @@ def build_overview(wg: str, cache_dir: str) -> str:
     docs = _documents_summary(cache_dir, wg)
     if docs.active_drafts or docs.concluded_draft_count:
         out.append(f"## Internet-Drafts ({len(docs.active_drafts)} active)")
+        if any("cited in" in bullet for bullet in docs.active_drafts):
+            out.append(
+                '_"cited in N" = distinct threads / issues across the gathered '
+                "corpus that reference the draft (de-duplicated per source); "
+                "cumulative, not weighted by recency. `find_citations` lists "
+                "them._"
+            )
         out.extend(docs.active_drafts)
         if docs.concluded_draft_count:
             out.append(
