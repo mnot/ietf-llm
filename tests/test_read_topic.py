@@ -262,6 +262,11 @@ def test_find_replies_returns_descendants_in_order(
     assert "First reply." in out_from_root
     assert "Reply to reply." in out_from_root
     assert out_from_root.index("First reply.") < out_from_root.index("Reply to reply.")
+    # Each message carries exactly one header — the `### [N] …` from its
+    # stored body — not a second `## …` header duplicating author/date.
+    assert "\n## " not in out_from_root
+    assert "### [2] 2026-04-11 09:00 — Bob (reply to [1])" in out_from_root
+    assert out_from_root.count("09:00 — Bob") == 1
 
     out_from_leaf = mcp_server.tool_find_replies(
         "wg", "threads/2026-04-10-arc.md", chunk_idx=3,

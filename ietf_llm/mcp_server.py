@@ -878,13 +878,14 @@ def tool_find_replies(
     if truncated_note:
         out.append(truncated_note)
     out.append("")
-    for _date, idx, title, body, url in kept:
+    for _date, idx, _title, body, _url in kept:
         out.append("---")
         out.append("")
-        out.append(f"## {title}  [chunk {idx}]")
-        if url:
-            out.append(f"_url:_ {url}")
-        out.append("")
+        # The stored chunk already opens with its own
+        # `### [N] DATE — Sender (reply to [P])` header plus the
+        # `_Subject:_` / `_Archived-At:_` lines, so render it as-is
+        # rather than prepending a second, near-identical header. The
+        # `[N]` in that header is the chunk_idx.
         body = body.strip()
         if len(body) > _READ_TOPIC_MAX_BODY_CHARS:
             body = body[: _READ_TOPIC_MAX_BODY_CHARS - 1] + "…"
