@@ -283,6 +283,33 @@ def test_overview_splits_active_from_concluded_drafts(
     assert "`draft-ietf-wg-old` —" not in out
 
 
+def test_overview_flags_drafts_blocked_on_discuss(tmp_path: Path) -> None:
+    # A draft with an unresolved IESG DISCUSS (from the ballot tally) is
+    # flagged with a pointer to the ballot, so a "what is going on" answer
+    # is nudged to read the substance, not just report the structure.
+    _seed_digests(tmp_path)
+    (tmp_path / "ballots").mkdir()
+    (tmp_path / "ballots" / "draft-ietf-wg-foo.md").write_text(
+        "# IESG ballot: draft-ietf-wg-foo\n\n"
+        "**Tally:** 1 DISCUSS, 2 Yes, 5 No Objection\n"
+    )
+    (tmp_path / "ballots" / "draft-ietf-wg-clear.md").write_text(
+        "# IESG ballot: draft-ietf-wg-clear\n\n**Tally:** 3 Yes, 10 No Objection\n"
+    )
+    out = build_overview("wg", str(tmp_path))
+    assert "## ⚠ Blocked on IESG DISCUSS (1)" in out
+    assert "`draft-ietf-wg-foo`" in out
+    assert "ballots/draft-ietf-wg-foo.md" in out
+    # A draft with no DISCUSS in its tally is not flagged.
+    assert "draft-ietf-wg-clear" not in out
+
+
+def test_overview_no_blocked_section_without_discuss(tmp_path: Path) -> None:
+    _seed_digests(tmp_path)
+    out = build_overview("wg", str(tmp_path))
+    assert "Blocked on IESG DISCUSS" not in out
+
+
 def test_overview_works_without_document_authors_section(tmp_path: Path) -> None:
     _seed_digests(tmp_path, with_authors=False)
     out = build_overview("wg", str(tmp_path))

@@ -17,10 +17,10 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timezone
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Tuple
 
 from ..gather.documents_manifest import load_documents_manifest
-from ..paths import charter_path, group_path, threads_dir
+from ..paths import ballots_dir, charter_path, group_path, threads_dir
 from .query import parse_md_tables, query_digest
 
 
@@ -167,6 +167,37 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
     return _DocSummary(
         active_drafts, concluded_drafts, len(rfcs), _rfc_summary_lines(rfcs)
     )
+
+
+#: A `**Tally:** … N DISCUSS …` count on a ballot file.
+_TALLY_DISCUSS_RE = re.compile(r"(\d+)\s+DISCUSS", re.IGNORECASE)
+
+
+def _blocked_drafts(cache_dir: str) -> List[Tuple[str, int]]:
+    """Drafts with an unresolved IESG DISCUSS, read from the `**Tally:**`
+    line of each `ballots/<draft>.md`. A DISCUSS holds publication, so this
+    is the substance a "what is going on" answer most needs to read — the
+    overview flags it and points at the ballot. Returns
+    `[(draft-name, discuss_count), …]` sorted by name."""
+    bdir = ballots_dir(cache_dir)
+    if not os.path.isdir(bdir):
+        return []
+    out: List[Tuple[str, int]] = []
+    for fname in sorted(os.listdir(bdir)):
+        if not (fname.startswith("draft-") and fname.endswith(".md")):
+            continue
+        try:
+            with open(os.path.join(bdir, fname), "r", encoding="utf-8") as fh:
+                head = fh.read(2000)  # the tally line is near the top
+        except OSError:
+            continue
+        for line in head.splitlines():
+            if line.startswith("**Tally:**"):
+                match = _TALLY_DISCUSS_RE.search(line)
+                if match and int(match.group(1)) > 0:
+                    out.append((fname[:-3], int(match.group(1))))
+                break
+    return out
 
 
 def _draft_concluded(doc: str, expiries: "dict[str, str]", now: datetime) -> bool:
@@ -514,6 +545,19 @@ def build_overview(wg: str, cache_dir: str) -> str:
     if docs.rfc_count:
         out.append(f"## Published RFCs ({docs.rfc_count})")
         out.extend(docs.rfc_lines)
+        out.append("")
+
+    blocked = _blocked_drafts(cache_dir)
+    if blocked:
+        out.append(f"## ⚠ Blocked on IESG DISCUSS ({len(blocked)})")
+        out.append(
+            "_A DISCUSS holds publication until cleared with the responsible "
+            "AD. Read the ballot for the actual objection — a later list / "
+            "chair discussion may already have addressed it._"
+        )
+        for name, count in blocked:
+            noun = "DISCUSS" if count == 1 else "DISCUSSes"
+            out.append(f"- `{name}` — {count} {noun}; read `ballots/{name}.md`.")
         out.append("")
 
     labels = _label_frequencies(cache_dir, wg)
