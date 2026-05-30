@@ -150,76 +150,33 @@ ISO (`"2026-05-01"`).
 `event_kind` ∈ {`draft-published`, `issue-opened`, `issue-closed`,
 `meeting`, `poll`, `wglc`, `adoption-call`, `charter-approved`,
 `chair-appointed`, `group-state`, `doc-adopted`, `doc-iesg`,
-`doc-rfc`, `doc-wglc`, `ballot`}. The Datatracker-sourced group (charter,
-chair, doc-*) spans the WG's full history regardless of the
-`--months` window; charter approvals and chair appointments are
-always included. `poll` events point at cached
-`meetings/<code>/polls/<datetime>.md` files — session polls aren't
-formal consensus but signal where a session was leaning.
-`ballot` events are IESG position changes (DISCUSS / Yes / No
-Objection / Abstain / Recuse) for drafts active in the window;
-each event links to `ballots/<draft-name>.md`, which has the full
-current ballot (latest position per AD) with DISCUSS text inline.
-A standing DISCUSS holds publication; report it as such rather
-than treating the draft as "approved" because most ADs cleared.
-`label` / `author` / `role`
-are substring matches.
+`doc-rfc`, `doc-wglc`, `ballot`}. Datatracker-sourced events (charter,
+chair, doc-*, ballot) span the WG's full history, ignoring the
+`--months` window. A standing `ballot` DISCUSS holds publication —
+report it as such, not as "approved" because most ADs cleared.
 
 ## Substantive questions: `search_corpus(corpus, query, k=8)`
 
-Returns top-k chunks with `file`, `chunk_idx`, `line_range`,
-snippet, and — for issue chunks — the issue's GitHub `labels`,
-open/closed `state`, `duplicate of: #N` when marked, and a
-`closing: …` preview when the issue is closed. The snippet ends
-with `[truncated]` when the chunk has more content than what's
-shown; absence of the marker means the snippet is the whole chunk.
-Pivot to the source with:
+Returns top-k chunks with a snippet (ending `[truncated]` when the
+chunk has more). Pivot to the source with `get_chunk_text` /
+`get_chunks_batch` (pass `end_chunk_idx` for a ≤20-chunk range),
+`read_file_section`, or `fetch_by_url` (resolve a pasted or cited
+GitHub / mail-archive URL to cached content — corpus only, never the
+live web).
 
-- `get_chunk_text(corpus, file, chunk_idx)` — full text of one chunk.
-  Pass `end_chunk_idx=N` to fetch a consecutive range (≤20 chunks)
-  in one call — use this to read a short thread / issue end-to-end.
-- `get_chunks_batch(corpus, [{file, chunk_idx, end_chunk_idx?}, …])` —
-  the same, but across multiple files in one round-trip. Use when
-  search hits span several files and you want all of them.
-- `read_file_section(corpus, file, start_line, max_lines)` — bounded
-  read for surrounding context or whole-file reading.
-- `fetch_by_url(corpus, url)` — resolves a pasted GitHub issue URL or
-  IETF mail-archive permalink to cached content without you knowing
-  the file name. Also use it when a chunk **cites** a URL inline
-  and you want the source, not the paraphrase. (Resolves only URLs
-  already in the corpus — it does NOT fetch from the live web.)
+Filters beyond the obvious `since`/`until`/`label`/`state`/
+`file_pattern` (`"threads/%"`, `"drafts/%"`, …):
 
-`search_corpus` also takes `since` / `until`, `file_pattern` (SQL
-LIKE on the file's relative path under the WG cache: `"threads/%"`,
-`"issues/%"`, `"meetings/%"`, `"drafts/%"`), `label` (substring
-against an issue's GitHub labels), `state` (`"open"` / `"closed"`),
-and `group_by="file"`.
-
-**`group_by="file"`** collapses the per-chunk hit list to one row
-per file with a hit count. Use this for **breadth** questions —
-*"which threads discuss the MLKEM controversy?"* returns four
-distinct threads instead of fifteen overlapping chunks, often
-saving four follow-up searches. Switch back to the default
-per-chunk view for **depth** questions — *"what did Alice say
-about Y?"* — where you want the actual quotes.
-
-**`author="<substring>"`** filters to messages by a specific
-person — *"what did Rescorla say about X"* / *"show me Mattsson's
-posts on Y"* without needing the file path. Substring match
-against the chunk's section header. Windowed draft / transcript
-chunks have no author and drop out implicitly.
-
-**`role="Chair"`** (or `"Author"`, `"Editor"`, `"AD"`) filters to
-messages from people with that structural role. *"What did the
-chairs decide about X"* / *"did the editor weigh in"* — the
-registry stamps `(Role)` into each section header at gather time
-and the filter matches it. Combine with `author=` to scope to
-one chair specifically.
-
-**`snippet_chars=N`** raises the per-hit snippet budget. Default
-renders compact snippets that often `[truncated]`; raise for
-long-form synthesis where the inline snippet should carry more
-context. Dial `k` down to compensate.
+- **`group_by="file"`** — one row per file with a hit count, for
+  **breadth** (*"which threads discuss MLKEM?"* → four threads, not
+  fifteen overlapping chunks). Drop it for **depth**, where you want
+  the actual quotes.
+- **`author="<substring>"`** / **`role="Chair"`** (or `Author` /
+  `Editor` / `AD`) — scope to a person or a structural role, matched
+  against the chunk's section header (*"what did Rescorla say"*, *"what
+  did the chairs decide"*). Combine to scope to one chair.
+- **`snippet_chars=N`** — raise the per-hit snippet for long-form
+  synthesis (dial `k` down to compensate).
 
 ## File types you'll encounter
 
@@ -277,19 +234,9 @@ wglc", sort="date")` and scan the latest hits whose chunk title
 carries a `(Chair)` role tag — those are usually the load-bearing
 posts.
 
-For an *entire* issue or thread end-to-end (not just hits matching
-a query), use `read_file_section(corpus, file, start_line=1)` on the
-per-issue / per-thread file — it's already in chronological order
-with an outline of who spoke when, and the 5000-line cap covers
-virtually every issue in one call. Reach for `get_chunks_batch`
-only when you need chunks across *multiple* files in one round-
-trip.
-
 `search_corpus(sort="date")` is the lower-level cousin of
-`read_topic`: same chronological re-ordering, but the unit is a
-chunk (snippet, not full text), and there's no reply-expansion.
-Useful when you want relevance hits in date order but don't need
-the full message bodies.
+`read_topic`: chronological, but the unit is a chunk (snippet, not
+full text) with no reply-expansion — relevance hits in date order.
 
 ## Message numbering and `chunk_idx`
 
@@ -352,10 +299,7 @@ A few interpretive norms that shape how to read the corpus:
 
 - **Don't reflexively crawl IETF sites.** Default to the corpus; if
   something's missing, the user re-gathers (`ietf-llm <corpus>`). Live
-  fetches (datatracker, mail archive, draft URLs, GitHub) are fine
-  when genuinely needed — e.g. a draft's current state — but say
-  you're going outside the corpus, and flag heavy use (more than a
-  couple of requests) so the user can re-gather instead.
+  fetches are fine when genuinely needed — see the intro for the rule.
 - **Don't read whole digests** when you want a slice — use filters.
 - **Don't read anything under `raw/`** — multi-MB per-year mailing-
   list dumps and legacy GitHub text blobs, kept only for grep /
