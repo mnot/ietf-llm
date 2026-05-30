@@ -87,11 +87,16 @@ def test_overview_caps_open_issues_at_five(tmp_path: Path) -> None:
     assert "Sixth open" not in out  # 6th of 6 open is dropped at limit=5
 
 
-def test_overview_caps_threads_at_five(tmp_path: Path) -> None:
+def test_overview_active_threads_excludes_single_message(tmp_path: Path) -> None:
     _seed_digests(tmp_path)
     out = build_overview("wg", str(tmp_path))
-    # Only 3 threads exist; all should appear, no "5 most recent" issue.
-    assert "Newest" in out and "Middle" in out and "Old" in out
+    # The thread section is heat-ranked: the two multi-message threads
+    # appear; the single-message "Old" thread has no back-and-forth and is
+    # excluded.
+    assert "## Most active threads" in out
+    sec = out.split("## Most active threads", 1)[1].split("\n## ", 1)[0]
+    assert "Newest" in sec and "Middle" in sec
+    assert "Old" not in sec
 
 
 def test_overview_includes_latest_events(tmp_path: Path) -> None:
@@ -309,6 +314,28 @@ def test_overview_flags_drafts_blocked_on_discuss(tmp_path: Path) -> None:
     assert "ballots/draft-ietf-wg-foo.md" in out
     # A draft with no DISCUSS in its tally is not flagged.
     assert "draft-ietf-wg-clear" not in out
+
+
+def test_overview_surfaces_most_active_threads(tmp_path: Path) -> None:
+    # Ranked by message count within a recent window: the heat signal.
+    # Single-message threads and threads outside the window are excluded.
+    _seed_digests(tmp_path)
+    (tmp_path / "digests/threads.md").write_text(
+        "# wg: threads\n\n"
+        "| Subject | Msgs | Participants | First | Last | File |\n"
+        "|---|---|---|---|---|---|\n"
+        "| Hot debate | 12 | 5 | 2026-05-01 | 2026-05-20 | t1.md |\n"
+        "| Mild chat | 3 | 2 | 2026-05-02 | 2026-05-18 | t2.md |\n"
+        "| Solo announce | 1 | 1 | 2026-05-19 | 2026-05-19 | t3.md |\n"
+        "| Old big thread | 40 | 9 | 2024-01-01 | 2024-02-01 | t4.md |\n"
+    )
+    out = build_overview("wg", str(tmp_path))
+    sec = out.split("## Most active threads", 1)[1].split("\n## ", 1)[0]
+    assert "Hot debate" in sec
+    assert "Mild chat" in sec
+    assert "Solo announce" not in sec  # single message: no back-and-forth
+    assert "Old big thread" not in sec  # outside the recency window
+    assert sec.index("Hot debate") < sec.index("Mild chat")  # ranked by msgs
 
 
 def test_overview_no_blocked_section_without_discuss(tmp_path: Path) -> None:

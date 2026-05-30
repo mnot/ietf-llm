@@ -46,11 +46,16 @@ discovering them one at a time: `overview`, `read_digest`,
 ## First call: pick by question shape
 
 **Orienting / structural** ("tell me about `<corpus>`", "what's this WG
-up to?", "who's on it?") → `overview(corpus)`. ~30 lines: chairs/ADs,
-status + area, charter excerpt, key resources (repo / home page /
-chat), Internet-Drafts (RFCs collapsed), top-5 open issues, top-5
-recent threads, and the last ~10 timeline events (ballots, WGLCs,
-adoption calls, meetings, publications). Often enough on its own.
+up to?", "who's on it?") → `overview(corpus)`. ~30-40 lines: chairs/ADs,
+status + area, charter excerpt, key resources, active Internet-Drafts
+(RFCs collapsed; concluded ones counted), any drafts **blocked on an
+IESG DISCUSS** (with a pointer to read the ballot), top open issues, the
+**most active threads** (ranked by back-and-forth, not recency), and
+recent discussion / decision events (routine publications and ballot
+positions folded to counts). Often enough to orient — but it is
+structure, not substance: when it flags a DISCUSS or a hot thread,
+*read it* (`ballots/X`, `read_topic`, `tally_positions`) before
+characterising the outcome.
 
 **Topical / decision** (specific subject matter or chair rulings)
 → go straight to the tool below. `overview` is still cheap if the
