@@ -18,7 +18,7 @@ import argparse
 import os
 import shutil
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from . import __version__, config, corpus, paths
 from .digest import generate_digests
@@ -33,6 +33,7 @@ from .gather.citations import (
     write_citations_digest,
 )
 from .gather.drafts import (
+    normalize_draft_name,
     process_documents,
     process_extra_drafts,
     validate_draft_names,
@@ -211,6 +212,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         'exact full name (`"Mark Nottingham"` — ambiguous names are '
         "listed). Drafts only — add --mailing-list to also follow "
         "specific lists. Persisted.",
+    )
+    parser.add_argument(
+        "--add-mentioned-drafts",
+        action="store_true",
+        dest="add_mentioned_drafts",
+        help="After gathering, scan the corpus's threads and issues for "
+        "Internet-Drafts mentioned but not already present, and add them. "
+        "Re-derived over the whole corpus each gather (backfills old "
+        "mentions); sticky — once added, a draft stays. Persisted.",
     )
     parser.add_argument(
         "--github-label",
@@ -494,25 +504,83 @@ def _download_github_archives(
     return pending
 
 
+def _present_draft_names(cache_dir: str) -> "set[str]":
+    """Normalised names of drafts already in the cache's drafts/ dir."""
+    directory = paths.drafts_dir(cache_dir)
+    names: set[str] = set()
+    if os.path.isdir(directory):
+        for fname in os.listdir(directory):
+            if fname.startswith("draft-") and fname.endswith(".txt"):
+                names.add(normalize_draft_name(fname))
+    return names
+
+
 def _gather_dynamic_drafts(
-    args: argparse.Namespace, cache_dir: str, verbosity: Verbosity
+    args: argparse.Namespace,
+    cache_dir: str,
+    persisted: Dict[str, Any],
+    verbosity: Verbosity,
 ) -> None:
-    """Materialise the generative draft sources (--new-drafts, --author).
+    """Materialise the generative draft sources (--author, --new-drafts).
 
-    `--new-drafts` is a rolling window (drafts aging out are pruned;
-    explicit --draft additions kept); `--author` is additive.
+    `--author` is additive; `--new-drafts` is a rolling window — drafts
+    aging out are pruned, but everything else we intend to keep
+    (explicit --draft, authored drafts, and previously-added mentioned
+    drafts) is retained.
     """
-    if args.new_drafts:
-        new_names = fetch_new_draft_names(args.months, verbose=verbosity)
-        process_extra_drafts(new_names, cache_dir, verbose=verbosity)
-        prune_drafts(cache_dir, new_names + (args.draft or []), verbose=verbosity)
-
+    author_names: List[str] = []
     if args.author:
         resolved = resolve_person(args.author, verbose=verbosity)
         if resolved is not None:
-            person_id, _name = resolved
-            author_names = fetch_author_draft_names(person_id, verbose=verbosity)
+            author_names = fetch_author_draft_names(resolved[0], verbose=verbosity)
             process_extra_drafts(author_names, cache_dir, verbose=verbosity)
+
+    if args.new_drafts:
+        new_names = fetch_new_draft_names(args.months, verbose=verbosity)
+        process_extra_drafts(new_names, cache_dir, verbose=verbosity)
+        keep = (
+            new_names
+            + (args.draft or [])
+            + author_names
+            + list(persisted.get("mentioned_drafts") or [])
+        )
+        prune_drafts(cache_dir, keep, verbose=verbosity)
+
+
+def _gather_mentioned_drafts(
+    args: argparse.Namespace,
+    cache_dir: str,
+    mentioned: "Iterable[str]",
+    persisted: Dict[str, Any],
+    verbosity: Verbosity,
+) -> None:
+    """Add drafts mentioned in the corpus but not already present.
+
+    `mentioned` is the set of draft names the citation scan found.
+    Only newly-seen candidates are validated (to drop garbage tokens
+    that would 404), then fetched. Sticky: the accumulated set is
+    persisted so a draft stays once added and survives the new-drafts
+    prune.
+    """
+    if not args.add_mentioned_drafts:
+        return
+    present = _present_draft_names(cache_dir)
+    already = set(persisted.get("mentioned_drafts") or [])
+    candidates = sorted(set(mentioned) - present - already)
+    valid = set(validate_draft_names(candidates, verbosity)) if candidates else set()
+    if valid:
+        process_extra_drafts(sorted(valid), cache_dir, verbose=verbosity)
+        log(
+            f"Mentioned drafts: added {len(valid)} of {len(candidates)} "
+            "new candidate(s).",
+            verbosity,
+            level=LogLevel.STATUS,
+        )
+    updated = sorted(already | valid)
+    if updated != sorted(already):
+        cfg = config.load(args.wg, SCOPE)
+        cfg["mentioned_drafts"] = updated
+        config.save(args.wg, SCOPE, cfg)
 
 
 def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
@@ -573,6 +641,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             "embed_model",
             "new_drafts",
             "author",
+            "add_mentioned_drafts",
         ),
         lists=(
             "github",
@@ -676,7 +745,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
 
-    _gather_dynamic_drafts(args, cache_dir, verbosity)
+    _gather_dynamic_drafts(args, cache_dir, persisted, verbosity)
 
     # Extract text from any PDFs in the cache (slide decks, whiteboards,
     # etc.). Writes a sibling .pdf.txt for each so the chunker picks
@@ -725,6 +794,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # overview's documents section can pick up the counts.
     citations_map = scan_citations(cache_dir, verbose=verbosity)
     write_citations_digest(cache_dir, citations_map, verbose=verbosity)
+    # --add-mentioned-drafts: pull drafts the corpus cites but doesn't
+    # have (reuses the citation scan we just ran).
+    _gather_mentioned_drafts(
+        args, cache_dir, citations_map.keys(), persisted, verbosity
+    )
     # citation_counts() is used by overview at tool-call time; nothing
     # consumes the in-memory map further in the gather pipeline. Kept
     # imported so a future caller can compute it without re-scanning.
