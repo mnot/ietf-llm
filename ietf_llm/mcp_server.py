@@ -56,7 +56,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from .corpus import kind_status
+from .corpus import describe, kind_status
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -189,23 +189,30 @@ _NEXT_TOOLS_HINT = (
 def tool_list_corpora() -> str:
     wgs = _list_wgs()
     if not wgs:
-        return (
-            "(no corpora gathered yet — run `ietf-llm <name>`)"
-        )
+        return "(no corpora gathered yet — run `ietf-llm <name>`)"
     rows = []
     for wg in wgs:
         kind, status = kind_status(wg)
         tag = f"{kind} · {status}" if status else kind
-        rows.append((wg, tag))
-    width = max(len(w) for w, _ in rows)
-    body = "\n".join(f"{w.ljust(width)}  {tag}" for w, tag in rows)
+        rows.append((wg, tag, describe(wg)))
+    name_w = max(len(w) for w, _, _ in rows)
+    tag_w = max(len(t) for _, t, _ in rows)
+    lines = []
+    for wg, tag, subject in rows:
+        line = f"{wg.ljust(name_w)}  {tag.ljust(tag_w)}"
+        if subject:
+            line += f"  {subject}"
+        lines.append(line.rstrip())
     return (
-        "Gathered corpora (name · kind [· status]). **kind** is "
-        "`group` (a WG/RG/edwg/BoF — accepts every tool), `list` (a "
-        "mailing list gathered on its own), `custom` (explicit drafts/"
-        "repos), or `synthetic` (an `x-` corpus). **status** is the "
-        "group state (`active` / `concluded` / `bof` / …) when known.\n\n"
-        + body
+        "Gathered corpora (name · kind [· status] · what it's about). "
+        "**kind** is `group` (a WG/RG/edwg/BoF — accepts every tool), "
+        "`list` (a mailing list gathered on its own), `custom` (explicit "
+        "drafts/repos or a followed author), or `synthetic` (an `x-` "
+        "corpus). **status** is the group state (`active` / `concluded` "
+        "/ `bof` / …) when known. The trailing text is the corpus's "
+        "subject — the group name, the list followed, the tracked "
+        "author — so you can tell what each one covers.\n\n"
+        + "\n".join(lines)
         + _NEXT_TOOLS_HINT
     )
 
@@ -1398,7 +1405,10 @@ def main() -> None:
         synthetic `x-` corpus. **Every tool here takes any kind** — the
         `corpus` argument is the corpus name, not specifically a WG.
         `status` flags group state (`active` / `concluded` / `bof`), so
-        you can tell a wound-down WG or finished BoF at a glance.
+        you can tell a wound-down WG or finished BoF at a glance. Each row
+        also carries the corpus's **subject** — the group's name, the
+        mailing list it follows, or the author it tracks — so you can see
+        what a corpus covers without opening it.
         """
         return await _offload(tool_list_corpora)
 

@@ -142,6 +142,23 @@ def test_group_state_and_area(monkeypatch: pytest.MonkeyPatch) -> None:
     assert utils.get_group_area("httpbis") == ("wit", "Web and Internet Transport")
 
 
+def test_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    utils.fetch_group_object.cache_clear()
+
+    def fake_fetch(
+        url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
+    ) -> Optional[_FakeResp]:
+        if "/group/group/?acronym=" in url:
+            return _FakeResp({"objects": [{"id": 1718, "name": "HTTP"}]})
+        return None
+
+    monkeypatch.setattr(utils, "fetch_resource", fake_fetch)
+    assert utils.get_group_name("httpbis") == "HTTP"
+    utils.fetch_group_object.cache_clear()
+    monkeypatch.setattr(utils, "fetch_resource", lambda *a, **k: None)
+    assert utils.get_group_name("nope") is None
+
+
 # --- group.md writer + overview surfacing --------------------------------
 
 
@@ -151,6 +168,7 @@ def test_write_group_info_renders_file(
     from ietf_llm.gather import group_info
     from ietf_llm.paths import group_path
 
+    monkeypatch.setattr(group_info, "get_group_name", lambda wg: "HTTP")
     monkeypatch.setattr(group_info, "get_group_state", lambda wg: "active")
     monkeypatch.setattr(
         group_info, "get_group_area", lambda wg: ("wit", "Web and Internet Transport")
@@ -162,6 +180,7 @@ def test_write_group_info_renders_file(
     written = group_info.write_group_info("httpbis", str(tmp_path), utils.Verbosity.QUIET)
     assert written
     text = open(group_path(str(tmp_path)), encoding="utf-8").read()
+    assert "**Name:** HTTP" in text
     assert "**Status:** active" in text
     assert "**Area:** Web and Internet Transport (wit)" in text
     assert "- repositories: https://github.com/httpwg/" in text
@@ -173,6 +192,7 @@ def test_write_group_info_noop_when_empty(
     from ietf_llm.gather import group_info
     from ietf_llm.paths import group_path
 
+    monkeypatch.setattr(group_info, "get_group_name", lambda wg: None)
     monkeypatch.setattr(group_info, "get_group_state", lambda wg: None)
     monkeypatch.setattr(group_info, "get_group_area", lambda wg: None)
     monkeypatch.setattr(group_info, "get_group_resources", lambda wg: ())

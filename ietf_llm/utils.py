@@ -344,6 +344,18 @@ def get_group_state(wg_name: str) -> Optional[str]:
     return state_uri.rsplit("/", 1)[-1] or None if state_uri else None
 
 
+def get_group_name(wg_name: str) -> Optional[str]:
+    """The group's human-readable name (e.g. httpbis -> 'HTTP'), or None.
+
+    Persisted into `group.md` so the corpus listing can name a group by
+    its title rather than just its shortname, without a network call.
+    """
+    group = fetch_group_object(wg_name)
+    if not group:
+        return None
+    return (group.get("name") or "").strip() or None
+
+
 def get_group_area(wg_name: str) -> Optional[Tuple[str, str]]:
     """The group's parent area as `(acronym, name)`, or None.
 

@@ -25,8 +25,8 @@ from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
 from .freshness import last_gathered, record_gather
+from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.charter import process_charter
-from .gather.group_info import write_group_info
 from .gather.citations import (
     citation_counts,
     scan_citations,
@@ -39,11 +39,11 @@ from .gather.drafts import (
     validate_draft_names,
 )
 from .gather.github import download_github_issues, process_github_issues
+from .gather.group_info import write_group_info
 from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
 from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
-from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
 from .gather.transcript_context import enrich_transcripts
@@ -411,21 +411,22 @@ def _print_cached_wgs() -> int:
         kind, status = corpus.kind_status(wg)
         when = last_gathered(wg)
         date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
-        rows.append((wg, kind, status or "—", date_str))
+        rows.append((wg, kind, status or "—", date_str, corpus.describe(wg)))
     name_w = max(len(r[0]) for r in rows + [("corpus",)])
     kind_w = max(len(r[1]) for r in rows + [("", "kind")])
     status_w = max(len(r[2]) for r in rows + [("", "", "status")])
     header = (
         f"{'corpus'.ljust(name_w)}  {'kind'.ljust(kind_w)}  "
-        f"{'status'.ljust(status_w)}  last gathered"
+        f"{'status'.ljust(status_w)}  {'last gathered'}  about"
     )
     print(header)
     print("-" * len(header))
-    for name, kind, status, date_str in rows:
-        print(
+    for name, kind, status, date_str, subject in rows:
+        line = (
             f"{name.ljust(name_w)}  {kind.ljust(kind_w)}  "
-            f"{status.ljust(status_w)}  {date_str}"
+            f"{status.ljust(status_w)}  {date_str}  {subject}"
         )
+        print(line.rstrip())
     return 0
 
 
@@ -540,6 +541,7 @@ def _gather_dynamic_drafts(
         if resolved is not None:
             author_names = fetch_author_draft_names(resolved[0], verbose=verbosity)
             process_extra_drafts(author_names, cache_dir, verbose=verbosity)
+            _persist_author_name(args.wg, resolved[1])
 
     if args.new_drafts:
         new_names = fetch_new_draft_names(args.months, verbose=verbosity)
@@ -551,6 +553,16 @@ def _gather_dynamic_drafts(
             + list(persisted.get("mentioned_drafts") or [])
         )
         prune_drafts(cache_dir, keep, verbose=verbosity)
+
+
+def _persist_author_name(wg: str, name: str) -> None:
+    """Record the resolved author's canonical name so the corpus listing
+    can show *who* a follow-an-author corpus tracks, even when it was
+    gathered by email or person id."""
+    cfg = config.load(wg, SCOPE)
+    if cfg.get("author_name") != name:
+        cfg["author_name"] = name
+        config.save(wg, SCOPE, cfg)
 
 
 def _gather_mentioned_drafts(

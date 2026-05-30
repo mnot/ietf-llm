@@ -17,6 +17,7 @@ from ..utils import (
     LogLevel,
     Verbosity,
     get_group_area,
+    get_group_name,
     get_group_resources,
     get_group_state,
     log,
@@ -34,13 +35,16 @@ def write_group_info(
     No-op (returns []) when the API yields no state, area, or
     resources — e.g. synthetic corpora, which have no group record.
     """
+    name = get_group_name(wg_name)
     state = get_group_state(wg_name)
     area = get_group_area(wg_name)
     resources = get_group_resources(wg_name)
-    if not (state or area or resources):
+    if not (name or state or area or resources):
         return []
 
     lines: List[str] = [f"# {wg_name} — working group metadata\n"]
+    if name:
+        lines.append(f"**Name:** {name}")
     if state:
         lines.append(f"**Status:** {state}")
     if area:
