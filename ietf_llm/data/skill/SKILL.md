@@ -25,12 +25,14 @@ outside the corpus, and flag it if you're making more than a
 couple of requests** so they can decide whether to re-gather
 instead. Prefer the corpus for anything it can answer.
 
-IRTF Research Groups use the same shortname convention (`cfrg`,
-`hrpc`, `pearg`, …); the tools don't distinguish. Synthetic /
-pre-WG corpora use an `x-` prefix (`x-webbotauth`) — collections
-of drafts and mailing lists with no formal WG yet, so they have no
-charter, leadership, auto-discovered drafts, or Datatracker
-timeline events. Otherwise they behave like any other shortname.
+Not every corpus is a Working Group. `list_working_groups` tags each
+one with a **kind**: `group` (a WG / IRTF RG / editorial WG / BoF —
+shortname convention `cfrg`, `hrpc`, …, with a `status` of `active` /
+`concluded` / `bof`), `list` (a standalone mailing list like
+`last-call`), `custom` (an explicit draft / repo set), or `synthetic`
+(an `x-` corpus, e.g. `x-webbotauth` — drafts/lists with no formal WG,
+hence no charter, leadership, or Datatracker timeline). **Every tool
+accepts any of them** — the `<wg>` argument is really a corpus name.
 
 ## First call: pick by question shape
 

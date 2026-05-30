@@ -20,7 +20,7 @@ import shutil
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import __version__, config, paths
+from . import __version__, config, corpus, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
@@ -356,37 +356,6 @@ def _print_completion(shell: str) -> int:
     return 0
 
 
-def _corpus_kind_status(wg: str) -> "tuple[str, str]":
-    """Best-effort `(kind, status)` for a cached corpus, read from disk
-    only (no network). `status` is the group state (`active` /
-    `concluded` / `bof` / …) for group corpora — so a glance shows which
-    WGs wound down and which BoFs are done — and empty otherwise.
-    """
-    if is_synthetic_wg(wg):
-        return ("synthetic", "")
-    cache = get_wg_file_cache_dir(wg)
-    gpath = paths.group_path(cache)
-    if os.path.isfile(gpath):
-        status = ""
-        with open(gpath, "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("**Status:**"):
-                    status = line.split("**Status:**", 1)[1].strip()
-                    break
-        return ("group", status)
-    # group.md is absent on caches gathered before it existed; other
-    # Datatracker-sourced artifacts still mark a group corpus (status
-    # is only known once group.md is rewritten on the next gather).
-    if os.path.isfile(paths.charter_path(cache)) or os.path.isdir(
-        paths.meetings_dir(cache)
-    ):
-        return ("group", "")
-    cfg = config.load(wg, SCOPE)
-    if cfg.get("mailing_list") and not cfg.get("draft") and not cfg.get("github"):
-        return ("list", "")
-    return ("custom", "")
-
-
 def _print_cached_wgs() -> int:
     """Print the cached corpora — name, kind, status, last-gathered —
     to stdout. Returns 0 if any were found, 1 if the cache is empty.
@@ -401,7 +370,7 @@ def _print_cached_wgs() -> int:
         return 1
     rows = []
     for wg in wgs:
-        kind, status = _corpus_kind_status(wg)
+        kind, status = corpus.kind_status(wg)
         when = last_gathered(wg)
         date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
         rows.append((wg, kind, status or "—", date_str))

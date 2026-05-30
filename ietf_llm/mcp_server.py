@@ -56,6 +56,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
+from . import corpus
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -189,10 +190,24 @@ def tool_list_working_groups() -> str:
     wgs = _list_wgs()
     if not wgs:
         return (
-            "(no working / research groups gathered yet — "
-            "run `ietf-llm <shortname>`)"
+            "(no corpora gathered yet — run `ietf-llm <name>`)"
         )
-    return "\n".join(wgs) + _NEXT_TOOLS_HINT
+    rows = []
+    for wg in wgs:
+        kind, status = corpus.kind_status(wg)
+        tag = f"{kind} · {status}" if status else kind
+        rows.append((wg, tag))
+    width = max(len(w) for w, _ in rows)
+    body = "\n".join(f"{w.ljust(width)}  {tag}" for w, tag in rows)
+    return (
+        "Gathered corpora (name · kind [· status]). **kind** is "
+        "`group` (a WG/RG/edwg/BoF — accepts every tool), `list` (a "
+        "mailing list gathered on its own), `custom` (explicit drafts/"
+        "repos), or `synthetic` (an `x-` corpus). **status** is the "
+        "group state (`active` / `concluded` / `bof` / …) when known.\n\n"
+        + body
+        + _NEXT_TOOLS_HINT
+    )
 
 
 def tool_overview(wg: str) -> str:
@@ -1372,11 +1387,18 @@ def main() -> None:
 
     @server.tool()
     async def list_working_groups() -> str:
-        """List IETF Working Groups (and IRTF Research Groups) gathered
-        in the local ietf-llm corpus. Use this first when you don't
-        know the `<wg>` shortname the user means. IRTF RGs use the
-        same shortname convention (e.g. `cfrg`, `hrpc`) and are first-
-        class — every other tool accepts them too.
+        """List the corpora gathered locally by ietf-llm, each tagged with
+        its **kind** and **status**. Use this first when you don't know
+        the `<wg>` name the user means.
+
+        Most corpora are IETF Working Groups / IRTF Research Groups by
+        shortname (`httpbis`, `cfrg`, …), but a corpus can also be a
+        standalone mailing list (`list`, e.g. `last-call`), an explicit
+        draft/repo set (`custom`), or a synthetic `x-` corpus. **Every
+        tool here takes any of them** — the `wg` parameter is really a
+        corpus name. `status` flags group state (`active` / `concluded`
+        / `bof`), so you can tell a wound-down WG or finished BoF at a
+        glance.
         """
         return await _offload(tool_list_working_groups)
 
