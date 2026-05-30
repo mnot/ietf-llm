@@ -21,6 +21,7 @@ def _args(wg: str, **kw: Any) -> argparse.Namespace:
         "draft": None,
         "github": None,
         "new_drafts": False,
+        "author": None,
     }
     base.update(kw)
     return argparse.Namespace(**base)
@@ -96,6 +97,18 @@ def test_new_drafts_flag_is_custom_no_group_lookup(
         lambda wg: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
     args = _args("new-ids", new_drafts=True)
+    assert main_mod._resolve_corpus_shape(args, {}, Verbosity.QUIET) == (False, False)
+    assert args.mailing_list is None
+
+
+def test_author_flag_is_custom_no_group_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main_mod, "fetch_group_object",
+        lambda wg: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    args = _args("mnot", author="Mark Nottingham")
     assert main_mod._resolve_corpus_shape(args, {}, Verbosity.QUIET) == (False, False)
     assert args.mailing_list is None
 

@@ -42,6 +42,7 @@ from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
 from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
+from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
 from .gather.transcript_context import enrich_transcripts
@@ -199,6 +200,17 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "draft whose -00 was submitted within the --months window (the "
         "positional name is just a label). A rolling window — drafts that "
         "age out are pruned on re-gather. Persisted.",
+    )
+    parser.add_argument(
+        "--author",
+        metavar="PERSON",
+        help="Make this a 'follow an author' corpus: gather every "
+        "Internet-Draft authored by this person (the positional name is "
+        "just a label). PERSON is an email (`mnot@mnot.net`, the "
+        "unambiguous recommended form), a Datatracker person id, or an "
+        'exact full name (`"Mark Nottingham"` — ambiguous names are '
+        "listed). Drafts only — add --mailing-list to also follow "
+        "specific lists. Persisted.",
     )
     parser.add_argument(
         "--github-label",
@@ -422,9 +434,14 @@ def _resolve_corpus_shape(
     if is_synthetic_wg(args.wg):
         return (True, False)
 
-    # Generative-source flags (--new-drafts; later --author) make this a
+    # Generative-source flags (--new-drafts, --author) make this a
     # custom subscription corpus — the name is a label, no group lookup.
-    if args.new_drafts or persisted.get("new_drafts"):
+    if (
+        args.new_drafts
+        or persisted.get("new_drafts")
+        or args.author
+        or persisted.get("author")
+    ):
         return (False, False)
 
     if fetch_group_object(args.wg) is not None:
@@ -475,6 +492,27 @@ def _download_github_archives(
         if download_github_issues(repo_short, gh_json, verbose=verbosity):
             pending.append((gh_json, gh_txt))
     return pending
+
+
+def _gather_dynamic_drafts(
+    args: argparse.Namespace, cache_dir: str, verbosity: Verbosity
+) -> None:
+    """Materialise the generative draft sources (--new-drafts, --author).
+
+    `--new-drafts` is a rolling window (drafts aging out are pruned;
+    explicit --draft additions kept); `--author` is additive.
+    """
+    if args.new_drafts:
+        new_names = fetch_new_draft_names(args.months, verbose=verbosity)
+        process_extra_drafts(new_names, cache_dir, verbose=verbosity)
+        prune_drafts(cache_dir, new_names + (args.draft or []), verbose=verbosity)
+
+    if args.author:
+        resolved = resolve_person(args.author, verbose=verbosity)
+        if resolved is not None:
+            person_id, _name = resolved
+            author_names = fetch_author_draft_names(person_id, verbose=verbosity)
+            process_extra_drafts(author_names, cache_dir, verbose=verbosity)
 
 
 def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
@@ -534,6 +572,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             "no_embed",
             "embed_model",
             "new_drafts",
+            "author",
         ),
         lists=(
             "github",
@@ -637,15 +676,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
 
-    # New-Internet-Drafts subscription: every -00 submitted in the
-    # --months window. A rolling window — drafts that aged out are
-    # pruned (explicit --draft additions are kept).
-    if args.new_drafts:
-        new_names = fetch_new_draft_names(args.months, verbose=verbosity)
-        process_extra_drafts(new_names, cache_dir, verbose=verbosity)
-        prune_drafts(
-            cache_dir, new_names + (args.draft or []), verbose=verbosity
-        )
+    _gather_dynamic_drafts(args, cache_dir, verbosity)
 
     # Extract text from any PDFs in the cache (slide decks, whiteboards,
     # etc.). Writes a sibling .pdf.txt for each so the chunker picks
