@@ -150,8 +150,8 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "--list",
         action="store_true",
         dest="list_wgs",
-        help="List the working groups already cached under "
-        "~/.cache/ietf-llm/ (with last-gathered date), then exit. "
+        help="List the corpora already cached under ~/.cache/ietf-llm/ "
+        "(with kind, status, last-gathered date, and subject), then exit. "
         "Does not gather.",
     )
     parser.add_argument(

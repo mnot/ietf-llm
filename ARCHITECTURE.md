@@ -79,7 +79,12 @@ The gather pipeline gates Datatracker-sourced steps on a single
 derives `(kind, status)` from on-disk artifacts for `ietf-llm --list`
 and the MCP `list_corpora` tool — identically, so they can't
 drift; `status` is the cached group state (`active` / `concluded` /
-`bof`).
+`bof`). `corpus.describe()` adds a brief **subject** line for the same
+two surfaces — the group's name (from `group.md`), the list it follows,
+or the tracked author (the resolved name persisted as `author_name`) —
+so a consumer can tell what an opaquely-named corpus is about without
+opening it. Both are network-free; older caches lacking the stored name
+degrade to an empty subject until the next gather.
 
 ## Cache layout
 
@@ -93,7 +98,7 @@ helpers.
 ├── <wg>/                                 # one dir per WG / corpus
 │   ├── files/                            # the corpus consumers read
 │   │   ├── charter.txt
-│   │   ├── group.md                      # status, parent area, Additional Resources
+│   │   ├── group.md                      # name, status, parent area, Additional Resources
 │   │   ├── digests/                      # index.md issues.md threads.md
 │   │   │                                 # people.md timeline.md citations.md
 │   │   ├── drafts/                       # draft-*.txt, rfc*.txt
@@ -220,7 +225,7 @@ ietf_llm/
 ├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + tools)
 ├── skill_install.py        # --install-claude-skill helper
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
-├── corpus.py               # corpus kind/status (group/list/custom/synthetic)
+├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── people.py               # actor/identity registry (roles, affiliations, domains)
@@ -235,7 +240,7 @@ ietf_llm/
 │
 ├── gather/                 # content acquisition + per-source post-processing
 │   ├── charter.py              # charter text artifact (rev from doc API)
-│   ├── group_info.py           # group.md: status / area / Additional Resources
+│   ├── group_info.py           # group.md: name / status / area / Additional Resources
 │   ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │   ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
 │   ├── author.py               # --author: a person's authored drafts

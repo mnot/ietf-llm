@@ -377,7 +377,8 @@ as a likely typo.
 
 **Cache & config:**
 
-- `--list` — list cached corpora (name, kind, status, last-gathered),
+- `--list` — list cached corpora (name, kind, status, last-gathered,
+  and a one-line subject — the group name, list, or tracked author),
   then exit.
 - `--clear-cache` — wipe this corpus's cache and re-download.
 - `--clear-config` — clear this corpus's persisted config.
