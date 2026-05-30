@@ -137,6 +137,37 @@ def _digest_path(wg: str, kind: str) -> Optional[str]:
     return path if os.path.isfile(path) else None
 
 
+def _available_digest_kinds(wg: str) -> List[str]:
+    """The digest kinds this corpus actually has on disk."""
+    cache = get_wg_file_cache_dir(wg)
+    return [k for k in _DIGEST_KINDS if os.path.isfile(digest_path(cache, k))]
+
+
+def _missing_digest_message(wg: str, kind: str) -> str:
+    """Explain a missing digest by what the corpus *has*, not the
+    universal kind list — so a valid-but-ungathered kind (e.g. `issues`
+    for a corpus with no GitHub repos) reads as absent, not invalid."""
+    if kind not in _DIGEST_KINDS:
+        return (
+            f"Unknown digest kind '{kind}'. "
+            f"Valid kinds: {', '.join(_DIGEST_KINDS)}."
+        )
+    available = _available_digest_kinds(wg)
+    if not available:
+        return f"No digests for {wg} yet. Run `ietf-llm {wg}` to generate them."
+    hint = ""
+    if kind == "issues":
+        hint = (
+            " (Issues come from GitHub; none were gathered for this corpus — "
+            "add repos with `ietf-llm "
+            f"{wg} --github owner/repo`.)"
+        )
+    return (
+        f"{wg} has no '{kind}' digest. "
+        f"This corpus has: {', '.join(available)}.{hint}"
+    )
+
+
 # --- Tool implementations (plain functions, also usable for unit tests) -----
 
 
@@ -265,10 +296,11 @@ def tool_list_labels(wg: str) -> str:
         for prefix, count in prefixes:
             lines.append(f"| `{prefix}` | {count} |")
         lines.append("")
+        example_prefix = prefixes[0][0]
         lines.append(
             f'_Use with `read_digest("{wg}", kind="threads", '
-            'subject="[mlkem]")` to read every thread carrying the '
-            "prefix, or with subject in `search_corpus` `file_pattern`."
+            f'subject="{example_prefix}")` to read every thread carrying '
+            "the prefix, or with subject in `search_corpus` `file_pattern`."
             "_"
         )
         lines.append("")
@@ -400,12 +432,7 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
 ) -> str:
     path = _digest_path(wg, kind)
     if not path:
-        valid = ", ".join(_DIGEST_KINDS)
-        return (
-            f"No '{kind}' digest for {wg}. "
-            f"Valid kinds: {valid}. "
-            f"Run `ietf-llm {wg}` to generate digests."
-        )
+        return _missing_digest_message(wg, kind)
     filtered = query_digest(
         path,
         kind,

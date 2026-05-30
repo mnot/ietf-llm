@@ -110,9 +110,43 @@ def test_read_digest_people_kind_is_valid(isolated_home: Path) -> None:
 
 def test_read_digest_rejects_unknown_kind(isolated_home: Path) -> None:
     out = mcp_server.tool_read_digest("wg", "nonsense")
-    # Error message names all valid kinds, including the new "people".
-    assert "people" in out
+    # An *unknown* kind is distinguished from an ungathered one.
+    assert "Unknown digest kind 'nonsense'" in out
+    assert "people" in out  # still lists the valid kinds
     assert "Valid kinds" in out
+
+
+def test_read_digest_absent_kind_reports_what_corpus_has(isolated_home: Path) -> None:
+    # `issues` is a valid kind, but this corpus gathered no GitHub repos.
+    # The message should list what IS present, not the universal set, and
+    # must not read as if `issues` were an invalid kind.
+    write_cache_file(isolated_home, "wg", "digests/threads.md", "# threads\n")
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
+    out = mcp_server.tool_read_digest("wg", "issues")
+    assert "no 'issues' digest" in out
+    assert "This corpus has: threads, people" in out
+    assert "Unknown digest kind" not in out  # not treated as invalid
+    assert "GitHub" in out  # explains why issues are absent
+
+
+def test_read_digest_no_digests_at_all(isolated_home: Path) -> None:
+    out = mcp_server.tool_read_digest("wg", "threads")
+    assert "No digests for wg yet" in out
+
+
+def test_list_labels_prefix_example_is_templated(isolated_home: Path) -> None:
+    # The subject-prefix example must use one of THIS corpus's prefixes,
+    # not a hardcoded `[mlkem]` (which is a TLS prefix).
+    write_cache_file(
+        isolated_home,
+        "wg",
+        "threads/2026-01-01-x.md",
+        "### [1] Re: [foo] hello\n\n_Subject:_ Re: [foo] hello\n\nbody\n",
+    )
+    out = mcp_server.tool_list_labels("wg")
+    assert "[mlkem]" not in out
+    if "subject=" in out:
+        assert "[foo]" in out
 
 
 def test_top_level_response_carries_freshness_line_when_fresh(
