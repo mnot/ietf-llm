@@ -134,6 +134,44 @@ def test_read_digest_no_digests_at_all(isolated_home: Path) -> None:
     assert "No digests for wg yet" in out
 
 
+def test_collapse_draft_versions() -> None:
+    from ietf_llm.mcp_server import _collapse_draft_versions
+
+    class _H:
+        def __init__(self, file: str) -> None:
+            self.file = file
+
+    hits = [
+        _H("drafts/draft-ietf-httpbis-rfc6265bis-04.txt"),
+        _H("drafts/draft-ietf-httpbis-rfc6265bis-22.txt"),  # newest → kept
+        _H("drafts/draft-ietf-httpbis-rfc6265bis-12.txt"),
+        _H("drafts/rfc9110.txt"),  # RFC, no rev → kept
+        _H("threads/2026-01-01-x.md"),  # non-draft → kept
+        _H("drafts/draft-ietf-httpbis-other-01.txt"),  # different stem → kept
+    ]
+    kept, dropped = _collapse_draft_versions(hits)
+    files = {h.file for h in kept}
+    assert "drafts/draft-ietf-httpbis-rfc6265bis-22.txt" in files
+    assert "drafts/draft-ietf-httpbis-rfc6265bis-04.txt" not in files
+    assert "drafts/draft-ietf-httpbis-rfc6265bis-12.txt" not in files
+    assert "drafts/rfc9110.txt" in files
+    assert "threads/2026-01-01-x.md" in files
+    assert "drafts/draft-ietf-httpbis-other-01.txt" in files
+    assert dropped == 2
+
+
+def test_collapse_draft_versions_single_rev_kept() -> None:
+    from ietf_llm.mcp_server import _collapse_draft_versions
+
+    class _H:
+        def __init__(self, file: str) -> None:
+            self.file = file
+
+    hits = [_H("drafts/draft-ietf-httpbis-only-03.txt")]
+    kept, dropped = _collapse_draft_versions(hits)
+    assert len(kept) == 1 and dropped == 0
+
+
 def test_list_labels_prefix_example_is_templated(isolated_home: Path) -> None:
     # The subject-prefix example must use one of THIS corpus's prefixes,
     # not a hardcoded `[mlkem]` (which is a TLS prefix).

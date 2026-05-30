@@ -959,13 +959,13 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     author: Optional[str] = None,
     role: Optional[str] = None,
     snippet_chars: Optional[int] = None,
+    collapse_versions: bool = True,
 ) -> str:
-    # When the consumer is asking a breadth question ("which threads
-    # discuss X?"), the default per-chunk hit list shows the same
-    # thread five times — wasting context. group_by="file" collapses
-    # to one row per file with hit count + best chunk; the per-chunk
-    # view stays the default for depth questions.
-    fetch_k = k if group_by != "file" else max(k * 4, 20)
+    # Over-fetch when we will thin the results — `group_by="file"`
+    # rolls up per file, and `collapse_versions` drops older draft revs —
+    # so the final list still reaches `k` distinct items.
+    over_fetch = group_by == "file" or collapse_versions
+    fetch_k = max(k * 4, 20) if over_fetch else k
     hits = search(
         wg,
         query,
@@ -986,8 +986,25 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
             wg,
             f"(no results — has `ietf-llm {wg} --embed` been run?)",
         )
+    dropped = 0
+    if collapse_versions:
+        hits, dropped = _collapse_draft_versions(hits)
+    note = ""
+    if dropped:
+        note = (
+            f"\n_{dropped} older draft revision(s) hidden — the latest "
+            "matching revision is shown. Pass `collapse_versions=False`, or "
+            "a versioned `file_pattern` (e.g. `drafts/%-04.txt`), for older "
+            "revisions._"
+        )
+    # When the consumer is asking a breadth question ("which threads
+    # discuss X?"), the default per-chunk hit list shows the same
+    # thread five times — wasting context. group_by="file" collapses
+    # to one row per file with hit count + best chunk; the per-chunk
+    # view stays the default for depth questions.
     if group_by == "file":
-        return _with_freshness(wg, _render_file_grouped(hits, k))
+        return _with_freshness(wg, _render_file_grouped(hits, k) + note)
+    hits = hits[:k]
     lines = []
     # Result-set state summary. When every hit comes from a closed issue,
     # the answer the consumer cares about is "this debate is resolved"
@@ -1041,7 +1058,41 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         if hit.url:
             lines.append(f"     url: {hit.url}")
         lines.append(f"     {hit.snippet}")
-    return _with_freshness(wg, "\n".join(lines))
+    return _with_freshness(wg, "\n".join(lines) + note)
+
+
+#: A draft file with a 2-digit revision suffix, e.g.
+#: `drafts/draft-ietf-httpbis-rfc6265bis-04.txt`. RFC files
+#: (`drafts/rfc9110.txt`) have no revision and are never collapsed.
+_DRAFT_REV_RE = re.compile(r"^(?P<stem>drafts/draft-.+)-(?P<rev>\d{2})\.txt$")
+
+
+def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
+    """Drop a hit from an older draft revision when a newer revision of the
+    same draft is also in the result set.
+
+    Searching across every gathered draft revision otherwise returns the
+    same section several times (`…-rfc6265bis-04`, `-02`, `-22`, …). Keep
+    the newest revision that actually matched per draft stem; older
+    revisions stay reachable via `collapse_versions=False` or a versioned
+    `file_pattern`. Non-draft hits (RFCs, threads, issues, meetings) pass
+    through untouched. Returns `(kept, dropped_count)`.
+    """
+    latest: Dict[str, int] = {}
+    for hit in hits:
+        match = _DRAFT_REV_RE.match(hit.file)
+        if match:
+            stem, rev = match.group("stem"), int(match.group("rev"))
+            latest[stem] = max(latest.get(stem, -1), rev)
+    kept: List[Any] = []
+    dropped = 0
+    for hit in hits:
+        match = _DRAFT_REV_RE.match(hit.file)
+        if match and int(match.group("rev")) != latest[match.group("stem")]:
+            dropped += 1
+            continue
+        kept.append(hit)
+    return kept, dropped
 
 
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
@@ -1629,6 +1680,7 @@ def main() -> None:
         author: Optional[str] = None,
         role: Optional[str] = None,
         snippet_chars: Optional[int] = None,
+        collapse_versions: bool = True,
     ) -> str:
         """Search a corpus semantically
         across mailing list threads, GitHub issues, drafts, RFCs,
@@ -1684,6 +1736,12 @@ def main() -> None:
         itself should carry more context. Tradeoff: bigger budget
         means more bytes per hit, so dial `k` down accordingly.
 
+        `collapse_versions=True` (the default) hides older draft
+        revisions when a newer one of the same draft also matched, so a
+        query does not return the same section as `…-rfc6265bis-04`,
+        `-02`, `-22`. Set it False, or pin a revision with `file_pattern`
+        (e.g. `"drafts/%-04.txt"`), to search a specific older revision.
+
         Requires the embedding index (built by default on gather;
         skipped only with `--no-embed`).
 
@@ -1710,6 +1768,7 @@ def main() -> None:
             author=author,
             role=role,
             snippet_chars=snippet_chars,
+            collapse_versions=collapse_versions,
         )
 
     @server.tool()
