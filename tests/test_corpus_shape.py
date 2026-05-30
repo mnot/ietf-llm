@@ -20,6 +20,7 @@ def _args(wg: str, **kw: Any) -> argparse.Namespace:
         "mailing_list": None,
         "draft": None,
         "github": None,
+        "new_drafts": False,
     }
     base.update(kw)
     return argparse.Namespace(**base)
@@ -83,6 +84,20 @@ def test_explicit_sources_make_a_custom_corpus(
     args = _args("mywatch", draft=["draft-foo-bar"])
     assert main_mod._resolve_corpus_shape(args, {}, Verbosity.QUIET) == (False, False)
     assert args.mailing_list is None  # untouched
+
+
+def test_new_drafts_flag_is_custom_no_group_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A generative flag short-circuits to a custom corpus before any
+    # group/list lookup, and doesn't default the list to the name.
+    monkeypatch.setattr(
+        main_mod, "fetch_group_object",
+        lambda wg: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    args = _args("new-ids", new_drafts=True)
+    assert main_mod._resolve_corpus_shape(args, {}, Verbosity.QUIET) == (False, False)
+    assert args.mailing_list is None
 
 
 def test_persisted_sources_count_on_rerun(

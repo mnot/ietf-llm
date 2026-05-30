@@ -43,6 +43,7 @@ from .gather.mail_threads import write_thread_files
 from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
+from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
 from .people import build_registry, write_people_digest
@@ -189,6 +190,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "discovered list (repeat for multiple). Assumes IETF hosting "
         "(`imap.ietf.org`); accepts either `foo` or `foo@ietf.org`. "
         "Persisted; future runs without --mailing-list still sync it.",
+    )
+    parser.add_argument(
+        "--new-drafts",
+        action="store_true",
+        dest="new_drafts",
+        help="Make this a 'new Internet-Drafts' subscription: gather every "
+        "draft whose -00 was submitted within the --months window (the "
+        "positional name is just a label). A rolling window — drafts that "
+        "age out are pruned on re-gather. Persisted.",
     )
     parser.add_argument(
         "--github-label",
@@ -409,10 +419,16 @@ def _resolve_corpus_shape(
     certainly a typo'd WG name, so we reject it rather than silently
     produce an empty corpus.
     """
-    synth = is_synthetic_wg(args.wg)
-    group_backed = (not synth) and fetch_group_object(args.wg) is not None
-    if group_backed or synth:
-        return synth, group_backed
+    if is_synthetic_wg(args.wg):
+        return (True, False)
+
+    # Generative-source flags (--new-drafts; later --author) make this a
+    # custom subscription corpus — the name is a label, no group lookup.
+    if args.new_drafts or persisted.get("new_drafts"):
+        return (False, False)
+
+    if fetch_group_object(args.wg) is not None:
+        return (False, True)
 
     has_sources = bool(
         args.mailing_list
@@ -435,7 +451,7 @@ def _resolve_corpus_shape(
                 level=LogLevel.ERROR,
             )
             return None
-    return synth, group_backed
+    return (False, False)  # custom / list corpus
 
 
 def _download_github_archives(
@@ -511,7 +527,14 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         args,
         wg=args.wg,
         scope=SCOPE,
-        scalars=("months", "summarize", "summarize_model", "no_embed", "embed_model"),
+        scalars=(
+            "months",
+            "summarize",
+            "summarize_model",
+            "no_embed",
+            "embed_model",
+            "new_drafts",
+        ),
         lists=(
             "github",
             "github_label",
@@ -519,7 +542,12 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             "draft",
             "mailing_list",
         ),
-        defaults={"months": DEFAULT_MONTHS, "summarize": False, "no_embed": False},
+        defaults={
+            "months": DEFAULT_MONTHS,
+            "summarize": False,
+            "no_embed": False,
+            "new_drafts": False,
+        },
     )
 
     wg_cache_dir = os.path.join(get_cache_dir(), args.wg)
@@ -608,6 +636,16 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # synthetic corpora, this is the ONLY draft source.
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
+
+    # New-Internet-Drafts subscription: every -00 submitted in the
+    # --months window. A rolling window — drafts that aged out are
+    # pruned (explicit --draft additions are kept).
+    if args.new_drafts:
+        new_names = fetch_new_draft_names(args.months, verbose=verbosity)
+        process_extra_drafts(new_names, cache_dir, verbose=verbosity)
+        prune_drafts(
+            cache_dir, new_names + (args.draft or []), verbose=verbosity
+        )
 
     # Extract text from any PDFs in the cache (slide decks, whiteboards,
     # etc.). Writes a sibling .pdf.txt for each so the chunker picks
