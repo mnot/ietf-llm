@@ -229,6 +229,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         "mentions); sticky — once added, a draft stays. Persisted.",
     )
     parser.add_argument(
+        "--include-related-drafts",
+        action="store_true",
+        dest="include_related_drafts",
+        help="Also gather active `draft-<author>-<wg>-<topic>` drafts the "
+        "WG follows but hasn't adopted (matches Datatracker's documents-"
+        "page 'Related Internet-Drafts' section). Off by default — can "
+        "be large for popular WGs. Persisted.",
+    )
+    parser.add_argument(
         "--github-label",
         action="append",
         metavar="LABEL",
@@ -625,6 +634,8 @@ def _gather_plan_summary(args: argparse.Namespace) -> str:
         parts.append(f"github: {_brief(args.github)}")
     if args.add_mentioned_drafts:
         parts.append("add-mentioned-drafts")
+    if args.include_related_drafts:
+        parts.append("include-related-drafts")
     if args.github_label:
         parts.append(f"labels: {_brief(args.github_label)}")
     if args.exclude_github_label:
@@ -694,6 +705,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             "new_drafts",
             "author",
             "add_mentioned_drafts",
+            "include_related_drafts",
         ),
         lists=(
             "github",
@@ -707,6 +719,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             "summarize": False,
             "no_embed": False,
             "new_drafts": False,
+            "include_related_drafts": False,
         },
     )
 
@@ -790,7 +803,12 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         enrich_transcripts(cache_dir, verbose=verbosity)
 
         # Documents (drafts & RFCs) — only auto-discoverable for real WGs.
-        process_documents(args.wg, cache_dir, verbose=verbosity)
+        process_documents(
+            args.wg,
+            cache_dir,
+            verbose=verbosity,
+            include_related=bool(args.include_related_drafts),
+        )
     # Extra drafts added via --draft. These aren't attributed to the WG
     # in the document API (often individual / author submissions the WG
     # is tracking but doesn't own), so they need explicit naming. For

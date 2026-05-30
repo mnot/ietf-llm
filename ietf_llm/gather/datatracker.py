@@ -199,6 +199,30 @@ def iter_group_documents(wg_name: str, doc_type: str) -> Iterator[Dict[str, Any]
         path = (body.get("meta") or {}).get("next") or None
 
 
+def iter_active_drafts_by_name(wg_name: str) -> Iterator[Dict[str, Any]]:
+    """Yield every currently-active Internet-Draft whose name contains
+    `-<wg_name>-`.
+
+    Matches Datatracker's "Related Internet-Drafts and RFCs" section on
+    the WG documents page: drafts the WG follows but doesn't own, found
+    by name pattern rather than group attribution. Caller is responsible
+    for the `draft-<author>-<wg>-` position-2 filter — this query alone
+    also returns drafts adopted by other WGs whose names happen to
+    contain the substring (e.g. `draft-ietf-mailmaint-oauth-public`).
+    """
+    path: Optional[str] = (
+        f"{_API_BASE}/doc/document/?type=draft"
+        f"&name__contains=-{wg_name}-"
+        f"&states__type__slug=draft&states__slug=active&limit=200"
+    )
+    while path:
+        body = _get_json(path)
+        if not body:
+            return
+        yield from body.get("objects") or []
+        path = (body.get("meta") or {}).get("next") or None
+
+
 def fetch_wg_roles(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Role]:
     """Return the role assignments for a WG (chairs, ADs, advisors, …).
 

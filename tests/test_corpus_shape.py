@@ -138,6 +138,7 @@ def _plan_args(**kw: Any) -> argparse.Namespace:
         "mailing_list": None,
         "github": None,
         "add_mentioned_drafts": False,
+        "include_related_drafts": False,
         "github_label": None,
         "exclude_github_label": None,
         "no_embed": False,
