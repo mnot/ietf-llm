@@ -97,8 +97,7 @@ def _material_url(meeting_number: str, docname: str) -> str:
     rendered file (markdown / text / PDF) — no revision or extension
     needed, Datatracker redirects to the current version."""
     return (
-        "https://datatracker.ietf.org/meeting/"
-        f"{meeting_number}/materials/{docname}"
+        "https://datatracker.ietf.org/meeting/" f"{meeting_number}/materials/{docname}"
     )
 
 

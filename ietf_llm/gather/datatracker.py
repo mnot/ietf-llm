@@ -78,6 +78,7 @@ _ROLE_NAME_FROM_URL = re.compile(r"/api/v1/name/rolename/([^/]+)/?$")
 # machinery: one shared file at ~/.cache/ietf-llm/.http-cache.json,
 # loaded once and flushed atomically at exit.
 
+
 class _HttpCache:
     """Lazy, process-wide ETag store. Loaded from disk on first use and
     flushed once atomically at interpreter exit (so a gather does one

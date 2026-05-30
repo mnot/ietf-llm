@@ -465,7 +465,11 @@ def write_timeline_digest(
     queries for corpora with no backing WG.
     """
     events = build_events(
-        wg, cache_dir, registry, months=months, verbose=verbose,
+        wg,
+        cache_dir,
+        registry,
+        months=months,
+        verbose=verbose,
         group_backed=group_backed,
     )
     if not events:

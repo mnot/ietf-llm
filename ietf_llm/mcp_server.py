@@ -1898,7 +1898,9 @@ def main() -> None:
         context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.
         """
-        return await _offload(tool_read_file_section, corpus, file, start_line, max_lines)
+        return await _offload(
+            tool_read_file_section, corpus, file, start_line, max_lines
+        )
 
     _prewarm_embedding_model_async()
     server.run()
