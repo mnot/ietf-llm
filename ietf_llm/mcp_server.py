@@ -63,7 +63,7 @@ from .digest.overview import (
     _subject_prefix_frequencies,
     build_overview,
 )
-from .digest.query import query_digest
+from .digest.query import parse_md_tables, query_digest
 from .embeddings import (
     _get_embed_model,
     chunk_counts,
@@ -719,6 +719,73 @@ def _read_thread_file_text(wg: str, file: str) -> Optional[str]:
         return None
 
 
+def _thread_sizes(wg: str) -> Dict[str, Tuple[str, str]]:
+    """`{file: (msgs, participants)}` from the threads digest, so the
+    read_topic thread map can show real thread size, not just how many
+    chunks matched the query. Empty when there's no threads digest."""
+    path = _digest_path(wg, "threads")
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            sections = parse_md_tables(fh.read())
+    except OSError:
+        return {}
+    out: Dict[str, Tuple[str, str]] = {}
+    for section in sections:
+        cols = [c.lower() for c in section.columns]
+        if "file" not in cols or "msgs" not in cols:
+            continue
+        i_file, i_msgs = cols.index("file"), cols.index("msgs")
+        i_part = cols.index("participants") if "participants" in cols else None
+        for row in section.rows:
+            if i_file >= len(row):
+                continue
+            file = row[i_file].strip().strip("`")
+            msgs = row[i_msgs] if i_msgs < len(row) else ""
+            part = row[i_part] if i_part is not None and i_part < len(row) else ""
+            out[file] = (msgs, part)
+    return out
+
+
+def _topic_thread_map(
+    wg: str, matched_hits: List[Any], rows: List[Any], limit: int = 8
+) -> List[str]:
+    """A saturation signal for read_topic: how the matches spread across
+    threads, with each thread's match count, how many were shown, and its
+    real size. Lets a caller see which cluster is major and which thread
+    it has only partly seen — so it knows when to read one in full rather
+    than keep slicing. Empty for a single-thread topic (no map needed)."""
+    matched_per_file: Dict[str, int] = {}
+    for hit in matched_hits:
+        matched_per_file[hit.file] = matched_per_file.get(hit.file, 0) + 1
+    if len(matched_per_file) <= 1:
+        return []
+    shown_per_file: Dict[str, int] = {}
+    for row in rows:
+        if row[6]:  # is_matched
+            shown_per_file[row[1]] = shown_per_file.get(row[1], 0) + 1
+    sizes = _thread_sizes(wg)
+    ranked = sorted(matched_per_file.items(), key=lambda kv: kv[1], reverse=True)
+    out = [
+        f"## Threads in this topic ({len(matched_per_file)})",
+        "_How the matches spread across threads — a thread with many matches "
+        "you have only partly seen is the one to read in full "
+        "(`read_file_section`)._",
+    ]
+    for file, n_matched in ranked[:limit]:
+        shown = shown_per_file.get(file, 0)
+        size = sizes.get(file)
+        size_tag = (
+            f" · thread has {size[0]} msgs, {size[1]} participants" if size else ""
+        )
+        out.append(f"- `{file}` — {n_matched} matched, {shown} shown{size_tag}")
+    if len(ranked) > limit:
+        out.append(f"_… and {len(ranked) - limit} more thread(s)._")
+    out.append("")
+    return out
+
+
 @_requires_corpus
 def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
     wg: str,
@@ -900,6 +967,11 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     if truncated_note:
         out.append(truncated_note)
     out.append("")
+
+    # Thread map: how the matches spread across threads (a saturation
+    # signal), so a consumer can see which cluster is major and which
+    # thread they have only partly seen — before reading the messages.
+    out.extend(_topic_thread_map(wg, thread_issue_hits, rows))
 
     # Global chronological numbers so a consumer can reference a message
     # unambiguously — the per-file `[N]` repeats across files in one
@@ -2097,11 +2169,16 @@ def main() -> None:
         included, and a low-scoring match may be off-topic. Each matched
         message carries a `rel=` score (higher = closer) so you can
         discount weak ones, and the header reports when more matched than
-        were shown. For a question about *completeness* (e.g. "the whole
-        controversy"), do not treat the slice as exhaustive: raise `k`,
-        scope with `file_pattern=` to cut cross-topic noise, read a thread
-        end-to-end with `read_file_section`, or enumerate a topic's
-        threads with `read_digest(kind="threads", subject="[…]")`.
+        were shown. When the matches span more than one thread, the output
+        opens with a **thread map** — each thread the matches touch, how
+        many matched vs. were shown, and the thread's real size — so you
+        can spot a major cluster the slice barely sampled (read that one in
+        full) instead of assuming the slice covered the debate. For a
+        question about *completeness* (e.g. "the whole controversy"), do
+        not treat the slice as exhaustive: raise `k`, scope with
+        `file_pattern=` to cut cross-topic noise, read a thread end-to-end
+        with `read_file_section`, or enumerate a topic's threads with
+        `read_digest(kind="threads", subject="[…]")`.
 
         `include_replies=True` walks the reply graph in each matched
         thread file and pulls every transitive reply descendant of a

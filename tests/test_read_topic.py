@@ -279,6 +279,41 @@ def test_read_topic_completeness_signal_and_scores(isolated_home: Path) -> None:
     assert "rel=" in out  # per-message relevance score
 
 
+def test_read_topic_thread_map_spans_threads(isolated_home: Path) -> None:
+    # The thread map lists each thread the matches span with match/shown
+    # counts — the saturation signal so a caller sees which cluster is
+    # major and which it has only partly seen.
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-10-a.md",
+        "# A\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice\n\nMLKEM aaa.\n\n"
+        "### [2] 2026-04-11 09:00 — Bob\n\nMLKEM bbb.\n",
+    )
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-12-b.md",
+        "# B\n\n## Messages\n\n### [1] 2026-04-12 09:00 — Carol\n\nMLKEM ccc.\n",
+    )
+    _build_with_stub("wg")
+    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    assert "## Threads in this topic (2)" in out
+    assert "threads/2026-04-10-a.md" in out
+    assert "threads/2026-04-12-b.md" in out
+    assert "matched" in out and "shown" in out
+
+
+def test_read_topic_no_thread_map_for_single_thread(isolated_home: Path) -> None:
+    # One thread → no map (it would say nothing useful).
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-10-a.md",
+        "# A\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice\n\nMLKEM aaa.\n\n"
+        "### [2] 2026-04-11 09:00 — Bob\n\nMLKEM bbb.\n",
+    )
+    _build_with_stub("wg")
+    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    assert "## Threads in this topic" not in out
+
+
 def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:
     # Only a draft is indexed — read_topic should return a hint pointing
     # the consumer at search_corpus rather than silently producing an
