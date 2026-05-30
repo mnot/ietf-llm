@@ -200,6 +200,13 @@ def _group_facts(cache_dir: str) -> "tuple[Optional[str], Optional[str], List[st
     return status, area, _section_lines(path, "Resources")
 
 
+#: A line of only rule characters (`====`, `----`), as our charter
+#: writer emits under the header. Skipped when picking the excerpt.
+_RULE_LINE_RE = re.compile(r"^[=_-]{3,}$")
+#: The header lines our charter writer prepends.
+_CHARTER_HEADER_RE = re.compile(r"^\s*(Working Group Charter:|Source:)", re.IGNORECASE)
+
+
 def _charter_excerpt(
     cache_dir: str,
     max_chars: int = 600,
@@ -220,7 +227,18 @@ def _charter_excerpt(
         return None
     paragraphs = re.split(r"\n\s*\n", text.strip())
     for raw in paragraphs:
-        para = " ".join(raw.split())  # collapse whitespace
+        # Drop the boilerplate our charter writer prepends — the
+        # `Working Group Charter:` / `Source:` lines and the `===` rule —
+        # before measuring. They carry no blank line between them, and
+        # the rule alone is 80 chars, so without this the header block
+        # clears the length gate and gets returned as the "excerpt".
+        kept = [
+            ln
+            for ln in raw.splitlines()
+            if not _RULE_LINE_RE.match(ln.strip())
+            and not _CHARTER_HEADER_RE.match(ln)
+        ]
+        para = " ".join(" ".join(kept).split())  # collapse whitespace
         # Skip headers / short procedural lines; the mission paragraph
         # is typically several sentences.
         if len(para) < 80:

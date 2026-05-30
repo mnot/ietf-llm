@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.digest.overview import build_overview
+from ietf_llm.digest.overview import _charter_excerpt, build_overview
 
 
 def _seed_digests(cache: Path, *, with_authors: bool = True) -> None:
@@ -266,6 +266,31 @@ def test_overview_links_charter_when_present(tmp_path: Path) -> None:
     assert "Charter" in out
     # The excerpt body is inlined as a blockquote.
     assert "Out of scope" in out
+
+
+def test_charter_excerpt_skips_writer_header(tmp_path: Path) -> None:
+    # Regression: our charter writer prepends a `Working Group Charter:`
+    # / `Source:` / `===` rule block with no blank line between the
+    # lines, and the rule alone is 80 chars — so the header used to clear
+    # the length gate and be returned as the excerpt. The excerpt must be
+    # the mission paragraph instead.
+    header = (
+        "Working Group Charter: httpbis\n"
+        "Source: https://www.ietf.org/charter/charter-ietf-httpbis-09.txt\n"
+        + ("=" * 80)
+    )
+    mission = (
+        "Hypertext Transfer Protocol (HTTP) is an Internet Standard "
+        "defined in STD 97 / RFC 9110, used across multiple transport "
+        "versions and maintained by this working group."
+    )
+    (tmp_path / "charter.txt").write_text(header + "\n\n" + mission + "\n")
+    excerpt = _charter_excerpt(str(tmp_path))
+    assert excerpt is not None
+    assert excerpt.startswith("Hypertext Transfer Protocol")
+    assert "Working Group Charter:" not in excerpt
+    assert "Source:" not in excerpt
+    assert "===" not in excerpt
 
 
 def test_overview_omits_charter_line_when_file_missing(tmp_path: Path) -> None:
