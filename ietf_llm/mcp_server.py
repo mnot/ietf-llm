@@ -83,10 +83,12 @@ from .positions import (
     tally_thread,
 )
 from .utils import (
+    LogLevel,
     Verbosity,
     get_cache_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
+    log,
 )
 
 MAX_LINES_DEFAULT = 400
@@ -1483,16 +1485,48 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     timeout fired, say), stop waiting immediately rather than blocking
     the loop until the thread finishes; the thread completes and frees
     its slot on its own.
+
+    A server-side deadline (`IETF_LLM_TOOL_TIMEOUT` seconds, default 120,
+    0 to disable) bounds a stuck call: rather than hang to the client's
+    multi-minute ceiling, it returns a clear, retryable error. Generous
+    enough not to trip a legitimate first-time embedding-model load or a
+    large file read.
     """
     # run_sync loses the return type through functools.partial; the
     # tool_* functions all return str, so cast.
-    return cast(
-        str,
-        await anyio.to_thread.run_sync(
-            functools.partial(fn, *args, **kwargs),
-            abandon_on_cancel=True,
-        ),
+    partial = functools.partial(fn, *args, **kwargs)
+    timeout = _tool_timeout_seconds()
+    if timeout <= 0:
+        return cast(
+            str, await anyio.to_thread.run_sync(partial, abandon_on_cancel=True)
+        )
+    with anyio.move_on_after(timeout):
+        return cast(
+            str, await anyio.to_thread.run_sync(partial, abandon_on_cancel=True)
+        )
+    # Reached only when the deadline cancelled the await above; the worker
+    # thread is abandoned (it finishes and frees its slot on its own).
+    name = getattr(fn, "__name__", "tool")
+    log(
+        f"{name} exceeded {timeout:.0f}s deadline; returning a timeout error.",
+        Verbosity.STATUS,
+        level=LogLevel.ERROR,
     )
+    return (
+        f"(Tool timed out after {int(timeout)}s. This is usually transient — "
+        "retry. If it persists: the embedding model may still be loading "
+        "(first `search_corpus` after startup), or a concurrent `ietf-llm` "
+        "gather may be holding the cache. Override with IETF_LLM_TOOL_TIMEOUT.)"
+    )
+
+
+def _tool_timeout_seconds() -> float:
+    """Per-call deadline for `_offload`, from `IETF_LLM_TOOL_TIMEOUT`
+    (seconds; default 120; non-positive disables)."""
+    try:
+        return float(os.environ.get("IETF_LLM_TOOL_TIMEOUT", "120"))
+    except ValueError:
+        return 120.0
 
 
 @graceful_keyboard_interrupt

@@ -160,6 +160,45 @@ def test_collapse_draft_versions() -> None:
     assert dropped == 2
 
 
+def test_offload_times_out_slow_calls(monkeypatch: object) -> None:
+    # A stuck tool call returns a fast, retryable error rather than
+    # hanging to the client's multi-minute ceiling. A fast call is
+    # unaffected.
+    import time
+
+    import anyio
+
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0.2")  # type: ignore[attr-defined]
+
+    def fast() -> str:
+        return "fast-result"
+
+    def slow() -> str:
+        time.sleep(1.0)
+        return "unreached"
+
+    async def run(fn: object) -> str:
+        return await mcp_server._offload(fn)
+
+    assert anyio.run(run, fast) == "fast-result"
+    out = anyio.run(run, slow)
+    assert "timed out" in out.lower()
+
+
+def test_offload_timeout_disabled_by_zero(monkeypatch: object) -> None:
+    import anyio
+
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0")  # type: ignore[attr-defined]
+
+    def quick() -> str:
+        return "ran"
+
+    async def run() -> str:
+        return await mcp_server._offload(quick)
+
+    assert anyio.run(run) == "ran"
+
+
 def test_collapse_draft_versions_single_rev_kept() -> None:
     from ietf_llm.mcp_server import _collapse_draft_versions
 
