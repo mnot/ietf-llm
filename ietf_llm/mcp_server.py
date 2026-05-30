@@ -587,6 +587,23 @@ _READ_TOPIC_MAX_K = 50
 # so total output stays bounded. 4 KB is plenty for a typical post.
 _READ_TOPIC_MAX_BODY_CHARS = 4000
 
+#: `(reply to [P])` marker inside a message header — captures the
+#: per-file parent index P.
+_REPLY_TO_RE = re.compile(r"\(reply to \[(\d+)\]\)")
+#: A leading `[N] ` per-file index on a stored message title, stripped
+#: when read_topic re-numbers globally.
+_LEADING_BRACKET_RE = re.compile(r"^\s*\[\d+\]\s*")
+
+
+def _strip_message_header(text: str) -> str:
+    """Drop a stored message chunk's leading `### [N] …` section-header
+    line, keeping the `_Subject:_` / `_Archived-At:_` lines and body — so
+    a caller that renders its own header does not show two."""
+    first, _, rest = text.partition("\n")
+    if first.lstrip().startswith("### ["):
+        return rest.lstrip("\n")
+    return text
+
 
 def _parse_reply_graph(text: str) -> Dict[int, List[int]]:
     """Walk a thread file's text once and return {parent_idx: [child_idx, ...]}.
@@ -782,22 +799,44 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         summary += f"; {n_replies} pulled in as reply descendants"
     summary += "._"
     out.append(summary)
+    out.append(
+        "_Messages are numbered `[1..N]` in this chronological order; a "
+        "`reply to [k]` points to that number here, not a per-file index. "
+        "`chunk` is the per-file index for `get_chunk_text` / `find_replies`._"
+    )
     if truncated_note:
         out.append(truncated_note)
     out.append("")
 
-    for row in rows:
+    # Global chronological numbers so a consumer can reference a message
+    # unambiguously — the per-file `[N]` repeats across files in one
+    # narrative ([1][2][1][2]…), and a stored "(reply to [P])" points at a
+    # per-file index that means nothing across the merged timeline.
+    seq_by_key = {(r[1], r[2]): i for i, r in enumerate(rows, 1)}
+    for seq, row in enumerate(rows, 1):
         chunk_date, file, chunk_idx, title, text, url, is_matched = row
         tag = "matched" if is_matched else "reply"
+        # Map the per-file "(reply to [P])" marker to the parent's global
+        # number, when that parent is in view.
+        parent_note = ""
+        reply_match = _REPLY_TO_RE.search(text.split("\n", 1)[0])
+        if reply_match:
+            parent_seq = seq_by_key.get((file, int(reply_match.group(1))))
+            if parent_seq:
+                parent_note = f"  ·  reply to [{parent_seq}]"
+        # Strip the title's own leading `[N]` and per-file `(reply to [P])`
+        # — both are per-file indices the global numbering replaces.
+        who = _LEADING_BRACKET_RE.sub("", title)
+        who = _REPLY_TO_RE.sub("", who).strip()
         out.append("---")
         out.append("")
-        out.append(f"## [{tag}] {title}")
+        out.append(f"## [{seq}] {who}  ·  [{tag}]{parent_note}")
         meta_bits = [f"_file:_ `{file}`", f"_chunk:_ {chunk_idx}"]
         if url:
             meta_bits.append(f"_url:_ {url}")
         out.append("  ·  ".join(meta_bits))
         out.append("")
-        body = text.strip()
+        body = _strip_message_header(text).strip()
         if len(body) > _READ_TOPIC_MAX_BODY_CHARS:
             body = body[: _READ_TOPIC_MAX_BODY_CHARS - 1] + "…"
             out.append(body)

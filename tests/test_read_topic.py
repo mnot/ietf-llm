@@ -223,6 +223,39 @@ def test_read_topic_include_replies_renders_replies_in_output(
     assert expanded.count("##") >= bare.count("##")
 
 
+def test_read_topic_numbers_messages_globally(isolated_home: Path) -> None:
+    # Two threads each have a per-file `[1]`. Merged into one timeline the
+    # numbering must be global [1..N] (no repeated [1]), and a per-file
+    # "(reply to [1])" must remap to the parent's global number. Dates set
+    # the chronological order: A1(01-01) < B1(01-02) < A2(01-03).
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-01-01-a.md",
+        (
+            "# A\n\n## Messages\n\n"
+            "### [1] 2026-01-01 09:00 — Alice\n\nAlice opens.\n\n"
+            "### [2] 2026-01-03 09:00 — Bob (reply to [1])\n\nBob replies.\n"
+        ),
+    )
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-01-02-b.md",
+        (
+            "# B\n\n## Messages\n\n"
+            "### [1] 2026-01-02 09:00 — Carol\n\nCarol posts.\n"
+        ),
+    )
+    _build_with_stub("wg")
+    out = mcp_server.tool_read_topic("wg", "anything", k=10)
+    # Global sequence, no repeated [1].
+    assert "## [1] 2026-01-01 09:00 — Alice" in out
+    assert "## [2] 2026-01-02 09:00 — Carol" in out
+    assert "## [3] 2026-01-03 09:00 — Bob" in out
+    assert out.count("## [1]") == 1
+    # Bob's per-file "(reply to [1])" remaps to Alice's global number [1].
+    assert "## [3] 2026-01-03 09:00 — Bob  ·  [matched]  ·  reply to [1]" in out
+    # No duplicated `### [N]` body header.
+    assert "\n### [" not in out
+
+
 def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:
     # Only a draft is indexed — read_topic should return a hint pointing
     # the consumer at search_corpus rather than silently producing an
