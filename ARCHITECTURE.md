@@ -6,8 +6,9 @@ decisions that aren't obvious from the code.
 
 ## Elevator pitch
 
-`ietf-llm` maintains a local, LLM-queryable corpus of an IETF Working
-Group's public record. One CLI gathers and indexes; three consumers
+`ietf-llm` maintains a local, LLM-queryable corpus of an IETF effort's
+public record — a Working Group, a mailing list, a set of drafts. One
+CLI gathers and indexes; three consumers
 read what was gathered — a semantic search CLI, an MCP server, and a
 NotebookLM exporter.
 
@@ -18,7 +19,7 @@ and reads from it forever.
 
 | Command | Job | Reads | Writes |
 |---|---|---|---|
-| `ietf-llm` | gather / refresh a WG, build digests, build embedding index | network | cache |
+| `ietf-llm` | gather / refresh a corpus, build digests, build embedding index | network | cache |
 | `ietf-llm-search` | semantic search over the cache | cache | stdout |
 | `ietf-llm-mcp` | expose the cache to MCP clients (Claude, Codex, etc.) | cache | stdio (MCP protocol) |
 | `ietf-llm-export` | mirror to local dir, or push to NotebookLM Enterprise | cache | local dir / NotebookLM |
@@ -42,13 +43,21 @@ once, in `__main__._resolve_corpus_shape`, into one of four **kinds**:
   editorial WG / BoF). Gets the full auto-sourced pipeline: charter,
   group metadata, meetings, documents, transcripts, datatracker roles,
   and the timeline group / ballot / doc-event queries.
-- **list** — not a group, but the name resolves as a mailarchive list
-  (`ietf-llm last-call`). Gathers only that list.
+- **list** — not a group, but the name resolves as a list archived at
+  mailarchive.ietf.org (IETF / IRTF / RFC-Editor — `last-call`,
+  `irtf-discuss`, `rfc-interest`). Gathers only that list, synced from
+  the IETF IMAP mirror; the address domain, if given, is stripped.
 - **custom** — not a group; content comes from explicit `--draft` /
   `--mailing-list` / `--github` (the name is a label).
 - **synthetic** — an `x-` prefixed name (`x-webbotauth`); like custom
   but explicitly skips even the group lookup. `utils.is_synthetic_wg()`
   is the predicate; the prefix is the only signal.
+
+Resolution **precedence** (first match wins): `x-` synthetic →
+generative flags (`--new-drafts` / `--author`, which make the name a
+label) → Datatracker group → mailarchive list → typo. So a name that is
+both a WG and a list resolves as the **group** — no loss, since a group
+corpus already auto-discovers that group's own list.
 
 There is **no `--list-only` flag** — the kind is inferred. A name that
 is neither a group, a known list, nor configured with sources is
@@ -68,7 +77,7 @@ and is retained through the new-drafts prune.
 The gather pipeline gates Datatracker-sourced steps on a single
 `group_backed` boolean (true only for the `group` kind). `corpus.py`
 derives `(kind, status)` from on-disk artifacts for `ietf-llm --list`
-and the MCP `list_working_groups` tool — identically, so they can't
+and the MCP `list_corpora` tool — identically, so they can't
 drift; `status` is the cached group state (`active` / `concluded` /
 `bof`).
 
@@ -272,7 +281,7 @@ ietf_llm/
 `tool_*` function (so the logic is testable without MCP). Grouped by
 job:
 
-- **Orient:** `list_working_groups`, `overview`, `list_labels`,
+- **Orient:** `list_corpora`, `overview`, `list_labels`,
   `list_files`.
 - **Catalogue:** `read_digest(kind=…, …filters)` over
   issues/threads/people/timeline/index.
@@ -428,10 +437,10 @@ new notebook each update rather than merge into an existing one.
 Override with `--embed-model <id>`; the id is persisted in the
 embeddings DB so search picks it up automatically.
 
-### `--summarize` requires explicit setup; `--embed` doesn't
+### `--summarize` requires explicit setup; embedding doesn't
 
-Embeddings tolerate a small local model fine; a bad summary is worse
-than none. Summarisation defers to whatever LLM the user configured via
+Embedding is on by default (opt out with `--no-embed`) and tolerates a
+small local model fine; a bad summary is worse than none. Summarisation defers to whatever LLM the user configured via
 the `llm` package; without one, we print setup help rather than limp
 along. Deterministic digests ship without any setup.
 

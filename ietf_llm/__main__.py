@@ -126,9 +126,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
     parser = argparse.ArgumentParser(
         description=(
-            "Gather an IETF Working Group's public record into the local "
-            "cache (~/.cache/ietf-llm/<wg>/). For export to NotebookLM or "
-            "a local directory, see `ietf-llm-export`."
+            "Gather an IETF corpus — a Working Group / RG / editorial WG / "
+            "BoF, a mailing list, or a custom set of drafts — into the "
+            "local cache (~/.cache/ietf-llm/<name>/). For export to "
+            "NotebookLM or a local directory, see `ietf-llm-export`."
         )
     )
     parser.add_argument(
@@ -137,7 +138,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     wg_arg = parser.add_argument(
         "wg",
         nargs="?",
-        help="IETF Working Group short name (e.g. 'httpbis'). "
+        metavar="NAME",
+        help="Corpus to gather: a Working Group / Research Group / "
+        "editorial WG / BoF shortname (e.g. 'httpbis'), a mailing list "
+        "(e.g. 'last-call'), or a custom label given explicit sources. "
         "Optional when using --install-claude-skill or --all.",
     )
     # Tab-completes already-gathered WG shortnames from the cache.
@@ -188,9 +192,11 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         action="append",
         metavar="LIST",
         dest="mailing_list",
-        help="Mailing list to sync in addition to the WG's auto-"
-        "discovered list (repeat for multiple). Assumes IETF hosting "
-        "(`imap.ietf.org`); accepts either `foo` or `foo@ietf.org`. "
+        help="Mailing list to sync, in addition to any the corpus "
+        "auto-discovers (repeat for multiple). Any list archived at "
+        "mailarchive.ietf.org works — IETF, IRTF, or RFC-Editor — synced "
+        "from the IETF IMAP mirror. A bare name or a full address; the "
+        "domain is optional and ignored (`rswg`, `rswg@rfc-editor.org`). "
         "Persisted; future runs without --mailing-list still sync it.",
     )
     parser.add_argument(

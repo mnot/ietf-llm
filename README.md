@@ -47,21 +47,16 @@ Two supported workflows:
   - [Shell completion](#shell-completion)
 - [1. Use as an MCP server](#1-use-as-an-mcp-server)
   - [Register the server](#register-the-server)
-  - [Gather a Working Group](#gather-a-working-group)
-  - [Ask your agent](#ask-your-agent)
-  - [Updating](#updating)
+  - [Gather a corpus](#gather-a-corpus)
 - [2. Use with NotebookLM](#2-use-with-notebooklm)
-  - [Gather a Working Group](#gather-a-working-group-1)
+  - [Gather a corpus](#gather-a-corpus-1)
   - [Export to a local directory](#export-to-a-local-directory)
   - [Export to NotebookLM Enterprise](#export-to-notebooklm-enterprise)
 - [Reference](#reference)
   - [Commands](#commands)
   - [Gather options](#gather-options)
   - [Semantic search from the CLI](#semantic-search-from-the-cli)
-  - [Digest files](#digest-files)
-  - [MCP tools](#mcp-tools)
 - [Migrating from `ietf-notebook`](#migrating-from-ietf-notebook)
-- [Contributing](#contributing)
 
 ## Installation
 
@@ -226,51 +221,29 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or
 }
 ```
 
-### Gather a Working Group
+### Gather a corpus
 
-Gathering is a slow, network-heavy job, so it runs from the CLI —
-not silently from the agent. Do it once per WG you want to query:
-
-```bash
-ietf-llm httpbis \
-    --github httpwg/http-core \
-    --github httpwg/http-extensions \
-    --embed
-```
-
-- `--github org/repo` — GitHub repos whose issues to include. Repeat
-  per repo. Persisted, so future updates omit it.
-- `--embed` — build the local semantic search index that backs the
-  `search_corpus` MCP tool. **Required if you want the agent to
-  search.** Downloads ~130 MB of model weights once on first run.
-
-Everything goes to `~/.cache/ietf-llm/<wg>/`. The MCP server reads
-from there — no separate destination to manage.
-
-### Ask your agent
-
-```text
-"What's open in httpbis right now?"
-"Anyone on the list raised concerns about cookie partitioning?"
-"How did the debate on MLKEM evolve in TLS?"
-```
-
-The agent uses `list_working_groups`, `overview`, `read_digest`,
-`search_corpus`, and `read_topic` to answer — no need to point at
-files. See [MCP tools](#mcp-tools) for the full surface.
-
-### Updating
-
-Just re-run the gather. All per-WG settings (GitHub repos, embedding
-choice) are remembered:
+Gather from the CLI, once per corpus. Settings persist, so refreshing
+is a bare re-run (`ietf-llm httpbis`), and the semantic index updates
+incrementally each time.
 
 ```bash
-ietf-llm httpbis
+ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
 ```
 
-Embedding is incremental — only changed files are re-embedded. Run on
-a cron or whenever you want fresh data; the agent picks up the new
-state on its next tool call.
+A corpus doesn't have to be a Working Group — the name is classified
+automatically:
+
+| Command | Corpus |
+|---|---|
+| `ietf-llm httpbis` | a WG / RG / editorial WG / BoF: charter, drafts, meetings, ballots, list |
+| `ietf-llm last-call` | a standalone mailing list (any archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor) |
+| `ietf-llm rfced --mailing-list rswg@rfc-editor.org` | a named list corpus (the address domain is optional) |
+| `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
+| `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored |
+
+Everything lands in `~/.cache/ietf-llm/<name>/`, which the MCP server
+reads. See [Gather options](#gather-options) for the full flag set.
 
 ---
 
@@ -284,15 +257,14 @@ straight to a NotebookLM Enterprise notebook.
 > Create a new notebook on each refresh rather than trying to merge
 > updates into an existing one.
 
-### Gather a Working Group
+### Gather a corpus
 
-Same as the MCP path, but `--embed` is optional (NotebookLM does its
-own indexing):
+Same as the MCP path; add `--no-embed` to skip the local index
+(NotebookLM does its own):
 
 ```bash
-ietf-llm httpbis \
-    --github httpwg/http-core \
-    --github httpwg/http-extensions
+ietf-llm httpbis --no-embed \
+    --github httpwg/http-core --github httpwg/http-extensions
 ```
 
 ### Export to a local directory
@@ -338,7 +310,7 @@ mode need only `ietf-llm-export <wg>`.
 
 | Command | Job | Reads | Writes |
 |---|---|---|---|
-| `ietf-llm` | Gather / refresh a WG | network | cache |
+| `ietf-llm` | Gather / refresh a corpus | network | cache |
 | `ietf-llm-export` | Mirror cache to dir, or push to NotebookLM Enterprise | cache | dir / NotebookLM |
 | `ietf-llm-search` | Semantic search over the cache | cache | stdout |
 | `ietf-llm-mcp` | Expose the cache to MCP clients | cache | stdio (MCP) |
@@ -349,68 +321,70 @@ the single source of truth; everything else reads from it.
 ### Gather options
 
 ```bash
-ietf-llm [OPTIONS] <wg_shortname>
+ietf-llm [OPTIONS] <name>
 ```
 
-- `--github OWNER/REPO` — repeat per GitHub repo whose issues to gather.
-- `--draft DRAFT-NAME` — extra Internet-Draft to track, beyond the
-  WG's auto-discovered documents (repeatable, persisted). Version
-  suffix is stripped; every revision is gathered.
-- `--mailing-list LIST` — extra IETF-hosted mailing list to sync,
-  beyond the WG's auto-discovered one (repeatable, persisted).
-  Accepts `foo` or `foo@ietf.org`.
-- `--new-drafts` — make this a subscription to *new* Internet-Drafts:
-  every draft whose `-00` was submitted within `--months` (a rolling
-  window; drafts that age out are pruned). The name is a label.
-- `--author PERSON` — make this a 'follow an author' corpus: every
-  draft `PERSON` has authored. `PERSON` is an email
-  (`mnot@mnot.net`, recommended), a Datatracker person id, or an exact
-  full name. Drafts only.
-- `--add-mentioned-drafts` — after gathering, pull any Internet-Drafts
-  the corpus's threads/issues mention but don't already include.
-  Composes onto any corpus; sticky (a draft stays once added).
-- `--github-label LABEL` / `--exclude-github-label LABEL` — filter
-  issues by label; repeatable.
+`<name>` is the corpus to gather, classified automatically:
+
+- a **Working Group / Research Group / editorial WG / BoF** shortname
+  (`httpbis`, `cfrg`, `rswg`) — gathered in full (charter, drafts,
+  meetings, ballots, mailing list);
+- a **mailing list** archived at mailarchive.ietf.org — IETF, IRTF,
+  or RFC-Editor (`last-call`, `irtf-discuss`, `rfc-interest`) — that
+  list on its own;
+- any other **label** given explicit sources (`--draft` /
+  `--mailing-list` / `--github` / `--new-drafts` / `--author`);
+- prefix with `x-` to skip the Datatracker group lookup entirely (a
+  fully manual corpus).
+
+A name that is none of these and has no configured sources is rejected
+as a likely typo.
+
+**Sources** (what to gather; all repeatable / persisted):
+
+- `--github OWNER/REPO` — a GitHub repo whose issues to include.
+- `--draft DRAFT-NAME` — an extra Internet-Draft to track, beyond a
+  WG's own documents. Version suffix stripped; every revision gathered.
+- `--mailing-list LIST` — an extra list to sync (any archived at
+  mailarchive.ietf.org). A bare name or a full address; the domain is
+  optional and ignored (`rswg`, `rswg@rfc-editor.org`).
+- `--new-drafts` — subscribe to *new* Internet-Drafts: every `-00`
+  submitted within `--months` (rolling window; drafts age out).
+- `--author PERSON` — every draft `PERSON` authored. `PERSON` is an
+  email (`mnot@mnot.net`, recommended), a Datatracker person id, or an
+  exact full name. Drafts only.
+- `--add-mentioned-drafts` — also pull drafts the corpus's
+  threads/issues mention but don't already include. Sticky.
+
+**Scope & filtering:**
+
 - `--months N` — months of mailing list / meeting / new-draft history
   (default 12).
+- `--github-label LABEL` / `--exclude-github-label LABEL` — include /
+  exclude issues by label.
+
+**Digests & search index:**
+
 - `--summarize` / `--summarize-model MODEL` — add LLM-generated
   one-liners to digests via the `llm` package.
-- `--embed` / `--embed-model MODEL` — build / refresh the semantic
-  search index (required for `ietf-llm-search` and the MCP
-  `search_corpus` tool).
-- `--rebuild-embeddings` — with `--embed`, drop and re-embed instead
-  of incremental update.
-- `--clear-cache` — wipe the cache for this WG and re-download.
-- `--clear-config` — clear persisted config for this WG.
-- `--list` — list cached corpora (name, kind, status, last-gathered)
-  and exit.
+- `--no-embed` — skip the semantic search index (it backs
+  `ietf-llm-search` and the MCP `search_corpus` tool). On by default,
+  incremental.
+- `--embed-model MODEL` — embedding model id (default: a small local
+  model).
+- `--rebuild-embeddings` — drop and re-embed everything instead of the
+  incremental update.
+
+**Cache & config:**
+
+- `--list` — list cached corpora (name, kind, status, last-gathered),
+  then exit.
+- `--clear-cache` — wipe this corpus's cache and re-download.
+- `--clear-config` — clear this corpus's persisted config.
 - `--quiet` / `--verbose`.
 
-Per-WG settings are persisted at `~/.config/ietf-llm/<wg>/gather.json`.
-
-**Corpora that aren't Working Groups.** The positional name doesn't
-have to be a WG. It's classified automatically:
-
-- A **Working Group / Research Group / editorial WG / BoF** shortname
-  (`httpbis`, `cfrg`, `rswg`, …) gets the full pipeline — charter,
-  meetings, drafts, ballots, mailing list.
-- A bare **mailing list** name gathers just that list:
-  `ietf-llm last-call`. Off-IETF lists work by full address (e.g.
-  `ietf-llm rfced --mailing-list rswg@rfc-editor.org`), gathered via
-  the IETF mirror archive.
-- A **custom** name with explicit `--draft` / `--mailing-list` /
-  `--github` gathers exactly those sources.
-
-A name that's neither a group, a known mailing list, nor configured
-with sources is rejected as a likely typo. `--list` shows each
-corpus's kind and (for groups) status, so you can spot concluded WGs
-and finished BoFs. Existing corpora keep working unchanged.
-
-**Synthetic corpora.** Prefix a name with `x-` (e.g.
-`ietf-llm x-webbotauth --draft draft-... --mailing-list foo@ietf.org`)
-to skip the Datatracker group lookup entirely — useful when you want a
-custom corpus whose name might otherwise collide with, or be probed
-against, a real group.
+Per-corpus settings are persisted at
+`~/.config/ietf-llm/<name>/gather.json`.
 
 **GitHub auth.** Set `GITHUB_TOKEN` on the gather invocation (a fine-
 scoped read-only token is plenty); without one you'll hit anonymous
@@ -434,58 +408,12 @@ ietf-llm-search httpbis "skepticism about cookie partitioning" -k 8
 Chunks are content-aware: one chunk per mailing list message, one per
 issue comment, and a windowed slice of drafts/RFCs/transcripts. The
 index lives at `~/.cache/ietf-llm/<wg>/embeddings.db` and updates
-incrementally on each `--embed` run.
+incrementally on each gather.
 
 Default model: **`sentence-transformers/BAAI/bge-small-en-v1.5`** —
 small (~33M params), MPS-accelerated, runs entirely on your machine.
 Override with `--embed-model <id>` for any model the `llm` package
 recognises.
-
-### Digest files
-
-Every gather produces small markdown digests under
-`~/.cache/ietf-llm/<wg>/files/digests/`:
-
-- `index.md` — categorised inventory of all cached files.
-- `issues.md` — one row per GitHub issue (state, title, labels,
-  comments, last updated), sorted open-first.
-- `threads.md` — one row per mailing list thread (subject, message
-  count, participants, date range).
-- `people.md` — participants with roles + message counts.
-- `timeline.md` — chronological events (draft publications, issue
-  open/close, meetings, polls, WGLC, …).
-
-Generated deterministically from the cache. Pass `--summarize` to
-also include LLM-generated one-liners per row.
-
-### MCP tools
-
-`ietf-llm-mcp` exposes:
-
-- `list_working_groups()` — WGs gathered locally.
-- `overview(wg)` — chairs, status/area, charter excerpt, key
-  resources (repo / home page / chat), active drafts, top open
-  issues, recent threads, latest meeting. First call for "tell me
-  about X."
-- `list_labels(wg)` — GitHub issue labels with frequencies.
-- `list_files(wg, pattern?)` — file inventory with chunk counts.
-- `read_digest(wg, kind, ...filters)` — `index` / `issues` /
-  `threads` / `people` / `timeline`. Filters compose (state, label,
-  author, role, since/until, event_kind, …).
-- `search_corpus(wg, query, ...)` — semantic search with optional
-  `state`, `label`, `file_pattern`, `since`/`until`, `sort="date"`,
-  `group_by="file"`.
-- `read_topic(wg, query, include_replies=False)` — chronological
-  narrative view: full message bodies across threads and issues in
-  date order, optionally walking reply descendants.
-- `get_chunk_text(wg, file, chunk_idx, end_chunk_idx?)` — full text
-  of one chunk (or a range).
-- `get_chunks_batch(wg, [{file, chunk_idx, end_chunk_idx?}, …])` —
-  multi-file batch fetch.
-- `fetch_by_url(wg, url)` — resolve a GitHub or mail-archive URL to
-  its cached content.
-- `read_file_section(wg, file, start_line, max_lines)` — bounded raw
-  read (default 400 lines, hard cap 5000).
 
 ---
 
@@ -536,12 +464,3 @@ The gather CLI is now idempotent — re-run it whenever you want fresh
 data. The export CLI always produces a complete fresh dump; for
 NotebookLM, create a new notebook each refresh rather than trying to
 merge updates.
-
-## Contributing
-
-Pull requests welcome. For major changes, please open an issue first.
-
-[ARCHITECTURE.md](ARCHITECTURE.md) is the read-this-first for anyone
-poking at the code: package layout, cache and config conventions,
-data flow, and the key design decisions worth knowing before you
-change anything.
