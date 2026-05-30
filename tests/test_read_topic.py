@@ -251,9 +251,32 @@ def test_read_topic_numbers_messages_globally(isolated_home: Path) -> None:
     assert "## [3] 2026-01-03 09:00 — Bob" in out
     assert out.count("## [1]") == 1
     # Bob's per-file "(reply to [1])" remaps to Alice's global number [1].
-    assert "## [3] 2026-01-03 09:00 — Bob  ·  [matched]  ·  reply to [1]" in out
+    bob = next(l for l in out.splitlines() if l.startswith("## [3]") and "Bob" in l)
+    assert "[matched]" in bob
+    assert "reply to [1]" in bob
     # No duplicated `### [N]` body header.
     assert "\n### [" not in out
+
+
+def test_read_topic_completeness_signal_and_scores(isolated_home: Path) -> None:
+    # read_topic is a relevance-ranked slice: it must say so, warn when
+    # more matched than shown, and tag each matched message with a score.
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-10-arc.md",
+        (
+            "# Arc\n\n## Messages\n\n"
+            "### [1] 2026-04-10 09:00 — Alice\n\nMLKEM one.\n\n"
+            "### [2] 2026-04-11 09:00 — Bob\n\nMLKEM two.\n\n"
+            "### [3] 2026-04-12 09:00 — Carol\n\nMLKEM three.\n\n"
+            "### [4] 2026-04-13 09:00 — Dave\n\nMLKEM four.\n"
+        ),
+    )
+    _build_with_stub("wg")
+    out = mcp_server.tool_read_topic("wg", "MLKEM", k=2)
+    assert "relevance-ranked slice" in out
+    assert "Not the whole debate" in out  # 4 matched, only 2 shown
+    assert "raise `k`" in out
+    assert "rel=" in out  # per-message relevance score
 
 
 def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:

@@ -764,13 +764,17 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     # are the only chunks that represent a "message" in a debate.
     # Windowed draft / transcript chunks may match a query but they
     # aren't messages, so the chronological view skips them.
-    matched: List[Any] = []
-    for hit in hits:
-        if not hit.file.lower().startswith(("threads/", "issues/")):
-            continue
-        matched.append(hit)
-        if len(matched) >= k:
-            break
+    thread_issue_hits = [
+        h for h in hits if h.file.lower().startswith(("threads/", "issues/"))
+    ]
+    matched = thread_issue_hits[:k]
+    # For the completeness signal: how many more matched than we show, and
+    # whether the relevance shortlist itself was capped (so the true total
+    # may be higher still). Per-match relevance scores let the caller spot
+    # an off-topic match instead of silently discarding it.
+    extra_matches = len(thread_issue_hits) - len(matched)
+    fetch_capped = len(hits) >= fetch_k
+    score_by_key = {(h.file, h.chunk_idx): float(h.score) for h in matched}
     if not matched:
         return _with_freshness(
             wg,
@@ -869,6 +873,25 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         summary += f"; {n_replies} pulled in as reply descendants"
     summary += "._"
     out.append(summary)
+    # Completeness signal: read_topic is a relevance-ranked slice, not a
+    # thread dump. Say so, say what was left out, and point at the paths to
+    # the whole debate — the thing a "controversy" question most needs.
+    out.append(
+        "_This is a **relevance-ranked slice** (semantic match on the query, "
+        "then date-ordered) — NOT a complete thread. Messages that do not "
+        "match the query are not here; check each `rel=` score and discount "
+        "low ones as possible off-topic noise._"
+    )
+    if extra_matches > 0 or fetch_capped:
+        more = f"{extra_matches}+ more" if extra_matches > 0 else "more"
+        out.append(
+            f"_⚠ Not the whole debate: {more} message(s) matched beyond the "
+            f"{len(matched)} shown — raise `k` (now {k}). For completeness: "
+            "read a thread end-to-end with `read_file_section`, enumerate a "
+            'topic\'s threads with `read_digest(kind="threads", '
+            'subject="[…]")` or `find_citations`, and pass `file_pattern=` '
+            "to cut cross-topic noise._"
+        )
     out.append(
         "_Messages are numbered `[1..N]` in this chronological order; a "
         "`reply to [k]` points to that number here, not a per-file index. "
@@ -898,9 +921,13 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         # — both are per-file indices the global numbering replaces.
         who = _LEADING_BRACKET_RE.sub("", title)
         who = _REPLY_TO_RE.sub("", who).strip()
+        # Show the relevance score on matched messages so a weak (likely
+        # off-topic) match is visible rather than blending into the arc.
+        score = score_by_key.get((file, chunk_idx))
+        rel = f"  ·  rel={score:.2f}" if is_matched and score is not None else ""
         out.append("---")
         out.append("")
-        out.append(f"## [{seq}] {who}  ·  [{tag}]{parent_note}")
+        out.append(f"## [{seq}] {who}  ·  [{tag}]{rel}{parent_note}")
         meta_bits = [f"_file:_ `{file}`", f"_chunk:_ {chunk_idx}"]
         if url:
             meta_bits.append(f"_url:_ {url}")
@@ -2060,6 +2087,18 @@ def main() -> None:
         transcript chunks are excluded since they aren't "messages" in
         a debate. The output is capped at 60 messages total; if the
         cap fires, the response says so.
+
+        IMPORTANT — this is a **relevance-ranked slice, not a complete
+        thread**: messages are the top-`k` semantic matches for the query,
+        then date-ordered. Messages that don't match the query are not
+        included, and a low-scoring match may be off-topic. Each matched
+        message carries a `rel=` score (higher = closer) so you can
+        discount weak ones, and the header reports when more matched than
+        were shown. For a question about *completeness* (e.g. "the whole
+        controversy"), do not treat the slice as exhaustive: raise `k`,
+        scope with `file_pattern=` to cut cross-topic noise, read a thread
+        end-to-end with `read_file_section`, or enumerate a topic's
+        threads with `read_digest(kind="threads", subject="[…]")`.
 
         `include_replies=True` walks the reply graph in each matched
         thread file and pulls every transitive reply descendant of a

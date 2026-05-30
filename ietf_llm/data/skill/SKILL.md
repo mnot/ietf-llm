@@ -83,6 +83,14 @@ topic is unfamiliar and you want terms to search for.
   when you want sub-thread descendants pulled in even if they don't
   themselves match the query.
 
+  **It's a relevance-ranked slice, not the whole debate.** Each message
+  shows a `rel=` score — discount low ones as possible off-topic noise —
+  and the header flags when more matched than were shown. For a
+  *completeness* question ("the whole controversy"), don't trust one
+  call: raise `k`, scope with `file_pattern=` (e.g. a `[mlkem]` cluster),
+  read a thread end-to-end with `read_file_section`, or enumerate the
+  cluster with `read_digest("threads", subject="[mlkem]")`.
+
   **If `read_topic` returns a thread that looks like a chair poll**
   ("please reply indicating which option you prefer", numbered
   options, terse one-word replies), follow up with
