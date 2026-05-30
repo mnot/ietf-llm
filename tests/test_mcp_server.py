@@ -576,13 +576,37 @@ def test_fetch_by_url_returns_chunk_when_url_matches(
     assert "issues/org-repo/1.md" in out
 
 
+def test_fetch_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
+    # The Archived-At permalink stamped on every thread message is a
+    # `www.w3.org/mid/<message-id>` URL — the form fetch_by_url must
+    # resolve (not `mailarchive.ietf.org/...`).
+    mid = "https://www.w3.org/mid/test-msgid-123@example.com"
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-01-01-t.md",
+        (
+            "# Thread\n\n## Messages\n\n"
+            "### [1] 2026-01-01 10:00 — Alice\n\n"
+            "_Subject:_ Hello\n"
+            f"_Archived-At:_ {mid}\n\n"
+            "the message body to resolve.\n"
+        ),
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_fetch_by_url("wg", mid)
+    assert "the message body to resolve" in out
+
+
 def test_fetch_by_url_returns_helpful_miss_message(
     isolated_home: Path,
 ) -> None:
-    # Unknown URL → message that explains what to do, not silent None.
+    # Unknown URL → message that explains the supported forms, not silent
+    # None — and names w3.org/mid so a consumer is not sent to mailarchive.
     write_cache_file(isolated_home, "wg", "x.txt", "hi")
-    out = mcp_server.tool_fetch_by_url("wg", "https://nope.example/")
+    out = mcp_server.tool_fetch_by_url("wg", "https://mailarchive.ietf.org/arch/msg/x/y/")
     assert "No cached chunk" in out
+    assert "w3.org/mid" in out
     assert "ietf-llm wg" in out  # the recovery hint
 
 
