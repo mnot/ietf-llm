@@ -18,7 +18,7 @@ import argparse
 import os
 import shutil
 import sys
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 
 from . import __version__, config, paths
 from .digest import generate_digests
@@ -52,6 +52,7 @@ from .utils import (
     LogLevel,
     Verbosity,
     cached_wg_names,
+    fetch_group_object,
     get_cache_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
@@ -381,6 +382,76 @@ def _print_cached_wgs() -> int:
     return 0
 
 
+def _resolve_corpus_shape(
+    args: argparse.Namespace,
+    persisted: Dict[str, Any],
+    verbosity: Verbosity,
+) -> "Optional[tuple[bool, bool]]":
+    """Classify the corpus and return `(synth, group_backed)`, or None
+    if the name is unusable (logged).
+
+    A name backed by a Datatracker group (WG / RG / edwg / BoF) is
+    `group_backed` and gets the full auto-sourced pipeline. Synthetic
+    `x-` corpora and any other name are "custom": content comes only
+    from explicit --mailing-list / --draft / --github. As a
+    convenience, a custom name with no sources is treated as a mailing
+    list (so `ietf-llm last-call` Just Works); a name that is neither a
+    group, a known list, nor configured with sources is almost
+    certainly a typo'd WG name, so we reject it rather than silently
+    produce an empty corpus.
+    """
+    synth = is_synthetic_wg(args.wg)
+    group_backed = (not synth) and fetch_group_object(args.wg) is not None
+    if group_backed or synth:
+        return synth, group_backed
+
+    has_sources = bool(
+        args.mailing_list
+        or args.draft
+        or args.github
+        or persisted.get("mailing_list")
+        or persisted.get("draft")
+        or persisted.get("github")
+    )
+    if not has_sources:
+        if validate_list_names([args.wg], verbosity):
+            args.mailing_list = [args.wg]
+        else:
+            log(
+                f"'{args.wg}' is not a Working Group / Research Group, a "
+                "known mailing list, or a synthetic (x-) corpus. Check the "
+                "spelling, or add sources with --mailing-list / --draft / "
+                "--github.",
+                verbosity,
+                level=LogLevel.ERROR,
+            )
+            return None
+    return synth, group_backed
+
+
+def _download_github_archives(
+    repos: "Optional[List[str]]", cache_dir: str, verbosity: Verbosity
+) -> "List[tuple[str, str]]":
+    """Download each configured repo's issue archive JSON. Returns
+    `[(json_path, raw_txt_path)]` for the ones that downloaded, deferred
+    so the .txt is rendered after the registry exists (canonical names).
+    """
+    pending: List[tuple[str, str]] = []
+    if not repos:
+        return pending
+    os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
+    os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
+    for repo_short in repos:
+        if repo_short.startswith("http"):
+            # URL form — the last two path segments are "<owner>/<repo>".
+            repo_short = "/".join(repo_short.rstrip("/").split("/")[-2:])
+        gh_json = paths.github_archive_path(cache_dir, repo_short)
+        gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
+        if download_github_issues(repo_short, gh_json, verbose=verbosity):
+            pending.append((gh_json, gh_txt))
+    return pending
+
+
 def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     """Run the full gather pipeline for a single WG.
 
@@ -393,6 +464,13 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         if config.clear(args.wg) and not args.quiet:
             print(f"Cleared configuration for {args.wg}.", file=sys.stderr)
 
+    persisted = config.load(args.wg, SCOPE)
+
+    shape = _resolve_corpus_shape(args, persisted, verbosity)
+    if shape is None:
+        return  # unusable name (typo); _resolve_corpus_shape logged why
+    synth, group_backed = shape
+
     # Validate the *new* CLI-provided --draft / --mailing-list values
     # against their authoritative sources before config.merge persists
     # them. Trust values already in gather.json from prior runs — they
@@ -401,7 +479,6 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Without this gate, a typo'd name sticks in gather.json and
     # logs the same skip line every subsequent run.
     if args.draft or args.mailing_list:
-        persisted = config.load(args.wg, SCOPE)
         persisted_drafts = set(persisted.get("draft", []))
         persisted_lists = set(persisted.get("mailing_list", []))
         if args.draft:
@@ -444,12 +521,8 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             shutil.rmtree(wg_cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
-    # `x-`-prefixed shortnames are synthetic / non-WG corpora — drafts
-    # and mailing lists that predate (or sit parallel to) any formal
-    # WG. Every Datatracker / WG-page lookup is skipped; only the
-    # explicit --draft / --mailing-list / --github extras drive
-    # content.
-    synth = is_synthetic_wg(args.wg)
+    # `synth` (x-) and `group_backed` were resolved above. A corpus
+    # that's neither is "custom" (list/draft/github sources only).
     if synth and not (args.draft or args.mailing_list or args.github):
         log(
             f"{args.wg}: synthetic (`x-`) corpus with no --draft / "
@@ -460,7 +533,12 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         )
 
     if verbosity != Verbosity.QUIET:
-        label = "Processing synthetic corpus" if synth else "Processing WG"
+        if group_backed:
+            label = "Processing WG"
+        elif synth:
+            label = "Processing synthetic corpus"
+        else:
+            label = "Processing custom corpus"
         print(f"{label}: {args.wg}", file=sys.stderr)
         print(f"Cache: {cache_dir}", file=sys.stderr)
         if args.clear_cache:
@@ -468,11 +546,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         print("-" * 40, file=sys.stderr)
 
     # Charter / meetings / WG document list / transcripts — all
-    # Datatracker-sourced. Skipped entirely for synthetic corpora;
-    # there's no charter to fetch, no WG meetings, no auto-
-    # discoverable document set.
+    # Datatracker-sourced. Skipped for corpora with no backing group
+    # (synthetic and custom): there's no charter, no WG meetings,
+    # no auto-discoverable document set.
     meeting_clusters: List[Any] = []
-    if not synth:
+    if group_backed:
         charter_file = paths.charter_path(cache_dir)
         os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
         process_charter(args.wg, charter_file, verbose=verbosity)
@@ -495,11 +573,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         cache_dir,
         months=args.months,
         extra_lists=args.mailing_list,
-        auto_discover=not synth,
+        auto_discover=group_backed,
         verbose=verbosity,
     )
 
-    if not synth:
+    if group_backed:
         # Transcripts: download, then prepend a meeting-context header
         # to each so chunks deep in a 200KB transcript carry attribution.
         # Interim transcripts (no meeting number) are matched to a
@@ -531,21 +609,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # GitHub issues — download the raw JSON archives first, but defer
     # rendering the .txt files until after the registry is built so the
     # Author / Comment-by lines can use canonical names.
-    gh_pending: List[tuple[str, str]] = []
-    if args.github:
-        # Ensure parent dirs exist for the new layout (github/ and raw/).
-        os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
-        os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
-        for repo_short in args.github:
-            if repo_short.startswith("http"):
-                # URL form — the last path segment is the repo name.
-                # repo_short normalises to "<owner>/<repo>" for the slug.
-                repo_short = repo_short.rstrip("/").split("/")[-2:]
-                repo_short = "/".join(repo_short)
-            gh_json = paths.github_archive_path(cache_dir, repo_short)
-            gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
-            if download_github_issues(repo_short, gh_json, verbose=verbosity):
-                gh_pending.append((gh_json, gh_txt))
+    gh_pending = _download_github_archives(args.github, cache_dir, verbosity)
 
     # Identity registry — consolidates mail/GitHub/Datatracker/draft
     # surface forms into canonical actors. Built BEFORE the github .txt
@@ -553,7 +617,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     registry = build_registry(
         args.wg,
         verbose=verbosity,
-        with_datatracker_roles=not synth,
+        with_datatracker_roles=group_backed,
     )
 
     for gh_json, gh_txt in gh_pending:
@@ -598,6 +662,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         registry,
         months=args.months,
         verbose=verbosity,
+        group_backed=group_backed,
     )
 
     # Digests

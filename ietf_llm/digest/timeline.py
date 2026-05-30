@@ -59,7 +59,7 @@ from ..paths import (
     minutes_path,
 )
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, atomic_open, is_synthetic_wg, log
+from ..utils import LogLevel, Verbosity, atomic_open, log
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------
@@ -396,6 +396,7 @@ def build_events(
     registry: Registry,
     months: int = 12,
     verbose: Verbosity = Verbosity.STATUS,
+    group_backed: bool = True,
 ) -> List[Event]:
     """Collect events from every source and return them sorted desc.
 
@@ -403,6 +404,10 @@ def build_events(
     events (charter, chair appointments) ignore it per policy. The
     mailing-list-derived events are implicitly bounded by whatever
     `--months` was used when the mail was fetched.
+
+    `group_backed=False` skips the Datatracker group / ballot / doc-event
+    queries — for corpora with no backing WG (synthetic `x-` and
+    list-only corpora), where those lookups would be empty or noise.
     """
     threads = build_threads(wg, registry=registry)
     events: List[Event] = []
@@ -413,10 +418,10 @@ def build_events(
 
     # Datatracker is the authoritative source for governance and
     # document-lifecycle events. If those calls succeed we prefer them
-    # over the mail-subject heuristic for WGLC / adoption. Skipped
-    # entirely for synthetic / `x-` corpora — there's no WG record
-    # to query.
-    if not is_synthetic_wg(wg):
+    # over the mail-subject heuristic for WGLC / adoption. Skipped for
+    # corpora with no backing WG (synthetic `x-`, list-only) — there's
+    # no group record to query.
+    if group_backed:
         dt_events: List[Event] = []
         dt_events.extend(fetch_group_events(wg, months, verbose))
         dt_events.extend(fetch_role_history(wg, verbose))
@@ -449,15 +454,20 @@ def write_timeline_digest(
     registry: Registry,
     months: int = 12,
     verbose: Verbosity = Verbosity.STATUS,
+    group_backed: bool = True,
 ) -> Optional[str]:
     """Render `<wg>-_timeline.md`. Returns the file path, or None if empty.
 
     The link column substitutes the actual WG acronym so the file
     references resolve against the cache. `months` bounds the
     Datatracker document-event window (governance events always
-    appear, regardless).
+    appear, regardless). `group_backed=False` skips Datatracker group
+    queries for corpora with no backing WG.
     """
-    events = build_events(wg, cache_dir, registry, months=months, verbose=verbose)
+    events = build_events(
+        wg, cache_dir, registry, months=months, verbose=verbose,
+        group_backed=group_backed,
+    )
     if not events:
         return None
 
