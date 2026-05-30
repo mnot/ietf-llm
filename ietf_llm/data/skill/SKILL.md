@@ -41,8 +41,9 @@ specifically a WG.
 **Orienting / structural** ("tell me about `<corpus>`", "what's this WG
 up to?", "who's on it?") → `overview(corpus)`. ~30 lines: chairs/ADs,
 status + area, charter excerpt, key resources (repo / home page /
-chat), active drafts, top-5 open issues, top-5 recent threads, latest
-meeting + latest draft. Often enough on its own.
+chat), Internet-Drafts (RFCs collapsed), top-5 open issues, top-5
+recent threads, and the last ~10 timeline events (ballots, WGLCs,
+adoption calls, meetings, publications). Often enough on its own.
 
 **Topical / decision** (specific subject matter or chair rulings)
 → go straight to the tool below. `overview` is still cheap if the

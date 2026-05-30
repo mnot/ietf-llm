@@ -405,16 +405,21 @@ def _recent_threads(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     return rows[:limit]
 
 
-def _latest_event(cache_dir: str, wg: str, event_kind: str) -> Optional[str]:
-    """Return the most recent bullet of the given event kind, or None."""
+def _recent_timeline_events(cache_dir: str, wg: str, limit: int) -> List[str]:
+    """The most recent `limit` timeline events of any kind, newest first.
+
+    The "what is going on now" signal lives in the timeline — ballots,
+    WGLCs, adoption calls, meetings, publications. The overview surfaces
+    the tail of it rather than just the single latest meeting and draft,
+    which buried the events a consumer most needs in one call.
+    """
     timeline_path = _digest_path(cache_dir, wg, "timeline")
     if not os.path.isfile(timeline_path):
-        return None
-    filtered = query_digest(timeline_path, "timeline", event_kind=event_kind, limit=1)
-    for line in filtered.splitlines():
-        if line.startswith("- **"):
-            return line[2:].strip()
-    return None
+        return []
+    filtered = query_digest(timeline_path, "timeline", limit=limit)
+    return [
+        line[2:].strip() for line in filtered.splitlines() if line.startswith("- **")
+    ]
 
 
 # --- Public entry point ---------------------------------------------------
@@ -521,14 +526,10 @@ def build_overview(wg: str, cache_dir: str) -> str:
             out.append("| " + " | ".join(row) + " |")
         out.append("")
 
-    latest_meeting = _latest_event(cache_dir, wg, "meeting")
-    latest_draft = _latest_event(cache_dir, wg, "draft-published")
-    if latest_meeting or latest_draft:
-        out.append("## Latest events")
-        if latest_meeting:
-            out.append(f"- {latest_meeting}")
-        if latest_draft:
-            out.append(f"- {latest_draft}")
+    recent_events = _recent_timeline_events(cache_dir, wg, limit=10)
+    if recent_events:
+        out.append("## Recent activity")
+        out.extend(f"- {event}" for event in recent_events)
         out.append("")
 
     out.append("---")

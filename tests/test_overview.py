@@ -97,8 +97,31 @@ def test_overview_caps_threads_at_five(tmp_path: Path) -> None:
 def test_overview_includes_latest_events(tmp_path: Path) -> None:
     _seed_digests(tmp_path)
     out = build_overview("wg", str(tmp_path))
+    assert "## Recent activity" in out
     assert "IETF 125 meeting" in out
     assert "draft-ietf-wg-vocab-06" in out
+
+
+def test_overview_recent_activity_spans_event_kinds(tmp_path: Path) -> None:
+    # The section must surface the last ~10 events of ALL kinds (ballots,
+    # WGLC, adoption, ...), newest first — not just the latest meeting and
+    # draft, which is what buried the real signal before.
+    _seed_digests(tmp_path)
+    (tmp_path / "digests/timeline.md").write_text(
+        "# wg: timeline\n\n"
+        "## 2026\n\n"
+        "- **2026-05-20** — `draft-ietf-wg-foo`: Roman Danyliw → DISCUSS\n"
+        "- **2026-05-10** — WGLC for `draft-ietf-wg-foo` started\n"
+        "- **2026-05-01** — adoption call for `draft-ietf-wg-bar`\n"
+        "- **2026-04-15** — `draft-ietf-wg-foo-03` published\n"
+        "- **2026-03-16** — IETF 125 meeting held\n"
+    )
+    out = build_overview("wg", str(tmp_path))
+    activity = out.split("## Recent activity", 1)[1]
+    for marker in ("DISCUSS", "WGLC", "adoption call", "published", "IETF 125"):
+        assert marker in activity
+    # Newest first: the DISCUSS (May 20) precedes the meeting (Mar 16).
+    assert activity.index("DISCUSS") < activity.index("IETF 125")
 
 
 def test_overview_includes_call_pattern_hints(tmp_path: Path) -> None:
