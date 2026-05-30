@@ -45,6 +45,7 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
 # pylint: disable=wrong-import-position
+import datetime
 import fnmatch
 import functools
 import re
@@ -170,6 +171,52 @@ def _missing_digest_message(wg: str, kind: str) -> str:
     )
 
 
+def _corpus_exists(wg: str) -> bool:
+    """True if `wg` has a cache directory. Read-only: unlike
+    `get_wg_file_cache_dir`, it never creates one — so a typo'd corpus
+    name is not silently materialised by a query."""
+    return os.path.isdir(os.path.join(get_cache_dir(), wg, "files"))
+
+
+def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
+    """Guard a `tool_*(wg, ...)` so an unknown corpus returns a clear
+    message — rather than creating a junk cache dir and rendering a hollow
+    result from it."""
+
+    @functools.wraps(fn)
+    def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
+        if not _corpus_exists(wg):
+            return (
+                f"Unknown corpus '{wg}'. Nothing is cached under that name — "
+                f"run `ietf-llm {wg}` to gather it, or call `list_corpora` to "
+                "see what is available."
+            )
+        return fn(wg, *args, **kwargs)
+
+    return wrapper
+
+
+def _invalid_date_message(value: Optional[str], field: str) -> Optional[str]:
+    """Error message if `value` is set but not a real `YYYY-MM-DD` date,
+    else None — so a fat-fingered date fails loudly instead of silently
+    matching nothing."""
+    if not value:
+        return None
+    try:
+        datetime.datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return (
+            f"Invalid {field} date {value!r} — use ISO format YYYY-MM-DD "
+            "(e.g. 2026-05-01)."
+        )
+    return None
+
+
+#: Upper bound on `k` for search_corpus, so a huge value can't return
+#: thousands of chunks and blow the context window.
+_MAX_SEARCH_K = 100
+
+
 # --- Tool implementations (plain functions, also usable for unit tests) -----
 
 
@@ -251,10 +298,12 @@ def tool_list_corpora() -> str:
     )
 
 
+@_requires_corpus
 def tool_overview(wg: str) -> str:
     return _with_freshness(wg, build_overview(wg, get_wg_file_cache_dir(wg)))
 
 
+@_requires_corpus
 def tool_list_labels(wg: str) -> str:
     """The WG's curation vocabulary — GitHub issue labels AND mailing-
     list subject-prefix clusters — with their frequencies, sorted by
@@ -309,6 +358,7 @@ def tool_list_labels(wg: str) -> str:
     return _with_freshness(wg, "\n".join(lines))
 
 
+@_requires_corpus
 def tool_find_citations(wg: str, draft_name: str) -> str:
     """Return every thread / issue file that cites the given draft.
 
@@ -354,6 +404,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     return _with_freshness(wg, "\n".join(out))
 
 
+@_requires_corpus
 def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     cache = get_wg_file_cache_dir(wg)
     if not os.path.isdir(cache):
@@ -417,6 +468,7 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     return _with_freshness(wg, body)
 
 
+@_requires_corpus
 def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     wg: str,
     kind: str = "index",
@@ -435,6 +487,10 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     path = _digest_path(wg, kind)
     if not path:
         return _missing_digest_message(wg, kind)
+    for field, value in (("since", since), ("until", until)):
+        date_error = _invalid_date_message(value, field)
+        if date_error:
+            return date_error
     filtered = query_digest(
         path,
         kind,
@@ -652,6 +708,7 @@ def _read_thread_file_text(wg: str, file: str) -> Optional[str]:
         return None
 
 
+@_requires_corpus
 def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
     wg: str,
     query: str,
@@ -855,6 +912,7 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     return _with_freshness(wg, "\n".join(out))
 
 
+@_requires_corpus
 def tool_find_replies(
     wg: str,
     file: str,
@@ -942,6 +1000,7 @@ def tool_find_replies(
     return _with_freshness(wg, "\n".join(out))
 
 
+@_requires_corpus
 def tool_tally_positions(wg: str, file: str) -> str:
     """Heuristic position tally for one thread / issue file.
 
@@ -987,6 +1046,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
     return _with_freshness(wg, body)
 
 
+@_requires_corpus
 def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
     wg: str,
     query: str,
@@ -1003,6 +1063,16 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     snippet_chars: Optional[int] = None,
     collapse_versions: bool = True,
 ) -> str:
+    for field, value in (("since", since), ("until", until)):
+        date_error = _invalid_date_message(value, field)
+        if date_error:
+            return date_error
+    # Clamp k to a sane range so a huge value can't return thousands of
+    # chunks (context bomb) and a negative one can't behave oddly.
+    try:
+        k = max(1, min(int(k), _MAX_SEARCH_K))
+    except (TypeError, ValueError):
+        k = 10
     # Over-fetch when we will thin the results — `group_by="file"`
     # rolls up per file, and `collapse_versions` drops older draft revs —
     # so the final list still reaches `k` distinct items.
@@ -1151,6 +1221,7 @@ def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
     return None
 
 
+@_requires_corpus
 def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
     """Fetch multiple (file, chunk_idx [, end_chunk_idx]) chunks in one
     call. Returns the concatenated chunk texts, each prefixed with its
@@ -1204,6 +1275,7 @@ def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
     return _with_freshness(wg, "\n".join(out_parts))
 
 
+@_requires_corpus
 def tool_fetch_by_url(wg: str, url: str) -> str:
     """Resolve a citation URL to its cached corpus content.
 
@@ -1251,6 +1323,7 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
     return _with_freshness(wg, "\n".join(parts))
 
 
+@_requires_corpus
 def tool_get_chunk(  # pylint: disable=too-many-return-statements
     wg: str,
     file: str,
@@ -1323,6 +1396,7 @@ def _chunk_not_found_hint(wg: str, file: str, chunk_idx: int) -> str:
     )
 
 
+@_requires_corpus
 def tool_read_file_section(
     wg: str,
     file: str,

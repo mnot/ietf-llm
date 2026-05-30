@@ -109,6 +109,7 @@ def test_read_digest_people_kind_is_valid(isolated_home: Path) -> None:
 
 
 def test_read_digest_rejects_unknown_kind(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "digests/index.md", "# x\n")
     out = mcp_server.tool_read_digest("wg", "nonsense")
     # An *unknown* kind is distinguished from an ungathered one.
     assert "Unknown digest kind 'nonsense'" in out
@@ -130,8 +131,78 @@ def test_read_digest_absent_kind_reports_what_corpus_has(isolated_home: Path) ->
 
 
 def test_read_digest_no_digests_at_all(isolated_home: Path) -> None:
+    # Corpus exists (has a files dir) but no digests were generated.
+    write_cache_file(isolated_home, "wg", "charter.txt", "x")
     out = mcp_server.tool_read_digest("wg", "threads")
     assert "No digests for wg yet" in out
+
+
+# --- systematic invalid-input handling -----------------------------------
+
+
+def _nonexistent_corpus_calls(nx: str):
+    """One lambda per wg-taking tool, invoked against a corpus that does
+    not exist. New tools should be added here."""
+    return {
+        "overview": lambda: mcp_server.tool_overview(nx),
+        "read_digest": lambda: mcp_server.tool_read_digest(nx, "threads"),
+        "search": lambda: mcp_server.tool_search(nx, "q"),
+        "list_labels": lambda: mcp_server.tool_list_labels(nx),
+        "list_files": lambda: mcp_server.tool_list_files(nx),
+        "read_topic": lambda: mcp_server.tool_read_topic(nx, "q"),
+        "tally_positions": lambda: mcp_server.tool_tally_positions(nx, "threads/x.md"),
+        "find_replies": lambda: mcp_server.tool_find_replies(nx, "threads/x.md", 1),
+        "find_citations": lambda: mcp_server.tool_find_citations(nx, "draft-x"),
+        "get_chunk": lambda: mcp_server.tool_get_chunk(nx, "threads/x.md", 1),
+        "get_chunks_batch": lambda: mcp_server.tool_get_chunks_batch(
+            nx, [{"file": "threads/x.md", "chunk_idx": 1}]
+        ),
+        "fetch_by_url": lambda: mcp_server.tool_fetch_by_url(
+            nx, "https://www.w3.org/mid/x"
+        ),
+        "read_file_section": lambda: mcp_server.tool_read_file_section(nx, "charter.txt"),
+    }
+
+
+def test_unknown_corpus_rejected_without_side_effects(isolated_home: Path) -> None:
+    # Every wg-taking tool must reject a typo'd corpus with a clear message
+    # — and must NOT create a junk cache directory just by being queried.
+    nx = "typo-corpus-xyz"
+    cache_dir = isolated_home / ".cache" / "ietf-llm" / nx
+    for name, call in _nonexistent_corpus_calls(nx).items():
+        out = call()
+        assert f"Unknown corpus '{nx}'" in out, f"{name}: {out[:80]!r}"
+        assert not cache_dir.exists(), f"{name} created a cache dir for a typo"
+
+
+def test_invalid_date_rejected_not_silently_empty(isolated_home: Path) -> None:
+    # A malformed or impossible date must fail loudly, not silently match
+    # nothing (which reads as "no activity").
+    write_cache_file(isolated_home, "wg", "digests/threads.md", "# threads\n")
+    for bad in ("not-a-date", "2026-13-40", "05/01/2026"):
+        assert "Invalid" in mcp_server.tool_read_digest("wg", "threads", since=bad)
+        assert "Invalid" in mcp_server.tool_read_digest("wg", "threads", until=bad)
+        assert "Invalid" in mcp_server.tool_search("wg", "q", since=bad)
+    # A valid date is not rejected.
+    assert "Invalid" not in mcp_server.tool_read_digest(
+        "wg", "threads", since="2026-04-01"
+    )
+
+
+def test_search_k_clamped_no_crash(isolated_home: Path) -> None:
+    # A huge or negative k must not crash or return an unbounded list.
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-01-01-t.md",
+        "# T\n\n## Messages\n\n### [1] 2026-01-01 09:00 — Alice\n\nbody.\n",
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    for bad_k in (100000, -5, 0):
+        out = mcp_server.tool_search("wg", "anything", k=bad_k)
+        assert isinstance(out, str)
+        n_hits = sum(1 for ln in out.splitlines() if ln.startswith("[") and "file=" in ln)
+        assert n_hits <= 100
 
 
 def test_collapse_draft_versions() -> None:

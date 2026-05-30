@@ -308,6 +308,7 @@ def test_find_replies_returns_descendants_in_order(
 
 
 def test_find_replies_refuses_issue_files(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "x.txt", "x")  # corpus must exist
     out = mcp_server.tool_find_replies(
         "wg", "issues/org-repo/1.md", chunk_idx=1,
     )
