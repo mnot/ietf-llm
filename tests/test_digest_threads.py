@@ -84,6 +84,48 @@ def test_threads_sorted_by_last_activity_desc(isolated_home: Path) -> None:
     assert 0 < new_pos < old_pos
 
 
+def test_threads_digest_roundtrips_through_query_digest(
+    isolated_home: Path,
+) -> None:
+    # Writer -> reader round-trip. The real threads digest, fed back
+    # through query_digest, must honour limit / since with the header
+    # appearing exactly once (no duplicated unfiltered copy). This is
+    # the structural guard for the class of bug where the reader's
+    # preamble logic diverges from the shape the writer emits: the
+    # threads writer puts one table directly under the `# ` title with
+    # no `## ` heading, which earlier query_digest fixtures never did.
+    from ietf_llm.digest.query import query_digest
+
+    threads = [
+        ("Topic A", "Mon, 02 Mar 2026 10:00:00 +0000"),
+        ("Topic B", "Mon, 09 Mar 2026 10:00:00 +0000"),
+        ("Topic C", "Mon, 16 Mar 2026 10:00:00 +0000"),
+        ("Topic D", "Mon, 04 May 2026 10:00:00 +0000"),
+    ]
+    for i, (subject, when) in enumerate(threads, start=1):
+        write_eml(isolated_home, "wg", "list", i, subject, "Alice <a@x>", when)
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    path = str(Path(get_wg_file_cache_dir("wg")) / "digests" / "threads.md")
+
+    def data_rows(md: str) -> list[str]:
+        return [
+            ln
+            for ln in md.splitlines()
+            if ln.startswith("| ")
+            and "Subject" not in ln
+            and set(ln.strip()) - set("|-: ")
+        ]
+
+    limited = query_digest(path, "threads", limit=2)
+    assert len(data_rows(limited)) == 2  # limit truncates, not all four
+    assert limited.count("| Subject |") == 1  # header not duplicated
+
+    recent = query_digest(path, "threads", since="2026-04-01")
+    assert "Topic D" in recent  # May activity kept
+    assert "Topic A" not in recent  # March activity dropped
+    assert recent.count("| Subject |") == 1
+
+
 def test_malformed_eml_is_skipped_not_fatal(isolated_home: Path) -> None:
     # A garbage .eml in the IMAP cache must not abort the digest; the
     # narrowed except in _build_threads_digest catches the malformed
