@@ -87,9 +87,11 @@ topic is unfamiliar and you want terms to search for.
   shows a `rel=` score — discount low ones as possible off-topic noise —
   and the header flags when more matched than were shown. For a
   *completeness* question ("the whole controversy"), don't trust one
-  call: raise `k`, scope with `file_pattern=` (e.g. a `[mlkem]` cluster),
-  read a thread end-to-end with `read_file_section`, or enumerate the
-  cluster with `read_digest("threads", subject="[mlkem]")`.
+  call: raise `k`; scope `read_topic` with `file_pattern=`, which matches
+  the thread filename (e.g. `"%mlkem%"`); read a thread end-to-end with
+  `read_file_section`; or enumerate a subject cluster with
+  `read_digest("threads", subject="<prefix>")`, where `<prefix>` is one
+  `list_labels` actually reports for this corpus.
 
   **If `read_topic` returns a thread that looks like a chair poll**
   ("please reply indicating which option you prefer", numbered
@@ -98,10 +100,11 @@ topic is unfamiliar and you want terms to search for.
   detection bucket'll show the option counts the consumer is
   actually asking about.
 - _"what other threads cover this topic?"_, _"what's the broader
-  context for thread X?"_ → `list_labels(corpus)` shows the WG's
-  `[xxx]`-style subject prefixes; then
-  `read_digest(corpus, kind="threads", subject="[mlkem]")` returns
-  every thread in that cluster. Multiple parallel threads on one
+  context for thread X?"_ → `list_labels(corpus)` **first** — it reports
+  THIS corpus's actual `[xxx]`-style subject prefixes (many WGs/gathers
+  have none; don't assume a prefix like `[mlkem]` exists). Then
+  `read_digest(corpus, kind="threads", subject="<one it reported>")`
+  returns every thread in that cluster. Multiple parallel threads on one
   topic are common (e.g. "WebBotAuth Direction" + "Reframing the
   Direction" + "Architectural Limitations" in one week) — the
   cluster filter pulls them together.

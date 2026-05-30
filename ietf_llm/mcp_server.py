@@ -1821,9 +1821,12 @@ def main() -> None:
              | "threads"  — one row per mailing list thread. Filters:
                             since/until ("YYYY-MM-DD"), min_messages,
                             limit, subject (substring on the thread
-                            subject — high-value for WGs that don't
-                            tag GitHub issues but cluster topics on
-                            the list, e.g. TLS with `[mlkem]`, `[ech]`).
+                            subject — high-value for WGs that cluster
+                            topics on the list with `[xxx]` prefixes).
+                            Call `list_labels` first for THIS corpus's
+                            actual prefixes; many gathers have none, so
+                            do not assume a specific one (e.g. `[mlkem]`)
+                            exists.
                             `sort="activity"` ranks by message count
                             (where the back-and-forth is) instead of
                             recency — pair with `since=` + `min_messages=`
