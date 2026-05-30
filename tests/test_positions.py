@@ -46,6 +46,28 @@ def test_i_support_phrase() -> None:
     assert conf == "high"
 
 
+def test_wglc_review_idioms_count_as_support() -> None:
+    # A WG Last Call rarely uses +1/-1; reviewers say "ready to progress",
+    # "in good shape", "looks good", "no objection". These register as
+    # low-confidence support so a clearly-supportive WGLC thread is not
+    # tallied at 0% coverage.
+    for body in (
+        "I have reviewed the document, and I think it is generally "
+        "ready to progress.",
+        "I think the document is in a good shape.",
+        "This looks good to me.",
+        "I have no objection to publishing this.",
+    ):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert label == "support", body
+        assert conf == "low", body
+
+
+def test_unrelated_prose_is_no_position() -> None:
+    label, _conf, _excerpt, _poll = extract_position("The weather is nice today.\n")
+    assert label == "no-position"
+
+
 def test_i_object_phrase() -> None:
     label, _conf, _excerpt, _poll = extract_position(
         "I object to this draft as written.\n"

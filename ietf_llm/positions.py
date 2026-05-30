@@ -100,9 +100,23 @@ _STRONG_CONDITIONAL = re.compile(
 # few lines) when the strong patterns miss. Conservative wording
 # because a body-anywhere match catches rhetorical / hypothetical uses
 # that the strong-line-start patterns wouldn't.
+# Includes WGLC-review idioms ("ready to progress", "in good shape",
+# "looks good", "no objection"): a Working Group Last Call rarely uses
+# `+1`/`-1`, so without these a clearly-supportive review thread tallied
+# 0% coverage. Low confidence, since a body-anywhere match also catches
+# negated ("not ready to progress") or quoted uses.
 _WEAK_SUPPORT = re.compile(
-    r"\b(?:I\s+(?:do\s+)?support|in\s+favo[u]?r\s+of|fine\s+with\s+me)\b",
-    re.IGNORECASE,
+    r"""\b(?:
+        I\s+(?:do\s+)?support
+      | in\s+favo[u]?r\s+of
+      | fine\s+with\s+me
+      | ready\s+to\s+(?:progress|advance|publish|be\s+published|go\s+forward|ship)
+      | ready\s+for\s+(?:publication|last\s+call|wglc|the\s+rfc\s+editor)
+      | (?:in\s+)?good\s+shape
+      | looks?\s+good(?:\s+to\s+me)?
+      | no\s+objection(?:s)?
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
 )
 _WEAK_OPPOSE = re.compile(
     r"\b(?:I\s+(?:do\s+)?oppose|strongly\s+against|cannot\s+support)\b",
