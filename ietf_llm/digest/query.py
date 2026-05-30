@@ -370,10 +370,21 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
 
 
 def _extract_preamble(text: str) -> str:
-    """Return everything before the first `## ` section heading."""
+    """Return the leading prose (title + description) before the first
+    table or sub-heading.
+
+    Stops at whichever comes first: a level-2+ heading (`## …`) or a
+    table row (`| … |`). The table boundary matters for digests whose
+    single table sits directly under the `# ` title with no intervening
+    `## ` heading (threads, people): without it the whole *unfiltered*
+    table is swallowed into the preamble and then re-emitted alongside
+    the filtered copy — duplicating the output and burying the `limit` /
+    `since` filtering that was applied only to the second copy.
+    """
     out: List[str] = []
     for line in text.splitlines():
-        if line.startswith("## "):
+        head = _HEADING_RE.match(line)
+        if (head and len(head.group(1)) >= 2) or line.lstrip().startswith("|"):
             break
         out.append(line)
     return "\n".join(out)

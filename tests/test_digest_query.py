@@ -229,6 +229,58 @@ def test_query_digest_handles_missing_file(tmp_path: Path) -> None:
     assert query_digest(str(tmp_path / "nope.md"), "issues") == ""
 
 
+def _threads_digest_file(tmp_path: Path) -> Path:
+    # A single-table digest whose table sits directly under the `# `
+    # title with no `## ` sub-heading — the threads / people shape.
+    text = (
+        "# wg: mailing list threads digest\n\n"
+        "_3 threads across 9 messages._\n\n"
+        "| Subject | Msgs | First | Last | File |\n"
+        "|---------|------|-------|------|------|\n"
+        "| Recent thing | 5 | 2026-05-01 | 2026-05-20 | `threads/a.md` |\n"
+        "| Middle thing | 3 | 2026-03-01 | 2026-04-10 | `threads/b.md` |\n"
+        "| Old thing | 1 | 2025-06-01 | 2025-06-01 | `threads/c.md` |\n"
+    )
+    path = tmp_path / "wg-_threads.md"
+    path.write_text(text)
+    return path
+
+
+def _thread_data_rows(out: str) -> list[str]:
+    return [
+        line
+        for line in out.splitlines()
+        if line.startswith("| ")
+        and "Subject" not in line
+        and set(line.strip()) - set("|-: ")
+    ]
+
+
+def test_threads_single_table_limit_applies(tmp_path: Path) -> None:
+    # Regression: the table is under the `# ` title with no `## `, so the
+    # preamble must NOT swallow it. limit must actually truncate, and the
+    # header row must appear exactly once (no duplicated/unfiltered copy).
+    path = _threads_digest_file(tmp_path)
+    out = query_digest(str(path), "threads", limit=2)
+    assert len(_thread_data_rows(out)) == 2
+    assert out.count("| Subject |") == 1
+
+
+def test_threads_single_table_since_filters_on_last_activity(tmp_path: Path) -> None:
+    path = _threads_digest_file(tmp_path)
+    out = query_digest(str(path), "threads", since="2026-04-01")
+    # "Old thing" (last 2025-06) drops; the other two (last in 2026) stay.
+    assert "Old thing" not in out
+    assert "Recent thing" in out
+    assert "Middle thing" in out
+    assert out.count("| Subject |") == 1
+
+
+def test_threads_single_table_no_filter_verbatim(tmp_path: Path) -> None:
+    path = _threads_digest_file(tmp_path)
+    assert query_digest(str(path), "threads") == path.read_text()
+
+
 # --- timeline filter ------------------------------------------------------
 
 
