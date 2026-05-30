@@ -124,3 +124,50 @@ def test_persisted_sources_count_on_rerun(
     assert main_mod._resolve_corpus_shape(
         args, persisted, Verbosity.QUIET
     ) == (False, False)
+
+
+# --- gather plan summary (shown at gather start) --------------------------
+
+
+def _plan_args(**kw: Any) -> argparse.Namespace:
+    base: Dict[str, Any] = {
+        "months": 12,
+        "new_drafts": False,
+        "author": None,
+        "draft": None,
+        "mailing_list": None,
+        "github": None,
+        "add_mentioned_drafts": False,
+        "github_label": None,
+        "exclude_github_label": None,
+        "no_embed": False,
+        "summarize": False,
+    }
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_gather_plan_summary_lists_sources_and_scope() -> None:
+    out = main_mod._gather_plan_summary(
+        _plan_args(months=6, github=["httpwg/http-core"], mailing_list=["last-call"])
+    )
+    assert "months=6" in out
+    assert "github: httpwg/http-core" in out
+    assert "lists: last-call" in out
+    assert "embed=on" in out
+
+
+def test_gather_plan_summary_author_and_new_drafts() -> None:
+    assert "author=mnot@mnot.net" in main_mod._gather_plan_summary(
+        _plan_args(author="mnot@mnot.net")
+    )
+    assert "new-drafts" in main_mod._gather_plan_summary(_plan_args(new_drafts=True))
+
+
+def test_gather_plan_summary_caps_long_lists() -> None:
+    out = main_mod._gather_plan_summary(_plan_args(draft=["a", "b", "c", "d", "e"]))
+    assert "a, b, c (+2 more)" in out
+
+
+def test_gather_plan_summary_flags_no_embed() -> None:
+    assert "embed=off" in main_mod._gather_plan_summary(_plan_args(no_embed=True))

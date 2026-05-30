@@ -601,6 +601,40 @@ def _gather_mentioned_drafts(
         config.save(args.wg, SCOPE, cfg)
 
 
+def _gather_plan_summary(args: argparse.Namespace) -> str:
+    """One-line summary of the effective (saved + CLI) gather config, so a
+    re-run shows what it is about to do — the persisted sources and scope,
+    not just the corpus name."""
+
+    def _brief(items: "Iterable[str]", limit: int = 3) -> str:
+        items = list(items)
+        if len(items) <= limit:
+            return ", ".join(items)
+        return ", ".join(items[:limit]) + f" (+{len(items) - limit} more)"
+
+    parts: List[str] = [f"months={args.months}"]
+    if args.new_drafts:
+        parts.append("new-drafts (rolling window)")
+    if args.author:
+        parts.append(f"author={args.author}")
+    if args.draft:
+        parts.append(f"drafts: {_brief(args.draft)}")
+    if args.mailing_list:
+        parts.append(f"lists: {_brief(args.mailing_list)}")
+    if args.github:
+        parts.append(f"github: {_brief(args.github)}")
+    if args.add_mentioned_drafts:
+        parts.append("add-mentioned-drafts")
+    if args.github_label:
+        parts.append(f"labels: {_brief(args.github_label)}")
+    if args.exclude_github_label:
+        parts.append(f"exclude-labels: {_brief(args.exclude_github_label)}")
+    parts.append("embed=off" if args.no_embed else "embed=on")
+    if args.summarize:
+        parts.append("summarize")
+    return " · ".join(parts)
+
+
 def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     """Run the full gather pipeline for a single WG.
 
@@ -704,6 +738,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             label = "Processing custom corpus"
         print(f"{label}: {args.wg}", file=sys.stderr)
         print(f"Cache: {cache_dir}", file=sys.stderr)
+        print(f"Config: {_gather_plan_summary(args)}", file=sys.stderr)
         if args.clear_cache:
             print("Clear cache: re-downloading all materials.", file=sys.stderr)
         print("-" * 40, file=sys.stderr)
