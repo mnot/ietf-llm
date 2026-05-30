@@ -89,7 +89,9 @@ topic is unfamiliar and you want terms to search for.
   → `read_topic(corpus, "X")`. Returns full messages (not snippets) in
   date order across threads and issues. Add `include_replies=True`
   when you want sub-thread descendants pulled in even if they don't
-  themselves match the query.
+  themselves match the query. For a *synthesis* task where the gist of
+  each message is enough, pass `body_chars=` (e.g. 800) to cap bodies and
+  spend far less context.
 
   **It's a relevance-ranked slice, not the whole debate.** Each message
   shows a `rel=` score — discount low ones as possible off-topic noise —

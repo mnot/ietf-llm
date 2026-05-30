@@ -795,7 +795,13 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     file_pattern: Optional[str] = None,
     k: int = 20,
     include_replies: bool = False,
+    body_chars: Optional[int] = None,
 ) -> str:
+    # Per-message body cap: default 4000, but a synthesis task can dial it
+    # down to spend less context. Clamp to [200, default] — lowering only.
+    body_cap = _READ_TOPIC_MAX_BODY_CHARS
+    if body_chars is not None and body_chars > 0:
+        body_cap = max(100, min(body_chars, _READ_TOPIC_MAX_BODY_CHARS))
     # Clamp k before widening, so a misuse (k=500) doesn't generate a
     # 1500-row SQL OR-chain that gets thrown away by the render cap.
     if k > _READ_TOPIC_MAX_K:
@@ -1006,12 +1012,12 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         out.append("  ·  ".join(meta_bits))
         out.append("")
         body = _strip_message_header(text).strip()
-        if len(body) > _READ_TOPIC_MAX_BODY_CHARS:
-            body = body[: _READ_TOPIC_MAX_BODY_CHARS - 1] + "…"
+        if len(body) > body_cap:
+            body = body[: body_cap - 1] + "…"
             out.append(body)
             out.append("")
             out.append(
-                f"_[message truncated at {_READ_TOPIC_MAX_BODY_CHARS} "
+                f"_[message truncated at {body_cap} "
                 f"chars; full body: `get_chunk_text({wg!r}, {file!r}, "
                 f"{chunk_idx})`]_"
             )
@@ -2140,11 +2146,17 @@ def main() -> None:
         file_pattern: Optional[str] = None,
         k: int = 20,
         include_replies: bool = False,
+        body_chars: Optional[int] = None,
     ) -> str:
         """Read a corpus's debate as a chronological narrative
         across mailing list threads and GitHub issues. Returns the full
         text of every matched message — author, date, role, archived-at
         URL, body — in date order, oldest first.
+
+        `body_chars` caps each message body (default 4000; min 100). Dial
+        it down for a synthesis task where the gist of each message is
+        enough — the slice costs far less context, and a truncated body
+        still points at `get_chunk_text` for the full text.
 
         Use this when the user wants the **arc** of a debate, not the
         ranked hits. The unit is a message, not a chunk: each matched
@@ -2209,6 +2221,7 @@ def main() -> None:
             file_pattern=file_pattern,
             k=k,
             include_replies=include_replies,
+            body_chars=body_chars,
         )
 
     @server.tool()

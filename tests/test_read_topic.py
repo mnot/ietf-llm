@@ -314,6 +314,21 @@ def test_read_topic_no_thread_map_for_single_thread(isolated_home: Path) -> None
     assert "## Threads in this topic" not in out
 
 
+def test_read_topic_body_chars_caps_message_length(isolated_home: Path) -> None:
+    # body_chars dials down the per-message body for a synthesis task.
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-04-10-a.md",
+        "# A\n\n## Messages\n\n"
+        "### [1] 2026-04-10 09:00 — Alice\n\nMLKEM " + ("blah " * 300) + "\n",
+    )
+    _build_with_stub("wg")
+    out = mcp_server.tool_read_topic("wg", "MLKEM", k=5, body_chars=100)
+    assert "truncated at 100 chars" in out
+    # Default (no cap) does not truncate this ~1500-char body at 100.
+    out_default = mcp_server.tool_read_topic("wg", "MLKEM", k=5)
+    assert "truncated at 100 chars" not in out_default
+
+
 def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:
     # Only a draft is indexed — read_topic should return a hint pointing
     # the consumer at search_corpus rather than silently producing an
