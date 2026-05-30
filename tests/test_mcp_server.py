@@ -836,15 +836,26 @@ def test_load_server_instructions_strips_frontmatter() -> None:
 
 
 def test_load_server_instructions_includes_load_bearing_content() -> None:
-    # Spot-check that the routing rules and IETF norms the skill carries
-    # actually land in the instructions string. If this regresses, the
-    # non-Claude harnesses lose the guidance.
+    # Spot-check that the routing rules the skill carries actually land
+    # in the instructions string. If this regresses, the non-Claude
+    # harnesses lose the guidance.
     out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
     assert out is not None
     # Routing rules.
     assert "overview" in out
     assert "read_digest" in out
     assert "search_corpus" in out
-    # IETF norms — the load-bearing interpretive guidance.
+    # IETF interpretive norms now live in IETF.md, fetched on demand —
+    # the instructions must point at the tool that returns them.
+    assert "read_ietf_norms" in out
+
+
+def test_read_ietf_norms_returns_bundled_doc() -> None:
+    # The interpretive norms (consensus, list-vs-meeting, attribution)
+    # are factored out of SKILL.md into IETF.md and exposed via this
+    # tool. The load-bearing phrases must survive the move so callers
+    # that pull the doc get the same guidance.
+    out = mcp_server.tool_read_ietf_norms()
     assert "Consensus is chair-declared" in out
     assert "Decisions happen on the mailing list" in out
+    assert "Individuals, not employers" in out

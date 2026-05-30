@@ -303,6 +303,24 @@ def tool_overview(wg: str) -> str:
     return _with_freshness(wg, build_overview(wg, get_wg_file_cache_dir(wg)))
 
 
+def tool_read_ietf_norms() -> str:
+    """Return the bundled IETF.md — interpretive norms for reading
+    a corpus (consensus, who-speaks-for-whom, list-vs-meeting).
+
+    Factored out of the server instructions so the always-on context
+    stays focused on tool routing; clients pull this on demand when
+    the question is "what did the WG decide / who supports what."
+    """
+    try:
+        path = resources.files("ietf_llm").joinpath("data/skill/IETF.md")
+        return path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return (
+            "(IETF.md is missing from the installed package — "
+            "try reinstalling: pipx install --force ietf-llm)"
+        )
+
+
 @_requires_corpus
 def tool_list_labels(wg: str) -> str:
     """The WG's curation vocabulary — GitHub issue labels AND mailing-
@@ -1795,9 +1813,28 @@ def main() -> None:
 
         Other ietf-llm tools: `read_digest`, `search_corpus`,
         `read_topic`, `get_chunk_text`, `read_file_section`,
-        `list_files`, `list_labels`.
+        `list_files`, `list_labels`. Interpretive norms (how
+        consensus works, who-speaks-for-whom, list vs meeting):
+        `read_ietf_norms`.
         """
         return await _offload(tool_overview, corpus)
+
+    @server.tool()
+    async def read_ietf_norms() -> str:
+        """Return the interpretive norms for reading an IETF corpus:
+        how consensus works (chair-declared, not vote-counted), how
+        to attribute positions (individuals, not employers), and
+        why mailing-list confirmation — not meeting agreement —
+        is the binding decision.
+
+        **Call this before** characterising what a WG decided, who
+        supports what, or where the group stands. Not needed for
+        catalogue lookups (`read_digest`), text fetches
+        (`read_file_section`), or structural questions (`overview`).
+        The content is stable across corpora — one call per session
+        is enough.
+        """
+        return await _offload(tool_read_ietf_norms)
 
     @server.tool()
     async def list_labels(corpus: str) -> str:
