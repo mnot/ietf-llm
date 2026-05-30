@@ -102,26 +102,33 @@ def test_overview_includes_latest_events(tmp_path: Path) -> None:
     assert "draft-ietf-wg-vocab-06" in out
 
 
-def test_overview_recent_activity_spans_event_kinds(tmp_path: Path) -> None:
-    # The section must surface the last ~10 events of ALL kinds (ballots,
-    # WGLC, adoption, ...), newest first — not just the latest meeting and
-    # draft, which is what buried the real signal before.
+def test_overview_recent_activity_folds_mechanical_events(tmp_path: Path) -> None:
+    # Discussion / decision events (WGLC, adoption, meeting) are shown as
+    # lines; the two mechanical classes — automated I-D Action publications
+    # (`… published · threads/…`) and per-AD IESG ballot positions
+    # (`… → …`) — are folded into counts so they do not crowd the list.
     _seed_digests(tmp_path)
     (tmp_path / "digests/timeline.md").write_text(
         "# wg: timeline\n\n"
         "## 2026\n\n"
-        "- **2026-05-20** — `draft-ietf-wg-foo`: Roman Danyliw → DISCUSS\n"
-        "- **2026-05-10** — WGLC for `draft-ietf-wg-foo` started\n"
-        "- **2026-05-01** — adoption call for `draft-ietf-wg-bar`\n"
-        "- **2026-04-15** — `draft-ietf-wg-foo-03` published\n"
+        "- **2026-05-20** — WGLC for `draft-ietf-wg-foo` started\n"
+        "- **2026-05-18** — `draft-ietf-wg-foo`: Roman Danyliw → DISCUSS · ballots/x\n"
+        "- **2026-05-17** — `draft-ietf-wg-foo`: Alice → No Objection · ballots/x\n"
+        "- **2026-05-10** — adoption call for `draft-ietf-wg-bar`\n"
+        "- **2026-04-15** — `draft-ietf-wg-foo-03` published · `threads/t.md`\n"
         "- **2026-03-16** — IETF 125 meeting held\n"
     )
     out = build_overview("wg", str(tmp_path))
-    activity = out.split("## Recent activity", 1)[1]
-    for marker in ("DISCUSS", "WGLC", "adoption call", "published", "IETF 125"):
-        assert marker in activity
-    # Newest first: the DISCUSS (May 20) precedes the meeting (Mar 16).
-    assert activity.index("DISCUSS") < activity.index("IETF 125")
+    activity = out.split("## Recent activity", 1)[1].split("## ", 1)[0]
+    # Discussion events shown as lines.
+    assert "WGLC" in activity
+    assert "adoption call" in activity
+    assert "IETF 125" in activity
+    # Mechanical events folded into counts, not shown as lines.
+    assert "→ DISCUSS" not in activity
+    assert "No Objection" not in activity
+    assert "1 I-D Action draft publication(s)" in activity
+    assert "2 IESG ballot position(s)" in activity
 
 
 def test_overview_includes_call_pattern_hints(tmp_path: Path) -> None:

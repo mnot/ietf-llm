@@ -463,21 +463,47 @@ def _recent_threads(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
     return rows[:limit]
 
 
-def _recent_timeline_events(cache_dir: str, wg: str, limit: int) -> List[str]:
-    """The most recent `limit` timeline events of any kind, newest first.
+class _RecentActivity(NamedTuple):
+    """Recent timeline activity, with mechanical events folded to counts."""
 
-    The "what is going on now" signal lives in the timeline — ballots,
-    WGLCs, adoption calls, meetings, publications. The overview surfaces
-    the tail of it rather than just the single latest meeting and draft,
-    which buried the events a consumer most needs in one call.
+    events: List[str]  # discussion / decision events, newest first
+    idaction: int  # automated I-D Action draft publications
+    ballots: int  # individual IESG ballot positions
+
+
+def _recent_activity(cache_dir: str, wg: str, limit: int) -> _RecentActivity:
+    """The recent discussion / decision events (WGLCs, adoption calls,
+    meetings, RFC milestones), newest first, with the two mechanical event
+    classes folded into counts so they do not crowd out the human signal:
+
+    - **I-D Action publications** (`… published · \\`threads/…\\``) — robot
+      announcements of new draft revisions.
+    - **IESG ballot positions** (`… → No Objection · ballots/…`) — routine
+      per-AD clearing; a single contested draft can flood the list with a
+      dozen. The one position that matters, a DISCUSS, is surfaced by the
+      blocked-drafts section above, so folding the rest loses nothing.
+
+    An RFC milestone (`… published as RFC`) is kept — it is a real event,
+    not a routine revision.
     """
     timeline_path = _digest_path(cache_dir, wg, "timeline")
     if not os.path.isfile(timeline_path):
-        return []
-    filtered = query_digest(timeline_path, "timeline", limit=limit)
-    return [
+        return _RecentActivity([], 0, 0)
+    filtered = query_digest(timeline_path, "timeline", limit=max(limit * 4, 40))
+    rows = [
         line[2:].strip() for line in filtered.splitlines() if line.startswith("- **")
     ]
+    events: List[str] = []
+    idaction = 0
+    ballots = 0
+    for row in rows:
+        if " published · " in row:
+            idaction += 1
+        elif " → " in row:  # an IESG ballot position
+            ballots += 1
+        elif len(events) < limit:
+            events.append(row)
+    return _RecentActivity(events, idaction, ballots)
 
 
 # --- Public entry point ---------------------------------------------------
@@ -600,10 +626,20 @@ def build_overview(wg: str, cache_dir: str) -> str:
             out.append("| " + " | ".join(row) + " |")
         out.append("")
 
-    recent_events = _recent_timeline_events(cache_dir, wg, limit=10)
-    if recent_events:
+    activity = _recent_activity(cache_dir, wg, limit=10)
+    if activity.events or activity.idaction or activity.ballots:
         out.append("## Recent activity")
-        out.extend(f"- {event}" for event in recent_events)
+        out.extend(f"- {event}" for event in activity.events)
+        folded = []
+        if activity.idaction:
+            folded.append(f"{activity.idaction} I-D Action draft publication(s)")
+        if activity.ballots:
+            folded.append(f"{activity.ballots} IESG ballot position(s)")
+        if folded:
+            out.append(
+                f"_+ {', '.join(folded)} in this span (mechanical, folded; the "
+                "timeline digest has them all)._"
+            )
         out.append("")
 
     out.append("---")
