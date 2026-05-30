@@ -69,9 +69,17 @@ topic is unfamiliar and you want terms to search for.
   argument) the `include_bodies` digest beats semantic search;
   reach for `search_corpus(corpus, "X", label="...")` only when you
   want ranking *inside* the cluster.
-- _"what did the WG decide about X?"_, _"position on X"_ →
-  `search_corpus(corpus, "X", state="closed")`. The chairs' resolution
-  lives in closed issues; open threads can be mid-debate noise.
+- _"what did the WG decide about X?"_, _"how was X resolved / what's the
+  disposition?"_, _"position on X"_ → the outcome is whatever the
+  **chairs declared** — this corpus does NOT compute consensus, so go to
+  their words, not a vote count or your own read of the thread. Filter to
+  the chair messages: `search_corpus(corpus, "X", role="Chair")`, and add
+  `file_pattern="threads/<file>%"` (or an issue path) to pin it to one
+  thread. Companions: `search_corpus(corpus, "X", state="closed")` (a
+  chair-resolved issue carries the disposition), and
+  `tally_positions(corpus, "<file>")` whose **Chair statements** section
+  pulls out a thread's procedural declarations (consensus call, WGLC,
+  closure). Always prefer the chair's own message over a summary of it.
 - _"what's open / closed / labelled X?"_, _"who's a chair?"_,
   _"what happened in May?"_ → `read_digest(corpus, kind=..., filters)`.
 - _"what was said about X?"_ → `search_corpus(corpus, "X")` plus
