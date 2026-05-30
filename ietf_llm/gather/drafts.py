@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
-from .datatracker import iter_group_documents
+from .datatracker import iter_active_drafts_by_name, iter_group_documents
 from .documents_manifest import save_documents_manifest
 
 # `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
@@ -30,7 +30,9 @@ def normalize_draft_name(name: str) -> str:
 
 
 def get_wg_documents(
-    wg_name: str, verbose: Verbosity = Verbosity.STATUS
+    wg_name: str,
+    verbose: Verbosity = Verbosity.STATUS,
+    include_related: bool = False,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """List the WG's adopted drafts and published RFCs via the
     Datatracker JSON API (`/api/v1/doc/document/?group__acronym=<wg>`).
@@ -41,6 +43,12 @@ def get_wg_documents(
     surfaced). RFCs come from the group's `rfc` documents. Returns
     `{"drafts": [...], "rfcs": [...]}` in the shape
     `process_documents` consumes.
+
+    When `include_related` is True, also merges in currently-active
+    "related" drafts: individual submissions of the form
+    `draft-<author>-<wg>-<topic>` (matching Datatracker's documents-page
+    "Related Internet-Drafts and RFCs" section). Off by default — these
+    aren't adopted, so the volume can be large for a popular WG.
     """
     log(f"Finding documents for {wg_name}...", verbose, level=LogLevel.STATUS)
     group_type = get_group_type(wg_name)
@@ -65,6 +73,29 @@ def get_wg_documents(
         exp = obj.get("expires")
         if isinstance(exp, str) and exp:
             expires[name] = exp
+
+    # Related drafts share the same {name, rev, expires} shape; merging
+    # into the same dicts dedupes naturally if a name somehow appears
+    # in both queries.
+    if include_related and group_type:
+        for obj in iter_active_drafts_by_name(wg_name):
+            name = obj.get("name") or ""
+            # Position-2 check: `draft-<author>-<wg>-<topic>`. Splits
+            # out adoptions of other WGs whose name contains -<wg>-
+            # (e.g. draft-ietf-mailmaint-oauth-public) and ill-formed
+            # names where <wg> isn't the second slug.
+            parts = name.split("-")
+            if len(parts) < 4 or parts[2] != wg_name:
+                continue
+            rev = obj.get("rev")
+            if not isinstance(rev, str) or not rev.isdigit():
+                continue
+            rev_int = int(rev)
+            if name not in drafts or rev_int > drafts[name]:
+                drafts[name] = rev_int
+            exp = obj.get("expires")
+            if isinstance(exp, str) and exp:
+                expires[name] = exp
 
     rfcs: Dict[str, str] = {}
     for obj in iter_group_documents(wg_name, "rfc"):
@@ -225,15 +256,19 @@ def process_documents(
     wg_name: str,
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
+    include_related: bool = False,
 ) -> List[str]:
     """Download all revisions of WG drafts and RFCs as text.
 
     Drafts and RFCs live under `drafts/` in the WG cache. The
     `destination` argument is the WG's `files/` dir; we materialise
     the `drafts/` subdir as needed.
+
+    When `include_related` is True, also pulls active individual
+    `draft-<author>-<wg>-<topic>` drafts (see `get_wg_documents`).
     """
     updated = []
-    docs = get_wg_documents(wg_name, verbose)
+    docs = get_wg_documents(wg_name, verbose, include_related=include_related)
     out_dir = drafts_dir(destination)
     os.makedirs(out_dir, exist_ok=True)
 
