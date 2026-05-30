@@ -60,7 +60,10 @@ API, or a person's authored drafts from the documentauthor table.
 They short-circuit shape inference to `custom` (the name is a label, no
 group lookup) and persist, so a bare re-run re-evaluates the source.
 Explicit sources (`--draft` / `--mailing-list` / `--github`) compose
-onto any kind.
+onto any kind. `--add-mentioned-drafts` is a *derived* source: it
+reuses the citation scan to pull drafts the corpus cites but lacks,
+persisting the accumulated set (`mentioned_drafts`) so it stays sticky
+and is retained through the new-drafts prune.
 
 The gather pipeline gates Datatracker-sourced steps on a single
 `group_backed` boolean (true only for the `group` kind). `corpus.py`

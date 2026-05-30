@@ -366,6 +366,9 @@ ietf-llm [OPTIONS] <wg_shortname>
   draft `PERSON` has authored. `PERSON` is an email
   (`mnot@mnot.net`, recommended), a Datatracker person id, or an exact
   full name. Drafts only.
+- `--add-mentioned-drafts` — after gathering, pull any Internet-Drafts
+  the corpus's threads/issues mention but don't already include.
+  Composes onto any corpus; sticky (a draft stays once added).
 - `--github-label LABEL` / `--exclude-github-label LABEL` — filter
   issues by label; repeatable.
 - `--months N` — months of mailing list / meeting / new-draft history
