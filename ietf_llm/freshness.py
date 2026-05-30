@@ -79,12 +79,31 @@ def last_gathered(wg: str) -> Optional[datetime]:
     return when.astimezone(timezone.utc)
 
 
+def _humanize_age(age_days: int) -> str:
+    """`today` / `1 day ago` / `N days ago`."""
+    if age_days <= 0:
+        return "today"
+    if age_days == 1:
+        return "1 day ago"
+    return f"{age_days} days ago"
+
+
+def _stale_warning(wg: str, age_days: int, date: str) -> str:
+    """The escalated, stale-cache warning line (with refresh prompt)."""
+    return (
+        f"⚠ {wg} cache last gathered {age_days} days ago "
+        f"({date}); run `ietf-llm {wg}` to refresh."
+    )
+
+
 def staleness_warning(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[str]:
     """Return a one-line warning if the cache is older than the threshold.
 
     Returns None when the cache is fresh, or when we have no record of
     when it was last gathered (see module docstring for why we don't
-    warn on absence). Single line — callers prepend or print as-is.
+    warn on absence). Single line — callers prepend or print as-is. Used
+    by the export CLI, which only wants to speak up when something is
+    actually stale.
     """
     when = last_gathered(wg)
     if when is None:
@@ -92,11 +111,26 @@ def staleness_warning(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Option
     age_days = (datetime.now(timezone.utc) - when).days
     if age_days < threshold_days:
         return None
-    return (
-        f"⚠ {wg} cache last gathered {age_days} days ago "
-        f"({when.strftime('%Y-%m-%d')}); "
-        f"run `ietf-llm {wg}` to refresh."
-    )
+    return _stale_warning(wg, age_days, when.strftime("%Y-%m-%d"))
+
+
+def freshness_line(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[str]:
+    """A one-line freshness note for *every* top-level tool response.
+
+    Always reports when the corpus was gathered, so a consumer knows the
+    floor on their view (a question like "what happened today" is shaped
+    by it). Escalates to the `staleness_warning` refresh prompt once the
+    cache is older than `threshold_days`. Returns None only when there is
+    no record of the gather time (absence is silent — see module docstring).
+    """
+    when = last_gathered(wg)
+    if when is None:
+        return None
+    age_days = (datetime.now(timezone.utc) - when).days
+    date = when.strftime("%Y-%m-%d")
+    if age_days >= threshold_days:
+        return _stale_warning(wg, age_days, date)
+    return f"_{wg} corpus gathered {date} ({_humanize_age(age_days)})._"
 
 
 def _now_iso() -> str:

@@ -71,7 +71,7 @@ from .embeddings import (
     get_messages,
     search,
 )
-from .freshness import staleness_warning
+from .freshness import freshness_line
 from .gather.citations import normalize_draft_name
 from .paths import digest_kind_from_relpath, digest_path
 from .positions import (
@@ -141,16 +141,17 @@ def _digest_path(wg: str, kind: str) -> Optional[str]:
 
 
 def _with_freshness(wg: str, body: str) -> str:
-    """Prepend the staleness warning (if any) to a tool response.
+    """Prepend the freshness line (gather date, escalating to a refresh
+    warning when stale) to a tool response.
 
     Top-level tools call this; pivot tools (get_chunk_text,
-    read_file_section) skip it because the warning has already been
-    seen on the call that surfaced the file in the first place.
+    read_file_section) skip it because the line has already been seen on
+    the call that surfaced the file in the first place.
     """
-    warning = staleness_warning(wg)
-    if not warning:
+    line = freshness_line(wg)
+    if not line:
         return body
-    return f"{warning}\n\n{body}"
+    return f"{line}\n\n{body}"
 
 
 def _flatten_rationale(rationale: str, limit: int) -> str:

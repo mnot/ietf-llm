@@ -115,6 +115,27 @@ def test_read_digest_rejects_unknown_kind(isolated_home: Path) -> None:
     assert "Valid kinds" in out
 
 
+def test_top_level_response_carries_freshness_line_when_fresh(
+    isolated_home: Path,
+) -> None:
+    # _with_freshness now prepends the gather date to every top-level
+    # response, not only when the cache is stale.
+    from ietf_llm.freshness import record_gather
+
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
+    record_gather("wg")
+    out = mcp_server.tool_read_digest("wg", "people")
+    assert "gathered" in out.lower()
+    assert "# people" in out
+
+
+def test_top_level_response_silent_when_no_sentinel(isolated_home: Path) -> None:
+    # Legacy cache with no sentinel: no freshness line, just the body.
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
+    out = mcp_server.tool_read_digest("wg", "people")
+    assert "gathered" not in out.lower()
+
+
 # --- get_chunk_text digest-file hint + chunk-not-found hints ---------------
 
 

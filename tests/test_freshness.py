@@ -15,6 +15,7 @@ from pathlib import Path
 from ietf_llm import freshness
 from ietf_llm.freshness import (
     _sentinel_path,
+    freshness_line,
     last_gathered,
     record_gather,
     staleness_warning,
@@ -115,3 +116,41 @@ def test_custom_threshold_overrides_default(isolated_home: Path) -> None:
     assert staleness_warning("wg", threshold_days=1) is not None
     # Default threshold: still fresh.
     assert staleness_warning("wg") is None
+
+
+# --- freshness_line: always reports, escalates when stale ------------------
+
+
+def test_freshness_line_silent_when_sentinel_missing(isolated_home: Path) -> None:
+    assert freshness_line("legacy-wg") is None
+
+
+def test_freshness_line_reports_date_when_fresh(isolated_home: Path) -> None:
+    record_gather("wg")
+    line = freshness_line("wg")
+    assert line is not None
+    # Neutral, informational — the date with no refresh nag.
+    assert "gathered" in line.lower()
+    assert "today" in line
+    assert "⚠" not in line
+    assert "refresh" not in line
+
+
+def test_freshness_line_humanizes_age(isolated_home: Path) -> None:
+    record_gather("wg")
+    _backdate("wg", days=3)
+    line = freshness_line("wg")
+    assert line is not None
+    assert "3 days ago" in line
+    assert "⚠" not in line
+
+
+def test_freshness_line_escalates_to_warning_when_stale(isolated_home: Path) -> None:
+    record_gather("wg")
+    _backdate("wg", days=freshness.STALE_AFTER_DAYS + 1)
+    line = freshness_line("wg")
+    assert line is not None
+    # Same escalated text as staleness_warning.
+    assert line == staleness_warning("wg")
+    assert "⚠" in line
+    assert "ietf-llm wg" in line

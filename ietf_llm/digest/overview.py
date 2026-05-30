@@ -18,7 +18,6 @@ import os
 import re
 from typing import List, NamedTuple, Optional
 
-from ..freshness import last_gathered
 from ..paths import charter_path, group_path, threads_dir
 from .query import parse_md_tables, query_digest
 
@@ -273,8 +272,7 @@ def _charter_excerpt(
         kept = [
             ln
             for ln in raw.splitlines()
-            if not _RULE_LINE_RE.match(ln.strip())
-            and not _CHARTER_HEADER_RE.match(ln)
+            if not _RULE_LINE_RE.match(ln.strip()) and not _CHARTER_HEADER_RE.match(ln)
         ]
         para = " ".join(" ".join(kept).split())  # collapse whitespace
         # Skip headers / short procedural lines; the mission paragraph
@@ -437,18 +435,9 @@ def build_overview(wg: str, cache_dir: str) -> str:
     out: List[str] = []
     out.append(f"# {wg} — overview\n")
 
-    # Freshness signal right under the title. Without this, a
-    # consumer reads dates inside the overview (latest event,
-    # most-recent thread) and can't tell whether the corpus is
-    # current — recent feedback flagged exactly this: "latest events"
-    # was dated 2025-11-02 while threads were from May 2026, and the
-    # consumer didn't know which was the floor on their view.
-    gathered_at = last_gathered(wg)
-    if gathered_at is not None:
-        out.append(
-            f"_Corpus last gathered: **{gathered_at.strftime('%Y-%m-%d')}**. "
-            f"Run `ietf-llm {wg}` to refresh._\n"
-        )
+    # Freshness (the gather date, escalating to a refresh prompt when
+    # stale) is prepended by the MCP layer's `_with_freshness` on every
+    # top-level response, so the overview itself no longer repeats it.
 
     out.append("## Working Group")
     out.append(_leadership_summary(cache_dir, wg))

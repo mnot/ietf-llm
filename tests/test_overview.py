@@ -354,32 +354,6 @@ def test_overview_omits_charter_line_when_file_missing(tmp_path: Path) -> None:
     assert "charter.txt" not in out
 
 
-def test_overview_shows_last_gathered_when_sentinel_present(
-    tmp_path: Path, monkeypatch: object,
-) -> None:
-    # Stub the freshness lookup to return a known datetime — simpler
-    # than wiring the sentinel through this test's tmp_path layout
-    # (which doesn't match the production cache-root structure).
-    import datetime
-    from ietf_llm.digest import overview as overview_mod
-    fake = datetime.datetime(2026, 5, 27, tzinfo=datetime.timezone.utc)
-    # overview binds `last_gathered` at import time (from ..freshness
-    # import last_gathered), so patch the name where it's looked up.
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        overview_mod, "last_gathered", lambda _wg: fake,
-    )
-    _seed_digests(tmp_path)
-    out = build_overview("wg", str(tmp_path))
-    assert "2026-05-27" in out
-    assert "last gathered" in out.lower()
-
-
-def test_overview_omits_gathered_line_when_sentinel_missing(
-    tmp_path: Path,
-) -> None:
-    # No sentinel → silently omit the freshness line. We deliberately
-    # don't warn on missing sentinel; the cache may pre-date the
-    # freshness feature.
-    _seed_digests(tmp_path)
-    out = build_overview("wg", str(tmp_path))
-    assert "last gathered" not in out.lower()
+# Freshness is no longer self-reported by build_overview; it is
+# prepended by the MCP layer's _with_freshness on every top-level
+# response. See test_freshness.py (freshness_line) and test_mcp_server.py.
