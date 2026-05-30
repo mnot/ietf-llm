@@ -85,6 +85,44 @@ def test_elide_quotes_handles_trailing_quote() -> None:
     assert "> [4 quoted lines elided]" in result
 
 
+def test_elide_quotes_collapses_outlook_header_block() -> None:
+    # No `>` prefixes — Outlook/Exchange quoting. The reply is kept; the
+    # From:/Sent:/Subject: header and everything after it is elided.
+    text = (
+        "I disagree, mainly interop.\n\n"
+        "From: John Mattsson <john=40ericsson.com@dmarc.ietf.org>\n"
+        "Sent: Friday, November 7, 2025 2:12 AM\n"
+        "To: tls@ietf.org\n"
+        "Subject: [TLS] Re: WG Last Call\n\n"
+        "the entire prior thread re-quoted\nline two\nline three\n"
+    )
+    result = elide_quotes(text)
+    assert "I disagree, mainly interop." in result
+    assert "quoted reply trail elided" in result
+    assert "re-quoted" not in result
+    assert "From: John Mattsson" not in result
+
+
+def test_elide_quotes_collapses_on_wrote_attribution() -> None:
+    text = (
+        "My objection stands.\n\n"
+        "On 10/11/2025 16:26, Blumenthal, Uri - 0553 - MITLL wrote:\n"
+        "big quoted table\nrow 1\nrow 2\n"
+    )
+    result = elide_quotes(text)
+    assert "My objection stands." in result
+    assert "quoted reply trail elided" in result
+    assert "big quoted table" not in result
+
+
+def test_elide_quotes_keeps_prose_ending_in_wrote() -> None:
+    # "the authors wrote:" is prose, not an attribution — must not trigger.
+    text = "As the RFC authors wrote: the MUST is normative.\nMy own analysis.\n"
+    result = elide_quotes(text)
+    assert "quoted reply trail elided" not in result
+    assert "My own analysis." in result
+
+
 # --- build_threads ---------------------------------------------------------
 
 

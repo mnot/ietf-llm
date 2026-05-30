@@ -193,18 +193,74 @@ def _normalize_archived_at(value: Optional[str]) -> Optional[str]:
 # --- Quote elision ---------------------------------------------------------
 
 
-def elide_quotes(text: str, keep_threshold: int = 2) -> str:
-    """Collapse multi-line quoted runs into '> [N lines elided]'.
+#: An Outlook "-----Original Message-----" separator.
+_ORIGINAL_MSG_RE = re.compile(r"^-{2,}\s*Original Message\s*-{2,}\s*$", re.IGNORECASE)
 
-    Quoted lines (start with `>` after optional whitespace) appearing
-    in runs longer than `keep_threshold` are replaced with a single
-    marker line. Shorter runs are left untouched. The intent is that
-    a 30-line quote of the parent message becomes one line of noise
-    while a one-liner inline citation stays inline.
+
+def _is_attribution(stripped: str) -> bool:
+    """A no-`>` attribution line that introduces a quoted reply trail —
+    `On <date>, <Name> <addr> wrote:` and its wrapped tails. Needs a
+    quote-source signal (an address, or an `On <date>`) so it doesn't fire
+    on prose like 'the authors wrote:'."""
+    if not stripped.rstrip().endswith("wrote:"):
+        return False
+    if "@" in stripped or "<" in stripped:
+        return True
+    if stripped.startswith("On ") and re.search(r"\d", stripped):
+        return True
+    return stripped == "wrote:"  # wrapped tail of a multi-line attribution
+
+
+def _has_outlook_header_block(lines: List[str], i: int) -> bool:
+    """A `From:` line that opens an Outlook/Exchange quoted-header block —
+    a `Sent:`/`Date:` and a `Subject:` within the next few lines."""
+    window = [ln.strip().lower() for ln in lines[i : i + 6]]
+    has_sent = any(w.startswith(("sent:", "date:")) for w in window)
+    has_subject = any(w.startswith("subject:") for w in window)
+    return has_sent and has_subject
+
+
+def _quoted_trail_start(lines: List[str]) -> Optional[int]:
+    """Index of the first line that begins a no-`>` quoted reply trail
+    (Outlook / Exchange / Apple top-post markers), or None. Everything
+    from there to the end of a top-posted message is the prior thread
+    re-quoted verbatim."""
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _ORIGINAL_MSG_RE.match(stripped):
+            return i
+        if stripped.lower().startswith("from:") and _has_outlook_header_block(lines, i):
+            return i
+        if _is_attribution(stripped):
+            return i
+    return None
+
+
+def elide_quotes(text: str, keep_threshold: int = 2) -> str:
+    """Collapse quoted reply trails so a thread file is readable.
+
+    Two shapes are handled. `>`-prefixed quote runs longer than
+    `keep_threshold` collapse to a single `> [N lines elided]` marker.
+    And the no-`>` quoting that Outlook / Exchange / Apple Mail produce —
+    a `-----Original Message-----` separator, a `From:`/`Sent:`/`Subject:`
+    header block, or an `On … wrote:` attribution, after which the prior
+    thread is pasted verbatim with no prefix — is elided from the first
+    such boundary to the end of the (top-posted) message. That trail is
+    the earlier messages, which the thread file already carries as their
+    own sections, so nothing is lost.
     """
+    lines = text.splitlines()
+    trail_marker: Optional[str] = None
+    cut = _quoted_trail_start(lines)
+    if cut is not None:
+        trail_marker = f"[{len(lines) - cut} lines of quoted reply trail elided]"
+        lines = lines[:cut]
+
     out: List[str] = []
     run: List[str] = []
-    for line in text.splitlines():
+    for line in lines:
         if line.lstrip().startswith(">"):
             run.append(line)
             continue
@@ -220,6 +276,10 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
             out.append(f"> [{len(run)} quoted lines elided]")
         else:
             out.extend(run)
+    if trail_marker is not None:
+        while out and not out[-1].strip():
+            out.pop()
+        out.append(trail_marker)
     return "\n".join(out)
 
 
