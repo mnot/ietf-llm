@@ -371,19 +371,35 @@ ietf-llm [OPTIONS] <wg_shortname>
   of incremental update.
 - `--clear-cache` — wipe the cache for this WG and re-download.
 - `--clear-config` — clear persisted config for this WG.
-- `--list` — list cached WGs (with last-gathered date) and exit.
+- `--list` — list cached corpora (name, kind, status, last-gathered)
+  and exit.
 - `--quiet` / `--verbose`.
 
 Per-WG settings are persisted at `~/.config/ietf-llm/<wg>/gather.json`.
 
-**Synthetic / pre-WG corpora.** Prefix the shortname with `x-`
-(e.g. `ietf-llm x-webbotauth --draft draft-... --mailing-list
-foo@ietf.org`) to gather a collection of drafts and mailing lists
-that don't have a formal WG yet. The `x-` prefix opts out of every
-Datatracker / WG-page lookup (no charter, no leadership, no
-auto-discovered drafts, no Datatracker timeline / ballot events)
-while leaving the rest of the pipeline working as normal —
-`--draft` and `--mailing-list` become the only content sources.
+**Corpora that aren't Working Groups.** The positional name doesn't
+have to be a WG. It's classified automatically:
+
+- A **Working Group / Research Group / editorial WG / BoF** shortname
+  (`httpbis`, `cfrg`, `rswg`, …) gets the full pipeline — charter,
+  meetings, drafts, ballots, mailing list.
+- A bare **mailing list** name gathers just that list:
+  `ietf-llm last-call`. Off-IETF lists work by full address (e.g.
+  `ietf-llm rfced --mailing-list rswg@rfc-editor.org`), gathered via
+  the IETF mirror archive.
+- A **custom** name with explicit `--draft` / `--mailing-list` /
+  `--github` gathers exactly those sources.
+
+A name that's neither a group, a known mailing list, nor configured
+with sources is rejected as a likely typo. `--list` shows each
+corpus's kind and (for groups) status, so you can spot concluded WGs
+and finished BoFs. Existing corpora keep working unchanged.
+
+**Synthetic corpora.** Prefix a name with `x-` (e.g.
+`ietf-llm x-webbotauth --draft draft-... --mailing-list foo@ietf.org`)
+to skip the Datatracker group lookup entirely — useful when you want a
+custom corpus whose name might otherwise collide with, or be probed
+against, a real group.
 
 **GitHub auth.** Set `GITHUB_TOKEN` on the gather invocation (a fine-
 scoped read-only token is plenty); without one you'll hit anonymous

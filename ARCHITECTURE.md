@@ -31,17 +31,35 @@ doesn't know or care which consumers are downstream.
 `ietf-llm --list` prints the cached WGs; `ietf-llm --completion <shell>`
 prints a shell tab-completion script.
 
-## WG shortnames
+## Corpus names and kinds
 
-`<wg>` is always a shortname (`httpbis`, `tls`, `aipref`). IRTF
-Research Groups use the same convention (`cfrg`, `hrpc`). A shortname
-prefixed with **`x-`** (`x-webbotauth`) is a *synthetic / pre-WG
-corpus*: a collection of drafts and mailing lists with no formal WG
-yet. Synthetic corpora skip every Datatracker / WG-page lookup (no
-charter, leadership, auto-discovered drafts, or Datatracker timeline /
-ballot events); only the explicit `--draft` / `--mailing-list` /
-`--github` inputs drive content. `utils.is_synthetic_wg()` is the
-single predicate; the prefix is the only signal (no side-table state).
+A corpus is not necessarily a Working Group — it's a named bundle of
+sources, and "a WG" is one preset. `<wg>` is a corpus name (the code
+keeps the historical `wg` parameter name). `_gather_one` classifies it
+once, in `__main__._resolve_corpus_shape`, into one of four **kinds**:
+
+- **group** — the name resolves to a Datatracker group (WG / IRTF RG /
+  editorial WG / BoF). Gets the full auto-sourced pipeline: charter,
+  group metadata, meetings, documents, transcripts, datatracker roles,
+  and the timeline group / ballot / doc-event queries.
+- **list** — not a group, but the name resolves as a mailarchive list
+  (`ietf-llm last-call`). Gathers only that list.
+- **custom** — not a group; content comes from explicit `--draft` /
+  `--mailing-list` / `--github` (the name is a label).
+- **synthetic** — an `x-` prefixed name (`x-webbotauth`); like custom
+  but explicitly skips even the group lookup. `utils.is_synthetic_wg()`
+  is the predicate; the prefix is the only signal.
+
+There is **no `--list-only` flag** — the kind is inferred. A name that
+is neither a group, a known list, nor configured with sources is
+rejected as a likely typo rather than producing an empty corpus.
+
+The gather pipeline gates Datatracker-sourced steps on a single
+`group_backed` boolean (true only for the `group` kind). `corpus.py`
+derives `(kind, status)` from on-disk artifacts for `ietf-llm --list`
+and the MCP `list_working_groups` tool — identically, so they can't
+drift; `status` is the cached group state (`active` / `concluded` /
+`bof`).
 
 ## Cache layout
 
@@ -182,6 +200,7 @@ ietf_llm/
 ├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + tools)
 ├── skill_install.py        # --install-claude-skill helper
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
+├── corpus.py               # corpus kind/status (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── people.py               # actor/identity registry (roles, affiliations, domains)
