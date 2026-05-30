@@ -27,7 +27,7 @@ gathered into one queryable corpus, an LLM can help you:
   grounded in the actual list traffic and chair statements, not
   someone's recollection.
 
-Two supported workflows:
+Three supported workflows:
 
 1. **[Use it as an MCP server](#1-use-as-an-mcp-server)** — register
    `ietf-llm-mcp` with Claude, Codex, Gemini, Cursor, Zed, etc. and
@@ -35,6 +35,9 @@ Two supported workflows:
 2. **[Use it with NotebookLM](#2-use-with-notebooklm)** — export the
    gathered corpus as a directory of clean text files (or push directly
    to NotebookLM Enterprise) and ingest it as a notebook source set.
+3. **[Use it from the CLI](#3-use-from-the-cli)** — run semantic
+   search over the cache directly with `ietf-llm-search`, no LLM
+   client required.
 
 > Also works with [IRTF](https://irtf.org/) Research Groups. Pass the
 > RG's shortname (e.g. `cfrg`, `hrpc`, `pearg`) anywhere this README
@@ -52,10 +55,10 @@ Two supported workflows:
   - [Gather a corpus](#gather-a-corpus-1)
   - [Export to a local directory](#export-to-a-local-directory)
   - [Export to NotebookLM Enterprise](#export-to-notebooklm-enterprise)
+- [3. Use from the CLI](#3-use-from-the-cli)
 - [Reference](#reference)
   - [Commands](#commands)
   - [Gather options](#gather-options)
-  - [Semantic search from the CLI](#semantic-search-from-the-cli)
 - [Migrating from `ietf-notebook`](#migrating-from-ietf-notebook)
 
 ## Installation
@@ -238,10 +241,14 @@ ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
 ```
 
 **First run:** gathering a corpus also builds a local semantic-search
-index, which downloads an embedding model (~130 MB) from
-[Hugging Face](https://huggingface.co/BAAI/bge-small-en-v1.5).
-Subsequent gathers reuse the cached model. Pass `--no-embed` to skip
-the index (and the download) — useful for
+index — this powers both the MCP `search_corpus` tool and
+`ietf-llm-search`. It uses
+[`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5)
+by default — ~130 MB, ~33M params, MPS-accelerated, runs entirely on
+your machine. Downloaded from Hugging Face on first use and cached;
+subsequent gathers reuse it. Override with `--embed-model <id>` for
+any model the `llm` package recognises. Pass `--no-embed` to skip the
+index (and the download) — useful for
 [NotebookLM export](#2-use-with-notebooklm) or offline gathers.
 
 A corpus doesn't have to be a Working Group — the name is classified
@@ -314,6 +321,24 @@ First run opens a browser to authorise; the token is cached at
 Per-WG export settings are persisted at
 `~/.config/ietf-llm/<wg>/export.json` — subsequent runs of the same
 mode need only `ietf-llm-export <wg>`.
+
+---
+
+## 3. Use from the CLI
+
+`ietf-llm-search` runs semantic search over a gathered corpus and
+prints ranked excerpts to stdout — useful on its own, or as input to
+another tool.
+
+```bash
+ietf-llm-search httpbis "skepticism about cookie partitioning" -k 8
+```
+
+Chunks are content-aware: one chunk per mailing list message, one per
+issue comment, and a windowed slice of drafts/RFCs/transcripts. The
+index lives at `~/.cache/ietf-llm/<wg>/embeddings.db` and updates
+incrementally on each gather — see
+[Gather a corpus](#gather-a-corpus) for the embedding model.
 
 ---
 
@@ -412,24 +437,6 @@ GITHUB_TOKEN=ghp_... ietf-llm httpbis
 GITHUB_TOKEN=$(security find-generic-password -s github-readonly -w) \
     ietf-llm httpbis
 ```
-
-### Semantic search from the CLI
-
-```bash
-ietf-llm-search httpbis "skepticism about cookie partitioning" -k 8
-```
-
-Chunks are content-aware: one chunk per mailing list message, one per
-issue comment, and a windowed slice of drafts/RFCs/transcripts. The
-index lives at `~/.cache/ietf-llm/<wg>/embeddings.db` and updates
-incrementally on each gather.
-
-Default model: **`sentence-transformers/BAAI/bge-small-en-v1.5`** —
-~130 MB on disk (~33M params), MPS-accelerated, runs entirely on your
-machine. Downloaded from
-[Hugging Face](https://huggingface.co/BAAI/bge-small-en-v1.5) on first
-use and cached. Skip with `--no-embed` at gather time. Override with
-`--embed-model <id>` for any model the `llm` package recognises.
 
 ---
 
