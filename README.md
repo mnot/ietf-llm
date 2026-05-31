@@ -44,11 +44,9 @@ Three supported workflows:
 - [What it's for](#what-its-for)
 - [Installation](#installation)
   - [Shell completion](#shell-completion)
+- [Gather a corpus](#gather-a-corpus)
 - [1. Use as an MCP server](#1-use-as-an-mcp-server)
-  - [Register the server](#register-the-server)
-  - [Gather a corpus](#gather-a-corpus)
 - [2. Use with NotebookLM](#2-use-with-notebooklm)
-  - [Gather a corpus](#gather-a-corpus-1)
   - [Export to a local directory](#export-to-a-local-directory)
   - [Export to NotebookLM Enterprise](#export-to-notebooklm-enterprise)
 - [3. Use from the CLI](#3-use-from-the-cli)
@@ -88,6 +86,47 @@ eval "$(ietf-llm --completion zsh)"
 # fish — in ~/.config/fish/config.fish
 ietf-llm --completion fish | source
 ```
+
+---
+
+## Gather a corpus
+
+Each use mode below reads from a local cache. Gather it once per
+corpus; settings persist, so refreshing is a bare re-run
+(`ietf-llm httpbis`), and the semantic index updates incrementally
+each time.
+
+```bash
+ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
+```
+
+Everything lands in `~/.cache/ietf-llm/<name>/` — the single source of
+truth that the MCP server, NotebookLM exporter, and CLI search all
+read from.
+
+**First run:** gathering a corpus also builds a local semantic-search
+index — this powers both the MCP `search_corpus` tool and
+`ietf-llm-search`. It uses
+[`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5)
+by default — ~130 MB, ~33M params, MPS-accelerated, runs entirely on
+your machine. Downloaded from Hugging Face on first use and cached;
+subsequent gathers reuse it. Override with `--embed-model <id>` for
+any model the `llm` package recognises. Pass `--no-embed` to skip the
+index (and the download) — useful for
+[NotebookLM export](#2-use-with-notebooklm) or offline gathers.
+
+A corpus doesn't have to be a Working Group — the name is classified
+automatically:
+
+| Command | Corpus |
+|---|---|
+| `ietf-llm httpbis` | a WG / RG / editorial WG / BoF: charter, drafts, meetings, ballots, list |
+| `ietf-llm last-call` | a standalone mailing list (any archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor) |
+| `ietf-llm rfced --mailing-list rswg@rfc-editor.org` | a named list corpus (the address domain is optional) |
+| `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
+| `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored |
+
+See [Gather options](#gather-options) for the full flag set.
 
 ---
 
@@ -225,41 +264,6 @@ timeout. It defaults to 120 seconds; override (or disable, with `0`) by
 setting `IETF_LLM_TOOL_TIMEOUT` in the server's environment — e.g. add
 `"env": {"IETF_LLM_TOOL_TIMEOUT": "180"}` to the JSON config above.
 
-### Gather a corpus
-
-Gather from the CLI, once per corpus. Settings persist, so refreshing
-is a bare re-run (`ietf-llm httpbis`), and the semantic index updates
-incrementally each time.
-
-```bash
-ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
-```
-
-**First run:** gathering a corpus also builds a local semantic-search
-index — this powers both the MCP `search_corpus` tool and
-`ietf-llm-search`. It uses
-[`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5)
-by default — ~130 MB, ~33M params, MPS-accelerated, runs entirely on
-your machine. Downloaded from Hugging Face on first use and cached;
-subsequent gathers reuse it. Override with `--embed-model <id>` for
-any model the `llm` package recognises. Pass `--no-embed` to skip the
-index (and the download) — useful for
-[NotebookLM export](#2-use-with-notebooklm) or offline gathers.
-
-A corpus doesn't have to be a Working Group — the name is classified
-automatically:
-
-| Command | Corpus |
-|---|---|
-| `ietf-llm httpbis` | a WG / RG / editorial WG / BoF: charter, drafts, meetings, ballots, list |
-| `ietf-llm last-call` | a standalone mailing list (any archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor) |
-| `ietf-llm rfced --mailing-list rswg@rfc-editor.org` | a named list corpus (the address domain is optional) |
-| `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
-| `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored |
-
-Everything lands in `~/.cache/ietf-llm/<name>/`, which the MCP server
-reads. See [Gather options](#gather-options) for the full flag set.
-
 ---
 
 ## 2. Use with NotebookLM
@@ -272,10 +276,9 @@ straight to a NotebookLM Enterprise notebook.
 > Create a new notebook on each refresh rather than trying to merge
 > updates into an existing one.
 
-### Gather a corpus
-
-Same as the MCP path; add `--no-embed` to skip the local index
-(NotebookLM does its own):
+Pass `--no-embed` when [gathering](#gather-a-corpus) if you only plan
+to use NotebookLM — it has its own index, so the local one is wasted
+work:
 
 ```bash
 ietf-llm httpbis --no-embed \
