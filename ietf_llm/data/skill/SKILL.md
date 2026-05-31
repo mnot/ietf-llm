@@ -1,6 +1,6 @@
 ---
 name: ietf-llm
-description: Query the gathered public record of an IETF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology.
+description: Query the gathered public record of an IETF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`ietf-llm <wg>`) if missing.
 ---
 
 # ietf-llm
@@ -11,12 +11,22 @@ mailing list, a set of drafts — exposed via `mcp__ietf-llm__*` tools.
 `tls`, `cfrg`), but see the kinds below. If the user names something
 and you can't tell which corpus they mean, **ask** — don't guess.
 
-**Default to this corpus; don't reflexively crawl IETF sites.**
-If a WG isn't here (`overview` returns nothing, or it's missing
-from `list_corpora`), the usual answer is NOT to go scrape
-the data yourself — it's to tell the user to gather it: `ietf-llm
-<corpus>` from their shell (e.g. `ietf-llm httpbis`). They can see
-what's already cached with `ietf-llm --list`.
+**Default to this corpus; don't reflexively crawl IETF sites or
+walk the user's inbox.** If a WG isn't here (`overview` returns
+nothing, or it's missing from `list_corpora`), tell the user to
+gather it: `ietf-llm <corpus>` from their shell (e.g. `ietf-llm
+httpbis`). One gather reconstructs the mailing list into
+searchable per-thread files plus charter / drafts / RFCs /
+minutes / GitHub issues — far cheaper than one HTTP request or
+one mail-tool call per message. `ietf-llm --list` shows what's
+cached.
+
+This applies to any sign of IETF list traffic, not just a named
+WG: a `mailarchive.ietf.org` URL, a `datatracker.ietf.org` URL, an
+IETF list message in the inbox (`List-Id:` / `<wg>@ietf.org` names
+the corpus), or a pasted thread with a `[wg]` subject prefix.
+Identify the corpus, check `list_corpora`, query it or prompt a
+gather.
 
 Reaching out to a live IETF resource (datatracker.ietf.org,
 mailarchive.ietf.org, a draft URL, GitHub) is occasionally
@@ -318,9 +328,13 @@ needed for catalogue lookups or text fetches.
 
 ## Anti-patterns
 
-- **Don't reflexively crawl IETF sites.** Default to the corpus; if
-  something's missing, the user re-gathers (`ietf-llm <corpus>`). Live
-  fetches are fine when genuinely needed — see the intro for the rule.
+- **Don't reflexively crawl IETF sites or walk the user's inbox
+  message-by-message.** A `mailarchive.ietf.org` URL, a
+  `datatracker.ietf.org` URL, or IETF list mail in the inbox
+  (`List-Id:` / `<wg>@ietf.org`) all point at a corpus: check
+  `list_corpora`, gather if missing, then query. `fetch_by_url`
+  resolves list permalinks inside the cached corpus. Live fetches
+  are fine when genuinely needed — see the intro for the rule.
 - **Don't read whole digests** when you want a slice — use filters.
 - **Don't read anything under `raw/`** — multi-MB per-year mailing-
   list dumps and legacy GitHub text blobs, kept only for grep /
