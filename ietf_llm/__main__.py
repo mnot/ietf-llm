@@ -67,18 +67,6 @@ from .utils import (
 
 SCOPE = "gather"
 
-# Flags that used to live here and have moved to `ietf-llm-export`. We
-# keep them suppressed in argparse so we can detect attempted use and
-# print a helpful redirect, rather than the generic "unrecognized
-# arguments" message.
-_MOVED_FLAGS = (
-    "--destination",
-    "--create",
-    "--credentials-file",
-    "--token-file",
-    "--update",
-)
-
 
 def _default_llm_model(verbose: Verbosity) -> str:
     """Return the user's configured default `llm` model name, or a fallback."""
@@ -100,30 +88,8 @@ def _default_llm_model(verbose: Verbosity) -> str:
         return "claude-haiku-4-5"
 
 
-def _detect_moved_flags(argv: list[str]) -> None:
-    """If the user passed a now-moved flag, print a redirect and exit."""
-    used = [
-        a for a in argv if any(a == f or a.startswith(f + "=") for f in _MOVED_FLAGS)
-    ]
-    if not used:
-        return
-    print(
-        "Error: these flags have moved to `ietf-llm-export` (a separate "
-        "tool):\n  " + " ".join(used) + "\n\n"
-        "The gather CLI now only populates the cache; exporting to a local\n"
-        "directory or to NotebookLM Enterprise is a separate step:\n\n"
-        "  ietf-llm <wg>                       # gather (populate cache)\n"
-        "  ietf-llm-export <wg> --destination <dir>      # mirror cache to dir\n"
-        "  ietf-llm-export <wg> --create <GCP_PROJECT>   # upload to NotebookLM\n",
-        file=sys.stderr,
-    )
-    sys.exit(2)
-
-
 @graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
-    _detect_moved_flags(sys.argv[1:])
-
     parser = argparse.ArgumentParser(
         description=(
             "Gather an IETF corpus — a Working Group / RG / editorial WG / "
