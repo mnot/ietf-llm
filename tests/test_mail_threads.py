@@ -123,6 +123,61 @@ def test_elide_quotes_keeps_prose_ending_in_wrote() -> None:
     assert "My own analysis." in result
 
 
+def test_elide_quotes_collapses_attribution_without_dash_prefix() -> None:
+    # The IESG last-call thread style: Gmail's text/plain alternative drops
+    # the `>` markers, leaving an `On … wrote:` line followed by the prior
+    # message pasted verbatim. Must elide from the attribution to EOF.
+    text = (
+        "I support publication.\n\n"
+        "On Fri, 29 May 2026 08:35:37 -0700, The IESG iesg-secretary@ietf.org wrote:\n\n"
+        "The IESG has received a request...\nAbstract\nThis document...\n"
+    )
+    result = elide_quotes(text)
+    assert "I support publication." in result
+    assert "quoted reply trail elided" in result
+    assert "The IESG has received" not in result
+
+
+def test_elide_quotes_collapses_non_english_attributions() -> None:
+    cases = {
+        "german": (
+            "Reply.\n\n"
+            "Am 16.06.2025 um 14:54 schrieb Bradley Silver <BSilver@advance.com>:\n"
+            "quoted body line one\nline two\n"
+        ),
+        "french": (
+            "Reply.\n\n"
+            "Le 10/04/26 à 16:43, Ben Schwartz a écrit :\n"
+            "quoted body line one\nline two\n"
+        ),
+        "italian": (
+            "Reply.\n\n"
+            "Il giorno mer 4 feb 2026 alle ore 23:04 James Cao <james@montcao.com> ha scritto:\n"
+            "quoted body line one\nline two\n"
+        ),
+        "dutch": (
+            "Reply.\n\n"
+            "Op 23-02-2026 om 16:24 schreef Eric Rescorla:\n"
+            "quoted body line one\nline two\n"
+        ),
+        "portuguese": (
+            "Reply.\n\n"
+            "Em 16 de julho de 2025, 09:05, Foo <foo@example.org> escreveu:\n"
+            "quoted body line one\nline two\n"
+        ),
+        "mutt-writes": (
+            "Reply.\n\n"
+            "Eric Rescorla <ekr@rtfm.com> writes:\n"
+            "quoted body line one\nline two\n"
+        ),
+    }
+    for label, text in cases.items():
+        result = elide_quotes(text)
+        assert "Reply." in result, label
+        assert "quoted reply trail elided" in result, label
+        assert "quoted body line one" not in result, label
+
+
 # --- build_threads ---------------------------------------------------------
 
 
