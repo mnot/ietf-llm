@@ -92,9 +92,7 @@ ietf-llm --completion fish | source
 ## Gather a corpus
 
 Each use mode below reads from a local cache. Gather it once per
-corpus; settings persist, so refreshing is a bare re-run
-(`ietf-llm httpbis`), and the semantic index updates incrementally
-each time.
+corpus; the semantic index updates incrementally on re-runs.
 
 ```bash
 ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
@@ -114,6 +112,12 @@ subsequent gathers reuse it. Override with `--embed-model <id>` for
 any model the `llm` package recognises. Pass `--no-embed` to skip the
 index (and the download) — useful for
 [NotebookLM export](#2-use-with-notebooklm) or offline gathers.
+
+**Subsequent runs:** the flags you passed are persisted to
+`~/.config/ietf-llm/<name>/gather.json`, so to refresh just run
+`ietf-llm <name>` — no need to repeat `--github`, `--mailing-list`,
+etc. Pass extra flags to add to the set, or `--clear-config` to start
+over.
 
 A corpus doesn't have to be a Working Group — the name is classified
 automatically:
