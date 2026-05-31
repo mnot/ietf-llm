@@ -48,15 +48,18 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
 import datetime
 import fnmatch
 import functools
+import json
 import re
 import sqlite3
 import sys
 import threading
+import time
 from importlib import resources
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
+from . import _debug_log
 from .corpus import describe, kind_status
 from .digest.overview import (
     _label_frequencies,
@@ -1676,6 +1679,22 @@ def _load_server_instructions() -> Optional[str]:
     return text
 
 
+def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
+    """Render the tail of the per-process debug log as JSON.
+
+    Sync helper for the `get_session_log` MCP tool; lives next to
+    `_offload` because it's part of the same diagnostic facility.
+    Temporary — removed when stall investigation closes."""
+    events = _debug_log.read_tail(limit=limit, since_seconds=since_seconds)
+    payload = {
+        "path": _debug_log.current_path(),
+        "enabled": _debug_log.is_enabled(),
+        "event_count": len(events),
+        "events": events,
+    }
+    return json.dumps(payload, indent=2, default=str)
+
+
 async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     """Run a blocking `tool_*` function in a worker thread.
 
@@ -1702,15 +1721,73 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     """
     # run_sync loses the return type through functools.partial; the
     # tool_* functions all return str, so cast.
-    partial = functools.partial(fn, *args, **kwargs)
-    timeout = _tool_timeout_seconds()
-    if timeout <= 0:
-        return cast(
-            str, await anyio.to_thread.run_sync(partial, abandon_on_cancel=True)
+    #
+    # Telemetry: every call gets a request id and emits offload_start /
+    # thread_started / thread_returned-or-error / offload_end events to
+    # the debug log so stall investigations have something to chew on.
+    # See ietf_llm/_debug_log.py.
+    req_id = _debug_log.next_id()
+    t0 = time.monotonic()
+    _debug_log.log_event(
+        req_id,
+        "offload_start",
+        tool=getattr(fn, "__name__", "tool"),
+        args_positional=len(args),
+        args_keys=list(kwargs.keys()),
+    )
+
+    def _instrumented() -> str:
+        _debug_log.log_event(
+            req_id,
+            "thread_started",
+            queue_wait=round(time.monotonic() - t0, 6),
         )
-    with anyio.move_on_after(timeout):
-        return cast(
-            str, await anyio.to_thread.run_sync(partial, abandon_on_cancel=True)
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:  # pylint: disable=broad-except
+            _debug_log.log_event(
+                req_id,
+                "thread_error",
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+            )
+            raise
+        _debug_log.log_event(
+            req_id,
+            "thread_returned",
+            result_bytes=len(result) if isinstance(result, str) else None,
+        )
+        return result
+
+    partial = functools.partial(_instrumented)
+    timeout = _tool_timeout_seconds()
+    status = "unknown"
+    try:
+        if timeout <= 0:
+            result = cast(
+                str,
+                await anyio.to_thread.run_sync(partial, abandon_on_cancel=True),
+            )
+            status = "ok"
+            return result
+        with anyio.move_on_after(timeout):
+            result = cast(
+                str,
+                await anyio.to_thread.run_sync(partial, abandon_on_cancel=True),
+            )
+            status = "ok"
+            return result
+        # Fell through `with` without returning → the deadline cancelled.
+        status = "timeout"
+    except BaseException:  # pylint: disable=broad-except,try-except-raise
+        status = "exception"
+        raise
+    finally:
+        _debug_log.log_event(
+            req_id,
+            "offload_end",
+            status=status,
+            elapsed=round(time.monotonic() - t0, 6),
         )
     # Reached only when the deadline cancelled the await above; the worker
     # thread is abandoned (it finishes and frees its slot on its own).
@@ -1750,6 +1827,13 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Diagnostic facility for investigating client-side stalls/timeouts.
+    # Off by default; opt in per session by setting IETF_LLM_DEBUG_LOG=1
+    # in the MCP server's launch env. When on, writes JSONL per-request
+    # timing to a per-pid file under ~/.cache/ietf-llm/_debug/, and the
+    # `get_session_log` tool returns its tail to the client.
+    _debug_log.init()
 
     # `instructions` is the MCP-spec mechanism for server-level
     # guidance: clients SHOULD surface it as system-prompt context.
@@ -2340,6 +2424,44 @@ def main() -> None:
         return await _offload(
             tool_read_file_section, corpus, file, start_line, max_lines
         )
+
+    # `get_session_log` is only registered when telemetry is enabled
+    # (IETF_LLM_DEBUG_LOG=1). With logging off the tool wouldn't have
+    # anything useful to return, so we leave it out of the advertised
+    # tool list entirely rather than ship a no-op tool.
+    if _debug_log.is_enabled():
+
+        @server.tool()
+        async def get_session_log(
+            limit: int = 200, since_seconds: Optional[float] = None
+        ) -> str:
+            """Return recent per-request telemetry from THIS MCP server
+            process — a diagnostic facility for investigating
+            client-side stalls/timeouts. Only registered when the
+            server was launched with `IETF_LLM_DEBUG_LOG=1`.
+
+            Each tool call emits a sequence of events keyed by request
+            id: `offload_start` (dispatched off the event loop),
+            `thread_started` (anyio worker picked it up — gap from
+            `offload_start` is the thread-pool queue wait),
+            `thread_returned` or `thread_error`, and `offload_end`
+            (always emitted, with `status` ∈ ok / timeout / exception
+            / unknown). A daemon thread also writes a `heartbeat` event
+            every 10s so an idle process is distinguishable from a
+            wedged one.
+
+            Returns a JSON object with `path` (the full log file on
+            disk), `enabled`, `event_count`, and `events`. If the
+            client is reporting a stall, call this with `since_seconds`
+            covering the stall window to get just the relevant tail.
+
+            Args:
+                limit: Max events to return from the tail (default 200,
+                    use 0 for no limit).
+                since_seconds: If set, only return events from the last
+                    N seconds of process time.
+            """
+            return await _offload(tool_get_session_log, limit, since_seconds)
 
     _prewarm_embedding_model_async()
     server.run()
