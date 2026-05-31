@@ -196,19 +196,47 @@ def _normalize_archived_at(value: Optional[str]) -> Optional[str]:
 #: An Outlook "-----Original Message-----" separator.
 _ORIGINAL_MSG_RE = re.compile(r"^-{2,}\s*Original Message\s*-{2,}\s*$", re.IGNORECASE)
 
+#: The verb-tail of an attribution line in any language we've seen in the
+#: corpus. The line ends in `<verb>[ <name>]?<optional whitespace>:`.
+#: German `schrieb` and Dutch `schreef` carry a name between verb and colon
+#: (`schrieb Peter Gutmann:`); the others put the verb immediately before
+#: the colon.
+_ATTRIBUTION_VERB_RE = re.compile(
+    r"(?:"
+    r"wrote|writes"  # English
+    r"|a écrit"  # French
+    r"|ha scritto"  # Italian
+    r"|escreveu"  # Portuguese
+    r"|escribió"  # Spanish
+    r"|schrieb [^:]+"  # German "schrieb <Name>"
+    r"|geschrieben"  # German alt
+    r"|schreef [^:]+"  # Dutch "schreef <Name>"
+    r")\s*:\s*$"
+)
+
+#: A "<word> <date>" prefix that marks the line as a quoted-reply
+#: attribution rather than prose. Each word is the language's
+#: equivalent of English "On" in `On <date>, <Name> wrote:`.
+_DATE_PREFIX_RE = re.compile(r"^(?:On|Le|Il|Am|Op|Em|El|W dniu)\s+\S.*\d")
+
+#: Bare wrapped tails of a multi-line attribution, e.g. when `On <date>,
+#: <Name> <addr>\nwrote:` wraps to its own line.
+_BARE_TAIL_ATTRIBUTIONS = frozenset({"wrote:", "writes:"})
+
 
 def _is_attribution(stripped: str) -> bool:
     """A no-`>` attribution line that introduces a quoted reply trail —
-    `On <date>, <Name> <addr> wrote:` and its wrapped tails. Needs a
-    quote-source signal (an address, or an `On <date>`) so it doesn't fire
-    on prose like 'the authors wrote:'."""
-    if not stripped.rstrip().endswith("wrote:"):
+    `On <date>, <Name> <addr> wrote:` and its non-English equivalents
+    (`Am … schrieb <Name>:`, `Le … a écrit :`, etc.). Needs a quote-source
+    signal (an address, or a date prefix) so it doesn't fire on prose like
+    'the authors wrote:'."""
+    if not _ATTRIBUTION_VERB_RE.search(stripped):
         return False
     if "@" in stripped or "<" in stripped:
         return True
-    if stripped.startswith("On ") and re.search(r"\d", stripped):
+    if _DATE_PREFIX_RE.match(stripped):
         return True
-    return stripped == "wrote:"  # wrapped tail of a multi-line attribution
+    return stripped in _BARE_TAIL_ATTRIBUTIONS
 
 
 def _has_outlook_header_block(lines: List[str], i: int) -> bool:
