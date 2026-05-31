@@ -5,10 +5,6 @@ Working Group's public record — charter, drafts, RFCs, meeting agendas,
 minutes, slides, transcripts, mailing list archives, and GitHub issues —
 for use with LLM-based tools.
 
-> **Note:** This package was previously published as `ietf-notebook`.
-> That distribution is deprecated. See
-> [Migrating from `ietf-notebook`](#migrating-from-ietf-notebook).
-
 ## What it's for
 
 A working group's history is spread across mailing list archives,
@@ -59,7 +55,6 @@ Three supported workflows:
 - [Reference](#reference)
   - [Commands](#commands)
   - [Gather options](#gather-options)
-- [Migrating from `ietf-notebook`](#migrating-from-ietf-notebook)
 
 ## Installation
 
@@ -437,53 +432,3 @@ GITHUB_TOKEN=ghp_... ietf-llm httpbis
 GITHUB_TOKEN=$(security find-generic-password -s github-readonly -w) \
     ietf-llm httpbis
 ```
-
----
-
-## Migrating from `ietf-notebook`
-
-If you previously used the `ietf-notebook` distribution:
-
-```bash
-pipx uninstall ietf-notebook
-pipx install ietf-llm
-```
-
-Cache and config directories changed names. To preserve a gathered
-cache, move it by hand:
-
-```bash
-mv ~/.cache/ietf-notebook  ~/.cache/ietf-llm
-mv ~/.config/ietf-notebook ~/.config/ietf-llm
-```
-
-Otherwise the old directories are simply ignored.
-
-### Command renames
-
-| Before | After |
-|---|---|
-| `ietf-notebook <wg>` | `ietf-llm <wg>` |
-| (no equivalent) | `ietf-llm-export <wg>` (split out) |
-| (no equivalent) | `ietf-llm-search <wg> <query>` (new) |
-| (no equivalent) | `ietf-llm-mcp` (new) |
-
-### Flags moved off the gather CLI
-
-These now live on `ietf-llm-export`:
-
-| Old: `ietf-notebook <wg> ...` | New |
-|---|---|
-| `--destination DIR` | `ietf-llm-export <wg> --destination DIR` |
-| `--create GCP_PROJECT` | `ietf-llm-export <wg> --create GCP_PROJECT` |
-| `--credentials-file PATH` | `ietf-llm-export <wg> --credentials-file PATH` |
-| `--token-file PATH` | `ietf-llm-export <wg> --token-file PATH` |
-
-If you pass any of these to `ietf-llm`, you'll get a redirect error.
-
-### `--update` is gone
-
-The gather CLI is now idempotent — re-run it whenever you want fresh
-data. The export CLI always produces a complete fresh dump; for
-NotebookLM, create a new notebook each refresh rather than trying to
-merge updates.
