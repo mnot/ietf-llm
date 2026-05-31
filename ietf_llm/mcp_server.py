@@ -59,7 +59,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import _debug_log
+from . import _debug_log, _stdio_transport
 from .corpus import describe, kind_status
 from .digest.overview import (
     _label_frequencies,
@@ -2464,7 +2464,32 @@ def main() -> None:
             return await _offload(tool_get_session_log, limit, since_seconds)
 
     _prewarm_embedding_model_async()
-    server.run()
+    # Replace FastMCP.run() with our own stdio transport. The default
+    # upstream transport writes outbound responses on the asyncio loop
+    # via `await stdout.write(...)`, and a slow client backpressures
+    # those writes through the kernel pipe buffer — stalling every
+    # queued response invisibly. Our transport hands serialized bytes
+    # to a daemon thread via a bounded in-process queue, so the loop
+    # never awaits a kernel write. See ietf_llm/_stdio_transport.py.
+    anyio.run(_run_with_threaded_writer, server)
+
+
+async def _run_with_threaded_writer(server: Any) -> None:
+    """Wire FastMCP's lowlevel server up to our threaded-writer stdio
+    transport. Mirrors `FastMCP.run_stdio_async` (the function our
+    transport replaces) line-for-line, swapping the transport."""
+    async with _stdio_transport.stdio_server_threaded_writer() as (
+        read_stream,
+        write_stream,
+    ):
+        # `_mcp_server` is the lowlevel `mcp.server.Server` instance
+        # FastMCP wraps. Private attribute, but stable in practice —
+        # the upstream `run_stdio_async` uses the same name.
+        await server._mcp_server.run(  # pylint: disable=protected-access
+            read_stream,
+            write_stream,
+            server._mcp_server.create_initialization_options(),  # pylint: disable=protected-access
+        )
 
 
 if __name__ == "__main__":

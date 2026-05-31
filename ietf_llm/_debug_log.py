@@ -137,6 +137,12 @@ def _heartbeat_loop() -> None:
     *process* (paused, swapped out, killed), while heartbeats continuing
     through a long quiet stretch confirm the process is alive and the
     issue is upstream (stdin not delivering, client not sending)."""
+    # Lazy import: the transport module is independent of debug
+    # logging, so don't pull it into the import graph unless we're
+    # actually going to call its getter.
+    # pylint: disable=import-outside-toplevel
+    from . import _stdio_transport
+
     while _enabled:
         time.sleep(10)
         with _calls_lock:
@@ -146,6 +152,7 @@ def _heartbeat_loop() -> None:
             "heartbeat",
             calls_seen=seen,
             uptime=round(time.monotonic() - _start_monotonic, 3),
+            writer_queue=_stdio_transport.queue_state(),
         )
 
 
