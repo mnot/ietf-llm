@@ -76,6 +76,7 @@ from .embeddings import (
     search,
 )
 from .freshness import freshness_line
+from .rfcs import render_rfc, render_search
 from .gather.citations import normalize_draft_name
 from .paths import digest_kind_from_relpath, digest_path
 from .positions import (
@@ -1862,6 +1863,52 @@ def main() -> None:
         what a corpus covers without opening it.
         """
         return await _offload(tool_list_corpora)
+
+    @server.tool()
+    async def rfc_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        query: str,
+        status: Optional[str] = None,
+        stream: Optional[str] = None,
+        level: Optional[str] = None,
+        wg: Optional[str] = None,
+        limit: int = 50,
+    ) -> str:
+        """Search the **published RFC series** by words in titles and
+        keywords, returning a compact markdown list. A bare RFC number
+        (e.g. "9110") short-circuits to that single RFC.
+
+        This is the whole-series index (every RFC, all streams), mirrored
+        from rfc.fyi — distinct from `search_corpus`, which is semantic
+        search *within one gathered Working Group*. Reach here for "find
+        an RFC about X", "which RFC is X", "what's the status of RFC N";
+        reach for `search_corpus` for a WG's own discussion of a topic.
+
+        Optional filters narrow the result set:
+          - `status`: `current` | `obsoleted`
+          - `stream`: `ietf` | `irtf` | `iab` | `independent` |
+            `editorial` | `legacy`
+          - `level`: `std` | `bcp` | `informational` | `experimental` |
+            `historic` | `unknown`
+          - `wg`: an IETF working group acronym.
+          - `limit`: max results (default 50).
+
+        Follow a hit with `get_rfc(number)` for full metadata and its
+        reference graph.
+        """
+        return await _offload(render_search, query, status, stream, level, wg, limit)
+
+    @server.tool()
+    async def get_rfc(number: str) -> str:
+        """Full metadata for one RFC from the published series: title,
+        status, stream, level, working group, keywords, what it
+        obsoletes / is obsoleted by, its normative + informative
+        references, how many RFCs cite it, and links to the text.
+
+        `number` is an RFC number or name ("9110" or "RFC9110"). This is
+        catalogue metadata, not the document body — to read the prose,
+        follow the text link in the output.
+        """
+        return await _offload(render_rfc, number)
 
     @server.tool()
     async def overview(corpus: str) -> str:

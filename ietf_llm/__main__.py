@@ -46,6 +46,7 @@ from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
+from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
 from .people import build_registry, write_people_digest
@@ -326,9 +327,13 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         for wg in targets:
             args.wg = wg
             _gather_one(args, verbosity)
-        return
+    else:
+        _gather_one(args, verbosity)
 
-    _gather_one(args, verbosity)
+    # Refresh the cross-corpus RFC-series index (singleton,
+    # mirrored from rfc.fyi). TTL-guarded and best-effort, so it is
+    # invisible on day-to-day gathers and never blocks the exit.
+    ensure_rfc_index(verbosity)
 
 
 def _discover_gathered_wgs() -> List[str]:

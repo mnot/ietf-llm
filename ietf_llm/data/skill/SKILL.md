@@ -226,6 +226,25 @@ Filters beyond the obvious `since`/`until`/`label`/`state`/
 - **`snippet_chars=N`** — raise the per-hit snippet for long-form
   synthesis (dial `k` down to compensate).
 
+## RFC-series lookups: `rfc_search` / `get_rfc`
+
+For the **published RFC series** — every RFC, all streams — reach for
+these, *not* `search_corpus`. Use them for "find an RFC about X", "which
+RFC is X", "what's the status of RFC N", or "what does RFC N reference /
+what cites it".
+
+- `rfc_search(query, ...)` — words in titles + keywords; a bare RFC
+  number returns that one RFC. Optional `status` / `stream` / `level` /
+  `wg` / `limit` filters.
+- `get_rfc(number)` — full metadata for one RFC: status, stream, level,
+  WG, keywords, obsoletes / obsoleted-by, references in and out,
+  citation counts, and links to the text.
+
+This is a cross-corpus index mirrored from rfc.fyi; it spans the whole
+series. `search_corpus` searches *within one gathered WG's* record.
+Rule of thumb: the unit is an RFC -> these tools; the unit is a WG and
+its discussion -> `overview` / `search_corpus`.
+
 ## File types you'll encounter
 
 All paths are relative to the WG's cache root (`<corpus>/files/`).
