@@ -39,6 +39,17 @@ _ST_PREFIX = "sentence-transformers/"
 #: Workers AI, OpenAI, a self-hosted vLLM / TEI, etc. are all just config.
 _OPENAI_EMBED_PREFIX = "openai-embed/"
 
+
+def is_remote_embed_model(model_name: str) -> bool:
+    """True if ``model_name`` selects the remote OpenAI-compatible backend.
+
+    Such a backend has no local weights and is network-backed, so callers
+    (e.g. the server's prewarm) can skip on-device-only work -- there is
+    nothing to load, and a network round-trip must not gate readiness.
+    """
+    return model_name.startswith(_OPENAI_EMBED_PREFIX)
+
+
 # Process-level cache of loaded embedding models, keyed by full model id.
 _MODEL_CACHE: dict[str, Any] = {}
 # Serialise concurrent loads of the same model. With background

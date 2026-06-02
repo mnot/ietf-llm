@@ -26,7 +26,12 @@ from .chunking import (
     _eligible_files,
     _window_text,
 )
-from .models import _MODEL_CACHE, DEFAULT_EMBED_MODEL, _get_embed_model
+from .models import (
+    _MODEL_CACHE,
+    DEFAULT_EMBED_MODEL,
+    _get_embed_model,
+    is_remote_embed_model,
+)
 from .search import Hit, build_index, search
 from .storage import chunk_counts, find_chunks_by_url, get_chunk, get_messages
 
@@ -44,6 +49,7 @@ __all__ = [
     # Used by mcp_server.py for pre-warming
     "_get_embed_model",
     "_MODEL_CACHE",
+    "is_remote_embed_model",
     # Used by tests
     "EMBED_CHAR_BUDGET",
     "EMBED_CHAR_OVERLAP",

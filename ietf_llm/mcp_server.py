@@ -69,6 +69,7 @@ from .digest.overview import (
 from .digest.query import parse_md_tables, query_digest
 from .embeddings import (
     _get_embed_model,
+    is_remote_embed_model,
     chunk_counts,
     find_chunks_by_url,
     get_chunk,
@@ -1590,6 +1591,19 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
 # --- MCP server wiring -------------------------------------------------------
 
 
+def _prewarm_one(model_name: str) -> None:
+    """Construct the embedding model and, for on-device models, force the
+    lazy weight load with a real embed.
+
+    A remote OpenAI-compatible backend has no weights to warm; constructing
+    the client is enough, and we must NOT make a network round-trip on the
+    prewarm path (R10: readiness must not depend on an upstream call).
+    """
+    model = _get_embed_model(model_name, Verbosity.QUIET)
+    if model is not None and not is_remote_embed_model(model_name):
+        list(model.embed("warmup"))
+
+
 def _prewarm_embedding_model_async() -> None:
     """Kick off embedding-model pre-warming in a background daemon
     thread. Returns immediately so the MCP server can register and
@@ -1628,11 +1642,7 @@ def _prewarm_embedding_model_async() -> None:
 
     def _worker() -> None:
         try:
-            model = _get_embed_model(model_name, Verbosity.QUIET)
-            if model is not None:
-                # llm-sentence-transformers loads weights lazily on
-                # first embed() — force that here.
-                list(model.embed("warmup"))
+            _prewarm_one(model_name)
         except Exception:  # pylint: disable=broad-except
             # Best-effort: any failure here means lazy load on the
             # first search_corpus call takes over. Stay silent — we're
