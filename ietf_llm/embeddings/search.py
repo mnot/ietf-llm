@@ -12,10 +12,11 @@ matmul; vectors were stored normalised), and returns the top-k hits.
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -31,6 +32,64 @@ _PROGRESS_EVERY = 25
 #: short enough that a slow embed call doesn't look like the gather
 #: has hung, long enough that small WGs don't get spammed.
 _PROGRESS_SECS = 20.0
+#: Commit the in-flight transaction and evict the MPS allocator cache on a
+#: dual cadence: after this many chunks embedded since the last flush, OR after
+#: `_FLUSH_EVERY_FILES` processed files — whichever comes first.
+#:
+#: The chunk trigger is what bounds MPS memory: the reserved pool grows with
+#: the number of chunks embedded since the last eviction, NOT the number of
+#: files, and late-corpus draft files run ~130 chunks each — so a pure
+#: file-count cadence lets a dense window pack thousands of chunks and spike
+#: the pool toward swap on smaller-RAM machines. Flushing per ~chunk keeps the
+#: peak uniform (~floor + this many chunks' worth) regardless of file density.
+#: ~1000 holds peaks to low single-digit GB even on an 8 GB Mac.
+_FLUSH_EVERY_CHUNKS = 1000
+#: The file-count trigger is a durability floor for the opposite regime — a
+#: long run of small/sparse files (threads, issues) that never reaches the
+#: chunk threshold still commits periodically, so a crash doesn't discard much
+#: and the on-disk WAL stays bounded.
+_FLUSH_EVERY_FILES = 25
+
+
+def _mps_mem_tools() -> (
+    Tuple[Optional[Callable[[], None]], Optional[Callable[[], int]]]
+):
+    """Return `(empty_cache, current_allocated_memory)` for torch's MPS
+    backend, or `(None, None)` when torch/MPS isn't in play.
+
+    Embedding runs on Apple-Silicon MPS by default (sentence-transformers
+    selects `mps:0`). The MPS caching allocator holds freed blocks instead
+    of returning them to the OS, and forward passes leak a little, so a long
+    build's high-water mark climbs — and because torch's default
+    `PYTORCH_MPS_HIGH_WATERMARK_RATIO` (1.7) only errors *above* physical
+    RAM, an overrun thrashes swap and hangs the machine rather than raising.
+    We evict periodically to cap it, and surface the live figure in progress.
+
+    torch is imported lazily (only when a build actually runs) so the CLI and
+    the torch-free remote-embedding path pay nothing. Returns `(None, None)`
+    on CPU/CUDA or when torch is absent, so callers no-op transparently.
+    """
+    try:
+        import torch  # pylint: disable=import-outside-toplevel,import-error
+    except ImportError:
+        return None, None
+    mps = getattr(torch, "mps", None)
+    try:
+        available = mps is not None and torch.backends.mps.is_available()
+    except (AttributeError, RuntimeError):
+        available = False
+    if not available:
+        return None, None
+    # driver_allocated_memory is the swap-relevant figure: the Metal driver's
+    # total allocation for the process, including the caching allocator's
+    # reserved pool — which is what runs away and crosses into swap.
+    # current_allocated_memory counts only live tensors and stays roughly flat
+    # even while the reserved pool grows, so it can't reveal the leak we evict
+    # for. Prefer driver; fall back to current on older torch.
+    gauge = getattr(mps, "driver_allocated_memory", None) or getattr(
+        mps, "current_allocated_memory", None
+    )
+    return getattr(mps, "empty_cache", None), gauge
 
 
 @dataclass
@@ -173,6 +232,13 @@ def build_index(
     # embeds without spamming on small ones.
     files_done = 0
     last_status = start
+    # Chunks embedded since the last flush — drives the chunk-count side of the
+    # flush cadence (the side that actually bounds MPS memory; see
+    # `_FLUSH_EVERY_CHUNKS`).
+    chunks_since_flush = 0
+    # MPS memory management: evict the allocator cache periodically and
+    # report the live high-water figure. No-ops off Apple Silicon.
+    mps_empty, mps_current = _mps_mem_tools()
     for path in files:
         # Relative path within the WG cache is what we store as
         # chunks.file, what consumers pass to get_chunk_text /
@@ -239,11 +305,30 @@ def build_index(
         )
         total_new += len(chunks)
         files_done += 1
+        chunks_since_flush += len(chunks)
         log(
             f"  embedded {relpath}: {len(chunks)} chunks",
             verbose,
             level=LogLevel.PROGRESS,
         )
+        # Periodic maintenance: commit so a crash doesn't discard the whole
+        # build (we'd otherwise commit only at the end, and a WAL rollback
+        # loses every embedded file), and evict the MPS allocator cache so a
+        # long run's memory high-water mark doesn't climb into swap and hang
+        # the machine. Dual cadence: the chunk count bounds the MPS peak (it
+        # scales with chunks since the last evict, not files), the file count
+        # is a durability floor for long stretches of sparse files. gc.collect()
+        # first so Python-side tensor refs are gone before empty_cache() returns
+        # the freed blocks to the OS.
+        if (
+            chunks_since_flush >= _FLUSH_EVERY_CHUNKS
+            or files_done % _FLUSH_EVERY_FILES == 0
+        ):
+            conn.commit()
+            gc.collect()
+            if mps_empty is not None:
+                mps_empty()
+            chunks_since_flush = 0
         # Light-touch STATUS pulse so the user sees progress on long
         # embeds without --verbose. Only fires when we've actually done
         # work (the skip-unchanged branch above continues without
@@ -251,9 +336,15 @@ def build_index(
         now = time.time()
         if files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS:
             elapsed = now - start
+            mem = ""
+            if mps_current is not None:
+                try:
+                    mem = f", mps {mps_current() / (1024 * 1024):.0f}MB"
+                except (RuntimeError, OSError):
+                    mem = ""
             log(
                 f"  …{files_done}/{pending} files, "
-                f"{total_new} chunks, {elapsed:.0f}s elapsed",
+                f"{total_new} chunks, {elapsed:.0f}s elapsed{mem}",
                 verbose,
                 level=LogLevel.STATUS,
             )
