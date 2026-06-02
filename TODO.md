@@ -191,3 +191,36 @@ name-string equality (curated records, not a fuzzy match).
 Yield per WG (how many real continuity-merges) is unmeasured. Guess: a handful,
 not dozens — most participants use one address and the name-merge already
 catches the rest. Report before/after on httpbis when built, same as PR #27.
+
+## Re-catalogue "WG"-means-corpus conflation in the CLI (deferred 2026-06-02)
+
+A corpus is still called a "WG" in user-facing CLI text where it could be a
+mailing list, custom draft set, or synthetic `x-` corpus. Deferred because an
+involved PR was in flight that may move all of this — **re-run the catalogue
+against the merged tree before correcting**, don't trust the line numbers below.
+
+Categories found (as of the deferral):
+- **User-facing strings (the priority).** Help text, error messages, and status
+  prints that say "WG" / "Working Group" for any corpus, in `__main__.py`
+  (`--completion` / `--all` help, the `--all` / `wg-required` / no-corpora
+  errors, the "Refreshing N WG(s)" status), `search_cli.py` (docstring,
+  description, positional help), and `export_cli.py` (docstring, usage examples,
+  description, positional help, `--destination` help).
+- **The `wg` positional + dests.** `search_cli` / `export_cli` positionals have
+  no `metavar`, so argparse prints `wg` in usage/`--help`; `__main__` already has
+  `metavar="NAME"` but `dest` is still `wg` (and `dest="list_wgs"`), so its
+  error messages leak it.
+- **Internal identifiers (larger, write-side-neutral rename).** `args.wg`,
+  `wg`/`wg_name` params threaded everywhere, and shared helpers in `utils.py`
+  (`cached_wg_names`, `wg_completer`, `is_synthetic_wg`, `get_wg_file_cache_dir`,
+  `get_wg_title`), plus `_discover_gathered_wgs` / `_print_cached_wgs` /
+  `_list_wgs`.
+
+Leave alone — genuinely about Working Groups: kind enumerations ("a Working
+Group / RG / editorial WG / BoF"), the `group_backed` "Processing WG" label,
+Datatracker group machinery (`get_wg_documents`, `fetch_wg_roles`), and the
+`--draft` / `--include-related-drafts` help (those features only fire for
+group-backed corpora — soften tone, don't hard-replace).
+
+Not yet catalogued: `data/skill/SKILL.md` and the `mcp_server.py` tool
+docstrings (~173 hits) — what clients actually read; sweep those too.
