@@ -2513,6 +2513,11 @@ def main() -> None:
             return await _offload(tool_get_session_log, limit, since_seconds)
 
     _prewarm_embedding_model_async()
+    if _resolve_transport() == "http":
+        # Shared-server deployment: standard MCP Streamable HTTP. The
+        # threaded-writer transport below is stdio-specific.
+        _run_http(server)
+        return
     # Replace FastMCP.run() with our own stdio transport. The default
     # upstream transport writes outbound responses on the asyncio loop
     # via `await stdout.write(...)`, and a slow client backpressures
@@ -2539,6 +2544,35 @@ async def _run_with_threaded_writer(server: Any) -> None:
             write_stream,
             server._mcp_server.create_initialization_options(),  # pylint: disable=protected-access
         )
+
+
+def _resolve_transport() -> str:
+    """Return the selected MCP transport: 'http' or 'stdio' (default).
+
+    stdio stays the default for local use; the shared-server deployment
+    sets IETF_LLM_MCP_TRANSPORT=http (or 'streamable-http').
+    """
+    transport = os.environ.get("IETF_LLM_MCP_TRANSPORT", "stdio").strip().lower()
+    return "http" if transport in ("http", "streamable-http") else "stdio"
+
+
+def _run_http(server: Any) -> None:
+    """Serve the MCP server over Streamable HTTP (R8).
+
+    Binds to IETF_LLM_MCP_HOST / IETF_LLM_MCP_PORT (defaults
+    127.0.0.1:8000). FastMCP's streamable_http_app() is a standard
+    MCP-spec Streamable HTTP ASGI app, so a fronting proxy can be
+    near-transparent. uvicorn ships transitively with `mcp`. The custom
+    threaded-writer transport is stdio-specific and does not apply here.
+    """
+    import uvicorn  # pylint: disable=import-outside-toplevel
+
+    host = os.environ.get("IETF_LLM_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(os.environ.get("IETF_LLM_MCP_PORT", "8000"))
+    except ValueError:
+        port = 8000
+    uvicorn.run(server.streamable_http_app(), host=host, port=port)
 
 
 if __name__ == "__main__":
