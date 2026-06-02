@@ -1,5 +1,74 @@
 # TODO
 
+## Don't embed concluded-draft revisions + add a literal-search tool (planned 2026-06-02)
+
+**The single biggest embed-time win. Drafts are ~86% of chunks, and for a
+mature WG the overwhelming majority are *concluded* work whose revision
+stacks are historical noise a semantic index should not carry.** The
+redundancy is concentrated in shipped specs: in httpbis the 787 draft-
+revision files across 79 distinct drafts are dominated by RFC'd lineages
+(`p2-semantics` alone = 27 revisions, `semantics` = 20, the whole
+7230–7235 / 9110–9114 family at ~20–27 revisions each). In-flight drafts
+are few and shallow. So the bulk of the win comes from the concluded ones.
+
+### Policy (decided)
+
+- **Embed in-flight (`active`) drafts in full** — *all* revisions. The
+  earlier "latest-revision-only" idea is **overridden**: live-debate drafts
+  are where "what changed between -02 and -03" is a real, current question,
+  the volume is modest (few drafts, few revisions), and that content may not
+  be anywhere else yet.
+- **Skip embedding drafts whose state is `rfc` or `replaced`, by default.**
+  - `rfc`: the RFC is canonical — embed it, not the draft stack. Measured:
+    RFC 9110 is represented in the httpbis index by 47 draft files
+    (`p2-semantics` -00..-26 + `semantics` -00..-19) PLUS `rfc9110.txt`,
+    ~2,000+ chunks for one long-published doc.
+  - `replaced`: catches renamed/merged lineages. `p2-semantics` never
+    became an RFC *under that name* — it was replaced by `semantics`, which
+    became RFC 9110. A literal "shipped as an RFC" rule would miss it and
+    keep embedding that 27-revision stack, so key off **draft state**, not
+    just the RFC list. (`expired`-but-never-published is a separate, low-
+    volume category that sometimes holds unique content — leave it embedded
+    for now; revisit if needed.)
+- Estimate: removes ~600–700 of httpbis's 787 revision files while keeping
+  the ~100–150 in-flight ones — i.e. ~most of the theoretical reduction,
+  giving up ~10–15% to retain the useful part. Near-zero search-quality
+  cost (concluded content survives in the RFC + the embedded threads/issues
+  + the current draft).
+
+### Detection cost
+
+Not free signal today. `get_wg_documents` fetches drafts and RFCs
+*separately* (`drafts.py:59`, `101`) and records only `expires` in
+`documents.json` (`drafts.py:73-75`, `278-281`) — which conflates
+published / replaced / merely-expired, so it's not a clean proxy. Need a
+small **write-side** addition: capture each draft's Datatracker **state**
+(and/or `replaced_by` / `rfc` linkage) into the manifest, then have
+`_eligible_files` (or a pre-filter feeding it) consult it. Orphan rows for
+now-ineligible files need a DB prune (a few lines in the build scan) or a
+clear on `--rebuild-embeddings`.
+
+Keep downloading/storing **all** revisions regardless (archive,
+`read_file_section`, citing a specific `-03` all still work) — this gates
+*embedding* only.
+
+### Companion: add a literal-search (grep) tool
+
+There is currently **no keyword/substring search** — semantic
+`search_corpus` (the embedding index) is the *only* content-discovery path,
+so "not embedded" == "not blind-discoverable." That's the one real gap from
+skipping concluded revisions: wording that lived only in a superseded
+revision and was removed before the RFC can't be found cold (it can still be
+*read* once something points at the revision, and `list_files` shows it on
+disk tagged "not indexed").
+
+Add a substring/grep tool over the on-disk cache (esp. `drafts/`). It needs
+no index, restores literal discoverability of every revision, and is a
+*better* fit for historical-draft questions, which tend to be literal
+("which revision first mentioned this parameter / section / term") rather
+than semantic. Net: drop the concluded-revision embedding volume, keep the
+full archive, and add the keyword path that matches those queries.
+
 ## Embedding-time efficiency (investigated 2026-06-02)
 
 **Verdict: don't build a shared content-addressed embedding cache. The data
