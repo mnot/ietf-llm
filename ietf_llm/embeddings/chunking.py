@@ -19,11 +19,35 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-CHUNK_SIZE = 2000  # characters
-CHUNK_OVERLAP = 200
-MAX_CHUNK_CHARS = 8000  # hard cap per chunk sent to the embedding model
+# Character budget per embedded chunk. The embedding model only embeds the
+# first ~512 tokens of whatever text it's given; anything past that is silently
+# dropped from the vector (though still stored for display). We therefore size
+# chunks in characters to stay under that window. Calibrated offline against
+# real corpora (httpbis/tls/aipref/rswg/last-call) by tokenising every message
+# section + windowed slice with the bge-small-en-v1.5 tokenizer: the section
+# tok/char ratio runs p50≈0.34, p99≈0.46, max≈0.52, so ~1200 chars keeps the
+# bulk (≈p95) of fragments under ~510 content tokens. Denser outliers (code,
+# URLs, base64) can still exceed it — the model truncates as a backstop, but
+# the `EMBED_CHAR_OVERLAP` between fragments means a tail dropped from one
+# fragment is re-covered by the head of the next, so content stays searchable.
+# Char-based on purpose: chunking must NOT depend on a runtime tokenizer (the
+# remote embedding backend won't ship one). Bumping this is a write-side change
+# — bump CHUNKER_VERSION in search.py so existing indices re-embed.
+EMBED_CHAR_BUDGET = 1200
+EMBED_CHAR_OVERLAP = 150
+MAX_CHUNK_CHARS = 8000  # hard cap for the legacy year-dump chunkers (dead path)
+
+# Identifies the chunking contract that produced an index. Stored in the
+# index `meta` table and compared at build time like the model id: a
+# mismatch forces a full re-embed of that WG on its next gather, so a
+# change to chunk boundaries (which the model-id check can't detect)
+# transparently rebuilds. Bump on any change to how chunks are cut.
+#   "1" — fixed 2000-char windows, 8000-char per-section truncation
+#   "2" — EMBED_CHAR_BUDGET windows; long sections split into sub_idx
+#         fragments instead of being truncated
+CHUNKER_VERSION = "2"
 
 
 @dataclass
@@ -32,6 +56,21 @@ class Chunk:
     chunk_idx: int  # ordinal within the file
     title: str  # subject / issue title / section hint, for display
     text: str
+    # Sub-fragment ordinal within a (file, chunk_idx). A message/comment
+    # section longer than EMBED_CHAR_BUDGET is windowed into several
+    # fragments that all share the same chunk_idx (so the message-number ==
+    # chunk_idx invariant the reader tools rely on is preserved) but get
+    # distinct sub_idx values and distinct embedding vectors. sub_idx 0
+    # carries the FULL section text (so get_chunk / get_messages can return
+    # the whole message) while embedding only its first window; sub_idx ≥1
+    # carry their window slice as both text and embedded text. Short,
+    # in-budget sections (the common case) are a single sub_idx 0 chunk.
+    sub_idx: int = 0
+    # Text actually fed to the embedding model. None means "embed `text`".
+    # Set on sub_idx 0 of a split section, where `text` holds the full
+    # message but only the first window should be embedded. Never stored —
+    # it exists only to drive build_index's embed call.
+    embed_text: Optional[str] = None
     # 1-indexed inclusive line range within the source file. Allow None
     # so legacy code paths and tests can construct chunks without them
     # (the index migration also leaves them NULL on pre-v2 rows).
@@ -118,6 +157,32 @@ def _build_line_index(text: str) -> List[int]:
 def _line_at(line_starts: List[int], offset: int) -> int:
     """1-indexed line number containing the given byte offset."""
     return bisect.bisect_right(line_starts, offset)
+
+
+def _window_text(text: str, budget: int, overlap: int) -> List[tuple[str, int, int]]:
+    """Slide a fixed-size window over `text`, returning (sub, start, end)
+    for each window where start/end are byte offsets *within `text`*.
+
+    Consecutive windows overlap by exactly `overlap` chars, so a token
+    dropped from the tail of one window (when a dense window tokenises past
+    the model's 512-token limit) is re-covered by the head of the next.
+    The single shared windowing primitive for both the windowed chunker and
+    the per-section splitter, so line-number mapping stays identical for
+    every sub-chunk. A sub-budget `text` returns one window spanning it all.
+    """
+    if not text:
+        return []
+    step = max(1, budget - overlap)
+    out: List[tuple[str, int, int]] = []
+    pos = 0
+    length = len(text)
+    while pos < length:
+        end = min(pos + budget, length)
+        out.append((text[pos:end], pos, end))
+        if end >= length:
+            break
+        pos += step
+    return out
 
 
 _RECORD_SEP = re.compile(r"\n=+\n+", re.MULTILINE)
@@ -320,17 +385,20 @@ def _chunk_issues_file(text: str, filename: str) -> List[Chunk]:
 
 
 def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
-    """Fixed-size character chunks with overlap, for drafts/RFCs/etc."""
+    """Budget-sized character chunks with overlap, for drafts/RFCs/etc.
+
+    Each window is its own chunk_idx (sub_idx 0); windows are sized to
+    EMBED_CHAR_BUDGET so the whole window fits the model's token budget
+    rather than having its tail silently dropped from the vector.
+    """
     chunks: List[Chunk] = []
     text = text.strip()
     if not text:
         return chunks
     line_starts = _build_line_index(text)
-    step = CHUNK_SIZE - CHUNK_OVERLAP
-    idx = 0
-    pos = 0
-    while pos < len(text):
-        body = text[pos : pos + CHUNK_SIZE]
+    for idx, (body, start, end) in enumerate(
+        _window_text(text, EMBED_CHAR_BUDGET, EMBED_CHAR_OVERLAP)
+    ):
         # First non-empty line as title hint
         title = next((ln.strip() for ln in body.splitlines() if ln.strip()), filename)
         if len(title) > 80:
@@ -341,13 +409,82 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
                 chunk_idx=idx,
                 title=title,
                 text=body,
-                start_line=_line_at(line_starts, pos),
-                end_line=_line_at(line_starts, pos + len(body) - 1),
+                start_line=_line_at(line_starts, start),
+                end_line=_line_at(line_starts, max(end - 1, start)),
             )
         )
-        idx += 1
-        pos += step
     return chunks
+
+
+def _section_chunks(
+    *,
+    file: str,
+    chunk_idx: int,
+    title: str,
+    body: str,
+    sec_off: int,
+    line_starts: List[int],
+    meta: Dict[str, Any],
+) -> List[Chunk]:
+    """Emit the chunk row(s) for one section (thread header or message).
+
+    In-budget section → a single sub_idx 0 chunk embedding its full text.
+    Over-budget section → windowed: sub_idx 0 carries the full body (with
+    the section's full line span) but embeds only its first window; later
+    sub_idx carry their window slice and its own line span. Every fragment
+    shares `chunk_idx`, `meta`, and the title (with a `(part k/n)` hint so a
+    search hit on a tail fragment is legible; storage strips the hint when
+    it reconstitutes the whole message).
+    """
+    windows = _window_text(body, EMBED_CHAR_BUDGET, EMBED_CHAR_OVERLAP)
+    full_start = _line_at(line_starts, sec_off)
+    full_end = _line_at(line_starts, sec_off + max(len(body) - 1, 0))
+    if len(windows) <= 1:
+        return [
+            Chunk(
+                file=file,
+                chunk_idx=chunk_idx,
+                sub_idx=0,
+                title=title,
+                text=body,
+                start_line=full_start,
+                end_line=full_end,
+                **meta,
+            )
+        ]
+    parts = len(windows)
+    out: List[Chunk] = []
+    for k, (sub, start, end) in enumerate(windows):
+        part_title = f"{title} (part {k + 1}/{parts})"
+        if k == 0:
+            # sub_idx 0: full body for retrieval, first window for the vector.
+            out.append(
+                Chunk(
+                    file=file,
+                    chunk_idx=chunk_idx,
+                    sub_idx=0,
+                    title=part_title,
+                    text=body,
+                    embed_text=sub,
+                    start_line=full_start,
+                    end_line=full_end,
+                    **meta,
+                )
+            )
+        else:
+            out.append(
+                Chunk(
+                    file=file,
+                    chunk_idx=chunk_idx,
+                    sub_idx=k,
+                    title=part_title,
+                    text=sub,
+                    start_line=_line_at(line_starts, sec_off + start),
+                    end_line=_line_at(line_starts, sec_off + max(end - 1, start)),
+                    **meta,
+                )
+            )
+    return out
 
 
 def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
@@ -394,22 +531,27 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     closing_rationale = _extract_issue_rationale(text) if is_issue else None
 
     # Header (subject + outline) is everything before the first message.
+    # It's chunk_idx 0 by convention; the reply graph and position tally
+    # both treat message number `[N]` as chunk_idx N, so the header — which
+    # has no message number — takes 0.
+    file_meta = {
+        "labels": labels,
+        "state": state,
+        "duplicate_of": duplicate_of,
+        "closing_rationale": closing_rationale,
+    }
     header_end = matches[0].start()
     header_text = text[:header_end].strip()
     if header_text:
-        chunks.append(
-            Chunk(
+        chunks.extend(
+            _section_chunks(
                 file=filename,
                 chunk_idx=0,
                 title="(thread header)",
-                text=header_text[:MAX_CHUNK_CHARS],
-                start_line=1,
-                end_line=_line_at(line_starts, max(header_end - 1, 0)),
-                labels=labels,
-                state=state,
-                url=file_url,
-                duplicate_of=duplicate_of,
-                closing_rationale=closing_rationale,
+                body=header_text,
+                sec_off=0,
+                line_starts=line_starts,
+                meta={**file_meta, "url": file_url},
             )
         )
 
@@ -419,6 +561,11 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         body = text[start_off:end_off].strip()
         if not body:
             continue
+        # chunk_idx is the message number `[N]` (regex group 1), NOT a
+        # running counter — a long message that splits into several
+        # sub_idx fragments must not push later messages' chunk_idx out of
+        # step with the `[N]` the reply graph / position tally key on.
+        msg_idx = int(match.group(1))
         # Title: "[N] DATE — Sender" without the leading `### `.
         title = match.group(0)[4:].strip()
         # Date is group 2 in the regex (e.g. "2026-04-13 10:00").
@@ -426,20 +573,15 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         # Per-chunk URL: issue chunks inherit the file-level URL;
         # thread chunks have their own per-message Archived-At line.
         chunk_url = file_url if is_issue else _extract_thread_archived_at(body)
-        chunks.append(
-            Chunk(
+        chunks.extend(
+            _section_chunks(
                 file=filename,
-                chunk_idx=len(chunks),
+                chunk_idx=msg_idx,
                 title=title,
-                text=body[:MAX_CHUNK_CHARS],
-                start_line=_line_at(line_starts, start_off),
-                end_line=_line_at(line_starts, max(end_off - 1, 0)),
-                chunk_date=chunk_date,
-                labels=labels,
-                state=state,
-                url=chunk_url,
-                duplicate_of=duplicate_of,
-                closing_rationale=closing_rationale,
+                body=body,
+                sec_off=start_off,
+                line_starts=line_starts,
+                meta={**file_meta, "chunk_date": chunk_date, "url": chunk_url},
             )
         )
     return chunks

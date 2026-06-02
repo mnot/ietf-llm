@@ -822,3 +822,109 @@ def test_mail_archive_year_dump_is_not_indexed(isolated_home: Path) -> None:
     hits = search("wg", "anything", k=20, verbose=Verbosity.QUIET)
     assert hits
     assert all("mail-archive" not in h.file for h in hits)
+
+
+# --- sub_idx fragments: writer -> chunker -> storage round-trip -------------
+
+
+def _count_rows(wg: str, file: str, chunk_idx: int) -> int:
+    """Raw fragment-row count for one (file, chunk_idx) in the index DB."""
+    import sqlite3
+
+    from ietf_llm.embeddings.storage import _db_path
+
+    conn = sqlite3.connect(_db_path(wg))
+    try:
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE file=? AND chunk_idx=?",
+            (file, chunk_idx),
+        )
+        return int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def test_long_message_splits_in_db_but_reads_back_whole(
+    isolated_home: Path,
+) -> None:
+    # A message far over the embed budget becomes several fragment rows
+    # (sub_idx 0..n) in the DB, yet get_chunk returns the WHOLE message
+    # and search collapses the fragments to a single hit — the
+    # one-chunk-per-message contract the reader tools depend on.
+    long_body = "alpha bravo charlie delta echo foxtrot " * 120  # ~4700 chars
+    write_cache_file(
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
+        (
+            "# Topic\n\n## Messages\n\n"
+            f"### [1] 2025-01-01 10:00 — Alice\n\n{long_body.strip()}\n"
+        ),
+    )
+    _build_with_stub("wg", isolated_home)
+
+    # Message [1] is chunk_idx 1; it split into >1 fragment rows.
+    assert _count_rows("wg", "threads/2025-01-01-topic.md", 1) > 1
+
+    # chunk_counts reports logical chunks (header + 1 message = 2), not rows.
+    counts = embeddings.chunk_counts("wg")
+    assert counts["threads/2025-01-01-topic.md"] == 2
+
+    # get_chunk returns the full message with a clean (hint-free) title.
+    result = embeddings.get_chunk("wg", "threads/2025-01-01-topic.md", 1)
+    assert result is not None
+    title, text, _start, _end = result
+    assert "(part" not in title
+    assert long_body.strip() in text
+
+    # search collapses the fragments to a single hit for the message.
+    hits = search("wg", "anything", k=20, verbose=Verbosity.QUIET)
+    msg_hits = [
+        h for h in hits
+        if h.file == "threads/2025-01-01-topic.md" and h.chunk_idx == 1
+    ]
+    assert len(msg_hits) == 1
+
+
+def test_issue_writer_output_splits_long_comment_and_reads_back(
+    isolated_home: Path,
+) -> None:
+    # Drive the REAL issue writer (not a hand-built fixture): a long issue
+    # description must chunk into covering fragments that share the issue's
+    # metadata, and read back whole through get_chunk.
+    from ietf_llm.embeddings.chunking import _chunk_file
+    from ietf_llm.gather.issue_files import write_issue_files
+    from conftest import make_issue, write_github_archive
+
+    long_desc = "the working group discussed cookie partitioning at length " * 90
+    write_github_archive(
+        isolated_home, "wg", "org/repo",
+        [
+            make_issue(
+                7, "Long one", state="open",
+                labels=["vocabulary", "top-level"],
+                updated_at="2026-01-01T10:00:00Z",
+                body=long_desc.strip(),
+            )
+        ],
+    )
+    cache = get_wg_file_cache_dir("wg")
+    write_issue_files("wg", cache, None, Verbosity.QUIET)
+
+    relpath = "issues/org-repo/7.md"
+    path = Path(cache) / "issues" / "org-repo" / "7.md"
+    assert path.exists()
+
+    # Chunk the emitted bytes directly: message [1] (the description) splits.
+    chunks = _chunk_file(str(path), relpath)
+    frags = [c for c in chunks if c.chunk_idx == 1]
+    assert len(frags) > 1
+    for c in frags:
+        assert c.state == "open"
+        assert c.labels == "vocabulary,top-level"
+        assert c.url == "https://github.com/org/repo/issues/7"
+
+    # And it reads back whole via the index.
+    _build_with_stub("wg", isolated_home)
+    result = embeddings.get_chunk("wg", relpath, 1)
+    assert result is not None
+    _title, text, _s, _e = result
+    assert long_desc.strip() in text
