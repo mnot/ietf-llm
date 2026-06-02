@@ -19,9 +19,19 @@ What gets normalised:
   - Display-name suffixes: ` via Datatracker`, ` (IETF)`, etc.
   - Multi-email same person: when two emails share a display name, they
     merge into one Person.
-  - GitHub login ↔ email local-part: when a GitHub login appears as the
-    local-part of any of a Person's emails, we link them. Conservative
-    heuristic; we don't try to infer linkage from name similarity alone.
+  - GitHub login → person, in three passes of decreasing precision
+    (see `people_linking.py` for the orchestration):
+      1. login ↔ email local-part: a login that equals the local-part of
+         one of a Person's emails (`mnot` ↔ `mnot@mnot.net`).
+      2. Datatracker `github_username` profile resource → the person's
+         verified emails: authoritative (self-reported) and matched by
+         exact email, so collision-free. Partial coverage.
+      3. GitHub users API real name → an exact mailing-list display-name
+         match: widest reach but name-only, so a last resort. We still
+         decline fuzzy / first-name-only matching — it manufactures false
+         merges (two different "Eric"s) far more often than real links.
+    A GitHub-only actor that none of these link to is at least relabelled
+    from its bare login to the resolved real name where we have one.
 
 What we don't do (yet):
 
@@ -43,8 +53,11 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from .gather.datatracker import fetch_wg_roles
 from .gather.draft_authors import latest_draft_paths, parse_authors
 from .gather.github import iter_issue_archives
-from .gather.github_users import resolve_logins
 from .paths import digest_path
+from .people_linking import (
+    resolve_github_user_names,
+    resolve_github_via_datatracker,
+)
 from .text import _parse_date
 from .utils import (
     LogLevel,
@@ -285,6 +298,124 @@ class Registry:
         person.touch_date(when)
         return person
 
+    def link_github_identity(
+        self,
+        login: str,
+        name: Optional[str],
+        emails: Iterable[str],
+    ) -> str:
+        """Link a GitHub-only actor to a mailing-list actor using identity
+        facts resolved from an external source (Datatracker profile, or
+        the GitHub users API).
+
+        `login` must already be in the registry as a GitHub author. We try
+        to merge its Person into a mailing-list Person, matching first on
+        any of `emails` (exact, collision-free — email is the registry's
+        primary key) and then on exact `name` (case-insensitive). On a
+        match the two Persons are merged and the result is "linked".
+
+        With no mailing-list match we don't invent one: we only upgrade the
+        bare login to the real `name` so the people file shows a human
+        rather than `kmadhavan-msft` ("named"). We deliberately do NOT
+        attach the resolved emails to an unlinked actor — those addresses
+        never appeared on the list, and adding them would miscount a
+        GitHub-only participant as active on both surfaces. Returns
+        "linked", "named", or "unmatched".
+        """
+        login = (login or "").strip()
+        gh_person = self._by_github.get(login)
+        if gh_person is None:
+            return "unmatched"
+        # Already linked to a mailing-list identity (by the local-part
+        # heuristic at ingest, or an earlier call): nothing to do.
+        if gh_person.emails or gh_person.message_count > 0:
+            return "already"
+
+        target = self._find_mail_person(name, emails, exclude=gh_person)
+        if target is not None:
+            self._merge_persons(target, gh_person)
+            return "linked"
+
+        if name and gh_person.canonical_name in gh_person.github_logins:
+            gh_person.canonical_name = name
+            self._by_name[name.lower()] = gh_person
+            return "named"
+        return "unmatched"
+
+    def _find_mail_person(
+        self,
+        name: Optional[str],
+        emails: Iterable[str],
+        exclude: Person,
+    ) -> Optional[Person]:
+        """Find an existing mailing-list Person matching any of `emails`
+        (exact) or `name` (exact, case-insensitive). Returns None when no
+        distinct match exists. Name matches must carry mail signal so we
+        don't link onto a draft-author / role-only stub."""
+        for raw in emails or []:
+            norm = _normalise_email(raw)
+            if not norm:
+                continue
+            cand = self._by_email.get(norm)
+            if cand is not None and cand is not exclude:
+                return cand
+        if name:
+            cand = self._by_name.get(name.lower())
+            if (
+                cand is not None
+                and cand is not exclude
+                and (cand.emails or cand.message_count > 0)
+            ):
+                return cand
+        return None
+
+    def _merge_persons(self, keep: Person, drop: Person) -> None:
+        """Fold `drop` into `keep` and remove it from the registry.
+
+        `keep` is the surviving identity (the mailing-list Person, which
+        carries the message history and a reviewed name); `drop` is the
+        GitHub-only Person being linked in. Every surface form and counter
+        moves across, and each index entry pointing at `drop` is repointed
+        at `keep`.
+        """
+        if keep is drop:
+            return
+        # Decide the canonical name before merging logins, so a freshly
+        # absorbed login can't make keep's existing name look "weak".
+        keep_name_weak = (
+            _looks_like_email(keep.canonical_name)
+            or keep.canonical_name in keep.github_logins
+        )
+        drop_name_real = bool(drop.canonical_name) and (
+            drop.canonical_name not in drop.github_logins
+        )
+        if keep_name_weak and drop_name_real:
+            keep.canonical_name = drop.canonical_name
+
+        keep.emails |= drop.emails
+        keep.github_logins |= drop.github_logins
+        keep.raw_from_headers |= drop.raw_from_headers
+        keep.roles |= drop.roles
+        keep.authored_documents |= drop.authored_documents
+        keep.edited_documents |= drop.edited_documents
+        keep.email_domains |= drop.email_domains
+        # Affiliations: keep wins on key clashes; drop fills gaps.
+        for source, org in drop.affiliations.items():
+            keep.affiliations.setdefault(source, org)
+        keep.message_count += drop.message_count
+        keep.issue_count += drop.issue_count
+        keep.touch_date(drop.first_seen)
+        keep.touch_date(drop.last_seen)
+
+        for email_addr in drop.emails:
+            self._by_email[email_addr] = keep
+        for gh_login in drop.github_logins:
+            self._by_github[gh_login] = keep
+        if drop.canonical_name:
+            self._by_name[drop.canonical_name.lower()] = keep
+        self._by_name[keep.canonical_name.lower()] = keep
+        self.persons = [person for person in self.persons if person is not drop]
+
     def add_document_author(
         self,
         name: str,
@@ -488,11 +619,18 @@ def build_registry(
     registry = Registry()
     _ingest_mail(wg, registry, verbose)
     _ingest_github(wg, registry, verbose)
-    # After GitHub authors are loaded, resolve any remaining
-    # login-as-name actors (heuristic email/local-part linking didn't
-    # find them) via the GitHub users API. Best-effort; no-op if there
-    # are no unresolved logins or the API isn't reachable.
-    _resolve_github_user_names(registry, verbose)
+    # Link still-unlinked GitHub authors to mailing-list identities, in
+    # order of precision. Both run before roles/drafts so name/email
+    # matches only ever land on a mailing-list Person.
+    #
+    # 1. Datatracker `github_username` profile resources — authoritative
+    #    (the person claimed the login themselves) and matched by verified
+    #    email, so collision-free. Partial coverage.
+    resolve_github_via_datatracker(registry, verbose)
+    # 2. GitHub users API real name — wider reach, matched by display name
+    #    only, so a last resort. Also upgrades a bare login to a real name
+    #    and records the self-reported `company` affiliation.
+    resolve_github_user_names(registry, verbose)
     if with_datatracker_roles:
         _ingest_datatracker_roles(wg, registry, verbose)
     _ingest_draft_authors(wg, registry, verbose)
@@ -553,73 +691,6 @@ def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
                 )
             count += 1
     log(f"  ingested authors from {count} issues", verbose, level=LogLevel.PROGRESS)
-
-
-def _resolve_github_user_names(
-    registry: Registry,
-    verbose: Verbosity,
-) -> None:
-    """For each Person whose canonical_name is just their GitHub login
-    (heuristic linking didn't find them in the mail registry), look up
-    the user's real name via the GitHub API and upgrade.
-
-    Logins where we already have a human-readable canonical_name are
-    skipped. Logins where the API returns no name (or returns 404)
-    stay as the login — but the cache records the absence so we
-    don't re-ask next gather.
-
-    Also captures the GitHub user's self-reported `company` field as
-    an affiliation signal — stored on Person.affiliations under the
-    "github" source tag, distinct from the draft-derived signal so
-    the renderer can show source agreement when both sources name
-    the same org.
-    """
-    candidates: List[str] = []
-    by_login: Dict[str, Person] = {}
-    for person in registry.persons:
-        if not person.github_logins:
-            continue
-        # Heuristic: canonical_name equals one of the github_logins
-        # means we never upgraded it to a real human name. Try the API.
-        if person.canonical_name in person.github_logins:
-            login = person.canonical_name
-            candidates.append(login)
-            by_login[login] = person
-    if not candidates:
-        return
-
-    log(
-        f"Resolving {len(candidates)} GitHub login(s) to real names...",
-        verbose,
-        level=LogLevel.STATUS,
-    )
-    resolved = resolve_logins(candidates, verbose=verbose)
-    n_upgraded = 0
-    n_companies = 0
-    for login, info in resolved.items():
-        target = by_login.get(login)
-        if target is None:
-            continue
-        if info.name:
-            # Keep the by_name index in sync so canonical_for_email
-            # lookups land on this Person now that we have a real name.
-            target.canonical_name = info.name
-            key = info.name.lower()
-            registry._by_name[key] = target  # pylint: disable=protected-access
-            n_upgraded += 1
-        # Record the company field as an affiliation source. We always
-        # try this — even when name resolution didn't upgrade, an
-        # already-named Person may still have a useful `company`.
-        if info.company:
-            registry.add_github_company(login, info.company)
-            n_companies += 1
-    if n_upgraded or n_companies:
-        log(
-            f"  upgraded {n_upgraded} login(s) to real names; "
-            f"{n_companies} affiliation(s) from GitHub `company`",
-            verbose,
-            level=LogLevel.STATUS,
-        )
 
 
 def _ingest_datatracker_roles(wg: str, registry: Registry, verbose: Verbosity) -> None:

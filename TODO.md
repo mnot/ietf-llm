@@ -138,3 +138,56 @@ thread grows daily and re-embeds in full each gather.) The proportionate fix is
 message-chunk, reuse unchanged ones, embed only new/edited sections. Stays
 per-WG — no new isolation or poisoning surface. This is a "wait until it hurts"
 optimization, not called for by current data.
+
+## Reconcile mailing-list identities via Datatracker person id (planned 2026-06-02)
+
+Use Datatracker's `email -> person` mapping as the identity **spine** so the
+same participant is recognised across addresses and over time — *continuity of
+participation*, not per-person profiling. Complements the GitHub-author linking
+(PR #27, `gather/datatracker_github.py`): that attaches GitHub logins to a
+Person; this consolidates the mail side itself.
+
+### Why
+
+Mail-side dedup today (`people.py`) merges two addresses only when they share a
+display name or one is a DMARC rewrite. It misses the common long-timer case:
+one human posting under unrelated addresses with *different* name spellings
+(`M. Nottingham <mnot@fastly.com>` vs `Mark Nottingham <mnot@mnot.net>`).
+Datatracker records all of a person's addresses — active and historical — under
+one person id, closing exactly that gap, and at higher precision than
+name-string equality (curated records, not a fuzzy match).
+
+### Approach (write-side)
+
+- New `gather/datatracker_people.py`: `resolve_addresses(addresses) ->
+  {address: person_uri}` via the email endpoint filtered with `address__in`,
+  chunked (~50/request). Verified against the live API: both `address__in` and
+  `person__in` batch-filter, and each row already carries its `person` uri — so
+  grouping needs **no** per-person follow-up request (a handful of calls per WG,
+  not one per participant). Global, WG-independent cache like
+  `_datatracker-github.json`.
+- In `build_registry`, right after `_ingest_mail` and **before** the GitHub
+  passes: collect distinct normalised mail addresses already in the registry,
+  resolve, group by person uri, and `_merge_persons` (helper added in PR #27)
+  any group spanning >=2 registry Persons. Person uri is the join key. Running
+  first means the GitHub passes inherit the consolidated identities for free.
+
+### Decisions
+
+- **Canonical name: merge-only.** Do NOT wholesale-adopt Datatracker's `name`;
+  only upgrade when the current canonical is still email-ish (matches the
+  existing upgrade rule). Avoids churning display names people already
+  recognise. Flip to "Datatracker name wins" only if we decide it should be
+  authoritative.
+- **Precision guards.** Relay / `noreply` addresses never reach the resolver
+  (`_normalise_email` drops them). Watch role / alias addresses (`chairs@`,
+  draft aliases) — a mis-merge corrupts identities corpus-wide, so keep the same
+  conservative posture as the GitHub linker.
+- **Write-side:** existing caches keep their old identities until the next
+  `ietf-llm <wg>` gather.
+
+### Unknown
+
+Yield per WG (how many real continuity-merges) is unmeasured. Guess: a handful,
+not dozens — most participants use one address and the name-merge already
+catches the rest. Report before/after on httpbis when built, same as PR #27.
