@@ -81,7 +81,8 @@ def _mps_mem_tools() -> (
     on CPU/CUDA or when torch is absent, so callers no-op transparently.
     """
     try:
-        import torch  # pylint: disable=import-outside-toplevel,import-error
+        # pylint: disable=import-outside-toplevel,import-error
+        import torch  # type: ignore[import-not-found,unused-ignore]
     except ImportError:
         return None, None
     mps = getattr(torch, "mps", None)

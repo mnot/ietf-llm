@@ -71,8 +71,8 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
-        # pylint: disable=import-outside-toplevel,import-error
-        from llm_sentence_transformers import (  # type: ignore[import-untyped]
+        # pylint: disable=import-outside-toplevel,import-error,line-too-long
+        from llm_sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
             SentenceTransformerModel,
             read_models,
             write_models,
