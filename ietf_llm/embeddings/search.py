@@ -130,6 +130,14 @@ def build_index(
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('model', ?)", (model_name,)
     )
+    # A rebuild clears meta (above), which would drop the schema_version the
+    # read-only search path checks. The physical schema is current (_open_db
+    # created / migrated it), so restamp it to keep meta consistent with the
+    # table; otherwise a rebuilt index reads as an outdated schema.
+    cur.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+        (str(_SCHEMA_VERSION),),
+    )
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('chunker_version', ?)",
         (CHUNKER_VERSION,),
