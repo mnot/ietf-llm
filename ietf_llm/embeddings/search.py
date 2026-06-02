@@ -42,8 +42,12 @@ _PROGRESS_SECS = 20.0
 #: file-count cadence lets a dense window pack thousands of chunks and spike
 #: the pool toward swap on smaller-RAM machines. Flushing per ~chunk keeps the
 #: peak uniform (~floor + this many chunks' worth) regardless of file density.
-#: ~1000 holds peaks to low single-digit GB even on an 8 GB Mac.
-_FLUSH_EVERY_CHUNKS = 1000
+#: Measured on the real httpbis rebuild, the dense-draft region costs ~4 MB of
+#: driver memory per chunk above a ~2 GB floor, so 500 holds the peak near
+#: ~4 GB — comfortable even on an 8 GB Mac (recommended_max ~5 GB there). The
+#: flush is cheap (commit + empty_cache), so the tighter cadence costs nothing
+#: measurable on throughput.
+_FLUSH_EVERY_CHUNKS = 500
 #: The file-count trigger is a durability floor for the opposite regime — a
 #: long run of small/sparse files (threads, issues) that never reaches the
 #: chunk threshold still commits periodically, so a crash doesn't discard much
