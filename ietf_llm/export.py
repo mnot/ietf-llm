@@ -43,7 +43,6 @@ import re
 import tempfile
 from typing import Dict, List, Tuple
 
-from .notebooklm import create_notebook, get_credentials, upload_source
 from .utils import (
     LogLevel,
     Verbosity,
@@ -296,6 +295,23 @@ def notebooklm(
     notebook limits (50 free / 300 Plus); see `directory()` for the
     bundling shape.
     """
+    # Google auth libraries live behind the optional `notebooklm` extra,
+    # so this push path imports them lazily and fails cleanly when the
+    # extra isn't installed (mirror-mode export needs none of this).
+    try:
+        # pylint: disable=import-outside-toplevel
+        from .notebooklm import create_notebook, get_credentials, upload_source
+    except ImportError:
+        log(
+            "NotebookLM export needs the optional `notebooklm` extra "
+            "(Google auth libraries):\n"
+            "  pipx install 'ietf-llm[notebooklm]'\n"
+            "  # or with pip: pip install 'ietf-llm[notebooklm]'",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return 0
+
     cache_dir = get_wg_file_cache_dir(wg)
     if not os.path.isdir(cache_dir):
         log(

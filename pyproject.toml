@@ -19,10 +19,8 @@ dependencies = [
     "requests",
     "beautifulsoup4",
     "pypdf",
-    # NotebookLM Enterprise export
-    "google-auth",
-    "google-auth-oauthlib",
-    "google-auth-httplib2",
+    # NotebookLM Enterprise export (Google auth) is the optional `notebooklm`
+    # extra -- mirror-mode export needs none of it; only the push does.
     # Digests, semantic search index, MCP server — all first-class features.
     # On-device embeddings (sentence-transformers / torch) are the optional
     # `local-embeddings` extra so a plain install stays torch-free and can
@@ -40,6 +38,13 @@ dependencies = [
 # and the embedding backend must be a remote `openai-embed/...` endpoint.
 # Kept out of base so the serving/ingest image stays torch-free.
 local-embeddings = ["llm-sentence-transformers"]
+# NotebookLM Enterprise export: Google auth libraries. Only the
+# `ietf-llm-export` NotebookLM push needs these; mirror mode does not.
+notebooklm = [
+    "google-auth",
+    "google-auth-oauthlib",
+    "google-auth-httplib2",
+]
 # Behaviour-shaping extras (not feature-gating)
 certs = ["pip-system-certs"]
 dev = [
@@ -52,6 +57,13 @@ dev = [
     "build",
     "types-requests",
     "types-beautifulsoup4",
+    # Optional runtime deps that must be present to lint / typecheck the
+    # optional modules (notebooklm.py imports google at module scope).
+    # Torch is deliberately NOT here -- the local-embeddings path is
+    # lazily imported, so it lints without it and CI stays torch-free.
+    "google-auth",
+    "google-auth-oauthlib",
+    "google-auth-httplib2",
 ]
 
 [project.urls]
