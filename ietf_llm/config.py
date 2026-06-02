@@ -66,6 +66,85 @@ def clear(wg: str) -> bool:
     return False
 
 
+def _global_config_path() -> str:
+    return os.path.join(get_config_dir(), "config.json")
+
+
+def load_global() -> Dict[str, Any]:
+    """Return the persisted global (non-WG) service config, or {}.
+
+    Holds settings that are properties of the tool / deployment rather than
+    of a corpus (the embedding model, summariser model, embed on/off),
+    so they are configured once and apply to every corpus.
+    """
+    path = _global_config_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return dict(json.load(fh))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_global(data: Mapping[str, Any]) -> None:
+    """Persist the global service config."""
+    os.makedirs(get_config_dir(), exist_ok=True)
+    path = _global_config_path()
+    try:
+        with atomic_open(path) as fh:
+            json.dump(dict(data), fh, indent=2, sort_keys=True)
+    except OSError as err:
+        log(f"Error saving global config ({path}): {err}", level=LogLevel.ERROR)
+
+
+def _coerce_env(raw: str, default: Any) -> Any:
+    """Coerce an environment string to the type of `default` (bool or str)."""
+    if isinstance(default, bool):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return raw.strip()
+
+
+def merge_global(
+    args: argparse.Namespace,
+    spec: Iterable["tuple[str, str, Any]"],
+) -> None:
+    """Resolve global service scalars into `args`.
+
+    `spec` is an iterable of ``(arg_name, env_var, default)``. Precedence is
+    **env > CLI > global-persisted > default**. A non-default CLI value is
+    written through to the global config so it sticks for every corpus
+    (even when the environment overrides it this run, so it is remembered
+    once the env var is gone). The environment wins even over an explicit
+    CLI flag -- a container's injected config is authoritative -- and a
+    notice is logged when it overrides one. Secrets come from the
+    environment only and are never persisted here.
+    """
+    persisted = load_global()
+    for name, env_var, default in spec:
+        cli_val = getattr(args, name, None)
+        cli_supplied = cli_val is not None and cli_val != default
+        if cli_supplied:
+            persisted[name] = cli_val
+        env_raw = os.environ.get(env_var)
+        if env_raw is not None and env_raw.strip():
+            env_val = _coerce_env(env_raw, default)
+            if cli_supplied and cli_val != env_val:
+                log(
+                    f"Ignoring --{name.replace('_', '-')}={cli_val}; "
+                    f"{env_var} is set in the environment and takes precedence.",
+                    level=LogLevel.STATUS,
+                )
+            setattr(args, name, env_val)
+        elif cli_supplied:
+            setattr(args, name, cli_val)
+        elif name in persisted:
+            setattr(args, name, persisted[name])
+        else:
+            setattr(args, name, default)
+    save_global(persisted)
+
+
 def merge(
     args: argparse.Namespace,
     wg: str,
