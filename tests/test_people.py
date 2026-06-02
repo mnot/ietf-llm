@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
+
+import pytest
 
 from ietf_llm.people import (
     Registry,
@@ -132,6 +135,127 @@ def test_github_only_actor_stays_separate(isolated_home: Path) -> None:
     assert r.persons[0].canonical_name == "randomuser"
 
 
+# --- link_github_identity (external-resolution linking) --------------------
+
+
+def test_link_github_identity_merges_by_email(isolated_home: Path) -> None:
+    # The login doesn't match the email local-part, so the ingest-time
+    # heuristic leaves them separate; an externally-resolved verified
+    # email links them.
+    r = Registry()
+    r.add_email_message("Roberto Polli <robipolli@gmail.com>", None)
+    r.add_github_author("ioggstream")
+    assert len(r.persons) == 2
+    outcome = r.link_github_identity(
+        "ioggstream", "Roberto Polli", ["robipolli@gmail.com"]
+    )
+    assert outcome == "linked"
+    assert len(r.persons) == 1
+    person = r.persons[0]
+    assert person.canonical_name == "Roberto Polli"
+    assert person.github_logins == {"ioggstream"}
+    assert person.emails == {"robipolli@gmail.com"}
+    assert person.message_count == 1
+    assert person.issue_count == 1
+    assert r.canonical_for_github("ioggstream") == "Roberto Polli"
+
+
+def test_link_github_identity_merges_by_name(isolated_home: Path) -> None:
+    # No verified email available (GitHub-API path), but the resolved
+    # display name matches a mailing-list Person exactly.
+    r = Registry()
+    r.add_email_message("Roy T. Fielding <fielding@gbiv.com>", None)
+    r.add_github_author("royfielding")
+    assert len(r.persons) == 2
+    outcome = r.link_github_identity("royfielding", "Roy T. Fielding", [])
+    assert outcome == "linked"
+    assert len(r.persons) == 1
+    assert r.persons[0].github_logins == {"royfielding"}
+    assert r.persons[0].canonical_name == "Roy T. Fielding"
+
+
+def test_link_github_identity_names_without_match(isolated_home: Path) -> None:
+    # No mailing-list identity matches: upgrade the bare login to the real
+    # name, but do NOT attach the resolved email — the actor never posted
+    # to the list and must stay in the github-only bucket.
+    r = Registry()
+    r.add_github_author("kmadhavan-msft")
+    outcome = r.link_github_identity(
+        "kmadhavan-msft", "Kannan Madhavan", ["kmadhavan@microsoft.com"]
+    )
+    assert outcome == "named"
+    assert len(r.persons) == 1
+    person = r.persons[0]
+    assert person.canonical_name == "Kannan Madhavan"
+    assert person.github_logins == {"kmadhavan-msft"}
+    assert person.emails == set()
+    assert person.message_count == 0
+
+
+def test_link_github_identity_unmatched_without_name(isolated_home: Path) -> None:
+    r = Registry()
+    r.add_github_author("ghost")
+    outcome = r.link_github_identity("ghost", None, [])
+    assert outcome == "unmatched"
+    assert r.persons[0].canonical_name == "ghost"
+
+
+def test_link_github_identity_unknown_login(isolated_home: Path) -> None:
+    r = Registry()
+    assert r.link_github_identity("nobody", "Someone", []) == "unmatched"
+    assert r.persons == []
+
+
+def test_link_github_identity_already_linked(isolated_home: Path) -> None:
+    # The ingest-time local-part heuristic already linked them; a later
+    # external pass must report "already" and change nothing.
+    r = Registry()
+    r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)
+    r.add_github_author("mnot")
+    assert len(r.persons) == 1
+    outcome = r.link_github_identity(
+        "mnot", "Mark Nottingham", ["mnot@mnot.net"]
+    )
+    assert outcome == "already"
+    assert len(r.persons) == 1
+
+
+def test_merge_preserves_counts_dates_and_affiliation(
+    isolated_home: Path,
+) -> None:
+    early = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    late = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    r = Registry()
+    r.add_email_message("Roberto Polli <robipolli@gmail.com>", early)
+    r.add_github_author("ioggstream", late)
+    r.add_github_company("ioggstream", "Par-Tec")  # affiliation on gh actor
+    outcome = r.link_github_identity(
+        "ioggstream", "Roberto Polli", ["robipolli@gmail.com"]
+    )
+    assert outcome == "linked"
+    person = r.persons[0]
+    # The github-only actor's affiliation, issue count, and date span all
+    # fold into the surviving mailing-list Person.
+    assert person.affiliations == {"github": "Par-Tec"}
+    assert person.issue_count == 1
+    assert person.message_count == 1
+    assert person.first_seen == early
+    assert person.last_seen == late
+
+
+def test_link_by_name_skips_signal_less_stub(isolated_home: Path) -> None:
+    # A name match must carry mail signal. A draft-author-only stub (no
+    # email, no messages) with the same name must NOT swallow the github
+    # actor — that would be a false merge onto someone who never posted.
+    r = Registry()
+    r.add_document_author("Foo Bar", None, document="draft-foo")
+    r.add_github_author("foobar")
+    assert len(r.persons) == 2
+    outcome = r.link_github_identity("foobar", "Foo Bar", [])
+    assert outcome == "named"  # upgraded, not linked
+    assert len(r.persons) == 2
+
+
 def test_canonical_for_email_resolves_all_forms(isolated_home: Path) -> None:
     r = Registry()
     when = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -182,6 +306,52 @@ def test_build_registry_aggregates_mail_and_github(isolated_home: Path) -> None:
     assert person.issue_count == 1
     assert person.emails == {"mnot@mnot.net"}
     assert person.github_logins == {"mnot"}
+
+
+def test_build_registry_links_github_via_datatracker(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end: a mailing-list participant and a GitHub issue author with
+    # a non-matching login, linked only through the person's self-reported
+    # `github_username` on Datatracker (joined by verified email).
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "Topic", "Roberto Polli <robipolli@gmail.com>",
+        "Mon, 01 Jan 2024 10:00:00 +0000",
+    )
+    write_github_archive(
+        isolated_home, "wg", "org/repo",
+        [make_issue(1, "Hi", author="ioggstream")],
+    )
+
+    from ietf_llm.gather import datatracker_github as dtg  # pylint: disable=import-outside-toplevel
+
+    def fake_get_json(
+        path_or_url: str, timeout: float = 10.0,  # noqa: ARG001
+    ) -> Optional[dict[str, Any]]:
+        if "personextresource" in path_or_url:
+            return {
+                "objects": [
+                    {"value": "ioggstream",
+                     "person": "/api/v1/person/person/1/"},
+                ],
+                "meta": {"next": None},
+            }
+        if "/email/" in path_or_url:
+            return {"objects": [{"address": "robipolli@gmail.com"}]}
+        if "/person/person/1/" in path_or_url:
+            return {"name": "Roberto Polli"}
+        return None
+
+    monkeypatch.setattr(dtg, "_get_json", fake_get_json)
+    registry = build_registry("wg", verbose=Verbosity.QUIET)
+    assert len(registry.persons) == 1
+    person = registry.persons[0]
+    assert person.canonical_name == "Roberto Polli"
+    assert person.github_logins == {"ioggstream"}
+    assert person.emails == {"robipolli@gmail.com"}
+    assert person.message_count == 1
+    assert person.issue_count == 1
 
 
 # --- write_people_digest layout --------------------------------------------
