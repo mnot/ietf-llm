@@ -45,6 +45,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
     from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
         ballots,
+        datatracker_github,
         datatracker_history,
         github_users,
     )
@@ -53,6 +54,14 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
         return
 
     monkeypatch.setattr(people, "_ingest_datatracker_roles", _noop)
+    # Block the GitHub-username profile-resource lookups (the new linking
+    # pass) at the network boundary. With `_get_json` returning None the
+    # index build aborts and the pass is a no-op. Tests exercising the
+    # link path monkeypatch this attribute with canned responses.
+    monkeypatch.setattr(
+        datatracker_github, "_get_json",
+        lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
     # Block HTTP calls from datatracker_history at the network boundary;
     # the real fetch_* functions still run, they just receive None and
     # return []. Tests that want to exercise the parsing path
