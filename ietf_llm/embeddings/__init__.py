@@ -15,8 +15,8 @@ externally-used symbol is re-exported here.
 from __future__ import annotations
 
 from .chunking import (
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
+    EMBED_CHAR_BUDGET,
+    EMBED_CHAR_OVERLAP,
     MAX_CHUNK_CHARS,
     Chunk,
     _chunk_file,
@@ -24,6 +24,7 @@ from .chunking import (
     _chunk_message_file,
     _chunk_windowed,
     _eligible_files,
+    _window_text,
 )
 from .models import _MODEL_CACHE, DEFAULT_EMBED_MODEL, _get_embed_model
 from .search import Hit, build_index, search
@@ -44,12 +45,13 @@ __all__ = [
     "_get_embed_model",
     "_MODEL_CACHE",
     # Used by tests
-    "CHUNK_OVERLAP",
-    "CHUNK_SIZE",
+    "EMBED_CHAR_BUDGET",
+    "EMBED_CHAR_OVERLAP",
     "MAX_CHUNK_CHARS",
     "_chunk_file",
     "_chunk_issues_file",
     "_chunk_message_file",
     "_chunk_windowed",
     "_eligible_files",
+    "_window_text",
 ]

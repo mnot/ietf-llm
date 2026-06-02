@@ -15,12 +15,12 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from ..utils import LogLevel, Verbosity, log
-from .chunking import _chunk_file, _eligible_files
+from .chunking import CHUNKER_VERSION, _chunk_file, _eligible_files
 from .models import DEFAULT_EMBED_MODEL, _get_embed_model
 from .snippet import make_snippet
 from .storage import (
@@ -105,12 +105,34 @@ def build_index(
         )
         rebuild = True
 
+    # A chunker change alters chunk boundaries but not the model id, so the
+    # model check above can't catch it. Record the chunker version and
+    # rebuild on mismatch, so an upgrade that changes how text is cut
+    # transparently re-chunks + re-embeds each WG on its next gather. A
+    # pre-versioning index (an existing `model` row but no `chunker_version`)
+    # counts as a mismatch — it was built by the old char-window chunker.
+    cur.execute("SELECT value FROM meta WHERE key='chunker_version'")
+    row = cur.fetchone()
+    existing_chunker = row[0] if row else None
+    if existing_model and existing_chunker != CHUNKER_VERSION:
+        log(
+            f"Chunker changed ({existing_chunker or 'pre-v2'} -> "
+            f"{CHUNKER_VERSION}); rebuilding index.",
+            verbose,
+            level=LogLevel.STATUS,
+        )
+        rebuild = True
+
     if rebuild:
         cur.execute("DELETE FROM chunks")
         cur.execute("DELETE FROM meta")
 
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('model', ?)", (model_name,)
+    )
+    cur.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('chunker_version', ?)",
+        (CHUNKER_VERSION,),
     )
 
     files = _eligible_files(cache_dir, wg)
@@ -177,8 +199,11 @@ def build_index(
         # If we had stale chunks for this file, drop them first.
         cur.execute("DELETE FROM chunks WHERE file=?", (relpath,))
 
-        # Embed in batches; llm models support embed_multi
-        texts = [c.text for c in chunks]
+        # Embed in batches; llm models support embed_multi. A split
+        # section's sub_idx 0 stores the full message in `text` but sets
+        # `embed_text` to just its first window, so we embed the window —
+        # the tail is covered by the later sub_idx fragments' own vectors.
+        texts = [c.embed_text if c.embed_text is not None else c.text for c in chunks]
         try:
             vectors = list(model.embed_multi(texts))
         except Exception as err:  # pylint: disable=broad-except
@@ -194,13 +219,14 @@ def build_index(
         for chunk, vec in zip(chunks, vectors):
             cur.execute(
                 "INSERT INTO chunks "
-                "(file, chunk_idx, title, text, embedding, "
+                "(file, chunk_idx, sub_idx, title, text, embedding, "
                 " start_line, end_line, chunk_date, labels, state, "
                 " url, duplicate_of, closing_rationale) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
+                    chunk.sub_idx,
                     chunk.title,
                     chunk.text,
                     _pack(vec),
@@ -422,7 +448,18 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
 
     embs = _unpack_matrix([r[4] for r in rows])
     scores = embs @ q_vec  # cosine since both sides are normalized
-    top: List[int] = [int(i) for i in np.argsort(-scores)[:k]]
+    # Collapse a long message's sub_idx fragments to a single hit — its
+    # best-scoring fragment — so search returns one row per logical
+    # message/window (the one-hit-per-message shape the reader tools rely
+    # on), with the snippet and line range taken from whichever fragment
+    # actually matched. Short, unsplit chunks are their own sole fragment.
+    best_by_key: Dict[Tuple[str, int], int] = {}
+    for i, row in enumerate(rows):
+        key = (row[0], row[1])
+        best = best_by_key.get(key)
+        if best is None or scores[i] > scores[best]:
+            best_by_key[key] = i
+    top: List[int] = sorted(best_by_key.values(), key=lambda i: -scores[i])[:k]
     # Chronological mode: pick top-k by relevance (so the query still
     # filters what's "about" the topic), then re-order those survivors
     # by date so the consumer reads early-objection → settled-position

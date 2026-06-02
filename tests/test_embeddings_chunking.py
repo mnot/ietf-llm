@@ -16,13 +16,14 @@ import os
 from pathlib import Path
 
 from ietf_llm.embeddings import (
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
+    EMBED_CHAR_BUDGET,
+    EMBED_CHAR_OVERLAP,
     _chunk_file,
     _chunk_issues_file,
     _chunk_message_file,
     _chunk_windowed,
     _eligible_files,
+    _window_text,
 )
 from ietf_llm.embeddings.chunking import _chunk_thread_file
 
@@ -130,14 +131,18 @@ def test_windowed_chunking_respects_size_and_overlap() -> None:
     text = "Title line\n" + ("xxx " * 2000)  # ~8000 chars
     chunks = _chunk_windowed(text, "draft-foo-00.txt")
     assert len(chunks) > 1
-    # First chunk should be at most CHUNK_SIZE chars.
-    assert len(chunks[0].text) <= CHUNK_SIZE
+    # Every window fits the embedding budget.
+    assert all(len(c.text) <= EMBED_CHAR_BUDGET for c in chunks)
     # First chunk's title is the first non-empty line.
     assert chunks[0].title.startswith("Title line")
-    # Sequential chunks advance by (CHUNK_SIZE - CHUNK_OVERLAP) chars.
-    step = CHUNK_SIZE - CHUNK_OVERLAP
+    # Sequential chunks advance by (budget - overlap) chars.
+    step = EMBED_CHAR_BUDGET - EMBED_CHAR_OVERLAP
+    stripped = text.strip()
     # Window 1 starts at offset `step`; its text must match.
-    assert chunks[1].text == text[step : step + CHUNK_SIZE]
+    assert chunks[1].text == stripped[step : step + EMBED_CHAR_BUDGET]
+    # Windows are each their own chunk_idx with sub_idx 0 (no sub-splitting).
+    assert [c.chunk_idx for c in chunks] == list(range(len(chunks)))
+    assert all(c.sub_idx == 0 for c in chunks)
 
 
 def test_windowed_chunking_empty_text() -> None:
@@ -237,7 +242,7 @@ def test_thread_chunker_parses_section_header_with_role_tag() -> None:
         "### [2] 2025-01-02 10:00 — Martin Thomson (Editor) (reply to [1])\n\n"
         "body two\n"
     )
-    chunks = _chunk_thread_file(text, "wg-thread-2025-01-01-topic.md")
+    chunks = _chunk_thread_file(text, "threads/2025-01-01-topic.md")
     # Header chunk + two message chunks.
     assert len(chunks) == 3
     # The role tag survives into the chunk title — so search hits will
@@ -251,3 +256,101 @@ def test_thread_chunker_parses_section_header_with_role_tag() -> None:
     # carries a chunk_date derived from the header timestamp.
     assert chunks[1].chunk_date is not None
     assert chunks[2].chunk_date is not None
+
+
+# --- token-budget windowing of long sections ------------------------------
+
+
+def _embedded(chunk) -> str:  # type: ignore[no-untyped-def]
+    """The text actually fed to the embedding model for a chunk."""
+    return chunk.embed_text if chunk.embed_text is not None else chunk.text
+
+
+def test_window_text_covers_input_with_fixed_overlap() -> None:
+    text = "".join(f"{i:04d}-" for i in range(1000))  # 5000 chars, no newlines
+    windows = _window_text(text, 1000, 100)
+    assert len(windows) > 1
+    # Offsets are exact slices of the input.
+    for sub, start, end in windows:
+        assert text[start:end] == sub
+        assert len(sub) <= 1000
+    # Consecutive windows overlap by exactly `overlap` chars.
+    for (s0, _a0, e0), (s1, a1, _e1) in zip(windows, windows[1:]):
+        assert e0 - a1 == 100
+    # Reconstruction modulo overlap == the original.
+    rebuilt = windows[0][0] + "".join(s[100:] for s, _a, _e in windows[1:])
+    assert rebuilt == text
+
+
+def test_no_embedded_fragment_exceeds_budget() -> None:
+    # A message section far over budget must split so that every embedded
+    # fragment fits — nothing is silently dropped at embed time.
+    long_body = "word " * 1200  # ~6000 chars
+    text = (
+        "# Topic\n\n## Messages\n\n"
+        f"### [1] 2025-01-01 10:00 — Alice\n\n{long_body}\n"
+    )
+    chunks = _chunk_thread_file(text, "threads/2025-01-01-topic.md")
+    assert all(len(_embedded(c)) <= EMBED_CHAR_BUDGET for c in chunks)
+
+
+def test_long_section_splits_into_covering_fragments_sharing_metadata() -> None:
+    # An over-budget issue comment splits into several sub_idx fragments
+    # that (a) all share the same chunk_idx and section metadata, and
+    # (b) together cover the whole comment.
+    long_body = "alpha bravo charlie delta echo " * 120  # ~3700 chars
+    text = (
+        "# Issue #7: Long one\n\n"
+        "**State:** OPEN  \n"
+        "**Labels:** vocabulary, top-level  \n"
+        "**URL:** https://github.com/org/repo/issues/7  \n\n"
+        "## Description\n\n"
+        f"### [1] 2026-01-01 10:00 — Bob _(opened issue)_\n\n{long_body}\n"
+    )
+    chunks = _chunk_thread_file(text, "issues/org-repo/7.md")
+    msg_frags = [c for c in chunks if c.chunk_idx == 1]
+    assert len(msg_frags) > 1  # actually split
+    # All fragments share chunk_idx, metadata, and sub_idx 0..n-1.
+    assert [c.sub_idx for c in msg_frags] == list(range(len(msg_frags)))
+    for c in msg_frags:
+        assert c.chunk_date == "2026-01-01T10:00:00Z"
+        assert c.labels == "vocabulary,top-level"
+        assert c.state == "open"
+        assert c.url == "https://github.com/org/repo/issues/7"
+        assert "(part" in c.title  # legibility hint on split fragments
+    # sub_idx 0 carries the FULL body (retrieval), later frags their slice.
+    assert long_body.strip() in msg_frags[0].text
+    # Every embedded fragment fits the budget.
+    assert all(len(_embedded(c)) <= EMBED_CHAR_BUDGET for c in msg_frags)
+    # The embedded fragments together cover the whole body (modulo overlap):
+    # concatenating their embedded text with overlap removed reproduces it.
+    embedded = [_embedded(c) for c in msg_frags]
+    rebuilt = embedded[0] + "".join(e[EMBED_CHAR_OVERLAP:] for e in embedded[1:])
+    assert msg_frags[0].text == rebuilt  # full body == reconstruction
+
+
+def test_sub_fragment_line_ranges_are_contiguous_and_correct() -> None:
+    # Build a section whose body is many short lines so line mapping is
+    # easy to reason about, large enough to force several fragments.
+    body_lines = [f"line {i:03d} of the body content here" for i in range(200)]
+    body = "\n".join(body_lines)
+    text = (
+        "# Topic\n\n## Messages\n\n"
+        f"### [1] 2025-01-01 10:00 — Alice\n\n{body}\n"
+    )
+    chunks = _chunk_thread_file(text, "threads/2025-01-01-topic.md")
+    frags = [c for c in chunks if c.chunk_idx == 1]
+    assert len(frags) > 1
+    # sub_idx 0 spans the whole section; its end_line is the last body line.
+    assert frags[0].start_line is not None and frags[0].end_line is not None
+    # Later fragments stay within the section and advance monotonically,
+    # with the next fragment starting at or before the previous one's end
+    # (overlap) — so the union covers every line with no gaps.
+    for prev, nxt in zip(frags[1:], frags[2:]):
+        assert nxt.start_line is not None and prev.start_line is not None
+        assert nxt.start_line >= prev.start_line
+        assert nxt.start_line <= prev.end_line + 1  # type: ignore[operator]
+    # No fragment's line range exceeds sub_idx 0's full-section span.
+    for c in frags[1:]:
+        assert c.start_line >= frags[0].start_line  # type: ignore[operator]
+        assert c.end_line <= frags[0].end_line  # type: ignore[operator]

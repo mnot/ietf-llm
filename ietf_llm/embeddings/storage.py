@@ -15,6 +15,7 @@ One DB per WG at ~/.cache/ietf-llm/<wg>/embeddings.db, with two tables:
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -27,7 +28,17 @@ from ..utils import get_cache_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
+
+#: Trailing "(part k/n)" hint the chunker appends to the title of a split
+#: message's fragments (for search-hit legibility). Stripped when a read
+#: path reconstitutes the whole message, so callers never see it.
+_PART_HINT_RE = re.compile(r"\s*\(part \d+/\d+\)$")
+
+
+def _clean_title(title: str) -> str:
+    """Drop the chunker's `(part k/n)` fragment hint from a stored title."""
+    return _PART_HINT_RE.sub("", title)
 
 
 def _db_path(wg: str) -> str:
@@ -63,6 +74,7 @@ def _open_db(wg: str) -> sqlite3.Connection:
             id         INTEGER PRIMARY KEY,
             file       TEXT NOT NULL,
             chunk_idx  INTEGER NOT NULL,
+            sub_idx    INTEGER NOT NULL DEFAULT 0,  -- fragment within a long section
             title      TEXT NOT NULL,
             text       TEXT NOT NULL,
             embedding  BLOB NOT NULL,
@@ -74,7 +86,7 @@ def _open_db(wg: str) -> sqlite3.Connection:
             url        TEXT,              -- GitHub URL or IETF Archived-At; NULL elsewhere
             duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
-            UNIQUE (file, chunk_idx)
+            UNIQUE (file, chunk_idx, sub_idx)
         )
         """)
     conn.execute("""
@@ -134,6 +146,46 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN duplicate_of INTEGER")
     if "closing_rationale" not in have:
         conn.execute("ALTER TABLE chunks ADD COLUMN closing_rationale TEXT")
+    # v7 → v8: per-section sub-fragment ordinal. Adding the column would be a
+    # plain ALTER, but the UNIQUE constraint must also widen from
+    # (file, chunk_idx) to (file, chunk_idx, sub_idx) so one long message can
+    # own several embedding rows. SQLite can't ALTER a constraint, so we
+    # recreate the table, carrying existing rows forward as sub_idx 0. They
+    # stay searchable as-is; a CHUNKER_VERSION mismatch re-embeds each WG on
+    # its next gather, which is when the finer-grained fragments appear.
+    if "sub_idx" not in have:
+        conn.execute("""
+            CREATE TABLE chunks_v8 (
+                id         INTEGER PRIMARY KEY,
+                file       TEXT NOT NULL,
+                chunk_idx  INTEGER NOT NULL,
+                sub_idx    INTEGER NOT NULL DEFAULT 0,
+                title      TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                embedding  BLOB NOT NULL,
+                start_line INTEGER,
+                end_line   INTEGER,
+                chunk_date TEXT,
+                labels     TEXT,
+                state      TEXT,
+                url        TEXT,
+                duplicate_of INTEGER,
+                closing_rationale TEXT,
+                UNIQUE (file, chunk_idx, sub_idx)
+            )
+            """)
+        conn.execute("""
+            INSERT INTO chunks_v8
+                (id, file, chunk_idx, sub_idx, title, text, embedding,
+                 start_line, end_line, chunk_date, labels, state, url,
+                 duplicate_of, closing_rationale)
+            SELECT id, file, chunk_idx, 0, title, text, embedding,
+                   start_line, end_line, chunk_date, labels, state, url,
+                   duplicate_of, closing_rationale
+            FROM chunks
+            """)
+        conn.execute("DROP TABLE chunks")
+        conn.execute("ALTER TABLE chunks_v8 RENAME TO chunks")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
@@ -179,7 +231,12 @@ def chunk_counts(wg: str) -> Dict[str, int]:
         return {}
     conn = _connect_ro(wg)
     try:
-        cur = conn.execute("SELECT file, COUNT(*) FROM chunks GROUP BY file")
+        # COUNT(DISTINCT chunk_idx): one logical chunk per message/window,
+        # even when a long message spans several sub_idx fragments — so the
+        # "0..N-1" hint stays the valid chunk_idx range for get_chunk_text.
+        cur = conn.execute(
+            "SELECT file, COUNT(DISTINCT chunk_idx) FROM chunks GROUP BY file"
+        )
         return {str(row[0]): int(row[1]) for row in cur.fetchall()}
     finally:
         conn.close()
@@ -201,9 +258,13 @@ def find_chunks_by_url(
         return []
     conn = _connect_ro(wg)
     try:
+        # sub_idx 0 only: it carries the full message text and span, so a
+        # split message resolves to one row here (not one per fragment),
+        # keeping the single-vs-file-level distinction the caller makes on
+        # the row count intact.
         cur = conn.execute(
             "SELECT file, chunk_idx, title, text, start_line, end_line "
-            "FROM chunks WHERE url = ? ORDER BY file, chunk_idx",
+            "FROM chunks WHERE url = ? AND sub_idx = 0 ORDER BY file, chunk_idx",
             (url,),
         )
         out: List[Tuple[str, int, str, str, Optional[int], Optional[int]]] = []
@@ -212,7 +273,7 @@ def find_chunks_by_url(
                 (
                     str(row[0]),
                     int(row[1]),
-                    str(row[2]),
+                    _clean_title(str(row[2])),
                     str(row[3]),
                     int(row[4]) if row[4] is not None else None,
                     int(row[5]) if row[5] is not None else None,
@@ -248,15 +309,18 @@ def get_messages(
         args: List[object] = []
         for file, idx in keys:
             args.extend([file, idx])
+        # sub_idx=0 holds the full message body and span, so each
+        # (file, chunk_idx) yields exactly one row — the whole message,
+        # not a fragment.
         cur = conn.execute(
             "SELECT file, chunk_idx, title, text, chunk_date, url "
-            f"FROM chunks WHERE {clauses}",
+            f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
             args,
         )
         out: Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]] = {}
         for row in cur.fetchall():
             out[(str(row[0]), int(row[1]))] = (
-                str(row[2]),
+                _clean_title(str(row[2])),
                 str(row[3]),
                 str(row[4]) if row[4] is not None else None,
                 str(row[5]) if row[5] is not None else None,
@@ -279,9 +343,12 @@ def get_chunk(
         return None
     conn = _connect_ro(wg)
     try:
+        # sub_idx 0 carries the full message text and the section's full
+        # line span; later fragments are embedding-only slices. Return the
+        # whole message so get_chunk_text shows it intact.
         cur = conn.execute(
             "SELECT title, text, start_line, end_line FROM chunks "
-            "WHERE file=? AND chunk_idx=?",
+            "WHERE file=? AND chunk_idx=? ORDER BY sub_idx LIMIT 1",
             (file, chunk_idx),
         )
         row = cur.fetchone()
@@ -289,6 +356,6 @@ def get_chunk(
             return None
         start_line = int(row[2]) if row[2] is not None else None
         end_line = int(row[3]) if row[3] is not None else None
-        return (str(row[0]), str(row[1]), start_line, end_line)
+        return (_clean_title(str(row[0])), str(row[1]), start_line, end_line)
     finally:
         conn.close()
