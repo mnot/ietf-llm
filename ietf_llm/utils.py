@@ -84,16 +84,32 @@ def is_synthetic_wg(name: str) -> bool:
 
 
 def get_config_dir() -> str:
-    """Return the configuration directory, creating it if necessary."""
-    config_dir = os.path.expanduser("~/.config/ietf-llm")
+    """Return the configuration directory, creating it if necessary.
+
+    Honours ``IETF_LLM_CONFIG_DIR`` (env > default) so a deployment can
+    point per-WG config at a mounted location; defaults to
+    ``~/.config/ietf-llm`` for the local CLI.
+    """
+    config_dir = os.environ.get("IETF_LLM_CONFIG_DIR", "").strip()
+    if not config_dir:
+        config_dir = os.path.expanduser("~/.config/ietf-llm")
     if not os.path.exists(config_dir):
         os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
 
 def get_cache_dir() -> str:
-    """Return the cache directory, creating it if necessary."""
-    cache_dir = os.path.expanduser("~/.cache/ietf-llm")
+    """Return the cache directory, creating it if necessary.
+
+    Honours ``IETF_LLM_CACHE_DIR`` (env > default) so a deployment can
+    point the corpus root at the synced / mounted location; defaults to
+    ``~/.cache/ietf-llm`` for the local CLI. The tree is relocatable
+    (chunk paths are relative to the cache root), so an absolute override
+    here moves the whole corpus.
+    """
+    cache_dir = os.environ.get("IETF_LLM_CACHE_DIR", "").strip()
+    if not cache_dir:
+        cache_dir = os.path.expanduser("~/.cache/ietf-llm")
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
     return cache_dir

@@ -29,6 +29,11 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows
+    # An ambient IETF_LLM_CACHE_DIR / _CONFIG_DIR would point the code at a
+    # real corpus and defeat the HOME sandbox -- clear them so tests stay
+    # isolated regardless of the developer's environment.
+    monkeypatch.delenv("IETF_LLM_CACHE_DIR", raising=False)
+    monkeypatch.delenv("IETF_LLM_CONFIG_DIR", raising=False)
     return tmp_path
 
 
