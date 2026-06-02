@@ -123,6 +123,35 @@ def build_index(
         )
         rebuild = True
 
+    # Probe the embedding dimension up front (one embed; negligible against
+    # a bulk build). Recording it is provenance beyond the model-id string;
+    # comparing it catches a silent backend change that keeps the same id
+    # but emits a different width -- mixing widths would corrupt the packed
+    # matrix, so a dimension change forces a rebuild.
+    embed_dim: Optional[int] = None
+    try:
+        embed_dim = len(list(model.embed("dimension probe"))) or None
+    except Exception as err:  # pylint: disable=broad-except
+        # If the probe fails the per-file embeds below will too; don't abort
+        # here, just skip the dimension guard for this run.
+        log(
+            f"Could not probe embedding dimension: {type(err).__name__}: {err}",
+            verbose,
+            level=LogLevel.PROGRESS,
+        )
+    if embed_dim is not None:
+        cur.execute("SELECT value FROM meta WHERE key='embed_dim'")
+        row = cur.fetchone()
+        existing_dim = int(row[0]) if row and row[0] else None
+        if existing_model and existing_dim and existing_dim != embed_dim:
+            log(
+                f"Embedding dimension changed ({existing_dim} -> {embed_dim}); "
+                "rebuilding index.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
+            rebuild = True
+
     if rebuild:
         cur.execute("DELETE FROM chunks")
         cur.execute("DELETE FROM meta")
@@ -142,6 +171,11 @@ def build_index(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('chunker_version', ?)",
         (CHUNKER_VERSION,),
     )
+    if embed_dim is not None:
+        cur.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('embed_dim', ?)",
+            (str(embed_dim),),
+        )
 
     files = _eligible_files(cache_dir, wg)
     log(
