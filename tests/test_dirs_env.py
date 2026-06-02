@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.utils import get_cache_dir, get_config_dir
+from ietf_llm.utils import get_cache_dir, get_config_dir, get_index_dir
 
 
 def test_cache_dir_honours_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -45,3 +45,18 @@ def test_empty_env_falls_back_to_default(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     assert get_cache_dir() == str(tmp_path / ".cache" / "ietf-llm")
+
+
+def test_index_dir_honours_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    target = tmp_path / "idx"
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(target))
+    assert get_index_dir() == str(target)
+    assert target.is_dir()
+
+
+def test_index_dir_defaults_to_cache_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.delenv("IETF_LLM_INDEX_DIR", raising=False)
+    monkeypatch.setenv("IETF_LLM_CACHE_DIR", str(tmp_path / "c"))
+    assert get_index_dir() == get_cache_dir()

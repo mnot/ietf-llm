@@ -91,6 +91,7 @@ from .utils import (
     LogLevel,
     Verbosity,
     get_cache_dir,
+    get_index_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
     log,
@@ -1601,7 +1602,8 @@ def _prewarm_embedding_model_async() -> None:
     The `_MODEL_LOAD_LOCK` in models.py serialises the two paths so
     we don't load twice.
     """
-    root = get_cache_dir()
+    # Scan the index dir (defaults to the cache root) for a model to warm.
+    root = get_index_dir()
     if not os.path.isdir(root):
         return
     model_name: Optional[str] = None

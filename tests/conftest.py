@@ -34,6 +34,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # isolated regardless of the developer's environment.
     monkeypatch.delenv("IETF_LLM_CACHE_DIR", raising=False)
     monkeypatch.delenv("IETF_LLM_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("IETF_LLM_INDEX_DIR", raising=False)
     return tmp_path
 
 

@@ -115,6 +115,23 @@ def get_cache_dir() -> str:
     return cache_dir
 
 
+def get_index_dir() -> str:
+    """Return the directory tree holding per-WG embedding index databases.
+
+    Honours ``IETF_LLM_INDEX_DIR`` (env > default) so a deployment can put
+    the hot, frequently-read ``<wg>/embeddings.db`` files on fast or
+    RAM-backed storage (tmpfs) separately from the corpus files. Defaults
+    to the cache root, so the local layout
+    (``<cache>/<wg>/embeddings.db``) is unchanged.
+    """
+    index_dir = os.environ.get("IETF_LLM_INDEX_DIR", "").strip()
+    if not index_dir:
+        index_dir = get_cache_dir()
+    if not os.path.exists(index_dir):
+        os.makedirs(index_dir, exist_ok=True)
+    return index_dir
+
+
 def get_wg_file_cache_dir(wg_name: str) -> str:
     """Get the local file cache directory for a Working Group."""
     cache_dir = os.path.join(get_cache_dir(), wg_name, "files")
