@@ -14,9 +14,15 @@ on first embed()) and the agent would appear to hang.
 
 from __future__ import annotations
 
+import json
+import os
+import random
 import sys
 import threading
-from typing import Any
+import time
+from typing import Any, Iterable, Sequence
+
+import requests
 
 from ..utils import LogLevel, Verbosity, log
 
@@ -26,6 +32,12 @@ from ..utils import LogLevel, Verbosity, log
 DEFAULT_EMBED_MODEL = "sentence-transformers/BAAI/bge-small-en-v1.5"
 
 _ST_PREFIX = "sentence-transformers/"
+
+#: Protocol-neutral prefix selecting the OpenAI-compatible remote backend.
+#: The id after the prefix is the model name sent to the endpoint, e.g.
+#: "openai-embed/@cf/baai/bge-small-en-v1.5". Provider-neutral: Cloudflare
+#: Workers AI, OpenAI, a self-hosted vLLM / TEI, etc. are all just config.
+_OPENAI_EMBED_PREFIX = "openai-embed/"
 
 # Process-level cache of loaded embedding models, keyed by full model id.
 _MODEL_CACHE: dict[str, Any] = {}
@@ -95,6 +107,180 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         return None
 
 
+class _OpenAICompatEmbeddingModel:
+    """Embeddings via an OpenAI-compatible ``POST {base}/embeddings`` endpoint.
+
+    Exposes the same ``embed`` / ``embed_multi`` surface the rest of the
+    package expects, so it drops in behind ``_get_embed_model`` exactly
+    like the local sentence-transformers model. Provider-neutral: the
+    endpoint, auth headers, and model id are configuration, so the
+    identical code serves Cloudflare Workers AI, OpenAI, a self-hosted
+    vLLM / TEI, etc.
+
+    ``embed_multi`` batches to ``batch_size`` inputs per request and
+    retries 429 / 5xx with exponential backoff + jitter (bulk ingest is
+    rate-sensitive); ``embed`` is the single-input query-time case.
+    """
+
+    def __init__(
+        self,
+        model_id: str,
+        base_url: str,
+        headers: dict[str, str],
+        *,
+        batch_size: int,
+        timeout: float,
+        max_retries: int,
+    ) -> None:
+        self._model_id = model_id
+        self._url = base_url.rstrip("/") + "/embeddings"
+        self._headers = {"Content-Type": "application/json", **headers}
+        self._batch_size = max(1, batch_size)
+        self._timeout = timeout
+        self._max_retries = max(0, max_retries)
+
+    def embed(self, text: str) -> list[float]:
+        return self._embed_batch([text])[0]
+
+    def embed_multi(self, texts: Iterable[str]) -> list[list[float]]:
+        items = list(texts)
+        out: list[list[float]] = []
+        for start in range(0, len(items), self._batch_size):
+            out.extend(self._embed_batch(items[start : start + self._batch_size]))
+        return out
+
+    def _embed_batch(self, batch: Sequence[str]) -> list[list[float]]:
+        if not batch:
+            return []
+        payload = {"model": self._model_id, "input": list(batch)}
+        data = self._post_with_retry(payload)
+        # OpenAI returns one object per input carrying an explicit `index`;
+        # sort by it so the output order matches the input regardless of
+        # what order the server happens to emit.
+        rows = sorted(data, key=lambda d: int(d.get("index", 0)))
+        return [[float(x) for x in row["embedding"]] for row in rows]
+
+    def _post_with_retry(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        attempt = 0
+        while True:
+            try:
+                resp = requests.post(
+                    self._url,
+                    headers=self._headers,
+                    json=payload,
+                    timeout=self._timeout,
+                )
+            except requests.RequestException:
+                if attempt >= self._max_retries:
+                    raise
+                self._sleep_backoff(attempt)
+                attempt += 1
+                continue
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt >= self._max_retries:
+                    resp.raise_for_status()
+                self._sleep_backoff(attempt, resp)
+                attempt += 1
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            return list(body["data"])
+
+    def _sleep_backoff(
+        self, attempt: int, resp: requests.Response | None = None
+    ) -> None:
+        # Honour Retry-After when the server sends it, else exponential
+        # backoff with jitter. The rate limit is account-level, so several
+        # concurrent gathers share the budget -- jitter de-synchronises
+        # their retries instead of having them all wake together.
+        delay = 0.0
+        if resp is not None:
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    delay = float(retry_after)
+                except ValueError:
+                    delay = 0.0
+        if delay <= 0.0:
+            delay = min(30.0, 2.0**attempt) + random.uniform(0.0, 1.0)
+        time.sleep(delay)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
+    """Build the OpenAI-compatible remote embedding backend from the env.
+
+    The model id is the part of ``model_name`` after the prefix; the
+    endpoint, auth, and tuning come from the environment so secrets never
+    live in code or persisted config. Returns None (with a logged reason)
+    when the endpoint isn't configured, matching the other loaders.
+    """
+    model_id = model_name[len(_OPENAI_EMBED_PREFIX) :]
+    base_url = os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
+    if not base_url:
+        log(
+            "Remote embedding model configured but IETF_LLM_EMBED_BASE_URL "
+            "is not set. Set the embeddings endpoint base URL (e.g. "
+            "https://host/v1) in the environment.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return None
+    headers: dict[str, str] = {}
+    token = os.environ.get("IETF_LLM_EMBED_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    # Extra headers as a JSON object: a gateway can require a header
+    # alongside the provider bearer token, so auth is a header map rather
+    # than a single Authorization line (avoids a rebuild to add one).
+    raw_headers = os.environ.get("IETF_LLM_EMBED_HEADERS", "").strip()
+    if raw_headers:
+        try:
+            extra = json.loads(raw_headers)
+        except json.JSONDecodeError:
+            log(
+                "IETF_LLM_EMBED_HEADERS is not valid JSON; ignoring it.",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+        else:
+            if isinstance(extra, dict):
+                headers.update({str(k): str(v) for k, v in extra.items()})
+            else:
+                log(
+                    "IETF_LLM_EMBED_HEADERS must be a JSON object; ignoring it.",
+                    verbose,
+                    level=LogLevel.ERROR,
+                )
+    return _OpenAICompatEmbeddingModel(
+        model_id,
+        base_url,
+        headers,
+        batch_size=_env_int("IETF_LLM_EMBED_BATCH", 96),
+        timeout=_env_float("IETF_LLM_EMBED_TIMEOUT", 10.0),
+        max_retries=_env_int("IETF_LLM_EMBED_RETRIES", 3),
+    )
+
+
 def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
     # Double-checked locking: the unlocked fast-path returns
     # immediately on warm-cache hits (the common case after first
@@ -112,6 +298,10 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
         # llm's registry (see _load_sentence_transformer docstring).
         if model_name.startswith(_ST_PREFIX):
             model = _load_sentence_transformer(model_name, verbose)
+        # Remote OpenAI-compatible path: no torch, no llm registry --
+        # just an HTTP endpoint configured from the environment.
+        elif model_name.startswith(_OPENAI_EMBED_PREFIX):
+            model = _load_openai_compat(model_name, verbose)
         else:
             try:
                 import llm  # pylint: disable=import-outside-toplevel,import-error
