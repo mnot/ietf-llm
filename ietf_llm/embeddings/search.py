@@ -23,7 +23,14 @@ from ..utils import LogLevel, Verbosity, log
 from .chunking import _chunk_file, _eligible_files
 from .models import DEFAULT_EMBED_MODEL, _get_embed_model
 from .snippet import make_snippet
-from .storage import _db_path, _open_db, _pack, _unpack_matrix
+from .storage import (
+    _SCHEMA_VERSION,
+    _connect_ro,
+    _db_path,
+    _open_db,
+    _pack,
+    _unpack_matrix,
+)
 
 #: After every N files processed, emit a one-line STATUS progress update.
 _PROGRESS_EVERY = 25
@@ -244,7 +251,7 @@ def build_index(
     return total_new
 
 
-def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
     wg: str,
     query: str,
     model_name: Optional[str] = None,
@@ -308,11 +315,30 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         )
         return []
 
-    conn = _open_db(wg)
+    # Read-only path: the index is built and migrated by gather
+    # (build_index); the server never writes. _connect_ro avoids the
+    # makedirs / WAL / ALTER-TABLE migration _open_db performs, which is
+    # unnecessary for a query and unsafe against an immutable index.
+    conn = _connect_ro(wg)
     cur = conn.cursor()
+    # We cannot migrate read-only, so if the on-disk schema predates this
+    # version the faceted columns this query selects may be absent -- bail
+    # with guidance rather than erroring on a missing column.
+    cur.execute("SELECT value FROM meta WHERE key='schema_version'")
+    sv_row = cur.fetchone()
+    if (int(sv_row[0]) if sv_row else 1) < _SCHEMA_VERSION:
+        log(
+            f"Embeddings index for {wg} is an older schema; re-run "
+            f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        conn.close()
+        return []
     cur.execute("SELECT value FROM meta WHERE key='model'")
     row = cur.fetchone()
     if not row:
+        conn.close()
         return []
     indexed_model = row[0]
     if model_name and model_name != indexed_model:
