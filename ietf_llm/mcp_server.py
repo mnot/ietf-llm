@@ -2566,6 +2566,48 @@ def _resolve_transport() -> str:
     return "http" if transport in ("http", "streamable-http") else "stdio"
 
 
+def _readiness() -> "tuple[bool, dict[str, Any]]":
+    """Readiness for the container, computed WITHOUT any upstream call (R18).
+
+    Ready when the index dir is mounted and usable. The embedding endpoint
+    is reported as configured-or-not but its reachability is deliberately
+    NOT probed: a slow / unreachable upstream must not flap readiness, and
+    R18 forbids gating liveness on a successful embed. (Once the corpus is
+    served from object storage, the bucket/pointer check belongs here too.)
+    """
+    index_dir = get_index_dir()
+    index_ok = os.path.isdir(index_dir) and os.access(index_dir, os.R_OK)
+    return index_ok, {
+        "index_dir": index_dir,
+        "index_dir_usable": index_ok,
+        "embed_endpoint_configured": bool(
+            os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
+        ),
+    }
+
+
+async def _health_endpoint(_request: Any) -> Any:
+    # pylint: disable=import-outside-toplevel
+    from starlette.responses import JSONResponse
+
+    ready, detail = _readiness()
+    return JSONResponse(
+        {"status": "ok" if ready else "unavailable", **detail},
+        status_code=200 if ready else 503,
+    )
+
+
+def _http_app(server: Any) -> Any:
+    """The Streamable HTTP ASGI app with a GET /health route added (R18).
+
+    /health sits beside the MCP endpoint (/mcp) on the same app, so it
+    shares the app lifespan -- no wrapper, no lifespan propagation gotcha.
+    """
+    app = server.streamable_http_app()
+    app.add_route("/health", _health_endpoint, methods=["GET"])
+    return app
+
+
 def _run_http(server: Any) -> None:
     """Serve the MCP server over Streamable HTTP (R8).
 
@@ -2582,7 +2624,7 @@ def _run_http(server: Any) -> None:
         port = int(os.environ.get("IETF_LLM_MCP_PORT", "8000"))
     except ValueError:
         port = 8000
-    uvicorn.run(server.streamable_http_app(), host=host, port=port)
+    uvicorn.run(_http_app(server), host=host, port=port)
 
 
 if __name__ == "__main__":

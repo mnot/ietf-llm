@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uvicorn
 import pytest
+from starlette.applications import Starlette
 
 from ietf_llm import mcp_server
 
@@ -32,11 +33,14 @@ def test_resolve_transport(monkeypatch, value, expected):
 
 
 class _FakeServer:
-    def __init__(self, app="ASGI_APP"):
-        self._app = app
+    """streamable_http_app() returns a real Starlette app so _http_app can
+    add the /health route to it (a plain object has no add_route)."""
+
+    def __init__(self):
+        self.app = Starlette(routes=[])
 
     def streamable_http_app(self):
-        return self._app
+        return self.app
 
 
 def test_run_http_binds_configured_host_port(monkeypatch):
@@ -47,8 +51,12 @@ def test_run_http_binds_configured_host_port(monkeypatch):
     )
     monkeypatch.setenv("IETF_LLM_MCP_HOST", "0.0.0.0")
     monkeypatch.setenv("IETF_LLM_MCP_PORT", "9001")
-    mcp_server._run_http(_FakeServer())
-    assert captured == {"app": "ASGI_APP", "host": "0.0.0.0", "port": 9001}
+    srv = _FakeServer()
+    mcp_server._run_http(srv)
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 9001
+    # The served app is the streamable-HTTP app (now carrying /health).
+    assert captured["app"] is srv.app
 
 
 def test_run_http_defaults(monkeypatch):
