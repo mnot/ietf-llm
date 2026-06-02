@@ -68,6 +68,18 @@ from .utils import (
 
 SCOPE = "gather"
 
+# Settings that are properties of the tool / deployment, not of a corpus:
+# the embedding model, whether to embed, and the summariser. As of 0.8.0
+# these are resolved GLOBALLY (env > CLI > global config > default) and are
+# no longer persisted per-WG. (arg_name, env_var, default)
+GLOBAL_SCALARS = (
+    ("embed_model", "IETF_LLM_EMBED_MODEL", None),
+    ("no_embed", "IETF_LLM_NO_EMBED", False),
+    ("summarize", "IETF_LLM_SUMMARIZE", False),
+    ("summarize_model", "IETF_LLM_SUMMARIZE_MODEL", None),
+)
+_GLOBAL_KEYS = tuple(name for name, _env, _default in GLOBAL_SCALARS)
+
 
 def _default_llm_model(verbose: Verbosity) -> str:
     """Return the user's configured default `llm` model name, or a fallback."""
@@ -617,6 +629,33 @@ def _gather_plan_summary(args: argparse.Namespace) -> str:
     return " · ".join(parts)
 
 
+def _migrate_global_keys(
+    wg: str, persisted: Dict[str, Any], verbosity: Verbosity
+) -> None:
+    """One-time migration for the 0.8.0 global-settings move.
+
+    The embed / summarise settings moved from per-WG gather.json to the
+    global config. Warn about any legacy per-WG values and strip them, so
+    the notice does not repeat and the stale values stop shadowing the
+    global ones. We do NOT auto-migrate the value (different corpora may
+    disagree); the user sets it once globally instead.
+    """
+    moved = sorted(k for k in _GLOBAL_KEYS if k in persisted)
+    if not moved:
+        return
+    log(
+        f"Note: {', '.join(moved)} are now global settings (0.8.0); the "
+        f"per-WG values in {wg}'s gather.json are ignored and being removed. "
+        f"Set them once with `ietf-llm --embed-model ...` / `--summarize` etc. "
+        f"or the matching IETF_LLM_* environment variables.",
+        verbosity,
+        level=LogLevel.STATUS,
+    )
+    for key in moved:
+        persisted.pop(key, None)
+    config.save(wg, SCOPE, persisted)
+
+
 def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     """Run the full gather pipeline for a single WG.
 
@@ -630,6 +669,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             print(f"Cleared configuration for {args.wg}.", file=sys.stderr)
 
     persisted = config.load(args.wg, SCOPE)
+    _migrate_global_keys(args.wg, persisted, verbosity)
 
     shape = _resolve_corpus_shape(args, persisted, verbosity)
     if shape is None:
@@ -669,10 +709,6 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         scope=SCOPE,
         scalars=(
             "months",
-            "summarize",
-            "summarize_model",
-            "no_embed",
-            "embed_model",
             "new_drafts",
             "author",
             "add_mentioned_drafts",
@@ -687,12 +723,13 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         ),
         defaults={
             "months": DEFAULT_MONTHS,
-            "summarize": False,
-            "no_embed": False,
             "new_drafts": False,
             "include_related_drafts": False,
         },
     )
+    # Embed / summarise settings are resolved globally (env > CLI > global
+    # config > default), not per-WG.
+    config.merge_global(args, GLOBAL_SCALARS)
 
     wg_cache_dir = os.path.join(get_cache_dir(), args.wg)
     cache_dir = get_wg_file_cache_dir(args.wg)
