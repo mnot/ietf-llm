@@ -68,8 +68,13 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         )
     except ImportError:
         log(
-            "`llm-sentence-transformers` is missing — this should ship "
-            "with ietf-llm. Try reinstalling: pipx install --force ietf-llm",
+            "On-device embeddings need the optional `local-embeddings` extra "
+            "(it pulls in sentence-transformers and torch):\n"
+            "  pipx install 'ietf-llm[local-embeddings]'\n"
+            "  # or with pip: pip install 'ietf-llm[local-embeddings]'\n"
+            "Alternatively, set a remote OpenAI-compatible endpoint "
+            "(IETF_LLM_EMBED_BASE_URL) and use an 'openai-embed/<model>' id, "
+            "which needs no torch.",
             verbose,
             level=LogLevel.ERROR,
         )

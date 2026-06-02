@@ -23,9 +23,11 @@ dependencies = [
     "google-auth",
     "google-auth-oauthlib",
     "google-auth-httplib2",
-    # Digests, semantic search index, MCP server — all first-class features
+    # Digests, semantic search index, MCP server — all first-class features.
+    # On-device embeddings (sentence-transformers / torch) are the optional
+    # `local-embeddings` extra so a plain install stays torch-free and can
+    # serve / index against a remote OpenAI-compatible endpoint instead.
     "llm",
-    "llm-sentence-transformers",
     "numpy",
     "mcp",
     # Shell tab-completion (completes cached WG shortnames)
@@ -33,6 +35,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# On-device embeddings: pulls sentence-transformers (and torch). Without
+# this, the local `sentence-transformers/...` default model is unavailable
+# and the embedding backend must be a remote `openai-embed/...` endpoint.
+# Kept out of base so the serving/ingest image stays torch-free.
+local-embeddings = ["llm-sentence-transformers"]
 # Behaviour-shaping extras (not feature-gating)
 certs = ["pip-system-certs"]
 dev = [
