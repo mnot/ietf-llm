@@ -108,10 +108,11 @@ class Person:
     affiliations: Dict[str, str] = field(default_factory=dict)
     # Domains of every email address we've seen for this person.
     # Stored separately from `affiliations` because email domain is
-    # NOT the same as affiliation (the canonical counter-example:
-    # `mnot.net` is Mark Nottingham's personal domain; he ships
-    # drafts as Cloudflare). Surfaced only on explicit request, with
-    # the framing that it's a fallback signal — not an attribution.
+    # NOT the same as affiliation: participants often use personal
+    # email, and some hold multiple affiliations, representing some or
+    # none of those interests in a given discussion. Surfaced only on
+    # explicit request, with the framing that it's a fallback signal —
+    # not an attribution.
     email_domains: Set[str] = field(default_factory=set)
     message_count: int = 0
     issue_count: int = 0
@@ -789,9 +790,10 @@ def write_people_digest(
             "to claim someone speaks for the organisation: people "
             "participate as individuals. Aggregate, don't attribute.\n\n"
             "Blank = no documented signal from either source. Do NOT "
-            "infer affiliation from email domain — `mnot.net` is "
-            "Mark Nottingham's personal domain; he ships drafts as "
-            "Cloudflare, not as mnot.net._\n\n"
+            "infer affiliation from email domain — participants often "
+            "use personal email, and some hold multiple affiliations, "
+            "representing some or none of those interests in a given "
+            "discussion._\n\n"
         )
 
         # Formal WG leadership comes from Datatracker. Surfaced first
