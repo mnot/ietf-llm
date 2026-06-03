@@ -1,6 +1,6 @@
 ---
 name: ietf-llm
-description: Query the gathered public record of an IETF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`ietf-llm <wg>`) if missing.
+description: Query the gathered public record of an IETF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`ietf-llm <name>`) if missing.
 ---
 
 # ietf-llm
@@ -12,7 +12,7 @@ mailing list, a set of drafts — exposed via `mcp__ietf-llm__*` tools.
 and you can't tell which corpus they mean, **ask** — don't guess.
 
 **Default to this corpus; don't reflexively crawl IETF sites or
-walk the user's inbox.** If a WG isn't here (`overview` returns
+walk the user's inbox.** If a corpus isn't here (`overview` returns
 nothing, or it's missing from `list_corpora`), tell the user to
 gather it: `ietf-llm <corpus>` from their shell (e.g. `ietf-llm
 httpbis`). One gather reconstructs the mailing list into
@@ -251,13 +251,13 @@ what cites it".
   citation counts, and links to the text.
 
 This is a cross-corpus index mirrored from rfc.fyi; it spans the whole
-series. `search_corpus` searches *within one gathered WG's* record.
-Rule of thumb: the unit is an RFC -> these tools; the unit is a WG and
-its discussion -> `overview` / `search_corpus`.
+series. `search_corpus` searches *within one gathered corpus's* record.
+Rule of thumb: the unit is an RFC -> these tools; the unit is a corpus
+and its discussion -> `overview` / `search_corpus`.
 
 ## File types you'll encounter
 
-All paths are relative to the WG's cache root (`<corpus>/files/`).
+All paths are relative to the corpus's cache root (`<corpus>/files/`).
 
 - **`threads/<date>-<slug>.md`** — one reconstructed mailing list
   conversation. Read in full when the user wants the thread.

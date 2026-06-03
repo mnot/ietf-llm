@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
-"""`ietf-llm-search <wg> <query>` — query the embedding index."""
+"""`ietf-llm-search <name> <query>` — query the embedding index."""
 
 from __future__ import annotations
 
@@ -20,12 +20,14 @@ from .utils import (
 @graceful_keyboard_interrupt
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Semantic search over a Working Group's gathered corpus."
+        description="Semantic search over a gathered corpus."
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    wg_arg = parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
+    wg_arg = parser.add_argument(
+        "wg", metavar="NAME", help="Corpus name (e.g. 'httpbis')"
+    )
     wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     parser.add_argument("query", help="Search query (natural language)")
     parser.add_argument(

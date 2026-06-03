@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
-"""`ietf-llm` — gather and index an IETF Working Group's public record.
+"""`ietf-llm` — gather and index the public record of an IETF effort.
 
 Populates ~/.cache/ietf-llm/<wg>/ with the charter, drafts, meeting
 materials, transcripts, mailing list, and GitHub issues for a Working
@@ -140,14 +140,14 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         help="Print a shell tab-completion script for all ietf-llm "
         "commands (bash | zsh | fish), then exit. Enable with "
         'e.g. `eval "$(ietf-llm --completion zsh)"` in your shell rc. '
-        "Completes cached WG shortnames for the `wg` argument.",
+        "Completes cached corpus names for the `NAME` argument.",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Refresh every WG that already has a cache directory under "
+        help="Refresh every corpus that already has a cache directory under "
         "~/.cache/ietf-llm/, using each one's persisted gather config. "
-        "Mutually exclusive with a positional wg argument; --clear-config "
+        "Mutually exclusive with a positional NAME argument; --clear-config "
         "is refused in this mode.",
     )
     parser.add_argument(
@@ -270,12 +270,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     parser.add_argument(
         "--clear-cache",
         action="store_true",
-        help="Clear the local file cache for this WG and re-download.",
+        help="Clear the local file cache for this corpus and re-download.",
     )
     parser.add_argument(
         "--clear-config",
         action="store_true",
-        help="Clear the persisted configuration for this WG "
+        help="Clear the persisted configuration for this corpus "
         "(both gather and export scopes).",
     )
     parser.add_argument(
@@ -305,15 +305,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         sys.exit(_print_cached_wgs())
 
     if args.all and args.wg:
-        parser.error("--all is mutually exclusive with a positional wg argument")
+        parser.error("--all is mutually exclusive with a positional NAME argument")
     if args.all and args.clear_config:
         parser.error(
             "--clear-config is refused with --all (too easy to nuke "
-            "every WG's config by accident); clear one WG at a time"
+            "every corpus's config by accident); clear one corpus at a time"
         )
     if not args.all and not args.wg:
         parser.error(
-            "wg argument is required (unless using --install-claude-skill or --all)"
+            "a corpus name is required (unless using --install-claude-skill or --all)"
         )
 
     verbosity = Verbosity.STATUS
@@ -326,14 +326,14 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         targets = _discover_gathered_wgs()
         if not targets:
             print(
-                "No gathered WGs found under ~/.cache/ietf-llm/. "
-                "Run `ietf-llm <wg>` once per WG first.",
+                "No gathered corpora found under ~/.cache/ietf-llm/. "
+                "Run `ietf-llm <name>` once per corpus first.",
                 file=sys.stderr,
             )
             sys.exit(1)
         if verbosity != Verbosity.QUIET:
             print(
-                f"Refreshing {len(targets)} WG(s): {', '.join(targets)}",
+                f"Refreshing {len(targets)} corpora: {', '.join(targets)}",
                 file=sys.stderr,
             )
         for wg in targets:
@@ -645,7 +645,7 @@ def _migrate_global_keys(
         return
     log(
         f"Note: {', '.join(moved)} are now global settings (0.8.0); the "
-        f"per-WG values in {wg}'s gather.json are ignored and being removed. "
+        f"per-corpus values in {wg}'s gather.json are ignored and being removed. "
         f"Set them once with `ietf-llm --embed-model ...` / `--summarize` etc. "
         f"or the matching IETF_LLM_* environment variables.",
         verbosity,
