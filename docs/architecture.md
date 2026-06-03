@@ -126,6 +126,11 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │
 ├── imap-cache/<wg>/<list>/<uid>.eml       # raw fetched messages
 ├── transcripts-repo/                      # shallow clone of ietf-minutes-data
+├── _rfc/                                   # cross-corpus RFC-series index (singleton)
+│   ├── rfcs.json                          #   per-RFC metadata (mirrored from rfc.fyi)
+│   ├── refs.json                          #   normative / informative references
+│   ├── tags.json                          #   curated rfc.fyi collections
+│   └── *.etag                             #   per-file ETag sidecars (conditional GET)
 ├── .http-cache.json                       # shared ETag store (conditional GET)
 └── _github-users.json                     # shared login → name / company cache
 ```
@@ -189,6 +194,12 @@ Key invariants:
   subdir per list, since a WG can follow several).
 - **`last-gathered`** is an ISO-8601 sentinel `freshness.py` writes at
   the end of each gather; consumers surface staleness from it.
+- **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
+  whole published RFC series from rfc.fyi (three JSON blobs), refreshed
+  once per gather run after the per-corpus work, TTL-guarded and
+  best-effort (`gather/rfcs.py`). The leading underscore keeps it out of
+  `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
+  `rfc_search` / `get_rfc` tools read it; it is not embedded.
 
 ## Config layout
 
@@ -237,6 +248,12 @@ backends* doc (`models.md`) for the full variable list.
 Once gathered, the cache is consumer-agnostic. Adding a new consumer
 is a matter of writing code that reads the cache; no change to gather.
 
+One side-channel sits beside this: every gather run also refreshes the
+cross-corpus RFC-series index from rfc.fyi into `_rfc/` (TTL-guarded,
+best-effort), which the MCP `rfc_search` / `get_rfc` tools read. It is a
+singleton mirror, not part of any corpus, so it stays outside the
+per-`<wg>` writer/reader flow above.
+
 ## Package layout
 
 ```
@@ -266,7 +283,15 @@ ietf_llm/
 │                           # write_if_changed, argcomplete helpers
 ├── oai_compat.py           # shared OpenAI-compatible HTTP plumbing (auth headers,
 │                           # retry + Retry-After) for the remote embed / summarise backends
+├── rfcs.py                 # cross-corpus RFC-series reader (rfc_search / get_rfc);
+│                           # reads the _rfc/ singleton mirrored from rfc.fyi
+├── gather_runner.py        # in-session gather: runs the __main__ pipeline off-thread,
+│                           # writes gather-status.json (start_gather / gather_status)
+├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
+├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
+├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 ├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
+├── data/skill/IETF.md      # interpretive norms, served on demand via read_ietf_norms
 │
 ├── gather/                 # content acquisition + per-source post-processing
 │   ├── charter.py              # charter text artifact (rev from doc API)
@@ -283,6 +308,10 @@ ietf_llm/
 │   ├── github_users.py         # resolve logins → real name + company
 │   ├── issue_files.py          # per-issue .md files
 │   ├── datatracker.py          # roles + paginated document listing via JSON API
+│   ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
+│   ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
+│   ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
+│   ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
 │   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
 │   ├── datatracker_github.py   # github_username profile resources → person (by email)
 │   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
@@ -319,7 +348,9 @@ ietf_llm/
 job:
 
 - **Orient:** `list_corpora`, `overview`, `list_labels`,
-  `list_files`.
+  `list_files`, `read_ietf_norms` (the bundled `IETF.md` interpretive
+  norms — consensus, attribution, list-vs-meeting — served on demand so
+  the always-on `instructions` field stays focused on tool routing).
 - **Catalogue:** `read_digest(kind=…, …filters)` over
   issues/threads/people/timeline/index. Beyond the per-kind filters,
   `sort="activity"` ranks threads/issues by message/comment count (heat,
@@ -339,6 +370,16 @@ job:
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`,
   `fetch_by_url` (resolves the `w3.org/mid` Archived-At permalinks and
   GitHub issue URLs the corpus actually stores), `read_file_section`.
+- **RFC series (cross-corpus):** `rfc_search(query, …filters)` over the
+  whole published RFC series and `get_rfc(number)` for one RFC's
+  metadata + reference graph. These read the `_rfc/` singleton, *not* a
+  gathered corpus — distinct from `search_corpus`, which is semantic
+  search within one WG. A bare RFC number short-circuits to that RFC.
+- **Diagnostics (gated):** `get_session_log` is registered **only** when
+  `IETF_LLM_DEBUG_LOG=1` — it returns this process's per-request
+  telemetry for investigating client-side stalls; with logging off it
+  has nothing to return, so it is left out of the advertised tool list
+  rather than shipped as a no-op.
 
 Every wrapper offloads its blocking `tool_*` body to a worker thread
 with a per-call deadline (`IETF_LLM_TOOL_TIMEOUT`, default 120s) so a
@@ -572,6 +613,23 @@ them in.
 store is expensive to refetch and shouldn't be lost when a WG's
 exported `files/` are cleared. Thread reconstruction walks it directly.
 
+### The RFC series is a cross-corpus singleton, mirrored not gathered
+
+`rfc_search` / `get_rfc` answer "find/identify/status of an RFC" across
+the *whole* published series — a question no single gathered corpus can
+serve. Rather than fold RFC metadata into every corpus, the series lives
+once at `_rfc/` (`rfcs.json` / `refs.json` / `tags.json`), mirrored from
+rfc.fyi's already-canonical, edge-cached JSON. `gather/rfcs.py` is the
+only writer: each gather run refreshes it after the per-corpus work,
+TTL-guarded (skip if young) and ETag-revalidated, and *never raises* —
+an RFC-index hiccup must not fail a corpus gather. `rfcs.py` is the
+read side, a clean-room port of rfc.fyi's search/reference semantics
+(prefix-word matching, exact-number short-circuit, obsoletes-aware
+inbound reference counting), rendering markdown like every other tool.
+It reads only the cache and touches no network — same boundary as the
+rest of the MCP server. The index is not embedded; it is a metadata
+catalogue, queried directly, not via the vector store.
+
 ### Persisted config: two files per WG, plus one global
 
 `gather.json` and `export.json` per WG (disjoint flag sets; one file
@@ -611,7 +669,9 @@ faceted search (with a stub model); the MCP tools (`overview`,
 search facets, `read_file_section` caps); positions/poll heuristics;
 ballots; citations; meeting clustering; synthetic-WG routing; the
 `--list` and `--completion` CLIs; export mirroring; freshness; PDF
-extraction; transcript context; skill install.
+extraction; transcript context; skill install; the RFC-series
+search/reference port (`test_rfcs.py`); and the in-session gather runner
+and status reporting (`test_gather_runner.py`).
 
 What's *not* unit-tested: live network paths and anything needing a
 real embedding model loaded — those get manual smoke tests against real
