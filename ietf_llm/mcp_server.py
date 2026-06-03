@@ -59,7 +59,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import _debug_log, _stdio_transport
+from . import __version__, _debug_log, _stdio_transport
 from .corpus import describe, kind_status
 from .digest.overview import (
     _label_frequencies,
@@ -78,7 +78,7 @@ from .embeddings import (
     probe_index,
     search,
 )
-from .freshness import freshness_line
+from .freshness import freshness_line, last_gathered
 from .rfcs import render_rfc, render_search
 from .gather.citations import normalize_draft_name
 from .paths import digest_kind_from_relpath, digest_path
@@ -2833,6 +2833,43 @@ def _resolve_transport() -> str:
     return "http" if transport in ("http", "streamable-http") else "stdio"
 
 
+def _corpora_freshness() -> "dict[str, Any]":
+    """Bounded freshness summary across all cached corpora (R18).
+
+    Reads only the per-corpus `last-gathered` sentinels -- no upstream
+    call -- so a replica can report how stale the data it serves is
+    without touching the network. `count` is every cached corpus;
+    `tracked` is the subset carrying a sentinel (caches predating
+    freshness tracking, or populated out of band, have none, so they
+    count but aren't tracked). `oldest` / `newest` bound the staleness
+    window without a per-corpus row, keeping the payload small on a box
+    serving many corpora -- the per-corpus breakdown is the /metrics
+    scrape's job. Both are null when nothing is tracked.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    wgs = _list_wgs()
+    tracked = [(wg, when) for wg in wgs if (when := last_gathered(wg)) is not None]
+
+    def _entry(item: "tuple[str, datetime.datetime]") -> "dict[str, Any]":
+        wg, when = item
+        return {
+            "corpus": wg,
+            "last_gathered": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "age_seconds": max(0, int((now - when).total_seconds())),
+        }
+
+    summary: "dict[str, Any]" = {
+        "count": len(wgs),
+        "tracked": len(tracked),
+        "oldest": None,
+        "newest": None,
+    }
+    if tracked:
+        summary["oldest"] = _entry(min(tracked, key=lambda it: it[1]))
+        summary["newest"] = _entry(max(tracked, key=lambda it: it[1]))
+    return summary
+
+
 def _readiness() -> "tuple[bool, dict[str, Any]]":
     """Readiness for the container, computed WITHOUT any upstream call (R18).
 
@@ -2857,12 +2894,14 @@ def _readiness() -> "tuple[bool, dict[str, Any]]":
             probe = "ok" if probe_index(wg) else "failed"
     ready = index_ok and probe != "failed"
     return ready, {
+        "version": __version__,
         "index_dir": index_dir,
         "index_dir_usable": index_ok,
         "index_probe": probe,
         "embed_endpoint_configured": bool(
             os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
         ),
+        "corpora": _corpora_freshness(),
     }
 
 
@@ -2904,6 +2943,22 @@ def _run_http(server: Any) -> None:
         port = int(os.environ.get("IETF_LLM_MCP_PORT", "8000"))
     except ValueError:
         port = 8000
+    # Startup preamble: version + freshness floor, mirroring what /health
+    # reports, so a rolling-deploy log shows which build a replica is on
+    # and how stale its caches are at boot. Under IETF_LLM_LOG_FORMAT=json
+    # this is a one-line structured record a collector can ingest.
+    fresh = _corpora_freshness()
+    oldest = fresh["oldest"]
+    floor = (
+        f"oldest {oldest['corpus']} {oldest['age_seconds'] // 86400}d"
+        if oldest
+        else "none tracked"
+    )
+    log(
+        f"ietf-llm {__version__} serving HTTP on {host}:{port}; "
+        f"{fresh['count']} corpora ({fresh['tracked']} tracked, {floor})",
+        level=LogLevel.STATUS,
+    )
     uvicorn.run(_http_app(server), host=host, port=port)
 
 
