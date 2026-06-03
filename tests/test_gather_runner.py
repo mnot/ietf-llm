@@ -13,13 +13,14 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, List, Tuple
 
 import pytest
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import gather_runner, utils
+from ietf_llm import freshness, gather_runner, utils
 from ietf_llm.gather_stages import stage_plan
 from ietf_llm.utils import Verbosity
 
@@ -184,6 +185,134 @@ def test_all_statuses_and_read_status(
     assert gather_runner.read_status("cfrg")["state"] == "done"
     names = [s["corpus"] for s in gather_runner.all_statuses()]
     assert "cfrg" in names
+
+
+# --- freshness debounce at the start() entry point ------------------------
+
+
+def _backdate_hours(corpus: str, hours: float) -> None:
+    when = datetime.now(timezone.utc) - timedelta(hours=hours)
+    Path(freshness._sentinel_path(corpus)).write_text(
+        when.strftime("%Y-%m-%dT%H:%M:%SZ"), encoding="utf-8"
+    )
+
+
+def test_start_debounces_a_freshly_gathered_corpus(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_k: Any) -> bool:
+        raise AssertionError("run_gather must not be reached for a fresh corpus")
+
+    monkeypatch.setattr(main_mod, "run_gather", boom)
+    freshness.record_gather("tls")  # just now -> inside the default 6h window
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert result["started"] is False
+    assert result["reason"] == "fresh"
+    assert "skipped" in result["detail"]
+
+
+def test_start_force_bypasses_debounce(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    freshness.record_gather("tls")
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
+    assert result["started"] is True
+    _wait_terminal("tls")
+
+
+def test_start_source_change_bypasses_debounce(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A request that supplies sources isn't a plain refresh -> not debounced.
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    freshness.record_gather("tls")
+    result = gather_runner.start(
+        gather_runner.GatherSpec(corpus="tls", draft=["draft-x"])
+    )
+    assert result["started"] is True
+    _wait_terminal("tls")
+
+
+def test_start_not_debounced_once_stale(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    freshness.record_gather("tls")
+    _backdate_hours("tls", freshness.GATHER_MIN_INTERVAL_DEFAULT_HOURS + 1)
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert result["started"] is True
+    _wait_terminal("tls")
+
+
+def test_has_sources_flags_only_real_sources() -> None:
+    assert gather_runner.GatherSpec(corpus="tls").has_sources() is False
+    assert gather_runner.GatherSpec(corpus="tls", force=True).has_sources() is False
+    assert gather_runner.GatherSpec(corpus="tls", months=6).has_sources() is False
+    assert gather_runner.GatherSpec(corpus="x", draft=["d"]).has_sources() is True
+    assert gather_runner.GatherSpec(corpus="x", new_drafts=True).has_sources() is True
+
+
+def test_force_is_rendered_to_argv() -> None:
+    # force propagates to the background thread's _gather_one (which
+    # re-checks the debounce), and parses cleanly through the CLI parser.
+    argv = gather_runner.GatherSpec(corpus="tls", force=True).to_argv()
+    assert "--force" in argv
+    assert main_mod.build_parser().parse_args(argv).force is True
+    # Absent by default.
+    assert "--force" not in gather_runner.GatherSpec(corpus="tls").to_argv()
+
+
+# --- freshness debounce at the CLI entry point (_gather_one) ---------------
+#
+# The debounce lives inside `_gather_one` (on raw CLI args, before merge),
+# so drive it directly via the stubbed pipeline and observe whether any
+# stage runs: a debounced gather returns True and emits nothing.
+
+
+def _ran_stages(
+    monkeypatch: pytest.MonkeyPatch, argv: List[str], shape: Tuple[bool, bool]
+) -> bool:
+    _stub_pipeline(monkeypatch, shape)
+    args = main_mod.build_parser().parse_args(argv)
+    seen = _emitted(args)
+    return bool(seen)
+
+
+def test_cli_debounces_fresh_corpus(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freshness.record_gather("tls")
+    assert _ran_stages(monkeypatch, ["tls"], (False, True)) is False  # skipped
+
+
+def test_cli_force_bypasses_debounce(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freshness.record_gather("tls")
+    assert _ran_stages(monkeypatch, ["tls", "--force"], (False, True)) is True
+
+
+def test_cli_source_flag_bypasses_debounce(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freshness.record_gather("tls")
+    assert _ran_stages(monkeypatch, ["tls", "--draft", "draft-x"], (False, True))
+
+
+def test_cli_gathers_when_stale(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freshness.record_gather("tls")
+    _backdate_hours("tls", freshness.GATHER_MIN_INTERVAL_DEFAULT_HOURS + 1)
+    assert _ran_stages(monkeypatch, ["tls"], (False, True)) is True
+
+
+def test_cli_first_gather_never_debounced(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No sentinel yet -> the gather proceeds.
+    assert _ran_stages(monkeypatch, ["new-corpus"], (False, True)) is True
 
 
 # --- corpus-name validation (path-traversal guard) ------------------------

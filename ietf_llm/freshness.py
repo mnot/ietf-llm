@@ -19,8 +19,8 @@ useful. One real gather and we're tracking it from there on.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from .utils import get_cache_dir
 
@@ -29,7 +29,17 @@ from .utils import get_cache_dir
 #: month-old material gets flagged before a user trusts it.
 STALE_AFTER_DAYS = 7
 
+#: Default freshness-debounce window for re-gathers, in hours. A re-gather
+#: of a corpus last gathered within this window is skipped at the gather
+#: entry point (the CLI and `start_gather`) unless forced. On a shared
+#: server this collapses several clients' near-simultaneous "looks stale,
+#: refresh it" decisions into one gather; locally it turns an accidental
+#: immediate re-run into a no-op. Override with `IETF_LLM_GATHER_MIN_INTERVAL`
+#: (float hours; 0 disables the debounce).
+GATHER_MIN_INTERVAL_DEFAULT_HOURS = 6.0
+
 _SENTINEL_NAME = "last-gathered"
+_MIN_INTERVAL_ENV = "IETF_LLM_GATHER_MIN_INTERVAL"
 
 
 def _sentinel_path(wg: str) -> str:
@@ -131,6 +141,114 @@ def freshness_line(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[
     if age_days >= threshold_days:
         return _stale_warning(wg, age_days, date)
     return f"_{wg} corpus gathered {date} ({_humanize_age(age_days)})._"
+
+
+def gather_min_interval_hours() -> float:
+    """Resolve the gather debounce window (in hours) from the environment.
+
+    `IETF_LLM_GATHER_MIN_INTERVAL` overrides `GATHER_MIN_INTERVAL_DEFAULT_HOURS`:
+    a non-negative float, in hours, where 0 disables the debounce. A
+    malformed or negative value falls back to the default rather than
+    failing — the debounce is a guard, not something worth aborting a
+    gather over.
+    """
+    raw = os.environ.get(_MIN_INTERVAL_ENV, "").strip()
+    if not raw:
+        return GATHER_MIN_INTERVAL_DEFAULT_HOURS
+    try:
+        hours = float(raw)
+    except ValueError:
+        return GATHER_MIN_INTERVAL_DEFAULT_HOURS
+    return hours if hours >= 0 else GATHER_MIN_INTERVAL_DEFAULT_HOURS
+
+
+def _humanize_delta(delta: timedelta) -> str:
+    """Compact `Nh Nm` / `Nh` / `Nm` / `<1m` for a positive duration."""
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 1:
+        return "<1m"
+    hours, mins = divmod(minutes, 60)
+    if hours and mins:
+        return f"{hours}h {mins}m"
+    if hours:
+        return f"{hours}h"
+    return f"{mins}m"
+
+
+def _format_hours(hours: float) -> str:
+    """`6h` / `0.5h` — trim a trailing `.0` from a whole-number window."""
+    return f"{hours:g}h"
+
+
+def debounce_reason(
+    wg: str, *, min_interval_hours: Optional[float] = None
+) -> Optional[str]:
+    """One-line 'fresh, skipped' note if `wg` was gathered within the
+    debounce window, else None.
+
+    Returns None — i.e. *go ahead and gather* — when there is no sentinel
+    (a first gather is never debounced), when the window is disabled
+    (`<= 0`), or when the cache is already older than the window.
+    `--force` / `force=True` bypass the debounce by simply not calling
+    this. A returned string is a success state, not an error: the existing
+    snapshot is fresh enough to query as-is.
+    """
+    hours = (
+        gather_min_interval_hours()
+        if min_interval_hours is None
+        else min_interval_hours
+    )
+    if hours <= 0:
+        return None
+    when = last_gathered(wg)
+    if when is None:
+        return None
+    age = datetime.now(timezone.utc) - when
+    if age >= timedelta(hours=hours):
+        return None
+    return (
+        f"{wg} was gathered {_humanize_delta(age)} ago "
+        f"({when.strftime('%Y-%m-%d %H:%M UTC')}), within the "
+        f"{_format_hours(hours)} freshness window — skipped. Query the "
+        "existing snapshot, or force a re-gather to override."
+    )
+
+
+#: CLI gather flags whose presence makes a run more than a plain refresh —
+#: a source/scope change, or an explicit rebuild — so it bypasses the
+#: debounce. `--months` is intentionally excluded: it has a default and a
+#: bare re-run still carries it, so it can't signal intent here.
+_SOURCE_CHANGE_FLAGS = (
+    "draft",
+    "mailing_list",
+    "github",
+    "github_label",
+    "exclude_github_label",
+    "author",
+    "new_drafts",
+    "add_mentioned_drafts",
+    "include_related_drafts",
+    "clear_cache",
+    "clear_config",
+    "rebuild_embeddings",
+)
+
+
+def cli_debounce_skip(args: Any) -> Optional[str]:
+    """The freshness-debounce skip message for a CLI gather `args` namespace,
+    or None to go ahead and gather.
+
+    Bypassed (None) by `--force` and by any flag that makes the run more
+    than a plain refresh (`_SOURCE_CHANGE_FLAGS`); `debounce_reason` then
+    decides the rest (never-gathered, disabled window, and stale caches all
+    return None). Lives here, with the rest of the debounce policy, rather
+    than in the CLI module.
+    """
+    if getattr(args, "force", False):
+        return None
+    if any(getattr(args, name, None) for name in _SOURCE_CHANGE_FLAGS):
+        return None
+    return debounce_reason(args.wg)
 
 
 def _now_iso() -> str:

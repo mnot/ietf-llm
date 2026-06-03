@@ -66,6 +66,38 @@ def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "already running" in out
 
 
+def test_start_gather_forwards_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_start(spec: gather_runner.GatherSpec) -> Dict[str, Any]:
+        captured["spec"] = spec
+        return {"started": True, "corpus": spec.corpus}
+
+    monkeypatch.setattr(gather_runner, "start", fake_start)
+    mcp_server.tool_start_gather("tls", force=True)
+    assert captured["spec"].force is True
+
+
+def test_start_gather_fresh_is_reported_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {
+            "started": False,
+            "reason": "fresh",
+            "detail": "tls was gathered 5m ago, within the 6h window — skipped.",
+            "corpus": "tls",
+        },
+    )
+    out = mcp_server.tool_start_gather("tls")
+    # Surfaces the skip detail, frames it as success, and points at force=True.
+    assert "skipped" in out
+    assert "success" in out
+    assert "force=True" in out
+    assert "already running" not in out
+
+
 def test_start_gather_rejects_blank_corpus() -> None:
     out = mcp_server.tool_start_gather("   ")
     assert "corpus name" in out

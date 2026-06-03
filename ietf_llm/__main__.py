@@ -24,7 +24,7 @@ from . import __version__, config, corpus, http_metrics, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
-from .freshness import last_gathered, record_gather
+from .freshness import cli_debounce_skip, last_gathered, record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.catalog import ensure_catalog_index
 from .gather.charter import process_charter
@@ -275,6 +275,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drop and re-embed everything (instead of incrementally "
         "updating). Useful after a schema migration that adds a new "
         "per-chunk column.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-gather even if the corpus is within the freshness window "
+        "(IETF_LLM_GATHER_MIN_INTERVAL, default 6h); overrides the debounce "
+        "that otherwise skips a just-gathered corpus.",
     )
     parser.add_argument(
         "--clear-cache",
@@ -686,6 +693,14 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     if shape is None:
         return False  # unusable name (typo); _resolve_corpus_shape logged why
     synth, group_backed = shape
+
+    # Freshness debounce: a plain re-gather of a recently-gathered corpus is
+    # skipped (checked on raw CLI args, before merge folds in persisted
+    # sources). --force / a source change bypasses it. A skip is success.
+    skip = cli_debounce_skip(args)
+    if skip is not None:
+        log(skip, verbosity, level=LogLevel.STATUS)
+        return True
 
     # Validate the *new* CLI-provided --draft / --mailing-list values
     # against their authoritative sources before config.merge persists

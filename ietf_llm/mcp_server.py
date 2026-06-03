@@ -1856,6 +1856,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     include_related_drafts: bool = False,
     github_label: Optional[List[str]] = None,
     exclude_github_label: Optional[List[str]] = None,
+    force: bool = False,
 ) -> str:
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
@@ -1880,9 +1881,17 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         months=months,
         add_mentioned_drafts=add_mentioned_drafts,
         include_related_drafts=include_related_drafts,
+        force=force,
     )
     result = gather_runner.start(spec)
     if not result.get("started"):
+        if result.get("reason") == "fresh":
+            detail = result.get("detail", f"'{corpus}' was gathered recently.")
+            return (
+                f"{detail} This is success, not an error — query '{corpus}' "
+                "directly. To re-gather anyway, call "
+                f'`start_gather(corpus="{corpus}", force=True)`.'
+            )
         return (
             f"A gather for '{corpus}' is already running. "
             f'Poll `gather_status(corpus="{corpus}")` for progress.'
@@ -2741,6 +2750,7 @@ def main() -> None:
             include_related_drafts: bool = False,
             github_label: Optional[List[str]] = None,
             exclude_github_label: Optional[List[str]] = None,
+            force: bool = False,
         ) -> str:
             """Gather a new corpus into the local cache, in the background.
 
@@ -2767,6 +2777,11 @@ def main() -> None:
             is in flight reports "already running"); different corpora run
             in parallel.
 
+            A corpus gathered within the freshness window (default 6h) is
+            **not** re-gathered — the call returns a "fresh, skipped" note.
+            That is success: query the existing snapshot, don't retry. Only
+            pass `force=True` when the user explicitly wants fresh data.
+
             Args:
                 corpus: Corpus name — a WG/RG/BoF shortname, a mailing-list
                     name, or any label for a custom/synthetic corpus.
@@ -2786,6 +2801,8 @@ def main() -> None:
                     drafts the WG follows. Can be large.
                 github_label: Include only issues with these labels.
                 exclude_github_label: Exclude issues with these labels.
+                force: Re-gather even if the corpus is within the freshness
+                    window. Use only on an explicit request for fresh data.
             """
             return await _offload(
                 tool_start_gather,
@@ -2800,6 +2817,7 @@ def main() -> None:
                 include_related_drafts,
                 github_label,
                 exclude_github_label,
+                force,
             )
 
         @server.tool()
