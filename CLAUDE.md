@@ -65,3 +65,9 @@ the hard way.
   the only writer. Keep that boundary. (`get_wg_file_cache_dir` *creates*
   the dir — use a read-only existence check at the tool boundary so a
   mistyped corpus name doesn't materialise a junk cache.)
+  - **The one exception:** the opt-in gather tools (`start_gather` /
+    `gather_status`, gated behind `IETF_LLM_ENABLE_GATHER=1`) let MCP
+    initiate a gather, so they *do* write and reach the network. They are
+    the only sanctioned write/network path on the server — everything
+    else stays read-only and offline. When the gate is unset the tools
+    aren't registered, so the default surface keeps the boundary intact.
