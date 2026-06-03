@@ -14,18 +14,12 @@ on first embed()) and the agent would appear to hang.
 
 from __future__ import annotations
 
-import json
 import os
-import random
 import sys
 import threading
-import time
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from typing import Any, Iterable, Sequence
 
-import requests
-
+from .. import oai_compat
 from ..utils import LogLevel, Verbosity, log
 
 #: Default embedding model. Local, no API key, MPS-accelerated on Apple
@@ -171,95 +165,18 @@ class _OpenAICompatEmbeddingModel:
         if not batch:
             return []
         payload = {"model": self._model_id, "input": list(batch)}
-        data = self._post_with_retry(payload)
+        body = oai_compat.post_json_with_retry(
+            self._url,
+            payload,
+            self._headers,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+        )
         # OpenAI returns one object per input carrying an explicit `index`;
         # sort by it so the output order matches the input regardless of
         # what order the server happens to emit.
-        rows = sorted(data, key=lambda d: int(d.get("index", 0)))
+        rows = sorted(body["data"], key=lambda d: int(d.get("index", 0)))
         return [[float(x) for x in row["embedding"]] for row in rows]
-
-    def _post_with_retry(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        attempt = 0
-        while True:
-            try:
-                resp = requests.post(
-                    self._url,
-                    headers=self._headers,
-                    json=payload,
-                    timeout=self._timeout,
-                )
-            except requests.RequestException:
-                if attempt >= self._max_retries:
-                    raise
-                self._sleep_backoff(attempt)
-                attempt += 1
-                continue
-            if resp.status_code == 429 or resp.status_code >= 500:
-                if attempt >= self._max_retries:
-                    resp.raise_for_status()
-                self._sleep_backoff(attempt, resp)
-                attempt += 1
-                continue
-            resp.raise_for_status()
-            body = resp.json()
-            return list(body["data"])
-
-    def _sleep_backoff(
-        self, attempt: int, resp: requests.Response | None = None
-    ) -> None:
-        # Honour Retry-After when the server sends it, else exponential
-        # backoff with jitter. The rate limit is account-level, so several
-        # concurrent gathers share the budget -- jitter de-synchronises
-        # their retries instead of having them all wake together.
-        delay = 0.0
-        if resp is not None:
-            retry_after = resp.headers.get("Retry-After")
-            if retry_after:
-                delay = _parse_retry_after(retry_after)
-        if delay <= 0.0:
-            delay = min(30.0, 2.0**attempt) + random.uniform(0.0, 1.0)
-        time.sleep(delay)
-
-
-def _parse_retry_after(value: str) -> float:
-    """Seconds to wait from a ``Retry-After`` header (RFC 9110 10.2.3).
-
-    Handles both permitted forms: delta-seconds and an HTTP-date
-    (IMF-fixdate). Returns 0.0 for anything unparseable, so the caller
-    falls back to its own exponential backoff.
-    """
-    value = value.strip()
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        pass
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
@@ -281,39 +198,19 @@ def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
             level=LogLevel.ERROR,
         )
         return None
-    headers: dict[str, str] = {}
-    token = os.environ.get("IETF_LLM_EMBED_TOKEN", "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    # Extra headers as a JSON object: a gateway can require a header
-    # alongside the provider bearer token, so auth is a header map rather
-    # than a single Authorization line (avoids a rebuild to add one).
-    raw_headers = os.environ.get("IETF_LLM_EMBED_HEADERS", "").strip()
-    if raw_headers:
-        try:
-            extra = json.loads(raw_headers)
-        except json.JSONDecodeError:
-            log(
-                "IETF_LLM_EMBED_HEADERS is not valid JSON; ignoring it.",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-        else:
-            if isinstance(extra, dict):
-                headers.update({str(k): str(v) for k, v in extra.items()})
-            else:
-                log(
-                    "IETF_LLM_EMBED_HEADERS must be a JSON object; ignoring it.",
-                    verbose,
-                    level=LogLevel.ERROR,
-                )
+    headers = oai_compat.build_headers(
+        os.environ.get("IETF_LLM_EMBED_TOKEN", ""),
+        os.environ.get("IETF_LLM_EMBED_HEADERS", ""),
+        "IETF_LLM_EMBED_HEADERS",
+        verbose,
+    )
     return _OpenAICompatEmbeddingModel(
         model_id,
         base_url,
         headers,
-        batch_size=_env_int("IETF_LLM_EMBED_BATCH", 96),
-        timeout=_env_float("IETF_LLM_EMBED_TIMEOUT", 10.0),
-        max_retries=_env_int("IETF_LLM_EMBED_RETRIES", 3),
+        batch_size=oai_compat.env_int("IETF_LLM_EMBED_BATCH", 96),
+        timeout=oai_compat.env_float("IETF_LLM_EMBED_TIMEOUT", 10.0),
+        max_retries=oai_compat.env_int("IETF_LLM_EMBED_RETRIES", 3),
     )
 
 

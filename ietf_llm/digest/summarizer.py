@@ -9,9 +9,10 @@ doesn't get the same wall of text 500 times.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from ..utils import LogLevel, Verbosity, log
+from .remote_summarizer import is_remote_summarize_model, load_openai_compat_chat
 
 
 def _llm_setup_help(model_name: str, underlying_error: str) -> str:
@@ -47,15 +48,40 @@ def _llm_setup_help(model_name: str, underlying_error: str) -> str:
     )
 
 
+def _remote_setup_help(model_name: str, underlying_error: str) -> str:
+    """Help message for a failed remote (openai-summarize/) summariser."""
+    return (
+        f"--summarize couldn't reach the remote summariser '{model_name}': "
+        f"{underlying_error}\n"
+        "\n"
+        "The 'openai-summarize/' prefix routes summaries to an "
+        "OpenAI-compatible chat-completions endpoint configured from the "
+        "environment. Check that these are set on the host running gather:\n"
+        "\n"
+        "  IETF_LLM_SUMMARIZE_BASE_URL   # the /v1 base URL\n"
+        "  IETF_LLM_SUMMARIZE_TOKEN      # bearer token (if the endpoint needs one)\n"
+        "  IETF_LLM_SUMMARIZE_HEADERS    # extra headers as JSON (optional)\n"
+        "\n"
+        "and that the endpoint serves the model named after the prefix."
+    )
+
+
 class _Summarizer:
     """Wraps the `llm` package. No-op if generation fails."""
 
     def __init__(self, model_name: Optional[str], verbose: Verbosity):
-        self.model = None
+        self.model: Any = None
         self.model_name = model_name
         self.verbose = verbose
         self._warned = False
+        self._remote = False
         if not model_name:
+            return
+        # Remote OpenAI-compatible path: no llm registry, endpoint and
+        # secrets from the environment (parallel to the embed backend).
+        if is_remote_summarize_model(model_name):
+            self._remote = True
+            self.model = load_openai_compat_chat(model_name, verbose)
             return
         try:
             import llm  # pylint: disable=import-outside-toplevel,import-error
@@ -101,13 +127,16 @@ class _Summarizer:
             # the error or rack up zero-value API attempts.
             if not self._warned:
                 log(
-                    _llm_setup_help(
-                        self.model_name or "(unknown)",
-                        f"{type(err).__name__}: {err}",
-                    ),
+                    self._setup_help(f"{type(err).__name__}: {err}"),
                     self.verbose,
                     level=LogLevel.ERROR,
                 )
                 self._warned = True
                 self.model = None
             return ""
+
+    def _setup_help(self, underlying_error: str) -> str:
+        name = self.model_name or "(unknown)"
+        if self._remote:
+            return _remote_setup_help(name, underlying_error)
+        return _llm_setup_help(name, underlying_error)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 import requests
 
+from ietf_llm import oai_compat
 from ietf_llm.embeddings import models
 from ietf_llm.embeddings.models import (
     _OpenAICompatEmbeddingModel,
@@ -49,14 +50,14 @@ def _model(**kw):
 
 
 def test_embed_single(monkeypatch):
-    monkeypatch.setattr(models.requests, "post",
+    monkeypatch.setattr(oai_compat.requests, "post",
                         lambda url, headers, json, timeout: _FakeResp(200, _echo(json["input"])))
     assert _model().embed("hello") == [5.0, 1.0]
 
 
 def test_embed_multi_preserves_input_order(monkeypatch):
     # Server returns rows in reversed index order; backend must reorder.
-    monkeypatch.setattr(models.requests, "post",
+    monkeypatch.setattr(oai_compat.requests, "post",
                         lambda url, headers, json, timeout: _FakeResp(200, _echo(json["input"], reverse=True)))
     out = _model().embed_multi(["a", "bb", "ccc"])
     assert [v[0] for v in out] == [1.0, 2.0, 3.0]
@@ -69,7 +70,7 @@ def test_embed_multi_batches_to_configured_size(monkeypatch):
         calls.append(len(json["input"]))
         return _FakeResp(200, _echo(json["input"]))
 
-    monkeypatch.setattr(models.requests, "post", fake)
+    monkeypatch.setattr(oai_compat.requests, "post", fake)
     out = _model(batch_size=2).embed_multi(["a", "b", "c", "d", "e"])
     assert calls == [2, 2, 1]
     assert len(out) == 5
@@ -82,7 +83,7 @@ def test_url_model_id_and_header_map_sent(monkeypatch):
         seen.update(url=url, headers=headers, model=json["model"])
         return _FakeResp(200, _echo(json["input"]))
 
-    monkeypatch.setattr(models.requests, "post", fake)
+    monkeypatch.setattr(oai_compat.requests, "post", fake)
     _OpenAICompatEmbeddingModel(
         "@cf/baai/bge-small-en-v1.5", "https://host/v1",
         {"Authorization": "Bearer tok", "cf-aig-authorization": "g"},
@@ -96,21 +97,21 @@ def test_url_model_id_and_header_map_sent(monkeypatch):
 
 @pytest.mark.parametrize("status", [429, 503])
 def test_retry_then_succeed(monkeypatch, status):
-    monkeypatch.setattr(models.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(oai_compat.time, "sleep", lambda *a, **k: None)
     n = {"i": 0}
 
     def fake(url, headers, json, timeout):
         n["i"] += 1
         return _FakeResp(status) if n["i"] <= 2 else _FakeResp(200, _echo(json["input"]))
 
-    monkeypatch.setattr(models.requests, "post", fake)
+    monkeypatch.setattr(oai_compat.requests, "post", fake)
     assert _model(max_retries=3).embed("hi") == [2.0, 1.0]
     assert n["i"] == 3
 
 
 def test_retry_exhausted_raises(monkeypatch):
-    monkeypatch.setattr(models.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(models.requests, "post",
+    monkeypatch.setattr(oai_compat.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(oai_compat.requests, "post",
                         lambda url, headers, json, timeout: _FakeResp(500))
     with pytest.raises(requests.HTTPError):
         _model(max_retries=1).embed("hi")
@@ -139,18 +140,3 @@ def test_load_bad_headers_json_ignored(monkeypatch):
     assert isinstance(m, _OpenAICompatEmbeddingModel)
     assert "Authorization" not in m._headers
 
-
-def test_parse_retry_after_delta_seconds():
-    assert models._parse_retry_after("5") == 5.0
-    assert models._parse_retry_after("  12  ") == 12.0
-    assert models._parse_retry_after("-3") == 0.0  # never negative
-
-
-def test_parse_retry_after_http_date():
-    assert models._parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT") > 0.0
-    assert models._parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 0.0
-
-
-def test_parse_retry_after_unparseable():
-    assert models._parse_retry_after("not-a-date") == 0.0
-    assert models._parse_retry_after("") == 0.0
