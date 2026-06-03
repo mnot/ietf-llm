@@ -49,9 +49,13 @@ IETF_LLM_MCP_TRANSPORT=http IETF_LLM_MCP_HOST=0.0.0.0 ietf-llm-mcp
 ## Health
 
 `GET /health` is a readiness probe for a load balancer or orchestrator. It returns `200` once the
-index directory is mounted and usable, `503` otherwise, with a small JSON body. It makes **no**
-upstream call — a slow or unreachable embedding endpoint won't flap readiness — so it reports
-"configured and ready to serve", not "the backend answered".
+index directory is mounted **and a corpus index actually opens** — the probe runs a trivial read
+against one `embeddings.db`, so an index that is present but unservable (e.g. a WAL database on a
+read-only mount without `IETF_LLM_INDEX_IMMUTABLE`, or a truncated file) fails the probe instead of
+passing it. A server with no corpora gathered yet is still ready. `503` otherwise, with a small JSON
+body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes **no** upstream call
+— a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured and
+ready to serve", not "the backend answered".
 
 ## Logging
 

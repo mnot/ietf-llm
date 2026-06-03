@@ -69,11 +69,13 @@ from .digest.overview import (
 from .digest.query import parse_md_tables, query_digest
 from .embeddings import (
     _get_embed_model,
+    any_indexed_wg,
     is_remote_embed_model,
     chunk_counts,
     find_chunks_by_url,
     get_chunk,
     get_messages,
+    probe_index,
     search,
 )
 from .freshness import freshness_line
@@ -2569,17 +2571,30 @@ def _resolve_transport() -> str:
 def _readiness() -> "tuple[bool, dict[str, Any]]":
     """Readiness for the container, computed WITHOUT any upstream call (R18).
 
-    Ready when the index dir is mounted and usable. The embedding endpoint
-    is reported as configured-or-not but its reachability is deliberately
-    NOT probed: a slow / unreachable upstream must not flap readiness, and
-    R18 forbids gating liveness on a successful embed. (Once the corpus is
-    served from object storage, the bucket/pointer check belongs here too.)
+    Ready when the index dir is mounted AND a real corpus index actually
+    opens. Probing one index (not just stat-ing the dir) catches an index
+    that is present but unservable -- e.g. a WAL-mode DB on a read-only
+    mount without IETF_LLM_INDEX_IMMUTABLE, or a truncated file -- which a
+    bare directory check would false-green. An empty server (no corpora
+    gathered yet) is still ready: the dir is fine and there is nothing to
+    open. The embedding endpoint is reported as configured-or-not but its
+    reachability is deliberately NOT probed: a slow / unreachable upstream
+    must not flap readiness, and R18 forbids gating liveness on an embed.
     """
     index_dir = get_index_dir()
     index_ok = os.path.isdir(index_dir) and os.access(index_dir, os.R_OK)
-    return index_ok, {
+    probe = "skipped"
+    if index_ok:
+        wg = any_indexed_wg()
+        if wg is None:
+            probe = "no-corpora"
+        else:
+            probe = "ok" if probe_index(wg) else "failed"
+    ready = index_ok and probe != "failed"
+    return ready, {
         "index_dir": index_dir,
         "index_dir_usable": index_ok,
+        "index_probe": probe,
         "embed_endpoint_configured": bool(
             os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
         ),

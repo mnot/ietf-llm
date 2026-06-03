@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -63,9 +64,38 @@ def _connect(path: str, *, write: bool = False) -> sqlite3.Connection:
     return conn
 
 
+def _index_immutable() -> bool:
+    """Whether to open index reads with SQLite's ``immutable=1``.
+
+    Off by default. On (``IETF_LLM_INDEX_IMMUTABLE=1``) for a served
+    replica that is published-and-swapped and never written in place --
+    the only way to read a WAL-mode DB from a read-only mount, where the
+    ``-shm`` sidecar a plain open would need cannot be created.
+    """
+    return os.environ.get("IETF_LLM_INDEX_IMMUTABLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _connect_ro(wg: str) -> sqlite3.Connection:
-    """Read-only connection to a WG index (busy timeout, no schema work)."""
-    return _connect(_db_path(wg))
+    """Read-only connection to a WG index (busy timeout, no schema work).
+
+    Default: a plain connection. It can create the WAL's ``-shm`` sidecar
+    on a writable index dir, which a checkpointed WAL database needs in
+    order to be read -- correct for the local CLI and for a writable
+    (tmpfs) served index. For an immutable replica on a read-only mount,
+    set ``IETF_LLM_INDEX_IMMUTABLE=1`` (see ``_index_immutable``): SQLite
+    then reads the file directly, skipping WAL/-shm and locking. Only safe
+    when nothing rewrites the file in place.
+    """
+    path = _db_path(wg)
+    if _index_immutable():
+        uri = f"{Path(os.path.abspath(path)).as_uri()}?immutable=1"
+        return sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_S)
+    return _connect(path)
 
 
 def _open_db(wg: str) -> sqlite3.Connection:
@@ -362,3 +392,40 @@ def get_chunk(
         return (_clean_title(str(row[0])), str(row[1]), start_line, end_line)
     finally:
         conn.close()
+
+
+def any_indexed_wg() -> Optional[str]:
+    """Name of some corpus that has a built index, or None.
+
+    Scans the index dir for a ``<wg>/embeddings.db``. Used by the server's
+    readiness probe to pick a real index to open.
+    """
+    root = get_index_dir()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    for name in names:
+        if os.path.exists(os.path.join(root, name, "embeddings.db")):
+            return name
+    return None
+
+
+def probe_index(wg: str) -> bool:
+    """Open the WG index read-only and run a trivial read.
+
+    True if it opens and reads; False on any sqlite / OS error. The
+    readiness probe uses this to catch an index that exists on disk but
+    cannot actually be served -- e.g. a WAL-mode DB on a read-only mount
+    (needs ``IETF_LLM_INDEX_IMMUTABLE``), or a truncated / corrupt file --
+    which a bare directory stat would miss.
+    """
+    try:
+        conn = _connect_ro(wg)
+        try:
+            conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            return True
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return False
