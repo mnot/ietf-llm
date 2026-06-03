@@ -65,6 +65,7 @@ from .utils import (
     is_synthetic_wg,
     log,
     maybe_autocomplete,
+    print_completion_snippet,
     wg_completer,
 )
 
@@ -309,7 +310,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     args = parser.parse_args()
 
     if args.completion:
-        sys.exit(_print_completion(args.completion))
+        sys.exit(print_completion_snippet(args.completion))
 
     if args.install_claude_skill:
         sys.exit(install())
@@ -368,35 +369,6 @@ def _discover_gathered_wgs() -> List[str]:
     because `--all` and `--list` read naturally with it.
     """
     return cached_wg_names()
-
-
-def _print_completion(shell: str) -> int:
-    """Print the argcomplete registration snippet for every ietf-llm
-    command, for the given shell. Returns an exit code.
-
-    Routed through `ietf-llm` itself (not argcomplete's own
-    `register-python-argcomplete` script) because under `pipx` only
-    this package's declared entry points are on PATH — a dependency's
-    scripts aren't exposed. `eval "$(ietf-llm --completion zsh)"`
-    works regardless of how the package was installed.
-    """
-    try:
-        import argcomplete  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        print(
-            "argcomplete is not installed (it ships with ietf-llm; "
-            "try reinstalling).",
-            file=sys.stderr,
-        )
-        return 1
-    commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
-    # argcomplete ships no type stubs; shellcode isn't in its __all__.
-    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
-        commands,
-        shell=shell,
-    )
-    print(snippet)
-    return 0
 
 
 def _print_cached_wgs() -> int:

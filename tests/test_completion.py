@@ -60,8 +60,8 @@ def test_print_completion_emits_registration_for_all_commands(
     # `ietf-llm --completion zsh` must print a snippet that registers
     # all three commands — driven through ietf-llm so it works under
     # pipx (which doesn't expose argcomplete's own scripts).
-    from ietf_llm.__main__ import _print_completion
-    rc = _print_completion("zsh")
+    from ietf_llm.utils import print_completion_snippet
+    rc = print_completion_snippet("zsh")
     assert rc == 0
     out = capsys.readouterr().out  # type: ignore[attr-defined]
     assert "ietf-llm" in out
@@ -70,8 +70,8 @@ def test_print_completion_emits_registration_for_all_commands(
 
 
 def test_print_completion_fish_format(capsys: object) -> None:
-    from ietf_llm.__main__ import _print_completion
-    rc = _print_completion("fish")
+    from ietf_llm.utils import print_completion_snippet
+    rc = print_completion_snippet("fish")
     assert rc == 0
     out = capsys.readouterr().out  # type: ignore[attr-defined]
     # fish output uses a different shape than bash/zsh; just confirm
