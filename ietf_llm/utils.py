@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
     _fcntl = None  # type: ignore[assignment]
 
-from . import __version__
+from . import __version__, http_metrics
 
 DEFAULT_HEADERS = {"User-Agent": f"ietf-llm/{__version__}"}
 DEFAULT_MONTHS = 12
@@ -556,8 +556,12 @@ def fetch_resource(
     try:
         res = requests.get(url, headers=combined_headers, timeout=30)
         res.raise_for_status()
+        http_metrics.record(url, res.status_code, len(res.content))
         return res
     except requests.RequestException as err:
+        status = err.response.status_code if err.response is not None else 0
+        n_bytes = len(err.response.content) if err.response is not None else 0
+        http_metrics.record(url, status, n_bytes, error=True)
         log(f"Error fetching {url}: {err}", level=LogLevel.ERROR)
         return None
 

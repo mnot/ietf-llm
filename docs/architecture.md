@@ -122,7 +122,8 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   ├── embeddings.db                      # per-WG semantic index
 │   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
 │   ├── documents.json                     # draft-name → {expires, state} (overview split + embed-skip)
-│   └── last-gathered                      # ISO-8601 sentinel (freshness)
+│   ├── last-gathered                      # ISO-8601 sentinel (freshness)
+│   └── gather-metrics.json                # last run's upstream HTTP load (egress metrics)
 │
 ├── imap-cache/<wg>/<list>/<uid>.eml       # raw fetched messages
 ├── transcripts-repo/                      # shallow clone of ietf-minutes-data
@@ -194,6 +195,13 @@ Key invariants:
   subdir per list, since a WG can follow several).
 - **`last-gathered`** is an ISO-8601 sentinel `freshness.py` writes at
   the end of each gather; consumers surface staleness from it.
+- **`gather-metrics.json`** records the upstream HTTP load of the last
+  run — request counts (transferred / revalidated / error), bytes, a
+  per-host breakdown, and a top-N of URL patterns. `http_metrics.py`
+  accumulates it at the two egress chokepoints (`datatracker._get_json`
+  and `utils.fetch_resource`) and the CLI prints a one-line summary at
+  the end of a gather. Beside the sentinel (one level above `files/`),
+  so it is neither indexed nor exported.
 - **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
   whole published RFC series from rfc.fyi (three JSON blobs), refreshed
   once per gather run after the per-corpus work, TTL-guarded and
@@ -272,6 +280,7 @@ ietf_llm/
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── freshness.py            # last-gathered sentinel + staleness warnings
+├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
 ├── people.py               # actor/identity registry (roles, affiliations, domains)
 ├── people_linking.py       # attach GitHub logins to identities (Datatracker, then name)
 ├── positions.py            # heuristic position / poll / chair-statement extraction
