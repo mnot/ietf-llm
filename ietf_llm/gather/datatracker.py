@@ -87,10 +87,19 @@ class _HttpCache:
     def __init__(self) -> None:
         self._entries: Optional[Dict[str, Dict[str, str]]] = None
         self._dirty = False
+        self._dest: Optional[str] = None  # bound once, on first load
 
-    @staticmethod
-    def _path() -> str:
-        return os.path.join(get_cache_dir(), ".http-cache.json")
+    def _path(self) -> str:
+        # Resolve the destination exactly once, on first load, while
+        # get_cache_dir() still points where the caller intends. The
+        # flush is deferred to interpreter exit via atexit; re-resolving
+        # get_cache_dir() there would pick up a *different* cache dir
+        # whenever HOME changed in between (tests revert their HOME
+        # monkeypatch before atexit fires) and write these in-memory
+        # entries over the user's real ~/.cache/ietf-llm/.http-cache.json.
+        if self._dest is None:
+            self._dest = os.path.join(get_cache_dir(), ".http-cache.json")
+        return self._dest
 
     def _load(self) -> Dict[str, Dict[str, str]]:
         if self._entries is None:
