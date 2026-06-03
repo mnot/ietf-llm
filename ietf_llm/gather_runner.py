@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import freshness
+from . import canonical, freshness
 from .utils import (
     LockHeld,
     LogLevel,
@@ -175,27 +175,39 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     Returns `{"started": True, "corpus": ...}` when a fresh gather was
     launched, or `{"started": False, "reason": ...}` otherwise:
     `"already running"` if one is already in flight for this corpus (in
-    this process or another), `"fresh"` (with a `"detail"` line) if the
-    corpus was gathered within the freshness-debounce window and was not
-    forced. Returns immediately; progress is tracked via the status file.
+    this process or another), `"similar exists"` (with a `"detail"` hint) if
+    a *new* custom/synthetic corpus would duplicate an existing one, or
+    `"fresh"` (with a `"detail"` line) if the corpus was gathered within the
+    freshness-debounce window. The last two are unforced-only. Returns
+    immediately; progress is tracked via the status file.
     """
     corpus = spec.corpus
     # Validate before any path is constructed: _run's first act is to take a
     # per-corpus file_lock, which makedirs the (corpus-derived) lock path.
     if not valid_corpus_name(corpus):
         return {"started": False, "reason": "invalid name", "corpus": corpus}
-    # Freshness debounce: a plain re-gather of a recently-gathered corpus is
-    # skipped (the snapshot is still fresh). Forced or source-changing
-    # requests bypass it — they aren't plain refreshes.
-    if not spec.force and not spec.has_sources():
-        detail = freshness.debounce_reason(corpus)
-        if detail is not None:
+    if not spec.force:
+        # Canonicalisation: a new custom/synthetic corpus that duplicates an
+        # existing one's sources is steered to reuse rather than minted.
+        hint = canonical.mcp_canonicalize_skip(spec)
+        if hint is not None:
             return {
                 "started": False,
-                "reason": "fresh",
-                "detail": detail,
+                "reason": "similar exists",
+                "detail": hint,
                 "corpus": corpus,
             }
+        # Freshness debounce: a plain re-gather of a recently-gathered corpus
+        # is skipped. A source-changing request isn't a plain refresh.
+        if not spec.has_sources():
+            detail = freshness.debounce_reason(corpus)
+            if detail is not None:
+                return {
+                    "started": False,
+                    "reason": "fresh",
+                    "detail": detail,
+                    "corpus": corpus,
+                }
     with _registry_lock:
         existing = _jobs.get(corpus)
         if existing is not None and existing.is_alive():

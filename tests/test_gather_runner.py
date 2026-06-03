@@ -20,9 +20,9 @@ from typing import Any, List, Tuple
 import pytest
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import freshness, gather_runner, utils
+from ietf_llm import config, freshness, gather_runner, utils
 from ietf_llm.gather_stages import stage_plan
-from ietf_llm.utils import Verbosity
+from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
 
 # --- writer-side drift guard ----------------------------------------------
@@ -313,6 +313,54 @@ def test_cli_first_gather_never_debounced(
 ) -> None:
     # No sentinel yet -> the gather proceeds.
     assert _ran_stages(monkeypatch, ["new-corpus"], (False, True)) is True
+
+
+# --- custom-corpus canonicalisation at the start() entry point ------------
+
+
+def _seed_corpus(corpus: str, **sources: Any) -> None:
+    get_wg_file_cache_dir(corpus)
+    config.save(corpus, "gather", dict(sources))
+
+
+def test_start_steers_new_overlapping_corpus_to_reuse(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_k: Any) -> bool:
+        raise AssertionError("run_gather must not run for a duplicate corpus")
+
+    monkeypatch.setattr(main_mod, "run_gather", boom)
+    _seed_corpus("x-existing", draft=["draft-foo-bar"])
+    result = gather_runner.start(
+        gather_runner.GatherSpec(corpus="x-new", draft=["draft-foo-bar"])
+    )
+    assert result["started"] is False
+    assert result["reason"] == "similar exists"
+    assert "x-existing" in result["detail"]
+
+
+def test_start_force_bypasses_canonicalisation(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    _seed_corpus("x-existing", draft=["draft-foo-bar"])
+    result = gather_runner.start(
+        gather_runner.GatherSpec(corpus="x-new", draft=["draft-foo-bar"], force=True)
+    )
+    assert result["started"] is True
+    _wait_terminal("x-new")
+
+
+def test_start_no_overlap_gathers(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    _seed_corpus("x-existing", draft=["draft-foo-bar"])
+    result = gather_runner.start(
+        gather_runner.GatherSpec(corpus="x-new", draft=["draft-distinct"])
+    )
+    assert result["started"] is True
+    _wait_terminal("x-new")
 
 
 # --- corpus-name validation (path-traversal guard) ------------------------

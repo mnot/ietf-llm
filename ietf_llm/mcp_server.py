@@ -2104,7 +2104,15 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     )
     result = gather_runner.start(spec)
     if not result.get("started"):
-        if result.get("reason") == "fresh":
+        reason = result.get("reason")
+        if reason == "similar exists":
+            detail = result.get("detail", f"'{corpus}' overlaps an existing corpus.")
+            return (
+                f"{detail} Prefer querying the existing corpus over gathering a "
+                f"near-duplicate. To mint '{corpus}' anyway, call "
+                f'`start_gather(corpus="{corpus}", force=True)`.'
+            )
+        if reason == "fresh":
             detail = result.get("detail", f"'{corpus}' was gathered recently.")
             return (
                 f"{detail} This is success, not an error — query '{corpus}' "
@@ -3070,6 +3078,12 @@ def main() -> None:
             **not** re-gathered — the call returns a "fresh, skipped" note.
             That is success: query the existing snapshot, don't retry. Only
             pass `force=True` when the user explicitly wants fresh data.
+
+            Custom / synthetic (`x-`) names are free-form and don't self-
+            deduplicate, so before minting one this checks `list_corpora` for
+            an existing corpus over the same sources. On overlap it returns a
+            reuse hint instead of gathering — prefer the existing corpus;
+            `force=True` mints the near-duplicate anyway.
 
             Args:
                 corpus: Corpus name — a WG/RG/BoF shortname, a mailing-list
