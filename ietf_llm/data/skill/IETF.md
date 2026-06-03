@@ -24,10 +24,11 @@ Two rules of thumb:
 1. **Aggregate, don't attribute.** "8 of 12 stated supporters are
    from organisations shipping TLS stacks" — fine. "Cloudflare
    supports X" — not fine, unless they said so.
-2. **Email domain ≠ affiliation.** `mnot.net` is Mark Nottingham's
-   personal domain; he ships drafts as Cloudflare or Independent
-   depending on the draft. Use the `affiliations` field on Person /
-   the people digest, never the From-header domain.
+2. **Email domain ≠ affiliation.** Participants often use personal
+   email for IETF communications, and some hold multiple affiliations,
+   representing some or none of those interests in a given discussion.
+   Affiliation cannot be inferred from the From-header domain. Use the
+   `affiliations` field on Person / the people digest instead.
 
 ## Decisions happen on the mailing list, not in meetings
 
