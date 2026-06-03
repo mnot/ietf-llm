@@ -265,6 +265,24 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements
     cur.execute("SELECT DISTINCT file FROM chunks")
     already = {row[0] for row in cur.fetchall()}
 
+    # Prune chunks for files no longer eligible: a draft that has since
+    # become `rfc`/`repl` (now skipped by _eligible_files) or a file
+    # removed from the cache. The incremental path keys on mtime, so it
+    # would otherwise never re-touch these and their stale chunks would
+    # linger. Doing it here migrates an existing index on the next gather
+    # with no --rebuild. (No-op after a rebuild — chunks was just cleared.)
+    eligible_rel = {os.path.relpath(p, cache_dir) for p in files}
+    orphans = already - eligible_rel
+    if orphans:
+        for orphan in orphans:
+            cur.execute("DELETE FROM chunks WHERE file=?", (orphan,))
+        already -= orphans
+        log(
+            f"Pruned {len(orphans)} now-ineligible file(s) from the index.",
+            verbose,
+            level=LogLevel.STATUS,
+        )
+
     # Quick first pass: how many files actually need re-embedding?
     # The cache is incremental, so most re-gathers touch only a handful
     # of files — let the user see that up front instead of waiting

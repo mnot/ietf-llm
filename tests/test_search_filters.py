@@ -121,6 +121,30 @@ def test_windowed_chunks_have_null_chunk_date_and_are_filtered_out(
     )
 
 
+def test_rebuild_prunes_chunks_for_now_ineligible_draft(
+    isolated_home: Path,
+) -> None:
+    """A draft indexed while active, then marked rfc/repl, has its chunks
+    pruned on the next build even though its file is unchanged (mtime
+    skip can't catch it — _eligible_files no longer returns it)."""
+    from ietf_llm.embeddings.storage import chunk_counts
+    from ietf_llm.gather.documents_manifest import save_documents_manifest
+
+    write_cache_file(
+        isolated_home, "wg", "drafts/draft-ietf-wg-foo-00.txt",
+        "Body of the draft. " * 100,
+    )
+    _build_with_stub("wg", isolated_home)
+    assert "drafts/draft-ietf-wg-foo-00.txt" in chunk_counts("wg")
+
+    # Draft is now published; its revision stack should leave the index.
+    save_documents_manifest(
+        "wg", {"draft-ietf-wg-foo": {"expires": "", "state": "rfc"}},
+    )
+    _build_with_stub("wg", isolated_home)
+    assert "drafts/draft-ietf-wg-foo-00.txt" not in chunk_counts("wg")
+
+
 # --- Filter behaviour -------------------------------------------------------
 
 
