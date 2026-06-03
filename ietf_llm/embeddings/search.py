@@ -24,7 +24,14 @@ from ..utils import LogLevel, Verbosity, log
 from .chunking import CHUNKER_VERSION, _chunk_file, _eligible_files
 from .models import DEFAULT_EMBED_MODEL, _get_embed_model
 from .snippet import make_snippet
-from .storage import _db_path, _open_db, _pack, _unpack_matrix
+from .storage import (
+    _SCHEMA_VERSION,
+    _connect_ro,
+    _db_path,
+    _open_db,
+    _pack,
+    _unpack_matrix,
+)
 
 #: After every N files processed, emit a one-line STATUS progress update.
 _PROGRESS_EVERY = 25
@@ -74,7 +81,8 @@ def _mps_mem_tools() -> (
     on CPU/CUDA or when torch is absent, so callers no-op transparently.
     """
     try:
-        import torch  # pylint: disable=import-outside-toplevel,import-error
+        # pylint: disable=import-outside-toplevel,import-error
+        import torch  # type: ignore[import-not-found,unused-ignore]
     except ImportError:
         return None, None
     mps = getattr(torch, "mps", None)
@@ -130,7 +138,7 @@ class Hit:
     closing_rationale: Optional[str] = None
 
 
-def build_index(
+def build_index(  # pylint: disable=too-many-locals,too-many-statements
     wg: str,
     cache_dir: str,
     model_name: str = DEFAULT_EMBED_MODEL,
@@ -179,6 +187,35 @@ def build_index(
         )
         rebuild = True
 
+    # Probe the embedding dimension up front (one embed; negligible against
+    # a bulk build). Recording it is provenance beyond the model-id string;
+    # comparing it catches a silent backend change that keeps the same id
+    # but emits a different width -- mixing widths would corrupt the packed
+    # matrix, so a dimension change forces a rebuild.
+    embed_dim: Optional[int] = None
+    try:
+        embed_dim = len(list(model.embed("dimension probe"))) or None
+    except Exception as err:  # pylint: disable=broad-except
+        # If the probe fails the per-file embeds below will too; don't abort
+        # here, just skip the dimension guard for this run.
+        log(
+            f"Could not probe embedding dimension: {type(err).__name__}: {err}",
+            verbose,
+            level=LogLevel.PROGRESS,
+        )
+    if embed_dim is not None:
+        cur.execute("SELECT value FROM meta WHERE key='embed_dim'")
+        row = cur.fetchone()
+        existing_dim = int(row[0]) if row and row[0] else None
+        if existing_model and existing_dim and existing_dim != embed_dim:
+            log(
+                f"Embedding dimension changed ({existing_dim} -> {embed_dim}); "
+                "rebuilding index.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
+            rebuild = True
+
     if rebuild:
         cur.execute("DELETE FROM chunks")
         cur.execute("DELETE FROM meta")
@@ -186,10 +223,23 @@ def build_index(
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('model', ?)", (model_name,)
     )
+    # A rebuild clears meta (above), which would drop the schema_version the
+    # read-only search path checks. The physical schema is current (_open_db
+    # created / migrated it), so restamp it to keep meta consistent with the
+    # table; otherwise a rebuilt index reads as an outdated schema.
+    cur.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+        (str(_SCHEMA_VERSION),),
+    )
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('chunker_version', ?)",
         (CHUNKER_VERSION,),
     )
+    if embed_dim is not None:
+        cur.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('embed_dim', ?)",
+            (str(embed_dim),),
+        )
 
     files = _eligible_files(cache_dir, wg)
     log(
@@ -365,7 +415,7 @@ def build_index(
     return total_new
 
 
-def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
     wg: str,
     query: str,
     model_name: Optional[str] = None,
@@ -429,11 +479,30 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         )
         return []
 
-    conn = _open_db(wg)
+    # Read-only path: the index is built and migrated by gather
+    # (build_index); the server never writes. _connect_ro avoids the
+    # makedirs / WAL / ALTER-TABLE migration _open_db performs, which is
+    # unnecessary for a query and unsafe against an immutable index.
+    conn = _connect_ro(wg)
     cur = conn.cursor()
+    # We cannot migrate read-only, so if the on-disk schema predates this
+    # version the faceted columns this query selects may be absent -- bail
+    # with guidance rather than erroring on a missing column.
+    cur.execute("SELECT value FROM meta WHERE key='schema_version'")
+    sv_row = cur.fetchone()
+    if (int(sv_row[0]) if sv_row else 1) < _SCHEMA_VERSION:
+        log(
+            f"Embeddings index for {wg} is an older schema; re-run "
+            f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        conn.close()
+        return []
     cur.execute("SELECT value FROM meta WHERE key='model'")
     row = cur.fetchone()
     if not row:
+        conn.close()
         return []
     indexed_model = row[0]
     if model_name and model_name != indexed_model:

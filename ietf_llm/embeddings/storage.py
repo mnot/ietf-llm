@@ -1,6 +1,7 @@
 """SQLite layer for the per-WG embedding index.
 
-One DB per WG at ~/.cache/ietf-llm/<wg>/embeddings.db, with two tables:
+One DB per WG at <index-dir>/<wg>/embeddings.db (the index dir defaults to
+the cache root; see utils.get_index_dir), with two tables:
 
   chunks(id, file, chunk_idx, title, text, embedding)
       One row per indexed chunk. The embedding column holds a packed
@@ -21,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from ..utils import get_cache_dir
+from ..utils import get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
 #: databases forward via ALTER TABLE so users don't have to re-embed,
@@ -42,7 +43,9 @@ def _clean_title(title: str) -> str:
 
 
 def _db_path(wg: str) -> str:
-    return os.path.join(get_cache_dir(), wg, "embeddings.db")
+    # The index root defaults to the cache root but can be pointed at fast
+    # / RAM-backed storage (tmpfs) via IETF_LLM_INDEX_DIR; see get_index_dir.
+    return os.path.join(get_index_dir(), wg, "embeddings.db")
 
 
 # Wait up to this long for a lock instead of failing immediately, so a

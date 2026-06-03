@@ -1,9 +1,11 @@
 import filecmp
+import json
 import os
 import re
 import shutil
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -84,19 +86,52 @@ def is_synthetic_wg(name: str) -> bool:
 
 
 def get_config_dir() -> str:
-    """Return the configuration directory, creating it if necessary."""
-    config_dir = os.path.expanduser("~/.config/ietf-llm")
+    """Return the configuration directory, creating it if necessary.
+
+    Honours ``IETF_LLM_CONFIG_DIR`` (env > default) so a deployment can
+    point per-WG config at a mounted location; defaults to
+    ``~/.config/ietf-llm`` for the local CLI.
+    """
+    config_dir = os.environ.get("IETF_LLM_CONFIG_DIR", "").strip()
+    if not config_dir:
+        config_dir = os.path.expanduser("~/.config/ietf-llm")
     if not os.path.exists(config_dir):
         os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
 
 def get_cache_dir() -> str:
-    """Return the cache directory, creating it if necessary."""
-    cache_dir = os.path.expanduser("~/.cache/ietf-llm")
+    """Return the cache directory, creating it if necessary.
+
+    Honours ``IETF_LLM_CACHE_DIR`` (env > default) so a deployment can
+    point the corpus root at the synced / mounted location; defaults to
+    ``~/.cache/ietf-llm`` for the local CLI. The tree is relocatable
+    (chunk paths are relative to the cache root), so an absolute override
+    here moves the whole corpus.
+    """
+    cache_dir = os.environ.get("IETF_LLM_CACHE_DIR", "").strip()
+    if not cache_dir:
+        cache_dir = os.path.expanduser("~/.cache/ietf-llm")
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
+
+
+def get_index_dir() -> str:
+    """Return the directory tree holding per-WG embedding index databases.
+
+    Honours ``IETF_LLM_INDEX_DIR`` (env > default) so a deployment can put
+    the hot, frequently-read ``<wg>/embeddings.db`` files on fast or
+    RAM-backed storage (tmpfs) separately from the corpus files. Defaults
+    to the cache root, so the local layout
+    (``<cache>/<wg>/embeddings.db``) is unchanged.
+    """
+    index_dir = os.environ.get("IETF_LLM_INDEX_DIR", "").strip()
+    if not index_dir:
+        index_dir = get_cache_dir()
+    if not os.path.exists(index_dir):
+        os.makedirs(index_dir, exist_ok=True)
+    return index_dir
 
 
 def get_wg_file_cache_dir(wg_name: str) -> str:
@@ -430,23 +465,40 @@ def log(
 
     Everything `log()` emits is narration about what the tool is doing,
     not program output; writing to stderr keeps it clear of any stdout
-    a caller might be piping (e.g. `ietf-llm-search` results, or future
-    stdout-data CLIs). Convention matches curl, git, wget, etc.
+    a caller might be piping (e.g. `ietf-llm-search` results) and, for the
+    stdio MCP transport, stdout *is* the protocol, so logs must never go
+    there. Convention matches curl, git, wget, etc.
 
     - level: LogLevel.ERROR / STATUS / PROGRESS — ERROR always shows;
       STATUS shows unless --quiet; PROGRESS shows only under --verbose.
+    - Set IETF_LLM_LOG_FORMAT=json for one-line structured JSON records
+      (ts / level / msg) for the container deployment, where a log
+      collector ingests them. Container runtimes capture stderr (and
+      stdout is reserved for the stdio protocol), so structured logs go to
+      stderr too. Messages carry no secrets -- keep it that way.
     """
     if level == LogLevel.ERROR:
-        print(f"[ERROR] {message}", file=sys.stderr)
+        visible = True
+    elif verbosity == Verbosity.QUIET:
+        visible = False
+    elif verbosity == Verbosity.VERBOSE:
+        visible = True
+    else:  # Verbosity.STATUS
+        visible = level == LogLevel.STATUS
+    if not visible:
         return
 
-    if verbosity == Verbosity.QUIET:
+    if os.environ.get("IETF_LLM_LOG_FORMAT", "").strip().lower() == "json":
+        record = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "level": level.name.lower(),
+            "msg": message,
+        }
+        print(json.dumps(record), file=sys.stderr)
         return
 
-    if verbosity == Verbosity.VERBOSE or (
-        verbosity == Verbosity.STATUS and level == LogLevel.STATUS
-    ):
-        print(message, file=sys.stderr)
+    prefix = "[ERROR] " if level == LogLevel.ERROR else ""
+    print(f"{prefix}{message}", file=sys.stderr)
 
 
 def fetch_resource(

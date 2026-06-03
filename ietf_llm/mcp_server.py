@@ -69,6 +69,7 @@ from .digest.overview import (
 from .digest.query import parse_md_tables, query_digest
 from .embeddings import (
     _get_embed_model,
+    is_remote_embed_model,
     chunk_counts,
     find_chunks_by_url,
     get_chunk,
@@ -91,6 +92,7 @@ from .utils import (
     LogLevel,
     Verbosity,
     get_cache_dir,
+    get_index_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
     log,
@@ -1589,6 +1591,19 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
 # --- MCP server wiring -------------------------------------------------------
 
 
+def _prewarm_one(model_name: str) -> None:
+    """Construct the embedding model and, for on-device models, force the
+    lazy weight load with a real embed.
+
+    A remote OpenAI-compatible backend has no weights to warm; constructing
+    the client is enough, and we must NOT make a network round-trip on the
+    prewarm path (R10: readiness must not depend on an upstream call).
+    """
+    model = _get_embed_model(model_name, Verbosity.QUIET)
+    if model is not None and not is_remote_embed_model(model_name):
+        list(model.embed("warmup"))
+
+
 def _prewarm_embedding_model_async() -> None:
     """Kick off embedding-model pre-warming in a background daemon
     thread. Returns immediately so the MCP server can register and
@@ -1601,7 +1616,8 @@ def _prewarm_embedding_model_async() -> None:
     The `_MODEL_LOAD_LOCK` in models.py serialises the two paths so
     we don't load twice.
     """
-    root = get_cache_dir()
+    # Scan the index dir (defaults to the cache root) for a model to warm.
+    root = get_index_dir()
     if not os.path.isdir(root):
         return
     model_name: Optional[str] = None
@@ -1626,11 +1642,7 @@ def _prewarm_embedding_model_async() -> None:
 
     def _worker() -> None:
         try:
-            model = _get_embed_model(model_name, Verbosity.QUIET)
-            if model is not None:
-                # llm-sentence-transformers loads weights lazily on
-                # first embed() — force that here.
-                list(model.embed("warmup"))
+            _prewarm_one(model_name)
         except Exception:  # pylint: disable=broad-except
             # Best-effort: any failure here means lazy load on the
             # first search_corpus call takes over. Stay silent — we're
@@ -2511,6 +2523,11 @@ def main() -> None:
             return await _offload(tool_get_session_log, limit, since_seconds)
 
     _prewarm_embedding_model_async()
+    if _resolve_transport() == "http":
+        # Shared-server deployment: standard MCP Streamable HTTP. The
+        # threaded-writer transport below is stdio-specific.
+        _run_http(server)
+        return
     # Replace FastMCP.run() with our own stdio transport. The default
     # upstream transport writes outbound responses on the asyncio loop
     # via `await stdout.write(...)`, and a slow client backpressures
@@ -2537,6 +2554,77 @@ async def _run_with_threaded_writer(server: Any) -> None:
             write_stream,
             server._mcp_server.create_initialization_options(),  # pylint: disable=protected-access
         )
+
+
+def _resolve_transport() -> str:
+    """Return the selected MCP transport: 'http' or 'stdio' (default).
+
+    stdio stays the default for local use; the shared-server deployment
+    sets IETF_LLM_MCP_TRANSPORT=http (or 'streamable-http').
+    """
+    transport = os.environ.get("IETF_LLM_MCP_TRANSPORT", "stdio").strip().lower()
+    return "http" if transport in ("http", "streamable-http") else "stdio"
+
+
+def _readiness() -> "tuple[bool, dict[str, Any]]":
+    """Readiness for the container, computed WITHOUT any upstream call (R18).
+
+    Ready when the index dir is mounted and usable. The embedding endpoint
+    is reported as configured-or-not but its reachability is deliberately
+    NOT probed: a slow / unreachable upstream must not flap readiness, and
+    R18 forbids gating liveness on a successful embed. (Once the corpus is
+    served from object storage, the bucket/pointer check belongs here too.)
+    """
+    index_dir = get_index_dir()
+    index_ok = os.path.isdir(index_dir) and os.access(index_dir, os.R_OK)
+    return index_ok, {
+        "index_dir": index_dir,
+        "index_dir_usable": index_ok,
+        "embed_endpoint_configured": bool(
+            os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
+        ),
+    }
+
+
+async def _health_endpoint(_request: Any) -> Any:
+    # pylint: disable=import-outside-toplevel
+    from starlette.responses import JSONResponse
+
+    ready, detail = _readiness()
+    return JSONResponse(
+        {"status": "ok" if ready else "unavailable", **detail},
+        status_code=200 if ready else 503,
+    )
+
+
+def _http_app(server: Any) -> Any:
+    """The Streamable HTTP ASGI app with a GET /health route added (R18).
+
+    /health sits beside the MCP endpoint (/mcp) on the same app, so it
+    shares the app lifespan -- no wrapper, no lifespan propagation gotcha.
+    """
+    app = server.streamable_http_app()
+    app.add_route("/health", _health_endpoint, methods=["GET"])
+    return app
+
+
+def _run_http(server: Any) -> None:
+    """Serve the MCP server over Streamable HTTP (R8).
+
+    Binds to IETF_LLM_MCP_HOST / IETF_LLM_MCP_PORT (defaults
+    127.0.0.1:8000). FastMCP's streamable_http_app() is a standard
+    MCP-spec Streamable HTTP ASGI app, so a fronting proxy can be
+    near-transparent. uvicorn ships transitively with `mcp`. The custom
+    threaded-writer transport is stdio-specific and does not apply here.
+    """
+    import uvicorn  # pylint: disable=import-outside-toplevel
+
+    host = os.environ.get("IETF_LLM_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(os.environ.get("IETF_LLM_MCP_PORT", "8000"))
+    except ValueError:
+        port = 8000
+    uvicorn.run(_http_app(server), host=host, port=port)
 
 
 if __name__ == "__main__":

@@ -14,10 +14,12 @@ on first embed()) and the agent would appear to hang.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
-from typing import Any
+from typing import Any, Iterable, Sequence
 
+from .. import oai_compat
 from ..utils import LogLevel, Verbosity, log
 
 #: Default embedding model. Local, no API key, MPS-accelerated on Apple
@@ -26,6 +28,23 @@ from ..utils import LogLevel, Verbosity, log
 DEFAULT_EMBED_MODEL = "sentence-transformers/BAAI/bge-small-en-v1.5"
 
 _ST_PREFIX = "sentence-transformers/"
+
+#: Protocol-neutral prefix selecting the OpenAI-compatible remote backend.
+#: The id after the prefix is the model name sent to the endpoint, e.g.
+#: "openai-embed/@cf/baai/bge-small-en-v1.5". Provider-neutral: Cloudflare
+#: Workers AI, OpenAI, a self-hosted vLLM / TEI, etc. are all just config.
+_OPENAI_EMBED_PREFIX = "openai-embed/"
+
+
+def is_remote_embed_model(model_name: str) -> bool:
+    """True if ``model_name`` selects the remote OpenAI-compatible backend.
+
+    Such a backend has no local weights and is network-backed, so callers
+    (e.g. the server's prewarm) can skip on-device-only work -- there is
+    nothing to load, and a network round-trip must not gate readiness.
+    """
+    return model_name.startswith(_OPENAI_EMBED_PREFIX)
+
 
 # Process-level cache of loaded embedding models, keyed by full model id.
 _MODEL_CACHE: dict[str, Any] = {}
@@ -48,16 +67,21 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
-        # pylint: disable=import-outside-toplevel,import-error
-        from llm_sentence_transformers import (  # type: ignore[import-untyped]
+        # pylint: disable=import-outside-toplevel,import-error,line-too-long
+        from llm_sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
             SentenceTransformerModel,
             read_models,
             write_models,
         )
     except ImportError:
         log(
-            "`llm-sentence-transformers` is missing — this should ship "
-            "with ietf-llm. Try reinstalling: pipx install --force ietf-llm",
+            "On-device embeddings need the optional `local-embeddings` extra "
+            "(it pulls in sentence-transformers and torch):\n"
+            "  pipx install 'ietf-llm[local-embeddings]'\n"
+            "  # or with pip: pip install 'ietf-llm[local-embeddings]'\n"
+            "Alternatively, set a remote OpenAI-compatible endpoint "
+            "(IETF_LLM_EMBED_BASE_URL) and use an 'openai-embed/<model>' id, "
+            "which needs no torch.",
             verbose,
             level=LogLevel.ERROR,
         )
@@ -95,6 +119,101 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         return None
 
 
+class _OpenAICompatEmbeddingModel:
+    """Embeddings via an OpenAI-compatible ``POST {base}/embeddings`` endpoint.
+
+    Exposes the same ``embed`` / ``embed_multi`` surface the rest of the
+    package expects, so it drops in behind ``_get_embed_model`` exactly
+    like the local sentence-transformers model. Provider-neutral: the
+    endpoint, auth headers, and model id are configuration, so the
+    identical code serves Cloudflare Workers AI, OpenAI, a self-hosted
+    vLLM / TEI, etc.
+
+    ``embed_multi`` batches to ``batch_size`` inputs per request and
+    retries 429 / 5xx with exponential backoff + jitter (bulk ingest is
+    rate-sensitive); ``embed`` is the single-input query-time case.
+    """
+
+    def __init__(
+        self,
+        model_id: str,
+        base_url: str,
+        headers: dict[str, str],
+        *,
+        batch_size: int,
+        timeout: float,
+        max_retries: int,
+    ) -> None:
+        self._model_id = model_id
+        self._url = base_url.rstrip("/") + "/embeddings"
+        self._headers = {"Content-Type": "application/json", **headers}
+        self._batch_size = max(1, batch_size)
+        self._timeout = timeout
+        self._max_retries = max(0, max_retries)
+
+    def embed(self, text: str) -> list[float]:
+        return self._embed_batch([text])[0]
+
+    def embed_multi(self, texts: Iterable[str]) -> list[list[float]]:
+        items = list(texts)
+        out: list[list[float]] = []
+        for start in range(0, len(items), self._batch_size):
+            out.extend(self._embed_batch(items[start : start + self._batch_size]))
+        return out
+
+    def _embed_batch(self, batch: Sequence[str]) -> list[list[float]]:
+        if not batch:
+            return []
+        payload = {"model": self._model_id, "input": list(batch)}
+        body = oai_compat.post_json_with_retry(
+            self._url,
+            payload,
+            self._headers,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+        )
+        # OpenAI returns one object per input carrying an explicit `index`;
+        # sort by it so the output order matches the input regardless of
+        # what order the server happens to emit.
+        rows = sorted(body["data"], key=lambda d: int(d.get("index", 0)))
+        return [[float(x) for x in row["embedding"]] for row in rows]
+
+
+def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
+    """Build the OpenAI-compatible remote embedding backend from the env.
+
+    The model id is the part of ``model_name`` after the prefix; the
+    endpoint, auth, and tuning come from the environment so secrets never
+    live in code or persisted config. Returns None (with a logged reason)
+    when the endpoint isn't configured, matching the other loaders.
+    """
+    model_id = model_name[len(_OPENAI_EMBED_PREFIX) :]
+    base_url = os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
+    if not base_url:
+        log(
+            "Remote embedding model configured but IETF_LLM_EMBED_BASE_URL "
+            "is not set. Set the embeddings endpoint base URL (e.g. "
+            "https://host/v1) in the environment.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return None
+    headers = oai_compat.build_headers(
+        os.environ.get("IETF_LLM_EMBED_TOKEN", ""),
+        os.environ.get("IETF_LLM_EMBED_HEADERS", ""),
+        "IETF_LLM_EMBED_HEADERS",
+        verbose,
+    )
+    return _OpenAICompatEmbeddingModel(
+        model_id,
+        base_url,
+        headers,
+        batch_size=oai_compat.env_int("IETF_LLM_EMBED_BATCH", 96),
+        timeout=oai_compat.env_float("IETF_LLM_EMBED_TIMEOUT", 10.0),
+        max_retries=oai_compat.env_int("IETF_LLM_EMBED_RETRIES", 3),
+    )
+
+
 def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
     # Double-checked locking: the unlocked fast-path returns
     # immediately on warm-cache hits (the common case after first
@@ -112,6 +231,10 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
         # llm's registry (see _load_sentence_transformer docstring).
         if model_name.startswith(_ST_PREFIX):
             model = _load_sentence_transformer(model_name, verbose)
+        # Remote OpenAI-compatible path: no torch, no llm registry --
+        # just an HTTP endpoint configured from the environment.
+        elif model_name.startswith(_OPENAI_EMBED_PREFIX):
+            model = _load_openai_compat(model_name, verbose)
         else:
             try:
                 import llm  # pylint: disable=import-outside-toplevel,import-error
