@@ -158,13 +158,23 @@ def copy_if_updated(src_path: str, dest_path: str) -> bool:
     return True
 
 
+class LockHeld(Exception):
+    """Raised by `file_lock(..., blocking=False)` when the lock is already
+    held by another owner (process or, with separate handles, this one)."""
+
+
 @contextmanager
-def file_lock(lock_path: str) -> "Iterator[None]":
+def file_lock(lock_path: str, blocking: bool = True) -> "Iterator[None]":
     """Best-effort cross-process exclusive lock (flock) held for the
     `with` body. Used to serialise access to a shared resource across
     concurrent gathers — notably the single transcripts git clone, where
     two simultaneous clone/pull operations would collide on git's
     index.lock and corrupt the tree.
+
+    With `blocking=False` the lock is taken non-blocking (LOCK_NB): if
+    another holder has it, `LockHeld` is raised instead of waiting. The
+    MCP gather runner uses this to answer "is a gather of this corpus
+    already running?" without stalling.
 
     A no-op where `fcntl` is unavailable (non-POSIX); the lock file
     itself is just a handle and is left in place between runs.
@@ -174,11 +184,46 @@ def file_lock(lock_path: str) -> "Iterator[None]":
         return
     os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
     with open(lock_path, "w", encoding="utf-8") as handle:
-        _fcntl.flock(handle, _fcntl.LOCK_EX)
+        if blocking:
+            _fcntl.flock(handle, _fcntl.LOCK_EX)
+        else:
+            try:
+                _fcntl.flock(handle, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            except OSError as err:
+                raise LockHeld(lock_path) from err
         try:
             yield
         finally:
             _fcntl.flock(handle, _fcntl.LOCK_UN)
+
+
+def lock_is_held(lock_path: str) -> "Optional[bool]":
+    """Non-blocking probe of a `file_lock`: True if currently held by some
+    owner, False if free, None if undeterminable.
+
+    This is the authoritative liveness signal for a resource guarded by
+    `file_lock` — a held flock is released by the OS the instant its holder
+    dies, and (unlike a recorded pid) it is meaningful across hosts sharing
+    the cache filesystem and immune to pid reuse. Opens the lock file
+    read-only so it works on a read-only mount, and returns None rather than
+    guessing when it cannot tell: `fcntl` unavailable (non-POSIX), or the
+    file cannot be opened. (Reliability still depends on the filesystem's
+    flock support — a guess-free None on exotic mounts is the honest answer.)
+    """
+    if _fcntl is None:
+        return None
+    if not os.path.exists(lock_path):
+        return False
+    try:
+        with open(lock_path, "r", encoding="utf-8") as handle:
+            try:
+                _fcntl.flock(handle, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            except OSError:
+                return True
+            _fcntl.flock(handle, _fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return None
 
 
 @contextmanager

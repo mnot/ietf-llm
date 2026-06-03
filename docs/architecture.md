@@ -535,6 +535,25 @@ For a hosted deployment, `IETF_LLM_LOG_FORMAT=json` switches `log()` to
 structured one-line JSON records on stderr (no secrets), for a log
 collector; `IETF_LLM_DEBUG_LOG` retains the per-request timing telemetry.
 
+### The one writer exception: opt-in in-session gather
+
+`IETF_LLM_ENABLE_GATHER=1` registers two extra tools — `start_gather` and
+`gather_status` — so a client can gather a new corpus without leaving the
+session. This deliberately breaks the read-only / no-network contract, so
+it is **off by default**: the shared HTTP replica stays read-only, and the
+torch-free serve image is unaffected (a gather there would need a remote
+`openai-embed/...` model to avoid pulling torch). `start_gather` runs the
+same `__main__` pipeline as the CLI in a **daemon thread** (`gather_runner`)
+and returns at once; it is not bounded by the per-call tool deadline.
+Progress is recorded to a per-corpus `gather-status.json` (atomic writes)
+that `gather_status` reads back — stage-level, driven by `gather_stages`
+(`stage_plan` is the single source of stage order, shared with the
+pipeline). One gather per corpus at a time is enforced by a non-blocking
+per-corpus `file_lock`, which also serialises against a concurrent CLI
+gather; different corpora gather in parallel. `gather_runner` and the
+gather pipeline are imported lazily so the default serve path never pulls
+them in.
+
 ### IMAP cache lives outside the per-WG directory
 
 `imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
@@ -598,7 +617,10 @@ on every push/PR across Python 3.10–3.14.
   `generate_digests()`, export from `__init__`.
 - **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
   then a thin `@server.tool()` wrapper in `main()`. Document the
-  routing in `data/skill/SKILL.md`.
+  routing in `data/skill/SKILL.md`. A tool that writes or reaches the
+  network (like `start_gather`) must be registered behind an opt-in env
+  gate, run its work off-thread, and be imported lazily so the read-only
+  serve path stays clean.
 - **New chunker** → add to `embeddings/chunking.py`, dispatch in
   `_chunk_file()`.
 - **New persisted flag** → add it to the right scope's `scalars` or

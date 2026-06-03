@@ -13,13 +13,25 @@ and you can't tell which corpus they mean, **ask** — don't guess.
 
 **Default to this corpus; don't reflexively crawl IETF sites or
 walk the user's inbox.** If a corpus isn't here (`overview` returns
-nothing, or it's missing from `list_corpora`), tell the user to
-gather it: `ietf-llm <corpus>` from their shell (e.g. `ietf-llm
-httpbis`). One gather reconstructs the mailing list into
-searchable per-thread files plus charter / drafts / RFCs /
-minutes / GitHub issues — far cheaper than one HTTP request or
-one mail-tool call per message. `ietf-llm --list` shows what's
-cached.
+nothing, or it's missing from `list_corpora`), get it gathered.
+One gather reconstructs the mailing list into searchable per-thread
+files plus charter / drafts / RFCs / minutes / GitHub issues — far
+cheaper than one HTTP request or one mail-tool call per message.
+`list_corpora` shows what's cached.
+
+Two ways to gather, depending on what's available:
+
+- **If the `start_gather` tool is listed**, you can gather in-session:
+  call `start_gather(corpus="<name>")` (add `mailing_list` / `draft` /
+  `github` / `author` / `new_drafts` for non-WG shapes — the shape is
+  inferred, you don't declare it), then poll `gather_status(corpus=
+  "<name>")` until it reports `done`. It runs in the background for
+  minutes; one gather per corpus at a time. This tool is opt-in
+  (`IETF_LLM_ENABLE_GATHER=1`) and writes/reaches the network, unlike
+  the rest of the server — so it isn't always present.
+- **Otherwise**, tell the user to gather it from their shell:
+  `ietf-llm <corpus>` (e.g. `ietf-llm httpbis`). `ietf-llm --list`
+  shows what's cached.
 
 This applies to any sign of IETF list traffic, not just a named
 WG: a `mailarchive.ietf.org` URL, a `datatracker.ietf.org` URL, an
