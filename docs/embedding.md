@@ -83,12 +83,6 @@ authoritative); when it overrides a flag you passed, a notice is logged.
 | Summaries | `--summarize` | `IETF_LLM_SUMMARIZE` | off |
 | Summariser model | `--summarize-model` | `IETF_LLM_SUMMARIZE_MODEL` | the `llm` default |
 
-The embedding backend takes its endpoint and token from the environment (above); the summariser does
-not. It runs at gather time through whatever model [`llm`](https://llm.datasette.io/) is configured
-to use, so to point summaries at a hosted OpenAI-compatible endpoint, configure it with `llm`'s own
-settings (e.g. `extra-openai-models.yaml` plus a stored key) on the host that runs gather — there
-are no `IETF_LLM_SUMMARIZE_BASE_URL` / `_TOKEN` knobs.
-
 > **Changed in 0.8.0:** these four moved from per-corpus `gather.json` to the global config. Old
 > per-corpus values are ignored; the first gather of a corpus that still carries them prints a
 > notice and removes them. Set them once, globally, instead.
