@@ -267,7 +267,7 @@ ietf_llm/
 ├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
 ├── search_cli.py           # `ietf-llm-search` entry point
 ├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + tools)
-├── skill_install.py        # --install-claude-skill helper
+├── skill_install.py        # --install-claude-skill + pristine-only auto-update on CLI gathers
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()

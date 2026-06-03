@@ -51,7 +51,7 @@ from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
 from .gather_stages import ProgressFn, StageTracker, stage_plan
 from .people import build_registry, write_people_digest
-from .skill_install import install
+from .skill_install import install, sync_if_pristine
 from .utils import (
     DEFAULT_MONTHS,
     LogLevel,
@@ -354,10 +354,11 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     else:
         _gather_one(args, verbosity)
 
-    # Refresh the cross-corpus RFC-series index (singleton,
-    # mirrored from rfc.fyi). TTL-guarded and best-effort, so it is
-    # invisible on day-to-day gathers and never blocks the exit.
+    # Tail housekeeping — both best-effort, never block the exit: refresh
+    # the cross-corpus RFC-series index (rfc.fyi mirror, TTL-guarded), then
+    # keep an installed Claude skill current (CLI-only; pristine→auto-update).
     ensure_rfc_index(verbosity)
+    sync_if_pristine(verbosity)
 
 
 def _discover_gathered_wgs() -> List[str]:
