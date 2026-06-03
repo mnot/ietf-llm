@@ -372,6 +372,17 @@ job:
   `role`/`file_pattern`/`since`/`until`/`sort="date"`/`group_by="file"`/
   `snippet_chars`/`collapse_versions` facets (`collapse_versions`,
   default on, hides older draft revisions of a matched draft).
+  `search_corpora(corpora=[…], query, …)` fans the same search across a
+  **bounded, explicit** set of gathered corpora and returns one merged,
+  rank-ordered list tagged by corpus — the breadth companion to the
+  single-corpus tool. Because cosine scores are only comparable within a
+  shared embedding-model id (vectors are not portable across backends),
+  it groups corpora by `index_model()` id: one group → a single ranking;
+  differing groups → ranked within each and interleaved by rank, never
+  merged on raw score. It carries the per-corpus facets that generalise
+  (`since`/`until`/`label`/`state`/`author`/`role`/`snippet_chars`/
+  `collapse_versions`) but omits the depth-only ones (`sort`, `group_by`,
+  `file_pattern`).
 - **Narrative:** `read_topic` (full messages, chronological, across
   files; numbered globally, mechanical headers de-duplicated),
   `find_replies` (reply tree of one message), `tally_positions`
