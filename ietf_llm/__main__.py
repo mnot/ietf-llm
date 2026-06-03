@@ -20,11 +20,11 @@ import shutil
 import sys
 from typing import Any, Dict, Iterable, List, Optional
 
-from . import __version__, config, corpus, http_metrics, paths
+from . import __version__, canonical, config, corpus, http_metrics, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
-from .freshness import cli_debounce_skip, last_gathered, record_gather
+from .freshness import last_gathered, record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.catalog import ensure_catalog_index
 from .gather.charter import process_charter
@@ -694,10 +694,11 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         return False  # unusable name (typo); _resolve_corpus_shape logged why
     synth, group_backed = shape
 
-    # Freshness debounce: a plain re-gather of a recently-gathered corpus is
-    # skipped (checked on raw CLI args, before merge folds in persisted
-    # sources). --force / a source change bypasses it. A skip is success.
-    skip = cli_debounce_skip(args)
+    # Skip an unnecessary gather (checked on raw CLI args, before merge folds
+    # in persisted sources): a reuse hint when a new custom/synthetic corpus
+    # duplicates an existing one, or a freshness debounce when a cached corpus
+    # is refreshed too soon. --force runs anyway; a skip here is success.
+    skip = canonical.cli_gather_skip(args, synthetic=synth, group_backed=group_backed)
     if skip is not None:
         log(skip, verbosity, level=LogLevel.STATUS)
         return True

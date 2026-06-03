@@ -90,6 +90,18 @@ everything by X" are all gatherable — they just aren't groups. Build any
 shape with `start_gather`'s shape arguments when that tool is present, or
 point the user at `ietf-llm --help` for the shell equivalents.
 
+**Before minting a custom / synthetic corpus, check for an existing one
+over the same sources.** A group or list name self-canonicalises (the
+first client to gather `tls` pays; everyone after reuses), but custom /
+synthetic names are free-form (`x-ai`, `x-llm-stuff`), so two clients
+over the same drafts / lists / repos invent different names and duplicate
+the work. Treat "does something close already exist?" as a required
+pre-gather check for these kinds: scan `list_corpora` for a corpus
+covering the same sources and prefer reusing it. The gather entry point
+enforces this too — on source overlap it returns a reuse hint naming the
+existing corpus instead of gathering; that is steering toward reuse, not
+an error. Mint the near-duplicate only on an explicit request (`force`).
+
 **Loading the tools.** Every tool is named `ietf-llm__…`. If your
 client loads MCP tools lazily — you have to search for a tool before
 you can call it — load the core set in one search rather than

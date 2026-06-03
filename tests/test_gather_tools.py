@@ -78,6 +78,26 @@ def test_start_gather_forwards_force(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["spec"].force is True
 
 
+def test_start_gather_similar_exists_steers_to_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {
+            "started": False,
+            "reason": "similar exists",
+            "detail": "'x-new' overlaps an existing corpus: 'x-old' already "
+            "covers draft:draft-foo.",
+            "corpus": "x-new",
+        },
+    )
+    out = mcp_server.tool_start_gather("x-new", draft=["draft-foo"])
+    # Names the existing corpus, steers to reuse, and offers force as the out.
+    assert "x-old" in out
+    assert "near-duplicate" in out
+    assert "force=True" in out
+
+
 def test_start_gather_fresh_is_reported_as_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
