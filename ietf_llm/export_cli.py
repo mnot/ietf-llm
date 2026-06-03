@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
-"""`ietf-llm-export` — emit a gathered WG cache as a NotebookLM-ready sink.
+"""`ietf-llm-export` — emit a gathered corpus cache as a NotebookLM-ready sink.
 
 Two output modes, mutually exclusive:
 
-  ietf-llm-export <wg> --destination <dir>
+  ietf-llm-export <name> --destination <dir>
       Mirror the cache to a local directory.
 
-  ietf-llm-export <wg> --create <GCP_PROJECT_ID>
+  ietf-llm-export <name> --create <GCP_PROJECT_ID>
       Create a new notebook in NotebookLM Enterprise and upload the cache
       as sources. Requires --credentials-file (OAuth2 client secrets) and
       writes a token to --token-file on first run.
@@ -16,8 +16,8 @@ Per project policy, every export is complete and fresh — there is no
 incremental / delta mode. To get a fresh NotebookLM with current state,
 re-run this and create a new notebook (delete the old one in the UI).
 
-Per-WG flags are persisted in ~/.config/ietf-llm/<wg>/export.json so you
-don't have to repeat them. Use `ietf-llm <wg> --clear-config` to reset.
+Per-corpus flags are persisted in ~/.config/ietf-llm/<name>/export.json so you
+don't have to repeat them. Use `ietf-llm <name> --clear-config` to reset.
 """
 
 from __future__ import annotations
@@ -46,20 +46,22 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Export a gathered IETF WG cache to a local directory "
+            "Export a gathered IETF corpus to a local directory "
             "(for hand-upload to NotebookLM) or to NotebookLM Enterprise."
         )
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    wg_arg = parser.add_argument("wg", help="Working Group short name (e.g. 'httpbis')")
+    wg_arg = parser.add_argument(
+        "wg", metavar="NAME", help="Corpus name (e.g. 'httpbis')"
+    )
     wg_arg.completer = wg_completer  # type: ignore[attr-defined]
     sink = parser.add_mutually_exclusive_group()
     sink.add_argument(
         "--destination",
         metavar="DIR",
-        help="Mirror the WG cache to this directory as .txt/.md files.",
+        help="Mirror the corpus cache to this directory as .txt/.md files.",
     )
     sink.add_argument(
         "--create",
