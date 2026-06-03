@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -37,10 +38,40 @@ from .utils import (
 _STATUS_NAME = "gather-status.json"
 _LOCK_NAME = ".gather.lock"
 
+# A corpus name becomes a cache directory, so it must be a single safe path
+# segment: letters/digits/`.`/`-`/`_`, starting with an alphanumeric. This
+# bars path separators, `..`, leading dots/dashes, and whitespace — the
+# write-side mirror of the read-side `_safe_path` guard, applied *before*
+# any path is built (the runner's first act is to take a per-corpus lock,
+# which creates directories). Real corpus names (WG shortnames, list names,
+# `x-` synthetics) all satisfy it; unusual custom labels still go via the CLI.
+_VALID_CORPUS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_MAX_CORPUS_LEN = 128
+
 # Live gather threads keyed by corpus, so a second start() in this process
 # can answer "already running" without racing on the file lock.
 _jobs: Dict[str, threading.Thread] = {}
 _registry_lock = threading.Lock()
+
+
+def valid_corpus_name(name: str) -> bool:
+    """True if `name` is a safe single path segment usable as a cache dir."""
+    return (
+        bool(name) and len(name) <= _MAX_CORPUS_LEN and bool(_VALID_CORPUS.match(name))
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort: is a process with this pid still around? Used to detect a
+    `running` status orphaned by a server restart/kill (the gather thread is
+    a daemon, so it dies without writing a terminal status)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but not signalable by us (EPERM), or unsupported
+    return True
 
 
 @dataclass
@@ -133,6 +164,10 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     Returns immediately; progress is tracked via the status file.
     """
     corpus = spec.corpus
+    # Validate before any path is constructed: _run's first act is to take a
+    # per-corpus file_lock, which makedirs the (corpus-derived) lock path.
+    if not valid_corpus_name(corpus):
+        return {"started": False, "reason": "invalid name", "corpus": corpus}
     with _registry_lock:
         existing = _jobs.get(corpus)
         if existing is not None and existing.is_alive():
@@ -191,6 +226,7 @@ def _execute(spec: GatherSpec) -> None:
         "corpus": corpus,
         "state": "running",
         "spec": spec.to_dict(),
+        "pid": os.getpid(),
         "started": _now_iso(),
         "updated": _now_iso(),
         "finished": None,
@@ -243,13 +279,25 @@ def _execute(spec: GatherSpec) -> None:
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:
-    """Read one corpus's gather status, or None if none recorded."""
+    """Read one corpus's gather status, or None if none recorded.
+
+    A `running` record whose recorded pid is no longer alive is relabelled
+    `interrupted` — the gather thread is a daemon, so a server restart/kill
+    leaves the status stuck at `running` forever otherwise. (The terminal
+    `done`/`failed` status is written while still holding the gather lock,
+    so a genuinely-running gather always has a live pid.)
+    """
     try:
         with open(_status_path(corpus), "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        return dict(data)
+        result = dict(data)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
+    if result.get("state") == "running":
+        pid = result.get("pid")
+        if isinstance(pid, int) and not _pid_alive(pid):
+            result["state"] = "interrupted"
+    return result
 
 
 def all_statuses() -> List[Dict[str, Any]]:

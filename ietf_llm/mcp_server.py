@@ -1860,6 +1860,12 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a corpus name to gather (e.g. a WG shortname like `tls`)."
+    if not gather_runner.valid_corpus_name(corpus):
+        return (
+            f"'{corpus}' is not a valid corpus name. Use letters, digits, "
+            "'.', '-' or '_' (no path separators or spaces), starting with a "
+            "letter or digit."
+        )
     spec = gather_runner.GatherSpec(
         corpus=corpus,
         mailing_list=list(mailing_list or []),

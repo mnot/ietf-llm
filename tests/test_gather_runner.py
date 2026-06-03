@@ -9,6 +9,8 @@ the runner writes under the sandboxed HOME.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -182,6 +184,72 @@ def test_all_statuses_and_read_status(
     assert gather_runner.read_status("cfrg")["state"] == "done"
     names = [s["corpus"] for s in gather_runner.all_statuses()]
     assert "cfrg" in names
+
+
+# --- corpus-name validation (path-traversal guard) ------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["tls", "httpbis", "last-call", "x-webbotauth", "draft.foo_bar", "a"]
+)
+def test_valid_corpus_name_accepts_real_names(name: str) -> None:
+    assert gather_runner.valid_corpus_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "", "..", "../evil", "../../etc/passwd", "/abs", "a/b", "a\\b",
+        ".hidden", "-flag", "has space", "x" * 129,
+    ],
+)
+def test_valid_corpus_name_rejects_unsafe(name: str) -> None:
+    assert gather_runner.valid_corpus_name(name) is False
+
+
+def test_start_rejects_traversal_without_writing(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called = {"ran": False}
+    monkeypatch.setattr(
+        main_mod, "run_gather", lambda *a, **k: called.__setitem__("ran", True)
+    )
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="../evil"))
+    assert result["started"] is False
+    assert result["reason"] == "invalid name"
+    # Nothing ran, and no directory was materialised inside or outside cache.
+    time.sleep(0.05)
+    assert called["ran"] is False
+    cache = isolated_home / ".cache" / "ietf-llm"
+    assert not (cache.parent / "evil").exists()
+    assert not (cache / ".." / "evil").exists()
+
+
+# --- interrupted-gather (zombie status) detection -------------------------
+
+
+def _write_status(corpus: str, **fields: Any) -> None:
+    path = gather_runner._status_path(corpus)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"corpus": corpus, **fields}, handle)
+
+
+def test_running_status_with_dead_pid_reads_as_interrupted(
+    isolated_home: Path,
+) -> None:
+    _write_status("zombie", state="running", pid=999_999_999, started="x")
+    assert gather_runner.read_status("zombie")["state"] == "interrupted"
+
+
+def test_running_status_with_live_pid_stays_running(isolated_home: Path) -> None:
+    _write_status("live", state="running", pid=os.getpid(), started="x")
+    assert gather_runner.read_status("live")["state"] == "running"
+
+
+def test_done_status_never_relabelled(isolated_home: Path) -> None:
+    _write_status("fin", state="done", pid=999_999_999, started="x")
+    assert gather_runner.read_status("fin")["state"] == "done"
 
 
 def test_spec_to_argv_round_trips_sources() -> None:

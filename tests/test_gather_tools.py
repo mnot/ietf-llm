@@ -71,6 +71,18 @@ def test_start_gather_rejects_blank_corpus() -> None:
     assert "corpus name" in out
 
 
+@pytest.mark.parametrize("name", ["../evil", "a/b", "/etc", "-flag", ".hidden"])
+def test_start_gather_rejects_unsafe_name_without_calling_runner(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    def boom(_spec: Any) -> Any:
+        raise AssertionError("runner.start must not be reached for unsafe names")
+
+    monkeypatch.setattr(gather_runner, "start", boom)
+    out = mcp_server.tool_start_gather(name)
+    assert "not a valid corpus name" in out
+
+
 # --- tool_gather_status ---------------------------------------------------
 
 
