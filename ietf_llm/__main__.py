@@ -46,6 +46,7 @@ from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
+from .gather.catalog import ensure_catalog_index
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
@@ -354,10 +355,9 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     else:
         _gather_one(args, verbosity)
 
-    # Tail housekeeping — both best-effort, never block the exit: refresh
-    # the cross-corpus RFC-series index (rfc.fyi mirror, TTL-guarded), then
-    # keep an installed Claude skill current (CLI-only; pristine→auto-update).
+    # Tail housekeeping (best-effort, never blocks exit): refresh mirrors, sync skill.
     ensure_rfc_index(verbosity)
+    ensure_catalog_index(verbosity)
     sync_if_pristine(verbosity)
 
 

@@ -9,7 +9,9 @@ A queryable local record of an IETF effort — a Working Group, a
 mailing list, a set of drafts — exposed via `mcp__ietf-llm__*` tools.
 `<corpus>` is the corpus name: often a WG / RG shortname (`httpbis`,
 `tls`, `cfrg`), but see the kinds below. If the user names something
-and you can't tell which corpus they mean, **ask** — don't guess.
+and you can't tell which corpus they mean, try `find_efforts(topic)`
+first to map it to candidate efforts (see "Topic, not a named effort"
+below); **ask** only when that doesn't resolve it — don't guess.
 
 **Default to this corpus; don't reflexively crawl IETF sites or
 walk the user's inbox.** If a corpus isn't here (`overview` returns
@@ -82,7 +84,40 @@ client loads MCP tools lazily — you have to search for a tool before
 you can call it — load the core set in one search rather than
 discovering them one at a time: `overview`, `read_digest`,
 `search_corpus`, `read_topic`, `tally_positions`, `find_replies`,
-`find_citations`, `list_corpora`, `list_labels`, `list_files`.
+`find_citations`, `list_corpora`, `list_labels`, `list_files`,
+`find_efforts`.
+
+## Topic, not a named effort: `find_efforts(topic)`
+
+The tools above are corpus-first: they need a corpus name. When the user
+gives a **topic with no obvious home** — "what is the IETF doing around
+AI?", "post-quantum work", "anything on congestion control?" — you don't
+yet know which corpus, and guessing or crawling Datatracker / the web is
+the wrong move. `find_efforts(topic)` is the entry point: it ranks the
+active working / research groups (by acronym + name + charter
+description, from a local mirror of the Datatracker group list) and tags
+each with whether it is **already gathered here** (`✓ cached`).
+
+The playbook:
+
+1. `find_efforts(topic)` → a ranked candidate list.
+2. **Prefer the cached efforts** — they answer immediately. For the rest,
+   gather only the **few that dominate** the topic (`start_gather` /
+   `ietf-llm <acronym>`), **not all of them**.
+3. Query each gathered corpus (`overview`, `search_corpus`, …) and
+   synthesize across them.
+
+**The cost rule is load-bearing.** On a shared server a wide gather
+fan-out costs everyone — shared cores and network — and over-gathering is
+the failure mode of a capable model here. Gather the few efforts that
+dominate the topic; **tell the user which ones you skipped**, mirroring
+the "tell the user when you go outside the corpus" norm.
+
+Scope and limits: v1 covers **active** groups only, so a concluded effort
+won't surface (use `rfc_search` for published work, `list_corpora` for
+what's already cached). BoF / pre-WG "emerging work" is barely
+represented in the group list, so a topic with no chartered group yet may
+return nothing — say so rather than inventing an effort.
 
 ## First call: pick by question shape
 

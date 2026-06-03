@@ -60,6 +60,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
 from . import __version__, _debug_log, _stdio_transport
+from .catalog import render_efforts
 from .corpus import describe, kind_status
 from .digest.overview import (
     _label_frequencies,
@@ -2020,6 +2021,36 @@ def main() -> None:
         what a corpus covers without opening it.
         """
         return await _offload(tool_list_corpora)
+
+    @server.tool()
+    async def find_efforts(query: str, limit: int = 15) -> str:
+        """Find active IETF/IRTF efforts by **topic** — the entry point
+        for "what is the IETF doing around X?" when no working group is
+        named. Returns a ranked markdown list of working/research groups,
+        each tagged with whether it is **already gathered here** (`✓
+        cached`); prefer those.
+
+        This is the topic→effort discovery step the corpus-first tools
+        lack. Reach here when the user gives a *subject* with no obvious
+        home — "AI", "post-quantum", "congestion control", "email
+        security" — instead of guessing a corpus or crawling Datatracker /
+        the web. It ranks over the official Datatracker group list
+        (acronym + name + charter description), mirrored locally; v1
+        covers **active** groups only, so a concluded effort or published
+        work won't surface here — use `rfc_search` for the RFC series, and
+        `list_corpora` to see what is already cached.
+
+        The playbook: `find_efforts(topic)` → present the candidates
+        (prefer the cached ones) → gather the **few** efforts that
+        dominate the topic (`start_gather` / `ietf-llm <acronym>`), not
+        all of them, and tell the user what you skipped → query each
+        gathered corpus → synthesize. On a shared server a wide gather
+        fan-out costs everyone, so over-gathering is the failure mode to
+        avoid.
+
+        `limit` caps results (default 15).
+        """
+        return await _offload(render_efforts, query, limit)
 
     @server.tool()
     async def rfc_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments

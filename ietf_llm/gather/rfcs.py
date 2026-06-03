@@ -32,13 +32,12 @@ the reader degrades to a "not gathered yet" message.
 from __future__ import annotations
 
 import os
-import time
-from typing import Optional
 
 import requests
 
 from ..rfcs import RFC_FILES, rfc_index_dir
 from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
+from . import _mirror
 
 RFC_DATA_BASE = "https://rfc.fyi/var"
 
@@ -71,10 +70,10 @@ def ensure_rfc_index(
 def _refresh_one(target_dir: str, name: str, verbosity: Verbosity, force: bool) -> None:
     body_path = os.path.join(target_dir, name)
     etag_path = body_path + ".etag"
-    if not force and _is_fresh(body_path):
+    if not force and _mirror.is_fresh(body_path, RFC_TTL_SECONDS):
         return
     headers = dict(DEFAULT_HEADERS)
-    etag = _read_etag(etag_path) if os.path.exists(body_path) else None
+    etag = _mirror.read_etag(etag_path) if os.path.exists(body_path) else None
     if etag:
         headers["If-None-Match"] = etag
     url = f"{RFC_DATA_BASE}/{name}"
@@ -84,75 +83,14 @@ def _refresh_one(target_dir: str, name: str, verbosity: Verbosity, force: bool) 
         log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
         return
     if response.status_code == 304:
-        _touch(body_path)
+        _mirror.touch(body_path)
         return
     try:
         response.raise_for_status()
     except requests.RequestException as err:
         log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
         return
-    if not _write_body(body_path, response.content, verbosity):
+    if not _mirror.write_body(body_path, response.content, verbosity, "RFC index"):
         return
-    _write_sidecar(etag_path, response.headers.get("ETag"))
+    _mirror.write_sidecar(etag_path, response.headers.get("ETag"))
     log(f"RFC index: updated {name}", verbosity, LogLevel.PROGRESS)
-
-
-def _is_fresh(body_path: str) -> bool:
-    try:
-        age = time.time() - os.path.getmtime(body_path)
-    except OSError:
-        return False
-    return age < RFC_TTL_SECONDS
-
-
-def _read_etag(etag_path: str) -> Optional[str]:
-    try:
-        with open(etag_path, "r", encoding="utf-8") as handle:
-            value = handle.read().strip()
-    except OSError:
-        return None
-    return value or None
-
-
-def _touch(path: str) -> None:
-    # Restart the TTL after a successful 304 revalidation, so a fresh
-    # check costs one conditional request per day, not one per gather.
-    try:
-        os.utime(path, None)
-    except OSError:
-        pass
-
-
-def _write_body(path: str, content: bytes, verbosity: Verbosity) -> bool:
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "wb") as handle:
-            handle.write(content)
-        os.replace(tmp, path)
-        return True
-    except OSError as err:
-        log(f"RFC index: write {path} failed: {err}", verbosity, LogLevel.PROGRESS)
-        _unlink(tmp)
-        return False
-
-
-def _write_sidecar(etag_path: str, etag: Optional[str]) -> None:
-    # Body is already on disk. If the server gave no ETag, drop any stale
-    # sidecar so we never send a mismatched If-None-Match next time.
-    if not etag:
-        _unlink(etag_path)
-        return
-    tmp = etag_path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(etag)
-        os.replace(tmp, etag_path)
-    except OSError:
-        _unlink(tmp)
-
-
-def _unlink(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
