@@ -21,6 +21,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from ..gather.documents_manifest import skip_embed_draft_names
+from ..gather.drafts import normalize_draft_name
+
 # Character budget per embedded chunk. The embedding model only embeds the
 # first ~512 tokens of whatever text it's given; anything past that is silently
 # dropped from the vector (though still stored for display). We therefore size
@@ -609,7 +612,7 @@ def _chunk_file(path: str, relpath: str) -> List[Chunk]:
     return _chunk_windowed(text, relpath)
 
 
-def _eligible_files(cache_dir: str, wg: str) -> List[str]:  # noqa: ARG001
+def _eligible_files(cache_dir: str, wg: str) -> List[str]:
     """Return absolute paths of files worth embedding.
 
     Walks the WG cache recursively. Skips:
@@ -618,7 +621,14 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:  # noqa: ARG001
       - `raw/` (legacy text dumps kept for grep / NotebookLM)
       - `meetings/<code>/slides/*.pdf` (binaries — we index the
         sibling `.pdf.txt` extracts instead)
+      - `drafts/draft-…-NN.txt` revisions of a draft whose Datatracker
+        state is `rfc` / `repl` (see `skip_embed_draft_names`): the
+        content is canonical in the published RFC or the replacing
+        draft, so the revision stack is historical noise. The files stay
+        on disk (read / cite / grep); only embedding is gated. RFC
+        `.txt` files and active / expired drafts are unaffected.
     """
+    skip_drafts = skip_embed_draft_names(wg)
     out = []
     for dirpath, _dirnames, filenames in os.walk(cache_dir):
         for name in sorted(filenames):
@@ -636,6 +646,13 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:  # noqa: ARG001
             if name.endswith(".pdf") or name.endswith(".json"):
                 continue
             if not (name.endswith(".txt") or name.endswith(".md")):
+                continue
+            if (
+                skip_drafts
+                and relpath_lower.startswith("drafts/")
+                and name.startswith("draft-")
+                and normalize_draft_name(name) in skip_drafts
+            ):
                 continue
             out.append(path)
     return out

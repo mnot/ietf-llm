@@ -121,7 +121,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │       └── github-<repo-slug>.txt
 │   ├── embeddings.db                      # per-WG semantic index
 │   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
-│   ├── documents.json                     # draft-name → expiry (active vs concluded)
+│   ├── documents.json                     # draft-name → {expires, state} (overview split + embed-skip)
 │   └── last-gathered                      # ISO-8601 sentinel (freshness)
 │
 ├── imap-cache/<wg>/<list>/<uid>.eml       # raw fetched messages
@@ -177,7 +177,13 @@ Key invariants:
   than truncated. The `chunks` table carries `start_line`/`end_line`,
   `chunk_date`, `labels`, `state`, `url`, `duplicate_of`,
   `closing_rationale` for faceted search. Schema is versioned; `_open_db`
-  migrates older DBs forward via ALTER TABLE.
+  migrates older DBs forward via ALTER TABLE. Not every cached file is
+  embedded: `raw/`, `github/`, digests, and PDFs are excluded, and a
+  draft's revision stack is skipped once its Datatracker `state`
+  (`documents.json`) is `rfc` (published — the RFC is canonical) or
+  `repl` (replaced — content lives in its successor). Those revisions
+  stay on disk for reading/citing; only embedding is gated. Active /
+  expired drafts and the RFC texts themselves are embedded.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).
@@ -423,8 +429,14 @@ affordances; we use all three:
 writers regenerate content every gather but write a file only when its
 bytes actually changed (`utils.write_if_changed`). A byte-identical
 re-render leaves mtime untouched — load-bearing because the embedder
-re-embeds any file whose mtime advanced. Orphans (a thread/issue that
-no longer exists) are deleted in a separate cleanup pass.
+re-embeds any file whose mtime advanced. The mtime rule alone can't
+catch a file that becomes *ineligible* without changing — a removed
+thread/issue, or a draft that flips to `rfc`/`repl` and is now skipped
+(see `embeddings.db` above) — so `build_index` opens with a prune: it drops chunks
+for any indexed file no longer in the eligible set. That keeps stale
+chunks from lingering and doubles as the migration path when the
+eligibility rules change (an existing cache sheds the now-skipped
+revisions on its next gather, no `--rebuild` needed).
 
 Every-gather corpus writes also go through `utils.atomic_open` (temp +
 `os.replace`), so the write is atomic — see the concurrency note below.

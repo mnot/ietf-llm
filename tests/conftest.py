@@ -51,6 +51,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
     from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
         ballots,
+        datatracker,
         datatracker_github,
         datatracker_history,
         github_users,
@@ -60,6 +61,16 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
         return
 
     monkeypatch.setattr(people, "_ingest_datatracker_roles", _noop)
+    # Block the document/state/roles JSON API at the network boundary.
+    # get_wg_documents -> draft_state_slugs() / iter_group_documents() both
+    # route through this; with it returning None the draft-state map is
+    # empty (state recorded as None, drafts still embed) and document
+    # listing is empty. Tests exercising these stub iter_group_documents /
+    # draft_state_slugs on the drafts module, or this attribute directly.
+    monkeypatch.setattr(
+        datatracker, "_get_json",
+        lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
     # Block the GitHub-username profile-resource lookups (the new linking
     # pass) at the network boundary. With `_get_json` returning None the
     # index build aborts and the pass is a no-op. Tests exercising the

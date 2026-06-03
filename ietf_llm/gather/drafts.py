@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Optional
 
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
-from .datatracker import iter_active_drafts_by_name, iter_group_documents
+from .datatracker import (
+    draft_state_slugs,
+    iter_active_drafts_by_name,
+    iter_group_documents,
+)
 from .documents_manifest import save_documents_manifest
 
 # `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
@@ -54,8 +58,14 @@ def get_wg_documents(
     group_type = get_group_type(wg_name)
     prefix = f"draft-{group_type}-{wg_name}-"
 
+    # One lookup of the draft-state URI→slug map (active/expired/rfc/repl/…),
+    # used to classify each document below. Empty on API failure → state
+    # is recorded as None and the draft is embedded (the safe default).
+    state_slugs = draft_state_slugs()
+
     drafts: Dict[str, int] = {}
     expires: Dict[str, str] = {}
+    states: Dict[str, Optional[str]] = {}
     for obj in iter_group_documents(wg_name, "draft"):
         name = obj.get("name") or ""
         if not name.startswith(prefix):
@@ -73,6 +83,7 @@ def get_wg_documents(
         exp = obj.get("expires")
         if isinstance(exp, str) and exp:
             expires[name] = exp
+        states[name] = _resolve_draft_state(obj, state_slugs)
 
     # Related drafts share the same {name, rev, expires} shape; merging
     # into the same dicts dedupes naturally if a name somehow appears
@@ -96,6 +107,7 @@ def get_wg_documents(
             exp = obj.get("expires")
             if isinstance(exp, str) and exp:
                 expires[name] = exp
+            states[name] = _resolve_draft_state(obj, state_slugs)
 
     rfcs: Dict[str, str] = {}
     for obj in iter_group_documents(wg_name, "rfc"):
@@ -106,11 +118,34 @@ def get_wg_documents(
 
     return {
         "drafts": [
-            {"name": n, "max_rev": r, "expires": expires.get(n, "")}
+            {
+                "name": n,
+                "max_rev": r,
+                "expires": expires.get(n, ""),
+                "state": states.get(n),
+            }
             for n, r in drafts.items()
         ],
         "rfcs": [{"name": n, "number": num} for n, num in rfcs.items()],
     }
+
+
+def _resolve_draft_state(
+    obj: Dict[str, Any], state_slugs: Dict[str, str]
+) -> Optional[str]:
+    """Return a draft document's draft-type state slug, or None.
+
+    A document carries several state URIs (draft, IESG, stream, …); only
+    one belongs to the `draft` state type, so we return the first of
+    `obj["states"]` that appears in `state_slugs` (the draft-type map).
+    None when the map is empty (API failure) or no draft-type state is
+    present.
+    """
+    for uri in obj.get("states") or []:
+        slug = state_slugs.get(uri)
+        if slug is not None:
+            return slug
+    return None
 
 
 def fetch_current_rev(
@@ -275,9 +310,18 @@ def process_documents(
     # 1. Process Drafts
     drafts = docs["drafts"]
     if drafts:
+        # Record every draft (not only ones with an expiry): the manifest
+        # now also drives which drafts the embedding index skips, keyed on
+        # Datatracker state, and a concluded draft may carry no expiry.
         save_documents_manifest(
             wg_name,
-            {str(d["name"]): str(d["expires"]) for d in drafts if d.get("expires")},
+            {
+                str(d["name"]): {
+                    "expires": str(d.get("expires") or ""),
+                    "state": d.get("state"),
+                }
+                for d in drafts
+            },
         )
         for draft in drafts:
             name = str(draft["name"])

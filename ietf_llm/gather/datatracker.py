@@ -199,6 +199,32 @@ def iter_group_documents(wg_name: str, doc_type: str) -> Iterator[Dict[str, Any]
         path = (body.get("meta") or {}).get("next") or None
 
 
+def draft_state_slugs() -> Dict[str, str]:
+    """Map each draft-type Datatracker state's resource URI to its slug.
+
+    The slugs are `active` / `expired` / `rfc` / `repl` (replaced) /
+    `auth-rm` / `ietf-rm`. A document object from `iter_group_documents`
+    already carries its state resource URIs inline (the `states` list),
+    so this one map lets `get_wg_documents` classify every draft's state
+    without a per-draft request. There are only a handful of draft
+    states, so the single `limit=100` page covers them all.
+
+    Returns `{}` on API failure — callers then record state as None and
+    embed the draft (the safe default), so a transient outage never
+    drops a draft from the index.
+    """
+    body = _get_json(f"{_API_BASE}/doc/state/?type__slug=draft&limit=100")
+    out: Dict[str, str] = {}
+    if not body:
+        return out
+    for obj in body.get("objects") or []:
+        uri = obj.get("resource_uri")
+        slug = obj.get("slug")
+        if isinstance(uri, str) and isinstance(slug, str):
+            out[uri] = slug
+    return out
+
+
 def iter_active_drafts_by_name(wg_name: str) -> Iterator[Dict[str, Any]]:
     """Yield every currently-active Internet-Draft whose name contains
     `-<wg_name>-`.

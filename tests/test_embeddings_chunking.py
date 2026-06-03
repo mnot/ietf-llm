@@ -224,6 +224,42 @@ def test_eligible_files_excludes_digests_json_pdf_and_raw(
     assert relpaths == ["charter.txt"]
 
 
+def test_eligible_files_skips_rfc_and_replaced_draft_revisions(
+    isolated_home: Path,
+) -> None:
+    """Revisions of a draft in state rfc / repl are excluded; active /
+    expired / unknown-state drafts and RFC .txt files stay eligible."""
+    from ietf_llm.gather.documents_manifest import save_documents_manifest
+
+    save_documents_manifest(
+        "wg",
+        {
+            "draft-ietf-wg-published": {"expires": "", "state": "rfc"},
+            "draft-ietf-wg-merged": {"expires": "", "state": "repl"},
+            "draft-ietf-wg-live": {"expires": "2099-01-01T00:00:00Z", "state": "active"},
+        },
+    )
+    files_dir = isolated_home / ".cache" / "ietf-llm" / "wg" / "files"
+    drafts = files_dir / "drafts"
+    drafts.mkdir(parents=True)
+    # Two revisions of each draft, plus an RFC text and an unmanaged draft.
+    for rev in ("00", "01"):
+        (drafts / f"draft-ietf-wg-published-{rev}.txt").write_text("x")
+        (drafts / f"draft-ietf-wg-merged-{rev}.txt").write_text("x")
+        (drafts / f"draft-ietf-wg-live-{rev}.txt").write_text("x")
+    (drafts / "rfc9999.txt").write_text("x")  # RFC text — always embedded
+    (drafts / "draft-individual-thing-00.txt").write_text("x")  # not in manifest
+
+    eligible = _eligible_files(str(files_dir), "wg")
+    relpaths = sorted(os.path.relpath(p, str(files_dir)) for p in eligible)
+    assert relpaths == [
+        "drafts/draft-ietf-wg-live-00.txt",
+        "drafts/draft-ietf-wg-live-01.txt",
+        "drafts/draft-individual-thing-00.txt",
+        "drafts/rfc9999.txt",
+    ]
+
+
 # --- chunker resilience to role-tagged section headers --------------------
 
 

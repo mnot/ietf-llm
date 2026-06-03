@@ -22,10 +22,53 @@ from ietf_llm.utils import Verbosity
 
 def test_manifest_roundtrip(isolated_home: Path) -> None:
     assert load_documents_manifest("httpbis") == {}  # absent → empty
-    save_documents_manifest("httpbis", {"draft-ietf-httpbis-x": "2026-11-14T00:00:00Z"})
+    save_documents_manifest(
+        "httpbis",
+        {"draft-ietf-httpbis-x": {"expires": "2026-11-14T00:00:00Z", "state": "active"}},
+    )
     assert load_documents_manifest("httpbis") == {
-        "draft-ietf-httpbis-x": "2026-11-14T00:00:00Z"
+        "draft-ietf-httpbis-x": {"expires": "2026-11-14T00:00:00Z", "state": "active"}
     }
+
+
+def test_manifest_normalises_legacy_flat_shape(isolated_home: Path) -> None:
+    """A manifest written before state was recorded mapped name → expiry
+    string. The loader lifts that into the record shape so a stale cache
+    keeps working until its next gather rewrites it."""
+    import json
+
+    from ietf_llm.utils import get_cache_dir
+
+    path = os.path.join(get_cache_dir(), "httpbis", "documents.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"draft-ietf-httpbis-old": "2020-01-01T00:00:00Z"}, fh)
+    assert load_documents_manifest("httpbis") == {
+        "draft-ietf-httpbis-old": {"expires": "2020-01-01T00:00:00Z", "state": None}
+    }
+
+
+def test_skip_embed_draft_names(isolated_home: Path) -> None:
+    """Only drafts whose state is in SKIP_EMBED_STATES (rfc / repl) are
+    returned; active / expired stay embeddable, as do unknown-state
+    drafts."""
+    from ietf_llm.gather.documents_manifest import skip_embed_draft_names
+
+    save_documents_manifest(
+        "httpbis",
+        {
+            "draft-ietf-httpbis-semantics": {"expires": "", "state": "rfc"},
+            "draft-ietf-httpbis-p2-semantics": {"expires": "", "state": "repl"},
+            "draft-ietf-httpbis-live": {"expires": "2099-01-01T00:00:00Z", "state": "active"},
+            "draft-ietf-httpbis-stale": {"expires": "2020-01-01T00:00:00Z", "state": "expired"},
+            "draft-ietf-httpbis-mystery": {"expires": "", "state": None},
+        },
+    )
+    assert skip_embed_draft_names("httpbis") == {
+        "draft-ietf-httpbis-semantics",
+        "draft-ietf-httpbis-p2-semantics",
+    }
+    assert skip_embed_draft_names("nonexistent-wg") == set()
 
 
 def test_manifest_corrupt_returns_empty(isolated_home: Path) -> None:
@@ -41,8 +84,17 @@ def test_manifest_corrupt_returns_empty(isolated_home: Path) -> None:
 # --- get_wg_documents captures expiry -------------------------------------
 
 
-def test_get_wg_documents_captures_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_wg_documents_captures_expiry_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(drafts_mod, "get_group_type", lambda wg: "ietf")
+    # Draft-state URI→slug map: the document objects carry these URIs in
+    # their `states` list, and get_wg_documents resolves the draft-type one.
+    monkeypatch.setattr(
+        drafts_mod,
+        "draft_state_slugs",
+        lambda: {"/api/v1/doc/state/1/": "active", "/api/v1/doc/state/3/": "rfc"},
+    )
 
     def fake_iter(wg, doc_type):
         if doc_type == "draft":
@@ -52,10 +104,13 @@ def test_get_wg_documents_captures_expiry(monkeypatch: pytest.MonkeyPatch) -> No
                         "name": "draft-ietf-httpbis-live",
                         "rev": "03",
                         "expires": "2026-11-14T00:00:00Z",
+                        # mixes a draft-type state URI with an unrelated one
+                        "states": ["/api/v1/doc/state/44/", "/api/v1/doc/state/1/"],
                     },
-                    {  # no expires field → omitted from the manifest
+                    {  # no expires field → "" in the draft dict; state resolved
                         "name": "draft-ietf-httpbis-nodate",
                         "rev": "00",
+                        "states": ["/api/v1/doc/state/3/"],
                     },
                 ]
             )
@@ -65,7 +120,9 @@ def test_get_wg_documents_captures_expiry(monkeypatch: pytest.MonkeyPatch) -> No
     docs = drafts_mod.get_wg_documents("httpbis", Verbosity.QUIET)
     by_name = {d["name"]: d for d in docs["drafts"]}
     assert by_name["draft-ietf-httpbis-live"]["expires"] == "2026-11-14T00:00:00Z"
+    assert by_name["draft-ietf-httpbis-live"]["state"] == "active"
     assert by_name["draft-ietf-httpbis-nodate"]["expires"] == ""
+    assert by_name["draft-ietf-httpbis-nodate"]["state"] == "rfc"
 
 
 # --- include_related merges & filters --------------------------------------

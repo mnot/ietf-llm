@@ -255,13 +255,15 @@ def test_draft_concluded_by_expiry() -> None:
 
     now = datetime.datetime(2026, 5, 30, tzinfo=datetime.timezone.utc)
     exp = {
-        "draft-old": "2014-08-10T00:00:00Z",   # past → concluded
-        "draft-live": "2026-11-14T00:00:00Z",  # future → active
-        "draft-bad": "not-a-date",             # unparseable → active
+        "draft-old": {"expires": "2014-08-10T00:00:00Z", "state": "rfc"},  # past
+        "draft-live": {"expires": "2026-11-14T00:00:00Z", "state": "active"},  # future
+        "draft-bad": {"expires": "not-a-date", "state": None},  # unparseable → active
+        "draft-nostate": {"expires": "", "state": "repl"},  # no expiry → active here
     }
     assert _draft_concluded("draft-old", exp, now) is True
     assert _draft_concluded("draft-live", exp, now) is False
     assert _draft_concluded("draft-bad", exp, now) is False
+    assert _draft_concluded("draft-nostate", exp, now) is False  # expiry-driven only
     assert _draft_concluded("draft-unknown", exp, now) is False  # not in manifest
 
 
@@ -283,8 +285,8 @@ def test_overview_splits_active_from_concluded_drafts(
         overview_mod,
         "load_documents_manifest",
         lambda _wg: {
-            "draft-ietf-wg-live": "2099-01-01T00:00:00Z",
-            "draft-ietf-wg-old": "2014-01-01T00:00:00Z",
+            "draft-ietf-wg-live": {"expires": "2099-01-01T00:00:00Z", "state": "active"},
+            "draft-ietf-wg-old": {"expires": "2014-01-01T00:00:00Z", "state": "rfc"},
         },
     )
     out = build_overview("wg", str(tmp_path))

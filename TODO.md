@@ -1,6 +1,23 @@
 # TODO
 
-## Don't embed concluded-draft revisions + add a literal-search tool (planned 2026-06-02)
+## Add a literal-search (grep) tool (planned 2026-06-02)
+
+The embedding-skip half of this item shipped (see below). The companion
+grep tool remains: there is still **no keyword/substring search** —
+semantic `search_corpus` (the embedding index) is the only
+content-discovery path, so "not embedded" == "not blind-discoverable."
+That's the one real gap from skipping concluded revisions: wording that
+lived only in a superseded revision and was removed before the RFC can't
+be found cold (it can still be *read* once something points at the
+revision, and `list_files` shows it on disk tagged "not indexed").
+
+Add a substring/grep tool over the on-disk cache (esp. `drafts/`). It
+needs no index, restores literal discoverability of every revision, and
+is a *better* fit for historical-draft questions, which tend to be
+literal ("which revision first mentioned this parameter / section /
+term") rather than semantic.
+
+## DONE: Don't embed concluded-draft revisions (shipped 2026-06-03)
 
 **The single biggest embed-time win. Drafts are ~86% of chunks, and for a
 mature WG the overwhelming majority are *concluded* work whose revision
@@ -52,22 +69,16 @@ Keep downloading/storing **all** revisions regardless (archive,
 `read_file_section`, citing a specific `-03` all still work) — this gates
 *embedding* only.
 
-### Companion: add a literal-search (grep) tool
-
-There is currently **no keyword/substring search** — semantic
-`search_corpus` (the embedding index) is the *only* content-discovery path,
-so "not embedded" == "not blind-discoverable." That's the one real gap from
-skipping concluded revisions: wording that lived only in a superseded
-revision and was removed before the RFC can't be found cold (it can still be
-*read* once something points at the revision, and `list_files` shows it on
-disk tagged "not indexed").
-
-Add a substring/grep tool over the on-disk cache (esp. `drafts/`). It needs
-no index, restores literal discoverability of every revision, and is a
-*better* fit for historical-draft questions, which tend to be literal
-("which revision first mentioned this parameter / section / term") rather
-than semantic. Net: drop the concluded-revision embedding volume, keep the
-full archive, and add the keyword path that matches those queries.
+**As shipped:** `documents.json` now maps `<draft> → {expires, state}`
+(loader normalises the legacy flat shape); `get_wg_documents` resolves
+each draft's Datatracker state via `draft_state_slugs()`;
+`_eligible_files` skips `drafts/` revisions whose base draft is `rfc` /
+`repl`; and `_build_index_locked` prunes orphaned chunks so an existing
+cache migrates on its next gather with no `--rebuild`. Measured against
+the real httpbis cache: 651 of 787 revision files skipped, 136 in-flight
+revisions + 53 RFC texts kept — matching the estimate above. This is a
+**write-side** change: existing caches keep their old index until the
+next `ietf-llm <wg>`.
 
 ## Embedding-time efficiency (investigated 2026-06-02)
 

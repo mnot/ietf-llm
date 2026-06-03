@@ -133,7 +133,7 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
         limit=50,
     )
     citation_counts = _load_citation_counts(cache_dir)
-    expiries = load_documents_manifest(wg)
+    manifest = load_documents_manifest(wg)
     now = datetime.now(timezone.utc)
     # The table is Name | Documents | Email; we want one entry per
     # distinct document with its authors gathered alongside.
@@ -164,7 +164,7 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
         if _RFC_RE.match(doc):
             rfcs.append((doc, cited))
             continue
-        if _draft_concluded(doc, expiries, now):
+        if _draft_concluded(doc, manifest, now):
             concluded_drafts += 1
             continue
         cite_tag = f"  _(cited in {cited})_" if cited else ""
@@ -205,11 +205,16 @@ def _blocked_drafts(cache_dir: str) -> List[Tuple[str, int]]:
     return out
 
 
-def _draft_concluded(doc: str, expiries: "dict[str, str]", now: datetime) -> bool:
+def _draft_concluded(
+    doc: str, manifest: "dict[str, dict[str, str | None]]", now: datetime
+) -> bool:
     """True when the manifest records a *past* expiry for `doc` (expired /
     replaced / published). Unknown drafts (not in the manifest) are treated
     as active, so individual or freshly-added drafts are never hidden."""
-    raw = expiries.get(doc)
+    rec = manifest.get(doc)
+    if not rec:
+        return False
+    raw = rec.get("expires")
     if not raw:
         return False
     try:
