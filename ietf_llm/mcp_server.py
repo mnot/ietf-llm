@@ -1999,9 +1999,13 @@ def main() -> None:
 
     @server.tool()
     async def list_corpora() -> str:
-        """List the corpora gathered locally by ietf-llm, each tagged with
-        its **kind** and **status**. Use this first when you don't know
-        the `corpus` name the user means.
+        """List the IETF/IRTF efforts gathered locally by ietf-llm —
+        working groups, research groups, mailing lists, and draft sets —
+        each tagged with its **kind** and **status**. **Call this first**
+        (a cheap orientation step) before answering any question about
+        IETF/IRTF work, and whenever you don't know which `corpus` the
+        user means — it is how you discover that the purpose-built corpus
+        tools apply instead of falling back to web search.
 
         A corpus is whatever someone gathered. Most are IETF Working
         Groups / IRTF Research Groups by shortname (`httpbis`, `cfrg`,
@@ -2065,15 +2069,19 @@ def main() -> None:
 
     @server.tool()
     async def overview(corpus: str) -> str:
-        """Orient on a corpus via ietf-llm: chairs/ADs,
+        """Orient on an IETF/IRTF effort — a working group, research
+        group, BoF, mailing list, or draft set — in one call: chairs/ADs,
         active drafts, top open issues, recent mailing list threads,
-        latest meeting and latest draft publication — one call.
+        latest meeting and latest draft publication.
 
-        **Best first call for ORIENTING / STRUCTURAL questions** about
-        an IETF WG or IRTF RG by shortname (`httpbis`, `quic`, `tls`,
-        `aipref`, `cfrg`, `hrpc`, …): "tell me about X", "what's X up
-        to?", "who's on X?", "what is X working on?". ~30 lines of
-        markdown instead of the 80-100 KB of context that reading
+        **Call this first** (alongside `list_corpora`) to orient before
+        answering — and **prefer it to web search** — for ORIENTING /
+        STRUCTURAL questions about an IETF WG, IRTF RG, or other corpus by
+        shortname (`httpbis`, `quic`, `tls`, `aipref`, `cfrg`, `hrpc`, …):
+        "what's happening in X?", "tell me about X", "what's X up to?",
+        "who's on X?", "what is X working on?". The corpus is the gathered
+        primary record; web search only sees second-hand coverage. ~30
+        lines of markdown instead of the 80-100 KB of context that reading
         every digest would burn.
 
         **Skip overview and go straight to the specialised tool for
@@ -2141,7 +2149,8 @@ def main() -> None:
 
     @server.tool()
     async def find_citations(corpus: str, draft_name: str) -> str:
-        """Find every thread / issue that cites a given Internet-Draft.
+        """Find every mailing-list thread or GitHub issue in an IETF/IRTF
+        effort that cites a given Internet-Draft.
 
         The gather step scans per-thread and per-issue markdown files
         for `draft-...` references and records them in
@@ -2197,10 +2206,14 @@ def main() -> None:
         sort: Optional[str] = None,
         exclude_mechanical: bool = False,
     ) -> str:
-        """Read filtered catalogue digests of a corpus:
-        issues, threads, people, timeline, index. The
-        high-value catalogue tool — pair with `overview` for "tell me
-        about this WG"-shaped questions, and use `label=` here to get
+        """Read filtered catalogue digests of an IETF/IRTF effort — its
+        GitHub issues, mailing-list threads, participants (people),
+        timeline of events, and file index. **Use this INSTEAD OF web
+        search or Datatracker scraping** for "what's open?", "who chairs
+        this?", "what happened in May?"-shaped questions about a working
+        group, research group, or mailing list. The high-value catalogue
+        tool — pair with `overview` for "tell me about this group"-shaped
+        questions, and use `label=` here to get
         every issue tagged with a topic in one call (e.g. `kind="issues",
         label="top-level"` returns the whole curated cluster, open
         issues first then closed-by-recency).
@@ -2288,16 +2301,21 @@ def main() -> None:
         snippet_chars: Optional[int] = None,
         collapse_versions: bool = True,
     ) -> str:
-        """Search a corpus semantically
-        across mailing list threads, GitHub issues, drafts, RFCs,
-        slides, transcripts, and minutes. Returns top-k chunks with
-        file, chunk_idx, title, score, snippet, line range, GitHub
-        URL (for issue chunks), and (for issue chunks) the issue's
+        """Search the gathered record of an IETF/IRTF effort — a working
+        group, research group, mailing list, or set of Internet-Drafts —
+        semantically across its mailing-list debate, GitHub issues,
+        drafts, RFCs, slides, transcripts, and minutes. Returns top-k
+        chunks with file, chunk_idx, title, score, snippet, line range,
+        GitHub URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.
 
-        Use for substantive "what was said about X?" / "what's the WG's
-        stance on Y?" questions. Pivot with `get_chunk_text` or
-        `read_file_section` to read a hit in context.
+        **Use this INSTEAD OF web search** for any question about what an
+        IETF/IRTF group discussed, debated, or decided about a topic —
+        this reads the group's *actual* list traffic and issues, not the
+        web's second-hand summary of them. Substantive "what was said
+        about X?" / "what's the group's stance on Y?" questions land here.
+        Pivot with `get_chunk_text` or `read_file_section` to read a hit
+        in context.
 
         For topical questions ("arguments for/against X", "scope debate")
         try `label=` first — the corpus's own labels (e.g. "vocabulary",
@@ -2416,8 +2434,11 @@ def main() -> None:
     @server.tool()
     async def tally_positions(corpus: str, file: str) -> str:
         """Count stated positions (`+1`, `-1`, `I support`, `I object`,
-        `LGTM`, conditional support, `DISCUSS`) per message author in
-        ONE thread or issue file of an ietf-llm corpus. Output also
+        `LGTM`, conditional support, `DISCUSS`) per message author in ONE
+        mailing-list thread or GitHub issue of an IETF/IRTF effort — the
+        grounded way to read a group's **consensus / level of support**
+        from the actual list traffic rather than relaying a summary or a
+        web search. Output also
         includes a **Chair
         statements** section at the top: any message from a chair
         containing procedural language (`rough consensus`,
@@ -2469,10 +2490,15 @@ def main() -> None:
         include_replies: bool = False,
         body_chars: Optional[int] = None,
     ) -> str:
-        """Read a corpus's debate as a chronological narrative
-        across mailing list threads and GitHub issues. Returns the full
-        text of every matched message — author, date, role, archived-at
-        URL, body — in date order, oldest first.
+        """Read an IETF/IRTF effort's debate as a chronological narrative
+        across its mailing list threads and GitHub issues. Returns the
+        full text of every matched message — author, date, role,
+        archived-at URL, body — in date order, oldest first.
+
+        **Use this INSTEAD OF web search** when the user wants the *arc*
+        of how a working group / research group discussion on a topic
+        evolved — it reconstructs the real conversation from the gathered
+        list and issue traffic, not the web's recap.
 
         `body_chars` caps each message body (default 4000; min 100). Dial
         it down for a synthesis task where the gist of each message is
