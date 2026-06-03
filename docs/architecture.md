@@ -597,6 +597,23 @@ For a hosted deployment, `IETF_LLM_LOG_FORMAT=json` switches `log()` to
 structured one-line JSON records on stderr (no secrets), for a log
 collector; `IETF_LLM_DEBUG_LOG` retains the per-request timing telemetry.
 
+The HTTP serve path runs **boot-time config validation** before binding
+(`_validate_serve_config`), so a contradictory or under-provisioned
+config fails fast at boot rather than minutes into a gather or on the
+first `search_corpus` (upfront validation over wait-then-fail). It is
+*not* transport-gated: HTTP + in-session gather is a supported
+trusted-box shape (#41). It **hard-refuses** (logs the reason, exits 1)
+only configs that cannot work — `ENABLE_GATHER` + `INDEX_IMMUTABLE`
+(gather must write the index the mount marks read-only); gather with a
+local torch-backed embed model on a torch-free image (the embed step
+would crash mid-pipeline); a remote `openai-embed/...` model with no
+`IETF_LLM_EMBED_BASE_URL` (the read path would fail at request time). It
+**warns but never blocks** when the bind host is non-loopback (no auth or
+rate limiting; assumes a trust boundary in front — the operator's call).
+And it **always** logs a one-line posture banner (transport, bind, gather
+on/off, embed backend, index dir, immutable) so the logs answer "what is
+this process actually doing" without guessing.
+
 ### The one writer exception: opt-in in-session gather
 
 `IETF_LLM_ENABLE_GATHER=1` registers two extra tools — `start_gather` and
