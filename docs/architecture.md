@@ -21,7 +21,7 @@ and reads from it forever.
 |---|---|---|---|
 | `ietf-llm` | gather / refresh a corpus, build digests, build embedding index | network | cache |
 | `ietf-llm-search` | semantic search over the cache | cache | stdout |
-| `ietf-llm-mcp` | expose the cache to MCP clients (Claude, Codex, etc.) | cache | stdio (MCP protocol) |
+| `ietf-llm-mcp` | expose the cache to MCP clients (Claude, Codex, etc.) | cache | stdio / HTTP (MCP) |
 | `ietf-llm-export` | mirror to local dir, or push to NotebookLM Enterprise | cache | local dir / NotebookLM |
 
 This is the load-bearing shape of the project: **one writer to the
@@ -91,7 +91,10 @@ degrade to an empty subject until the next gather.
 Everything the gather produces lands under `~/.cache/ietf-llm/`. The
 layout is the responsibility of `paths.py` — the single source of
 truth for where files live. Don't hardcode paths elsewhere; call the
-helpers.
+helpers. The root is relocatable via `IETF_LLM_CACHE_DIR` (and
+`IETF_LLM_CONFIG_DIR`), and the per-WG `embeddings.db` files can live on
+a separate, faster volume via `IETF_LLM_INDEX_DIR` — so a deployment can
+park the hot index on tmpfs while the corpus comes from elsewhere.
 
 ```
 ~/.cache/ietf-llm/
@@ -150,7 +153,10 @@ Key invariants:
   assignments, and draft Authors' Addresses sections, and merges the
   surface forms of one actor (DMARC-rewritten variants, relay
   addresses, multiple emails, GitHub logins matching an email
-  local-part) into one canonical `Person`. A Person also carries
+  local-part) into one canonical `Person`. GitHub logins are further
+  linked to identities via each person's Datatracker `github_username`
+  profile resource (exact, by verified email), then by display name
+  (`people_linking`). A Person also carries
   **affiliations** (keyed by source: `draft:<doc>` and `github`) and
   the set of **email domains** seen — distinct fields, because email
   domain ≠ affiliation. The `digests/people.md` digest leads with
@@ -163,11 +169,15 @@ Key invariants:
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
   activity in the `--months` window.
-- **`embeddings.db` is per-WG.** The model id is recorded in the DB's
-  `meta` table and read back at query time. The `chunks` table carries
-  `start_line`/`end_line`, `chunk_date`, `labels`, `state`, `url`,
-  `duplicate_of`, `closing_rationale` for faceted search. Schema is
-  versioned; `_open_db` migrates older DBs forward via ALTER TABLE.
+- **`embeddings.db` is per-WG.** `meta` records the embedding model id,
+  the chunker version, and the vector dimension; a change to any of the
+  three forces a rebuild, and the model id is read back at query time to
+  resolve the same backend. Chunks are sized to the model's token budget
+  — a long thread/issue section is split into several sub-chunks rather
+  than truncated. The `chunks` table carries `start_line`/`end_line`,
+  `chunk_date`, `labels`, `state`, `url`, `duplicate_of`,
+  `closing_rationale` for faceted search. Schema is versioned; `_open_db`
+  migrates older DBs forward via ALTER TABLE.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).
@@ -180,11 +190,12 @@ Per-WG, per-tool persistent flags live under `~/.config/ietf-llm/`:
 
 ```
 ~/.config/ietf-llm/
+├── config.json                             # global service settings (see below)
 ├── client_secrets.json                     # GCP OAuth (NotebookLM only)
 ├── token.json                              # cached OAuth token
 └── <wg>/
-    ├── gather.json                         # ietf-llm flags
-    └── export.json                         # ietf-llm-export flags
+    ├── gather.json                         # per-WG ietf-llm flags
+    └── export.json                         # per-WG ietf-llm-export flags
 ```
 
 The split into two scoped files is deliberate: the gather and export
@@ -192,6 +203,15 @@ tools have non-overlapping flag sets, and a user reasoning about "how
 is this WG configured" should read one or the other without seeing
 irrelevant settings. `ietf-llm <wg> --clear-config` wipes the whole
 `<wg>/` config dir.
+
+`config.json` is the **global** scope (`config.merge_global`), for
+settings that are properties of the tool or deployment rather than of a
+corpus: the embedding model, embed on/off, and the summariser. As of
+0.8.0 these resolve `env > CLI > global config > default` and are no
+longer persisted per-WG (`_migrate_global_keys` strips legacy per-WG
+values on the next gather). Secrets — embedding tokens, etc. — come from
+the environment only and are never written here. See the *Embedding
+backends* doc (`embedding.md`) for the full variable list.
 
 ## Data flow
 
@@ -205,7 +225,7 @@ irrelevant settings. `ietf-llm <wg> --clear-config` wipes the whole
                 ┌────────────────────────────────┼──────────────────────────┐
                 ▼                                ▼                          ▼
         ietf-llm-search               ietf-llm-mcp                 ietf-llm-export
-        (CLI, stdout)                 (stdio MCP server)           (local dir / NotebookLM)
+        (CLI, stdout)                 (MCP: stdio / HTTP)          (local dir / NotebookLM)
 ```
 
 Once gathered, the cache is consumer-agnostic. Adding a new consumer
@@ -230,6 +250,7 @@ ietf_llm/
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── people.py               # actor/identity registry (roles, affiliations, domains)
+├── people_linking.py       # attach GitHub logins to identities (Datatracker, then name)
 ├── positions.py            # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
@@ -255,6 +276,7 @@ ietf_llm/
 │   ├── issue_files.py          # per-issue .md files
 │   ├── datatracker.py          # roles + paginated document listing via JSON API
 │   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
+│   ├── datatracker_github.py   # github_username profile resources → person (by email)
 │   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
 │   ├── ballots.py              # IESG ballot positions (scoped to --months)
 │   ├── citations.py            # draft → citing thread/issue cross-reference
@@ -274,7 +296,7 @@ ietf_llm/
 │
 └── embeddings/             # semantic search (split for legibility)
     ├── __init__.py             # public surface + re-exports
-    ├── chunking.py             # per-message / per-issue / windowed chunkers
+    ├── chunking.py             # per-message / per-issue / windowed chunkers; splits long sections
     ├── storage.py              # sqlite schema, vector packing, lookup
     ├── models.py               # embedding-model loading + process-level cache
     ├── snippet.py              # structure-aware snippet rendering for hits
@@ -450,12 +472,26 @@ When the cache changes, the next export produces a complete fresh
 output — no delta tracking. For NotebookLM the workflow is to create a
 new notebook each update rather than merge into an existing one.
 
-### The default embedding model is local
+### The default embedding model is local; the backend is pluggable
 
-`sentence-transformers/BAAI/bge-small-en-v1.5` ships as the default
-(~130 MB, MPS-accelerated, no API key, auto-downloaded on first use).
-Override with `--embed-model <id>`; the id is persisted in the
-embeddings DB so search picks it up automatically.
+`sentence-transformers/BAAI/bge-small-en-v1.5` is the default (~130 MB,
+MPS-accelerated, no API key), but it lives behind the optional
+`local-embeddings` extra (torch is not in the base install). The
+`_get_embed_model` choke point dispatches on an id *prefix*:
+`sentence-transformers/` constructs the local model;
+`openai-embed/<model>` constructs a provider-neutral, network-backed
+OpenAI-compatible (`/v1/embeddings`) client configured entirely from the
+environment (`is_remote_embed_model` is the predicate); anything else
+falls through to `llm`. The remote backend pulls no torch, so a serving
+container can stay lean.
+
+Whichever backend built an index, its id is recorded in the DB's `meta`
+(alongside the chunker version and the vector *dimension*, recorded as
+provenance), and `search` reads the id back to resolve the same backend.
+Vectors are *not* portable across backends — even the "same" model isn't
+bit-identical across runtimes — so the id prefixes never collide and a
+dimension change forces a rebuild. See the *Embedding backends* doc
+(`embedding.md`) for the variables.
 
 ### `--summarize` requires explicit setup; embedding doesn't
 
@@ -466,14 +502,29 @@ along. Deterministic digests ship without any setup.
 
 ### The MCP server reads exclusively from the cache, off a daemon prewarm
 
-No network paths: everything an MCP client can do is read files or
-sqlite rows under `~/.cache/ietf-llm/`. On startup the server kicks off
-embedding-model prewarming in a **daemon thread** (so registration
-isn't blocked by the ~10 s weight load) and caps native-math threads
+The read tools touch no network: everything an MCP client can do is read
+files or sqlite rows under the cache. On startup the server kicks off
+embedding-model prewarming in a **daemon thread** (so registration isn't
+blocked by the ~10 s weight load) and caps native-math threads
 (`OMP_NUM_THREADS=1` etc.) so concurrent MCP sessions don't oversubscribe
-cores. `read_file_section` is hard-capped (default 400 lines, max 5000)
-as context hygiene — an LLM client can't slurp a multi-MB file in one
-call.
+cores. For a remote embedding backend the prewarm is a no-op beyond
+constructing the client — there are no weights to load, and it makes no
+upstream call, so readiness never waits on the network. `read_file_section`
+is hard-capped (default 400 lines, max 5000) as context hygiene.
+
+The default transport is the custom threaded-writer **stdio** path (see
+`_stdio_transport.py`, which sidesteps an upstream loop-blocking write).
+Setting `IETF_LLM_MCP_TRANSPORT=http` serves standard MCP **Streamable
+HTTP** instead — FastMCP's `streamable_http_app()` under uvicorn, with a
+`GET /health` readiness route added — for a shared deployment serving
+many clients from one process. Concurrency is safe because every tool
+opens its own read-only sqlite connection per call (`_connect_ro`,
+never shared across `anyio` worker threads) and the index is queried
+read-only (no migrations on the serve path).
+
+For a hosted deployment, `IETF_LLM_LOG_FORMAT=json` switches `log()` to
+structured one-line JSON records on stderr (no secrets), for a log
+collector; `IETF_LLM_DEBUG_LOG` retains the per-request timing telemetry.
 
 ### IMAP cache lives outside the per-WG directory
 
@@ -481,10 +532,15 @@ call.
 store is expensive to refetch and shouldn't be lost when a WG's
 exported `files/` are cleared. Thread reconstruction walks it directly.
 
-### Persisted config is two files per WG, not one
+### Persisted config: two files per WG, plus one global
 
-`gather.json` and `export.json`. Disjoint flag sets; one file would
-make `--clear-config` either too broad or too narrow.
+`gather.json` and `export.json` per WG (disjoint flag sets; one file
+would make `--clear-config` either too broad or too narrow), plus a
+single global `config.json` for tool/deployment-wide settings (embedding,
+summariser) that aren't properties of any one corpus. The global scope
+resolves `env > CLI > global > default`, so a container's injected
+environment is authoritative; the per-WG scope is content only and holds
+no secrets.
 
 ### Other normalisation invariants
 
@@ -503,8 +559,9 @@ make `--clear-config` either too broad or too narrow.
 `tests/conftest.py` provides the `isolated_home` fixture (monkeypatches
 `$HOME` to a tmp dir so tests never touch the real `~/.cache` /
 `~/.config`) and an autouse `_no_datatracker` fixture that stubs every
-network seam (`datatracker`, `datatracker_history`, `ballots`,
-`github_users`). Helpers synthesise `.eml` files, GitHub archives, and
+network seam (`datatracker`, `datatracker_history`,
+`datatracker_github`, `ballots`, `github_users`). Helpers synthesise
+`.eml` files, GitHub archives, and
 cache files.
 
 Coverage spans: config; the digest builders and `query` filters;

@@ -1,6 +1,6 @@
 # ietf-llm — working notes
 
-`ARCHITECTURE.md` has the design; `README.md` has usage. This file is the
+`docs/architecture.md` has the design; `README.md` has usage. This file is the
 working context that isn't in either — conventions and gotchas learned
 the hard way.
 
