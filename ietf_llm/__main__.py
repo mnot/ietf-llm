@@ -20,7 +20,7 @@ import shutil
 import sys
 from typing import Any, Dict, Iterable, List, Optional
 
-from . import __version__, config, corpus, paths
+from . import __version__, config, corpus, http_metrics, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
@@ -701,6 +701,8 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     was unusable (logged). `progress`, when given, is called as each
     stage begins (see `_stage_plan`).
     """
+    http_metrics.reset()  # fresh per-corpus egress accounting; see `http_metrics`
+
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
             print(f"Cleared configuration for {args.wg}.", file=sys.stderr)
@@ -788,13 +790,10 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         )
 
     if verbosity != Verbosity.QUIET:
-        if group_backed:
-            label = "Processing WG"
-        elif synth:
-            label = "Processing synthetic corpus"
-        else:
-            label = "Processing custom corpus"
-        print(f"{label}: {args.wg}", file=sys.stderr)
+        kind = (
+            "WG" if group_backed else "synthetic corpus" if synth else "custom corpus"
+        )
+        print(f"Processing {kind}: {args.wg}", file=sys.stderr)
         print(f"Cache: {cache_dir}", file=sys.stderr)
         print(f"Config: {_gather_plan_summary(args)}", file=sys.stderr)
         if args.clear_cache:
@@ -983,13 +982,14 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # Record successful gather so freshness checks (export warning,
     # MCP staleness banner) know when to nag. Best-effort; never fatal.
     record_gather(args.wg)
+    http_metrics.persist(wg_cache_dir)  # baseline for cross-run comparison
 
     if verbosity != Verbosity.QUIET:
         print("-" * 40, file=sys.stderr)
+        print(http_metrics.current().summary_line(), file=sys.stderr)
         print(f"Cache populated at {cache_dir}.", file=sys.stderr)
         print(
-            "To export: `ietf-llm-export "
-            f"{args.wg} --destination <dir>` "
+            f"To export: `ietf-llm-export {args.wg} --destination <dir>` "
             "(or --create <GCP_PROJECT>).",
             file=sys.stderr,
         )

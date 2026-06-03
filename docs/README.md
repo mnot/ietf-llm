@@ -21,7 +21,8 @@ Guides beyond the [main README](../README.md), which covers installation and the
 - **[Storage & locations](storage.md)** — relocate the cache, config, and index directories (e.g.
   the hot index onto tmpfs).
 - **[Running the MCP server over HTTP](mcp-server.md)** — serve many concurrent clients from one
-  process; health checks, logging, secrets.
+  process; the deployment contract (no built-in authn/rate/quota), health checks, freshness and
+  degraded mode, logging.
 
 ## Contributing
 

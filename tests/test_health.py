@@ -5,12 +5,23 @@ load balancer / orchestrator can probe the container.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from ietf_llm import mcp_server
+from ietf_llm import __version__, mcp_server
+
+
+def _seed_corpus(home: Any, wg: str, sentinel: str | None) -> None:
+    """Materialise a corpus under the sandbox cache: a `files/` dir (what
+    `_list_wgs` keys on) and, when given, a `last-gathered` sentinel."""
+    base = os.path.join(mcp_server.get_cache_dir(), wg)
+    os.makedirs(os.path.join(base, "files"), exist_ok=True)
+    if sentinel is not None:
+        with open(os.path.join(base, "last-gathered"), "w", encoding="utf-8") as fh:
+            fh.write(sentinel)
 
 
 class _FakeServer:
@@ -54,3 +65,39 @@ def test_health_route_unavailable(monkeypatch):
     resp = client.get("/health")
     assert resp.status_code == 503
     assert resp.json()["status"] == "unavailable"
+
+
+def test_readiness_reports_version(isolated_home):
+    _, detail = mcp_server._readiness()
+    assert detail["version"] == __version__
+
+
+def test_corpora_freshness_empty(isolated_home):
+    summary = mcp_server._corpora_freshness()
+    assert summary == {"count": 0, "tracked": 0, "oldest": None, "newest": None}
+
+
+def test_corpora_freshness_summary(isolated_home):
+    # Two tracked corpora at different ages, plus one with no sentinel:
+    # it counts but is not tracked, and never becomes oldest/newest.
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    _seed_corpus(isolated_home, "httpbis", "2026-01-01T00:00:00Z")
+    _seed_corpus(isolated_home, "quic", None)
+
+    summary = mcp_server._corpora_freshness()
+    assert summary["count"] == 3
+    assert summary["tracked"] == 2
+    assert summary["oldest"]["corpus"] == "tls"
+    assert summary["newest"]["corpus"] == "httpbis"
+    # Earlier gather => larger age; both are real, positive second counts.
+    assert summary["oldest"]["age_seconds"] > summary["newest"]["age_seconds"] > 0
+    assert summary["oldest"]["last_gathered"] == "2025-01-01T00:00:00Z"
+
+
+def test_health_route_includes_freshness(isolated_home):
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    client = TestClient(mcp_server._http_app(_FakeServer()))
+    body = client.get("/health").json()
+    assert body["version"] == __version__
+    assert body["corpora"]["count"] == 1
+    assert body["corpora"]["oldest"]["corpus"] == "tls"

@@ -19,6 +19,39 @@ The read tools touch no network and never write: every query opens its own read-
 connection, and the index is read as-is (gather is the only writer). So multiple clients — and a
 concurrent re-gather — are safe against one corpus.
 
+## Deployment contract
+
+Read this before exposing the HTTP server to anything but localhost.
+
+`ietf-llm-mcp` is a read-only query surface over the *public* IETF record. It is **not designed to
+sit on the open Internet.** It assumes a trust boundary you control — run it on an internal
+interface (the default bind is `127.0.0.1`) and put your own proxy in front of anything wider.
+
+**The server provides no identity, rate limiting, or cost control.** Concretely:
+
+- **No authn/z.** There is no login, no API key, no per-client identity. `IETF_LLM_MCP_HOST` defaults
+  to `127.0.0.1`; widen it (`0.0.0.0`) only behind a proxy. Any identity is the proxy's job.
+- **No rate limiting.** Nothing caps request rate or concurrency beyond the per-call tool deadline
+  (`IETF_LLM_TOOL_TIMEOUT`). One client can saturate CPU. Rate and concurrency limits are the
+  proxy's job.
+- **No quota or budget cap.** `search_corpus` and `read_topic` each embed their query, which for a
+  remote backend is a metered, paid `/v1/embeddings` call per request — with no quota, no budget
+  ceiling, no circuit breaker, and no query-embedding cache. A busy or hostile client runs up the
+  embedding bill. Quota is the proxy's (or the upstream account's) job.
+
+**If you front it with a proxy, that proxy owns identity, rate limiting, and quota** — the server
+will not do any of it, now or by configuration.
+
+**Threat model: availability, cost, and abuse — not confidentiality.** The read path serves only
+the public IETF record (mailing lists, drafts, RFCs, minutes — all already public at ietf.org).
+There is nothing secret to leak, so the risks worth sizing controls against are denial of service,
+the embedding bill, and abuse of compute — not data exposure. The secrets that *do* exist (the
+embedding token, any other credential) are read from the environment only and are never written to
+disk, to the per-corpus config, or back to a client.
+
+The one exception to "read-only" is the opt-in [in-session gather](#in-session-gather-opt-in) below,
+which writes and reaches the network; leave it off for an exposed replica.
+
 ## Installing
 
 ```bash
@@ -57,12 +90,52 @@ body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes *
 — a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured and
 ready to serve", not "the backend answered".
 
+The JSON body also carries two operator-facing fields that don't gate readiness. `version` is the
+running package version, for correlating behaviour across a rolling deploy. `corpora` is a bounded
+freshness summary read from the per-corpus `last-gathered` sentinels (no upstream call): `count`
+(all cached corpora), `tracked` (those carrying a sentinel — caches predating freshness tracking
+have none), and `oldest` / `newest`, each `{corpus, last_gathered, age_seconds}` (or `null` when
+nothing is tracked). `oldest` is the staleness floor — a replica can be perfectly ready while
+serving a corpus that went stale days ago, and this is how an operator sees that at a glance. It is
+deliberately a summary, not a per-corpus row, so a box serving many corpora keeps a small payload;
+the per-corpus breakdown belongs to a future `/metrics` scrape.
+
+## Cache freshness and degraded mode
+
+**The serve process never writes the cache.** `gather` is the only writer (`ietf-llm <name>`), run
+out-of-band on a write node where `IETF_LLM_CACHE_DIR` is writable; a serving replica only ever
+reads. So fresh data reaches a read replica out-of-band, in three steps:
+
+1. Gather on the write side, producing the corpus tree and its `embeddings.db`.
+2. Publish those to the storage the replica reads — a shared mount, or a sync to the replica's local
+   disk. Corpus writes are atomic (temp + rename), so a reader sees the old bytes or the new, never a
+   torn file. The index is a SQLite database: publish it immutable and swap it atomically, then read
+   it with `IETF_LLM_INDEX_IMMUTABLE=1` on a read-only mount (see [Storage](storage.md)).
+3. The replica picks it up with no restart — every tool opens a fresh read-only connection per call.
+
+**Degraded mode when the embedding upstream is down.** Only two tools embed their query, and they are
+the only ones that fail if the remote `/v1/embeddings` endpoint is unreachable:
+
+- **Fail:** `search_corpus` and `read_topic` — both embed the query to do semantic search.
+- **Keep working:** every deterministic tool — `overview`, `read_digest`, `list_corpora`,
+  `list_files`, `list_labels`, `find_citations`, `find_replies`, `tally_positions`, `rfc_search` /
+  `get_rfc`, `read_file_section`, and `get_chunk_text` / `get_chunks_batch`. (`fetch_by_url` also
+  keeps working; it fetches a URL rather than embedding, so it's independent of the embedding backend
+  but not of network egress.)
+
+`GET /health` makes no upstream call (see above), so a down embedding endpoint degrades search
+without flapping readiness.
+
 ## Logging
 
 Set `IETF_LLM_LOG_FORMAT=json` for one-line structured log records (`ts` / `level` / `msg`) that a
 log collector can ingest; the default is human-readable text. Logs go to stderr (stdout is reserved
 for the stdio protocol; container runtimes capture stderr). Log messages carry no secrets.
 `IETF_LLM_DEBUG_LOG=1` additionally records per-request timing telemetry.
+
+When serving over HTTP, the server emits a one-line startup preamble at this same log level —
+version, bind address, and the `corpora` freshness floor — mirroring `/health`, so a deploy log
+shows which build a replica came up on and how stale its caches were at boot.
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -92,14 +165,6 @@ This is the one break from the read-only / no-network contract — leave it
 enable it on the torch-free serve image, use a remote
 `openai-embed/...` embedding model so the gather's index build pulls no torch.
 
-## Secrets and access
-
-- **Secrets come from the environment only** — the embedding token and any other credential are read
-  from the environment and never written to disk or to the per-corpus config.
-- **Access control is yours to put in front.** The server has no built-in authn/z; the corpus is the
-  public IETF record. Bind it to an internal interface and front it with whatever your platform uses
-  for access and TLS.
-
 ## A minimal deployment
 
 ```bash
@@ -114,7 +179,7 @@ export IETF_LLM_INDEX_DIR=/dev/shm/ietf-llm
 
 # transport + observability
 export IETF_LLM_MCP_TRANSPORT=http
-export IETF_LLM_MCP_HOST=0.0.0.0
+export IETF_LLM_MCP_HOST=0.0.0.0   # bind wide only behind a proxy (see Deployment contract)
 export IETF_LLM_LOG_FORMAT=json
 
 ietf-llm-mcp
