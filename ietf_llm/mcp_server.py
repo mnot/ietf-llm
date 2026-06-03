@@ -59,7 +59,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import __version__, _debug_log, _stdio_transport, config
+from . import __version__, _debug_log, _stdio_transport, config, serve_metrics
 from .catalog import render_efforts
 from .corpus import describe, kind_status
 from .digest.overview import (
@@ -1800,11 +1800,19 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         status = "exception"
         raise
     finally:
+        elapsed = time.monotonic() - t0
         _debug_log.log_event(
             req_id,
             "offload_end",
             status=status,
-            elapsed=round(time.monotonic() - t0, 6),
+            elapsed=round(elapsed, 6),
+        )
+        # RED per tool for the /metrics scrape (issue #40). `status` is
+        # "ok" on success; "timeout"/"exception" both count as errors.
+        serve_metrics.record_tool(
+            getattr(fn, "__name__", "tool"),
+            elapsed,
+            error=status != "ok",
         )
     # Reached only when the deadline cancelled the await above; the worker
     # thread is abandoned (it finishes and frees its slot on its own).
@@ -2948,14 +2956,45 @@ async def _health_endpoint(_request: Any) -> Any:
     )
 
 
-def _http_app(server: Any) -> Any:
-    """The Streamable HTTP ASGI app with a GET /health route added (R18).
+def _corpus_ages() -> "List[Tuple[str, int]]":
+    """Per-corpus `last-gathered` age in seconds, for the freshness gauge.
 
-    /health sits beside the MCP endpoint (/mcp) on the same app, so it
-    shares the app lifespan -- no wrapper, no lifespan propagation gotcha.
+    Reads only the per-corpus sentinels (no upstream call; R18). Untracked
+    corpora -- those without a sentinel -- are omitted, leaving the gauge
+    to carry only ages it can actually report. This is the per-corpus
+    breakdown /health deliberately summarises rather than enumerates.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ages: "List[Tuple[str, int]]" = []
+    for wg in _list_wgs():
+        when = last_gathered(wg)
+        if when is not None:
+            ages.append((wg, max(0, int((now - when).total_seconds()))))
+    return ages
+
+
+async def _metrics_endpoint(_request: Any) -> Any:
+    # pylint: disable=import-outside-toplevel
+    from starlette.responses import PlainTextResponse
+
+    body = serve_metrics.render(_corpus_ages())
+    # Prometheus text exposition format v0.0.4.
+    return PlainTextResponse(
+        body, media_type="text/plain; version=0.0.4; charset=utf-8"
+    )
+
+
+def _http_app(server: Any) -> Any:
+    """The Streamable HTTP ASGI app with GET /health and /metrics added.
+
+    Both sit beside the MCP endpoint (/mcp) on the same app, so they
+    share the app lifespan -- no wrapper, no lifespan propagation gotcha.
+    /health is the human-glance readiness view (R18); /metrics is the
+    Prometheus scrape view (issue #40). Neither makes an upstream call.
     """
     app = server.streamable_http_app()
     app.add_route("/health", _health_endpoint, methods=["GET"])
+    app.add_route("/metrics", _metrics_endpoint, methods=["GET"])
     return app
 
 
