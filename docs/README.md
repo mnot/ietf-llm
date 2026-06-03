@@ -16,8 +16,8 @@ Guides beyond the [main README](../README.md), which covers installation and the
 
 ## Configuring & deploying
 
-- **[Embedding backends](embedding.md)** — the on-device model vs a remote OpenAI-compatible
-  endpoint, and how the global embedding / summariser settings resolve.
+- **[Model backends](models.md)** — the embedding model and the summariser, on-device or remote
+  (OpenAI-compatible), and how the global model settings resolve.
 - **[Storage & locations](storage.md)** — relocate the cache, config, and index directories (e.g.
   the hot index onto tmpfs).
 - **[Running the MCP server over HTTP](mcp-server.md)** — serve many concurrent clients from one

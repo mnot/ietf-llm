@@ -211,7 +211,7 @@ corpus: the embedding model, embed on/off, and the summariser. As of
 longer persisted per-WG (`_migrate_global_keys` strips legacy per-WG
 values on the next gather). Secrets — embedding tokens, etc. — come from
 the environment only and are never written here. See the *Embedding
-backends* doc (`embedding.md`) for the full variable list.
+backends* doc (`models.md`) for the full variable list.
 
 ## Data flow
 
@@ -258,6 +258,8 @@ ietf_llm/
 │                           # defaults, group metadata via API (type/title/list),
 │                           # is_synthetic_wg, cached_wg_names,
 │                           # write_if_changed, argcomplete helpers
+├── oai_compat.py           # shared OpenAI-compatible HTTP plumbing (auth headers,
+│                           # retry + Retry-After) for the remote embed / summarise backends
 ├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
 │
 ├── gather/                 # content acquisition + per-source post-processing
@@ -287,7 +289,8 @@ ietf_llm/
 │   ├── __init__.py             # generate_digests() + re-exports
 │   ├── events.py               # shared Event dataclass (gather ↔ digest seam)
 │   ├── helpers.py              # state case-folding, size formatting, re-exports
-│   ├── summarizer.py           # optional LLM-backed one-liner wrapper
+│   ├── summarizer.py           # optional LLM-backed one-liner wrapper (llm lib or remote)
+│   ├── remote_summarizer.py    # openai-summarize/ remote chat-completions backend
 │   ├── issues.py / threads.py / index.py   # per-kind digest builders
 │   ├── timeline.py             # chronological event log (incl. Datatracker, ballots)
 │   ├── overview.py             # one-call composed summary (+ charter excerpt,
@@ -491,7 +494,7 @@ provenance), and `search` reads the id back to resolve the same backend.
 Vectors are *not* portable across backends — even the "same" model isn't
 bit-identical across runtimes — so the id prefixes never collide and a
 dimension change forces a rebuild. See the *Embedding backends* doc
-(`embedding.md`) for the variables.
+(`models.md`) for the variables.
 
 ### `--summarize` requires explicit setup; embedding doesn't
 

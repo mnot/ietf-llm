@@ -64,7 +64,7 @@ A name that is none of these and has no configured sources is rejected as a like
 
 `--summarize`, `--summarize-model`, `--embed-model`, and `--no-embed` are **global** settings, not
 per-corpus: set once, applied everywhere, and overridable by environment. See
-[Embedding backends](embedding.md#global-settings).
+[Model backends](models.md#global-settings).
 
 **Cache & config:**
 

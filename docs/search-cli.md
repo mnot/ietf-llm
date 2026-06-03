@@ -13,7 +13,7 @@ pipx install 'ietf-llm[local-embeddings]'
 ```
 
 The on-device search model needs the `local-embeddings` extra. Alternatively, point at a
-[remote endpoint](embedding.md). Then [gather a corpus](gathering.md) to search.
+[remote endpoint](models.md). Then [gather a corpus](gathering.md) to search.
 
 ## Searching
 

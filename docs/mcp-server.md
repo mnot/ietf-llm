@@ -10,7 +10,7 @@ For local use, the MCP server speaks stdio and needs none of this; see
 A hosted deployment is the stdio server with three things configured around it:
 
 1. **Transport** — serve Streamable HTTP instead of stdio (below).
-2. **[Embeddings](embedding.md)** — point at a remote endpoint so the image carries no torch
+2. **[Embeddings](models.md#embeddings)** — point at a remote endpoint so the image carries no torch
    and the read path makes no local model load.
 3. **[Storage](storage.md)** — relocate the corpus and index directories (e.g. the index onto
    tmpfs).
@@ -26,8 +26,8 @@ pipx install ietf-llm
 ```
 
 A base install is torch-free: the server embeds against a remote endpoint
-([Embeddings](embedding.md)), not an on-device model. Corpora are gathered separately on the write
-side (where `IETF_LLM_CACHE_DIR` is writable); the server only reads.
+([Embeddings](models.md#embeddings)), not an on-device model. Corpora are gathered separately on
+the write side (where `IETF_LLM_CACHE_DIR` is writable); the server only reads.
 
 ## Transport
 

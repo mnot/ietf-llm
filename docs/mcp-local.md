@@ -17,7 +17,7 @@ pipx install 'ietf-llm[local-embeddings]'
 ```
 
 Search needs an embedding backend: the on-device model via the `local-embeddings` extra, or a
-[remote endpoint](embedding.md) (no torch). Then [gather a corpus](gathering.md)
+[remote endpoint](models.md) (no torch). Then [gather a corpus](gathering.md)
 before querying.
 
 ## Register with your client

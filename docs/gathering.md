@@ -21,7 +21,7 @@ and `ietf-llm-search`. By default it uses
 the `local-embeddings` extra (~130 MB, downloaded once and cached).
 
 Prefer not to run a model locally? Omit `[local-embeddings]` and point at a remote
-OpenAI-compatible endpoint instead — see [Embedding backends](embedding.md). Or pass
+OpenAI-compatible endpoint instead — see the [remote embedding backend](models.md). Or pass
 `--no-embed` to skip the index entirely (useful for [NotebookLM export](notebooklm.md)).
 
 **Behind a corporate firewall** with TLS interception? Gathering may need the `certs` extra:
@@ -34,7 +34,7 @@ pipx install 'ietf-llm[local-embeddings,certs]'
 just run `ietf-llm <name>` — no need to repeat `--github`, `--mailing-list`, etc. Pass extra flags
 to add to the set, or `--clear-config` to start over. (The embedding and summariser settings are an
 exception — they're properties of the tool, not a corpus, so they're set once and apply everywhere;
-see [Embedding backends](embedding.md#global-settings).)
+see the [global model settings](models.md#global-settings).)
 
 A corpus doesn't have to be a Working Group — the name is classified automatically:
 
