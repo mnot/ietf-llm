@@ -1829,6 +1829,131 @@ def _tool_timeout_seconds() -> float:
         return 120.0
 
 
+def _gather_enabled() -> bool:
+    """True when the operator has opted into the gather tools by setting
+    `IETF_LLM_ENABLE_GATHER` truthy.
+
+    Off by default: gather writes to the cache and reaches the network,
+    which the rest of the server never does. Leaving it off preserves the
+    read-only / no-network guarantee for the shared HTTP deployment; local
+    users who want in-session gathering turn it on.
+    """
+    raw = os.environ.get("IETF_LLM_ENABLE_GATHER", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    corpus: str,
+    mailing_list: Optional[List[str]] = None,
+    draft: Optional[List[str]] = None,
+    github: Optional[List[str]] = None,
+    author: Optional[str] = None,
+    new_drafts: bool = False,
+    months: Optional[int] = None,
+    add_mentioned_drafts: bool = False,
+    include_related_drafts: bool = False,
+    github_label: Optional[List[str]] = None,
+    exclude_github_label: Optional[List[str]] = None,
+) -> str:
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    corpus = (corpus or "").strip()
+    if not corpus:
+        return "Provide a corpus name to gather (e.g. a WG shortname like `tls`)."
+    spec = gather_runner.GatherSpec(
+        corpus=corpus,
+        mailing_list=list(mailing_list or []),
+        draft=list(draft or []),
+        github=list(github or []),
+        github_label=list(github_label or []),
+        exclude_github_label=list(exclude_github_label or []),
+        author=author,
+        new_drafts=new_drafts,
+        months=months,
+        add_mentioned_drafts=add_mentioned_drafts,
+        include_related_drafts=include_related_drafts,
+    )
+    result = gather_runner.start(spec)
+    if not result.get("started"):
+        return (
+            f"A gather for '{corpus}' is already running. "
+            f'Poll `gather_status(corpus="{corpus}")` for progress.'
+        )
+    return (
+        f"Started gathering '{corpus}' in the background (this can take "
+        f'minutes). Poll `gather_status(corpus="{corpus}")` for stage-level '
+        "progress; the corpus is queryable once it reports `done`."
+    )
+
+
+def tool_gather_status(corpus: Optional[str] = None) -> str:
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    if corpus:
+        status = gather_runner.read_status(corpus.strip())
+        if status is None:
+            return (
+                f"No gather has been recorded for '{corpus}'. Start one with "
+                f'`start_gather(corpus="{corpus}")`.'
+            )
+        return _format_gather_status(status)
+    statuses = gather_runner.all_statuses()
+    if not statuses:
+        return "No gathers have been recorded yet."
+    return "\n".join(_format_gather_status(s) for s in statuses)
+
+
+def _format_gather_status(status: Dict[str, Any]) -> str:
+    """One compact line for a gather status record."""
+    corpus = status.get("corpus", "?")
+    state = status.get("state", "?")
+    parts = [f"**{corpus}** — {state}"]
+    if state == "running":
+        idx = status.get("stage_index") or 0
+        total = status.get("stage_total")
+        stage = status.get("stage")
+        if total:
+            label = f"stage {idx}/{total}"
+            if stage:
+                label += f" ({stage})"
+            parts.append(label)
+        elif stage:
+            parts.append(f"stage: {stage}")
+    elapsed = _gather_elapsed(status)
+    if elapsed:
+        parts.append(elapsed)
+    if state == "failed" and status.get("error"):
+        parts.append(f"error: {status['error']}")
+    return " · ".join(parts)
+
+
+def _parse_iso(value: Any) -> "Optional[datetime.datetime]":
+    """Parse a trailing-Z ISO 8601 timestamp, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        text = value[:-1] + "+00:00" if value.endswith("Z") else value
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _gather_elapsed(status: Dict[str, Any]) -> str:
+    """`45s` / `3m12s` between start and finish (or now, if running)."""
+    started = _parse_iso(status.get("started"))
+    if started is None:
+        return ""
+    end = _parse_iso(status.get("finished")) or datetime.datetime.now(
+        datetime.timezone.utc
+    )
+    secs = int((end - started).total_seconds())
+    if secs < 0:
+        return ""
+    if secs < 120:
+        return f"{secs}s"
+    return f"{secs // 60}m{secs % 60:02d}s"
+
+
 @graceful_keyboard_interrupt
 def main() -> None:
     try:
@@ -2523,6 +2648,104 @@ def main() -> None:
                     N seconds of process time.
             """
             return await _offload(tool_get_session_log, limit, since_seconds)
+
+    # `start_gather` / `gather_status` write to the cache and reach the
+    # network — the one break from this server's read-only / no-network
+    # contract — so they are registered only when the operator opts in with
+    # IETF_LLM_ENABLE_GATHER=1. Default off keeps the shared HTTP replica
+    # read-only; local stdio users turn it on for in-session gathering.
+    if _gather_enabled():
+
+        @server.tool()
+        async def start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+            corpus: str,
+            mailing_list: Optional[List[str]] = None,
+            draft: Optional[List[str]] = None,
+            github: Optional[List[str]] = None,
+            author: Optional[str] = None,
+            new_drafts: bool = False,
+            months: Optional[int] = None,
+            add_mentioned_drafts: bool = False,
+            include_related_drafts: bool = False,
+            github_label: Optional[List[str]] = None,
+            exclude_github_label: Optional[List[str]] = None,
+        ) -> str:
+            """Gather a new corpus into the local cache, in the background.
+
+            Use this when a corpus the user asks about isn't cached yet
+            (`list_corpora` doesn't show it). Returns immediately; the
+            gather runs for minutes. Poll `gather_status(corpus=...)` until
+            it reports `done`, then the normal read tools work on it.
+
+            The corpus **shape is inferred** from what you pass — you don't
+            declare it:
+            - **Working Group / RG / BoF**: pass just `corpus` as the
+              shortname (`tls`, `cfrg`). The charter, drafts, RFCs,
+              meetings, mailing list, and any GitHub issues are
+              auto-discovered.
+            - **Standalone mailing list**: pass `corpus` as the list name
+              (`last-call`); auto-detected when it isn't a known group.
+            - **Custom set**: any label as `corpus` plus explicit
+              `mailing_list` / `draft` / `github` sources.
+            - **Follow an author / new drafts**: `author` (email, person
+              id, or exact name) or `new_drafts=True` (rolling window).
+            - **Synthetic**: an `x-` `corpus` name with explicit sources.
+
+            One gather per corpus runs at a time (a second call while one
+            is in flight reports "already running"); different corpora run
+            in parallel.
+
+            Args:
+                corpus: Corpus name — a WG/RG/BoF shortname, a mailing-list
+                    name, or any label for a custom/synthetic corpus.
+                mailing_list: Extra mailing lists to sync (bare name or
+                    full address; domain optional).
+                draft: Internet-Drafts to track (`draft-foo-bar`; version
+                    suffix ignored, all revisions gathered).
+                github: GitHub repos whose issues to gather (`owner/repo`).
+                author: Make this a follow-an-author corpus (drafts by this
+                    person; email is the unambiguous form).
+                new_drafts: Make this a rolling 'new Internet-Drafts'
+                    subscription over the `months` window.
+                months: Months of mailing-list / meeting history to fetch.
+                add_mentioned_drafts: Also pull in drafts the corpus cites
+                    but doesn't already have.
+                include_related_drafts: Also gather related (un-adopted)
+                    drafts the WG follows. Can be large.
+                github_label: Include only issues with these labels.
+                exclude_github_label: Exclude issues with these labels.
+            """
+            return await _offload(
+                tool_start_gather,
+                corpus,
+                mailing_list,
+                draft,
+                github,
+                author,
+                new_drafts,
+                months,
+                add_mentioned_drafts,
+                include_related_drafts,
+                github_label,
+                exclude_github_label,
+            )
+
+        @server.tool()
+        async def gather_status(corpus: Optional[str] = None) -> str:
+            """Report the progress of background gathers started with
+            `start_gather`.
+
+            With `corpus`, returns that corpus's state: `running` (with the
+            current stage, e.g. `stage 7/17 (github issues)`, and elapsed
+            time), `done`, or `failed` (with the error). With no argument,
+            lists every recorded gather, most-recently-active first. Poll
+            this after `start_gather`; once a corpus reports `done`, the
+            read tools (`overview`, `search_corpus`, …) work on it.
+
+            Args:
+                corpus: The corpus to report on. Omit to list all.
+            """
+            return await _offload(tool_gather_status, corpus)
 
     _prewarm_embedding_model_async()
     if _resolve_transport() == "http":

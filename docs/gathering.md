@@ -15,6 +15,12 @@ ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
 Everything lands in `~/.cache/ietf-llm/<name>/` — the single source of truth that the MCP server,
 NotebookLM exporter, and CLI search all read from.
 
+> **From an MCP client:** if the server was started with `IETF_LLM_ENABLE_GATHER=1`, an assistant
+> can run the same gather in-session via the `start_gather` tool and watch it with `gather_status`,
+> instead of you running `ietf-llm <name>` in a shell. See
+> [Running the MCP server](mcp-server.md#in-session-gather-opt-in). The CLI below is the canonical
+> path and is always available.
+
 Gathering also builds a **semantic-search index**, which powers both the MCP `search_corpus` tool
 and `ietf-llm-search`. By default it uses
 [`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5) on-device, which needs

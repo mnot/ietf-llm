@@ -69,6 +69,28 @@ for the stdio protocol; container runtimes capture stderr). Log messages carry n
 | `IETF_LLM_LOG_FORMAT` | `text` or `json` | `text` |
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds (`0` disables) | `120` |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry | off |
+| `IETF_LLM_ENABLE_GATHER` | register the in-session gather tools (writes + network) | off |
+
+## In-session gather (opt-in)
+
+The server is read-only by default. Setting `IETF_LLM_ENABLE_GATHER=1`
+registers two extra tools so a client can gather a new corpus without
+dropping to a shell:
+
+- `start_gather(corpus, [mailing_list], [draft], [github], [author], [new_drafts], …)`
+  — kicks off a gather in a background thread and returns immediately. The
+  corpus shape (group / list / custom / synthetic) is inferred from the
+  arguments. One gather per corpus runs at a time; different corpora run in
+  parallel.
+- `gather_status([corpus])` — reports `running` (with the current stage,
+  e.g. `stage 7/17 (github issues)`, and elapsed time), `done`, or `failed`
+  (with the error). Progress is persisted to
+  `<corpus>/gather-status.json` in the cache.
+
+This is the one break from the read-only / no-network contract — leave it
+**off** for a shared HTTP replica or a read-only-mounted cache. If you do
+enable it on the torch-free serve image, use a remote
+`openai-embed/...` embedding model so the gather's index build pulls no torch.
 
 ## Secrets and access
 
@@ -98,5 +120,6 @@ export IETF_LLM_LOG_FORMAT=json
 ietf-llm-mcp
 ```
 
-[Gathering corpora](gathering.md) is still a separate, write-side step (`ietf-llm <name>`), run
-wherever you can write to `IETF_LLM_CACHE_DIR`; the server only ever reads.
+[Gathering corpora](gathering.md) is normally a separate, write-side step (`ietf-llm <name>`), run
+wherever you can write to `IETF_LLM_CACHE_DIR`; the server only ever reads — unless you opt into the
+in-session gather tools above.

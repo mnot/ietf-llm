@@ -49,6 +49,7 @@ from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
+from .gather_stages import ProgressFn, StageTracker, stage_plan
 from .people import build_registry, write_people_digest
 from .skill_install import install
 from .utils import (
@@ -101,8 +102,14 @@ def _default_llm_model(verbose: Verbosity) -> str:
         return "claude-haiku-4-5"
 
 
-@graceful_keyboard_interrupt
-def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the `ietf-llm` argument parser.
+
+    Extracted from `main()` so the programmatic entry point
+    (`run_gather`, used by the MCP gather runner) can turn a CLI-style
+    argv into the same fully-defaulted, validated Namespace that `main()`
+    builds — one source of truth for the flag surface and its defaults.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Gather an IETF corpus — a Working Group / RG / editorial WG / "
@@ -291,7 +298,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Detailed progress reporting."
     )
+    return parser
 
+
+@graceful_keyboard_interrupt
+def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
+    parser = build_parser()
     maybe_autocomplete(parser)
     args = parser.parse_args()
 
@@ -656,13 +668,37 @@ def _migrate_global_keys(
     config.save(wg, SCOPE, persisted)
 
 
-def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
+def run_gather(
+    argv: List[str],
+    verbosity: Verbosity = Verbosity.STATUS,
+    progress: Optional[ProgressFn] = None,
+) -> bool:
+    """Programmatic gather entry point: gather one corpus from a CLI-style
+    `argv` (`[corpus, "--mailing-list", "foo", ...]`).
+
+    Parses through `build_parser()` so defaults and validation match the
+    CLI exactly, then runs the pipeline. Returns True on success, False if
+    the corpus name was unusable (a typo'd WG that is neither a group, a
+    known list, nor configured with sources). Used by the MCP gather
+    runner; not wired to any console script.
+    """
+    args = build_parser().parse_args(argv)
+    return _gather_one(args, verbosity, progress=progress)
+
+
+def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
+    args: argparse.Namespace,
+    verbosity: Verbosity,
+    progress: Optional[ProgressFn] = None,
+) -> bool:
     """Run the full gather pipeline for a single WG.
 
     Loads the WG's persisted config first (so per-WG --github lists etc.
     apply), then walks the gather stages in order. Mutates args in place
     via config.merge; safe to call repeatedly with different args.wg
-    values for --all.
+    values for --all. Returns True on success, False if the corpus name
+    was unusable (logged). `progress`, when given, is called as each
+    stage begins (see `_stage_plan`).
     """
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
@@ -673,7 +709,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
     shape = _resolve_corpus_shape(args, persisted, verbosity)
     if shape is None:
-        return  # unusable name (typo); _resolve_corpus_shape logged why
+        return False  # unusable name (typo); _resolve_corpus_shape logged why
     synth, group_backed = shape
 
     # Validate the *new* CLI-provided --draft / --mailing-list values
@@ -764,12 +800,15 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             print("Clear cache: re-downloading all materials.", file=sys.stderr)
         print("-" * 40, file=sys.stderr)
 
+    tracker = StageTracker(stage_plan(args, group_backed), progress)
+
     # Charter / meetings / WG document list / transcripts — all
     # Datatracker-sourced. Skipped for corpora with no backing group
     # (synthetic and custom): there's no charter, no WG meetings,
     # no auto-discoverable document set.
     meeting_clusters: List[Any] = []
     if group_backed:
+        tracker.begin("charter")
         charter_file = paths.charter_path(cache_dir)
         os.makedirs(os.path.dirname(charter_file) or cache_dir, exist_ok=True)
         process_charter(args.wg, charter_file, verbose=verbosity)
@@ -778,6 +817,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         # Returns the meeting clusters (date-spans → canonical codes)
         # so transcripts can match interim transcripts to the right
         # clustered meeting rather than orphaning them.
+        tracker.begin("meetings")
         meeting_clusters = process_meetings(
             args.wg,
             cache_dir,
@@ -787,6 +827,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
 
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.
+    tracker.begin("mailing list")
     sync_mailing_list(
         args.wg,
         cache_dir,
@@ -801,6 +842,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         # to each so chunks deep in a 200KB transcript carry attribution.
         # Interim transcripts (no meeting number) are matched to a
         # meeting cluster by date span; only truly unmatched ones orphan.
+        tracker.begin("transcripts")
         process_transcripts(
             args.wg,
             cache_dir,
@@ -811,6 +853,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
         enrich_transcripts(cache_dir, verbose=verbosity)
 
         # Documents (drafts & RFCs) — only auto-discoverable for real WGs.
+        tracker.begin("documents")
         process_documents(
             args.wg,
             cache_dir,
@@ -820,7 +863,10 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Extra drafts added via --draft. These aren't attributed to the WG
     # in the document API (often individual / author submissions the WG
     # is tracking but doesn't own), so they need explicit naming. For
-    # synthetic corpora, this is the ONLY draft source.
+    # synthetic corpora, this is the ONLY draft source. Paired with the
+    # generative draft sources (--author / --new-drafts) as one stage.
+    if args.draft or args.author or args.new_drafts:
+        tracker.begin("drafts")
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
 
@@ -830,22 +876,28 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # etc.). Writes a sibling .pdf.txt for each so the chunker picks
     # them up — slides become searchable content rather than invisible
     # binaries.
+    tracker.begin("pdf text")
     extract_all_pdfs(cache_dir, verbose=verbosity)
 
     # GitHub issues — download the raw JSON archives first, but defer
     # rendering the .txt files until after the registry is built so the
     # Author / Comment-by lines can use canonical names.
+    if args.github:
+        tracker.begin("github archives")
     gh_pending = _download_github_archives(args.github, cache_dir, verbosity)
 
     # Identity registry — consolidates mail/GitHub/Datatracker/draft
     # surface forms into canonical actors. Built BEFORE the github .txt
     # files are rendered so author lines come out canonical.
+    tracker.begin("identity registry")
     registry = build_registry(
         args.wg,
         verbose=verbosity,
         with_datatracker_roles=group_backed,
     )
 
+    if args.github:
+        tracker.begin("github issues")
     for gh_json, gh_txt in gh_pending:
         process_github_issues(
             gh_json,
@@ -859,10 +911,12 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # Per-issue .md files — symmetric with per-thread mail files; gives
     # each GitHub issue a structured reading view with full comment
     # history attributed to canonical names.
+    tracker.begin("issue files")
     write_issue_files(args.wg, cache_dir, registry=registry, verbose=verbosity)
 
     # Per-thread reconstructions (depends on the registry so sender
     # names are already canonical when threads are written).
+    tracker.begin("thread files")
     write_thread_files(args.wg, cache_dir, registry=registry, verbose=verbosity)
 
     # Cross-link drafts to threads / issues that cite them. Scans the
@@ -871,6 +925,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # overview can surface inline. Has to run AFTER write_thread_files
     # and write_issue_files; runs BEFORE generate_digests so the
     # overview's documents section can pick up the counts.
+    tracker.begin("citations")
     citations_map = scan_citations(cache_dir, verbose=verbosity)
     write_citations_digest(cache_dir, citations_map, verbose=verbosity)
     # --add-mentioned-drafts: pull drafts the corpus cites but doesn't
@@ -884,9 +939,11 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     _ = citation_counts
 
     # People digest
+    tracker.begin("people")
     write_people_digest(args.wg, cache_dir, registry, verbose=verbosity)
 
     # Timeline digest
+    tracker.begin("timeline")
     write_timeline_digest(
         args.wg,
         cache_dir,
@@ -897,6 +954,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     )
 
     # Digests
+    tracker.begin("digests")
     summarize_model: Any = None
     if args.summarize or args.summarize_model:
         summarize_model = args.summarize_model or _default_llm_model(verbosity)
@@ -912,6 +970,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
     # the rare case (long-running first gather where the user wants
     # to defer the embed cost).
     if not args.no_embed:
+        tracker.begin("embedding index")
         build_index(
             args.wg,
             cache_dir,
@@ -933,6 +992,7 @@ def _gather_one(args: argparse.Namespace, verbosity: Verbosity) -> None:
             "(or --create <GCP_PROJECT>).",
             file=sys.stderr,
         )
+    return True
 
 
 if __name__ == "__main__":  # pragma: no cover

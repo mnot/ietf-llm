@@ -158,13 +158,23 @@ def copy_if_updated(src_path: str, dest_path: str) -> bool:
     return True
 
 
+class LockHeld(Exception):
+    """Raised by `file_lock(..., blocking=False)` when the lock is already
+    held by another owner (process or, with separate handles, this one)."""
+
+
 @contextmanager
-def file_lock(lock_path: str) -> "Iterator[None]":
+def file_lock(lock_path: str, blocking: bool = True) -> "Iterator[None]":
     """Best-effort cross-process exclusive lock (flock) held for the
     `with` body. Used to serialise access to a shared resource across
     concurrent gathers — notably the single transcripts git clone, where
     two simultaneous clone/pull operations would collide on git's
     index.lock and corrupt the tree.
+
+    With `blocking=False` the lock is taken non-blocking (LOCK_NB): if
+    another holder has it, `LockHeld` is raised instead of waiting. The
+    MCP gather runner uses this to answer "is a gather of this corpus
+    already running?" without stalling.
 
     A no-op where `fcntl` is unavailable (non-POSIX); the lock file
     itself is just a handle and is left in place between runs.
@@ -174,7 +184,13 @@ def file_lock(lock_path: str) -> "Iterator[None]":
         return
     os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
     with open(lock_path, "w", encoding="utf-8") as handle:
-        _fcntl.flock(handle, _fcntl.LOCK_EX)
+        if blocking:
+            _fcntl.flock(handle, _fcntl.LOCK_EX)
+        else:
+            try:
+                _fcntl.flock(handle, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            except OSError as err:
+                raise LockHeld(lock_path) from err
         try:
             yield
         finally:
