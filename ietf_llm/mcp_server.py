@@ -17,12 +17,12 @@ Tools:
          draft section). Use after search to read a hit in full without
          pulling the whole source file.
   read_file_section(wg, file, start_line=1, max_lines=400)
-      -> bounded read of any file in the WG's cache
+      -> bounded read of any file in the corpus's cache
          (~/.cache/ietf-llm/<wg>/files/). Refuses to return more than
          `max_lines` lines (default 400) so context can't be blown by
          accident.
   list_files(wg)
-      -> filenames + sizes for the WG.
+      -> filenames + sizes for the corpus.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def _list_wgs() -> List[str]:
 
 
 def _safe_path(wg: str, file: str) -> Optional[str]:
-    """Resolve `file` inside the WG's file cache; refuse path escapes."""
+    """Resolve `file` inside the corpus's file cache; refuse path escapes."""
     cache = get_wg_file_cache_dir(wg)
     candidate = os.path.realpath(os.path.join(cache, file))
     if not candidate.startswith(os.path.realpath(cache) + os.sep):
@@ -271,7 +271,7 @@ _NEXT_TOOLS_HINT = (
     "\n\n_Next: `overview(wg)` for orientation · "
     "`read_digest(wg, kind=..., ...filters)` for catalogue queries · "
     "`search_corpus(wg, query, ...)` for substantive content · "
-    "`list_labels(wg)` for the WG's curation vocabulary._"
+    "`list_labels(wg)` for the corpus's curation vocabulary._"
 )
 
 
@@ -331,7 +331,7 @@ def tool_read_ietf_norms() -> str:
 
 @_requires_corpus
 def tool_list_labels(wg: str) -> str:
-    """The WG's curation vocabulary — GitHub issue labels AND mailing-
+    """The corpus's curation vocabulary — GitHub issue labels AND mailing-
     list subject-prefix clusters — with their frequencies, sorted by
     count descending.
 
@@ -407,7 +407,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
         return _with_freshness(
             wg,
             f"No citations digest for {wg}. Either no thread / issue "
-            "files reference any drafts, or this WG was gathered with "
+            "files reference any drafts, or this corpus was gathered with "
             f"an older version. Re-run `ietf-llm {wg}` to rebuild.",
         )
     normalised = normalize_draft_name(draft_name)
@@ -733,7 +733,7 @@ def _descendants(graph: Dict[int, List[int]], root: int) -> List[int]:
 
 def _read_thread_file_text(wg: str, file: str) -> Optional[str]:
     """Read a thread file's raw text. Returns None if the file isn't in
-    the WG cache (so include_replies degrades gracefully — we just skip
+    the corpus cache (so include_replies degrades gracefully — we just skip
     the expansion rather than erroring the whole call)."""
     path = _safe_path(wg, file)
     if path is None:
@@ -1066,7 +1066,7 @@ def tool_find_replies(
 
     Surfaces "did anyone refute this?"-shaped questions: when an
     assertion lands in message [N], you want the responses to N, not
-    a semantic search that scatters across the WG. Walks the reply
+    a semantic search that scatters across the corpus. Walks the reply
     graph in the same file (no cross-file replies — a true reply
     lives in the same thread by construction).
     """
@@ -1350,7 +1350,7 @@ def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
 
 
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
-    """If `file` identifies a per-WG digest (`digests/<kind>.md`),
+    """If `file` identifies a per-corpus digest (`digests/<kind>.md`),
     return the digest `kind`; otherwise None.
 
     Used so chunk-fetch / file-section calls on a digest file can
@@ -1895,7 +1895,7 @@ def main() -> None:
         from rfc.fyi — distinct from `search_corpus`, which is semantic
         search *within one gathered Working Group*. Reach here for "find
         an RFC about X", "which RFC is X", "what's the status of RFC N";
-        reach for `search_corpus` for a WG's own discussion of a topic.
+        reach for `search_corpus` for a corpus's own discussion of a topic.
 
         Optional filters narrow the result set:
           - `status`: `current` | `obsoleted`
@@ -1941,7 +1941,7 @@ def main() -> None:
         TOPICAL questions:**
           - "arguments for/against X" / "scope debate about X" →
             `search_corpus(corpus, "X", label="...")` — issue labels are
-            the WG's own curation.
+            the corpus's own curation.
           - "what did the WG decide about X?" / "what's the WG's
             position on X?" → `search_corpus(corpus, "X", state="closed")`
             — the chairs' resolution lives in closed issues.
@@ -1983,7 +1983,7 @@ def main() -> None:
 
     @server.tool()
     async def list_labels(corpus: str) -> str:
-        """List the WG's curation vocabulary — GitHub issue labels
+        """List the corpus's curation vocabulary — GitHub issue labels
         AND mailing-list `[xxx]`-style subject prefixes — with
         frequencies. Call this before picking a `label=` filter for
         `read_digest` / `search_corpus`, or a `subject="[xxx]"`
@@ -2033,9 +2033,9 @@ def main() -> None:
         semantics), e.g. `"threads/*mlkem*"`, `"meetings/ietf125/*"`,
         `"issues/*/155.md"`. Use it instead of dumping the whole
         inventory when you already know roughly what you're after — a
-        long-running WG can have 1000+ files.
+        long-running corpus can have 1000+ files.
 
-        `(digest)` rows are the per-WG summary digests — read them via
+        `(digest)` rows are the per-corpus summary digests — read them via
         `read_digest`, not `get_chunk_text`.
         """
         return await _offload(tool_list_files, corpus, pattern=pattern)
@@ -2161,7 +2161,7 @@ def main() -> None:
         `read_file_section` to read a hit in context.
 
         For topical questions ("arguments for/against X", "scope debate")
-        try `label=` first — the WG's own labels (e.g. "vocabulary",
+        try `label=` first — the corpus's own labels (e.g. "vocabulary",
         "top-level", "ready to close") are usually better curation than
         semantic ranking alone. Pair with `kind="issues"` in `read_digest`
         to get the issue catalogue, then `search_corpus` for depth inside
@@ -2296,7 +2296,7 @@ def main() -> None:
         binding signal in IETF is the actual list traffic. A grounded
         count beats a relayed claim.
 
-        Pass `file` as a relative path under the WG cache, e.g.
+        Pass `file` as a relative path under the corpus cache, e.g.
         `threads/2026-04-12-wglc-mlkem.md` or
         `issues/org-repo/155.md`. Files outside threads/ and issues/
         don't have the per-message section structure this tool reads
@@ -2422,7 +2422,7 @@ def main() -> None:
         (e.g. an entire short thread). Range size is capped at
         20 chunks per call.
 
-        Note: per-WG digests (`digests/*.md`) are not chunked — use
+        Note: per-corpus digests (`digests/*.md`) are not chunked — use
         `read_digest` for those.
         """
         return await _offload(
