@@ -26,6 +26,7 @@ from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
 from .freshness import last_gathered, record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
+from .gather.catalog import ensure_catalog_index
 from .gather.charter import process_charter
 from .gather.citations import (
     citation_counts,
@@ -46,7 +47,6 @@ from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
-from .gather.catalog import ensure_catalog_index
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
