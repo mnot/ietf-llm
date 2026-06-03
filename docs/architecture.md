@@ -441,7 +441,13 @@ servers) can run at once. The safety model:
 - **Index DB.** Connections use WAL + a 30 s busy timeout
   (`storage._connect`), so an MCP query during a same-WG index rebuild
   reads the last committed snapshot instead of erroring with "database
-  is locked".
+  is locked". Concurrent builds of one corpus serialise on a per-corpus
+  `file_lock`, and a build checkpoints the WAL (`TRUNCATE`) before close
+  so the published `embeddings.db` is a self-contained object. A
+  read-only replica opens with `IETF_LLM_INDEX_IMMUTABLE=1` (SQLite
+  `immutable=1`) — the only way to read a WAL DB from a read-only mount,
+  where the `-shm` sidecar otherwise can't be created. search() closes
+  its connection on every return so a query never pins the WAL.
 - **Corpus files.** Atomic writes (above) mean a reader sees the old
   bytes or the new, never a truncated file. Skip-if-exists files
   (drafts, RFCs, transcripts, slide text) are written once and not
