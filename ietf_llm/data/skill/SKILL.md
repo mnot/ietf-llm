@@ -58,6 +58,25 @@ hence no charter, leadership, or Datatracker timeline). **Every tool
 takes any kind** — the `corpus` argument is the corpus name, not
 specifically a WG.
 
+**Recognise the shape before you gather.** When the thing the user
+cares about isn't a WG/RG, it still maps to a corpus — don't default to
+assuming a group is the only option:
+
+- a **standalone mailing list** (`last-call`, `ietf`) → a `list` corpus,
+  auto-detected when the name isn't a known group.
+- **specific Internet-Drafts** with no owning WG, or a **cross-WG topic**
+  spanning several drafts / repos / lists → a `custom` corpus built from
+  explicit sources. *Following one author's drafts* and a *rolling
+  new-drafts subscription* are `custom` corpora too — same kind,
+  distinguished by their source, not a separate label.
+- a topic with **no formal effort behind it at all** → a `synthetic`
+  `x-<topic>` corpus (no charter, leadership, or Datatracker timeline).
+
+So a lone draft URL, a pasted standalone-list thread, or "follow
+everything by X" are all gatherable — they just aren't groups. Build any
+shape with `start_gather`'s shape arguments when that tool is present, or
+point the user at `ietf-llm --help` for the shell equivalents.
+
 **Loading the tools.** Every tool is named `ietf-llm__…`. If your
 client loads MCP tools lazily — you have to search for a tool before
 you can call it — load the core set in one search rather than
