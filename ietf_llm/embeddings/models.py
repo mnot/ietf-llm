@@ -20,6 +20,8 @@ import random
 import sys
 import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Iterable, Sequence
 
 import requests
@@ -213,13 +215,31 @@ class _OpenAICompatEmbeddingModel:
         if resp is not None:
             retry_after = resp.headers.get("Retry-After")
             if retry_after:
-                try:
-                    delay = float(retry_after)
-                except ValueError:
-                    delay = 0.0
+                delay = _parse_retry_after(retry_after)
         if delay <= 0.0:
             delay = min(30.0, 2.0**attempt) + random.uniform(0.0, 1.0)
         time.sleep(delay)
+
+
+def _parse_retry_after(value: str) -> float:
+    """Seconds to wait from a ``Retry-After`` header (RFC 9110 10.2.3).
+
+    Handles both permitted forms: delta-seconds and an HTTP-date
+    (IMF-fixdate). Returns 0.0 for anything unparseable, so the caller
+    falls back to its own exponential backoff.
+    """
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
 def _env_int(name: str, default: int) -> int:

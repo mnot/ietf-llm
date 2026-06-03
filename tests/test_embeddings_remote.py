@@ -138,3 +138,19 @@ def test_load_bad_headers_json_ignored(monkeypatch):
     m = _load_openai_compat("openai-embed/m", Verbosity.QUIET)
     assert isinstance(m, _OpenAICompatEmbeddingModel)
     assert "Authorization" not in m._headers
+
+
+def test_parse_retry_after_delta_seconds():
+    assert models._parse_retry_after("5") == 5.0
+    assert models._parse_retry_after("  12  ") == 12.0
+    assert models._parse_retry_after("-3") == 0.0  # never negative
+
+
+def test_parse_retry_after_http_date():
+    assert models._parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT") > 0.0
+    assert models._parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 0.0
+
+
+def test_parse_retry_after_unparseable():
+    assert models._parse_retry_after("not-a-date") == 0.0
+    assert models._parse_retry_after("") == 0.0
