@@ -106,6 +106,15 @@ def test_gather_status_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "No gather has been recorded for 'ghost'" in out
 
 
+def test_gather_status_rejects_unsafe_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(_corpus: str) -> Any:
+        raise AssertionError("read_status must not see an unsafe name")
+
+    monkeypatch.setattr(gather_runner, "read_status", boom)
+    out = mcp_server.tool_gather_status("../etc/passwd")
+    assert "not a valid corpus name" in out
+
+
 def test_gather_status_all(monkeypatch: pytest.MonkeyPatch) -> None:
     rows: List[Dict[str, Any]] = [
         {"corpus": "tls", "state": "done", "started": "2026-06-03T12:00:00Z",
@@ -147,3 +156,15 @@ def test_format_failed_includes_error() -> None:
 
 def test_elapsed_handles_missing_timestamps() -> None:
     assert mcp_server._gather_elapsed({}) == ""
+
+
+def test_format_interrupted_omits_growing_elapsed() -> None:
+    out = mcp_server._format_gather_status(
+        {"corpus": "tls", "state": "interrupted",
+         "started": "2026-06-03T12:00:00Z", "finished": None}
+    )
+    assert "**tls** — interrupted" in out
+    assert "re-run" in out
+    # No elapsed token (it would grow on every poll); elapsed always has a
+    # digit, and nothing else in an interrupted line does.
+    assert not any(ch.isdigit() for ch in out)

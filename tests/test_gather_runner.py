@@ -19,7 +19,7 @@ from typing import Any, List, Tuple
 import pytest
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import gather_runner
+from ietf_llm import gather_runner, utils
 from ietf_llm.gather_stages import stage_plan
 from ietf_llm.utils import Verbosity
 
@@ -235,21 +235,30 @@ def _write_status(corpus: str, **fields: Any) -> None:
         json.dump({"corpus": corpus, **fields}, handle)
 
 
-def test_running_status_with_dead_pid_reads_as_interrupted(
+@pytest.mark.skipif(utils._fcntl is None, reason="needs flock")
+def test_running_status_without_held_lock_reads_as_interrupted(
     isolated_home: Path,
 ) -> None:
-    _write_status("zombie", state="running", pid=999_999_999, started="x")
+    # No live gather holds the corpus lock, so a stuck `running` record is a
+    # dead gather -> interrupted.
+    _write_status("zombie", state="running", started="x")
     assert gather_runner.read_status("zombie")["state"] == "interrupted"
 
 
-def test_running_status_with_live_pid_stays_running(isolated_home: Path) -> None:
-    _write_status("live", state="running", pid=os.getpid(), started="x")
-    assert gather_runner.read_status("live")["state"] == "running"
+def test_running_status_with_held_lock_stays_running(isolated_home: Path) -> None:
+    # While the gather lock is genuinely held, `running` is real.
+    _write_status("live", state="running", started="x")
+    with utils.file_lock(gather_runner._lock_path("live")):
+        assert gather_runner.read_status("live")["state"] == "running"
 
 
 def test_done_status_never_relabelled(isolated_home: Path) -> None:
-    _write_status("fin", state="done", pid=999_999_999, started="x")
+    _write_status("fin", state="done", started="x")
     assert gather_runner.read_status("fin")["state"] == "done"
+
+
+def test_read_status_rejects_unsafe_name(isolated_home: Path) -> None:
+    assert gather_runner.read_status("../etc/passwd") is None
 
 
 def test_spec_to_argv_round_trips_sources() -> None:

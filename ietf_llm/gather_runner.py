@@ -32,6 +32,7 @@ from .utils import (
     atomic_open,
     file_lock,
     get_cache_dir,
+    lock_is_held,
     log,
 )
 
@@ -59,19 +60,6 @@ def valid_corpus_name(name: str) -> bool:
     return (
         bool(name) and len(name) <= _MAX_CORPUS_LEN and bool(_VALID_CORPUS.match(name))
     )
-
-
-def _pid_alive(pid: int) -> bool:
-    """Best-effort: is a process with this pid still around? Used to detect a
-    `running` status orphaned by a server restart/kill (the gather thread is
-    a daemon, so it dies without writing a terminal status)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True  # exists but not signalable by us (EPERM), or unsupported
-    return True
 
 
 @dataclass
@@ -279,24 +267,28 @@ def _execute(spec: GatherSpec) -> None:
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:
-    """Read one corpus's gather status, or None if none recorded.
+    """Read one corpus's gather status, or None if none recorded (or the
+    name is not a safe path segment).
 
-    A `running` record whose recorded pid is no longer alive is relabelled
-    `interrupted` — the gather thread is a daemon, so a server restart/kill
-    leaves the status stuck at `running` forever otherwise. (The terminal
-    `done`/`failed` status is written while still holding the gather lock,
-    so a genuinely-running gather always has a live pid.)
+    A `running` record whose gather lock is provably free is relabelled
+    `interrupted`: the gather thread is a daemon, so a server restart/kill
+    leaves the status stuck at `running` forever otherwise. The lock is the
+    authoritative signal (`lock_is_held`) — it works across hosts sharing
+    the cache and is immune to pid reuse, and because the terminal
+    `done`/`failed` status is always written while still holding the lock, a
+    free lock under a `running` status means the gather died. When liveness
+    is undeterminable (`lock_is_held` -> None) the status is left as-is.
     """
+    if not valid_corpus_name(corpus):
+        return None
     try:
         with open(_status_path(corpus), "r", encoding="utf-8") as handle:
             data = json.load(handle)
         result = dict(data)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
-    if result.get("state") == "running":
-        pid = result.get("pid")
-        if isinstance(pid, int) and not _pid_alive(pid):
-            result["state"] = "interrupted"
+    if result.get("state") == "running" and lock_is_held(_lock_path(corpus)) is False:
+        result["state"] = "interrupted"
     return result
 
 

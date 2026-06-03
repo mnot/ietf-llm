@@ -197,6 +197,35 @@ def file_lock(lock_path: str, blocking: bool = True) -> "Iterator[None]":
             _fcntl.flock(handle, _fcntl.LOCK_UN)
 
 
+def lock_is_held(lock_path: str) -> "Optional[bool]":
+    """Non-blocking probe of a `file_lock`: True if currently held by some
+    owner, False if free, None if undeterminable.
+
+    This is the authoritative liveness signal for a resource guarded by
+    `file_lock` — a held flock is released by the OS the instant its holder
+    dies, and (unlike a recorded pid) it is meaningful across hosts sharing
+    the cache filesystem and immune to pid reuse. Opens the lock file
+    read-only so it works on a read-only mount, and returns None rather than
+    guessing when it cannot tell: `fcntl` unavailable (non-POSIX), or the
+    file cannot be opened. (Reliability still depends on the filesystem's
+    flock support — a guess-free None on exotic mounts is the honest answer.)
+    """
+    if _fcntl is None:
+        return None
+    if not os.path.exists(lock_path):
+        return False
+    try:
+        with open(lock_path, "r", encoding="utf-8") as handle:
+            try:
+                _fcntl.flock(handle, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            except OSError:
+                return True
+            _fcntl.flock(handle, _fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return None
+
+
 @contextmanager
 def atomic_open(
     path: str, encoding: str = "utf-8", newline: Optional[str] = None

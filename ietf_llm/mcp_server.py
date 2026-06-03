@@ -1896,7 +1896,10 @@ def tool_gather_status(corpus: Optional[str] = None) -> str:
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
     if corpus:
-        status = gather_runner.read_status(corpus.strip())
+        corpus = corpus.strip()
+        if not gather_runner.valid_corpus_name(corpus):
+            return f"'{corpus}' is not a valid corpus name."
+        status = gather_runner.read_status(corpus)
         if status is None:
             return (
                 f"No gather has been recorded for '{corpus}'. Start one with "
@@ -1925,9 +1928,14 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
             parts.append(label)
         elif stage:
             parts.append(f"stage: {stage}")
-    elapsed = _gather_elapsed(status)
-    if elapsed:
-        parts.append(elapsed)
+    # An interrupted gather never finished, so its start->now span isn't a
+    # meaningful "elapsed" (it would grow on every poll); omit it.
+    if state != "interrupted":
+        elapsed = _gather_elapsed(status)
+        if elapsed:
+            parts.append(elapsed)
+    if state == "interrupted":
+        parts.append("the gather process ended before completion; re-run it")
     if state == "failed" and status.get("error"):
         parts.append(f"error: {status['error']}")
     return " · ".join(parts)
@@ -2743,10 +2751,12 @@ def main() -> None:
 
             With `corpus`, returns that corpus's state: `running` (with the
             current stage, e.g. `stage 7/17 (github issues)`, and elapsed
-            time), `done`, or `failed` (with the error). With no argument,
-            lists every recorded gather, most-recently-active first. Poll
-            this after `start_gather`; once a corpus reports `done`, the
-            read tools (`overview`, `search_corpus`, …) work on it.
+            time), `done`, `failed` (with the error), or `interrupted` (the
+            server process ended mid-gather — re-run `start_gather`). With no
+            argument, lists every recorded gather, most-recently-active
+            first. Poll this after `start_gather`; once a corpus reports
+            `done`, the read tools (`overview`, `search_corpus`, …) work on
+            it.
 
             Args:
                 corpus: The corpus to report on. Omit to list all.
