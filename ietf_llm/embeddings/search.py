@@ -16,11 +16,11 @@ import gc
 import os
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..utils import LogLevel, Verbosity, log
+from ..utils import LogLevel, Verbosity, file_lock, log
 from .chunking import CHUNKER_VERSION, _chunk_file, _eligible_files
 from .models import DEFAULT_EMBED_MODEL, _get_embed_model
 from .snippet import make_snippet
@@ -138,7 +138,7 @@ class Hit:
     closing_rationale: Optional[str] = None
 
 
-def build_index(  # pylint: disable=too-many-locals,too-many-statements
+def build_index(
     wg: str,
     cache_dir: str,
     model_name: str = DEFAULT_EMBED_MODEL,
@@ -153,7 +153,21 @@ def build_index(  # pylint: disable=too-many-locals,too-many-statements
     model = _get_embed_model(model_name, verbose)
     if model is None:
         return 0
+    # Serialise concurrent builds of the same corpus -- a second gather, or
+    # a future gather-triggering MCP tool -- so they don't interleave writes
+    # to one DB. Readers are unaffected: they use a busy timeout + WAL.
+    with file_lock(_db_path(wg) + ".lock"):
+        return _build_index_locked(wg, cache_dir, model, model_name, rebuild, verbose)
 
+
+def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements
+    wg: str,
+    cache_dir: str,
+    model: Any,
+    model_name: str,
+    rebuild: bool,
+    verbose: Verbosity,
+) -> int:
     conn = _open_db(wg)
     cur = conn.cursor()
 
@@ -405,6 +419,11 @@ def build_index(  # pylint: disable=too-many-locals,too-many-statements
             last_status = now
 
     conn.commit()
+    # Fold the WAL back into the main DB file and truncate it, so the
+    # published index is a self-contained single object -- a reader (or an
+    # object-storage copy) never depends on a -wal sidecar that a single .db
+    # ship would leave behind.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.close()
     elapsed = time.time() - start
     log(
@@ -516,6 +535,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
 
     model = _get_embed_model(use_model, verbose)
     if model is None:
+        conn.close()
         return []
 
     try:
@@ -527,6 +547,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             verbose,
             level=LogLevel.ERROR,
         )
+        conn.close()
         return []
     q_norm = float(np.linalg.norm(q_vec))
     if q_norm:
@@ -582,6 +603,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     )
     rows = cur.fetchall()
     if not rows:
+        conn.close()
         return []
 
     embs = _unpack_matrix([r[4] for r in rows])

@@ -33,18 +33,27 @@ from .models import (
     is_remote_embed_model,
 )
 from .search import Hit, build_index, search
-from .storage import chunk_counts, find_chunks_by_url, get_chunk, get_messages
+from .storage import (
+    any_indexed_wg,
+    chunk_counts,
+    find_chunks_by_url,
+    get_chunk,
+    get_messages,
+    probe_index,
+)
 
 __all__ = [
     # Public surface
     "DEFAULT_EMBED_MODEL",
     "Chunk",
     "Hit",
+    "any_indexed_wg",
     "build_index",
     "chunk_counts",
     "find_chunks_by_url",
     "get_chunk",
     "get_messages",
+    "probe_index",
     "search",
     # Used by mcp_server.py for pre-warming
     "_get_embed_model",
