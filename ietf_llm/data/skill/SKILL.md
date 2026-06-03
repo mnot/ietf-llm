@@ -83,9 +83,9 @@ point the user at `ietf-llm --help` for the shell equivalents.
 client loads MCP tools lazily — you have to search for a tool before
 you can call it — load the core set in one search rather than
 discovering them one at a time: `overview`, `read_digest`,
-`search_corpus`, `read_topic`, `tally_positions`, `find_replies`,
-`find_citations`, `list_corpora`, `list_labels`, `list_files`,
-`find_efforts`.
+`search_corpus`, `search_corpora`, `read_topic`, `tally_positions`,
+`find_replies`, `find_citations`, `list_corpora`, `list_labels`,
+`list_files`, `find_efforts`.
 
 ## Topic, not a named effort: `find_efforts(topic)`
 
@@ -104,8 +104,13 @@ The playbook:
 2. **Prefer the cached efforts** — they answer immediately. For the rest,
    gather only the **few that dominate** the topic (`start_gather` /
    `ietf-llm <acronym>`), **not all of them**.
-3. Query each gathered corpus (`overview`, `search_corpus`, …) and
-   synthesize across them.
+3. `search_corpora(corpora=[the few you gathered], query)` to query across
+   them in **one** call — merged, rank-ordered hits tagged by corpus —
+   instead of N separate `search_corpus` calls. This is the synthesis
+   step: it finds *where* across efforts the topic lives.
+4. Pivot to the corpus-scoped tools (`read_topic`, `tally_positions`,
+   `read_digest`, `search_corpus`) for **depth** on the specific efforts
+   that matter — `search_corpora` is breadth, not depth.
 
 **The cost rule is load-bearing.** On a shared server a wide gather
 fan-out costs everyone — shared cores and network — and over-gathering is
@@ -301,6 +306,27 @@ Filters beyond the obvious `since`/`until`/`label`/`state`/
   did the chairs decide"*). Combine to scope to one chair.
 - **`snippet_chars=N`** — raise the per-hit snippet for long-form
   synthesis (dial `k` down to compensate).
+
+## Across several efforts: `search_corpora(corpora, query)`
+
+When a question spans **multiple** gathered efforts ("what is the IETF
+doing around AI?"), don't run `search_corpus` N times and merge by hand
+— `search_corpora(corpora=[...], query)` fans the same search across the
+bounded set you name and returns one merged, rank-ordered list, each hit
+tagged `corpus=`. `corpora` is **required** — the few efforts you chose
+(typically `find_efforts` output), never a blind scan; unknown / un-indexed
+corpora and anything past the 12-corpus cap are reported, not dropped.
+`k` bounds the **total** hits. Facets mirror `search_corpus`
+(`since`/`until`/`label`/`state`/`author`/`role`/`snippet_chars`/
+`collapse_versions`); the depth-only knobs (`sort`, `group_by`,
+`file_pattern`) are deliberately absent — scope a single corpus for those.
+
+Scores are comparable only **within** one embedding model: when the
+corpora share a model the result is a single ranking; when they differ,
+hits are grouped by model and the groups are interleaved by rank (the
+header says which). Treat it as **breadth** — it locates *where* a topic
+lives; pivot to `read_topic` / `tally_positions` / `read_digest` /
+`search_corpus` (using the `corpus=` tag) for the decisions and narrative.
 
 ## RFC-series lookups: `rfc_search` / `get_rfc`
 

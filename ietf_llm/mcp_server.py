@@ -76,10 +76,11 @@ from .embeddings import (
     find_chunks_by_url,
     get_chunk,
     get_messages,
+    index_model,
     probe_index,
     search,
 )
-from .freshness import freshness_line, last_gathered
+from .freshness import freshness_line, last_gathered, staleness_warning
 from .rfcs import render_rfc, render_search
 from .gather.citations import normalize_draft_name
 from .paths import digest_kind_from_relpath, digest_path
@@ -1316,6 +1317,216 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     return _with_freshness(wg, "\n".join(lines) + note)
 
 
+#: Upper bound on how many corpora one `search_corpora` call will fan
+#: across, so an over-long list can't turn a single call into a heavy
+#: multi-index scan. Corpora past the cap are dropped with a note (never
+#: silently truncated).
+_MAX_SEARCH_CORPORA = 12
+
+
+def _dedup_corpus_names(corpora: List[str]) -> List[str]:
+    """Strip / drop blanks / de-dup the requested corpus names, preserving
+    first-seen order. Non-string entries are ignored defensively."""
+    seen: set[str] = set()
+    out: List[str] = []
+    for name in corpora:
+        if not isinstance(name, str):
+            continue
+        name = name.strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+    corpora: List[str],
+    query: str,
+    k: int = 10,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    label: Optional[str] = None,
+    state: Optional[str] = None,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
+    collapse_versions: bool = True,
+) -> str:
+    for field, value in (("since", since), ("until", until)):
+        date_error = _invalid_date_message(value, field)
+        if date_error:
+            return date_error
+    requested = _dedup_corpus_names(corpora or [])
+    if not requested:
+        return (
+            "search_corpora needs an explicit `corpora` list — the few "
+            "efforts that dominate the topic, not a blind scan. Use "
+            "`find_efforts(topic)` to discover candidates and `list_corpora` "
+            "to see what is already cached, then pass the chosen names."
+        )
+    # Bound the fan-out. Excess corpora are reported, not silently dropped.
+    dropped_for_cap: List[str] = []
+    if len(requested) > _MAX_SEARCH_CORPORA:
+        dropped_for_cap = requested[_MAX_SEARCH_CORPORA:]
+        requested = requested[:_MAX_SEARCH_CORPORA]
+    # Read-only existence check first, so a typo'd name is reported rather
+    # than materialising a junk cache (see `_corpus_exists`).
+    unknown = [c for c in requested if not _corpus_exists(c)]
+    known = [c for c in requested if _corpus_exists(c)]
+    # Clamp k to the same sane range as single-corpus search.
+    try:
+        k = max(1, min(int(k), _MAX_SEARCH_K))
+    except (TypeError, ValueError):
+        k = 10
+    # Per corpus: read its embedding-model id (governs score comparability),
+    # then run the same single-corpus search() and tag the hits.
+    per_corpus: Dict[str, List[Any]] = {}
+    model_by_corpus: Dict[str, str] = {}
+    no_index: List[str] = []
+    empty: List[str] = []
+    dropped_versions = 0
+    for corpus in known:
+        model = index_model(corpus)
+        if model is None:
+            no_index.append(corpus)
+            continue
+        # Over-fetch when collapsing draft revisions so each corpus can
+        # still contribute k distinct items to the merge.
+        fetch_k = max(k * 4, 20) if collapse_versions else k
+        hits = search(
+            corpus,
+            query,
+            k=fetch_k,
+            since=since,
+            until=until,
+            label=label,
+            state=state,
+            author=author,
+            role=role,
+            snippet_chars=snippet_chars,
+            verbose=Verbosity.QUIET,
+        )
+        if collapse_versions and hits:
+            hits, dropped = _collapse_draft_versions(hits)
+            dropped_versions += dropped
+        if not hits:
+            empty.append(corpus)
+            continue
+        per_corpus[corpus] = hits[:k]
+        model_by_corpus[corpus] = model
+
+    # Skip diagnostics — surfaced whether or not any hits came back, so a
+    # caller always learns which requested corpora contributed nothing.
+    skip_notes: List[str] = []
+    if unknown:
+        skip_notes.append(f"unknown (not gathered): {', '.join(unknown)}")
+    if no_index:
+        skip_notes.append(
+            "no embedding index — run `ietf-llm <name>`: " + ", ".join(no_index)
+        )
+    if empty:
+        skip_notes.append(f"no matching hits: {', '.join(empty)}")
+    if dropped_for_cap:
+        skip_notes.append(
+            f"dropped over the {_MAX_SEARCH_CORPORA}-corpus cap: "
+            + ", ".join(dropped_for_cap)
+        )
+
+    if not per_corpus:
+        body = [f"(no results for {query!r} across the requested corpora)"]
+        body += [f"_Skipped — {n}._" for n in skip_notes]
+        return "\n".join(body)
+
+    # Group corpora by embedding-model id (insertion order = first-seen).
+    # Scores are directly comparable only within a group; see index_model.
+    groups: Dict[str, List[str]] = {}
+    for corpus in known:
+        if corpus in per_corpus:
+            groups.setdefault(model_by_corpus[corpus], []).append(corpus)
+
+    # Rank within each group on raw score (comparable there).
+    group_ranked: List[List[Tuple[str, Any]]] = []
+    for members in groups.values():
+        pool: List[Tuple[str, Any]] = [
+            (corpus, hit) for corpus in members for hit in per_corpus[corpus]
+        ]
+        pool.sort(key=lambda ch: -ch[1].score)
+        group_ranked.append(pool)
+
+    if len(group_ranked) == 1:
+        # One model across all corpora — a single comparable ranking.
+        final = group_ranked[0][:k]
+    else:
+        # Differing models — interleave the per-group rankings round-robin
+        # by rank position rather than merging on non-comparable scores.
+        final = []
+        idx = 0
+        while len(final) < k and any(idx < len(g) for g in group_ranked):
+            for grp in group_ranked:
+                if idx < len(grp):
+                    final.append(grp[idx])
+                    if len(final) >= k:
+                        break
+            idx += 1
+
+    queried = [c for c in known if c in per_corpus]
+    lines: List[str] = []
+    if len(groups) > 1:
+        lines.append(
+            "_Corpora use different embedding models, so scores are NOT "
+            "comparable across them — grouped by model and interleaved by "
+            "rank:_"
+        )
+        for model, members in groups.items():
+            lines.append(f"_  • `{model}`: {', '.join(members)}_")
+    else:
+        only_model = next(iter(groups))
+        lines.append(
+            f"_Ranked across {len(queried)} corpora ({', '.join(queried)}); "
+            f"all share embedding model `{only_model}`, so scores are "
+            "directly comparable._"
+        )
+    # Surface stale corpora once, compactly — depth tools repeat the detail.
+    stale = [c for c in queried if staleness_warning(c)]
+    if stale:
+        lines.append(f"_Stale (consider re-gathering): {', '.join(stale)}._")
+    for note in skip_notes:
+        lines.append(f"_Skipped — {note}._")
+    lines.append("")
+
+    for i, (corpus, hit) in enumerate(final, 1):
+        loc = (
+            f" lines={hit.start_line}-{hit.end_line}"
+            if hit.start_line is not None
+            else ""
+        )
+        state_tag = f"  [{hit.state}]" if hit.state else ""
+        lines.append(
+            f"[{i}] corpus={corpus}  score={hit.score:.3f}  file={hit.file}  "
+            f"chunk={hit.chunk_idx}{loc}{state_tag}"
+        )
+        lines.append(f"     {hit.title}")
+        if hit.labels:
+            lines.append(f"     labels: {hit.labels}")
+        if hit.url:
+            lines.append(f"     url: {hit.url}")
+        lines.append(f"     {hit.snippet}")
+
+    if dropped_versions:
+        lines.append(
+            f"\n_{dropped_versions} older draft revision(s) hidden across "
+            "corpora; pass `collapse_versions=False` for older revisions._"
+        )
+    lines.append(
+        "\n_Breadth view — this finds WHERE a topic lives across efforts. "
+        "Pivot to the single-corpus tools for depth, using the `corpus=` "
+        "tag: `search_corpus(corpus, query, ...)`, `read_topic`, "
+        "`tally_positions`, `read_digest`; read a hit with "
+        "`get_chunk_text(corpus, file, chunk)` / `read_file_section`._"
+    )
+    return "\n".join(lines)
+
+
 #: A draft file with a 2-digit revision suffix, e.g.
 #: `drafts/draft-ietf-httpbis-rfc6265bis-04.txt`. RFC files
 #: (`drafts/rfc9110.txt`) have no revision and are never collapsed.
@@ -2420,6 +2631,76 @@ def main() -> None:
             state=state,
             sort=sort,
             group_by=group_by,
+            author=author,
+            role=role,
+            snippet_chars=snippet_chars,
+            collapse_versions=collapse_versions,
+        )
+
+    @server.tool()
+    async def search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        corpora: List[str],
+        query: str,
+        k: int = 10,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        label: Optional[str] = None,
+        state: Optional[str] = None,
+        author: Optional[str] = None,
+        role: Optional[str] = None,
+        snippet_chars: Optional[int] = None,
+        collapse_versions: bool = True,
+    ) -> str:
+        """Semantic search across **several** gathered corpora in one call,
+        returning merged, rank-ordered hits each tagged with the `corpus=`
+        it came from. The cross-corpus companion to `search_corpus` — same
+        per-corpus engine, fanned over the set you name.
+
+        **This is the synthesis step for a cross-cutting topic** ("what is
+        the IETF doing around AI?", "where is post-quantum being worked
+        on?"). The flow: `find_efforts(topic)` → gather the **few** efforts
+        that dominate it → `search_corpora` across them in ONE call to see
+        where the topic lives → then pivot to the single-corpus tools
+        (`read_topic`, `tally_positions`, `read_digest`, `search_corpus`)
+        for depth on the efforts that matter. Frame it as **breadth, not
+        depth**: it finds *where* across efforts a topic appears;
+        decisions, narrative, and consensus still come from the
+        single-corpus tools and `read_ietf_norms`.
+
+        `corpora` is a **required, explicit list** — the bounded set you
+        chose (typically the cached output of `find_efforts`), never an
+        unbounded scan of every cache. Unknown names, corpora with no
+        embedding index, and any past the 12-corpus cap are skipped
+        and reported, not silently dropped.
+
+        **Score comparability.** Cosine scores are only directly
+        comparable across corpora built with the **same embedding model**.
+        When every corpus shares one model, the result is a single
+        score-ranked list. When models differ, corpora are grouped by
+        model, ranked within each group, and the groups are **interleaved
+        by rank** rather than merged on raw score — and the header tells
+        you which corpora were grouped together.
+
+        `k` bounds the **total** merged hits returned (default 10). The
+        facets mirror `search_corpus` and apply per corpus: `since` /
+        `until` (ISO `YYYY-MM-DD`), `label`, `state` (`open` / `closed`),
+        `author`, `role`, `snippet_chars`, `collapse_versions`. The
+        depth-only knobs (`sort`, `group_by`, `file_pattern`) are
+        intentionally omitted — scope a single corpus for those.
+
+        Read-only; operates on existing caches, no re-gather needed.
+        Requires each corpus's embedding index (built by default on
+        gather).
+        """
+        return await _offload(
+            tool_search_corpora,
+            corpora,
+            query,
+            k=k,
+            since=since,
+            until=until,
+            label=label,
+            state=state,
             author=author,
             role=role,
             snippet_chars=snippet_chars,

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import os
+import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -450,6 +451,29 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements
         level=LogLevel.STATUS,
     )
     return total_new
+
+
+def index_model(wg: str) -> Optional[str]:
+    """Return the embedding-model id recorded in `wg`'s index, or None
+    when there is no index (or no `model` row).
+
+    Cross-corpus search uses this to decide whose scores are directly
+    comparable: cosine scores from two corpora are only comparable when
+    both were embedded with the same model id (see architecture.md —
+    vectors are not portable across backends, and the "same" model is
+    not bit-identical across runtimes). Read-only: never creates or
+    migrates the DB.
+    """
+    if not os.path.exists(_db_path(wg)):
+        return None
+    conn = _connect_ro(wg)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='model'").fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return row[0] if row else None
 
 
 def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
