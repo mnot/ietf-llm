@@ -29,7 +29,7 @@ There are three supported workflows:
 
 1. **Use it as an MCP server** — register it with Claude, Codex, Cursor, Gemini, Zed,
    etc. and ask questions across any corpus you've gathered. Two ways to run it:
-   - **[Local MCP](docs/mcp-local.md)** — one server subprocess per client, on your own machine.
+   - **[Local MCP](docs/mcp-local.md)** — one server subprocess per client, on your own machine. <-- **Best starting point**
    - **[As a shared HTTP MCP server](docs/mcp-server.md)** — one process serving many concurrent
      clients (hosted).
 2. **[Use it with NotebookLM](docs/notebooklm.md)** — export the gathered corpus as a directory of
