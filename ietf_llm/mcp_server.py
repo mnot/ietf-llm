@@ -59,7 +59,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import __version__, _debug_log, _stdio_transport
+from . import __version__, _debug_log, _stdio_transport, config
 from .catalog import render_efforts
 from .corpus import describe, kind_status
 from .digest.overview import (
@@ -72,6 +72,7 @@ from .embeddings import (
     _get_embed_model,
     any_indexed_wg,
     is_remote_embed_model,
+    DEFAULT_EMBED_MODEL,
     chunk_counts,
     find_chunks_by_url,
     get_chunk,
@@ -2958,6 +2959,188 @@ def _http_app(server: Any) -> Any:
     return app
 
 
+def _resolve_bind() -> "Tuple[str, int]":
+    """Resolve the HTTP bind host:port from the environment (defaults
+    127.0.0.1:8000). A non-integer port falls back to 8000."""
+    host = os.environ.get("IETF_LLM_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(os.environ.get("IETF_LLM_MCP_PORT", "8000"))
+    except ValueError:
+        port = 8000
+    return host, port
+
+
+def _effective_embed_model() -> str:
+    """The embedding model the serve/gather paths would actually use.
+
+    Mirrors `config.merge_global`'s precedence with no CLI in play and no
+    persistence side effect: env > global-persisted > default. Read-only,
+    so it is safe to call at boot to validate the embed config."""
+    env = os.environ.get("IETF_LLM_EMBED_MODEL", "").strip()
+    if env:
+        return env
+    persisted = config.load_global().get("embed_model")
+    if isinstance(persisted, str) and persisted.strip():
+        return persisted.strip()
+    return DEFAULT_EMBED_MODEL
+
+
+def _effective_no_embed() -> bool:
+    """Whether gather would skip embedding (env > global-persisted)."""
+    env = os.environ.get("IETF_LLM_NO_EMBED", "").strip()
+    if env:
+        return env.lower() in ("1", "true", "yes", "on")
+    return bool(config.load_global().get("no_embed", False))
+
+
+def _index_immutable_enabled() -> bool:
+    """Whether IETF_LLM_INDEX_IMMUTABLE is set (matches storage's predicate)."""
+    return os.environ.get("IETF_LLM_INDEX_IMMUTABLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+#: Prefix marking a local, torch-backed embedding model (mirrors
+#: embeddings.models._ST_PREFIX). A gather that embeds with one of these
+#: on a torch-free image crashes deep in the pipeline.
+_LOCAL_EMBED_PREFIX = "sentence-transformers/"
+
+
+def _torch_importable() -> bool:
+    """True if `torch` can be imported, without importing it.
+
+    `find_spec` only inspects the import system, so a torch-free serve
+    image pays nothing and a present-but-heavy torch isn't loaded just to
+    answer the question."""
+    import importlib.util  # pylint: disable=import-outside-toplevel
+
+    try:
+        return importlib.util.find_spec("torch") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Heuristic: is `host` a loopback bind (not externally reachable)?
+
+    String-based on the common cases rather than resolving DNS at boot
+    (slow, and a resolver hiccup must not gate startup). `0.0.0.0` / `::`
+    (bind-all) and any routable address or unrecognised hostname are
+    treated as non-loopback -- the safe default is to assume reachable
+    and warn."""
+    lowered = host.strip().lower()
+    return lowered in ("localhost", "::1") or lowered.startswith("127.")
+
+
+def _serve_posture(host: str, port: int) -> "Dict[str, str]":
+    """The always-logged boot posture: what this process is actually doing."""
+    model = _effective_embed_model()
+    backend = "remote" if is_remote_embed_model(model) else "local"
+    return {
+        "transport": "http",
+        "bind": f"{host}:{port}",
+        "gather": "on" if _gather_enabled() else "off",
+        "embed_backend": backend,
+        "embed_model": model,
+        "no_embed": "yes" if _effective_no_embed() else "no",
+        "index_dir": get_index_dir(),
+        "index_immutable": "yes" if _index_immutable_enabled() else "no",
+    }
+
+
+def _serve_config_problems(host: str) -> "Tuple[List[str], List[str]]":
+    """Cross-knob consistency check for the HTTP serve path (issue #46).
+
+    Returns (hard_errors, warnings). Transport is not the thing to gate
+    on: HTTP + in-session gather is a supported, trusted-box shape (#41).
+    We refuse only configs that cannot work, and warn (not refuse) on
+    exposure -- the operator owns that boundary.
+    """
+    errors: "List[str]" = []
+    warnings: "List[str]" = []
+
+    gather = _gather_enabled()
+    model = _effective_embed_model()
+    remote = is_remote_embed_model(model)
+
+    # 1a. gather must write the index; immutable says the mount is read-only.
+    if gather and _index_immutable_enabled():
+        errors.append(
+            "IETF_LLM_ENABLE_GATHER=1 and IETF_LLM_INDEX_IMMUTABLE=1 "
+            "contradict: gather must write the index, but immutable marks "
+            "the mount read-only. Unset one."
+        )
+
+    # 1b. gather-on-torch-free with a local (torch-backed) embed model would
+    # crash deep in the embed step. Hard refuse (a gather-enabled server that
+    # cannot gather is a misconfiguration worth surfacing now).
+    if (
+        gather
+        and not _effective_no_embed()
+        and model.startswith(_LOCAL_EMBED_PREFIX)
+        and not _torch_importable()
+    ):
+        errors.append(
+            f"IETF_LLM_ENABLE_GATHER=1 with a local embedding model "
+            f"({model}) but torch is not importable: gather's embed step "
+            f"would crash mid-pipeline. Set an 'openai-embed/<model>' id "
+            f"(IETF_LLM_EMBED_MODEL) with IETF_LLM_EMBED_BASE_URL, install "
+            f"the 'local-embeddings' extra, or set IETF_LLM_NO_EMBED=1."
+        )
+
+    # 1c. Remote embed model but no endpoint: search_corpus (the read path
+    # everyone uses) would fail confusingly at request time. Independent of
+    # gather.
+    if remote and not os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip():
+        errors.append(
+            f"Embedding model {model} is remote but IETF_LLM_EMBED_BASE_URL "
+            f"is not set: search_corpus would fail at request time. Set the "
+            f"endpoint base URL (e.g. https://host/v1)."
+        )
+
+    # 2. Exposure without auth: warn loudly, never block. Binding wide
+    # behind a proxy is the intended production shape (#41).
+    if not _is_loopback_host(host):
+        msg = (
+            f"binding to {host} (non-loopback): the server has no "
+            f"authentication or rate limiting and assumes a trust boundary "
+            f"(proxy / firewall) in front (#41)."
+        )
+        if gather:
+            msg += (
+                " gather is enabled, so an unauthenticated caller could "
+                "trigger cache writes and network egress."
+            )
+        warnings.append(msg)
+
+    return errors, warnings
+
+
+def _validate_serve_config(host: str, port: int) -> None:
+    """Log the boot posture, surface warnings, and refuse on hard errors.
+
+    Called before binding so a contradictory or under-provisioned config
+    fails fast at boot rather than minutes into a gather or on the first
+    search_corpus (project preference: upfront validation over
+    wait-then-fail). Raises SystemExit(1) on any hard error.
+    """
+    posture = _serve_posture(host, port)
+    log(
+        "serve posture: " + " ".join(f"{k}={v}" for k, v in posture.items()),
+        level=LogLevel.STATUS,
+    )
+    errors, warnings = _serve_config_problems(host)
+    for warning in warnings:
+        log(f"WARNING: {warning}", level=LogLevel.STATUS)
+    if errors:
+        for error in errors:
+            log(f"Refusing to start: {error}", level=LogLevel.ERROR)
+        raise SystemExit(1)
+
+
 def _run_http(server: Any) -> None:
     """Serve the MCP server over Streamable HTTP (R8).
 
@@ -2969,11 +3152,10 @@ def _run_http(server: Any) -> None:
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
 
-    host = os.environ.get("IETF_LLM_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    try:
-        port = int(os.environ.get("IETF_LLM_MCP_PORT", "8000"))
-    except ValueError:
-        port = 8000
+    host, port = _resolve_bind()
+    # Boot-time config validation + posture banner (issue #46): fail fast
+    # on contradictory / under-provisioned configs, warn on exposure.
+    _validate_serve_config(host, port)
     # Startup preamble: version + freshness floor, mirroring what /health
     # reports, so a rolling-deploy log shows which build a replica is on
     # and how stale its caches are at boot. Under IETF_LLM_LOG_FORMAT=json
