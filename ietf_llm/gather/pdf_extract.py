@@ -40,6 +40,20 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 #: Files we never try to extract — they're already text or non-PDF.
 _EXCLUDED_SUFFIXES = (".txt", ".md", ".json")
 
+# pypdf can return strings containing lone UTF-16 surrogate code points
+# (U+D800–U+DFFF) when a deck has an unusual glyph/CMap or malformed
+# embedded font. A Python str holds them fine, but encoding to UTF-8
+# under the default strict handler raises UnicodeEncodeError ("surrogates
+# not allowed") — which previously aborted the whole gather on one bad
+# deck. Replace them with U+FFFD so the text round-trips through the
+# write path and the downstream chunker / embedder.
+_LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def _strip_surrogates(text: str) -> str:
+    """Replace lone UTF-16 surrogate code points with U+FFFD."""
+    return _LONE_SURROGATE_RE.sub("�", text)
+
 
 # --- Slide context inference ----------------------------------------------
 
@@ -213,7 +227,9 @@ def extract_pdf_text(pdf_path: str) -> str:
         if not page_text:
             continue
         parts.append(f"## Page {idx}\n\n{page_text}")
-    return ("\n\n\f\n\n".join(parts) + "\n") if parts else ""
+    if not parts:
+        return ""
+    return _strip_surrogates("\n\n\f\n\n".join(parts) + "\n")
 
 
 def extract_all_pdfs(
@@ -229,6 +245,7 @@ def extract_all_pdfs(
         return []
     written: List[str] = []
     skipped_empty = 0
+    failed = 0
     for dirpath, _dirnames, filenames in os.walk(cache_dir):
         for name in sorted(filenames):
             if not name.lower().endswith(".pdf"):
@@ -241,38 +258,68 @@ def extract_all_pdfs(
             if not _needs_extraction(pdf_path, txt_path):
                 continue
 
-            # Slide PDFs get a context header listing the meeting,
-            # date (read from the companion minutes file), and topic
-            # slug — without it, a chunk from page 5 of a deck has no
-            # signal as to which IETF or interim it came from.
-            context = slide_context(relpath, cache_dir)
-            header = _render_slide_header(name, context)
-
-            text = extract_pdf_text(pdf_path)
-            if not text:
-                # Write a tiny stub so we don't retry every gather, and so
-                # the .txt's mtime signals "we tried and there's nothing
-                # useful here". The stub keeps the context header so an
-                # agent reading the digests still knows which meeting
-                # the PDF belongs to.
-                stub_body = (
-                    "_No extractable text. The PDF is image-only, encrypted, "
-                    "or its content stream couldn't be parsed._\n"
-                )
-                with open(txt_path, "w", encoding="utf-8") as fh:
-                    fh.write(header + "\n" + stub_body)
-                skipped_empty += 1
+            # One malformed deck must not abort the whole gather. Any
+            # unexpected failure (a write that still can't encode, a
+            # pypdf edge case that escapes the per-page guard, an I/O
+            # error) degrades to a logged skip so the corpus is still
+            # produced — minus that one document's text.
+            try:
+                if _extract_one(pdf_path, relpath, txt_path, cache_dir):
+                    skipped_empty += 1
                 written.append(txt_path)
-                continue
-            with open(txt_path, "w", encoding="utf-8") as fh:
-                fh.write(header + "\n" + text)
-            written.append(txt_path)
+            except Exception as exc:  # pylint: disable=broad-except
+                failed += 1
+                # A failed write may have left a truncated/empty .txt;
+                # remove it so this PDF is retried next gather rather
+                # than mistaken for a successful empty extraction.
+                _remove_if_exists(txt_path)
+                log(
+                    f"PDF extraction failed for {relpath}: "
+                    f"{type(exc).__name__}: {exc}",
+                    verbose,
+                    level=LogLevel.STATUS,
+                )
 
-    if written:
+    if written or failed:
         log(
             f"PDF extraction: {len(written)} files "
-            f"({skipped_empty} with no extractable text)",
+            f"({skipped_empty} with no extractable text, {failed} failed)",
             verbose,
             level=LogLevel.STATUS,
         )
     return written
+
+
+def _remove_if_exists(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _extract_one(pdf_path: str, relpath: str, txt_path: str, cache_dir: str) -> bool:
+    """Extract one PDF and write its sibling .txt. Returns True if the
+    PDF had no extractable text (a stub was written instead)."""
+    # Slide PDFs get a context header listing the meeting, date (read
+    # from the companion minutes file), and topic slug — without it, a
+    # chunk from page 5 of a deck has no signal as to which IETF or
+    # interim it came from.
+    context = slide_context(relpath, cache_dir)
+    header = _render_slide_header(name=os.path.basename(pdf_path), context=context)
+
+    text = extract_pdf_text(pdf_path)
+    if not text:
+        # Write a tiny stub so we don't retry every gather, and so the
+        # .txt's mtime signals "we tried and there's nothing useful
+        # here". The stub keeps the context header so an agent reading
+        # the digests still knows which meeting the PDF belongs to.
+        stub_body = (
+            "_No extractable text. The PDF is image-only, encrypted, "
+            "or its content stream couldn't be parsed._\n"
+        )
+        with open(txt_path, "w", encoding="utf-8") as fh:
+            fh.write(header + "\n" + stub_body)
+        return True
+    with open(txt_path, "w", encoding="utf-8") as fh:
+        fh.write(header + "\n" + text)
+    return False

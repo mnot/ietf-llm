@@ -11,7 +11,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import ietf_llm.gather.pdf_extract as pdf_extract
 from ietf_llm.gather.pdf_extract import (
+    _strip_surrogates,
     extract_all_pdfs,
     extract_pdf_text,
     slide_context,
@@ -110,6 +112,40 @@ def test_extract_all_pdfs_writes_stub_for_unextractable(tmp_path: Path) -> None:
     txt = tmp_path / "bad.pdf.txt"
     assert txt.exists()
     assert "No extractable text" in txt.read_text()
+
+
+def test_strip_surrogates_replaces_lone_surrogates() -> None:
+    # A lone high surrogate that would raise UnicodeEncodeError on a
+    # strict utf-8 write becomes U+FFFD; surrounding text is untouched.
+    cleaned = _strip_surrogates("a\ud834bc\udfff")
+    assert cleaned == "a�bc�"
+    # And the result actually encodes as utf-8 now.
+    assert cleaned.encode("utf-8")
+
+
+def test_extract_all_pdfs_survives_unencodable_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # A deck whose extracted text still can't be utf-8 encoded (a lone
+    # surrogate that slipped past sanitisation) must not abort the gather:
+    # it degrades to a logged skip, and other decks still get written.
+    good = tmp_path / "good.pdf"
+    good.write_bytes(MINIMAL_PDF)
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(MINIMAL_PDF)
+
+    def fake_extract(pdf_path: str) -> str:
+        if pdf_path.endswith("bad.pdf"):
+            return "## Page 1\n\nlone surrogate \ud800 here\n"
+        return extract_pdf_text(pdf_path)
+
+    monkeypatch.setattr(pdf_extract, "extract_pdf_text", fake_extract)
+    # Should not raise.
+    written = extract_all_pdfs(str(tmp_path))
+    # The good deck still produced a .txt; the bad one did not.
+    assert (tmp_path / "good.pdf.txt").exists()
+    assert not (tmp_path / "bad.pdf.txt").exists()
+    assert str(tmp_path / "good.pdf.txt") in written
 
 
 def test_extract_all_pdfs_ignores_non_pdfs(tmp_path: Path) -> None:
