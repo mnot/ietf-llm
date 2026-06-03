@@ -66,6 +66,35 @@ def maybe_autocomplete(parser: Any) -> None:
     argcomplete.autocomplete(parser)
 
 
+def print_completion_snippet(shell: str) -> int:
+    """Print the argcomplete registration snippet for every ietf-llm
+    command, for the given shell. Returns an exit code.
+
+    Routed through `ietf-llm` itself (not argcomplete's own
+    `register-python-argcomplete` script) because under `pipx` only
+    this package's declared entry points are on PATH — a dependency's
+    scripts aren't exposed. `eval "$(ietf-llm --completion zsh)"`
+    works regardless of how the package was installed.
+    """
+    try:
+        import argcomplete  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        print(
+            "argcomplete is not installed (it ships with ietf-llm; "
+            "try reinstalling).",
+            file=sys.stderr,
+        )
+        return 1
+    commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
+    # argcomplete ships no type stubs; shellcode isn't in its __all__.
+    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
+        commands,
+        shell=shell,
+    )
+    print(snippet)
+    return 0
+
+
 def is_synthetic_wg(name: str) -> bool:
     """True for synthetic / non-WG corpora (the `x-` prefix convention).
 

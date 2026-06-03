@@ -42,6 +42,17 @@ the corpus), or a pasted thread with a `[wg]` subject prefix.
 Identify the corpus, check `list_corpora`, query it or prompt a
 gather.
 
+**Re-gathering is debounced; a "fresh, skipped" result is success.**
+Before re-gathering an *already-cached* corpus, check its freshness —
+`overview` and `list_corpora` surface the last-gathered date. Only
+re-gather if the corpus is materially stale or the user explicitly asks
+for fresh data; on a shared server, prefer the cached snapshot. A
+`start_gather` of a corpus gathered within the freshness window (default
+6h, `IETF_LLM_GATHER_MIN_INTERVAL`) returns a "fresh, skipped" note
+**instead of** starting one — that is success, not failure: query the
+existing snapshot, don't retry the gather. Pass `force=True` (CLI:
+`--force`) only on an explicit request for fresh data.
+
 Reaching out to a live IETF resource (datatracker.ietf.org,
 mailarchive.ietf.org, a draft URL, GitHub) is occasionally
 necessary — e.g. to confirm a draft's *current* state, which the

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from . import freshness
 from .utils import (
     LockHeld,
     LogLevel,
@@ -79,6 +80,27 @@ class GatherSpec:
     months: Optional[int] = None
     add_mentioned_drafts: bool = False
     include_related_drafts: bool = False
+    #: Bypass the freshness debounce (re-gather even if recently gathered).
+    #: start() checks it directly; to_argv also renders it so the background
+    #: thread's _gather_one honours the same bypass.
+    force: bool = False
+
+    def has_sources(self) -> bool:
+        """True if this request supplies any source/scope flags — i.e. it is
+        more than a plain refresh. Such a request bypasses the freshness
+        debounce, since the caller is changing *what* gets gathered, not
+        just asking to refresh the same snapshot."""
+        return bool(
+            self.mailing_list
+            or self.draft
+            or self.github
+            or self.github_label
+            or self.exclude_github_label
+            or self.author
+            or self.new_drafts
+            or self.add_mentioned_drafts
+            or self.include_related_drafts
+        )
 
     def to_argv(self) -> List[str]:
         """Render as CLI-style argv for `__main__.run_gather`."""
@@ -103,6 +125,10 @@ class GatherSpec:
             argv.append("--add-mentioned-drafts")
         if self.include_related_drafts:
             argv.append("--include-related-drafts")
+        if self.force:
+            # Propagate the bypass to the background thread's _gather_one,
+            # which re-checks the debounce; start() already decided to run.
+            argv.append("--force")
         return argv
 
     def to_dict(self) -> Dict[str, Any]:
@@ -147,15 +173,29 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     """Start a background gather for `spec.corpus`.
 
     Returns `{"started": True, "corpus": ...}` when a fresh gather was
-    launched, or `{"started": False, "reason": "already running", ...}` if
-    one is already in flight for this corpus (in this process or another).
-    Returns immediately; progress is tracked via the status file.
+    launched, or `{"started": False, "reason": ...}` otherwise:
+    `"already running"` if one is already in flight for this corpus (in
+    this process or another), `"fresh"` (with a `"detail"` line) if the
+    corpus was gathered within the freshness-debounce window and was not
+    forced. Returns immediately; progress is tracked via the status file.
     """
     corpus = spec.corpus
     # Validate before any path is constructed: _run's first act is to take a
     # per-corpus file_lock, which makedirs the (corpus-derived) lock path.
     if not valid_corpus_name(corpus):
         return {"started": False, "reason": "invalid name", "corpus": corpus}
+    # Freshness debounce: a plain re-gather of a recently-gathered corpus is
+    # skipped (the snapshot is still fresh). Forced or source-changing
+    # requests bypass it — they aren't plain refreshes.
+    if not spec.force and not spec.has_sources():
+        detail = freshness.debounce_reason(corpus)
+        if detail is not None:
+            return {
+                "started": False,
+                "reason": "fresh",
+                "detail": detail,
+                "corpus": corpus,
+            }
     with _registry_lock:
         existing = _jobs.get(corpus)
         if existing is not None and existing.is_alive():

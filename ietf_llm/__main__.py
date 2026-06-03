@@ -24,7 +24,7 @@ from . import __version__, config, corpus, http_metrics, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
-from .freshness import last_gathered, record_gather
+from .freshness import cli_debounce_skip, last_gathered, record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.catalog import ensure_catalog_index
 from .gather.charter import process_charter
@@ -65,6 +65,7 @@ from .utils import (
     is_synthetic_wg,
     log,
     maybe_autocomplete,
+    print_completion_snippet,
     wg_completer,
 )
 
@@ -276,6 +277,13 @@ def build_parser() -> argparse.ArgumentParser:
         "per-chunk column.",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-gather even if the corpus is within the freshness window "
+        "(IETF_LLM_GATHER_MIN_INTERVAL, default 6h); overrides the debounce "
+        "that otherwise skips a just-gathered corpus.",
+    )
+    parser.add_argument(
         "--clear-cache",
         action="store_true",
         help="Clear the local file cache for this corpus and re-download.",
@@ -309,7 +317,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     args = parser.parse_args()
 
     if args.completion:
-        sys.exit(_print_completion(args.completion))
+        sys.exit(print_completion_snippet(args.completion))
 
     if args.install_claude_skill:
         sys.exit(install())
@@ -368,35 +376,6 @@ def _discover_gathered_wgs() -> List[str]:
     because `--all` and `--list` read naturally with it.
     """
     return cached_wg_names()
-
-
-def _print_completion(shell: str) -> int:
-    """Print the argcomplete registration snippet for every ietf-llm
-    command, for the given shell. Returns an exit code.
-
-    Routed through `ietf-llm` itself (not argcomplete's own
-    `register-python-argcomplete` script) because under `pipx` only
-    this package's declared entry points are on PATH — a dependency's
-    scripts aren't exposed. `eval "$(ietf-llm --completion zsh)"`
-    works regardless of how the package was installed.
-    """
-    try:
-        import argcomplete  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        print(
-            "argcomplete is not installed (it ships with ietf-llm; "
-            "try reinstalling).",
-            file=sys.stderr,
-        )
-        return 1
-    commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
-    # argcomplete ships no type stubs; shellcode isn't in its __all__.
-    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
-        commands,
-        shell=shell,
-    )
-    print(snippet)
-    return 0
 
 
 def _print_cached_wgs() -> int:
@@ -714,6 +693,14 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     if shape is None:
         return False  # unusable name (typo); _resolve_corpus_shape logged why
     synth, group_backed = shape
+
+    # Freshness debounce: a plain re-gather of a recently-gathered corpus is
+    # skipped (checked on raw CLI args, before merge folds in persisted
+    # sources). --force / a source change bypasses it. A skip is success.
+    skip = cli_debounce_skip(args)
+    if skip is not None:
+        log(skip, verbosity, level=LogLevel.STATUS)
+        return True
 
     # Validate the *new* CLI-provided --draft / --mailing-list values
     # against their authoritative sources before config.merge persists
