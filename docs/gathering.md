@@ -17,9 +17,10 @@ NotebookLM exporter, and CLI search all read from.
 
 > **From an MCP client:** if the server was started with `IETF_LLM_ENABLE_GATHER=1`, an assistant
 > can run the same gather in-session via the `start_gather` tool and watch it with `gather_status`,
-> instead of you running `ietf-llm <name>` in a shell. See
-> [Running the MCP server](mcp-server.md#in-session-gather-opt-in). The CLI below is the canonical
-> path and is always available.
+> instead of you running `ietf-llm <name>` in a shell. This works for a local stdio server
+> ([how to enable it](mcp-local.md#in-session-gather-opt-in)) as well as an
+> [HTTP one](mcp-server.md#in-session-gather-opt-in). The CLI below is the canonical path and is
+> always available.
 
 Gathering also builds a **semantic-search index**, which powers both the MCP `search_corpus` tool
 and `ietf-llm-search`. By default it uses

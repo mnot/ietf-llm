@@ -141,6 +141,26 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or `.cursor/mcp.json
 }
 ```
 
+## In-session gather (opt-in)
+
+The server is read-only by default. Set `IETF_LLM_ENABLE_GATHER=1` in its `env` to register the
+`start_gather` / `gather_status` tools, letting the assistant gather a corpus in-session instead of
+you running `ietf-llm <name>` in a shell:
+
+```json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "ietf-llm-mcp",
+      "env": { "IETF_LLM_ENABLE_GATHER": "1" }
+    }
+  }
+}
+```
+
+Gather writes to the cache and reaches the network — the one break from read-only — so leave it off
+unless that's fine. See the [full tool description](mcp-server.md#in-session-gather-opt-in).
+
 ## Tuning
 
 Each tool call has a server-side deadline so a stuck call fails fast with a clear message rather
