@@ -90,6 +90,16 @@ body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes *
 — a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured and
 ready to serve", not "the backend answered".
 
+The JSON body also carries two operator-facing fields that don't gate readiness. `version` is the
+running package version, for correlating behaviour across a rolling deploy. `corpora` is a bounded
+freshness summary read from the per-corpus `last-gathered` sentinels (no upstream call): `count`
+(all cached corpora), `tracked` (those carrying a sentinel — caches predating freshness tracking
+have none), and `oldest` / `newest`, each `{corpus, last_gathered, age_seconds}` (or `null` when
+nothing is tracked). `oldest` is the staleness floor — a replica can be perfectly ready while
+serving a corpus that went stale days ago, and this is how an operator sees that at a glance. It is
+deliberately a summary, not a per-corpus row, so a box serving many corpora keeps a small payload;
+the per-corpus breakdown belongs to a future `/metrics` scrape.
+
 ## Cache freshness and degraded mode
 
 **The serve process never writes the cache.** `gather` is the only writer (`ietf-llm <name>`), run
@@ -122,6 +132,10 @@ Set `IETF_LLM_LOG_FORMAT=json` for one-line structured log records (`ts` / `leve
 log collector can ingest; the default is human-readable text. Logs go to stderr (stdout is reserved
 for the stdio protocol; container runtimes capture stderr). Log messages carry no secrets.
 `IETF_LLM_DEBUG_LOG=1` additionally records per-request timing telemetry.
+
+When serving over HTTP, the server emits a one-line startup preamble at this same log level —
+version, bind address, and the `corpora` freshness floor — mirroring `/health`, so a deploy log
+shows which build a replica came up on and how stale its caches were at boot.
 
 | Variable | Purpose | Default |
 |---|---|---|
