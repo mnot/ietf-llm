@@ -55,4 +55,3 @@ ietf-llm-search [OPTIONS] <name> "<query>"
 | `--until ISO_DATE` | Only chunks dated on or before `ISO_DATE`. |
 | `-q`, `--quiet` | Suppress status logging. |
 | `--version` | Print the version and exit. |
-
