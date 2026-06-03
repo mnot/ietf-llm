@@ -17,9 +17,10 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from typing import Any, Iterable, Sequence
 
-from .. import oai_compat
+from .. import oai_compat, serve_metrics
 from ..utils import LogLevel, Verbosity, log
 
 #: Default embedding model. Local, no API key, MPS-accelerated on Apple
@@ -165,13 +166,23 @@ class _OpenAICompatEmbeddingModel:
         if not batch:
             return []
         payload = {"model": self._model_id, "input": list(batch)}
-        body = oai_compat.post_json_with_retry(
-            self._url,
-            payload,
-            self._headers,
-            timeout=self._timeout,
-            max_retries=self._max_retries,
-        )
+        # Embed-backend RED for the /metrics scrape (issue #40): this is
+        # the paid, metered upstream the read path depends on. Time the
+        # whole retrying call and record success/failure either way; a
+        # raised error still counts (in the `finally`) before re-raising.
+        start = time.monotonic()
+        errored = True
+        try:
+            body = oai_compat.post_json_with_retry(
+                self._url,
+                payload,
+                self._headers,
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+            )
+            errored = False
+        finally:
+            serve_metrics.record_embed(time.monotonic() - start, error=errored)
         # OpenAI returns one object per input carrying an explicit `index`;
         # sort by it so the output order matches the input regardless of
         # what order the server happens to emit.

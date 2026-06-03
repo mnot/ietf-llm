@@ -1,0 +1,212 @@
+"""Serve-side RED metrics for the hosted HTTP deployment — the read side.
+
+Distinct from `http_metrics.py` (gather/write-side egress accounting): this
+module is the process-global, in-memory registry behind the `GET /metrics`
+route the HTTP serve path exposes (R8). It records, for the running server:
+
+  - **RED per tool** — every `_offload`-wrapped MCP tool records its
+    request count, error count, and a latency histogram, labelled by tool
+    (issue #40).
+  - **Embed backend** — each request to the remote OpenAI-compatible
+    `/embeddings` endpoint (`embeddings/models.py`) records call count,
+    error count, and latency. This is the one read-path dependency that
+    drives a paid, metered upstream, so it is the thing most worth
+    watching for cost and latency.
+
+Index-freshness gauges are NOT held here: they are derived at scrape time
+from the per-corpus `last-gathered` sentinels and passed into `render()`
+by the endpoint, so this module stays free of any `mcp_server` import
+(no cycle) and holds no state that can go stale between scrapes.
+
+Zero new dependencies: the Prometheus text exposition format (v0.0.4) is
+simple enough to emit by hand, so the stdio/local install stays lean and
+nothing new is pulled onto the serve image either. The registry is
+process-global behind a lock — unlike the thread-local gather accumulator,
+a served process wants the aggregate across all its request threads.
+
+Recording is unconditional (a handful of updates under a lock, paid on
+every tool call regardless of transport); the data is only ever exposed
+when the HTTP `/metrics` route is mounted, so the stdio path accumulates
+harmless counters no one reads.
+"""
+
+from __future__ import annotations
+
+import threading
+from typing import Dict, Iterable, List, Optional, Tuple
+
+#: Histogram bucket upper bounds in seconds (the implicit +Inf bucket is
+#: emitted last). Spans a sub-10ms cache hit through a multi-second
+#: embedding-model cold load up to the tool deadline's neighbourhood.
+_BUCKETS: Tuple[float, ...] = (
+    0.01,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
+)
+
+
+class _Histogram:
+    """A minimal Prometheus-style histogram plus an error counter.
+
+    `counts[i]` is the cumulative "<= _BUCKETS[i]" observation count, so
+    each bucket renders directly. `errors` rides along here rather than in
+    a parallel map so a tool's RED triplet (requests/errors/latency) lives
+    in one object."""
+
+    __slots__ = ("counts", "sum", "count", "errors")
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.counts: List[int] = [0] * len(_BUCKETS)
+        self.sum: float = 0.0
+        self.count: int = 0
+        self.errors: int = 0
+
+    def observe(self, value: float, *, error: bool) -> None:
+        self.count += 1
+        self.sum += value
+        if error:
+            self.errors += 1
+        for i, bound in enumerate(_BUCKETS):
+            if value <= bound:
+                self.counts[i] += 1
+
+
+# --- Process-global registry -----------------------------------------------
+
+_LOCK = threading.Lock()
+#: tool name -> its RED histogram (carries request count + errors + latency)
+_tools: Dict[str, _Histogram] = {}
+#: the remote /embeddings backend (a single unlabelled series)
+_embed = _Histogram()
+
+
+def record_tool(tool: str, elapsed: float, *, error: bool) -> None:
+    """Record one MCP tool invocation: its latency and whether it errored.
+
+    Called from `_offload` in `mcp_server.py` for every tool, on the way
+    out (the `finally`), so a timeout or exception is still counted."""
+    with _LOCK:
+        hist = _tools.get(tool)
+        if hist is None:
+            hist = _Histogram()
+            _tools[tool] = hist
+        hist.observe(elapsed, error=error)
+
+
+def record_embed(elapsed: float, *, error: bool) -> None:
+    """Record one request to the remote `/embeddings` endpoint."""
+    with _LOCK:
+        _embed.observe(elapsed, error=error)
+
+
+def reset() -> None:
+    """Clear all counters. For tests; the server never calls this."""
+    with _LOCK:
+        _tools.clear()
+        _embed.reset()
+
+
+# --- Prometheus text exposition --------------------------------------------
+
+
+def _escape_label(value: str) -> str:
+    """Escape a Prometheus label value (backslash, double-quote, newline)."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _fmt(value: float) -> str:
+    """Render a whole-number float without its trailing `.0`, so integer
+    counts read as integers in the exposition."""
+    if value == int(value):
+        return str(int(value))
+    return repr(value)
+
+
+def _emit_histogram(
+    lines: List[str], name: str, label: str, hist: "_Histogram"
+) -> None:
+    """Append the `_bucket`/`_sum`/`_count` series for one histogram.
+
+    `label` is a pre-rendered `key="value"` fragment (or ""). Buckets are
+    emitted directly because `hist.counts` is already cumulative."""
+    inner = f"{label}," if label else ""
+    for bound, count in zip(_BUCKETS, hist.counts):
+        lines.append(f'{name}_bucket{{{inner}le="{_fmt(bound)}"}} {count}')
+    lines.append(f'{name}_bucket{{{inner}le="+Inf"}} {hist.count}')
+    suffix = f"{{{label}}}" if label else ""
+    lines.append(f"{name}_sum{suffix} {_fmt(hist.sum)}")
+    lines.append(f"{name}_count{suffix} {hist.count}")
+
+
+def render(corpus_ages: Optional[Iterable[Tuple[str, int]]] = None) -> str:
+    """Render the full Prometheus text exposition.
+
+    `corpus_ages` is `(corpus, age_seconds)` pairs the endpoint derives
+    from the `last-gathered` sentinels at scrape time (only tracked
+    corpora; untracked ones are omitted). Passed in rather than computed
+    here so this module needs nothing from `mcp_server` / `freshness`.
+
+    The whole body is built under the lock so a single scrape is a
+    consistent snapshot; scrapes are infrequent and recorders only block
+    for the few microseconds it takes to format some lines.
+    """
+    with _LOCK:
+        return _render_locked(corpus_ages)
+
+
+def _render_locked(corpus_ages: Optional[Iterable[Tuple[str, int]]]) -> str:
+    tools = sorted(_tools.items())
+    lines: List[str] = []
+
+    # RED per tool.
+    lines.append("# HELP ietf_llm_tool_requests_total MCP tool invocations.")
+    lines.append("# TYPE ietf_llm_tool_requests_total counter")
+    for tool, hist in tools:
+        lab = f'tool="{_escape_label(tool)}"'
+        lines.append(f"ietf_llm_tool_requests_total{{{lab}}} {hist.count}")
+
+    lines.append("# HELP ietf_llm_tool_errors_total Errored/timed-out tool calls.")
+    lines.append("# TYPE ietf_llm_tool_errors_total counter")
+    for tool, hist in tools:
+        lab = f'tool="{_escape_label(tool)}"'
+        lines.append(f"ietf_llm_tool_errors_total{{{lab}}} {hist.errors}")
+
+    lines.append("# HELP ietf_llm_tool_latency_seconds MCP tool latency.")
+    lines.append("# TYPE ietf_llm_tool_latency_seconds histogram")
+    for tool, hist in tools:
+        lab = f'tool="{_escape_label(tool)}"'
+        _emit_histogram(lines, "ietf_llm_tool_latency_seconds", lab, hist)
+
+    # Embed backend (remote /embeddings).
+    lines.append("# HELP ietf_llm_embed_requests_total Remote /embeddings requests.")
+    lines.append("# TYPE ietf_llm_embed_requests_total counter")
+    lines.append(f"ietf_llm_embed_requests_total {_embed.count}")
+    lines.append("# HELP ietf_llm_embed_errors_total Failed /embeddings requests.")
+    lines.append("# TYPE ietf_llm_embed_errors_total counter")
+    lines.append(f"ietf_llm_embed_errors_total {_embed.errors}")
+    lines.append("# HELP ietf_llm_embed_latency_seconds Remote /embeddings latency.")
+    lines.append("# TYPE ietf_llm_embed_latency_seconds histogram")
+    _emit_histogram(lines, "ietf_llm_embed_latency_seconds", "", _embed)
+
+    # Index freshness, computed by the caller from the last-gathered
+    # sentinels (no upstream call; R18).
+    lines.append(
+        "# HELP ietf_llm_corpus_last_gathered_age_seconds "
+        "Per-corpus last-gathered age."
+    )
+    lines.append("# TYPE ietf_llm_corpus_last_gathered_age_seconds gauge")
+    for corpus, age in corpus_ages or ():
+        lab = f'corpus="{_escape_label(corpus)}"'
+        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {int(age)}")
+
+    return "\n".join(lines) + "\n"

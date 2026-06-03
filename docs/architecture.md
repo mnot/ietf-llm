@@ -299,6 +299,7 @@ ietf_llm/
 ├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
 ├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
 ├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
+├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
 ├── data/skill/IETF.md      # interpretive norms, served on demand via read_ietf_norms
 │
@@ -586,16 +587,27 @@ is hard-capped (default 400 lines, max 5000) as context hygiene.
 The default transport is the custom threaded-writer **stdio** path (see
 `_stdio_transport.py`, which sidesteps an upstream loop-blocking write).
 Setting `IETF_LLM_MCP_TRANSPORT=http` serves standard MCP **Streamable
-HTTP** instead — FastMCP's `streamable_http_app()` under uvicorn, with a
-`GET /health` readiness route added — for a shared deployment serving
-many clients from one process. Concurrency is safe because every tool
-opens its own read-only sqlite connection per call (`_connect_ro`,
-never shared across `anyio` worker threads) and the index is queried
-read-only (no migrations on the serve path).
+HTTP** instead — FastMCP's `streamable_http_app()` under uvicorn, with
+`GET /health` (readiness) and `GET /metrics` (Prometheus scrape) routes
+added — for a shared deployment serving many clients from one process.
+Concurrency is safe because every tool opens its own read-only sqlite
+connection per call (`_connect_ro`, never shared across `anyio` worker
+threads) and the index is queried read-only (no migrations on the serve
+path).
 
 For a hosted deployment, `IETF_LLM_LOG_FORMAT=json` switches `log()` to
 structured one-line JSON records on stderr (no secrets), for a log
 collector; `IETF_LLM_DEBUG_LOG` retains the per-request timing telemetry.
+`GET /health` reports binary readiness plus build version and a bounded
+per-corpus freshness summary (no upstream call; R18). `GET /metrics`
+exposes a fleet-aggregate Prometheus view — RED per tool (request /
+error counts + latency histogram, recorded at the `_offload` chokepoint),
+the remote `/embeddings` backend's call / error counts + latency
+(`serve_metrics.py`, recorded in `embeddings/models.py`), and a
+per-corpus `last-gathered` age gauge derived at scrape time. It is
+zero-dependency (the text exposition is emitted by hand) and read-only;
+the registry is process-global and accumulates harmlessly even on the
+stdio path, where nothing scrapes it.
 
 The HTTP serve path runs **boot-time config validation** before binding
 (`_validate_serve_config`), so a contradictory or under-provisioned
