@@ -8,12 +8,13 @@ never read from a file (the file:// + SQLite slice has none yet — an S3 access
 key / SQL password would be env-only). This is the single place that reads these
 knobs; the table below is authoritative. See `docs/cloud-storage.md`.
 
-| key            | env var                  | global config.json | secret |
-|----------------|--------------------------|--------------------|--------|
-| store backend  | IETF_LLM_STORE_BACKEND   | store_backend      | no     |
-| control DB     | IETF_LLM_CONTROL_DB      | control_db         | no     |
-| blob dir       | IETF_LLM_BLOB_DIR        | blob_dir           | no     |
-| scratch dir    | IETF_LLM_SCRATCH_DIR     | scratch_dir        | no     |
+| key             | env var                    | global config.json | secret |
+|-----------------|----------------------------|--------------------|--------|
+| store backend   | IETF_LLM_STORE_BACKEND     | store_backend      | no     |
+| control DB      | IETF_LLM_CONTROL_DB        | control_db         | no     |
+| control DB token| IETF_LLM_CONTROL_DB_TOKEN  | —                  | YES    |
+| blob dir        | IETF_LLM_BLOB_DIR          | blob_dir           | no     |
+| scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
 """
 
 from __future__ import annotations
@@ -52,6 +53,14 @@ def control_db() -> Optional[str]:
     A filesystem path selects the local SQLite backend (created on first use); a
     cloud database-API locator (e.g. Cloudflare D1) selects that adapter."""
     return _resolve(CONTROL_DB, None)
+
+
+def control_db_token() -> Optional[str]:
+    """API token for a cloud control-plane database (e.g. a Cloudflare D1 token),
+    or None if unset. A **secret**: read from the environment only, never the
+    config file."""
+    raw = os.environ.get("IETF_LLM_CONTROL_DB_TOKEN")
+    return raw.strip() if raw and raw.strip() else None
 
 
 def blob_dir() -> Optional[str]:

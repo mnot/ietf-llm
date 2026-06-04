@@ -293,7 +293,8 @@ ietf_llm/
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── corpus_store.py         # CorpusStore seam: port + LocalCorpusStore + factory
-├── corpus_control.py       # cloud control plane: versions / pointer / leases (SQLite)
+├── corpus_control.py       # control plane: ControlPlane + SqlExecutor seam + SQLite
+├── corpus_control_d1.py    # Cloudflare D1 executor (cloud control plane over HTTP)
 ├── corpus_blobs.py         # cloud blob plane: immutable whole-object store (file://)
 ├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default

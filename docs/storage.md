@@ -101,10 +101,14 @@ so a stateless cloud database over HTTP behaves exactly like a local file.
   number of *processes on one host* but **not writers across hosts**. So the SQLite backend fits a
   **single host** (the serve process(es) and the cron gather sharing one local file) or development.
 - For **multiple hosts**, point it at a **SQLite-compatible cloud database reached over its HTTP
-  API** — e.g. **Cloudflare D1** — via that backend's adapter. That is the configuration in which the
-  cross-host behaviour described above (every replica resolving the same pointer; one lease shared
-  between a cron gather and the serve fleet) actually holds. Any API token is a secret and comes from
-  the environment, never `config.json`.
+  API**, via that backend's adapter. That is the configuration in which the cross-host behaviour
+  described above (every replica resolving the same pointer; one lease shared between a cron gather
+  and the serve fleet) actually holds. **Cloudflare D1** ships today: set
+  `IETF_LLM_CONTROL_DB=d1://<account_id>/<database_id>` and the API token in
+  `IETF_LLM_CONTROL_DB_TOKEN` (a **secret** — environment only, never `config.json`). The D1 adapter
+  uses only D1's HTTP API (no Workers binding), runs the lease as one `/raw` call and publish as one
+  atomic D1 `batch`, and pulls no extra dependency. Other SQLite-compatible cloud databases (e.g.
+  libSQL/Turso) plug in as additional adapters behind the same seam.
 
 `IETF_LLM_BLOB_DIR` is the immutable blob store: a directory path (`file://`), fine for development or
 a shared volume (whole-object writes + atomic rename).

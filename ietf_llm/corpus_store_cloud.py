@@ -37,9 +37,15 @@ def _new_version() -> str:
 
 
 def _build_control_plane(locator: str) -> ControlPlane:
-    """Build the control-plane backend from `locator`. A filesystem path selects
-    the local SQLite backend; cloud database-API adapters (e.g. Cloudflare D1)
-    plug in here by scheme."""
+    """Build the control-plane backend from `locator`'s scheme: `d1://…` selects
+    the Cloudflare D1 adapter; a filesystem path selects the local SQLite
+    backend."""
+    if locator.startswith("d1://"):
+        from .corpus_control_d1 import (  # pylint: disable=import-outside-toplevel
+            D1ControlPlane,
+        )
+
+        return D1ControlPlane(locator)
     return SqliteControlPlane(locator)
 
 
