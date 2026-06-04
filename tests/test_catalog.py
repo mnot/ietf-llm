@@ -2,7 +2,7 @@
 Datatracker mirror writer (`ietf_llm.gather.catalog`).
 
 The reader is exercised against a small seeded `_catalog/catalog.json`;
-the writer against a stubbed `requests.get` so no HTTP is hit. The final
+the writer against a stubbed HTTP session so no HTTP is hit. The final
 block is a writer->reader round-trip — drive `ensure_catalog_index` with
 canned Datatracker payloads, then read the bytes back through
 `render_efforts` — the durable guard against writer/reader format drift
@@ -306,7 +306,7 @@ def _install_stub(monkeypatch: pytest.MonkeyPatch, handler: Any) -> List[Dict[st
         calls.append({"url": url, "headers": headers or {}})
         return handler(url, headers or {})
 
-    monkeypatch.setattr(gather_catalog.requests, "get", fake_get)
+    monkeypatch.setattr(gather_catalog.http_session(), "get", fake_get)
     return calls
 
 

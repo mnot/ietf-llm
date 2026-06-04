@@ -21,6 +21,7 @@ from ..utils import (
     clean_html,
     fetch_resource,
     format_filename,
+    http_session,
     log,
     write_if_changed,
 )
@@ -553,7 +554,7 @@ def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
 def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
     """Check head/stream for PDF content type and download."""
     try:
-        p_res = requests.get(
+        p_res = http_session().get(
             url,
             timeout=60,
             stream=True,

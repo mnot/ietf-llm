@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from ..catalog import CATALOG_FILE, catalog_index_dir
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
+from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, http_session, log
 from . import _mirror
 
 _API = "https://datatracker.ietf.org/api/v1/group/group/"
@@ -99,7 +99,7 @@ def _refresh_source(target_dir: str, name: str, url: str, verbosity: Verbosity) 
     if etag:
         headers["If-None-Match"] = etag
     try:
-        response = requests.get(url, headers=headers, timeout=_TIMEOUT)
+        response = http_session().get(url, headers=headers, timeout=_TIMEOUT)
     except requests.RequestException as err:
         log(f"Catalog: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
         return False

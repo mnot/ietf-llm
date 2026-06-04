@@ -210,7 +210,7 @@ def test_validate_github_repos_keeps_real_drops_missing(
     def fake_get(url: str, **_kwargs: object) -> _Resp:
         return _Resp(200 if "httpwg/drafts" in url else 404)
 
-    monkeypatch.setattr(github.requests, "get", fake_get)  # type: ignore[attr-defined]
+    monkeypatch.setattr(github.http_session(), "get", fake_get)  # type: ignore[attr-defined]
     valid = validate_github_repos(
         ["httpwg/drafts", "httpwg/typodrafts"], verbose=Verbosity.QUIET,
     )
@@ -222,7 +222,7 @@ def test_validate_github_repos_drops_non_owner_repo(monkeypatch: object) -> None
     def boom(*_a: object, **_k: object) -> object:
         raise AssertionError("should not probe a malformed value")
 
-    monkeypatch.setattr(github.requests, "get", boom)  # type: ignore[attr-defined]
+    monkeypatch.setattr(github.http_session(), "get", boom)  # type: ignore[attr-defined]
     assert validate_github_repos(["just-a-name"], verbose=Verbosity.QUIET) == []
 
 
@@ -232,7 +232,7 @@ def test_validate_github_repos_keeps_on_network_error(monkeypatch: object) -> No
     def fake_get(*_a: object, **_k: object) -> object:
         raise requests.RequestException("boom")
 
-    monkeypatch.setattr(github.requests, "get", fake_get)  # type: ignore[attr-defined]
+    monkeypatch.setattr(github.http_session(), "get", fake_get)  # type: ignore[attr-defined]
     assert validate_github_repos(["httpwg/drafts"], verbose=Verbosity.QUIET) == [
         "httpwg/drafts"
     ]
@@ -249,7 +249,7 @@ def test_download_github_issues_owner_starting_with_http(
         seen.append(url)
         return _Resp(404)  # no gh-pages archive; falls through to the API
 
-    monkeypatch.setattr(github.requests, "get", fake_get)  # type: ignore[attr-defined]
+    monkeypatch.setattr(github.http_session(), "get", fake_get)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
         github, "_fetch_all_issues", lambda *a, **k: [],
     )

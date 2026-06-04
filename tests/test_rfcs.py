@@ -2,7 +2,7 @@
 rfc.fyi mirror writer (`ietf_llm.gather.rfcs`).
 
 The reader is exercised against a small seeded `_rfc/` cache; the writer
-against a stubbed `requests.get` so no HTTP is hit. The final block is a
+against a stubbed HTTP session so no HTTP is hit. The final block is a
 writer->reader round-trip — drive `ensure_rfc_index` with canned
 responses, then read the bytes back through `render_*` — which is the
 durable guard against writer/reader format drift.
@@ -262,8 +262,8 @@ def _install_stub(
     monkeypatch: pytest.MonkeyPatch,
     handler: Any,
 ) -> List[Dict[str, Any]]:
-    """Replace gather.rfcs.requests.get with `handler`, recording each
-    call's url + headers. Returns the call log."""
+    """Replace the shared HTTP session's get with `handler`, recording
+    each call's url + headers. Returns the call log."""
     calls: List[Dict[str, Any]] = []
 
     def fake_get(
@@ -272,7 +272,7 @@ def _install_stub(
         calls.append({"url": url, "headers": headers or {}})
         return handler(url, headers or {})
 
-    monkeypatch.setattr(gather_rfcs.requests, "get", fake_get)
+    monkeypatch.setattr(gather_rfcs.http_session(), "get", fake_get)
     return calls
 
 

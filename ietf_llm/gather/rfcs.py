@@ -36,7 +36,7 @@ import os
 import requests
 
 from ..rfcs import RFC_FILES, rfc_index_dir
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
+from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, http_session, log
 from . import _mirror
 
 RFC_DATA_BASE = "https://rfc.fyi/var"
@@ -78,7 +78,7 @@ def _refresh_one(target_dir: str, name: str, verbosity: Verbosity, force: bool) 
         headers["If-None-Match"] = etag
     url = f"{RFC_DATA_BASE}/{name}"
     try:
-        response = requests.get(url, headers=headers, timeout=_TIMEOUT)
+        response = http_session().get(url, headers=headers, timeout=_TIMEOUT)
     except requests.RequestException as err:
         log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
         return

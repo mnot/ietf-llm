@@ -46,7 +46,14 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, get_cache_dir, log
+from ..utils import (
+    DEFAULT_HEADERS,
+    LogLevel,
+    Verbosity,
+    get_cache_dir,
+    http_session,
+    log,
+)
 
 _CACHE_FILENAME = "_github-users.json"
 _USER_API = "https://api.github.com/users/"
@@ -177,7 +184,7 @@ def _fetch_one(  # pylint: disable=too-many-return-statements
     rather than raising — see _Outcome docstring."""
     url = _USER_API + login
     try:
-        response = requests.get(url, headers=headers, timeout=10.0)
+        response = http_session().get(url, headers=headers, timeout=10.0)
     except requests.RequestException as err:
         log(
             f"GitHub user lookup transient error for {login}: "

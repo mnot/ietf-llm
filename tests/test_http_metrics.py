@@ -159,7 +159,7 @@ class _FakeResp:
 def test_fetch_resource_records(monkeypatch: pytest.MonkeyPatch) -> None:
     http_metrics.reset()
     monkeypatch.setattr(
-        utils.requests, "get", lambda *a, **k: _FakeResp(200, b"hello")
+        utils.http_session(), "get", lambda *a, **k: _FakeResp(200, b"hello")
     )
     assert utils.fetch_resource("https://datatracker.ietf.org/r") is not None
     m = http_metrics.current()
@@ -169,7 +169,7 @@ def test_fetch_resource_records(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fetch_resource_records_error(monkeypatch: pytest.MonkeyPatch) -> None:
     http_metrics.reset()
     monkeypatch.setattr(
-        utils.requests, "get", lambda *a, **k: _FakeResp(404, b"nope")
+        utils.http_session(), "get", lambda *a, **k: _FakeResp(404, b"nope")
     )
     assert utils.fetch_resource("https://datatracker.ietf.org/missing") is None
     m = http_metrics.current()
@@ -187,12 +187,14 @@ def test_get_json_records_200_and_304(
 
     http_metrics.reset()
     monkeypatch.setattr(
-        datatracker.requests, "get", lambda *a, **k: _FakeResp(200, b'{"a": 1}', {"a": 1})
+        datatracker.http_session(),
+        "get",
+        lambda *a, **k: _FakeResp(200, b'{"a": 1}', {"a": 1}),
     )
     assert datatracker._get_json("/api/v1/x") == {"a": 1}
 
     monkeypatch.setattr(
-        datatracker.requests, "get", lambda *a, **k: _FakeResp(304, b"")
+        datatracker.http_session(), "get", lambda *a, **k: _FakeResp(304, b"")
     )
     datatracker._get_json("/api/v1/y")
     m = http_metrics.current()
