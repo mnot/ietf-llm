@@ -72,6 +72,18 @@ class CorpusStore(ABC):
         cloud backend materialises the version's blobs here first.
         """
 
+    @abstractmethod
+    def publish(self, corpus: str, workspace: str) -> str:
+        """Publish the gathered tree at local `workspace` as a new version of
+        `corpus`, atomically, and return its version token.
+
+        This is the write-side seam. The local backend treats it as a no-op
+        finalise (the workspace already *is* the live cache). A cloud backend
+        uploads the workspace as a fresh immutable version and flips the
+        current-version pointer in one transaction, so readers see the old
+        version or the new, never a half-published one.
+        """
+
     def corpus_exists(self, corpus: str) -> bool:
         """True if `corpus` has a resolvable current version. Defined in terms
         of `resolve_current` so a backend implements only the primitive;
@@ -93,6 +105,11 @@ class LocalCorpusStore(CorpusStore):
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         files = _local_files_dir(corpus)
         return files if os.path.isdir(files) else None
+
+    def publish(self, corpus: str, workspace: str) -> str:
+        # No-op finalise: the local cache is the single live version, and the
+        # gather writes straight into it, so there is nothing to upload or flip.
+        return LOCAL_VERSION
 
 
 @lru_cache(maxsize=1)
