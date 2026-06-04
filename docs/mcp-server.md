@@ -63,12 +63,15 @@ shape — it validates cross-knob *consistency*:
   together with `IETF_LLM_INDEX_IMMUTABLE` (gather must write the index the mount marks read-only);
   gather with a local torch-backed embed model on a torch-free image and no `--no-embed` (the embed
   step would crash mid-pipeline); a remote `openai-embed/...` model with no `IETF_LLM_EMBED_BASE_URL`
-  (the read path would fail at request time).
+  (the read path would fail at request time); `IETF_LLM_STORE_BACKEND=cloud` with the cloud store
+  under-configured (missing `IETF_LLM_CONTROL_DB` / `IETF_LLM_BLOB_DIR` / `IETF_LLM_SCRATCH_DIR`), or
+  an unrecognised backend name.
 - **Warn but never block** when the bind host is non-loopback — the no-auth / no-rate-limit posture
   above is the operator's risk to own; the warning is louder when gather is also on.
 - **Always** log a one-line posture banner (transport, bind, gather on/off, embed backend, embed
-  model, index dir, immutable), honouring `IETF_LLM_LOG_FORMAT=json`, so the logs answer "what is
-  this process actually doing" — dovetailing with the version / freshness preamble below.
+  model, index dir, immutable, store backend), honouring `IETF_LLM_LOG_FORMAT=json`, so the logs
+  answer "what is this process actually doing" — dovetailing with the version / freshness preamble
+  below.
 
 ## Installing
 
@@ -131,6 +134,14 @@ reads. So fresh data reaches a read replica out-of-band, in three steps:
    it with `IETF_LLM_INDEX_IMMUTABLE=1` on a read-only mount (see [Storage](storage.md)).
 3. The replica picks it up with no restart — every tool opens a fresh read-only connection per call.
 
+With the **cloud store backend** (`IETF_LLM_STORE_BACKEND=cloud`, see
+[Storage](storage.md#corpus-store-backend-local-vs-cloud)) steps 2–3 are built in rather than your
+job: a gather publishes a new immutable version and flips the per-corpus pointer in one transaction,
+and every replica resolves the current version per request and materialises it onto local scratch —
+so a publish is visible fleet-wide with no separate sync step and no torn read. This is also what
+makes the [in-session gather](#in-session-gather-opt-in) durable and fleet-coherent (rather than a
+single-box convenience), with a cross-host lease serialising it against a concurrent cron gather.
+
 **Degraded mode when the embedding upstream is down.** Only two tools embed their query, and they are
 the only ones that fail if the remote `/v1/embeddings` endpoint is unreachable:
 
@@ -179,9 +190,14 @@ dropping to a shell:
   `<corpus>/gather-status.json` in the cache.
 
 This is the one break from the read-only / no-network contract — leave it
-**off** for a shared HTTP replica or a read-only-mounted cache. If you do
-enable it on the torch-free serve image, use a remote
-`openai-embed/...` embedding model so the gather's index build pulls no torch.
+**off** for a shared HTTP replica or a read-only-mounted cache *on the local
+backend*, where a gathered corpus is only durable on the box that wrote it. On
+the **cloud backend** it is a first-class shape: the gather publishes a new
+immutable version through the store (atomic pointer flip, visible to every
+replica) under a cross-host lease, so enabling it on a replicated fleet is safe —
+see [Cache freshness](#cache-freshness-and-degraded-mode). If you do enable it on
+the torch-free serve image, use a remote `openai-embed/...` embedding model so
+the gather's index build pulls no torch.
 
 ## A minimal deployment
 

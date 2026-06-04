@@ -71,3 +71,15 @@ the hard way.
     the only sanctioned write/network path on the server — everything
     else stays read-only and offline. When the gate is unset the tools
     aren't registered, so the default surface keeps the boundary intact.
+- **The cache is reached through a `CorpusStore` seam** (`corpus_store.py`):
+  read tools resolve a corpus's files dir via `get_corpus_store().local_cache_dir`
+  (the `_files_dir` / `_corpus_exists` boundary in `mcp_server`, which also keeps
+  the read-only existence check above), and a gather publishes via
+  `store.publish`. The default `local` backend is today's filesystem — no
+  behaviour change. The opt-in `cloud` backend (`IETF_LLM_STORE_BACKEND=cloud`,
+  SQLite + `file://` today; Postgres + S3 by swapping the two injected
+  components) makes publish the explicit write→read handoff (atomic version
+  pointer flip) and the gather lease cross-host. So on the cloud backend the
+  reader-side vs write-side line above is mediated by *publish*: a re-gather is
+  not visible to readers until it publishes a new version. See
+  `docs/architecture.md` ("The storage seam").

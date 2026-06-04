@@ -62,6 +62,39 @@ SQLite then reads the database file directly, skipping the WAL and locking. Use 
 index is genuinely immutable (a read replica you publish and swap atomically), never while a gather
 rewrites it in place.
 
+## Corpus store backend (local vs cloud)
+
+By default ietf-llm reads and writes the cache directly — the **local** corpus store, where the
+live `<cache>/<corpus>` tree is the one and only version. The CLI and a single-box server use this
+and need none of the rest of this section.
+
+For a replicated, ephemeral deployment (many serving containers, gather driven by cron *and* by the
+in-session MCP tools), set `IETF_LLM_STORE_BACKEND=cloud`. The cloud store keeps durable state in
+two places — a transactional **control plane** (per-corpus version pointer, manifests, gather
+leases) and an immutable **blob store** (the versioned `files/` + `embeddings.db`) — and
+materialises the current version onto local scratch to serve reads. A gather publishes a new
+immutable version and flips the pointer in one transaction, so every replica sees the old version or
+the new (never a torn one), and a cross-host lease keeps a cron gather and an in-session gather from
+clobbering each other.
+
+| Variable | What | Required |
+|---|---|---|
+| `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
+| `IETF_LLM_CONTROL_DB` | control-plane database (path / DSN) | cloud |
+| `IETF_LLM_BLOB_DIR` | blob-store base location | cloud |
+| `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
+
+These non-secret knobs may instead be set in the global `config.json` (`store_backend`,
+`control_db`, `blob_dir`, `scratch_dir`); the environment wins. Any secret (an object-store key, a
+database password) comes from the environment only and is never read from the config file.
+
+The current cloud backend ships a **SQLite** control plane and a **`file://`** blob store — usable
+as-is over a shared volume or for development. Pointing it at a managed SQL database and an
+S3-compatible object store is a backend swap behind the same interfaces: the program is the storage
+client (no FUSE mounts), and the object store needs no special features because all atomicity lives
+in the control-plane pointer. The HTTP serve path validates these knobs at boot and refuses to start
+if `cloud` is selected but under-configured (see [mcp-server.md](mcp-server.md)).
+
 ## Notes
 
 - `IETF_LLM_CACHE_DIR` only needs to *exist* and be readable for a read-only consumer (the MCP

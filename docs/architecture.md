@@ -292,6 +292,11 @@ ietf_llm/
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
+├── corpus_store.py         # CorpusStore seam: port + LocalCorpusStore + factory
+├── corpus_control.py       # cloud control plane: versions / pointer / leases (SQLite)
+├── corpus_blobs.py         # cloud blob plane: immutable whole-object store (file://)
+├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read
+├── service_config.py       # deployment knobs (store backend, …): env > global > default
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
 ├── people.py               # actor/identity registry (roles, affiliations, domains)
@@ -444,6 +449,39 @@ Every consumer reads from the cache. The cache is the contract. Adding
 a consumer never requires touching gather; gather never has to know
 who reads its output. This is the project's main architectural lever.
 
+The cache is reached through a seam — the `CorpusStore` (`corpus_store.py`) —
+so the *contract* generalises from "a local directory" to "whatever a
+`CorpusStore` materialises locally". The local filesystem is the default
+implementation and the only one the laptop CLI uses; a cloud deployment can
+select a different backend without touching any consumer (see next).
+
+### The storage seam: CorpusStore (local default, cloud-pluggable)
+
+`CorpusStore` is a *coarse* seam, not a per-file I/O layer: it answers two
+questions and otherwise stays out of the way. **Read side** — `local_cache_dir
+(corpus)` returns a local directory for the corpus's current version, which
+consumers then read through the `paths.py` helpers exactly as before. **Write
+side** — `publish(corpus, workspace)` makes a gathered tree the new current
+version. `get_corpus_store()` picks the backend from service config
+(`IETF_LLM_STORE_BACKEND`, default `local`).
+
+- **`LocalCorpusStore`** (default) — the live `~/.cache/ietf-llm/<corpus>` *is*
+  the single version: `resolve_current` is a sentinel, `local_cache_dir` is the
+  existing files dir, `publish` is a no-op finalise, the gather lease is a no-op
+  grant. The laptop CLI is unchanged.
+- **`CloudCorpusStore`** — composes a transactional **control plane**
+  (`corpus_control.ControlPlane`: per-corpus version pointer, manifests, gather
+  leases) and an immutable **blob plane** (`corpus_blobs.BlobStore`:
+  whole-object, versioned-prefix), materialising a version onto local scratch
+  for reads. `publish` stages blobs to a fresh version prefix, then flips the
+  pointer in one transaction — a reader sees the old version or the new, never a
+  torn one, and a killed publish leaves the prior version live. The current
+  pieces are SQLite + `file://`; they port to Postgres + S3 by swapping those
+  two components (the program stays the client; the store needs no special
+  features because all atomicity lives in the pointer). This is the path that
+  closes the MCP-driven-gather durability/coherence hole on an ephemeral,
+  replicated serve fleet. Operator setup: [storage.md](storage.md).
+
 ### Use the Datatracker API; do not scrape HTML
 
 **When the data is available from the Datatracker REST API, the gather
@@ -555,6 +593,13 @@ servers) can run at once. The safety model:
   config) are written temp + rename; concurrent writers are
   last-writer-wins, which at worst costs a redundant re-fetch, never a
   corrupt file.
+- **Cross-host writers (cloud backend).** The `file_lock` above serialises
+  gathers on one host; *across* hosts (a cron gather and the serve fleet's
+  in-session gather) the cloud backend's per-corpus **gather lease**
+  (`ControlPlane`, owner + TTL) is the mutual-exclusion primitive, and
+  publish-by-transaction replaces shared-filesystem atomic writes for
+  cross-object atomicity. Both are no-ops on the local backend, which relies on
+  the flock as before.
 
 ### `ietf-llm` (gather) has no `--update` flag
 
