@@ -23,7 +23,7 @@ import numpy as np
 
 from ..utils import LogLevel, Verbosity, file_lock, log
 from .chunking import CHUNKER_VERSION, _chunk_file, _eligible_files
-from .models import DEFAULT_EMBED_MODEL, _get_embed_model
+from .models import DEFAULT_EMBED_MODEL, _get_embed_model, is_remote_embed_model
 from .snippet import make_snippet
 from .storage import (
     _SCHEMA_VERSION,
@@ -324,8 +324,15 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements
     # `_FLUSH_EVERY_CHUNKS`).
     chunks_since_flush = 0
     # MPS memory management: evict the allocator cache periodically and
-    # report the live high-water figure. No-ops off Apple Silicon.
-    mps_empty, mps_current = _mps_mem_tools()
+    # report the live high-water figure. No-ops off Apple Silicon, and
+    # skipped entirely on the remote backend — embedding happens over HTTP,
+    # so no tensors are allocated locally and the gauge reads ~0; reporting
+    # "mps 0MB" there is just noise (torch may still be installed for the
+    # local fallback, so _mps_mem_tools alone wouldn't suppress it).
+    if is_remote_embed_model(model_name):
+        mps_empty, mps_current = None, None
+    else:
+        mps_empty, mps_current = _mps_mem_tools()
     for path in files:
         # Relative path within the WG cache is what we store as
         # chunks.file, what consumers pass to get_chunk_text /
