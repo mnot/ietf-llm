@@ -80,7 +80,7 @@ clobbering each other.
 | Variable | What | Required |
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
-| `IETF_LLM_CONTROL_DB` | control-plane database (path / DSN) | cloud |
+| `IETF_LLM_CONTROL_DB` | filesystem path to the control-plane SQLite DB (created if absent) | cloud |
 | `IETF_LLM_BLOB_DIR` | blob-store base location | cloud |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 
@@ -88,12 +88,27 @@ These non-secret knobs may instead be set in the global `config.json` (`store_ba
 `control_db`, `blob_dir`, `scratch_dir`); the environment wins. Any secret (an object-store key, a
 database password) comes from the environment only and is never read from the config file.
 
-The current cloud backend ships a **SQLite** control plane and a **`file://`** blob store — usable
-as-is over a shared volume or for development. Pointing it at a managed SQL database and an
-S3-compatible object store is a backend swap behind the same interfaces: the program is the storage
-client (no FUSE mounts), and the object store needs no special features because all atomicity lives
-in the control-plane pointer. The HTTP serve path validates these knobs at boot and refuses to start
-if `cloud` is selected but under-configured (see [mcp-server.md](mcp-server.md)).
+**What `IETF_LLM_CONTROL_DB` is.** Today the control plane is **SQLite**, so this is a *filesystem
+path* to the database file (e.g. `/var/lib/ietf-llm/control.db`) — **not** a connection string. You
+provide the path; the parent directory, the database file, and the schema are all created on first
+use, so there is nothing to migrate by hand. Because it is SQLite it must sit on a **local POSIX
+filesystem** — the same constraint as the index — never NFS/SMB or an object-store FUSE mount, where
+SQLite's locking is unreliable.
+
+That local-filesystem requirement is the load-bearing limit of the current backend. A SQLite control
+DB safely coordinates any number of *processes on one host* (WAL + a busy timeout) but **not writers
+across hosts** — so the multi-replica, cross-host behaviour described above (every replica resolving
+the same pointer; a lease shared between a cron gather and the serve fleet) holds **only with a
+Postgres control plane**. As shipped, the `cloud` backend therefore fits a **single host** (the serve
+process(es) and the cron gather sharing one local `CONTROL_DB`) or development; spanning hosts is the
+Postgres swap. The blob store has no such limit — a `file://` `IETF_LLM_BLOB_DIR` on a shared volume
+is fine (whole-object writes + atomic rename), and S3 removes the question entirely.
+
+Pointing the control plane at Postgres and the blob store at an S3-compatible service is a backend
+swap behind the same two interfaces: the program is the storage client (no FUSE mounts), and the
+object store needs no special features because all atomicity lives in the control-plane pointer. The
+HTTP serve path validates these knobs at boot and refuses to start if `cloud` is selected but
+under-configured (see [mcp-server.md](mcp-server.md)).
 
 ## Notes
 
