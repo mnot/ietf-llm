@@ -17,7 +17,9 @@ _SPEC = [
 
 
 def _args(**kw):
-    ns = argparse.Namespace(embed_model=None, no_embed=False)
+    # None is the unset sentinel (what argparse stores when no flag is
+    # given); a non-None value means the flag was supplied this run.
+    ns = argparse.Namespace(embed_model=None, no_embed=None)
     for key, val in kw.items():
         setattr(ns, key, val)
     return ns
@@ -77,3 +79,39 @@ def test_bool_env_coercion(monkeypatch, isolated_home):
     args = _args()
     config.merge_global(args, _SPEC)
     assert args.no_embed is False
+
+
+def test_explicit_false_overrides_and_persists_globally(isolated_home):
+    # --no-embed persists True...
+    config.merge_global(_args(no_embed=True), _SPEC)
+    assert config.load_global()["no_embed"] is True
+    # ...and --embed (an explicit False, distinct from the unset None) both
+    # overrides it this run AND clears it for later runs.
+    args = _args(no_embed=False)
+    config.merge_global(args, _SPEC)
+    assert args.no_embed is False
+    assert config.load_global()["no_embed"] is False
+    later = _args()
+    config.merge_global(later, _SPEC)
+    assert later.no_embed is False
+
+
+def test_records_resolution_source(monkeypatch, isolated_home):
+    # default → config → cli → env, surfaced on args._global_sources.
+    args = _args()
+    config.merge_global(args, _SPEC)
+    assert args._global_sources["no_embed"] == "default"
+
+    config.merge_global(_args(no_embed=True), _SPEC)  # persist it
+    from_config = _args()
+    config.merge_global(from_config, _SPEC)
+    assert from_config._global_sources["no_embed"] == "config"
+
+    cli = _args(embed_model="openai-embed/m")
+    config.merge_global(cli, _SPEC)
+    assert cli._global_sources["embed_model"] == "cli"
+
+    monkeypatch.setenv("IETF_LLM_NO_EMBED", "yes")
+    env = _args()
+    config.merge_global(env, _SPEC)
+    assert env._global_sources["no_embed"] == "env"

@@ -172,3 +172,17 @@ def test_gather_plan_summary_caps_long_lists() -> None:
 
 def test_gather_plan_summary_flags_no_embed() -> None:
     assert "embed=off" in main_mod._gather_plan_summary(_plan_args(no_embed=True))
+
+
+def test_gather_plan_summary_annotates_config_source() -> None:
+    # A surprising embed=off the user didn't ask for this run is traceable
+    # to the global config; cli / default sources are left unannotated.
+    out = main_mod._gather_plan_summary(
+        _plan_args(no_embed=True, _global_sources={"no_embed": "config"})
+    )
+    assert "embed=off (from config)" in out
+
+    plain = main_mod._gather_plan_summary(
+        _plan_args(no_embed=False, _global_sources={"no_embed": "default"})
+    )
+    assert "embed=on" in plain and "(from" not in plain

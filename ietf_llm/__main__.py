@@ -54,6 +54,7 @@ from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
+from .gather_plan import _gather_plan_summary
 from .gather_stages import ProgressFn, StageTracker, stage_plan
 from .people import build_registry, write_people_digest
 from .skill_install import install, sync_if_pristine
@@ -251,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--summarize",
         action="store_true",
+        default=None,
         help="Add LLM-generated one-line summaries to digest files. "
         "Requires the `llm` package (https://llm.datasette.io/).",
     )
@@ -259,13 +261,26 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODEL",
         help="Model id for --summarize (defaults to `llm`'s configured default).",
     )
-    parser.add_argument(
+    embed_group = parser.add_mutually_exclusive_group()
+    embed_group.add_argument(
         "--no-embed",
-        action="store_true",
+        dest="no_embed",
+        action="store_const",
+        const=True,
+        default=None,
         help="Skip building the semantic search index. By default the "
         "index is built on every gather (incremental — only new / changed "
         "files are re-embedded). Use this to defer index work on the "
-        "first gather, then re-run without the flag later.",
+        "first gather, then re-run without the flag later. This setting is "
+        "remembered globally; clear it with --embed.",
+    )
+    embed_group.add_argument(
+        "--embed",
+        dest="no_embed",
+        action="store_const",
+        const=False,
+        help="Build the semantic search index, overriding a remembered "
+        "--no-embed in the global config (the default behaviour otherwise).",
     )
     parser.add_argument(
         "--embed-model",
@@ -587,42 +602,6 @@ def _gather_mentioned_drafts(
         cfg = config.load(args.wg, SCOPE)
         cfg["mentioned_drafts"] = updated
         config.save(args.wg, SCOPE, cfg)
-
-
-def _gather_plan_summary(args: argparse.Namespace) -> str:
-    """One-line summary of the effective (saved + CLI) gather config, so a
-    re-run shows what it is about to do — the persisted sources and scope,
-    not just the corpus name."""
-
-    def _brief(items: "Iterable[str]", limit: int = 3) -> str:
-        items = list(items)
-        if len(items) <= limit:
-            return ", ".join(items)
-        return ", ".join(items[:limit]) + f" (+{len(items) - limit} more)"
-
-    parts: List[str] = [f"months={args.months}"]
-    if args.new_drafts:
-        parts.append("new-drafts (rolling window)")
-    if args.author:
-        parts.append(f"author={args.author}")
-    if args.draft:
-        parts.append(f"drafts: {_brief(args.draft)}")
-    if args.mailing_list:
-        parts.append(f"lists: {_brief(args.mailing_list)}")
-    if args.github:
-        parts.append(f"github: {_brief(args.github)}")
-    if args.add_mentioned_drafts:
-        parts.append("add-mentioned-drafts")
-    if args.include_related_drafts:
-        parts.append("include-related-drafts")
-    if args.github_label:
-        parts.append(f"labels: {_brief(args.github_label)}")
-    if args.exclude_github_label:
-        parts.append(f"exclude-labels: {_brief(args.exclude_github_label)}")
-    parts.append("embed=off" if args.no_embed else "embed=on")
-    if args.summarize:
-        parts.append("summarize")
-    return " · ".join(parts)
 
 
 def _migrate_global_keys(
