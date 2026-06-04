@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +41,11 @@ from .utils import (
 _STATUS_NAME = "gather-status.json"
 _LOCK_NAME = ".gather.lock"
 
+#: Cross-host gather-lease TTL (cloud backend). Generous — a gather runs minutes
+#: and the lease is released on completion; heartbeat-renew during a very long
+#: gather is a future refinement (the control plane exposes renew_lease).
+_LEASE_TTL = 3600.0
+
 # A corpus name becomes a cache directory, so it must be a single safe path
 # segment: letters/digits/`.`/`-`/`_`, starting with an alphanumeric. This
 # bars path separators, `..`, leading dots/dashes, and whitespace — the
@@ -54,6 +60,11 @@ _MAX_CORPUS_LEN = 128
 # can answer "already running" without racing on the file lock.
 _jobs: Dict[str, threading.Thread] = {}
 _registry_lock = threading.Lock()
+
+
+def _owner() -> str:
+    """Identify this gather process for the cross-host lease: host + pid."""
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def valid_corpus_name(name: str) -> bool:
@@ -260,8 +271,11 @@ def _execute(spec: GatherSpec) -> None:
     # Imported lazily so the read-only serve path doesn't pull the gather
     # pipeline (and its many imports) unless gather is actually enabled.
     from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
 
     corpus = spec.corpus
+    store = corpus_store.get_corpus_store()
+    owner = _owner()
     status: Dict[str, Any] = {
         "corpus": corpus,
         "state": "running",
@@ -297,11 +311,29 @@ def _execute(spec: GatherSpec) -> None:
         _persist()
 
     _persist()
+    # Cross-host gather lease: a no-op grant on the local backend (the file
+    # lock in `_run` already serialises a single box), a real lease on the
+    # cloud backend so a cron gather and the serve fleet's in-session gather
+    # cannot write the same corpus at once.
+    if not store.acquire_lease(corpus, owner, _LEASE_TTL):
+        status["state"] = "failed"
+        status["error"] = (
+            f"another host holds the gather lease for '{corpus}'; "
+            "a gather is already running elsewhere."
+        )
+        status["finished"] = _now_iso()
+        _persist()
+        return
     try:
         ok = gather_main.run_gather(
             spec.to_argv(), Verbosity.STATUS, progress=_progress
         )
         if ok:
+            # Publish the gathered tree as a new version. A no-op finalise on
+            # the local backend (the cache already is the live version); on the
+            # cloud backend this uploads the corpus and flips the pointer
+            # atomically, making it visible fleet-wide.
+            store.publish(corpus, os.path.join(get_cache_dir(), corpus))
             status["state"] = "done"
         else:
             status["state"] = "failed"
@@ -314,6 +346,7 @@ def _execute(spec: GatherSpec) -> None:
         status["state"] = "failed"
         status["error"] = f"{type(err).__name__}: {err}"[:500]
     finally:
+        store.release_lease(corpus, owner)
         status["finished"] = _now_iso()
         _persist()
 

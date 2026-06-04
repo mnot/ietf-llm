@@ -59,7 +59,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import __version__, _debug_log, _stdio_transport, config, serve_metrics
+from . import (
+    __version__,
+    _debug_log,
+    _stdio_transport,
+    config,
+    serve_metrics,
+    service_config,
+)
 from .catalog import render_efforts
 from .corpus import describe, kind_status
 from .corpus_store import get_corpus_store
@@ -3408,6 +3415,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
         "no_embed": "yes" if _effective_no_embed() else "no",
         "index_dir": get_index_dir(),
         "index_immutable": "yes" if _index_immutable_enabled() else "no",
+        "store_backend": service_config.store_backend(),
     }
 
 
@@ -3475,6 +3483,31 @@ def _serve_config_problems(host: str) -> "Tuple[List[str], List[str]]":
                 "trigger cache writes and network egress."
             )
         warnings.append(msg)
+
+    # 3. Cloud corpus store selected but under-configured: reads (and any
+    # gather publish) would fail at request time. Validate the required knobs
+    # are present, upfront.
+    backend = service_config.store_backend()
+    if backend == "cloud":
+        missing = [
+            env
+            for env, value in (
+                ("IETF_LLM_CONTROL_DB", service_config.control_db()),
+                ("IETF_LLM_BLOB_DIR", service_config.blob_dir()),
+                ("IETF_LLM_SCRATCH_DIR", service_config.scratch_dir()),
+            )
+            if not value
+        ]
+        if missing:
+            errors.append(
+                "IETF_LLM_STORE_BACKEND=cloud but the corpus store is "
+                "under-configured: missing " + ", ".join(missing) + "."
+            )
+    elif backend != "local":
+        errors.append(
+            f"IETF_LLM_STORE_BACKEND={backend!r} is not recognised "
+            "(expected 'local' or 'cloud')."
+        )
 
     return errors, warnings
 

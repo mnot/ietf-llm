@@ -34,6 +34,33 @@ def _new_version() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def build_cloud_store() -> "CloudCorpusStore":
+    """Construct the cloud backend from service config, or raise ValueError if
+    it is selected but under-configured. The serve path surfaces this earlier
+    via boot-time validation; this guards the CLI / gather path too."""
+    from . import service_config  # pylint: disable=import-outside-toplevel
+
+    control = service_config.control_db()
+    blobs = service_config.blob_dir()
+    scratch = service_config.scratch_dir()
+    missing = [
+        env
+        for env, value in (
+            ("IETF_LLM_CONTROL_DB", control),
+            ("IETF_LLM_BLOB_DIR", blobs),
+            ("IETF_LLM_SCRATCH_DIR", scratch),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(
+            "cloud corpus store selected but not configured: missing "
+            + ", ".join(missing)
+        )
+    assert control and blobs and scratch  # narrowed by the check above
+    return CloudCorpusStore(ControlPlane(control), BlobStore(blobs), scratch)
+
+
 class CloudCorpusStore(CorpusStore):
     """CorpusStore over a transactional control plane + an immutable blob store,
     materialising versions onto `scratch_dir`."""

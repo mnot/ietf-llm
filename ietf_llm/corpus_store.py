@@ -22,11 +22,12 @@ interface, different backend. See `docs/cloud-storage.md`.
 
 from __future__ import annotations
 
+import importlib
 import os
 from abc import ABC, abstractmethod
-from functools import lru_cache
-from typing import List, Optional
+from typing import List, Optional, cast
 
+from . import service_config
 from .utils import cached_wg_names, get_cache_dir
 
 #: Version token the local backend returns for any present corpus. The local
@@ -134,10 +135,19 @@ class LocalCorpusStore(CorpusStore):
         return LOCAL_VERSION
 
 
-@lru_cache(maxsize=1)
 def get_corpus_store() -> CorpusStore:
-    """The process-wide `CorpusStore`. The local filesystem backend today; a
-    future service-config selection (`docs/cloud-storage.md`) will choose a
-    cloud backend here. Cached so a backend that holds connections is built
-    once — `get_corpus_store.cache_clear()` resets it (used by tests)."""
+    """The `CorpusStore` selected by service config.
+
+    `store_backend` (env `IETF_LLM_STORE_BACKEND` > global config > `local`)
+    chooses the backend: `local` (the laptop / single-box default, today's
+    behaviour) or `cloud` (a SQL control plane + object-store blob plane; see
+    `corpus_store_cloud`). Constructed per call — both backends are cheap,
+    stateless handles that open no connection until used."""
+    if service_config.store_backend() == "cloud":
+        # Loaded dynamically rather than with a static
+        # `from .corpus_store_cloud import ...`: that module imports CorpusStore
+        # from here, so a static back-import would be a cycle. The cloud
+        # machinery stays out of the default local path entirely.
+        cloud = importlib.import_module(f"{__package__}.corpus_store_cloud")
+        return cast(CorpusStore, cloud.build_cloud_store())
     return LocalCorpusStore()
