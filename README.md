@@ -29,14 +29,14 @@ There are three supported workflows:
 
 1. **Use it as an MCP server** — register it with Claude, Codex, Cursor, Gemini, Zed,
    etc. and ask questions across any corpus you've gathered. Two ways to run it:
-   - **[Local MCP](docs/mcp-local.md)** — one server subprocess per client, on your own machine. <-- **Best starting point**
-   - **[As a shared HTTP MCP server](docs/mcp-server.md)** — one process serving many concurrent
+   - **[Local MCP](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md)** — one server subprocess per client, on your own machine. <-- **Best starting point**
+   - **[As a shared HTTP MCP server](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-server.md)** — one process serving many concurrent
      clients (hosted).
-2. **[Use it with NotebookLM](docs/notebooklm.md)** — export the gathered corpus as a directory of
+2. **[Use it with NotebookLM](https://github.com/mnot/ietf-llm/blob/main/docs/notebooklm.md)** — export the gathered corpus as a directory of
    clean text files and ingest it as a notebook (or push directly to NotebookLM Enterprise).
-3. **[Use it from the CLI](docs/search-cli.md)** — run semantic search over the cache directly with
+3. **[Use it from the CLI](https://github.com/mnot/ietf-llm/blob/main/docs/search-cli.md)** — run semantic search over the cache directly with
    `ietf-llm-search`, no LLM client required.
 
 See the workflow documentation linked above for installation and use instructions, or the
-[full documentation listing](docs/README.md).
+[full documentation listing](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
 
