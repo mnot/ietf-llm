@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -92,3 +93,44 @@ def test_materialise_fails_on_missing_blob(tmp_path: Path) -> None:
     (tmp_path / "bucket" / "tls" / "v1" / "files" / "digests" / "index.md").unlink()
     with pytest.raises(FileNotFoundError):
         store.local_cache_dir("tls")
+
+
+def _publish_with_index(store: CloudCorpusStore, tmp_path: Path) -> None:
+    ws = tmp_path / "wsidx"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    (ws / "embeddings.db").write_bytes(b"DB")
+    store.publish("tls", str(ws), version="v1")
+
+
+# G-2: the search index resolves through the store.
+def test_local_index_dir_is_index_root(isolated_home: Path) -> None:
+    from ietf_llm.utils import get_index_dir
+
+    assert LocalCorpusStore().local_index_dir("tls") == os.path.join(
+        get_index_dir(), "tls"
+    )
+
+
+def test_cloud_index_dir_materialises_db(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    _publish_with_index(store, tmp_path)
+    idx = store.local_index_dir("tls")
+    assert idx is not None
+    assert (Path(idx) / "embeddings.db").read_bytes() == b"DB"
+
+
+def test_db_path_ro_routes_through_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import corpus_store as cs_mod
+    from ietf_llm.embeddings import storage as storage_mod
+
+    store = _cloud(tmp_path)
+    _publish_with_index(store, tmp_path)
+    monkeypatch.setattr(cs_mod, "get_corpus_store", lambda: store)
+    path = storage_mod._db_path_ro("tls")
+    assert path.endswith("embeddings.db")
+    assert os.path.isfile(path)  # the version's index was materialised
+    with open(path, "rb") as handle:
+        assert handle.read() == b"DB"

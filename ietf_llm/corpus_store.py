@@ -28,7 +28,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, cast
 
 from . import service_config
-from .utils import cached_wg_names, get_cache_dir
+from .utils import cached_wg_names, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local
 #: cache is single-version (the live tree on disk), so the value is opaque — it
@@ -71,6 +71,20 @@ class CorpusStore(ABC):
         Callers read it through the `paths.py` helpers. Read-only — never
         creates the directory. The local backend returns the existing tree; a
         cloud backend materialises the version's blobs here first.
+        """
+
+    @abstractmethod
+    def local_index_dir(self, corpus: str) -> Optional[str]:
+        """Local filesystem directory holding the current version's
+        `embeddings.db`, or None if the corpus has no current version.
+
+        The read side of the search index resolves the DB path through this, so
+        a cloud reader replica serves the *version's* index rather than an empty
+        local index dir. The local backend returns its index dir directly; a
+        cloud backend materialises the version (same as `local_cache_dir`) and
+        returns the dir that holds `embeddings.db`. (The *write* path —
+        `build_index` during a gather — does not use this; it writes the local
+        index dir.)
         """
 
     @abstractmethod
@@ -128,6 +142,12 @@ class LocalCorpusStore(CorpusStore):
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         files = _local_files_dir(corpus)
         return files if os.path.isdir(files) else None
+
+    def local_index_dir(self, corpus: str) -> Optional[str]:
+        # The live index dir — `<index_root>/<corpus>` — exactly where
+        # `_db_path` has always resolved it, so local read behaviour is
+        # unchanged. Returned even if no DB exists yet (search handles that).
+        return os.path.join(get_index_dir(), corpus)
 
     def publish(self, corpus: str, workspace: str) -> str:
         # No-op finalise: the local cache is the single live version, and the

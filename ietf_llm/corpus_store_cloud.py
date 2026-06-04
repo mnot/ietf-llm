@@ -125,6 +125,17 @@ class CloudCorpusStore(CorpusStore):
         files_dir = os.path.join(dest_root, "files")
         return files_dir if os.path.isdir(files_dir) else None
 
+    def local_index_dir(self, corpus: str) -> Optional[str]:
+        version = self._control.resolve_current(corpus)
+        if version is None:
+            return None
+        dest_root = os.path.join(self._scratch, corpus, version)
+        # Materialise the version (idempotent — shared with local_cache_dir);
+        # the version's `embeddings.db` sits directly under dest_root.
+        if not os.path.isdir(dest_root):
+            self._materialise_version(corpus, version, dest_root)
+        return dest_root
+
     def _materialise_version(self, corpus: str, version: str, dest_root: str) -> None:
         """Materialise a version onto local scratch **atomically and verified**:
         fetch into a temp dir, check every file the manifest lists is present,
