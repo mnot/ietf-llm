@@ -90,6 +90,28 @@ class CorpusStore(ABC):
         read-only, creates nothing."""
         return self.resolve_current(corpus) is not None
 
+    # --- write-side gather lease (default: no-op single writer) -----------
+
+    def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+        """Take the cross-host gather lease for `corpus` on behalf of `owner`
+        for `ttl` seconds; return True if granted.
+
+        The default always grants: a single-box backend needs no distributed
+        lease — the local gather is already serialised by a file lock. A cloud
+        backend overrides this with a real lease in its control plane so two
+        hosts (a cron gather and the serve fleet's in-session gather) cannot
+        write the same corpus at once.
+        """
+        return True
+
+    def renew_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+        """Extend `owner`'s lease by `ttl` seconds; True if still held. Default
+        no-op grants."""
+        return True
+
+    def release_lease(self, corpus: str, owner: str) -> None:
+        """Release `owner`'s lease on `corpus`. Default no-op."""
+
 
 class LocalCorpusStore(CorpusStore):
     """Filesystem backend: the live cache under `get_cache_dir()` is the corpus,

@@ -84,3 +84,12 @@ class CloudCorpusStore(CorpusStore):
             corpus, version, {"version": version, "files": sorted(files)}
         )
         return version
+
+    def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+        return self._control.acquire_lease(corpus, owner, ttl)
+
+    def renew_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+        return self._control.renew_lease(corpus, owner, ttl)
+
+    def release_lease(self, corpus: str, owner: str) -> None:
+        self._control.release_lease(corpus, owner)
