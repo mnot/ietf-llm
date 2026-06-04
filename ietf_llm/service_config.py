@@ -47,7 +47,10 @@ def store_backend() -> str:
 
 
 def control_db() -> Optional[str]:
-    """Path / DSN of the cloud control-plane database (None if unset)."""
+    """Locator for the control-plane database, or None if unset.
+
+    SQLite today, so a filesystem path (created on first use); a connection
+    string once a Postgres backend lands."""
     return _resolve(CONTROL_DB, None)
 
 
