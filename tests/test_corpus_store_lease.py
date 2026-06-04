@@ -5,15 +5,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.corpus_blobs import BlobStore
-from ietf_llm.corpus_control import ControlPlane
+from ietf_llm.corpus_blobs import FileBlobStore
+from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
 
 
 def _cloud(tmp_path: Path) -> CloudCorpusStore:
-    control = ControlPlane(str(tmp_path / "control.db"))
-    blobs = BlobStore(str(tmp_path / "bucket"))
+    control = SqliteControlPlane(str(tmp_path / "control.db"))
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
     return CloudCorpusStore(control, blobs, str(tmp_path / "scratch"))
 
 

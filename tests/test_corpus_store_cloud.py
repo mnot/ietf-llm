@@ -7,14 +7,14 @@ from typing import Tuple
 
 import pytest
 
-from ietf_llm.corpus_blobs import BlobStore
-from ietf_llm.corpus_control import ControlPlane
+from ietf_llm.corpus_blobs import FileBlobStore
+from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
 
 
-def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, ControlPlane]:
-    control = ControlPlane(str(tmp_path / "control.db"))
-    blobs = BlobStore(str(tmp_path / "bucket"))
+def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, SqliteControlPlane]:
+    control = SqliteControlPlane(str(tmp_path / "control.db"))
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
     store = CloudCorpusStore(control, blobs, str(tmp_path / "scratch"))
     return store, control
 

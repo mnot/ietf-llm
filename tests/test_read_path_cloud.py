@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 
 from ietf_llm import mcp_server
-from ietf_llm.corpus_blobs import BlobStore
-from ietf_llm.corpus_control import ControlPlane
+from ietf_llm.corpus_blobs import FileBlobStore
+from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
 
 
 def _cloud_store(root: Path) -> CloudCorpusStore:
-    control = ControlPlane(str(root / "control.db"))
-    blobs = BlobStore(str(root / "bucket"))
+    control = SqliteControlPlane(str(root / "control.db"))
+    blobs = FileBlobStore(str(root / "bucket"))
     return CloudCorpusStore(control, blobs, str(root / "scratch"))
 
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.corpus_control import ControlPlane
+from ietf_llm.corpus_control import SqliteControlPlane
 
 
-def _cp(tmp_path: Path) -> ControlPlane:
-    return ControlPlane(str(tmp_path / "control.db"))
+def _cp(tmp_path: Path) -> SqliteControlPlane:
+    return SqliteControlPlane(str(tmp_path / "control.db"))
 
 
 def test_publish_then_resolve_and_manifest(tmp_path: Path) -> None:
