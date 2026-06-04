@@ -37,7 +37,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..digest.events import Event
 from ..paths import ballot_path, ballots_dir
 from ..utils import LogLevel, Verbosity, log, write_if_changed
-from .datatracker import _get_json  # pylint: disable=protected-access
+from .datatracker import (  # pylint: disable=protected-access
+    _get_json,
+    fetch_person_names,
+)
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
 
@@ -197,28 +200,46 @@ def fetch_ballots(
         verbose,
         level=LogLevel.STATUS,
     )
-    person_cache: Dict[str, str] = {}
-    ballots: List[Ballot] = []
+    # First pass: pull each in-scope doc's full ballot body and collect
+    # the distinct balloters across all of them.
+    bodies: List[Tuple[str, Dict[str, Any]]] = []
+    balloters: set[str] = set()
     for doc_name in doc_names:
-        ballot = _fetch_full_ballot(doc_name, cutoff, person_cache)
+        body = _get_json(
+            f"{_API_BASE}/doc/ballotpositiondocevent/"
+            f"?doc__name={doc_name}"
+            "&limit=500"
+        )
+        if not body or "objects" not in body:
+            continue
+        bodies.append((doc_name, body))
+        for obj in body["objects"]:
+            balloter = obj.get("balloter") or obj.get("by") or ""
+            if balloter:
+                balloters.add(balloter)
+
+    # One batched query resolves every balloter (the same ~15 ADs recur
+    # across docs) instead of one GET per balloter.
+    person_cache: Dict[str, str] = fetch_person_names(balloters)
+
+    ballots: List[Ballot] = []
+    for doc_name, body in bodies:
+        ballot = _build_ballot(doc_name, body, cutoff, person_cache)
         if ballot is None or not ballot.positions:
             continue
         ballots.append(ballot)
     return ballots
 
 
-def _fetch_full_ballot(
+def _build_ballot(
     doc_name: str,
+    body: Dict[str, Any],
     cutoff: datetime,
     person_cache: Dict[str, str],
 ) -> Optional[Ballot]:
-    """Fetch every position event for one doc and collapse to the
-    current ballot (latest event per balloter wins)."""
-    body = _get_json(
-        f"{_API_BASE}/doc/ballotpositiondocevent/" f"?doc__name={doc_name}" "&limit=500"
-    )
-    if not body or "objects" not in body:
-        return None
+    """Collapse one doc's position events to the current ballot (latest
+    event per balloter wins). `person_cache` is pre-resolved by the
+    caller; any balloter it misses falls back to an individual lookup."""
     events: List[Tuple[str, Dict[str, Any], datetime]] = []
     first_event: Optional[datetime] = None
     latest_in_window: Optional[datetime] = None

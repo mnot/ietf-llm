@@ -18,12 +18,19 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
 from .. import http_metrics
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, get_cache_dir, log
+from ..utils import (
+    DEFAULT_HEADERS,
+    LogLevel,
+    Verbosity,
+    get_cache_dir,
+    http_session,
+    log,
+)
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
 
@@ -67,6 +74,7 @@ def is_leadership(role_slug: str) -> bool:
 
 _EMAIL_FROM_URL = re.compile(r"/api/v1/person/email/([^/]+)/?$")
 _ROLE_NAME_FROM_URL = re.compile(r"/api/v1/name/rolename/([^/]+)/?$")
+_PERSON_ID_FROM_URL = re.compile(r"/person/person/(\d+)/?")
 
 
 # --- Conditional-GET cache -------------------------------------------------
@@ -158,7 +166,7 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         headers["If-None-Match"] = entry["etag"]
 
     try:
-        response = requests.get(url, headers=headers, timeout=timeout)
+        response = http_session().get(url, headers=headers, timeout=timeout)
     except requests.RequestException:
         http_metrics.record(url, 0, 0, error=True)
         return _decode_cached(entry)
@@ -265,6 +273,45 @@ def iter_active_drafts_by_name(wg_name: str) -> Iterator[Dict[str, Any]]:
         path = (body.get("meta") or {}).get("next") or None
 
 
+def fetch_person_names(person_urls: Iterable[str]) -> Dict[str, str]:
+    """Resolve many person resource URLs to display names in one (or a
+    few) batched requests.
+
+    Datatracker's Tastypie API honours `id__in=`, so N person
+    dereferences collapse to ceil(N/100) list queries instead of N
+    individual GETs — the bulk of the per-gather person chatter (WG
+    roles, IESG balloters). Returns `{person_url: name}` for every input
+    URL whose numeric id the API returned; URLs whose id can't be parsed
+    or that the API omitted are simply absent, so callers keep their
+    existing per-URL fallback (an email local-part or the raw id).
+    """
+    # Distinct id → the input URL(s) that referenced it (a person may be
+    # named by both path and absolute form across call sites).
+    id_to_urls: Dict[str, List[str]] = {}
+    for url in person_urls:
+        match = _PERSON_ID_FROM_URL.search(url or "")
+        if match:
+            id_to_urls.setdefault(match.group(1), []).append(url)
+
+    out: Dict[str, str] = {}
+    ids = list(id_to_urls)
+    for start in range(0, len(ids), 100):
+        chunk = ids[start : start + 100]
+        body = _get_json(
+            f"{_API_BASE}/person/person/?id__in={','.join(chunk)}&limit=100"
+        )
+        if not body:
+            continue
+        for obj in body.get("objects") or []:
+            match = _PERSON_ID_FROM_URL.search(obj.get("resource_uri") or "")
+            if not match:
+                continue
+            name = obj.get("name") or obj.get("ascii") or ""
+            for url in id_to_urls.get(match.group(1), []):
+                out[url] = name
+    return out
+
+
 def fetch_wg_roles(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Role]:
     """Return the role assignments for a WG (chairs, ADs, advisors, …).
 
@@ -282,34 +329,24 @@ def fetch_wg_roles(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Role]
         )
         return []
 
-    out: List[Role] = []
-    # Tiny per-call cache so two chairs of the same WG don't re-fetch
-    # the same person endpoint (they don't, but the pattern is cheap).
-    person_cache: Dict[str, str] = {}
-
+    # First parse every role row, then resolve all the people in one
+    # batched query (instead of one GET per person).
+    parsed: List[Tuple[str, Optional[str], str]] = []  # (slug, email, person_url)
     for obj in roles_body["objects"]:
-        role_url = obj.get("name", "")
-        role_match = _ROLE_NAME_FROM_URL.search(role_url)
+        role_match = _ROLE_NAME_FROM_URL.search(obj.get("name", ""))
         if not role_match:
             continue
-        role_slug = role_match.group(1)
-
-        email_url = obj.get("email", "")
-        email_match = _EMAIL_FROM_URL.search(email_url)
+        email_match = _EMAIL_FROM_URL.search(obj.get("email", ""))
         email = email_match.group(1) if email_match else None
+        parsed.append((role_match.group(1), email, obj.get("person", "")))
 
-        person_url = obj.get("person", "")
-        if person_url in person_cache:
-            name = person_cache[person_url]
-        else:
-            person_body = _get_json(person_url)
-            name = ""
-            if person_body:
-                name = person_body.get("name") or person_body.get("ascii") or ""
-            if not name and email:
-                name = email.split("@", 1)[0]
-            person_cache[person_url] = name
+    names = fetch_person_names(person_url for _, _, person_url in parsed)
 
+    out: List[Role] = []
+    for role_slug, email, person_url in parsed:
+        name = names.get(person_url, "")
+        if not name and email:
+            name = email.split("@", 1)[0]
         out.append(
             Role(
                 role=role_slug,

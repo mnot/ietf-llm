@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
@@ -12,6 +13,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     import fcntl as _fcntl
@@ -22,6 +25,49 @@ from . import __version__, http_metrics
 
 DEFAULT_HEADERS = {"User-Agent": f"ietf-llm/{__version__}"}
 DEFAULT_MONTHS = 12
+
+
+# --- Shared HTTP session ---------------------------------------------------
+#
+# A single gather fires dozens-to-hundreds of sequential HTTPS requests,
+# almost all to datatracker.ietf.org. A bare requests.get() opens a fresh
+# TCP + TLS connection every time, so the handshake (1-2 RTT) is paid per
+# request — pure waste against a keep-alive host. One process-wide Session
+# with a connection pool amortises that across the whole run. The mounted
+# adapter also retries transient transport errors and 5xx / 429 with
+# exponential backoff (the pipeline otherwise has none), honouring
+# Retry-After. Every gather-side fetch routes through this.
+
+_SESSION: Optional[requests.Session] = None
+_SESSION_LOCK = threading.Lock()
+
+
+def http_session() -> requests.Session:
+    """Return the process-wide pooled, retrying `requests.Session`.
+
+    Lazily built under a lock (the MCP runner can gather two corpora in
+    separate threads); urllib3's underlying pool is thread-safe for the
+    concurrent GETs the pipeline issues."""
+    global _SESSION  # pylint: disable=global-statement
+    if _SESSION is None:
+        with _SESSION_LOCK:
+            if _SESSION is None:
+                session = requests.Session()
+                retry = Retry(
+                    total=3,
+                    backoff_factor=0.5,
+                    status_forcelist=(429, 500, 502, 503, 504),
+                    allowed_methods=frozenset({"GET", "HEAD"}),
+                    respect_retry_after_header=True,
+                    raise_on_status=False,
+                )
+                adapter = HTTPAdapter(
+                    pool_connections=8, pool_maxsize=8, max_retries=retry
+                )
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+                _SESSION = session
+    return _SESSION
 
 
 def cached_wg_names() -> List[str]:
@@ -583,7 +629,7 @@ def fetch_resource(
     if headers:
         combined_headers.update(headers)
     try:
-        res = requests.get(url, headers=combined_headers, timeout=30)
+        res = http_session().get(url, headers=combined_headers, timeout=30)
         res.raise_for_status()
         http_metrics.record(url, res.status_code, len(res.content))
         return res

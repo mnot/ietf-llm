@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, log
+from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, http_session, log
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
@@ -147,7 +147,9 @@ def download_github_issues(
             level=LogLevel.STATUS,
         )
         try:
-            response = requests.get(repo_short, headers=DEFAULT_HEADERS, timeout=60)
+            response = http_session().get(
+                repo_short, headers=DEFAULT_HEADERS, timeout=60
+            )
             response.raise_for_status()
             with open(dest_path, "w", encoding="utf-8") as json_file:
                 json_file.write(response.text)
@@ -175,7 +177,7 @@ def download_github_issues(
         level=LogLevel.STATUS,
     )
     try:
-        response = requests.get(archive_url, headers=DEFAULT_HEADERS, timeout=30)
+        response = http_session().get(archive_url, headers=DEFAULT_HEADERS, timeout=30)
         if response.status_code == 200:
             log("Archive found; downloading...", verbose, level=LogLevel.STATUS)
             try:
@@ -249,7 +251,7 @@ def _fetch_all_issues(
             f"https://api.github.com/repos/{owner}/{repo_name}/issues"
             f"?state=all&page={page}&per_page=100"
         )
-        res = requests.get(api_url, headers=headers, timeout=60)
+        res = http_session().get(api_url, headers=headers, timeout=60)
         res.raise_for_status()
         issues = res.json()
         if not issues:
@@ -287,7 +289,7 @@ def _fetch_issue_comments(
     comments_url: str, headers: Dict[str, str]
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a specific issue."""
-    c_res = requests.get(comments_url, headers=headers, timeout=30)
+    c_res = http_session().get(comments_url, headers=headers, timeout=30)
     if c_res.status_code == 200:
         comments = c_res.json()
         return [
