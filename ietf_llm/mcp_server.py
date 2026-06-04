@@ -98,7 +98,6 @@ from .utils import (
     LogLevel,
     Verbosity,
     get_index_dir,
-    get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
     log,
 )
@@ -120,9 +119,27 @@ def _list_wgs() -> List[str]:
     return get_corpus_store().list_corpora()
 
 
+def _files_dir(wg: str) -> str:
+    """The local `files/` directory for `wg`'s current version, via the corpus
+    store — which materialises a cloud version onto local scratch, or returns
+    the live cache dir for the local backend. Every read tool is guarded by
+    `_requires_corpus`, so the corpus is known to exist by the time this is
+    called; a None here means it vanished mid-request and is a real error.
+
+    The version is resolved per call. Pinning one version across all of a
+    request's reads — so a concurrent publish cannot tear a multi-read tool —
+    is a later refinement (a request-scoped version context) and affects only
+    the cloud backend; the local backend is single-version.
+    """
+    cache = get_corpus_store().local_cache_dir(wg)
+    if cache is None:
+        raise FileNotFoundError(f"no current version for corpus {wg!r}")
+    return cache
+
+
 def _safe_path(wg: str, file: str) -> Optional[str]:
     """Resolve `file` inside the corpus's file cache; refuse path escapes."""
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     candidate = os.path.realpath(os.path.join(cache, file))
     if not candidate.startswith(os.path.realpath(cache) + os.sep):
         return None
@@ -137,14 +154,14 @@ _DIGEST_KINDS = ("index", "issues", "threads", "people", "timeline")
 def _digest_path(wg: str, kind: str) -> Optional[str]:
     if kind not in _DIGEST_KINDS:
         return None
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     path = digest_path(cache, kind)
     return path if os.path.isfile(path) else None
 
 
 def _available_digest_kinds(wg: str) -> List[str]:
     """The digest kinds this corpus actually has on disk."""
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     return [k for k in _DIGEST_KINDS if os.path.isfile(digest_path(cache, k))]
 
 
@@ -302,7 +319,7 @@ def tool_list_corpora() -> str:
 
 @_requires_corpus
 def tool_overview(wg: str) -> str:
-    return _with_freshness(wg, build_overview(wg, get_wg_file_cache_dir(wg)))
+    return _with_freshness(wg, build_overview(wg, _files_dir(wg)))
 
 
 def tool_read_ietf_norms() -> str:
@@ -334,7 +351,7 @@ def tool_list_labels(wg: str) -> str:
     groups (TLS, with `[mlkem]` / `[ech]`) cluster on the list. The
     consumer doesn't have to know which the WG uses — both render.
     """
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     labels = _label_frequencies(cache, wg)
     prefixes = _subject_prefix_frequencies(cache)
     if not labels and not prefixes:
@@ -395,7 +412,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     suffix stripped), so `draft-Foo-Bar-07` and `draft-foo-bar` both
     yield the same result.
     """
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     citations_md = digest_path(cache, "citations")
     if not os.path.isfile(citations_md):
         return _with_freshness(
@@ -433,7 +450,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
 
 @_requires_corpus
 def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     if not os.path.isdir(cache):
         return f"No cache for {wg}."
     # chunk_counts() is cheap (one GROUP BY) and lets the consumer bound
@@ -1148,7 +1165,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
     affiliation from the people digest when known — exposing the
     implementer-clustering signal alongside the raw count.
     """
-    cache_dir = get_wg_file_cache_dir(wg)
+    cache_dir = _files_dir(wg)
     if not file_supports_tally(file):
         return (
             f"`{file}` doesn't have the per-message section structure "
