@@ -81,7 +81,8 @@ clobbering each other.
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
 | `IETF_LLM_CONTROL_DB` | control-plane locator: a filesystem path → local SQLite. A cloud database-API adapter (e.g. Cloudflare D1) plugs into the same SQL seam | cloud |
-| `IETF_LLM_BLOB_DIR` | blob-store base directory (`file://`) | cloud |
+| `IETF_LLM_BLOB_DIR` | blob-store locator: a directory path → `file://` (bundled), or `s3://bucket/prefix` → S3-compatible (needs `[s3]`) | cloud |
+| `IETF_LLM_BLOB_ENDPOINT_URL` | S3 endpoint URL for a non-AWS service (R2, MinIO); unset = AWS | s3 only |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 
 These non-secret knobs may instead be set in the global `config.json` (`store_backend`,
@@ -110,8 +111,20 @@ so a stateless cloud database over HTTP behaves exactly like a local file.
   atomic D1 `batch`, and pulls no extra dependency. Other SQLite-compatible cloud databases (e.g.
   libSQL/Turso) plug in as additional adapters behind the same seam.
 
-`IETF_LLM_BLOB_DIR` is the immutable blob store: a directory path (`file://`), fine for development or
-a shared volume (whole-object writes + atomic rename).
+**Choosing a blob backend.** `IETF_LLM_BLOB_DIR` selects the immutable blob store (the versioned
+`files/` + `embeddings.db`):
+
+- A **directory path** selects the bundled `file://` backend — fine for development or a shared
+  volume (whole-object writes + atomic rename), but not for a multi-host fleet.
+- An **`s3://bucket/prefix`** locator selects the S3-compatible backend (`pip install ietf-llm[s3]`),
+  which works against AWS S3, Cloudflare R2, or MinIO. For a non-AWS endpoint set
+  `IETF_LLM_BLOB_ENDPOINT_URL` (e.g. the R2 `https://<account>.r2.cloudflarestorage.com`).
+  Credentials come from the standard AWS environment / instance-role chain
+  (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) — **secret**, environment only. It uses only
+  whole-object GET/PUT/HEAD/LIST.
+
+A real cloud fleet needs the object-store blob backend *and* a cloud control plane — `file://` blobs
+or a local SQLite control DB each pin you to a single host.
 
 In every case the program is the storage *client* (no FUSE mounts), and the object store needs no
 special features because all atomicity lives in the control-plane pointer. The HTTP serve path

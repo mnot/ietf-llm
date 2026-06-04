@@ -45,6 +45,10 @@ notebooklm = [
     "google-auth-oauthlib",
     "google-auth-httplib2",
 ]
+# S3-compatible object store for the cloud blob plane (corpus_blobs_s3).
+# Only the `cloud` store backend with an `s3://` IETF_LLM_BLOB_DIR needs it;
+# the default file:// blob store and base install do not.
+s3 = ["boto3"]
 # Behaviour-shaping extras (not feature-gating)
 certs = ["pip-system-certs"]
 dev = [
@@ -58,12 +62,15 @@ dev = [
     "types-requests",
     "types-beautifulsoup4",
     # Optional runtime deps that must be present to lint / typecheck the
-    # optional modules (notebooklm.py imports google at module scope).
-    # Torch is deliberately NOT here -- the local-embeddings path is
-    # lazily imported, so it lints without it and CI stays torch-free.
+    # optional modules (notebooklm.py imports google at module scope;
+    # corpus_blobs_s3.py imports boto3). Torch is deliberately NOT here -- the
+    # local-embeddings path is lazily imported, so it lints without it and CI
+    # stays torch-free.
     "google-auth",
     "google-auth-oauthlib",
     "google-auth-httplib2",
+    "boto3",
+    "moto",
 ]
 
 [project.urls]

@@ -296,6 +296,7 @@ ietf_llm/
 ├── corpus_control.py       # control plane: ControlPlane + SqlExecutor seam + SQLite
 ├── corpus_control_d1.py    # Cloudflare D1 executor (cloud control plane over HTTP)
 ├── corpus_blobs.py         # cloud blob plane: immutable whole-object store (file://)
+├── corpus_blobs_s3.py      # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
 ├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
 ├── freshness.py            # last-gathered sentinel + staleness warnings
@@ -485,7 +486,8 @@ version. `get_corpus_store()` picks the backend from service config
   transaction). So the same control-plane logic runs over `SqliteExecutor` (a
   local file, single-host/dev) or a SQLite-compatible cloud database reached over
   its HTTP API (e.g. a Cloudflare D1 adapter) for the multi-host case. The blob
-  plane is `FileBlobStore` today. The program stays the storage client (no FUSE),
+  plane is `FileBlobStore` (local / shared volume) or `S3BlobStore` (the `[s3]`
+  extra; AWS S3 / Cloudflare R2 / MinIO). The program stays the storage client (no FUSE),
   and the store needs no special features because all atomicity lives in the
   pointer. This is the path that closes the MCP-driven-gather durability/coherence
   hole on an ephemeral, replicated serve fleet. Operator setup:

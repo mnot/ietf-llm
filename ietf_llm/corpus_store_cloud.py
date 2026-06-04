@@ -49,6 +49,23 @@ def _build_control_plane(locator: str) -> ControlPlane:
     return SqliteControlPlane(locator)
 
 
+def _build_blob_store(locator: str) -> BlobStore:
+    """Build the blob backend from `locator`'s scheme: `s3://bucket/prefix`
+    selects the S3-compatible backend (the `[s3]` extra); a directory path
+    selects the bundled `file://` backend."""
+    if locator.startswith("s3://"):
+        try:
+            from .corpus_blobs_s3 import (  # pylint: disable=import-outside-toplevel
+                S3BlobStore,
+            )
+        except ImportError as err:
+            raise ValueError(
+                "an s3:// blob store needs the 's3' extra (pip install ietf-llm[s3])"
+            ) from err
+        return S3BlobStore(locator)
+    return FileBlobStore(locator)
+
+
 def build_cloud_store() -> "CloudCorpusStore":
     """Construct the cloud backend from service config, or raise ValueError if
     it is selected but under-configured. The serve path surfaces this earlier
@@ -74,7 +91,7 @@ def build_cloud_store() -> "CloudCorpusStore":
         )
     assert control and blobs and scratch  # narrowed by the check above
     return CloudCorpusStore(
-        _build_control_plane(control), FileBlobStore(blobs), scratch
+        _build_control_plane(control), _build_blob_store(blobs), scratch
     )
 
 
