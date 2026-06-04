@@ -112,18 +112,26 @@ def merge_global(
     """Resolve global service scalars into `args`.
 
     `spec` is an iterable of ``(arg_name, env_var, default)``. Precedence is
-    **env > CLI > global-persisted > default**. A non-default CLI value is
-    written through to the global config so it sticks for every corpus
-    (even when the environment overrides it this run, so it is remembered
-    once the env var is gone). The environment wins even over an explicit
-    CLI flag -- a container's injected config is authoritative -- and a
-    notice is logged when it overrides one. Secrets come from the
-    environment only and are never persisted here.
+    **env > CLI > global-persisted > default**. A CLI value is written
+    through to the global config so it sticks for every corpus (even when
+    the environment overrides it this run, so it is remembered once the env
+    var is gone). The environment wins even over an explicit CLI flag -- a
+    container's injected config is authoritative -- and a notice is logged
+    when it overrides one. Secrets come from the environment only and are
+    never persisted here.
+
+    "Supplied on the CLI" means the arg is not ``None``: callers use
+    ``None`` as the unset sentinel (so a flag like ``--embed`` can carry an
+    explicit ``False`` that still overrides and persists, distinct from the
+    declared default). The resolved source of each scalar (``env`` / ``cli``
+    / ``config`` / ``default``) is recorded on ``args._global_sources`` for
+    callers that want to explain where a value came from.
     """
     persisted = load_global()
+    sources: Dict[str, str] = {}
     for name, env_var, default in spec:
         cli_val = getattr(args, name, None)
-        cli_supplied = cli_val is not None and cli_val != default
+        cli_supplied = cli_val is not None
         if cli_supplied:
             persisted[name] = cli_val
         env_raw = os.environ.get(env_var)
@@ -136,13 +144,18 @@ def merge_global(
                     level=LogLevel.STATUS,
                 )
             setattr(args, name, env_val)
+            sources[name] = "env"
         elif cli_supplied:
             setattr(args, name, cli_val)
+            sources[name] = "cli"
         elif name in persisted:
             setattr(args, name, persisted[name])
+            sources[name] = "config"
         else:
             setattr(args, name, default)
+            sources[name] = "default"
     save_global(persisted)
+    setattr(args, "_global_sources", sources)
 
 
 def merge(
