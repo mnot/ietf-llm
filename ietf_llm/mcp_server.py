@@ -62,6 +62,7 @@ import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 from . import __version__, _debug_log, _stdio_transport, config, serve_metrics
 from .catalog import render_efforts
 from .corpus import describe, kind_status
+from .corpus_store import get_corpus_store
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -96,7 +97,6 @@ from .positions import (
 from .utils import (
     LogLevel,
     Verbosity,
-    get_cache_dir,
     get_index_dir,
     get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
@@ -117,16 +117,7 @@ MAX_CHUNK_RANGE = 20
 
 
 def _list_wgs() -> List[str]:
-    root = get_cache_dir()
-    if not os.path.isdir(root):
-        return []
-    out = []
-    for name in sorted(os.listdir(root)):
-        if name.startswith("_") or name.startswith("."):
-            continue
-        if os.path.isdir(os.path.join(root, name, "files")):
-            out.append(name)
-    return out
+    return get_corpus_store().list_corpora()
 
 
 def _safe_path(wg: str, file: str) -> Optional[str]:
@@ -186,7 +177,7 @@ def _corpus_exists(wg: str) -> bool:
     """True if `wg` has a cache directory. Read-only: unlike
     `get_wg_file_cache_dir`, it never creates one — so a typo'd corpus
     name is not silently materialised by a query."""
-    return os.path.isdir(os.path.join(get_cache_dir(), wg, "files"))
+    return get_corpus_store().corpus_exists(wg)
 
 
 def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
