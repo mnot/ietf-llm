@@ -18,7 +18,7 @@ import argparse
 import os
 import shutil
 import sys
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import __version__, canonical, config, corpus, http_metrics, paths
 from .digest import generate_digests
@@ -39,7 +39,11 @@ from .gather.drafts import (
     process_extra_drafts,
     validate_draft_names,
 )
-from .gather.github import download_github_issues, process_github_issues
+from .gather.github import (
+    download_github_issues,
+    process_github_issues,
+    validate_github_repos,
+)
 from .gather.group_info import write_group_info
 from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
@@ -485,7 +489,7 @@ def _download_github_archives(
     os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
     os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
     for repo_short in repos:
-        if repo_short.startswith("http"):
+        if repo_short.startswith(("http://", "https://")):
             # URL form — the last two path segments are "<owner>/<repo>".
             repo_short = "/".join(repo_short.rstrip("/").split("/")[-2:])
         gh_json = paths.github_archive_path(cache_dir, repo_short)
@@ -648,6 +652,32 @@ def _migrate_global_keys(
     config.save(wg, SCOPE, persisted)
 
 
+def _validate_new_sources(
+    args: argparse.Namespace,
+    persisted: Dict[str, Any],
+    key: str,
+    validator: "Callable[[List[str], Verbosity], List[str]]",
+    verbosity: Verbosity,
+) -> None:
+    """Drop CLI `--<key>` values that `validator` rejects, BEFORE
+    `config.merge` persists them — so a typo'd name doesn't stick in
+    gather.json and log the same skip line every subsequent run.
+
+    Only *new* values are validated; ones already persisted are trusted
+    (they passed once), so a transient Datatracker / mailarchive / GitHub
+    outage can't trash working config.
+    """
+    current = getattr(args, key, None)
+    if not current:
+        return
+    known = set(persisted.get(key, []))
+    new = [v for v in current if v not in known]
+    if not new:
+        return
+    ok = set(validator(new, verbosity))
+    setattr(args, key, [v for v in current if v in known or v in ok] or None)
+
+
 def run_gather(
     argv: List[str],
     verbosity: Verbosity = Verbosity.STATUS,
@@ -703,32 +733,14 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         log(skip, verbosity, level=LogLevel.STATUS)
         return True
 
-    # Validate the *new* CLI-provided --draft / --mailing-list values
-    # against their authoritative sources before config.merge persists
-    # them. Trust values already in gather.json from prior runs — they
-    # passed validation once, and re-validating means a transient
-    # Datatracker / mailarchive outage would trash working config.
-    # Without this gate, a typo'd name sticks in gather.json and
-    # logs the same skip line every subsequent run.
-    if args.draft or args.mailing_list:
-        persisted_drafts = set(persisted.get("draft", []))
-        persisted_lists = set(persisted.get("mailing_list", []))
-        if args.draft:
-            new = [d for d in args.draft if d not in persisted_drafts]
-            if new:
-                ok = set(validate_draft_names(new, verbosity))
-                args.draft = [
-                    d for d in args.draft if d in persisted_drafts or d in ok
-                ] or None
-        if args.mailing_list:
-            new = [lst for lst in args.mailing_list if lst not in persisted_lists]
-            if new:
-                ok = set(validate_list_names(new, verbosity))
-                args.mailing_list = [
-                    lst
-                    for lst in args.mailing_list
-                    if lst in persisted_lists or lst in ok
-                ] or None
+    # Validate the *new* CLI-provided --draft / --mailing-list / --github
+    # values against their authoritative sources before config.merge
+    # persists them (see _validate_new_sources for the rationale).
+    _validate_new_sources(args, persisted, "draft", validate_draft_names, verbosity)
+    _validate_new_sources(
+        args, persisted, "mailing_list", validate_list_names, verbosity
+    )
+    _validate_new_sources(args, persisted, "github", validate_github_repos, verbosity)
 
     config.merge(
         args,

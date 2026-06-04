@@ -50,6 +50,9 @@ def _stub_pipeline(
     monkeypatch.setattr(main_mod, "scan_citations", lambda *a, **k: {})
     monkeypatch.setattr(main_mod, "validate_draft_names", lambda names, v: list(names))
     monkeypatch.setattr(main_mod, "validate_list_names", lambda names, v: list(names))
+    monkeypatch.setattr(
+        main_mod, "validate_github_repos", lambda names, verbose=None: list(names)
+    )
 
 
 def _emitted(args: Any) -> List[str]:
