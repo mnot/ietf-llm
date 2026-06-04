@@ -69,7 +69,7 @@ from . import (
 )
 from .catalog import render_efforts
 from .corpus import describe, kind_status
-from .corpus_store import get_corpus_store
+from .corpus_store import get_corpus_store, pin_corpus_version
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -205,19 +205,25 @@ def _corpus_exists(wg: str) -> bool:
 
 
 def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
-    """Guard a `tool_*(wg, ...)` so an unknown corpus returns a clear
-    message — rather than creating a junk cache dir and rendering a hollow
-    result from it."""
+    """Guard a `tool_*(wg, ...)` so an unknown corpus returns a clear message —
+    rather than creating a junk cache dir and rendering a hollow result from it.
+
+    Also resolves the corpus's current version **once** and pins it for the
+    whole tool call, so every read in the request (files and the search index)
+    stays on one version even if a publish lands mid-call (G-1). No-op pin on
+    the single-version local backend."""
 
     @functools.wraps(fn)
     def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
-        if not _corpus_exists(wg):
+        version = get_corpus_store().resolve_current(wg)
+        if version is None:
             return (
                 f"Unknown corpus '{wg}'. Nothing is cached under that name — "
                 f"run `ietf-llm {wg}` to gather it, or call `list_corpora` to "
                 "see what is available."
             )
-        return fn(wg, *args, **kwargs)
+        with pin_corpus_version(wg, version):
+            return fn(wg, *args, **kwargs)
 
     return wrapper
 

@@ -22,10 +22,12 @@ interface, different backend. See `docs/cloud-storage.md`.
 
 from __future__ import annotations
 
+import contextvars
 import importlib
 import os
 from abc import ABC, abstractmethod
-from typing import List, Optional, cast
+from contextlib import contextmanager
+from typing import Dict, Iterator, List, Optional, cast
 
 from . import service_config
 from .utils import cached_wg_names, get_cache_dir, get_index_dir
@@ -40,6 +42,31 @@ def _local_files_dir(corpus: str) -> str:
     """The `<cache>/<corpus>/files` path under the local cache root. Pure path
     construction — does not touch the filesystem (so it never creates a dir)."""
     return os.path.join(get_cache_dir(), corpus, "files")
+
+
+#: Request-scoped pinned versions: corpus -> version. Set once at the MCP tool
+#: boundary so every read in a request (files *and* index) resolves the same
+#: version, and a publish landing mid-request cannot mix two versions into one
+#: answer. Only the cloud backend consults it; the local backend is
+#: single-version. A ContextVar so it is isolated per request/worker thread.
+_pinned_versions: contextvars.ContextVar[Dict[str, str]] = contextvars.ContextVar(
+    "ietf_llm_pinned_versions", default={}
+)
+
+
+@contextmanager
+def pin_corpus_version(corpus: str, version: str) -> Iterator[None]:
+    """Pin `corpus` to `version` for the duration of the block."""
+    token = _pinned_versions.set({**_pinned_versions.get(), corpus: version})
+    try:
+        yield
+    finally:
+        _pinned_versions.reset(token)
+
+
+def pinned_version(corpus: str) -> Optional[str]:
+    """The version `corpus` is pinned to in this request, or None."""
+    return _pinned_versions.get().get(corpus)
 
 
 class CorpusStore(ABC):

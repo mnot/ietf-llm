@@ -134,3 +134,29 @@ def test_db_path_ro_routes_through_store(
     assert os.path.isfile(path)  # the version's index was materialised
     with open(path, "rb") as handle:
         assert handle.read() == b"DB"
+
+
+# G-1: a request-scoped pin keeps all reads on one version across a mid-request
+# publish (files and index both stay pinned).
+def test_version_pin_holds_across_publish(tmp_path: Path) -> None:
+    from ietf_llm.corpus_store import pin_corpus_version
+
+    store = _cloud(tmp_path)
+    _publish_with_index(store, tmp_path)  # v1: files/x.md == "f"
+    v1 = store.resolve_current("tls")
+    assert v1 is not None
+    with pin_corpus_version("tls", v1):
+        ws2 = tmp_path / "ws2"
+        (ws2 / "files").mkdir(parents=True)
+        (ws2 / "files" / "x.md").write_text("v2content")
+        (ws2 / "embeddings.db").write_bytes(b"DB2")
+        store.publish("tls", str(ws2), version="v2")
+        assert store.resolve_current("tls") == "v2"  # the pointer moved...
+        # ...but pinned reads still serve v1, for both files and the index.
+        cache = store.local_cache_dir("tls")
+        assert cache is not None and (Path(cache) / "x.md").read_text() == "f"
+        idx = store.local_index_dir("tls")
+        assert idx is not None and idx.endswith(v1)
+    # Outside the pin, reads follow the current version (v2).
+    idx2 = store.local_index_dir("tls")
+    assert idx2 is not None and idx2.endswith("v2")

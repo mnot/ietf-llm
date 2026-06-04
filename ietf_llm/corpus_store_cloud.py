@@ -27,7 +27,7 @@ from typing import List, Optional
 
 from .corpus_blobs import BlobStore, FileBlobStore
 from .corpus_control import ControlPlane, SqliteControlPlane
-from .corpus_store import CorpusStore
+from .corpus_store import CorpusStore, pinned_version
 
 
 def _new_version() -> str:
@@ -114,7 +114,9 @@ class CloudCorpusStore(CorpusStore):
         return self._control.resolve_current(corpus)
 
     def local_cache_dir(self, corpus: str) -> Optional[str]:
-        version = self._control.resolve_current(corpus)
+        # Honour a request-scoped pin so all of a request's reads stay on one
+        # version even if a publish lands mid-request (G-1).
+        version = pinned_version(corpus) or self._control.resolve_current(corpus)
         if version is None:
             return None
         dest_root = os.path.join(self._scratch, corpus, version)
@@ -126,7 +128,7 @@ class CloudCorpusStore(CorpusStore):
         return files_dir if os.path.isdir(files_dir) else None
 
     def local_index_dir(self, corpus: str) -> Optional[str]:
-        version = self._control.resolve_current(corpus)
+        version = pinned_version(corpus) or self._control.resolve_current(corpus)
         if version is None:
             return None
         dest_root = os.path.join(self._scratch, corpus, version)
