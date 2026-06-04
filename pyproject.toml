@@ -67,7 +67,10 @@ dev = [
 ]
 
 [project.urls]
-homepage = "https://github.com/mnot/ietf-llm"
+Homepage = "https://github.com/mnot/ietf-llm"
+Documentation = "https://github.com/mnot/ietf-llm/blob/main/docs/README.md"
+Source = "https://github.com/mnot/ietf-llm"
+Issues = "https://github.com/mnot/ietf-llm/issues"
 
 [project.scripts]
 ietf-llm = "ietf_llm.__main__:main"
