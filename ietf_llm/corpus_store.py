@@ -142,12 +142,20 @@ def get_corpus_store() -> CorpusStore:
     chooses the backend: `local` (the laptop / single-box default, today's
     behaviour) or `cloud` (a SQL control plane + object-store blob plane; see
     `corpus_store_cloud`). Constructed per call — both backends are cheap,
-    stateless handles that open no connection until used."""
-    if service_config.store_backend() == "cloud":
+    stateless handles that open no connection until used. An unrecognised
+    backend value **raises** rather than silently falling back to local — so a
+    typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead of writing to
+    a local cache and never publishing to the fleet."""
+    backend = service_config.store_backend()
+    if backend == "local":
+        return LocalCorpusStore()
+    if backend == "cloud":
         # Loaded dynamically rather than with a static
         # `from .corpus_store_cloud import ...`: that module imports CorpusStore
         # from here, so a static back-import would be a cycle. The cloud
         # machinery stays out of the default local path entirely.
         cloud = importlib.import_module(f"{__package__}.corpus_store_cloud")
         return cast(CorpusStore, cloud.build_cloud_store())
-    return LocalCorpusStore()
+    raise ValueError(
+        f"unrecognised IETF_LLM_STORE_BACKEND={backend!r} (expected 'local' or 'cloud')"
+    )

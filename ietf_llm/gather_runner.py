@@ -22,6 +22,7 @@ import os
 import re
 import socket
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -62,9 +63,16 @@ _jobs: Dict[str, threading.Thread] = {}
 _registry_lock = threading.Lock()
 
 
+#: A random per-process nonce so the lease owner id is unique even if two
+#: replicas collide on hostname *and* pid (some orchestrators reuse pod
+#: hostnames) — without it, a renew/release could cross hosts.
+_PROCESS_NONCE = uuid.uuid4().hex[:8]
+
+
 def _owner() -> str:
-    """Identify this gather process for the cross-host lease: host + pid."""
-    return f"{socket.gethostname()}:{os.getpid()}"
+    """Identify this gather process for the cross-host lease: host + pid +
+    a per-process random nonce."""
+    return f"{socket.gethostname()}:{os.getpid()}:{_PROCESS_NONCE}"
 
 
 def valid_corpus_name(name: str) -> bool:

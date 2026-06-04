@@ -50,6 +50,11 @@ _SCHEMA_STMTS = (
 Statement = Tuple[str, Sequence[Any]]
 Row = Tuple[Any, ...]
 
+#: Per-process guard: SQLite db paths whose schema has been ensured this run, so
+#: the `CREATE TABLE IF NOT EXISTS` batch is not re-issued on every per-request
+#: executor construction (the D1 executor has its own equivalent guard).
+_sqlite_schema_ensured: set[str] = set()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -239,7 +244,10 @@ class SqliteExecutor(SqlExecutor):
         return conn
 
     def ensure_schema(self, statements: Sequence[str]) -> None:
+        if self._db_path in _sqlite_schema_ensured:
+            return
         self.batch([(stmt, ()) for stmt in statements])
+        _sqlite_schema_ensured.add(self._db_path)
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> List[Row]:
         conn = self._connect()
