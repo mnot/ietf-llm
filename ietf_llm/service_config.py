@@ -49,8 +49,8 @@ def store_backend() -> str:
 def control_db() -> Optional[str]:
     """Locator for the control-plane database, or None if unset.
 
-    SQLite today, so a filesystem path (created on first use); a connection
-    string once a Postgres backend lands."""
+    A filesystem path selects the local SQLite backend (created on first use); a
+    cloud database-API locator (e.g. Cloudflare D1) selects that adapter."""
     return _resolve(CONTROL_DB, None)
 
 

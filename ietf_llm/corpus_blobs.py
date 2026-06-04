@@ -2,8 +2,8 @@
 immutable store of the versioned corpus bytes (`files/` + `embeddings.db`).
 
 `BlobStore` is the interface. `FileBlobStore` is the bundled `file://` backend
-(a base directory — works for development or over a shared volume). `S3BlobStore`
-(see the `[s3]` extra) is the production backend over an S3-compatible API. Keys
+(a base directory — works for development or over a shared volume); an
+object-store backend (S3-compatible) can plug in behind the same interface. Keys
 are POSIX-style relative paths (e.g. `tls/<version>/digests/index.md`). The store
 uses only whole-object operations and no engine-special features, because all
 atomicity lives in the control-plane pointer, never here. See `docs/storage.md`.

@@ -4,10 +4,11 @@
 It holds no storage logic of its own — it composes a `ControlPlane`
 (transactional versions / pointer / leases) and a `BlobStore` (immutable
 whole-object blobs), and stages materialised versions onto a local scratch
-directory. Both planes are pluggable and chosen by the config value's scheme:
-SQLite + `file://` for development / single-host, Postgres + S3 for production.
-This class is backend-agnostic — it depends only on the `ControlPlane` and
-`BlobStore` interfaces. See `docs/storage.md`.
+directory. Both planes are pluggable: the control plane is a `SqlControlPlane`
+over a `SqlExecutor` (a local SQLite file, or a SQLite-compatible cloud database
+over HTTP such as Cloudflare D1); the blob plane is `file://`. This class is
+backend-agnostic — it depends only on the `ControlPlane` and `BlobStore`
+interfaces. See `docs/storage.md`.
 
 Publish ordering is the load-bearing invariant: blobs go to a *fresh* version
 prefix first (invisible — nothing references it), then the control plane records
@@ -18,11 +19,10 @@ a torn read.
 
 from __future__ import annotations
 
-import importlib
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, cast
+from typing import List, Optional
 
 from .corpus_blobs import BlobStore, FileBlobStore
 from .corpus_control import ControlPlane, SqliteControlPlane
@@ -37,43 +37,16 @@ def _new_version() -> str:
 
 
 def _build_control_plane(locator: str) -> ControlPlane:
-    """Pick a control-plane backend from `locator`'s scheme: a `postgres://` /
-    `postgresql://` DSN selects Postgres (needs the `[postgres]` extra); anything
-    else is a SQLite file path. The optional backend is loaded dynamically so a
-    base install — and the type checker — need not see its dependency."""
-    if locator.startswith(("postgres://", "postgresql://")):
-        try:
-            module = importlib.import_module(f"{__package__}.corpus_control_postgres")
-        except ImportError as err:
-            raise ValueError(
-                "a postgresql:// control DB needs the 'postgres' extra "
-                "(pip install ietf-llm[postgres])"
-            ) from err
-        return cast(ControlPlane, module.PostgresControlPlane(locator))
+    """Build the control-plane backend from `locator`. A filesystem path selects
+    the local SQLite backend; cloud database-API adapters (e.g. Cloudflare D1)
+    plug in here by scheme."""
     return SqliteControlPlane(locator)
-
-
-def _build_blob_store(locator: str) -> BlobStore:
-    """Pick a blob backend from `locator`'s scheme: `s3://…` selects S3 (needs
-    the `[s3]` extra); anything else is a `file://` base directory. The optional
-    backend is loaded dynamically (see `_build_control_plane`)."""
-    if locator.startswith("s3://"):
-        try:
-            module = importlib.import_module(f"{__package__}.corpus_blobs_s3")
-        except ImportError as err:
-            raise ValueError(
-                "an s3:// blob store needs the 's3' extra (pip install ietf-llm[s3])"
-            ) from err
-        return cast(BlobStore, module.S3BlobStore(locator))
-    return FileBlobStore(locator)
 
 
 def build_cloud_store() -> "CloudCorpusStore":
     """Construct the cloud backend from service config, or raise ValueError if
     it is selected but under-configured. The serve path surfaces this earlier
-    via boot-time validation; this guards the CLI / gather path too. The
-    control-plane and blob backends are chosen by the scheme of their configured
-    locators (see `_build_control_plane` / `_build_blob_store`)."""
+    via boot-time validation; this guards the CLI / gather path too."""
     from . import service_config  # pylint: disable=import-outside-toplevel
 
     control = service_config.control_db()
@@ -95,7 +68,7 @@ def build_cloud_store() -> "CloudCorpusStore":
         )
     assert control and blobs and scratch  # narrowed by the check above
     return CloudCorpusStore(
-        _build_control_plane(control), _build_blob_store(blobs), scratch
+        _build_control_plane(control), FileBlobStore(blobs), scratch
     )
 
 

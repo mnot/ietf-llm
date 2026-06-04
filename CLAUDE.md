@@ -76,10 +76,13 @@ the hard way.
   (the `_files_dir` / `_corpus_exists` boundary in `mcp_server`, which also keeps
   the read-only existence check above), and a gather publishes via
   `store.publish`. The default `local` backend is today's filesystem — no
-  behaviour change. The opt-in `cloud` backend (`IETF_LLM_STORE_BACKEND=cloud`,
-  SQLite + `file://` today; Postgres + S3 by swapping the two injected
-  components) makes publish the explicit write→read handoff (atomic version
-  pointer flip) and the gather lease cross-host. So on the cloud backend the
+  behaviour change. The opt-in `cloud` backend (`IETF_LLM_STORE_BACKEND=cloud`)
+  puts the control plane behind a pluggable `SqlExecutor` seam (`query` + atomic
+  `batch`, SQLite dialect): a local SQLite file (single-host/dev) or a
+  SQLite-compatible cloud database over HTTP (e.g. a Cloudflare D1 adapter) for
+  multi-host; the blob plane is `file://`. It makes publish the explicit
+  write→read handoff (atomic version pointer flip) and the gather lease
+  cross-host. So on the cloud backend the
   reader-side vs write-side line above is mediated by *publish*: a re-gather is
   not visible to readers until it publishes a new version. See
   `docs/architecture.md` ("The storage seam").

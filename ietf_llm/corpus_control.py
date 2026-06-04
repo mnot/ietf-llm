@@ -3,22 +3,22 @@ that holds, per corpus, its published versions and manifests, the single
 *current version* pointer (the linearizable read every request resolves), and
 the gather *leases* that serialise writers across hosts.
 
-`ControlPlane` is the interface. `SqlControlPlane` implements it against any
-DB-API 2.0 SQL database, writing **portable** SQL — the two operations that must
-be atomic are expressed without any single-engine trick:
+`ControlPlane` is the interface. `SqlControlPlane` implements it over a
+**pluggable SQL executor** — the `SqlExecutor` seam — with two primitives:
 
-  - the **lease** test-and-set is a *single* conditional upsert
-    (`INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING`), atomic at the
-    statement level on every engine;
-  - **publish** records the version and flips the pointer in one DB-API
-    transaction (`commit()` / `rollback()`), not a `BEGIN IMMEDIATE`.
+  - `query(sql, params)` runs **one** statement and returns its rows;
+  - `batch(statements)` runs several statements **atomically, in one round
+    trip**.
 
-So the same implementation runs on SQLite, Postgres, and libSQL; a subclass only
-supplies a connection and the parameter placeholder. `SqliteControlPlane` is the
-bundled single-host / development backend (SQLite is a local file — it
-coordinates processes on one host, not writers across hosts); `PostgresControlPlane`
-(see `[postgres]` extra) is the multi-host production backend. The program owns
-the schema (created on connect). See `docs/storage.md`.
+Everything is SQLite dialect (`?` placeholders), and the two operations that
+must be atomic are shaped so a *stateless HTTP* database works exactly like a
+local file: the lease test-and-set is a single conditional upsert with
+`RETURNING` (one `query`), and publish is a two-statement `batch` (one round
+trip) — there are no interactive multi-round-trip transactions. So the same
+`SqlControlPlane` runs over a local SQLite file (`SqliteExecutor`) or a cloud
+SQLite-compatible database reached over its HTTP API (e.g. the Cloudflare D1
+adapter in `corpus_control_d1`). The program owns the schema. See
+`docs/storage.md`.
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ import sqlite3
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-# Schema as individual statements (not a SQLite `executescript`), each created
-# if absent so the program owns the schema on any engine. `DOUBLE PRECISION`
-# has REAL affinity on SQLite and is native on Postgres.
+#: Schema as individual `CREATE TABLE IF NOT EXISTS` statements (portable across
+#: SQLite, D1, libSQL). `DOUBLE PRECISION` has REAL affinity on SQLite and is a
+#: real type on the others.
 _SCHEMA_STMTS = (
     "CREATE TABLE IF NOT EXISTS corpus_version ("
     " corpus TEXT NOT NULL, version TEXT NOT NULL,"
@@ -45,6 +45,10 @@ _SCHEMA_STMTS = (
     " corpus TEXT PRIMARY KEY, owner TEXT NOT NULL,"
     " acquired_at DOUBLE PRECISION NOT NULL, expires_at DOUBLE PRECISION NOT NULL)",
 )
+
+#: A statement plus its positional parameters.
+Statement = Tuple[str, Sequence[Any]]
+Row = Tuple[Any, ...]
 
 
 def _now_iso() -> str:
@@ -95,96 +99,81 @@ class ControlPlane(ABC):
         """Owner of the live lease on `corpus`, or None."""
 
 
+class SqlExecutor(ABC):
+    """Runs SQLite-dialect SQL against a backend. Two primitives, each a single
+    round trip, so a stateless HTTP database (D1, libSQL) behaves like a local
+    file. Implementations open/close per call as needed — the serve path is
+    multi-threaded."""
+
+    @abstractmethod
+    def ensure_schema(self, statements: Sequence[str]) -> None:
+        """Apply the schema DDL (idempotent `CREATE TABLE IF NOT EXISTS`)."""
+
+    @abstractmethod
+    def query(self, sql: str, params: Sequence[Any] = ()) -> List[Row]:
+        """Run one statement; return its rows (empty for a write without
+        `RETURNING`)."""
+
+    @abstractmethod
+    def batch(self, statements: Sequence[Statement]) -> None:
+        """Run several statements atomically (all-or-nothing) in one unit."""
+
+
 class SqlControlPlane(ControlPlane):
-    """Portable DB-API 2.0 implementation. Subclasses supply `_connect()` (a
-    fresh connection per call — connections are opened per operation, since the
-    serve path is multi-threaded) and `_param` (the placeholder marker). The SQL
-    below is written once with `?` placeholders and translated if needed."""
+    """Control plane implemented over a `SqlExecutor`. Backend-agnostic: the
+    same logic runs over SQLite or any SQLite-compatible cloud database, since
+    every operation is one `query` or one atomic `batch`."""
 
-    #: Parameter placeholder for this engine: "?" (sqlite, libsql) or "%s" (psycopg).
-    _param: str = "?"
-
-    def _connect(self) -> Any:
-        raise NotImplementedError
-
-    def _sql(self, query: str) -> str:
-        return query if self._param == "?" else query.replace("?", self._param)
-
-    def _ensure_schema(self, conn: Any) -> None:
-        for stmt in _SCHEMA_STMTS:
-            conn.execute(stmt)
-        conn.commit()
+    def __init__(self, executor: SqlExecutor) -> None:
+        self._sql = executor
+        self._sql.ensure_schema(_SCHEMA_STMTS)
 
     # --- versions + current pointer ---------------------------------------
 
     def publish_version(
         self, corpus: str, version: str, manifest: Dict[str, Any]
     ) -> None:
+        # Record the version and flip the pointer in one atomic batch (one round
+        # trip): an interruption leaves the prior version current and the new
+        # version unreferenced, never a torn read.
         payload = json.dumps(manifest, sort_keys=True)
         now = _now_iso()
-        conn = self._connect()
-        try:
-            conn.execute(
-                self._sql(
+        self._sql.batch(
+            [
+                (
                     "INSERT INTO corpus_version"
                     " (corpus, version, manifest, created_at) VALUES (?, ?, ?, ?)"
                     " ON CONFLICT (corpus, version) DO UPDATE SET"
-                    " manifest=excluded.manifest, created_at=excluded.created_at"
+                    " manifest=excluded.manifest, created_at=excluded.created_at",
+                    (corpus, version, payload, now),
                 ),
-                (corpus, version, payload, now),
-            )
-            conn.execute(
-                self._sql(
+                (
                     "INSERT INTO corpus_pointer (corpus, version, updated_at)"
                     " VALUES (?, ?, ?) ON CONFLICT (corpus) DO UPDATE SET"
-                    " version=excluded.version, updated_at=excluded.updated_at"
+                    " version=excluded.version, updated_at=excluded.updated_at",
+                    (corpus, version, now),
                 ),
-                (corpus, version, now),
-            )
-            conn.commit()
-        except BaseException:  # pylint: disable=broad-except
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+            ]
+        )
 
     def resolve_current(self, corpus: str) -> Optional[str]:
-        conn = self._connect()
-        try:
-            cur = conn.execute(
-                self._sql("SELECT version FROM corpus_pointer WHERE corpus=?"),
-                (corpus,),
-            )
-            row = cur.fetchone()
-        finally:
-            conn.close()
-        return str(row[0]) if row else None
+        rows = self._sql.query(
+            "SELECT version FROM corpus_pointer WHERE corpus=?", (corpus,)
+        )
+        return str(rows[0][0]) if rows else None
 
     def get_manifest(self, corpus: str, version: str) -> Optional[Dict[str, Any]]:
-        conn = self._connect()
-        try:
-            cur = conn.execute(
-                self._sql(
-                    "SELECT manifest FROM corpus_version"
-                    " WHERE corpus=? AND version=?"
-                ),
-                (corpus, version),
-            )
-            row = cur.fetchone()
-        finally:
-            conn.close()
-        if not row:
+        rows = self._sql.query(
+            "SELECT manifest FROM corpus_version WHERE corpus=? AND version=?",
+            (corpus, version),
+        )
+        if not rows:
             return None
-        loaded: Dict[str, Any] = json.loads(row[0])
+        loaded: Dict[str, Any] = json.loads(rows[0][0])
         return loaded
 
     def list_corpora(self) -> List[str]:
-        conn = self._connect()
-        try:
-            cur = conn.execute("SELECT corpus FROM corpus_pointer ORDER BY corpus")
-            rows = cur.fetchall()
-        finally:
-            conn.close()
+        rows = self._sql.query("SELECT corpus FROM corpus_pointer ORDER BY corpus")
         return [str(r[0]) for r in rows]
 
     # --- gather lease ------------------------------------------------------
@@ -196,78 +185,47 @@ class SqlControlPlane(ControlPlane):
         # take it over only if the held lease has expired or is already ours.
         # RETURNING yields a row iff we now hold it.
         clock = time.time() if now is None else now
-        conn = self._connect()
-        try:
-            cur = conn.execute(
-                self._sql(
-                    "INSERT INTO gather_lease (corpus, owner, acquired_at, expires_at)"
-                    " VALUES (?, ?, ?, ?)"
-                    " ON CONFLICT (corpus) DO UPDATE SET owner=excluded.owner,"
-                    " acquired_at=excluded.acquired_at, expires_at=excluded.expires_at"
-                    " WHERE gather_lease.expires_at <= ? OR gather_lease.owner = ?"
-                    " RETURNING owner"
-                ),
-                (corpus, owner, clock, clock + ttl, clock, owner),
-            )
-            row = cur.fetchone()
-            conn.commit()
-            return row is not None
-        except BaseException:  # pylint: disable=broad-except
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        rows = self._sql.query(
+            "INSERT INTO gather_lease (corpus, owner, acquired_at, expires_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (corpus) DO UPDATE SET owner=excluded.owner,"
+            " acquired_at=excluded.acquired_at, expires_at=excluded.expires_at"
+            " WHERE gather_lease.expires_at <= ? OR gather_lease.owner = ?"
+            " RETURNING owner",
+            (corpus, owner, clock, clock + ttl, clock, owner),
+        )
+        return bool(rows)
 
     def renew_lease(
         self, corpus: str, owner: str, ttl: float, now: Optional[float] = None
     ) -> bool:
         clock = time.time() if now is None else now
-        conn = self._connect()
-        try:
-            cur = conn.execute(
-                self._sql(
-                    "UPDATE gather_lease SET expires_at=? WHERE corpus=? AND owner=?"
-                ),
-                (clock + ttl, corpus, owner),
-            )
-            conn.commit()
-            return bool(cur.rowcount and cur.rowcount > 0)
-        finally:
-            conn.close()
+        rows = self._sql.query(
+            "UPDATE gather_lease SET expires_at=?"
+            " WHERE corpus=? AND owner=? RETURNING owner",
+            (clock + ttl, corpus, owner),
+        )
+        return bool(rows)
 
     def release_lease(self, corpus: str, owner: str) -> None:
-        conn = self._connect()
-        try:
-            conn.execute(
-                self._sql("DELETE FROM gather_lease WHERE corpus=? AND owner=?"),
-                (corpus, owner),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        self._sql.query(
+            "DELETE FROM gather_lease WHERE corpus=? AND owner=?", (corpus, owner)
+        )
 
     def lease_holder(self, corpus: str, now: Optional[float] = None) -> Optional[str]:
         clock = time.time() if now is None else now
-        conn = self._connect()
-        try:
-            cur = conn.execute(
-                self._sql("SELECT owner, expires_at FROM gather_lease WHERE corpus=?"),
-                (corpus,),
-            )
-            row = cur.fetchone()
-        finally:
-            conn.close()
-        if row is None or row[1] <= clock:
+        rows = self._sql.query(
+            "SELECT owner, expires_at FROM gather_lease WHERE corpus=?", (corpus,)
+        )
+        if not rows or rows[0][1] <= clock:
             return None
-        return str(row[0])
+        return str(rows[0][0])
 
 
-class SqliteControlPlane(SqlControlPlane):
-    """Bundled single-host / development backend: a local SQLite file. SQLite
-    coordinates processes on one host (WAL + busy timeout) but not writers
-    across hosts — a multi-host fleet wants `PostgresControlPlane`."""
-
-    _param = "?"
+class SqliteExecutor(SqlExecutor):
+    """Local-file `SqlExecutor`: a SQLite database. Coordinates processes on one
+    host (WAL + busy timeout) but not writers across hosts — for that, a
+    cloud SQL executor (e.g. D1). Opens a connection per call (thread-safe)."""
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -278,5 +236,36 @@ class SqliteControlPlane(SqlControlPlane):
             os.makedirs(directory, exist_ok=True)
         conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
-        self._ensure_schema(conn)
         return conn
+
+    def ensure_schema(self, statements: Sequence[str]) -> None:
+        self.batch([(stmt, ()) for stmt in statements])
+
+    def query(self, sql: str, params: Sequence[Any] = ()) -> List[Row]:
+        conn = self._connect()
+        try:
+            cur = conn.execute(sql, tuple(params))
+            rows = [tuple(r) for r in cur.fetchall()]
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
+
+    def batch(self, statements: Sequence[Statement]) -> None:
+        conn = self._connect()
+        try:
+            for sql, params in statements:
+                conn.execute(sql, tuple(params))
+            conn.commit()
+        except BaseException:  # pylint: disable=broad-except
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+class SqliteControlPlane(SqlControlPlane):
+    """Convenience: a `SqlControlPlane` over a local SQLite file at `db_path`."""
+
+    def __init__(self, db_path: str) -> None:
+        super().__init__(SqliteExecutor(db_path))

@@ -80,34 +80,34 @@ clobbering each other.
 | Variable | What | Required |
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
-| `IETF_LLM_CONTROL_DB` | SQL control-plane locator: a filesystem path → SQLite (bundled), or a `postgresql://` DSN → Postgres (needs `[postgres]`) | cloud |
-| `IETF_LLM_BLOB_DIR` | blob-store locator: a directory path → `file://` (bundled), or `s3://bucket/prefix` → S3 (needs `[s3]`) | cloud |
+| `IETF_LLM_CONTROL_DB` | control-plane locator: a filesystem path → local SQLite. A cloud database-API adapter (e.g. Cloudflare D1) plugs into the same SQL seam | cloud |
+| `IETF_LLM_BLOB_DIR` | blob-store base directory (`file://`) | cloud |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 
 These non-secret knobs may instead be set in the global `config.json` (`store_backend`,
 `control_db`, `blob_dir`, `scratch_dir`); the environment wins. Any secret (an object-store key, a
 database password) comes from the environment only and is never read from the config file.
 
-**Choosing a control-plane and blob backend.** Each is chosen by the *scheme* of its configured
-locator, so the same knob selects a development or a production backend:
+**Choosing a control-plane backend.** `IETF_LLM_CONTROL_DB` selects the transactional control plane
+(version pointer, manifests, gather leases), reached through a pluggable **SQL executor** seam — the
+control-plane logic is identical across backends (the lease is a single conditional `RETURNING`
+upsert, and publish is one atomic two-statement batch — one round trip, no interactive transaction),
+so a stateless cloud database over HTTP behaves exactly like a local file.
 
-- **`IETF_LLM_CONTROL_DB`** — the transactional control plane (version pointer, manifests, gather
-  leases).
-  - A **filesystem path** (e.g. `/var/lib/ietf-llm/control.db`) selects the bundled **SQLite**
-    backend. You provide the path; the directory, the database file, and the schema are all created
-    on first use — nothing to migrate by hand. Being SQLite it must sit on a **local POSIX
-    filesystem** (never NFS/SMB or an object-store FUSE mount, where SQLite's locking is unreliable),
-    and it coordinates any number of *processes on one host* but **not writers across hosts**. So the
-    SQLite backend fits a **single host** (the serve process(es) and the cron gather sharing one
-    local file) or development.
-  - A **`postgresql://…` DSN** selects the **Postgres** backend (`pip install ietf-llm[postgres]`).
-    This is the multi-host production control plane — the only configuration in which the cross-host
-    behaviour described above (every replica resolving the same pointer; one lease shared between a
-    cron gather and the serve fleet) actually holds. The password lives in the DSN / environment,
-    never in `config.json`.
-- **`IETF_LLM_BLOB_DIR`** — the immutable blob store. A **directory path** selects the bundled
-  `file://` backend (fine for development or a shared volume — whole-object writes + atomic rename);
-  an **`s3://bucket/prefix`** locator selects S3 (`pip install ietf-llm[s3]`).
+- A **filesystem path** (e.g. `/var/lib/ietf-llm/control.db`) selects the bundled **SQLite** backend.
+  You provide the path; the directory, the database file, and the schema are all created on first use
+  — nothing to migrate by hand. Being SQLite it must sit on a **local POSIX filesystem** (never
+  NFS/SMB or an object-store FUSE mount, where SQLite's locking is unreliable), and it coordinates any
+  number of *processes on one host* but **not writers across hosts**. So the SQLite backend fits a
+  **single host** (the serve process(es) and the cron gather sharing one local file) or development.
+- For **multiple hosts**, point it at a **SQLite-compatible cloud database reached over its HTTP
+  API** — e.g. **Cloudflare D1** — via that backend's adapter. That is the configuration in which the
+  cross-host behaviour described above (every replica resolving the same pointer; one lease shared
+  between a cron gather and the serve fleet) actually holds. Any API token is a secret and comes from
+  the environment, never `config.json`.
+
+`IETF_LLM_BLOB_DIR` is the immutable blob store: a directory path (`file://`), fine for development or
+a shared volume (whole-object writes + atomic rename).
 
 In every case the program is the storage *client* (no FUSE mounts), and the object store needs no
 special features because all atomicity lives in the control-plane pointer. The HTTP serve path

@@ -475,17 +475,20 @@ version. `get_corpus_store()` picks the backend from service config
   materialising a version onto local scratch for reads. `publish` stages blobs
   to a fresh version prefix, then flips the pointer in one transaction — a reader
   sees the old version or the new, never a torn one, and a killed publish leaves
-  the prior version live. Both planes are **interfaces with pluggable backends,
-  chosen by the config locator's scheme**: `ControlPlane` →
-  `SqlControlPlane` (portable DB-API SQL — its atomic ops are a single-statement
-  lease upsert and a one-transaction publish, no engine-specific tricks), with
-  `SqliteControlPlane` for dev/single-host and `PostgresControlPlane` (the
-  `[postgres]` extra) for the multi-host production control plane; `BlobStore` →
-  `FileBlobStore` (dev / shared volume) or `S3BlobStore` (the `[s3]` extra). The
-  program stays the storage client (no FUSE), and the store needs no special
-  features because all atomicity lives in the pointer. This is the path that
-  closes the MCP-driven-gather durability/coherence hole on an ephemeral,
-  replicated serve fleet. Operator setup: [storage.md](storage.md).
+  the prior version live. Both planes are **interfaces with pluggable backends**.
+  The control plane is a `SqlControlPlane` over a small **`SqlExecutor`** seam —
+  two primitives, `query` (one statement) and `batch` (several atomically, one
+  round trip) — and all SQLite-dialect, with its atomic ops shaped for a
+  stateless HTTP database: the lease is a single conditional `RETURNING` upsert
+  and publish is a one-round-trip two-statement batch (no interactive
+  transaction). So the same control-plane logic runs over `SqliteExecutor` (a
+  local file, single-host/dev) or a SQLite-compatible cloud database reached over
+  its HTTP API (e.g. a Cloudflare D1 adapter) for the multi-host case. The blob
+  plane is `FileBlobStore` today. The program stays the storage client (no FUSE),
+  and the store needs no special features because all atomicity lives in the
+  pointer. This is the path that closes the MCP-driven-gather durability/coherence
+  hole on an ephemeral, replicated serve fleet. Operator setup:
+  [storage.md](storage.md).
 
 ### Use the Datatracker API; do not scrape HTML
 
