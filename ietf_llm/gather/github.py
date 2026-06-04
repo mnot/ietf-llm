@@ -183,7 +183,7 @@ def validate_github_repos(
             continue
         api_url = f"https://api.github.com/repos/{owner}/{repo}"
         try:
-            resp = requests.get(api_url, headers=headers, timeout=30)
+            resp = http_session().get(api_url, headers=headers, timeout=30)
         except requests.RequestException:
             valid.append(raw)  # ambiguous — keep rather than discard config
             continue
