@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from pathlib import Path
+from typing import Any, List, Tuple
 
 import pytest
 
@@ -160,3 +163,41 @@ def test_version_pin_holds_across_publish(tmp_path: Path) -> None:
     # Outside the pin, reads follow the current version (v2).
     idx2 = store.local_index_dir("tls")
     assert idx2 is not None and idx2.endswith("v2")
+
+
+# G-4: the lease heartbeat renews until stopped, and bails if the lease is lost.
+class _RenewSpy:
+    def __init__(self, result: bool) -> None:
+        self.result = result
+        self.calls: List[Tuple[str, str]] = []
+
+    def renew_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+        self.calls.append((corpus, owner))
+        return self.result
+
+
+def test_heartbeat_renews_until_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import gather_runner as gr
+
+    monkeypatch.setattr(gr, "_LEASE_HEARTBEAT_S", 0.01)
+    spy: Any = _RenewSpy(result=True)
+    stop = threading.Event()
+    t = threading.Thread(target=gr._heartbeat_lease, args=(spy, "tls", "me", stop))
+    t.start()
+    time.sleep(0.06)
+    stop.set()
+    t.join(timeout=1.0)
+    assert not t.is_alive()
+    assert len(spy.calls) >= 1 and spy.calls[0] == ("tls", "me")
+
+
+def test_heartbeat_stops_when_lease_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import gather_runner as gr
+
+    monkeypatch.setattr(gr, "_LEASE_HEARTBEAT_S", 0.01)
+    spy: Any = _RenewSpy(result=False)  # lease was stolen after an expiry
+    stop = threading.Event()
+    t = threading.Thread(target=gr._heartbeat_lease, args=(spy, "tls", "me", stop))
+    t.start()
+    t.join(timeout=1.0)
+    assert not t.is_alive()  # exited on its own once renew returned False

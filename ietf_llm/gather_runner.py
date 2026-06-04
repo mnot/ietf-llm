@@ -42,10 +42,14 @@ from .utils import (
 _STATUS_NAME = "gather-status.json"
 _LOCK_NAME = ".gather.lock"
 
-#: Cross-host gather-lease TTL (cloud backend). Generous — a gather runs minutes
-#: and the lease is released on completion; heartbeat-renew during a very long
-#: gather is a future refinement (the control plane exposes renew_lease).
+#: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
+#: gather and renewed periodically (see `_LEASE_HEARTBEAT_S`), so even a gather
+#: longer than the TTL cannot let it lapse and admit a second writer.
 _LEASE_TTL = 3600.0
+
+#: How often the heartbeat thread renews the lease — comfortably under the TTL so
+#: a slow renew or a stalled stage still refreshes in time.
+_LEASE_HEARTBEAT_S = 900.0
 
 # A corpus name becomes a cache directory, so it must be a single safe path
 # segment: letters/digits/`.`/`-`/`_`, starting with an alphanumeric. This
@@ -73,6 +77,18 @@ def _owner() -> str:
     """Identify this gather process for the cross-host lease: host + pid +
     a per-process random nonce."""
     return f"{socket.gethostname()}:{os.getpid()}:{_PROCESS_NONCE}"
+
+
+def _heartbeat_lease(
+    store: Any, corpus: str, owner: str, stop: threading.Event
+) -> None:
+    """Renew the gather lease periodically so a gather longer than the lease TTL
+    cannot let the lease lapse (which would admit a second writer). Exits when
+    `stop` is set or if the lease is lost (renew returns False). A no-op renew on
+    the local backend, so this thread is harmless there."""
+    while not stop.wait(_LEASE_HEARTBEAT_S):
+        if not store.renew_lease(corpus, owner, _LEASE_TTL):
+            break
 
 
 def valid_corpus_name(name: str) -> bool:
@@ -332,6 +348,17 @@ def _execute(spec: GatherSpec) -> None:
         status["finished"] = _now_iso()
         _persist()
         return
+    # Keep the lease alive for the whole gather (G-4): a background heartbeat
+    # renews it well within the TTL, so a multi-hour gather cannot let the lease
+    # expire and let a second writer publish an orphaned version.
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_lease,
+        args=(store, corpus, owner, stop_heartbeat),
+        name=f"lease-heartbeat:{corpus}",
+        daemon=True,
+    )
+    heartbeat.start()
     try:
         ok = gather_main.run_gather(
             spec.to_argv(), Verbosity.STATUS, progress=_progress
@@ -354,6 +381,8 @@ def _execute(spec: GatherSpec) -> None:
         status["state"] = "failed"
         status["error"] = f"{type(err).__name__}: {err}"[:500]
     finally:
+        stop_heartbeat.set()
+        heartbeat.join(timeout=5.0)
         store.release_lease(corpus, owner)
         status["finished"] = _now_iso()
         _persist()
