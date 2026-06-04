@@ -52,6 +52,24 @@ disk, to the per-corpus config, or back to a client.
 The one exception to "read-only" is the opt-in [in-session gather](#in-session-gather-opt-in) below,
 which writes and reaches the network; leave it off for an exposed replica.
 
+## Boot-time config validation
+
+The HTTP serve path validates its configuration **before binding**, so a contradictory or
+under-provisioned config fails fast at boot rather than minutes into a gather or on the first
+`search_corpus`. It is not transport-gated — HTTP + in-session gather is a supported trusted-box
+shape — it validates cross-knob *consistency*:
+
+- **Hard refuse** (logs the reason, exits 1) for configs that cannot work: `IETF_LLM_ENABLE_GATHER`
+  together with `IETF_LLM_INDEX_IMMUTABLE` (gather must write the index the mount marks read-only);
+  gather with a local torch-backed embed model on a torch-free image and no `--no-embed` (the embed
+  step would crash mid-pipeline); a remote `openai-embed/...` model with no `IETF_LLM_EMBED_BASE_URL`
+  (the read path would fail at request time).
+- **Warn but never block** when the bind host is non-loopback — the no-auth / no-rate-limit posture
+  above is the operator's risk to own; the warning is louder when gather is also on.
+- **Always** log a one-line posture banner (transport, bind, gather on/off, embed backend, embed
+  model, index dir, immutable), honouring `IETF_LLM_LOG_FORMAT=json`, so the logs answer "what is
+  this process actually doing" — dovetailing with the version / freshness preamble below.
+
 ## Installing
 
 ```bash

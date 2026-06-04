@@ -132,6 +132,10 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   ├── refs.json                          #   normative / informative references
 │   ├── tags.json                          #   curated rfc.fyi collections
 │   └── *.etag                             #   per-file ETag sidecars (conditional GET)
+├── _catalog/                               # cross-corpus active-effort catalog (singleton)
+│   ├── catalog.json                       #   derived slim effort records (find_efforts reads)
+│   ├── raw-active.json / raw-bof.json     #   raw Datatracker group slices (revalidation)
+│   └── *.etag                             #   per-file ETag sidecars (conditional GET)
 ├── .http-cache.json                       # shared ETag store (conditional GET)
 └── _github-users.json                     # shared login → name / company cache
 ```
@@ -208,6 +212,15 @@ Key invariants:
   best-effort (`gather/rfcs.py`). The leading underscore keeps it out of
   `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
   `rfc_search` / `get_rfc` tools read it; it is not embedded.
+- **`_catalog/` is the matching singleton for active efforts.** It
+  mirrors the active (and BoF) slice of the Datatracker group list,
+  refreshed beside `_rfc/` in tail housekeeping with the same TTL / ETag
+  / never-raises discipline (`gather/catalog.py`). Unlike the RFC mirror
+  its reader-facing file is *derived*: the raw source slices
+  (`raw-active.json` / `raw-bof.json`) are kept for revalidation, then
+  projected to the slim `catalog.json` record list the reader wants. The
+  leading underscore keeps it out of the corpus enumerations; the
+  `find_efforts` tool reads it; it is not embedded.
 
 ## Config layout
 
@@ -294,6 +307,8 @@ ietf_llm/
 │                           # retry + Retry-After) for the remote embed / summarise backends
 ├── rfcs.py                 # cross-corpus RFC-series reader (rfc_search / get_rfc);
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
+├── catalog.py              # cross-corpus active-effort reader (find_efforts);
+│                           # ranks the _catalog/ singleton by topic, tags cached efforts
 ├── gather_runner.py        # in-session gather: runs the __main__ pipeline off-thread,
 │                           # writes gather-status.json (start_gather / gather_status)
 ├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
@@ -320,7 +335,9 @@ ietf_llm/
 │   ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
 │   ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
 │   ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
+│   ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
 │   ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
+│   ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
 │   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
 │   ├── datatracker_github.py   # github_username profile resources → person (by email)
 │   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
@@ -360,6 +377,11 @@ job:
   `list_files`, `read_ietf_norms` (the bundled `IETF.md` interpretive
   norms — consensus, attribution, list-vs-meeting — served on demand so
   the always-on `instructions` field stays focused on tool routing).
+- **Discover (topic-first):** `find_efforts(query)` ranks the active
+  IETF/IRTF efforts by a free-text topic and tags each with whether it
+  is already gathered here — the entry point for "what is the IETF doing
+  around X?" when no corpus is named. It reads the `_catalog/` singleton,
+  *not* a gathered corpus; v1 covers active groups only.
 - **Catalogue:** `read_digest(kind=…, …filters)` over
   issues/threads/people/timeline/index. Beyond the per-kind filters,
   `sort="activity"` ranks threads/issues by message/comment count (heat,
@@ -655,6 +677,26 @@ inbound reference counting), rendering markdown like every other tool.
 It reads only the cache and touches no network — same boundary as the
 rest of the MCP server. The index is not embedded; it is a metadata
 catalogue, queried directly, not via the vector store.
+
+### The effort catalog is the matching singleton for "topic, no corpus"
+
+The whole tool surface is corpus-first: every tool needs a corpus name,
+so a topic with no obvious home ("what is the IETF doing around AI?")
+had no entry point. `find_efforts(query)` closes that gap, and it leans
+on the same singleton-mirror pattern as the RFC series. `gather/catalog.py`
+mirrors the active (and BoF) slice of the Datatracker group collection
+into `_catalog/`, refreshed once per gather run in the same tail
+housekeeping as `_rfc/` and sharing its plumbing (`gather/_mirror.py`:
+TTL guard, `If-None-Match` revalidation, never-raises). Unlike the RFC
+mirror the reader-facing blob is *derived* — the raw group slices are
+kept for revalidation, then projected to the slim `catalog.json` record
+list (acronym, name, type, state, area, description). `catalog.py` is
+the read side: it ranks efforts by a free-text topic (acronym over name
+over charter description) and tags each with whether it is already
+gathered here, so the model prefers a cached corpus over a fresh gather.
+Read-only, no network, markdown out — same boundary as every other tool.
+v1 covers active groups only; concluded efforts surface through
+`rfc_search`, already-cached ones through `list_corpora`.
 
 ### Persisted config: two files per WG, plus one global
 
