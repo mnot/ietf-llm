@@ -9,10 +9,17 @@ doesn't get the same wall of text 500 times.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 from ..utils import LogLevel, Verbosity, log
 from .remote_summarizer import is_remote_summarize_model, load_openai_compat_chat
+
+#: Heartbeat cadence for the summarise progress pulse (wall-clock seconds).
+#: Summarisation makes one model call per issue/thread — slow on a remote
+#: endpoint — so without this a large WG shows a long silence between
+#: "Generating digests..." and the first "Wrote ... digest" line.
+_PROGRESS_SECS = 20.0
 
 
 def _llm_setup_help(model_name: str, underlying_error: str) -> str:
@@ -75,6 +82,12 @@ class _Summarizer:
         self.verbose = verbose
         self._warned = False
         self._remote = False
+        # Progress accounting across every summarise() call, so the one
+        # wrapper reports for all digests rather than each loop reporting
+        # itself. _started/_last_pulse are set on the first call.
+        self._count = 0
+        self._started: Optional[float] = None
+        self._last_pulse = 0.0
         if not model_name:
             return
         # Remote OpenAI-compatible path: no llm registry, endpoint and
@@ -119,6 +132,7 @@ class _Summarizer:
             # Strip surrounding quotes if any
             if len(text) > 2 and text[0] in "\"'" and text[-1] == text[0]:
                 text = text[1:-1]
+            self._note_progress()
             return text
         except Exception as err:  # pylint: disable=broad-except
             # Most common case: model loaded but API key missing/invalid.
@@ -134,6 +148,32 @@ class _Summarizer:
                 self._warned = True
                 self.model = None
             return ""
+
+    def _note_progress(self) -> None:
+        """Count a successful summary and emit a periodic STATUS heartbeat."""
+        now = time.time()
+        if self._started is None:
+            self._started = now
+            self._last_pulse = now
+        self._count += 1
+        if now - self._last_pulse >= _PROGRESS_SECS:
+            log(
+                f"  …summarised {self._count} items, "
+                f"{now - self._started:.0f}s elapsed",
+                self.verbose,
+                level=LogLevel.STATUS,
+            )
+            self._last_pulse = now
+
+    def report(self) -> None:
+        """Log a final one-line tally. No-op if nothing was summarised."""
+        if self._started is None or self._count == 0:
+            return
+        log(
+            f"Summarised {self._count} items in " f"{time.time() - self._started:.1f}s",
+            self.verbose,
+            level=LogLevel.STATUS,
+        )
 
     def _setup_help(self, underlying_error: str) -> str:
         name = self.model_name or "(unknown)"

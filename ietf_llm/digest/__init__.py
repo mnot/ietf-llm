@@ -114,4 +114,5 @@ def generate_digests(
     )
     generated.append(index_path)
 
+    summarizer.report()
     return generated
