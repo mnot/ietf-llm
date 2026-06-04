@@ -27,7 +27,7 @@ import importlib
 import os
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Dict, Iterator, List, Optional, cast
+from typing import Any, Dict, Iterator, List, Optional, cast
 
 from . import service_config
 from .utils import cached_wg_names, get_cache_dir, get_index_dir
@@ -153,6 +153,18 @@ class CorpusStore(ABC):
 
     def release_lease(self, corpus: str, owner: str) -> None:
         """Release `owner`'s lease on `corpus`. Default no-op."""
+
+    # --- fleet-visible gather status (default: backend keeps it locally) ---
+
+    def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:
+        """Record fleet-visible gather status for `corpus`. Default no-op: the
+        local backend keeps status in the per-corpus `gather-status.json` (one
+        host), so there is nothing to share across replicas."""
+
+    def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
+        """Fleet-visible gather status, or None when the backend keeps status
+        locally (the local backend — callers then fall back to the local file)."""
+        return None
 
 
 class LocalCorpusStore(CorpusStore):

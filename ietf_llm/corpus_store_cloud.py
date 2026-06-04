@@ -19,11 +19,12 @@ a torn read.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .corpus_blobs import BlobStore, FileBlobStore
 from .corpus_control import ControlPlane, SqliteControlPlane
@@ -198,3 +199,21 @@ class CloudCorpusStore(CorpusStore):
 
     def release_lease(self, corpus: str, owner: str) -> None:
         self._control.release_lease(corpus, owner)
+
+    def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:
+        self._control.set_gather_status(corpus, json.dumps(status, sort_keys=True))
+
+    def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
+        raw = self._control.get_gather_status(corpus)
+        if raw is None:
+            return None
+        data: Dict[str, Any] = json.loads(raw)
+        # Liveness: a `running` record with no live lease is a crashed gather.
+        # The cloud topology shares the control plane, not the cache, so the
+        # lease — not a local file lock — is the authoritative liveness signal.
+        if (
+            data.get("state") == "running"
+            and self._control.lease_holder(corpus) is None
+        ):
+            data["state"] = "interrupted"
+        return data

@@ -201,3 +201,28 @@ def test_heartbeat_stops_when_lease_lost(monkeypatch: pytest.MonkeyPatch) -> Non
     t.start()
     t.join(timeout=1.0)
     assert not t.is_alive()  # exited on its own once renew returned False
+
+
+# G-8: gather status is fleet-visible via the control plane on the cloud backend.
+def test_cloud_gather_status_roundtrip(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    store.put_gather_status("tls", {"state": "running", "stage": "drafts"})
+    got = store.get_gather_status("tls")
+    assert got is not None
+    # No live lease -> a `running` record is relabelled `interrupted` (crashed).
+    assert got["state"] == "interrupted"
+    assert got["stage"] == "drafts"
+
+
+def test_cloud_gather_status_running_with_live_lease(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    store.acquire_lease("tls", "node-a", 1000.0)
+    store.put_gather_status("tls", {"state": "running"})
+    got = store.get_gather_status("tls")
+    assert got is not None and got["state"] == "running"  # the lease is live
+
+
+def test_local_gather_status_is_noop(isolated_home: Path) -> None:
+    store = LocalCorpusStore()
+    store.put_gather_status("tls", {"state": "running"})  # no-op
+    assert store.get_gather_status("tls") is None  # local backend uses the file

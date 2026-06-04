@@ -327,6 +327,17 @@ def _execute(spec: GatherSpec) -> None:
                 Verbosity.STATUS,
                 level=LogLevel.ERROR,
             )
+        # Also publish to the store so the status is fleet-visible (G-8): a
+        # no-op on the local backend, a control-plane write on the cloud backend.
+        # Never fail the gather on a status-publish error.
+        try:
+            store.put_gather_status(corpus, status)
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"gather_runner: could not publish status for {corpus}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.ERROR,
+            )
 
     def _progress(name: str, index: int, total: int) -> None:
         status["stage"] = name
@@ -392,17 +403,28 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     """Read one corpus's gather status, or None if none recorded (or the
     name is not a safe path segment).
 
-    A `running` record whose gather lock is provably free is relabelled
-    `interrupted`: the gather thread is a daemon, so a server restart/kill
-    leaves the status stuck at `running` forever otherwise. The lock is the
-    authoritative signal (`lock_is_held`) — it works across hosts sharing
-    the cache and is immune to pid reuse, and because the terminal
-    `done`/`failed` status is always written while still holding the lock, a
-    free lock under a `running` status means the gather died. When liveness
-    is undeterminable (`lock_is_held` -> None) the status is left as-is.
+    On the **cloud** backend the status comes from the control plane, so a
+    `gather_status` call answered by any replica sees the gather running on
+    another (G-8); its `running`→`interrupted` relabel keys off the cross-host
+    *lease* (the cloud topology shares the control plane, not the cache, so a
+    local file lock cannot answer for another host).
+
+    On the **local** backend status is the per-corpus `gather-status.json`, and
+    a `running` record whose gather *file lock* is provably free is relabelled
+    `interrupted`: the gather thread is a daemon, so a restart/kill would
+    otherwise leave it stuck at `running`. The lock is released by the OS the
+    instant its holder dies, and the terminal status is written while still
+    holding it, so a free lock under `running` means the gather died. When
+    liveness is undeterminable (`lock_is_held` -> None) the status is left as-is.
     """
     if not valid_corpus_name(corpus):
         return None
+    # Fleet-visible status first (cloud backend); None on the local backend.
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
+    fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
+    if fleet is not None:
+        return fleet
     try:
         with open(_status_path(corpus), "r", encoding="utf-8") as handle:
             data = json.load(handle)

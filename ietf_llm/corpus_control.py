@@ -44,6 +44,8 @@ _SCHEMA_STMTS = (
     "CREATE TABLE IF NOT EXISTS gather_lease ("
     " corpus TEXT PRIMARY KEY, owner TEXT NOT NULL,"
     " acquired_at DOUBLE PRECISION NOT NULL, expires_at DOUBLE PRECISION NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS corpus_status ("
+    " corpus TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at TEXT NOT NULL)",
 )
 
 #: A statement plus its positional parameters.
@@ -102,6 +104,15 @@ class ControlPlane(ABC):
     @abstractmethod
     def lease_holder(self, corpus: str, now: Optional[float] = None) -> Optional[str]:
         """Owner of the live lease on `corpus`, or None."""
+
+    @abstractmethod
+    def set_gather_status(self, corpus: str, payload: str) -> None:
+        """Store the latest gather status (opaque JSON) for `corpus`, so it is
+        visible to any replica, not just the one running the gather."""
+
+    @abstractmethod
+    def get_gather_status(self, corpus: str) -> Optional[str]:
+        """The stored gather status for `corpus`, or None if none recorded."""
 
 
 class SqlExecutor(ABC):
@@ -225,6 +236,20 @@ class SqlControlPlane(ControlPlane):
         if not rows or rows[0][1] <= clock:
             return None
         return str(rows[0][0])
+
+    def set_gather_status(self, corpus: str, payload: str) -> None:
+        self._sql.query(
+            "INSERT INTO corpus_status (corpus, status, updated_at)"
+            " VALUES (?, ?, ?) ON CONFLICT (corpus) DO UPDATE SET"
+            " status=excluded.status, updated_at=excluded.updated_at",
+            (corpus, payload, _now_iso()),
+        )
+
+    def get_gather_status(self, corpus: str) -> Optional[str]:
+        rows = self._sql.query(
+            "SELECT status FROM corpus_status WHERE corpus=?", (corpus,)
+        )
+        return str(rows[0][0]) if rows else None
 
 
 class SqliteExecutor(SqlExecutor):
