@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from ietf_llm import corpus_control
+from ietf_llm.corpus_blobs import FileBlobStore
 from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
+from ietf_llm.corpus_store_cloud import CloudCorpusStore
 from ietf_llm.gather_runner import _owner
 
 _STORE_ENV = (
@@ -53,3 +55,40 @@ def test_sqlite_schema_ensured_once(tmp_path: Path) -> None:
     assert path in corpus_control._sqlite_schema_ensured
     # A second construction is a no-op for ensure_schema (still works).
     SqliteControlPlane(path).resolve_current("nope")
+
+
+def _cloud(tmp_path: Path) -> CloudCorpusStore:
+    return CloudCorpusStore(
+        SqliteControlPlane(str(tmp_path / "c.db")),
+        FileBlobStore(str(tmp_path / "bucket")),
+        str(tmp_path / "scratch"),
+    )
+
+
+def _publish_tls(store: CloudCorpusStore, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / "files" / "digests").mkdir(parents=True)
+    (ws / "files" / "digests" / "index.md").write_text("hi")
+    (ws / "last-gathered").write_text("x")
+    store.publish("tls", str(ws), version="v1")
+
+
+# G-5/G-6: a complete materialise serves the whole tree (atomic temp+rename).
+def test_materialise_serves_complete_tree(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    _publish_tls(store, tmp_path)
+    cache = store.local_cache_dir("tls")
+    assert cache is not None
+    assert (Path(cache) / "digests" / "index.md").read_text() == "hi"
+    # No leftover temp dirs in scratch.
+    assert not list((tmp_path / "scratch" / "tls").glob("*.tmp.*"))
+
+
+# G-7: a lost blob fails loudly (manifest-verified) instead of silently omitting.
+def test_materialise_fails_on_missing_blob(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    _publish_tls(store, tmp_path)
+    # Simulate a lost/durability-gap blob: delete one object from the bucket.
+    (tmp_path / "bucket" / "tls" / "v1" / "files" / "digests" / "index.md").unlink()
+    with pytest.raises(FileNotFoundError):
+        store.local_cache_dir("tls")

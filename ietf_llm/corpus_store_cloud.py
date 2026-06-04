@@ -20,6 +20,7 @@ a torn read.
 from __future__ import annotations
 
 import os
+import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -120,9 +121,39 @@ class CloudCorpusStore(CorpusStore):
         # Versions are immutable, so a materialised copy is reusable: only fetch
         # if this version is not already staged locally.
         if not os.path.isdir(dest_root):
-            self._blobs.materialise_prefix(f"{corpus}/{version}/", dest_root)
+            self._materialise_version(corpus, version, dest_root)
         files_dir = os.path.join(dest_root, "files")
         return files_dir if os.path.isdir(files_dir) else None
+
+    def _materialise_version(self, corpus: str, version: str, dest_root: str) -> None:
+        """Materialise a version onto local scratch **atomically and verified**:
+        fetch into a temp dir, check every file the manifest lists is present,
+        then rename into place. So a present `dest_root` is always a complete,
+        verified copy — a crash or a concurrent fetch cannot leave a partial tree
+        that a reader serves as if whole, and a lost blob fails loudly rather than
+        silently dropping a file from the materialised tree."""
+        manifest = self._control.get_manifest(corpus, version) or {}
+        expected = list(manifest.get("files") or [])
+        tmp = f"{dest_root}.tmp.{uuid.uuid4().hex[:8]}"
+        try:
+            self._blobs.materialise_prefix(f"{corpus}/{version}/", tmp)
+            missing = [f for f in expected if not os.path.isfile(os.path.join(tmp, f))]
+            if missing:
+                raise FileNotFoundError(
+                    f"version {version} of '{corpus}' is incomplete: missing "
+                    + ", ".join(sorted(missing)[:5])
+                )
+            os.makedirs(os.path.dirname(dest_root), exist_ok=True)
+            try:
+                os.rename(tmp, dest_root)
+            except OSError:
+                # Another materialise won the race and dest_root now exists; use
+                # it. Re-raise only if it genuinely failed to appear.
+                if not os.path.isdir(dest_root):
+                    raise
+        finally:
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
 
     def publish(
         self, corpus: str, workspace: str, version: Optional[str] = None
