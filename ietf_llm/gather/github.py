@@ -133,6 +133,71 @@ def process_github_issues(
     return [output_file]
 
 
+def normalize_repo_short(value: str) -> str:
+    """Reduce a `--github` value to its bare ``owner/repo`` short form.
+
+    Accepts either a short name (``owner/repo``) or a full GitHub URL
+    (``https://github.com/owner/repo[/...]``) and returns the last two
+    path segments. A trailing slash or ``.git`` suffix is stripped. The
+    URL test matches a real scheme, not any string starting with
+    ``http`` — otherwise an owner like ``httpwg`` is mistaken for a URL.
+    """
+    cleaned = value.strip().rstrip("/")
+    if cleaned.lower().startswith(("http://", "https://")):
+        cleaned = "/".join(cleaned.split("/")[-2:])
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    return cleaned
+
+
+def validate_github_repos(
+    values: List[str],
+    verbose: Verbosity = Verbosity.STATUS,
+    token: Optional[str] = None,
+) -> List[str]:
+    """Return the subset of `--github` `values` that name a real repo.
+
+    Used by the CLI to drop typo'd `--github` values BEFORE
+    `config.merge` persists them, mirroring `validate_draft_names` /
+    `validate_list_names`. Each value is normalised to ``owner/repo``
+    and probed against the GitHub repo API. Only a definitive 404 drops
+    a value; an ambiguous failure (rate limit, network error) keeps it,
+    so a transient outage does not discard working config. Values are
+    returned in the user's original form so the persisted value matches
+    what they typed.
+    """
+    valid: List[str] = []
+    headers = {**DEFAULT_HEADERS, "Accept": "application/vnd.github.v3+json"}
+    github_token = token or os.environ.get("GITHUB_TOKEN")
+    if github_token:
+        headers["Authorization"] = f"token {github_token}"
+    for raw in values:
+        short = normalize_repo_short(raw)
+        owner, _, repo = short.partition("/")
+        if not owner or not repo:
+            log(
+                f"--github {raw!r}: not an 'owner/repo' name; not persisting.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
+            continue
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        try:
+            resp = requests.get(api_url, headers=headers, timeout=30)
+        except requests.RequestException:
+            valid.append(raw)  # ambiguous — keep rather than discard config
+            continue
+        if resp.status_code == 404:
+            log(
+                f"--github {raw}: repository not found on GitHub; not persisting.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
+            continue
+        valid.append(raw)
+    return valid
+
+
 def download_github_issues(
     repo_short: str,
     dest_path: str,
@@ -140,7 +205,7 @@ def download_github_issues(
     verbose: Verbosity = Verbosity.STATUS,
 ) -> bool:
     """Download GitHub issues JSON using the API from 'owner/repo' short name."""
-    if repo_short.startswith("http"):
+    if repo_short.startswith(("http://", "https://")):
         log(
             f"Direct downloading GitHub issues from {repo_short}...",
             verbose,
