@@ -132,7 +132,7 @@ build: venv
 changelog.md:
 	$(eval PREV_RELEASE=$(shell git tag --sort=-taggerdate -l 'v*' | head -1))
 	@if [ -n "$(PREV_RELEASE)" ]; then RANGE="$(PREV_RELEASE)..HEAD"; else RANGE="HEAD"; fi; \
-	git --no-pager log --pretty="- %s" $$RANGE --grep "^Added:" --grep "^Changed:" --grep "^Fixed:" --grep "^Removed:" --output=$@
+	git --no-pager log --no-merges --pretty="- %s" $$RANGE --grep "^Added:" --grep "^Changed:" --grep "^Fixed:" --grep "^Removed:" --output=$@
 	@if [ ! -s $@ ]; then echo "- Maintenance release (no changelog entries)" > $@; fi
 	sed -i "" -e "1s/^/\n\n/" $@
 
