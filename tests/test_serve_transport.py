@@ -44,6 +44,41 @@ def test_posture_reports_host_allowlist(monkeypatch: pytest.MonkeyPatch) -> None
     assert mcp_server._serve_posture("0.0.0.0", 8000)["host_allowlist"] == "off"
 
 
+def test_stateless_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
+    assert mcp_server._stateless_http_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+def test_stateless_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("IETF_LLM_MCP_STATELESS", value)
+    assert mcp_server._stateless_http_enabled() is False
+
+
+def test_stateless_setting_flows_to_fastmcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
+    server = FastMCP(
+        "ietf-llm", instructions="x",
+        stateless_http=mcp_server._stateless_http_enabled(),
+    )
+    assert server.settings.stateless_http is True
+    monkeypatch.setenv("IETF_LLM_MCP_STATELESS", "0")
+    server = FastMCP(
+        "ietf-llm", instructions="x",
+        stateless_http=mcp_server._stateless_http_enabled(),
+    )
+    assert server.settings.stateless_http is False
+
+
+def test_posture_reports_stateless(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
+    assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "yes"
+    monkeypatch.setenv("IETF_LLM_MCP_STATELESS", "0")
+    assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "no"
+
+
 def test_disallowed_host_is_rejected_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -96,6 +96,7 @@ can be near-transparent.
 | `IETF_LLM_MCP_TRANSPORT` | `stdio` or `http` | `stdio` |
 | `IETF_LLM_MCP_HOST` | bind address | `127.0.0.1` |
 | `IETF_LLM_MCP_PORT` | bind port | `8000` |
+| `IETF_LLM_MCP_STATELESS` | stateless sessions (`0`/`false` for stateful) | `1` (on) |
 | `IETF_LLM_MCP_ALLOWED_HOSTS` | comma-separated `Host` allow-list (enables DNS-rebinding protection) | unset (off) |
 | `IETF_LLM_MCP_ALLOWED_ORIGINS` | comma-separated `Origin` allow-list (browser callers) | unset (any) |
 
@@ -104,6 +105,15 @@ The MCP endpoint is served at `/mcp`.
 ```bash
 IETF_LLM_MCP_TRANSPORT=http IETF_LLM_MCP_HOST=0.0.0.0 ietf-llm-mcp
 ```
+
+### Stateless sessions
+
+The HTTP transport runs **stateless by default**: the server keeps no
+`Mcp-Session-Id` state between requests, so any replica behind a load balancer
+can answer any request with no session affinity — the right shape for this
+read-mostly server. Set `IETF_LLM_MCP_STATELESS=0` (or `false`/`no`/`off`) to
+restore stateful per-client sessions. The setting is ignored by the stdio
+transport. The boot posture banner reports the effective `stateless` value.
 
 ### Host / Origin allow-list
 

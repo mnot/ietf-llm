@@ -2254,9 +2254,13 @@ def main() -> None:
     # from the installed skill available to Codex / Gemini / Cursor /
     # Zed / opencode — one source of truth, no parallel maintenance.
     server_instructions = _load_server_instructions()
-    # HTTP transport knobs (ignored by stdio): optional Host/Origin allow-list
+    # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
+    # so any replica answers any request) and an optional Host/Origin allow-list
     # for DNS-rebinding protection when the server is fronted directly (#41).
-    fastmcp_kwargs: "Dict[str, Any]" = {"instructions": server_instructions}
+    fastmcp_kwargs: "Dict[str, Any]" = {
+        "instructions": server_instructions,
+        "stateless_http": _stateless_http_enabled(),
+    }
     transport_security = _transport_security_settings()
     if transport_security is not None:
         fastmcp_kwargs["transport_security"] = transport_security
@@ -3361,6 +3365,21 @@ def _csv_env(name: str) -> "List[str]":
     ]
 
 
+def _stateless_http_enabled() -> bool:
+    """Whether the HTTP transport runs stateless (no per-client session).
+
+    Default **on**: a stateless server keeps no `Mcp-Session-Id` state between
+    requests, so any replica behind a load balancer can answer any request with
+    no session affinity — the right shape for this read-mostly server, and what
+    a horizontally-scaled deployment wants. Set `IETF_LLM_MCP_STATELESS=0`
+    (or false/no/off) to restore stateful sessions. stdio ignores this.
+    """
+    raw = os.environ.get("IETF_LLM_MCP_STATELESS", "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
 def _transport_security_settings() -> "Optional[Any]":
     """DNS-rebinding (Host/Origin) protection for the HTTP transport, or None.
 
@@ -3459,6 +3478,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
     return {
         "transport": "http",
         "bind": f"{host}:{port}",
+        "stateless": "yes" if _stateless_http_enabled() else "no",
         "gather": "on" if _gather_enabled() else "off",
         "embed_backend": backend,
         "embed_model": model,
