@@ -7,7 +7,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -15,7 +15,7 @@ from ietf_llm import corpus_control
 from ietf_llm.corpus_blobs import FileBlobStore
 from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
-from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.gather_runner import _owner
 
 _STORE_ENV = (
@@ -226,3 +226,110 @@ def test_local_gather_status_is_noop(isolated_home: Path) -> None:
     store = LocalCorpusStore()
     store.put_gather_status("tls", {"state": "running"})  # no-op
     assert store.get_gather_status("tls") is None  # local backend uses the file
+
+
+# --- resolve-version cache (short-TTL coalescing of current-version lookups) ---
+
+
+def _counting_cloud(
+    tmp_path: Path, name: str = "cloud", ttl: float = 60.0
+) -> Tuple[CloudCorpusStore, Dict[str, int]]:
+    """A cloud store whose control-plane `resolve_current` is wrapped with a call
+    counter, with caching keyed by `name` (so stores don't share entries)."""
+    base = tmp_path / name
+    base.mkdir(parents=True, exist_ok=True)
+    control = SqliteControlPlane(str(base / "c.db"))
+    counter: Dict[str, int] = {"n": 0}
+    real = control.resolve_current
+
+    def counting(corpus: str) -> Any:
+        counter["n"] += 1
+        return real(corpus)
+
+    control.resolve_current = counting  # type: ignore[method-assign]
+    store = CloudCorpusStore(
+        control,
+        FileBlobStore(str(base / "bucket")),
+        str(base / "scratch"),
+        resolve_ttl=ttl,
+        cache_key=name,
+    )
+    return store, counter
+
+
+def _publish_version(store: CloudCorpusStore, tmp_path: Path, name: str) -> None:
+    ws = tmp_path / f"ws-{name}"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    store.publish("tls", str(ws), version="v1")
+
+
+def test_resolve_cache_coalesces_reads(tmp_path: Path) -> None:
+    _clear_resolve_cache()
+    store, counter = _counting_cloud(tmp_path)
+    _publish_version(store, tmp_path, "cloud")
+    _clear_resolve_cache()  # cold cache: ignore the publish write-through
+    counter["n"] = 0
+    for _ in range(5):
+        assert store.resolve_current("tls") == "v1"
+    assert counter["n"] == 1  # five reads, one control-plane call
+
+
+def test_resolve_cache_write_through_on_publish(tmp_path: Path) -> None:
+    _clear_resolve_cache()
+    store, counter = _counting_cloud(tmp_path)
+    _publish_version(store, tmp_path, "cloud")
+    counter["n"] = 0
+    # The publisher serves what it just published with no extra round trip.
+    assert store.resolve_current("tls") == "v1"
+    assert counter["n"] == 0
+
+
+def test_resolve_cache_disabled_when_ttl_zero(tmp_path: Path) -> None:
+    _clear_resolve_cache()
+    store, counter = _counting_cloud(tmp_path, ttl=0.0)
+    _publish_version(store, tmp_path, "cloud")
+    counter["n"] = 0
+    for _ in range(3):
+        store.resolve_current("tls")
+    assert counter["n"] == 3  # no caching: every read hits the control plane
+
+
+def test_resolve_cache_negative_caching(tmp_path: Path) -> None:
+    _clear_resolve_cache()
+    store, counter = _counting_cloud(tmp_path)
+    assert store.resolve_current("ghost") is None
+    assert store.resolve_current("ghost") is None
+    assert counter["n"] == 1  # the absent result is cached too
+
+
+def test_resolve_cache_expires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import corpus_store_cloud as csc
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(csc.time, "monotonic", lambda: clock["t"])
+    _clear_resolve_cache()
+    store, counter = _counting_cloud(tmp_path, ttl=10.0)
+    _publish_version(store, tmp_path, "cloud")
+    _clear_resolve_cache()
+    counter["n"] = 0
+    store.resolve_current("tls")  # caches until t=1010
+    clock["t"] = 1005.0
+    store.resolve_current("tls")  # still fresh
+    assert counter["n"] == 1
+    clock["t"] = 1011.0
+    store.resolve_current("tls")  # expired -> re-resolves
+    assert counter["n"] == 2
+
+
+def test_resolve_cache_scoped_per_control_plane(tmp_path: Path) -> None:
+    _clear_resolve_cache()
+    store_a, count_a = _counting_cloud(tmp_path, name="A")
+    store_b, count_b = _counting_cloud(tmp_path, name="B")
+    _publish_version(store_a, tmp_path, "A")  # only A has a version
+    _clear_resolve_cache()
+    count_a["n"] = count_b["n"] = 0
+    assert store_a.resolve_current("tls") == "v1"
+    assert store_b.resolve_current("tls") is None  # B's pointer is empty...
+    # ...and B's miss didn't read A's cached entry (separate cache_key).
+    assert count_a["n"] == 1 and count_b["n"] == 1

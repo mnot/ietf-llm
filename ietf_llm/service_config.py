@@ -15,6 +15,7 @@ knobs; the table below is authoritative. See `docs/cloud-storage.md`.
 | control DB token| IETF_LLM_CONTROL_DB_TOKEN  | —                  | YES    |
 | blob dir        | IETF_LLM_BLOB_DIR          | blob_dir           | no     |
 | scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
+| resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ STORE_BACKEND: Tuple[str, str] = ("IETF_LLM_STORE_BACKEND", "store_backend")
 CONTROL_DB: Tuple[str, str] = ("IETF_LLM_CONTROL_DB", "control_db")
 BLOB_DIR: Tuple[str, str] = ("IETF_LLM_BLOB_DIR", "blob_dir")
 SCRATCH_DIR: Tuple[str, str] = ("IETF_LLM_SCRATCH_DIR", "scratch_dir")
+RESOLVE_TTL: Tuple[str, str] = ("IETF_LLM_RESOLVE_TTL", "resolve_ttl")
+
+#: Default seconds to cache a current-version lookup on the cloud backend.
+_DEFAULT_RESOLVE_TTL = 10.0
 
 
 def _resolve(key: Tuple[str, str], default: Optional[str]) -> Optional[str]:
@@ -71,3 +76,20 @@ def blob_dir() -> Optional[str]:
 def scratch_dir() -> Optional[str]:
     """Local directory where the cloud backend materialises versions."""
     return _resolve(SCRATCH_DIR, None)
+
+
+def resolve_ttl() -> float:
+    """Seconds to cache a corpus's current-version lookup on the cloud backend,
+    so a burst of reads coalesces to one control-plane call (default 10; 0
+    disables). A new version becomes visible fleet-wide within this many seconds
+    of a publish — the publishing process refreshes its own cache immediately,
+    and since versions are immutable a stale read just serves a valid older
+    version. Invalid or negative values fall back to the default."""
+    raw = _resolve(RESOLVE_TTL, None)
+    if raw is None:
+        return _DEFAULT_RESOLVE_TTL
+    try:
+        ttl = float(raw)
+    except ValueError:
+        return _DEFAULT_RESOLVE_TTL
+    return ttl if ttl >= 0 else _DEFAULT_RESOLVE_TTL

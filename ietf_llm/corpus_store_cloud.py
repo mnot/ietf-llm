@@ -22,13 +22,30 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .corpus_blobs import BlobStore, FileBlobStore
 from .corpus_control import ControlPlane, SqliteControlPlane
 from .corpus_store import CorpusStore, pinned_version
+
+#: Process-global current-version cache: (cache_key, corpus) -> (version,
+#: monotonic expiry). Keyed by the control-plane identity (its locator) so two
+#: stores over different control planes in one process never share entries.
+#: Caches None too (negative caching), so a burst of lookups for an absent
+#: corpus also collapses to one control-plane call. Off unless a positive TTL is
+#: configured. See `service_config.resolve_ttl`.
+_RESOLVE_CACHE: Dict[Tuple[str, str], Tuple[Optional[str], float]] = {}
+_RESOLVE_LOCK = threading.Lock()
+
+
+def _clear_resolve_cache() -> None:
+    """Drop every cached current-version entry (test seam / hard reset)."""
+    with _RESOLVE_LOCK:
+        _RESOLVE_CACHE.clear()
 
 
 def _new_version() -> str:
@@ -93,7 +110,11 @@ def build_cloud_store() -> "CloudCorpusStore":
         )
     assert control and blobs and scratch  # narrowed by the check above
     return CloudCorpusStore(
-        _build_control_plane(control), _build_blob_store(blobs), scratch
+        _build_control_plane(control),
+        _build_blob_store(blobs),
+        scratch,
+        resolve_ttl=service_config.resolve_ttl(),
+        cache_key=control,
     )
 
 
@@ -102,22 +123,66 @@ class CloudCorpusStore(CorpusStore):
     materialising versions onto `scratch_dir`."""
 
     def __init__(
-        self, control: ControlPlane, blobs: BlobStore, scratch_dir: str
+        self,
+        control: ControlPlane,
+        blobs: BlobStore,
+        scratch_dir: str,
+        *,
+        resolve_ttl: float = 0.0,
+        cache_key: str = "",
     ) -> None:
         self._control = control
         self._blobs = blobs
         self._scratch = scratch_dir
+        # Current-version caching is opt-in: off (ttl 0) for direct construction,
+        # configured to a short TTL by `build_cloud_store`. `cache_key` scopes the
+        # process-global cache to this control plane.
+        self._resolve_ttl = resolve_ttl
+        self._cache_key = cache_key
 
     def list_corpora(self) -> List[str]:
         return self._control.list_corpora()
 
     def resolve_current(self, corpus: str) -> Optional[str]:
-        return self._control.resolve_current(corpus)
+        # A short-TTL cache so a burst of reads coalesces to one control-plane
+        # call (the cloud control plane is a per-request HTTP hop, and the D1
+        # REST path shares the account-wide API rate limit). Versions are
+        # immutable and the pointer changes only on publish, so a stale hit just
+        # serves a valid older version for up to the TTL; the publishing process
+        # refreshes its own entry immediately (see `publish`). Concurrent misses
+        # may each resolve within the window — no single-flight, which a short
+        # TTL makes cheap.
+        if self._resolve_ttl <= 0:
+            return self._control.resolve_current(corpus)
+        key = (self._cache_key, corpus)
+        with _RESOLVE_LOCK:
+            entry = _RESOLVE_CACHE.get(key)
+            if entry is not None and entry[1] > time.monotonic():
+                return entry[0]
+        # Resolve outside the lock so a slow control-plane call doesn't serialise
+        # every reader.
+        version = self._control.resolve_current(corpus)
+        with _RESOLVE_LOCK:
+            _RESOLVE_CACHE[key] = (version, time.monotonic() + self._resolve_ttl)
+        return version
+
+    def _cache_version(self, corpus: str, version: Optional[str]) -> None:
+        """Write `version` straight into the current-version cache (write-through
+        on publish), so the publishing process serves what it just published with
+        no extra control-plane round trip. No-op when caching is off."""
+        if self._resolve_ttl <= 0:
+            return
+        with _RESOLVE_LOCK:
+            _RESOLVE_CACHE[(self._cache_key, corpus)] = (
+                version,
+                time.monotonic() + self._resolve_ttl,
+            )
 
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         # Honour a request-scoped pin so all of a request's reads stay on one
-        # version even if a publish lands mid-request (G-1).
-        version = pinned_version(corpus) or self._control.resolve_current(corpus)
+        # version even if a publish lands mid-request (G-1); otherwise resolve
+        # through the cache.
+        version = pinned_version(corpus) or self.resolve_current(corpus)
         if version is None:
             return None
         dest_root = os.path.join(self._scratch, corpus, version)
@@ -129,7 +194,7 @@ class CloudCorpusStore(CorpusStore):
         return files_dir if os.path.isdir(files_dir) else None
 
     def local_index_dir(self, corpus: str) -> Optional[str]:
-        version = pinned_version(corpus) or self._control.resolve_current(corpus)
+        version = pinned_version(corpus) or self.resolve_current(corpus)
         if version is None:
             return None
         dest_root = os.path.join(self._scratch, corpus, version)
@@ -189,6 +254,10 @@ class CloudCorpusStore(CorpusStore):
         self._control.publish_version(
             corpus, version, {"version": version, "files": sorted(files)}
         )
+        # Write-through so this process serves the version it just published
+        # immediately, without waiting out the resolve TTL. Other replicas /
+        # processes pick it up within the TTL.
+        self._cache_version(corpus, version)
         return version
 
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
