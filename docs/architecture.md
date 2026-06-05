@@ -474,7 +474,8 @@ version. `get_corpus_store()` picks the backend from service config
 - **`CloudCorpusStore`** — composes a transactional **control plane**
   (`ControlPlane`: per-corpus version pointer, manifests, gather leases) and an
   immutable **blob plane** (`BlobStore`: whole-object, versioned-prefix),
-  materialising a version onto local scratch for reads. `publish` stages blobs
+  materialising a version onto local scratch for reads (a replica reaps
+  superseded versions to keep scratch bounded). `publish` stages blobs
   to a fresh version prefix, then flips the pointer in one transaction — a reader
   sees the old version or the new, never a torn one, and a killed publish leaves
   the prior version live. Both planes are **interfaces with pluggable backends**.

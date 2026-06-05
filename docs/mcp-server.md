@@ -83,6 +83,9 @@ A base install is torch-free: the server embeds against a remote endpoint
 ([Embeddings](models.md#embeddings)), not an on-device model. Corpora are gathered separately on
 the write side (where `IETF_LLM_CACHE_DIR` is writable); the server only reads.
 
+For an S3 / R2 / MinIO blob store (the cloud store backend), add the `s3` extra:
+`pipx install 'ietf-llm[s3]'`. See [Storage](storage.md#corpus-store-backend-local-vs-cloud).
+
 ## Transport
 
 Set `IETF_LLM_MCP_TRANSPORT=http`. The server will serve MCP as Streamable HTTP, so a fronting proxy
@@ -134,13 +137,12 @@ reads. So fresh data reaches a read replica out-of-band, in three steps:
    it with `IETF_LLM_INDEX_IMMUTABLE=1` on a read-only mount (see [Storage](storage.md)).
 3. The replica picks it up with no restart — every tool opens a fresh read-only connection per call.
 
-With the **cloud store backend** (`IETF_LLM_STORE_BACKEND=cloud`, see
-[Storage](storage.md#corpus-store-backend-local-vs-cloud)) steps 2–3 are built in rather than your
-job: a gather publishes a new immutable version and flips the per-corpus pointer in one transaction,
-and every replica resolves the current version per request and materialises it onto local scratch —
-so a publish is visible fleet-wide with no separate sync step and no torn read. This is also what
-makes the [in-session gather](#in-session-gather-opt-in) durable and fleet-coherent (rather than a
-single-box convenience), with a cross-host lease serialising it against a concurrent cron gather.
+The **cloud store backend** (`IETF_LLM_STORE_BACKEND=cloud`, see
+[Storage](storage.md#corpus-store-backend-local-vs-cloud)) does steps 2–3 for you: a publish is
+visible fleet-wide with no separate sync step and no torn read, so a read replica needs no manual
+publish/sync. It is also what makes the [in-session gather](#in-session-gather-opt-in) durable and
+fleet-coherent rather than a single-box convenience. Mechanics are in
+[architecture.md](architecture.md).
 
 **Degraded mode when the embedding upstream is down.** Only two tools embed their query, and they are
 the only ones that fail if the remote `/v1/embeddings` endpoint is unreachable:

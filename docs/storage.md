@@ -91,8 +91,9 @@ across hosts. A real fleet needs both:
 - **Control DB** — point `IETF_LLM_CONTROL_DB` at a SQLite-compatible cloud database over HTTP.
   **Cloudflare D1** ships today: `d1://<account_id>/<database_id>` plus the token in
   `IETF_LLM_CONTROL_DB_TOKEN`. (libSQL/Turso and others can plug in behind the same seam.)
-- **Blob store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO; for a non-AWS
-  endpoint set `IETF_LLM_BLOB_ENDPOINT_URL`. Credentials come from the standard AWS
+- **Blob store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO. It needs the
+  `s3` extra: `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the brackets). For a
+  non-AWS endpoint set `IETF_LLM_BLOB_ENDPOINT_URL`; credentials come from the standard AWS
   environment / instance-role chain.
 
 **Current-version cache.** A new version is visible to a replica within `IETF_LLM_RESOLVE_TTL`
