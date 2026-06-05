@@ -2254,7 +2254,13 @@ def main() -> None:
     # from the installed skill available to Codex / Gemini / Cursor /
     # Zed / opencode — one source of truth, no parallel maintenance.
     server_instructions = _load_server_instructions()
-    server = FastMCP("ietf-llm", instructions=server_instructions)
+    # HTTP transport knobs (ignored by stdio): optional Host/Origin allow-list
+    # for DNS-rebinding protection when the server is fronted directly (#41).
+    fastmcp_kwargs: "Dict[str, Any]" = {"instructions": server_instructions}
+    transport_security = _transport_security_settings()
+    if transport_security is not None:
+        fastmcp_kwargs["transport_security"] = transport_security
+    server = FastMCP("ietf-llm", **fastmcp_kwargs)
 
     @server.tool()
     async def list_corpora() -> str:
@@ -3348,6 +3354,38 @@ def _resolve_bind() -> "Tuple[str, int]":
     return host, port
 
 
+def _csv_env(name: str) -> "List[str]":
+    """A comma-separated env var as a list of stripped, non-empty items."""
+    return [
+        item.strip() for item in os.environ.get(name, "").split(",") if item.strip()
+    ]
+
+
+def _transport_security_settings() -> "Optional[Any]":
+    """DNS-rebinding (Host/Origin) protection for the HTTP transport, or None.
+
+    Off by default (today's behaviour: the server assumes a trust boundary in
+    front, #41). When `IETF_LLM_MCP_ALLOWED_HOSTS` is set, enable validation and
+    accept only those `Host` values — each an exact `host` / `host:port`, or a
+    `host:*` wildcard that matches any port. `IETF_LLM_MCP_ALLOWED_ORIGINS`
+    likewise restricts the `Origin` header (browser callers); unset means any
+    origin. This lets an operator front the server directly (no proxy enforcing
+    Host) without exposure to DNS-rebinding, which is otherwise the proxy's job.
+    """
+    allowed_hosts = _csv_env("IETF_LLM_MCP_ALLOWED_HOSTS")
+    if not allowed_hosts:
+        return None
+    from mcp.server.transport_security import (  # pylint: disable=import-outside-toplevel,import-error
+        TransportSecuritySettings,
+    )
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=_csv_env("IETF_LLM_MCP_ALLOWED_ORIGINS"),
+    )
+
+
 def _effective_embed_model() -> str:
     """The embedding model the serve/gather paths would actually use.
 
@@ -3417,6 +3455,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
     """The always-logged boot posture: what this process is actually doing."""
     model = _effective_embed_model()
     backend = "remote" if is_remote_embed_model(model) else "local"
+    allowed_hosts = _csv_env("IETF_LLM_MCP_ALLOWED_HOSTS")
     return {
         "transport": "http",
         "bind": f"{host}:{port}",
@@ -3427,6 +3466,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
         "index_dir": get_index_dir(),
         "index_immutable": "yes" if _index_immutable_enabled() else "no",
         "store_backend": service_config.store_backend(),
+        "host_allowlist": ",".join(allowed_hosts) if allowed_hosts else "off",
     }
 
 
