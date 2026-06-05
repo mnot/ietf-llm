@@ -46,6 +46,13 @@ _SCHEMA_STMTS = (
     " acquired_at DOUBLE PRECISION NOT NULL, expires_at DOUBLE PRECISION NOT NULL)",
     "CREATE TABLE IF NOT EXISTS corpus_status ("
     " corpus TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    # Fleet-wide gather concurrency: one row per *actively running* gather
+    # (keyed by the gatherer's owner id), expiring on a TTL like a lease. The
+    # live row count is the global slot occupancy; the cap is enforced at
+    # acquire time. A queued gather holds its per-corpus lease but no slot.
+    "CREATE TABLE IF NOT EXISTS gather_active ("
+    " owner TEXT PRIMARY KEY, corpus TEXT NOT NULL,"
+    " expires_at DOUBLE PRECISION NOT NULL)",
 )
 
 #: A statement plus its positional parameters.
@@ -104,6 +111,29 @@ class ControlPlane(ABC):
     @abstractmethod
     def lease_holder(self, corpus: str, now: Optional[float] = None) -> Optional[str]:
         """Owner of the live lease on `corpus`, or None."""
+
+    @abstractmethod
+    def acquire_gather_slot(
+        self,
+        owner: str,
+        corpus: str,
+        ttl: float,
+        max_inflight: int,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Claim one of the `max_inflight` fleet-wide gather slots for `owner`
+        for `ttl` seconds; True if granted (fewer than `max_inflight` other
+        live slots). Idempotent for an owner that already holds one."""
+
+    @abstractmethod
+    def renew_gather_slot(
+        self, owner: str, ttl: float, now: Optional[float] = None
+    ) -> bool:
+        """Extend `owner`'s gather slot; False if `owner` no longer holds one."""
+
+    @abstractmethod
+    def release_gather_slot(self, owner: str) -> None:
+        """Release `owner`'s gather slot (no-op if not held)."""
 
     @abstractmethod
     def set_gather_status(self, corpus: str, payload: str) -> None:
@@ -236,6 +266,48 @@ class SqlControlPlane(ControlPlane):
         if not rows or rows[0][1] <= clock:
             return None
         return str(rows[0][0])
+
+    # --- fleet-wide gather slots (global concurrency cap) ------------------
+
+    def acquire_gather_slot(
+        self,
+        owner: str,
+        corpus: str,
+        ttl: float,
+        max_inflight: int,
+        now: Optional[float] = None,
+    ) -> bool:
+        # Single-statement atomic admission: insert our slot only if fewer than
+        # `max_inflight` *other* live slots exist (excluding our own row so a
+        # re-acquire is idempotent and never self-blocks). ON CONFLICT refreshes
+        # our own row. RETURNING yields a row iff we now hold a slot. Statement-
+        # level atomicity makes the count-then-insert safe under concurrent
+        # acquirers across hosts (the DB serialises writers).
+        clock = time.time() if now is None else now
+        rows = self._sql.query(
+            "INSERT INTO gather_active (owner, corpus, expires_at)"
+            " SELECT ?, ?, ?"
+            " WHERE (SELECT COUNT(*) FROM gather_active"
+            "        WHERE expires_at > ? AND owner <> ?) < ?"
+            " ON CONFLICT (owner) DO UPDATE SET"
+            " corpus=excluded.corpus, expires_at=excluded.expires_at"
+            " RETURNING owner",
+            (owner, corpus, clock + ttl, clock, owner, max_inflight),
+        )
+        return bool(rows)
+
+    def renew_gather_slot(
+        self, owner: str, ttl: float, now: Optional[float] = None
+    ) -> bool:
+        clock = time.time() if now is None else now
+        rows = self._sql.query(
+            "UPDATE gather_active SET expires_at=? WHERE owner=? RETURNING owner",
+            (clock + ttl, owner),
+        )
+        return bool(rows)
+
+    def release_gather_slot(self, owner: str) -> None:
+        self._sql.query("DELETE FROM gather_active WHERE owner=?", (owner,))
 
     def set_gather_status(self, corpus: str, payload: str) -> None:
         self._sql.query(

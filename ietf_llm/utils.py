@@ -1,4 +1,5 @@
 import filecmp
+import itertools
 import json
 import os
 import re
@@ -301,6 +302,11 @@ def lock_is_held(lock_path: str) -> "Optional[bool]":
         return None
 
 
+#: Per-process counter making each `atomic_open` temp name unique even across
+#: threads writing the same path; `next()` is atomic under the GIL.
+_atomic_tmp_counter = itertools.count()
+
+
 @contextmanager
 def atomic_open(
     path: str, encoding: str = "utf-8", newline: Optional[str] = None
@@ -309,15 +315,17 @@ def atomic_open(
     partial result: writes go to a temp file in the same directory and
     are `os.replace`d into place (atomic on POSIX) only on clean close.
 
-    The temp name carries the pid so concurrent writers (e.g. two
-    gathers, or a gather while an MCP server reads) don't clobber each
-    other's temp. On error the temp is removed and the original left
-    intact. Load-bearing for the MCP-reads-during-gather case.
+    The temp name carries the pid *and* a per-process counter so concurrent
+    writers — two processes, or two threads of one process writing the same
+    path (e.g. the gather worker and an enqueue both touching a status file) —
+    never share a temp and clobber each other's rename. On error the temp is
+    removed and the original left intact. Load-bearing for the
+    MCP-reads-during-gather case.
 
     `newline` is passed through to `open` — `write_if_changed` uses
     `"\n"` so the bytes written match its LF-normalised comparison.
     """
-    tmp = f"{path}.{os.getpid()}.tmp"
+    tmp = f"{path}.{os.getpid()}.{next(_atomic_tmp_counter)}.tmp"
     handle = open(  # pylint: disable=consider-using-with
         tmp, "w", encoding=encoding, newline=newline
     )

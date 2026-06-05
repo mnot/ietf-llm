@@ -35,15 +35,19 @@ Two ways to gather, depending on what's available:
   `ietf-llm <corpus>` (e.g. `ietf-llm httpbis`). `ietf-llm --list`
   shows what's cached.
 
-**A gather already in flight is a `gather_status` thing, not a retry
-thing.** Only one gather per corpus runs at a time, and on a shared
-server that one may have been started by another client or host. If
-`start_gather` reports *already running*, the gather is live — **poll
-`gather_status(corpus="<name>")`** to watch its progress to `done`; do
-**not** re-issue `start_gather` or add `force=True` to "unstick" it.
-`force` overrides the *freshness debounce* (re-gather a recently-cached
-corpus) only — it never starts a second concurrent gather, so spamming it
-against a running gather does nothing but waste calls.
+**A gather in flight — or `queued` behind one — is a `gather_status`
+thing, not a retry thing.** Only one gather per corpus runs at a time,
+and on a shared server that one may have been started by another client
+or host. Gathers also run **capped to a few at once to stay polite to
+datatracker** (per host, and across the whole deployment) — so when that
+cap is reached, a *different* corpus you ask for may report **`queued`**
+until a slot frees.
+In every one of these cases — *already running*, *queued* — the move is
+the same: **poll `gather_status(corpus="<name>")`** until it reports
+`done`; do **not** re-issue `start_gather` or add `force=True` to "unstick"
+it. `force` overrides the *freshness debounce* (re-gather a recently-cached
+corpus) only — it never starts a second concurrent gather or jumps the
+queue, so spamming it just wastes calls.
 
 This applies to any sign of IETF list traffic, not just a named
 WG: a `mailarchive.ietf.org` URL, a `datatracker.ietf.org` URL, an

@@ -207,14 +207,42 @@ registers two extra tools so a client can gather a new corpus without
 dropping to a shell:
 
 - `start_gather(corpus, [mailing_list], [draft], [github], [author], [new_drafts], …)`
-  — kicks off a gather in a background thread and returns immediately. The
-  corpus shape (group / list / custom / synthetic) is inferred from the
-  arguments. One gather per corpus runs at a time; different corpora run in
-  parallel.
-- `gather_status([corpus])` — reports `running` (with the current stage,
-  e.g. `stage 7/17 (github issues)`, and elapsed time), `done`, or `failed`
-  (with the error). Progress is persisted to
-  `<corpus>/gather-status.json` in the cache.
+  — enqueues a gather and returns immediately. The corpus shape (group / list /
+  custom / synthetic) is inferred from the arguments.
+- `gather_status([corpus])` — reports `queued`, `running` (with the current
+  stage, e.g. `stage 7/17 (github issues)`, and elapsed time), `done`, `failed`
+  (with the error), or `interrupted` (the gatherer ended before completion).
+  Status is persisted to `<corpus>/gather-status.json` and, on the cloud
+  backend, to the control plane so any replica can report it.
+
+### Gather concurrency
+
+Gathers run capped to a few at once, to stay polite to shared upstreams
+(datatracker, mailarchive, GitHub) without making a second client wait behind
+the first. `IETF_LLM_GATHER_MAX_INFLIGHT` (default `3`) sets the cap two ways:
+
+- **Per host:** a pool of that many workers, so a single host runs up to N
+  gathers at once; beyond that, requests queue (FIFO).
+  `IETF_LLM_GATHER_QUEUE_MAX` bounds the backlog (default `16`); past it,
+  `start_gather` is refused rather than piling up unbounded work.
+- **Fleet-wide:** each running gather holds one of N per-job slots in the
+  control plane, so the whole deployment runs at most N at once — a single host
+  can use all N, a multi-host fleet shares them. The slot only applies on the
+  **cloud backend**; on the local backend the per-host worker pool is the bound.
+
+Set it to `1` for strictly serial gathering, or higher for more throughput at
+the cost of more concurrent upstream load.
+
+A request for a corpus already in flight (here or on another host) reports
+*already running*; a request for a different corpus when no slot is free is
+accepted as `queued`. Either way the client polls `gather_status` — it does not
+retry. The per-corpus lease is taken at enqueue, so the same corpus is never
+gathered twice across the fleet, and a `queued`/`running` record whose gatherer
+died is relabelled `interrupted` once its lease lapses.
+
+> The CLI (`ietf-llm <corpus>`) does **not** yet participate in the fleet-wide
+> slot, so a cron/shell gather runs alongside the cap rather than counting
+> toward it. Bringing the CLI under the same slot is a planned follow-up.
 
 This is the one break from the read-only / no-network contract — leave it
 **off** for a shared HTTP replica or a read-only-mounted cache *on the local

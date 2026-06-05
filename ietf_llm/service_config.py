@@ -16,6 +16,7 @@ knobs; the table below is authoritative. See `docs/storage.md`.
 | blob dir        | IETF_LLM_BLOB_DIR          | blob_dir           | no     |
 | scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
 | resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
+| gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
 """
 
 from __future__ import annotations
@@ -31,9 +32,18 @@ CONTROL_DB: Tuple[str, str] = ("IETF_LLM_CONTROL_DB", "control_db")
 BLOB_DIR: Tuple[str, str] = ("IETF_LLM_BLOB_DIR", "blob_dir")
 SCRATCH_DIR: Tuple[str, str] = ("IETF_LLM_SCRATCH_DIR", "scratch_dir")
 RESOLVE_TTL: Tuple[str, str] = ("IETF_LLM_RESOLVE_TTL", "resolve_ttl")
+GATHER_MAX_INFLIGHT: Tuple[str, str] = (
+    "IETF_LLM_GATHER_MAX_INFLIGHT",
+    "gather_max_inflight",
+)
 
 #: Default seconds to cache a current-version lookup on the cloud backend.
 _DEFAULT_RESOLVE_TTL = 10.0
+
+#: Default max concurrent gathers (per host and fleet-wide). Small enough to
+#: stay polite to shared upstreams, but >1 so a second client's gather does not
+#: wait behind the first. Raise for more throughput, set 1 for strict serial.
+_DEFAULT_GATHER_MAX_INFLIGHT = 3
 
 
 def _resolve(key: Tuple[str, str], default: Optional[str]) -> Optional[str]:
@@ -93,3 +103,21 @@ def resolve_ttl() -> float:
     except ValueError:
         return _DEFAULT_RESOLVE_TTL
     return ttl if ttl >= 0 else _DEFAULT_RESOLVE_TTL
+
+
+def gather_max_inflight() -> int:
+    """Maximum gathers running concurrently (default 3). It bounds both the
+    per-host worker pool and the fleet-wide slot count, so a single host runs up
+    to this many at once and the whole deployment never exceeds it either. Keeps
+    aggregate load on shared upstreams (datatracker, mailarchive, GitHub)
+    bounded while letting a second client's gather start without waiting. On the
+    local backend only the per-host pool applies (no control-plane slots).
+    Invalid or sub-1 values fall back to the default."""
+    raw = _resolve(GATHER_MAX_INFLIGHT, None)
+    if raw is None:
+        return _DEFAULT_GATHER_MAX_INFLIGHT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_GATHER_MAX_INFLIGHT
+    return value if value >= 1 else _DEFAULT_GATHER_MAX_INFLIGHT

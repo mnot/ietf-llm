@@ -177,6 +177,88 @@ def test_second_start_reports_already_running(
     _wait_terminal("httpbis")
 
 
+def _blocking_gather(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    """Patch run_gather to block on the returned event, so a gather stays in
+    flight while the test inspects the queue."""
+    release = threading.Event()
+
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+        progress("mailing list", 1, 1)
+        release.wait(timeout=5.0)
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", blocking_run)
+    return release
+
+
+def test_two_corpora_run_concurrently(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The default cap (3) lets a host run several gathers at once, so a second
+    # client's gather does not wait behind the first.
+    both_running = threading.Event()
+    release = threading.Event()
+    started: set[str] = set()
+    lock = threading.Lock()
+
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+        progress("mailing list", 1, 1)
+        with lock:
+            started.add(argv[0])
+            if len(started) >= 2:
+                both_running.set()
+        release.wait(timeout=5.0)
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", blocking_run)
+    first = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    second = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
+    assert first["started"] and first["queued_behind"] == 0
+    # ahead=1 < cap, so quic starts at once (does not wait behind tls).
+    assert second["started"] and second["queued_behind"] == 0
+    try:
+        assert both_running.wait(timeout=3.0), "gathers did not run concurrently"
+    finally:
+        release.set()
+    _wait_terminal("tls")
+    _wait_terminal("quic")
+
+
+def test_queued_behind_reported_at_cap(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the cap at 1, the first gather fills it; the second is reported as
+    # waiting behind 1 (the arithmetic the tool turns into a "queued" message).
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", "1")
+    release = _blocking_gather(monkeypatch)
+    first = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    try:
+        second = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
+        assert first["queued_behind"] == 0
+        assert second["queued_behind"] == 1
+    finally:
+        release.set()
+    _wait_terminal("tls")
+    _wait_terminal("quic")
+
+
+def test_queue_full_is_refused(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("IETF_LLM_GATHER_QUEUE_MAX", "1")
+    release = _blocking_gather(monkeypatch)
+    first = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert first["started"] is True
+    try:
+        # The backlog bound (1) is already reached by tls, so quic is refused.
+        refused = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
+        assert refused["started"] is False
+        assert refused["reason"] == "queue full"
+    finally:
+        release.set()
+    _wait_terminal("tls")
+
+
 # --- cross-host gather visibility (cloud backend) -------------------------
 
 
@@ -227,12 +309,12 @@ def test_start_refuses_even_with_force_when_running(
     assert result["reason"] == "already running"
 
 
-def test_execute_backstop_leaves_holder_status_untouched(
+def test_lease_denied_at_enqueue_refuses_without_clobbering(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the pre-check passed but the cross-host lease is then unavailable
-    (a tight race), `_execute` returns without writing any status, so the
-    winning host's fleet-visible status stays authoritative."""
+    """The per-corpus lease is taken at enqueue, so if another host owns the
+    corpus, `start()` refuses synchronously (already running) without spawning
+    a worker or writing any status over the holder's record."""
     from ietf_llm.corpus_store import LocalCorpusStore
 
     class _LeaseDenied(LocalCorpusStore):
@@ -246,11 +328,8 @@ def test_execute_backstop_leaves_holder_status_untouched(
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("lease denied")),
     )
     result = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
-    assert result["started"] is True  # local file lock was free
-    # Give the daemon thread a beat to reach (and bail at) the lease acquire.
-    deadline = time.time() + 2.0
-    while time.time() < deadline and gather_runner.read_status("quic") is None:
-        time.sleep(0.01)
+    assert result["started"] is False
+    assert result["reason"] == "already running"
     # No status persisted: the holder's record (None here) is left untouched.
     assert gather_runner.read_status("quic") is None
 
@@ -493,21 +572,31 @@ def _write_status(corpus: str, **fields: Any) -> None:
         json.dump({"corpus": corpus, **fields}, handle)
 
 
-@pytest.mark.skipif(utils._fcntl is None, reason="needs flock")
-def test_running_status_without_held_lock_reads_as_interrupted(
+def test_untracked_nonterminal_status_reads_as_interrupted(
     isolated_home: Path,
 ) -> None:
-    # No live gather holds the corpus lock, so a stuck `running` record is a
-    # dead gather -> interrupted.
+    # No live job in this process's registry, so a stuck non-terminal record is
+    # a dead gather -> interrupted (covers both queued and running).
     _write_status("zombie", state="running", started="x")
     assert gather_runner.read_status("zombie")["state"] == "interrupted"
+    _write_status("waiting", state="queued", started="x")
+    assert gather_runner.read_status("waiting")["state"] == "interrupted"
 
 
-def test_running_status_with_held_lock_stays_running(isolated_home: Path) -> None:
-    # While the gather lock is genuinely held, `running` is real.
+def test_tracked_nonterminal_status_stays(isolated_home: Path) -> None:
+    # While the corpus is tracked in this process's registry, its state is real.
     _write_status("live", state="running", started="x")
-    with utils.file_lock(gather_runner._lock_path("live")):
+    _write_status("pend", state="queued", started="x")
+    with gather_runner._registry_lock:
+        gather_runner._jobs["live"] = "running"
+        gather_runner._jobs["pend"] = "queued"
+    try:
         assert gather_runner.read_status("live")["state"] == "running"
+        assert gather_runner.read_status("pend")["state"] == "queued"
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._jobs.pop("live", None)
+            gather_runner._jobs.pop("pend", None)
 
 
 def test_done_status_never_relabelled(isolated_home: Path) -> None:

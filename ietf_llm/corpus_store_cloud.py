@@ -315,6 +315,17 @@ class CloudCorpusStore(CorpusStore):
     def release_lease(self, corpus: str, owner: str) -> None:
         self._control.release_lease(corpus, owner)
 
+    def acquire_gather_slot(
+        self, owner: str, corpus: str, ttl: float, max_inflight: int
+    ) -> bool:
+        return self._control.acquire_gather_slot(owner, corpus, ttl, max_inflight)
+
+    def renew_gather_slot(self, owner: str, ttl: float) -> bool:
+        return self._control.renew_gather_slot(owner, ttl)
+
+    def release_gather_slot(self, owner: str) -> None:
+        self._control.release_gather_slot(owner)
+
     def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:
         self._control.set_gather_status(corpus, json.dumps(status, sort_keys=True))
 
@@ -323,11 +334,12 @@ class CloudCorpusStore(CorpusStore):
         if raw is None:
             return None
         data: Dict[str, Any] = json.loads(raw)
-        # Liveness: a `running` record with no live lease is a crashed gather.
-        # The cloud topology shares the control plane, not the cache, so the
-        # lease — not a local file lock — is the authoritative liveness signal.
+        # Liveness: a non-terminal (`queued`/`running`) record with no live lease
+        # is a crashed gatherer. The cloud topology shares the control plane, not
+        # the cache, so the lease — held from enqueue through completion — is the
+        # authoritative liveness signal.
         if (
-            data.get("state") == "running"
+            data.get("state") in ("queued", "running")
             and self._control.lease_holder(corpus) is None
         ):
             data["state"] = "interrupted"

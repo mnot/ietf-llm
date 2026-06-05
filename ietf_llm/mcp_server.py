@@ -2123,7 +2123,11 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         include_related_drafts=include_related_drafts,
         force=force,
     )
-    result = gather_runner.start(spec)
+    return _format_start_result(gather_runner.start(spec), corpus)
+
+
+def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
+    """Render `gather_runner.start`'s result dict as the tool's reply."""
     if not result.get("started"):
         reason = result.get("reason")
         if reason == "similar exists":
@@ -2140,9 +2144,24 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
                 "directly. To re-gather anyway, call "
                 f'`start_gather(corpus="{corpus}", force=True)`.'
             )
+        if reason == "queue full":
+            return (
+                f"This host's gather queue is full, so '{corpus}' was not "
+                "accepted. Too many gathers are already pending — wait for some "
+                "to finish (`gather_status()`), then retry."
+            )
         return (
             f"A gather for '{corpus}' is already running. "
             f'Poll `gather_status(corpus="{corpus}")` for progress.'
+        )
+    if result.get("queued_behind"):
+        ahead = result["queued_behind"]
+        return (
+            f"Queued '{corpus}' for gathering ({ahead} gather"
+            f"{'s' if ahead != 1 else ''} ahead of it). Gathers are capped to a "
+            "few at once (per host and across the deployment) to stay polite to "
+            f"upstreams, so it starts when a slot frees. Poll "
+            f'`gather_status(corpus="{corpus}")`.'
         )
     return (
         f"Started gathering '{corpus}' in the background (this can take "
@@ -2176,6 +2195,8 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
     corpus = status.get("corpus", "?")
     state = status.get("state", "?")
     parts = [f"**{corpus}** — {state}"]
+    if state == "queued":
+        parts.append("waiting for a gather slot (gathers are capped to a few at once)")
     if state == "running":
         idx = status.get("stage_index") or 0
         total = status.get("stage_total")
@@ -3099,11 +3120,14 @@ def main() -> None:
               id, or exact name) or `new_drafts=True` (rolling window).
             - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
-            One gather per corpus runs at a time — including across hosts on
-            a shared deployment, where another client may have started it. A
-            call while one is in flight reports "already running": poll
-            `gather_status(corpus=...)` to watch it, don't retry or pass
-            `force` to "unstick" it. Different corpora run in parallel.
+            One gather per corpus runs at a time — including across hosts on a
+            shared deployment, where another client may have started it. A call
+            while that corpus is in flight reports "already running": poll
+            `gather_status(corpus=...)` to watch it, don't retry or pass `force`
+            to "unstick" it. A *different* corpus runs concurrently up to a small
+            cap (a few at once, per host and across the deployment, to stay
+            polite to datatracker); beyond that it reports "queued" and starts
+            when a slot frees — again, poll rather than retry.
 
             A corpus gathered within the freshness window (default 6h) is
             **not** re-gathered — the call returns a "fresh, skipped" note.
