@@ -17,7 +17,7 @@ constant sentinel and `local_cache_dir` returns the real
 `~/.cache/ietf-llm/<corpus>/files`. A cloud backend (SQL control plane +
 object-store blob plane) resolves a version pointer and materialises the
 immutable blobs into local scratch, returning that path instead — same
-interface, different backend. See `docs/cloud-storage.md`.
+interface, different backend. See `docs/storage.md`.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class CorpusStore(ABC):
     """Brokers materialisation (read) and publication (write) of a corpus.
 
     Backends: `LocalCorpusStore` (filesystem, single-version) today; a SQL +
-    object-store backend for cloud deployments (`docs/cloud-storage.md`).
+    object-store backend for cloud deployments (`docs/storage.md`).
     """
 
     @abstractmethod

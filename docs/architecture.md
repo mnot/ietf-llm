@@ -489,9 +489,12 @@ version. `get_corpus_store()` picks the backend from service config
   plane is `FileBlobStore` (local / shared volume) or `S3BlobStore` (the `[s3]`
   extra; AWS S3 / Cloudflare R2 / MinIO). The program stays the storage client (no FUSE),
   and the store needs no special features because all atomicity lives in the
-  pointer. This is the path that closes the MCP-driven-gather durability/coherence
-  hole on an ephemeral, replicated serve fleet. Operator setup:
-  [storage.md](storage.md).
+  pointer. Reads resolve the current version through the control plane behind a
+  short per-replica TTL cache (`IETF_LLM_RESOLVE_TTL`, default 10s), so a burst of
+  reads coalesces to one round trip; immutable versions make a stale hit harmless,
+  and a publish refreshes the publishing replica immediately. This is the path
+  that closes the MCP-driven-gather durability/coherence hole on an ephemeral,
+  replicated serve fleet. Operator setup: [storage.md](storage.md).
 
 ### Use the Datatracker API; do not scrape HTML
 

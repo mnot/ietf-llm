@@ -6,7 +6,7 @@ operator can set it via the container environment, bake it into the shared
 config file, or mix the two. Secrets come from the environment only and are
 never read from a file (the file:// + SQLite slice has none yet — an S3 access
 key / SQL password would be env-only). This is the single place that reads these
-knobs; the table below is authoritative. See `docs/cloud-storage.md`.
+knobs; the table below is authoritative. See `docs/storage.md`.
 
 | key             | env var                    | global config.json | secret |
 |-----------------|----------------------------|--------------------|--------|

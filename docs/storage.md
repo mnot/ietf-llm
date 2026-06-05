@@ -84,10 +84,20 @@ clobbering each other.
 | `IETF_LLM_BLOB_DIR` | blob-store locator: a directory path → `file://` (bundled), or `s3://bucket/prefix` → S3-compatible (needs `[s3]`) | cloud |
 | `IETF_LLM_BLOB_ENDPOINT_URL` | S3 endpoint URL for a non-AWS service (R2, MinIO); unset = AWS | s3 only |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
+| `IETF_LLM_RESOLVE_TTL` | seconds a replica caches a corpus's current-version lookup; `0` disables (default `10`) | — |
 
 These non-secret knobs may instead be set in the global `config.json` (`store_backend`,
-`control_db`, `blob_dir`, `scratch_dir`); the environment wins. Any secret (an object-store key, a
-database password) comes from the environment only and is never read from the config file.
+`control_db`, `blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. Any secret (an
+object-store key, a database password) comes from the environment only and is never read from the
+config file.
+
+**Resolving the current version.** Every read first resolves the corpus's current version through
+the control plane, so a replica caches that lookup for `IETF_LLM_RESOLVE_TTL` seconds (default 10) to
+coalesce a burst of reads into one control-plane call — which also keeps the D1 HTTP path comfortably
+under the account-wide Cloudflare API rate limit. Versions are immutable and the pointer moves only
+on publish, so a stale hit just serves a valid older version for at most the TTL; the replica that
+publishes refreshes its own cache immediately, and others pick up a new version within the TTL. Set
+`0` to resolve on every read (immediate cross-replica visibility, more control-plane calls).
 
 **Choosing a control-plane backend.** `IETF_LLM_CONTROL_DB` selects the transactional control plane
 (version pointer, manifests, gather leases), reached through a pluggable **SQL executor** seam — the
