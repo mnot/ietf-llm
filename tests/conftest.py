@@ -14,10 +14,30 @@ import email.policy
 import email.utils
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _drain_gather_worker() -> Iterable[None]:
+    """Wait for the shared gather worker to finish any in-flight job before the
+    next test runs. The worker is a process-wide daemon, and a job's terminal
+    status is written *before* the worker pops it from the registry — so without
+    this, a job from one test could still be popping `_jobs` (or releasing its
+    lease) as the next test starts, contaminating it."""
+    yield
+    from ietf_llm import gather_runner  # pylint: disable=import-outside-toplevel
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        with gather_runner._registry_lock:  # pylint: disable=protected-access
+            idle = not gather_runner._jobs  # pylint: disable=protected-access
+        if idle and gather_runner._queue.empty():  # pylint: disable=protected-access
+            return
+        time.sleep(0.005)
 
 
 @pytest.fixture

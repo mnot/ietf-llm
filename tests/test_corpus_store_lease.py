@@ -36,3 +36,21 @@ def test_cloud_lease_excludes_other_holder(tmp_path: Path) -> None:
     assert store.renew_lease("tls", "node-a", 1000.0) is True
     store.release_lease("tls", "node-a")
     assert store.acquire_lease("tls", "node-b", 1000.0) is True
+
+
+def test_local_gather_slot_is_noop_always_granted() -> None:
+    store = LocalCorpusStore()
+    # No fleet to bound on a single box: every slot request is granted.
+    assert store.acquire_gather_slot("A", "tls", 100.0, 1) is True
+    assert store.acquire_gather_slot("B", "quic", 100.0, 1) is True
+    assert store.renew_gather_slot("B", 100.0) is True
+    store.release_gather_slot("B")
+
+
+def test_cloud_gather_slot_enforces_fleet_cap(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    # Cap 1: one slot fleet-wide. The second owner is refused until release.
+    assert store.acquire_gather_slot("A", "tls", 1000.0, 1) is True
+    assert store.acquire_gather_slot("B", "quic", 1000.0, 1) is False
+    store.release_gather_slot("A")
+    assert store.acquire_gather_slot("B", "quic", 1000.0, 1) is True

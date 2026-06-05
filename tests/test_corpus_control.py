@@ -70,3 +70,27 @@ def test_lease_release_frees_it(tmp_path: Path) -> None:
     cp.release_lease("tls", "node-a")
     assert cp.lease_holder("tls", now=1001.0) is None
     assert cp.acquire_lease("tls", "node-b", ttl=100.0, now=1001.0) is True
+
+
+def test_gather_slot_cap_enforced_and_idempotent(tmp_path: Path) -> None:
+    cp = _cp(tmp_path)
+    # Cap of 2: two distinct owners get a slot, a third is refused.
+    assert cp.acquire_gather_slot("A", "tls", 100.0, 2, now=1000.0) is True
+    assert cp.acquire_gather_slot("B", "quic", 100.0, 2, now=1000.0) is True
+    assert cp.acquire_gather_slot("C", "http", 100.0, 2, now=1000.0) is False
+    # Re-acquiring an already-held slot is idempotent even at the cap.
+    assert cp.acquire_gather_slot("A", "tls", 100.0, 2, now=1010.0) is True
+
+
+def test_gather_slot_expiry_and_release_reclaim(tmp_path: Path) -> None:
+    cp = _cp(tmp_path)
+    assert cp.acquire_gather_slot("A", "tls", 10.0, 1, now=1000.0) is True
+    # Cap 1: B is blocked while A's slot is live.
+    assert cp.acquire_gather_slot("B", "quic", 10.0, 1, now=1005.0) is False
+    # Once A's slot expires, B can take it.
+    assert cp.acquire_gather_slot("B", "quic", 10.0, 1, now=1011.0) is True
+    # Renew keeps B's; release frees it for the next caller.
+    assert cp.renew_gather_slot("B", 10.0, now=1015.0) is True
+    cp.release_gather_slot("B")
+    assert cp.acquire_gather_slot("A", "tls", 10.0, 1, now=1016.0) is True
+    assert cp.renew_gather_slot("ZZZ", 10.0) is False  # no slot held

@@ -193,6 +193,29 @@ class CorpusStore(ABC):
     def release_lease(self, corpus: str, owner: str) -> None:
         """Release `owner`'s lease on `corpus`. Default no-op."""
 
+    # --- fleet-wide gather concurrency cap (default: no global limit) ------
+
+    def acquire_gather_slot(
+        self, owner: str, corpus: str, ttl: float, max_inflight: int
+    ) -> bool:
+        """Claim one of `max_inflight` fleet-wide gather slots for `owner`;
+        True if granted.
+
+        The default always grants: a single-box backend has no fleet to bound —
+        the per-host worker already serialises its own gathers. A cloud backend
+        overrides this with a real global slot in its control plane so the whole
+        deployment runs at most `max_inflight` gathers at once (politeness toward
+        shared upstreams like datatracker)."""
+        return True
+
+    def renew_gather_slot(self, owner: str, ttl: float) -> bool:
+        """Extend `owner`'s gather slot; True if still held. Default no-op
+        grants."""
+        return True
+
+    def release_gather_slot(self, owner: str) -> None:
+        """Release `owner`'s gather slot. Default no-op."""
+
     # --- fleet-visible gather status (default: backend keeps it locally) ---
 
     def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:

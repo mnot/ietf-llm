@@ -16,6 +16,7 @@ knobs; the table below is authoritative. See `docs/storage.md`.
 | blob dir        | IETF_LLM_BLOB_DIR          | blob_dir           | no     |
 | scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
 | resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
+| gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
 """
 
 from __future__ import annotations
@@ -31,9 +32,17 @@ CONTROL_DB: Tuple[str, str] = ("IETF_LLM_CONTROL_DB", "control_db")
 BLOB_DIR: Tuple[str, str] = ("IETF_LLM_BLOB_DIR", "blob_dir")
 SCRATCH_DIR: Tuple[str, str] = ("IETF_LLM_SCRATCH_DIR", "scratch_dir")
 RESOLVE_TTL: Tuple[str, str] = ("IETF_LLM_RESOLVE_TTL", "resolve_ttl")
+GATHER_MAX_INFLIGHT: Tuple[str, str] = (
+    "IETF_LLM_GATHER_MAX_INFLIGHT",
+    "gather_max_inflight",
+)
 
 #: Default seconds to cache a current-version lookup on the cloud backend.
 _DEFAULT_RESOLVE_TTL = 10.0
+
+#: Default fleet-wide gather concurrency cap (one gather across the deployment
+#: at a time — maximally polite to shared upstreams; raise for more throughput).
+_DEFAULT_GATHER_MAX_INFLIGHT = 1
 
 
 def _resolve(key: Tuple[str, str], default: Optional[str]) -> Optional[str]:
@@ -93,3 +102,20 @@ def resolve_ttl() -> float:
     except ValueError:
         return _DEFAULT_RESOLVE_TTL
     return ttl if ttl >= 0 else _DEFAULT_RESOLVE_TTL
+
+
+def gather_max_inflight() -> int:
+    """Maximum gathers running concurrently across the whole deployment (the
+    fleet-wide concurrency cap; default 1). Bounds aggregate load on shared
+    upstreams (datatracker, mailarchive, GitHub) — one gather fleet-wide at a
+    time by default. Only meaningful on the cloud backend, where the slot lives
+    in the control plane; on the local backend the per-host worker is the bound.
+    Invalid or sub-1 values fall back to the default."""
+    raw = _resolve(GATHER_MAX_INFLIGHT, None)
+    if raw is None:
+        return _DEFAULT_GATHER_MAX_INFLIGHT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_GATHER_MAX_INFLIGHT
+    return value if value >= 1 else _DEFAULT_GATHER_MAX_INFLIGHT

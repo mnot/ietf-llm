@@ -2,70 +2,91 @@
 
 The MCP server is otherwise read-only and never touches the network; this
 module is the one deliberate exception, gated behind
-`IETF_LLM_ENABLE_GATHER=1` (see `mcp_server._gather_enabled`). It runs the
-same pipeline as the `ietf-llm` CLI in a daemon thread, so a `start_gather`
-tool call returns immediately, and records stage-level progress to a
-per-corpus status file (`~/.cache/ietf-llm/<corpus>/gather-status.json`)
-that the `gather_status` tool reads back.
+`IETF_LLM_ENABLE_GATHER=1` (see `mcp_server._gather_enabled`). A `start_gather`
+tool call returns immediately, enqueuing the request; a background worker runs
+the same pipeline as the `ietf-llm` CLI and records stage-level progress to a
+per-corpus status record (`~/.cache/ietf-llm/<corpus>/gather-status.json` and,
+on the cloud backend, the control plane) that the `gather_status` tool reads
+back.
 
-Concurrency model (matching the rest of the project): one gather per corpus
-at a time, different corpora in parallel. A non-blocking per-corpus
-`file_lock` enforces this and also guards against a CLI gather of the same
-corpus running at the same time; an in-process registry answers "already
-running here?" without touching the filesystem.
+Concurrency model — two nested caps that keep the gather pipeline polite to
+shared upstreams (datatracker, mailarchive, GitHub):
+
+- **Per host:** a single worker drains a bounded FIFO queue, so each host runs
+  ONE gather at a time; further requests queue (an in-process registry answers
+  "already running / queued here?" and bounds the backlog).
+- **Fleet-wide:** the worker holds one of `service_config.gather_max_inflight()`
+  global slots in the control plane while running, so the whole deployment runs
+  at most that many gathers at once (default 1). On the local backend the slot
+  is a no-op grant — the single worker is the only bound.
+
+The per-corpus lease (cloud backend) is taken at *enqueue*, so it dedupes the
+same corpus across hosts and anchors the `queued`/`running` record's liveness.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import socket
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import canonical, freshness
+from . import canonical, freshness, service_config
 from .utils import (
-    LockHeld,
     LogLevel,
     Verbosity,
     atomic_open,
-    file_lock,
     get_cache_dir,
     get_index_dir,
-    lock_is_held,
     log,
 )
 
 _STATUS_NAME = "gather-status.json"
-_LOCK_NAME = ".gather.lock"
 
 #: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
 #: gather and renewed periodically (see `_LEASE_HEARTBEAT_S`), so even a gather
 #: longer than the TTL cannot let it lapse and admit a second writer.
 _LEASE_TTL = 3600.0
 
-#: How often the heartbeat thread renews the lease — comfortably under the TTL so
-#: a slow renew or a stalled stage still refreshes in time.
+#: How often the heartbeat thread renews the lease/slot — comfortably under the
+#: TTL so a slow renew or a stalled stage still refreshes in time.
 _LEASE_HEARTBEAT_S = 900.0
+
+#: How often the worker retries the global slot pool while a job sits queued
+#: waiting for the fleet to free a slot.
+_SLOT_POLL_S = 5.0
+
+#: Default bound on this host's pending-gather backlog (queued + running);
+#: overflow is refused so a runaway caller cannot pile up unbounded work.
+_DEFAULT_QUEUE_MAX = 16
 
 # A corpus name becomes a cache directory, so it must be a single safe path
 # segment: letters/digits/`.`/`-`/`_`, starting with an alphanumeric. This
 # bars path separators, `..`, leading dots/dashes, and whitespace — the
 # write-side mirror of the read-side `_safe_path` guard, applied *before*
-# any path is built (the runner's first act is to take a per-corpus lock,
-# which creates directories). Real corpus names (WG shortnames, list names,
-# `x-` synthetics) all satisfy it; unusual custom labels still go via the CLI.
+# any path is built. Real corpus names (WG shortnames, list names, `x-`
+# synthetics) all satisfy it; unusual custom labels still go via the CLI.
 _VALID_CORPUS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MAX_CORPUS_LEN = 128
 
-# Live gather threads keyed by corpus, so a second start() in this process
-# can answer "already running" without racing on the file lock.
-_jobs: Dict[str, threading.Thread] = {}
+# This host runs ONE gather at a time (the per-host cap): a single worker thread
+# drains a FIFO queue, and holds a global slot in the control plane while running
+# (the fleet-wide cap). `_jobs` maps corpus -> state ("queued" | "running") for
+# in-process dedup, queue-bound enforcement, and local-backend liveness.
+_queue: "queue.Queue[GatherSpec]" = queue.Queue()
+_jobs: Dict[str, str] = {}
 _registry_lock = threading.Lock()
+#: The single worker thread, held in a dict so it can be (re)started without a
+#: module-level `global` rebind.
+_worker_state: Dict[str, Optional[threading.Thread]] = {"thread": None}
+_heartbeat_stop = threading.Event()
 
 
 #: A random per-process nonce so the lease owner id is unique even if two
@@ -222,30 +243,24 @@ def _status_path(corpus: str) -> str:
     return os.path.join(get_cache_dir(), corpus, _STATUS_NAME)
 
 
-def _lock_path(corpus: str) -> str:
-    return os.path.join(get_cache_dir(), corpus, _LOCK_NAME)
-
-
 def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
-    """Reason to refuse a gather *before* spawning, or None to proceed.
+    """Reason to refuse a gather *before* queuing, or None to proceed.
 
-    The pre-spawn gate, in priority order: a gather already in flight (here
+    The pre-queue gate, in priority order: a gather already in flight (here
     or, on the cloud backend, on another host), then — unless `force` — a
     source-duplicating custom corpus, then the freshness debounce.
     """
     corpus = spec.corpus
-    # Cross-host guard (cloud backend): a gather already running on another
-    # host shares its status through the control plane but not this host's file
-    # lock, so without this check a second host would spawn a competing thread
-    # that clobbers the shared status and then fails the lease. Refuse up front
-    # so the caller just polls `gather_status` and sees that host's live
-    # progress. `force` overrides the freshness debounce only — never a gather
-    # that is genuinely in flight. None on the local backend, where the
-    # in-process registry and file lock catch same-host races.
+    # Cross-host guard (cloud backend): a gather already queued or running on
+    # another host is fleet-visible through the control plane. Refuse up front so
+    # the caller just polls `gather_status` and sees that host's live progress.
+    # `force` overrides the freshness debounce only — never a gather in flight.
+    # None on the local backend, where the in-process registry catches same-host
+    # races (the lease below is the cross-host arbiter for the tight race).
     from . import corpus_store  # pylint: disable=import-outside-toplevel
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
-    if fleet is not None and fleet.get("state") == "running":
+    if fleet is not None and fleet.get("state") in ("queued", "running"):
         return {"started": False, "reason": "already running", "corpus": corpus}
     if spec.force:
         return None
@@ -273,90 +288,85 @@ def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
     return None
 
 
-def start(spec: GatherSpec) -> Dict[str, Any]:
-    """Start a background gather for `spec.corpus`.
+def _queue_max() -> int:
+    """Bound on this host's pending-gather backlog (queued + running). Overflow
+    is refused so a runaway caller cannot pile up unbounded background work.
+    `IETF_LLM_GATHER_QUEUE_MAX` overrides the default; sub-1 falls back."""
+    raw = os.environ.get("IETF_LLM_GATHER_QUEUE_MAX", "").strip()
+    if not raw:
+        return _DEFAULT_QUEUE_MAX
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_QUEUE_MAX
+    return value if value >= 1 else _DEFAULT_QUEUE_MAX
 
-    Returns `{"started": True, "corpus": ...}` when a fresh gather was
-    launched, or `{"started": False, "reason": ...}` otherwise:
-    `"already running"` if one is already in flight for this corpus (in
-    this process or another), `"similar exists"` (with a `"detail"` hint) if
-    a *new* custom/synthetic corpus would duplicate an existing one, or
-    `"fresh"` (with a `"detail"` line) if the corpus was gathered within the
-    freshness-debounce window. The last two are unforced-only. Returns
-    immediately; progress is tracked via the status file.
+
+def start(spec: GatherSpec) -> Dict[str, Any]:
+    """Enqueue a background gather for `spec.corpus`.
+
+    Returns `{"started": True, "corpus": ..., "queued_behind": N}` when the
+    gather was accepted (N gathers already in flight ahead of it on this host;
+    0 means it starts as soon as a fleet slot is free), or
+    `{"started": False, "reason": ...}` otherwise: `"already running"` (one is
+    in flight for this corpus, here or — cloud backend — on another host),
+    `"similar exists"` / `"fresh"` (unforced-only debounce hints, with a
+    `"detail"`), or `"queue full"` (this host's backlog is at the bound).
+    Returns immediately; progress is tracked via the status record.
+
+    One gather runs at a time on this host (a single worker drains the queue),
+    and at most `service_config.gather_max_inflight()` run across the whole
+    deployment at once (a global slot in the control plane). The per-corpus
+    lease is taken here, at enqueue, so it dedupes across hosts and anchors the
+    queued job's liveness.
     """
     corpus = spec.corpus
-    # Validate before any path is constructed: _run's first act is to take a
-    # per-corpus file_lock, which makedirs the (corpus-derived) lock path.
     if not valid_corpus_name(corpus):
         return {"started": False, "reason": "invalid name", "corpus": corpus}
     refusal = _pre_start_refusal(spec)
     if refusal is not None:
         return refusal
-    with _registry_lock:
-        existing = _jobs.get(corpus)
-        if existing is not None and existing.is_alive():
-            return {"started": False, "reason": "already running", "corpus": corpus}
-        got_lock = threading.Event()
-        outcome: Dict[str, bool] = {"locked": False}
-        thread = threading.Thread(
-            target=_run,
-            args=(spec, got_lock, outcome),
-            name=f"gather:{corpus}",
-            daemon=True,
-        )
-        _jobs[corpus] = thread
-        thread.start()
-    # The non-blocking lock acquire inside the thread is immediate; wait
-    # briefly for the handshake so we can report the contended case
-    # synchronously rather than spawning a no-op thread.
-    got_lock.wait(timeout=5.0)
-    if not outcome["locked"]:
-        return {"started": False, "reason": "already running", "corpus": corpus}
-    return {"started": True, "corpus": corpus}
-
-
-def _run(
-    spec: GatherSpec,
-    got_lock: threading.Event,
-    outcome: Dict[str, bool],
-) -> None:
-    """Thread body: take the per-corpus lock and run the pipeline."""
-    corpus = spec.corpus
-    try:
-        with file_lock(_lock_path(corpus), blocking=False):
-            outcome["locked"] = True
-            got_lock.set()
-            _execute(spec)
-    except LockHeld:
-        # Another process holds the corpus lock — leave its status alone.
-        pass
-    finally:
-        got_lock.set()  # unblock start() even on an early/unexpected error
-        with _registry_lock:
-            if _jobs.get(corpus) is threading.current_thread():
-                _jobs.pop(corpus, None)
-
-
-def _execute(spec: GatherSpec) -> None:
-    """Run the gather pipeline, writing status as each stage begins and on
-    completion. Any exception is recorded as a failed status, not raised —
-    the thread has no caller to surface it to."""
-    # Imported lazily so the read-only serve path doesn't pull the gather
-    # pipeline (and its many imports) unless gather is actually enabled.
-    from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
     from . import corpus_store  # pylint: disable=import-outside-toplevel
 
-    corpus = spec.corpus
     store = corpus_store.get_corpus_store()
     owner = _owner()
-    status: Dict[str, Any] = {
-        "corpus": corpus,
-        "state": "running",
+    with _registry_lock:
+        if corpus in _jobs:
+            return {"started": False, "reason": "already running", "corpus": corpus}
+        if len(_jobs) >= _queue_max():
+            return {"started": False, "reason": "queue full", "corpus": corpus}
+        # Take the per-corpus lease NOW, before queuing: on the cloud backend
+        # this atomically dedupes the same corpus across hosts (the loser of a
+        # near-simultaneous race is told "already running"), and it is the
+        # liveness anchor for the queued state. A no-op grant on the local
+        # backend, where the in-process registry above is the dedup.
+        if not store.acquire_lease(corpus, owner, _LEASE_TTL):
+            return {"started": False, "reason": "already running", "corpus": corpus}
+        ahead = len(_jobs)
+        _jobs[corpus] = "queued"
+    # Publish `queued` BEFORE enqueueing, then enqueue, then ensure the worker is
+    # up. Ordering matters: the worker only ever writes `running`/terminal, and
+    # it can only dequeue after the put below — so this `queued` write always
+    # happens-before the worker's writes and can never clobber a later state
+    # (which, with a fast gather, would otherwise leave the record stuck at
+    # `queued`). It also makes the queued state fleet-visible at once (a client
+    # checking status on another replica sees it, not just the enqueuing host).
+    _write_status(store, _new_status(spec, "queued"))
+    with _registry_lock:
+        _queue.put(spec)
+        _ensure_worker(owner)
+    return {"started": True, "queued_behind": ahead, "corpus": corpus}
+
+
+def _new_status(spec: GatherSpec, state: str) -> Dict[str, Any]:
+    now = _now_iso()
+    return {
+        "corpus": spec.corpus,
+        "state": state,
         "spec": spec.to_dict(),
         "pid": os.getpid(),
-        "started": _now_iso(),
-        "updated": _now_iso(),
+        "started": now,
+        "updated": now,
         "finished": None,
         "stage": None,
         "stage_index": 0,
@@ -364,93 +374,172 @@ def _execute(spec: GatherSpec) -> None:
         "error": None,
     }
 
-    def _persist() -> None:
-        status["updated"] = _now_iso()
-        path = _status_path(corpus)
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with atomic_open(path) as handle:
-                json.dump(status, handle, indent=2, sort_keys=True)
-        except OSError as err:
-            log(
-                f"gather_runner: could not write status for {corpus}: {err}",
-                Verbosity.STATUS,
-                level=LogLevel.ERROR,
-            )
-        # Also publish to the store so the status is fleet-visible (G-8): a
-        # no-op on the local backend, a control-plane write on the cloud backend.
-        # Never fail the gather on a status-publish error.
-        try:
-            store.put_gather_status(corpus, status)
-        except Exception as err:  # pylint: disable=broad-except
-            log(
-                f"gather_runner: could not publish status for {corpus}: {err}",
-                Verbosity.STATUS,
-                level=LogLevel.ERROR,
-            )
 
-    def _progress(name: str, index: int, total: int) -> None:
-        status["stage"] = name
-        status["stage_index"] = index
-        status["stage_total"] = total
-        _persist()
-
-    # Cross-host gather lease: a no-op grant on the local backend (the file
-    # lock in `_run` already serialises a single box), a real lease on the
-    # cloud backend so a cron gather and the serve fleet's in-session gather
-    # cannot write the same corpus at once. Taken *before* the first status
-    # write so a host that loses the race returns without overwriting the
-    # winner's fleet-visible status — the caller then polls `gather_status`
-    # and sees the winner's live progress (the pre-check in `start()` catches
-    # this for all but a tight acquire-time race; this is the backstop).
-    if not store.acquire_lease(corpus, owner, _LEASE_TTL):
-        return
-    _persist()
-    # Keep the lease alive for the whole gather (G-4): a background heartbeat
-    # renews it well within the TTL, so a multi-hour gather cannot let the lease
-    # expire and let a second writer publish an orphaned version.
-    stop_heartbeat = threading.Event()
-    heartbeat = threading.Thread(
-        target=_heartbeat_lease,
-        args=(store, corpus, owner, stop_heartbeat),
-        name=f"lease-heartbeat:{corpus}",
-        daemon=True,
-    )
-    heartbeat.start()
+def _write_status(store: Any, status: Dict[str, Any]) -> None:
+    """Persist a status record locally and publish it to the store so it is
+    fleet-visible (G-8). Never fails the gather on a write/publish error."""
+    status["updated"] = _now_iso()
+    corpus = status["corpus"]
+    path = _status_path(corpus)
     try:
-        ok = gather_main.run_gather(
-            spec.to_argv(), Verbosity.STATUS, progress=_progress
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with atomic_open(path) as handle:
+            json.dump(status, handle, indent=2, sort_keys=True)
+    except OSError as err:
+        log(
+            f"gather_runner: could not write status for {corpus}: {err}",
+            Verbosity.STATUS,
+            level=LogLevel.ERROR,
         )
-        if ok:
-            # Publish the gathered tree as a new version. A no-op finalise on
-            # the local backend (the cache already is the live version); on the
-            # cloud backend this uploads the corpus and flips the pointer
-            # atomically, making it visible fleet-wide. The index lives outside
-            # the cache when IETF_LLM_INDEX_DIR is split off, so include it
-            # explicitly (G-2) — otherwise a reader replica has no index.
-            workspace = os.path.join(get_cache_dir(), corpus)
-            store.publish(
-                corpus,
-                workspace,
-                extra_files=_index_extra_files(corpus, workspace) or None,
+    try:
+        store.put_gather_status(corpus, status)
+    except Exception as err:  # pylint: disable=broad-except
+        log(
+            f"gather_runner: could not publish status for {corpus}: {err}",
+            Verbosity.STATUS,
+            level=LogLevel.ERROR,
+        )
+
+
+def _store() -> Any:
+    """The current CorpusStore. Fetched fresh (not captured) so the long-lived
+    worker/heartbeat always honour the live config rather than whatever was set
+    when they first started."""
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
+    return corpus_store.get_corpus_store()
+
+
+def _ensure_worker(owner: str) -> None:
+    """Lazily start the single gather worker and the lease/slot heartbeat.
+    Caller holds `_registry_lock`. Both are daemons that live for the process."""
+    existing = _worker_state["thread"]
+    if existing is not None and existing.is_alive():
+        return
+    _heartbeat_stop.clear()
+    worker = threading.Thread(
+        target=_worker_loop, args=(owner,), name="gather-worker", daemon=True
+    )
+    _worker_state["thread"] = worker
+    worker.start()
+    threading.Thread(
+        target=_heartbeat_loop,
+        args=(owner, _heartbeat_stop),
+        name="gather-heartbeat",
+        daemon=True,
+    ).start()
+
+
+def _heartbeat_loop(owner: str, stop: threading.Event) -> None:
+    """Renew every lease this host holds (queued + running jobs) and the active
+    gather slot, comfortably within the TTL, so a long gather — or a long wait
+    for a fleet slot — cannot let the lease/slot lapse. No-ops on the local
+    backend. Lives for the process (daemon); `stop` is a test seam."""
+    while not stop.wait(_LEASE_HEARTBEAT_S):
+        with _registry_lock:
+            corpora = list(_jobs.keys())
+            running = any(state == "running" for state in _jobs.values())
+        if not corpora:
+            continue
+        store = _store()
+        for corpus in corpora:
+            store.renew_lease(corpus, owner, _LEASE_TTL)
+        if running:
+            store.renew_gather_slot(owner, _LEASE_TTL)
+
+
+def _worker_loop(owner: str) -> None:
+    """Drain the gather queue one job at a time (the per-host cap of 1). Each
+    job already holds its per-corpus lease (taken at enqueue); the worker waits
+    for a global slot, runs the pipeline, then releases slot and lease."""
+    while True:
+        spec = _queue.get()
+        corpus = spec.corpus
+        store = _store()
+        try:
+            _run_one(store, owner, spec)
+        except BaseException as err:  # pylint: disable=broad-except
+            # The worker must outlive any single job's failure.
+            log(
+                f"gather_runner: worker error on {corpus}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.ERROR,
             )
-            status["state"] = "done"
-        else:
+        finally:
+            try:
+                store.release_lease(corpus, owner)
+            except Exception:  # pylint: disable=broad-except
+                pass
+            with _registry_lock:
+                _jobs.pop(corpus, None)
+            _queue.task_done()
+
+
+def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
+    """Run one queued gather: wait for a fleet-wide slot, then run the pipeline,
+    publishing status at each transition. Holds the per-corpus lease throughout
+    (released by the worker loop). Never raises — failures become a `failed`
+    status."""
+    # Imported lazily so the read-only serve path doesn't pull the gather
+    # pipeline (and its many imports) unless gather is actually enabled.
+    from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
+
+    corpus = spec.corpus
+    status = _new_status(spec, "queued")
+    # Wait for one of the fleet-wide gather slots. While queued, the heartbeat
+    # renews the lease; re-publishing `queued` keeps `updated` fresh so a stale
+    # record is distinguishable. On shutdown, bail without a terminal status —
+    # the released lease lets liveness relabel the record `interrupted`.
+    max_inflight = service_config.gather_max_inflight()
+    while not store.acquire_gather_slot(owner, corpus, _LEASE_TTL, max_inflight):
+        if _heartbeat_stop.is_set():
+            return
+        _write_status(store, status)
+        time.sleep(_SLOT_POLL_S)
+    try:
+        with _registry_lock:
+            _jobs[corpus] = "running"
+        status["state"] = "running"
+        _write_status(store, status)
+
+        def _progress(name: str, index: int, total: int) -> None:
+            status["stage"] = name
+            status["stage_index"] = index
+            status["stage_total"] = total
+            _write_status(store, status)
+
+        try:
+            ok = gather_main.run_gather(
+                spec.to_argv(), Verbosity.STATUS, progress=_progress
+            )
+            if ok:
+                # Publish the gathered tree as a new version. A no-op finalise on
+                # the local backend (the cache already is the live version); on
+                # the cloud backend this uploads the corpus and flips the pointer
+                # atomically. The index lives outside the cache when
+                # IETF_LLM_INDEX_DIR is split off, so include it explicitly (G-2).
+                workspace = os.path.join(get_cache_dir(), corpus)
+                store.publish(
+                    corpus,
+                    workspace,
+                    extra_files=_index_extra_files(corpus, workspace) or None,
+                )
+                status["state"] = "done"
+            else:
+                status["state"] = "failed"
+                status["error"] = (
+                    f"'{corpus}' is not a recognized Working Group / Research "
+                    "Group, a known mailing list, a draft/repo set, or a "
+                    "synthetic (x-) corpus. Check the spelling or add sources."
+                )
+        except BaseException as err:  # pylint: disable=broad-except
             status["state"] = "failed"
-            status["error"] = (
-                f"'{corpus}' is not a recognized Working Group / Research "
-                "Group, a known mailing list, a draft/repo set, or a "
-                "synthetic (x-) corpus. Check the spelling or add sources."
-            )
-    except BaseException as err:  # pylint: disable=broad-except
-        status["state"] = "failed"
-        status["error"] = f"{type(err).__name__}: {err}"[:500]
+            status["error"] = f"{type(err).__name__}: {err}"[:500]
+        finally:
+            status["finished"] = _now_iso()
+            _write_status(store, status)
     finally:
-        stop_heartbeat.set()
-        heartbeat.join(timeout=5.0)
-        store.release_lease(corpus, owner)
-        status["finished"] = _now_iso()
-        _persist()
+        store.release_gather_slot(owner)
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:
@@ -458,18 +547,17 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     name is not a safe path segment).
 
     On the **cloud** backend the status comes from the control plane, so a
-    `gather_status` call answered by any replica sees the gather running on
-    another (G-8); its `running`→`interrupted` relabel keys off the cross-host
-    *lease* (the cloud topology shares the control plane, not the cache, so a
-    local file lock cannot answer for another host).
+    `gather_status` call answered by any replica sees a gather queued or running
+    on another (G-8); its `queued`/`running`→`interrupted` relabel keys off the
+    cross-host *lease* (the cloud topology shares the control plane, not the
+    cache, so a local file cannot answer for another host).
 
     On the **local** backend status is the per-corpus `gather-status.json`, and
-    a `running` record whose gather *file lock* is provably free is relabelled
-    `interrupted`: the gather thread is a daemon, so a restart/kill would
-    otherwise leave it stuck at `running`. The lock is released by the OS the
-    instant its holder dies, and the terminal status is written while still
-    holding it, so a free lock under `running` means the gather died. When
-    liveness is undeterminable (`lock_is_held` -> None) the status is left as-is.
+    a non-terminal (`queued`/`running`) record whose corpus is not in this
+    process's live job registry is relabelled `interrupted`: the worker is a
+    daemon, so a restart/kill would otherwise leave the record stuck. The local
+    backend has a single gatherer (this process), so "not tracked here" means
+    the job that wrote the record is gone.
     """
     if not valid_corpus_name(corpus):
         return None
@@ -485,8 +573,11 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
         result = dict(data)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
-    if result.get("state") == "running" and lock_is_held(_lock_path(corpus)) is False:
-        result["state"] = "interrupted"
+    if result.get("state") in ("queued", "running"):
+        with _registry_lock:
+            tracked = corpus in _jobs
+        if not tracked:
+            result["state"] = "interrupted"
     return result
 
 
