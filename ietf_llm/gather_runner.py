@@ -226,6 +226,53 @@ def _lock_path(corpus: str) -> str:
     return os.path.join(get_cache_dir(), corpus, _LOCK_NAME)
 
 
+def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
+    """Reason to refuse a gather *before* spawning, or None to proceed.
+
+    The pre-spawn gate, in priority order: a gather already in flight (here
+    or, on the cloud backend, on another host), then — unless `force` — a
+    source-duplicating custom corpus, then the freshness debounce.
+    """
+    corpus = spec.corpus
+    # Cross-host guard (cloud backend): a gather already running on another
+    # host shares its status through the control plane but not this host's file
+    # lock, so without this check a second host would spawn a competing thread
+    # that clobbers the shared status and then fails the lease. Refuse up front
+    # so the caller just polls `gather_status` and sees that host's live
+    # progress. `force` overrides the freshness debounce only — never a gather
+    # that is genuinely in flight. None on the local backend, where the
+    # in-process registry and file lock catch same-host races.
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
+    fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
+    if fleet is not None and fleet.get("state") == "running":
+        return {"started": False, "reason": "already running", "corpus": corpus}
+    if spec.force:
+        return None
+    # Canonicalisation: a new custom/synthetic corpus that duplicates an
+    # existing one's sources is steered to reuse rather than minted.
+    hint = canonical.mcp_canonicalize_skip(spec)
+    if hint is not None:
+        return {
+            "started": False,
+            "reason": "similar exists",
+            "detail": hint,
+            "corpus": corpus,
+        }
+    # Freshness debounce: a plain re-gather of a recently-gathered corpus is
+    # skipped. A source-changing request isn't a plain refresh.
+    if not spec.has_sources():
+        detail = freshness.debounce_reason(corpus)
+        if detail is not None:
+            return {
+                "started": False,
+                "reason": "fresh",
+                "detail": detail,
+                "corpus": corpus,
+            }
+    return None
+
+
 def start(spec: GatherSpec) -> Dict[str, Any]:
     """Start a background gather for `spec.corpus`.
 
@@ -243,28 +290,9 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     # per-corpus file_lock, which makedirs the (corpus-derived) lock path.
     if not valid_corpus_name(corpus):
         return {"started": False, "reason": "invalid name", "corpus": corpus}
-    if not spec.force:
-        # Canonicalisation: a new custom/synthetic corpus that duplicates an
-        # existing one's sources is steered to reuse rather than minted.
-        hint = canonical.mcp_canonicalize_skip(spec)
-        if hint is not None:
-            return {
-                "started": False,
-                "reason": "similar exists",
-                "detail": hint,
-                "corpus": corpus,
-            }
-        # Freshness debounce: a plain re-gather of a recently-gathered corpus
-        # is skipped. A source-changing request isn't a plain refresh.
-        if not spec.has_sources():
-            detail = freshness.debounce_reason(corpus)
-            if detail is not None:
-                return {
-                    "started": False,
-                    "reason": "fresh",
-                    "detail": detail,
-                    "corpus": corpus,
-                }
+    refusal = _pre_start_refusal(spec)
+    if refusal is not None:
+        return refusal
     with _registry_lock:
         existing = _jobs.get(corpus)
         if existing is not None and existing.is_alive():
@@ -367,20 +395,17 @@ def _execute(spec: GatherSpec) -> None:
         status["stage_total"] = total
         _persist()
 
-    _persist()
     # Cross-host gather lease: a no-op grant on the local backend (the file
     # lock in `_run` already serialises a single box), a real lease on the
     # cloud backend so a cron gather and the serve fleet's in-session gather
-    # cannot write the same corpus at once.
+    # cannot write the same corpus at once. Taken *before* the first status
+    # write so a host that loses the race returns without overwriting the
+    # winner's fleet-visible status — the caller then polls `gather_status`
+    # and sees the winner's live progress (the pre-check in `start()` catches
+    # this for all but a tight acquire-time race; this is the backstop).
     if not store.acquire_lease(corpus, owner, _LEASE_TTL):
-        status["state"] = "failed"
-        status["error"] = (
-            f"another host holds the gather lease for '{corpus}'; "
-            "a gather is already running elsewhere."
-        )
-        status["finished"] = _now_iso()
-        _persist()
         return
+    _persist()
     # Keep the lease alive for the whole gather (G-4): a background heartbeat
     # renews it well within the TTL, so a multi-hour gather cannot let the lease
     # expire and let a second writer publish an orphaned version.

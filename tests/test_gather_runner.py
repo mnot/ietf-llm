@@ -177,6 +177,84 @@ def test_second_start_reports_already_running(
     _wait_terminal("httpbis")
 
 
+# --- cross-host gather visibility (cloud backend) -------------------------
+
+
+def _patch_store(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
+    from ietf_llm import corpus_store
+
+    monkeypatch.setattr(corpus_store, "get_corpus_store", lambda: store)
+
+
+def test_start_refuses_when_another_host_is_running(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gather running on another host is fleet-visible through the control
+    plane: `start()` must report it as already running and NOT spawn a thread
+    that would clobber the holder's shared status."""
+    from ietf_llm.corpus_store import LocalCorpusStore
+
+    class _FleetRunning(LocalCorpusStore):
+        def get_gather_status(self, corpus: str) -> Any:
+            return {"corpus": corpus, "state": "running", "stage": "drafts"}
+
+    _patch_store(monkeypatch, _FleetRunning())
+    monkeypatch.setattr(
+        main_mod,
+        "run_gather",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not spawn")),
+    )
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="httpbis"))
+    assert result["started"] is False
+    assert result["reason"] == "already running"
+
+
+def test_start_refuses_even_with_force_when_running(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`force` overrides the freshness debounce only — never a live gather."""
+    from ietf_llm.corpus_store import LocalCorpusStore
+
+    class _FleetRunning(LocalCorpusStore):
+        def get_gather_status(self, corpus: str) -> Any:
+            return {"corpus": corpus, "state": "running"}
+
+    _patch_store(monkeypatch, _FleetRunning())
+    result = gather_runner.start(
+        gather_runner.GatherSpec(corpus="httpbis", force=True)
+    )
+    assert result["started"] is False
+    assert result["reason"] == "already running"
+
+
+def test_execute_backstop_leaves_holder_status_untouched(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the pre-check passed but the cross-host lease is then unavailable
+    (a tight race), `_execute` returns without writing any status, so the
+    winning host's fleet-visible status stays authoritative."""
+    from ietf_llm.corpus_store import LocalCorpusStore
+
+    class _LeaseDenied(LocalCorpusStore):
+        def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+            return False
+
+    _patch_store(monkeypatch, _LeaseDenied())
+    monkeypatch.setattr(
+        main_mod,
+        "run_gather",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("lease denied")),
+    )
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
+    assert result["started"] is True  # local file lock was free
+    # Give the daemon thread a beat to reach (and bail at) the lease acquire.
+    deadline = time.time() + 2.0
+    while time.time() < deadline and gather_runner.read_status("quic") is None:
+        time.sleep(0.01)
+    # No status persisted: the holder's record (None here) is left untouched.
+    assert gather_runner.read_status("quic") is None
+
+
 def test_all_statuses_and_read_status(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

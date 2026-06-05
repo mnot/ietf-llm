@@ -3091,9 +3091,11 @@ def main() -> None:
               id, or exact name) or `new_drafts=True` (rolling window).
             - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
-            One gather per corpus runs at a time (a second call while one
-            is in flight reports "already running"); different corpora run
-            in parallel.
+            One gather per corpus runs at a time — including across hosts on
+            a shared deployment, where another client may have started it. A
+            call while one is in flight reports "already running": poll
+            `gather_status(corpus=...)` to watch it, don't retry or pass
+            `force` to "unstick" it. Different corpora run in parallel.
 
             A corpus gathered within the freshness window (default 6h) is
             **not** re-gathered — the call returns a "fresh, skipped" note.
@@ -3126,7 +3128,10 @@ def main() -> None:
                 github_label: Include only issues with these labels.
                 exclude_github_label: Exclude issues with these labels.
                 force: Re-gather even if the corpus is within the freshness
-                    window. Use only on an explicit request for fresh data.
+                    window (and mint a near-duplicate custom corpus despite an
+                    overlap hint). Overrides the freshness debounce only — it
+                    never starts a second gather while one is running. Use only
+                    on an explicit request for fresh data.
             """
             return await _offload(
                 tool_start_gather,
