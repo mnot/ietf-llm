@@ -22,7 +22,9 @@ variable:
 | `IETF_LLM_INDEX_DIR` | per-corpus `embeddings.db` files | the cache root |
 | `IETF_LLM_INDEX_IMMUTABLE` | read the index in SQLite immutable mode (read-only mounts) | off |
 
-An unset (or blank) variable falls back to the default, so the local CLI is unaffected.
+An unset (or blank) variable falls back to the default, so the local CLI is unaffected. A read-only
+consumer (the MCP server, `ietf-llm-search`) only needs `IETF_LLM_CACHE_DIR` to *exist* and be
+readable; gather needs it writable.
 
 ## Separating the index from the corpus
 
@@ -39,28 +41,19 @@ export IETF_LLM_INDEX_DIR=/dev/shm/ietf-llm      # embeddings.db, on tmpfs
 The layout under each root is the same as the defaults (`<root>/<name>/…`), so a directory can be
 moved by setting the variable and relocating its contents — no re-gather required.
 
-## The index must be on a local filesystem
+## The index is SQLite: where it can live
 
-Wherever `IETF_LLM_INDEX_DIR` points, it has to be a **local POSIX filesystem** — a real disk or
-tmpfs, never a network filesystem (NFS, SMB) or an object-store FUSE mount. The index is a SQLite
-database, and SQLite's WAL and file locking are unreliable over those, risking corruption or
-"database is locked" errors. Serving an object-stored index means **materialising it to local disk
-first**, not pointing `IETF_LLM_INDEX_DIR` at a remote mount.
+The index is a SQLite database in WAL mode, which constrains where `IETF_LLM_INDEX_DIR` can point:
 
-## Serving from a read-only mount
-
-The index is a SQLite database in WAL mode. A plain read opens fine when the index dir is
-**writable** — the local CLI, or a tmpfs index — because SQLite can create the small `-wal` / `-shm`
-sidecars it needs there. On a **read-only** mount those sidecars can't be created and the open
-fails. For a published, immutable index that nothing rewrites in place, set:
-
-```bash
-export IETF_LLM_INDEX_IMMUTABLE=1
-```
-
-SQLite then reads the database file directly, skipping the WAL and locking. Use it **only** when the
-index is genuinely immutable (a read replica you publish and swap atomically), never while a gather
-rewrites it in place.
+- **A local POSIX filesystem only** — a real disk or tmpfs, never a network filesystem (NFS, SMB) or
+  an object-store FUSE mount, where SQLite's WAL and locking are unreliable (corruption, or
+  "database is locked"). To serve an object-stored index, materialise it to local disk first rather
+  than point `IETF_LLM_INDEX_DIR` at a remote mount.
+- **Writable, unless marked immutable** — a normal open creates the small `-wal` / `-shm` sidecars,
+  so it fails on a read-only mount. For a published index that nothing rewrites in place, set
+  `IETF_LLM_INDEX_IMMUTABLE=1`: SQLite then reads the file directly, skipping the WAL and locking.
+  Use it *only* when the index really is immutable (a read replica you publish and swap atomically),
+  never while a gather rewrites it.
 
 ## Corpus store backend (local vs cloud)
 
@@ -110,10 +103,3 @@ or set `0` for instant cross-replica visibility.
 ones automatically, so size it for roughly 2× the versions you actively read per corpus. **On tmpfs,
 scratch is RAM** — size the pod accordingly. Orphaned *blobs* are not reaped; set a bucket lifecycle
 rule (retain the current version plus a grace window) to cap object-store cost.
-
-## Notes
-
-- `IETF_LLM_CACHE_DIR` only needs to *exist* and be readable for a read-only consumer (the MCP
-  server, `ietf-llm-search`); gather needs it writable.
-- These pair naturally with [running the MCP server over HTTP](mcp-server.md), where the
-  corpus is read-only and the index can sit on tmpfs for speed.
