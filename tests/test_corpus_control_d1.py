@@ -105,22 +105,35 @@ def test_rejected_token_raises_actionable_auth_error(status: int) -> None:
     assert str(status) in str(exc.value)
 
 
+#: A syntactically valid D1 Database ID (UUID) for locators under test.
+_DB_UUID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+
+
 def test_invalid_locator_raises() -> None:
     with pytest.raises(ValueError):
         D1ControlPlane("d1://only-one-part", token="tok")
 
 
+def test_database_name_instead_of_uuid_is_rejected() -> None:
+    # The reported mix-up: the database *name* where the Database ID (UUID)
+    # belongs. Caught up front with a message that names the fix.
+    with pytest.raises(ValueError) as exc:
+        D1ControlPlane("d1://acc/my-database", token="tok")
+    msg = str(exc.value)
+    assert "UUID" in msg and "Database ID" in msg
+
+
 def test_missing_token_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_CONTROL_DB_TOKEN", raising=False)
     with pytest.raises(ValueError):
-        D1ControlPlane("d1://acc/db")
+        D1ControlPlane(f"d1://acc/{_DB_UUID}")
 
 
 def test_construct_ensures_schema_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(d1mod, "_schema_ensured", set())
     sess = _Session({"success": True, "result": []})
-    D1ControlPlane("d1://acc/db", token="tok", session=sess)  # type: ignore[arg-type]
+    D1ControlPlane(f"d1://acc/{_DB_UUID}", token="tok", session=sess)  # type: ignore[arg-type]
     # Construction ran ensure_schema as a single batch (the CREATE TABLEs).
     assert sess.calls
-    assert sess.calls[0]["url"].endswith("/d1/database/db/query")
+    assert sess.calls[0]["url"].endswith(f"/d1/database/{_DB_UUID}/query")
     assert "batch" in sess.calls[0]["json"]

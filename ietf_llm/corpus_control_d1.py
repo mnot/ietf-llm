@@ -11,8 +11,19 @@ already a base dep). D1 *is* SQLite, so the SQL is unchanged. Two endpoints:
     statements in a single transaction (all-or-nothing) — what `publish` needs.
 
 The database is addressed by an `IETF_LLM_CONTROL_DB` locator of the form
-`d1://<account_id>/<database_id>`; the API token is a secret read from
-`IETF_LLM_CONTROL_DB_TOKEN`. See `docs/storage.md`.
+`d1://<account_id>/<database_id>`, where **both segments are the IDs shown in
+the Cloudflare dashboard, not human-friendly names**:
+
+  - `<account_id>` is the Account ID (a 32-character hex string), not the
+    account name;
+  - `<database_id>` is the **Database ID** — a UUID like
+    `0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d` shown on the D1 database's page —
+    **not** the database name you typed when creating it.
+
+Passing the database *name* where the UUID belongs is the easy mistake (D1
+would just answer "not found" later), so the locator is validated up front.
+The API token is a secret read from `IETF_LLM_CONTROL_DB_TOKEN`. See
+`docs/storage.md`.
 
 Verification note: the request building and response parsing here are unit-tested
 against a mocked HTTP layer; the live D1 transport is not exercised by the test
@@ -32,6 +43,10 @@ from .utils import http_session
 _API_BASE = "https://api.cloudflare.com/client/v4"
 _TIMEOUT = 30.0
 _LOCATOR_RE = re.compile(r"^d1://([^/]+)/([^/]+)$")
+#: A D1 Database ID is a UUID. We validate the locator's second segment against
+#: this so the database *name* (the common mix-up) is rejected with a clear
+#: message instead of failing later as a confusing "not found".
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.IGNORECASE)
 
 #: Process-wide guard so the schema DDL is sent at most once per process per D1
 #: database, not on every per-request executor construction.
@@ -138,6 +153,14 @@ class D1ControlPlane(SqlControlPlane):
             raise ValueError(
                 "invalid D1 locator (expected d1://<account_id>/<database_id>): "
                 f"{locator!r}"
+            )
+        database_id = match.group(2)
+        if not _UUID_RE.match(database_id):
+            raise ValueError(
+                f"D1 locator's database segment {database_id!r} is not a UUID: it "
+                "must be the Database ID (a UUID shown on the database's page in "
+                "the Cloudflare dashboard), not the database name. Locator form: "
+                "d1://<account_id>/<database_id>."
             )
         if not token:
             from . import service_config  # pylint: disable=import-outside-toplevel
