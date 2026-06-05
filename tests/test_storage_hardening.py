@@ -333,3 +333,53 @@ def test_resolve_cache_scoped_per_control_plane(tmp_path: Path) -> None:
     assert store_b.resolve_current("tls") is None  # B's pointer is empty...
     # ...and B's miss didn't read A's cached entry (separate cache_key).
     assert count_a["n"] == 1 and count_b["n"] == 1
+
+
+# --- G-2 residual: a split-out index dir is still captured into the version ---
+
+
+def test_publish_includes_extra_files(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    idx = tmp_path / "fastindex" / "tls" / "embeddings.db"
+    idx.parent.mkdir(parents=True)
+    idx.write_bytes(b"SPLITDB")
+    store.publish(
+        "tls", str(ws), version="v1", extra_files={"embeddings.db": str(idx)}
+    )
+    got = store.local_index_dir("tls")  # materialise the version
+    assert got is not None
+    assert (Path(got) / "embeddings.db").read_bytes() == b"SPLITDB"
+    assert (Path(got) / "files" / "x.md").read_text() == "f"
+
+
+def test_index_extra_files_empty_when_inside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import gather_runner as gr
+
+    ws = tmp_path / "cache" / "tls"
+    ws.mkdir(parents=True)
+    (ws / "embeddings.db").write_bytes(b"DB")
+    # Default layout: index dir == cache, so the version walk already gets it.
+    monkeypatch.setattr(gr, "get_index_dir", lambda: str(tmp_path / "cache"))
+    assert gr._index_extra_files("tls", str(ws)) == {}
+
+
+def test_index_extra_files_captures_split_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import gather_runner as gr
+
+    ws = tmp_path / "cache" / "tls"
+    ws.mkdir(parents=True)
+    split = tmp_path / "fastindex"
+    (split / "tls").mkdir(parents=True)
+    (split / "tls" / "embeddings.db").write_bytes(b"DB")
+    (split / "tls" / "embeddings.db-wal").write_bytes(b"W")  # sidecar too
+    monkeypatch.setattr(gr, "get_index_dir", lambda: str(split))
+    extras = gr._index_extra_files("tls", str(ws))
+    assert set(extras) == {"embeddings.db", "embeddings.db-wal"}
+    assert extras["embeddings.db"] == str(split / "tls" / "embeddings.db")

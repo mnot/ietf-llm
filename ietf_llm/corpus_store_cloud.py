@@ -235,20 +235,32 @@ class CloudCorpusStore(CorpusStore):
                 shutil.rmtree(tmp, ignore_errors=True)
 
     def publish(
-        self, corpus: str, workspace: str, version: Optional[str] = None
+        self,
+        corpus: str,
+        workspace: str,
+        version: Optional[str] = None,
+        *,
+        extra_files: Optional[Dict[str, str]] = None,
     ) -> str:
         version = version or _new_version()
         prefix = f"{corpus}/{version}/"
-        files: List[str] = []
-        # Stage every file in the workspace to the fresh version prefix. Nothing
-        # references this prefix yet, so a partial upload is invisible.
+        staged: Dict[str, str] = {}
+        # Stage every file in the workspace to the fresh version prefix, plus any
+        # extra_files (e.g. an index living outside the cache), keyed by their
+        # version-relative path. Nothing references this prefix yet, so a partial
+        # upload is invisible. Workspace files win on a key clash.
+        for rel, abs_path in (extra_files or {}).items():
+            staged[rel.replace(os.sep, "/")] = abs_path
         for dirpath, _dirs, names in os.walk(workspace):
             for name in names:
                 abs_path = os.path.join(dirpath, name)
                 rel = os.path.relpath(abs_path, workspace).replace(os.sep, "/")
-                with open(abs_path, "rb") as handle:
-                    self._blobs.put(prefix + rel, handle.read())
-                files.append(rel)
+                staged[rel] = abs_path
+        files: List[str] = []
+        for rel, abs_path in staged.items():
+            with open(abs_path, "rb") as handle:
+                self._blobs.put(prefix + rel, handle.read())
+            files.append(rel)
         # Atomically record the version and flip the pointer. If this raises,
         # the staged blobs are orphaned and the prior version stays current.
         self._control.publish_version(

@@ -115,15 +115,27 @@ class CorpusStore(ABC):
         """
 
     @abstractmethod
-    def publish(self, corpus: str, workspace: str) -> str:
+    def publish(
+        self,
+        corpus: str,
+        workspace: str,
+        *,
+        extra_files: Optional[Dict[str, str]] = None,
+    ) -> str:
         """Publish the gathered tree at local `workspace` as a new version of
         `corpus`, atomically, and return its version token.
 
+        `extra_files` maps a version-relative path to an absolute local path for
+        files that live *outside* `workspace` but belong in the version — notably
+        the embeddings index when `IETF_LLM_INDEX_DIR` points away from the cache
+        (so a cloud reader replica still gets the version's `embeddings.db`).
+
         This is the write-side seam. The local backend treats it as a no-op
-        finalise (the workspace already *is* the live cache). A cloud backend
-        uploads the workspace as a fresh immutable version and flips the
-        current-version pointer in one transaction, so readers see the old
-        version or the new, never a half-published one.
+        finalise (the workspace already *is* the live cache, and the index is
+        read from its own dir). A cloud backend uploads the workspace plus any
+        `extra_files` as a fresh immutable version and flips the current-version
+        pointer in one transaction, so readers see the old version or the new,
+        never a half-published one.
         """
 
     def corpus_exists(self, corpus: str) -> bool:
@@ -188,9 +200,16 @@ class LocalCorpusStore(CorpusStore):
         # unchanged. Returned even if no DB exists yet (search handles that).
         return os.path.join(get_index_dir(), corpus)
 
-    def publish(self, corpus: str, workspace: str) -> str:
-        # No-op finalise: the local cache is the single live version, and the
-        # gather writes straight into it, so there is nothing to upload or flip.
+    def publish(
+        self,
+        corpus: str,
+        workspace: str,
+        *,
+        extra_files: Optional[Dict[str, str]] = None,
+    ) -> str:
+        # No-op finalise: the local cache is the single live version, the gather
+        # writes straight into it, and the index is read from its own dir — so
+        # there is nothing to upload or flip (`extra_files` is irrelevant here).
         return LOCAL_VERSION
 
 

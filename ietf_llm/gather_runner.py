@@ -35,6 +35,7 @@ from .utils import (
     atomic_open,
     file_lock,
     get_cache_dir,
+    get_index_dir,
     lock_is_held,
     log,
 )
@@ -89,6 +90,27 @@ def _heartbeat_lease(
     while not stop.wait(_LEASE_HEARTBEAT_S):
         if not store.renew_lease(corpus, owner, _LEASE_TTL):
             break
+
+
+def _index_extra_files(corpus: str, workspace: str) -> Dict[str, str]:
+    """Index files that belong in the published version but live *outside*
+    `workspace` — the embeddings index when `IETF_LLM_INDEX_DIR` points away from
+    the cache. Returns `{}` when the index dir is inside the workspace (the
+    default layout), since the workspace walk already captures it. So a cloud
+    reader replica gets the version's `embeddings.db` regardless of where the
+    index is configured (G-2)."""
+    index_dir = os.path.join(get_index_dir(), corpus)
+    if not os.path.isdir(index_dir):
+        return {}
+    ws_real = os.path.realpath(workspace)
+    idx_real = os.path.realpath(index_dir)
+    if idx_real == ws_real or idx_real.startswith(ws_real + os.sep):
+        return {}  # inside the workspace; the walk already captures it
+    return {
+        name: os.path.join(index_dir, name)
+        for name in os.listdir(index_dir)
+        if os.path.isfile(os.path.join(index_dir, name))
+    }
 
 
 def valid_corpus_name(name: str) -> bool:
@@ -378,8 +400,15 @@ def _execute(spec: GatherSpec) -> None:
             # Publish the gathered tree as a new version. A no-op finalise on
             # the local backend (the cache already is the live version); on the
             # cloud backend this uploads the corpus and flips the pointer
-            # atomically, making it visible fleet-wide.
-            store.publish(corpus, os.path.join(get_cache_dir(), corpus))
+            # atomically, making it visible fleet-wide. The index lives outside
+            # the cache when IETF_LLM_INDEX_DIR is split off, so include it
+            # explicitly (G-2) — otherwise a reader replica has no index.
+            workspace = os.path.join(get_cache_dir(), corpus)
+            store.publish(
+                corpus,
+                workspace,
+                extra_files=_index_extra_files(corpus, workspace) or None,
+            )
             status["state"] = "done"
         else:
             status["state"] = "failed"
