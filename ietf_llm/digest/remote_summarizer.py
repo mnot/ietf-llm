@@ -75,6 +75,7 @@ class _OpenAICompatChatModel:
             self._headers,
             timeout=self._timeout,
             max_retries=self._max_retries,
+            auth_hint="IETF_LLM_SUMMARIZE_TOKEN / IETF_LLM_SUMMARIZE_HEADERS",
         )
         choices = body.get("choices") or []
         if not choices:

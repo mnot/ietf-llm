@@ -91,6 +91,13 @@ across hosts. A real fleet needs both:
 - **Control DB** — point `IETF_LLM_CONTROL_DB` at a SQLite-compatible cloud database over HTTP.
   **Cloudflare D1** ships today: `d1://<account_id>/<database_id>` plus the token in
   `IETF_LLM_CONTROL_DB_TOKEN`. (libSQL/Turso and others can plug in behind the same seam.)
+  Both locator segments are **IDs from the Cloudflare dashboard, not names**:
+  - `<account_id>` — the Account ID (a 32-char hex string), not the account name.
+  - `<database_id>` — the **Database ID**, a UUID like `0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d`
+    shown on the database's page. This is the common slip: it is **not** the database name you
+    chose when creating it. A name here is rejected at startup with a message saying so.
+  - `IETF_LLM_CONTROL_DB_TOKEN` — a Cloudflare **API token** (not the account's Global API Key)
+    scoped with D1 edit permission.
 - **Blob store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO. It needs the
   `s3` extra: `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the brackets). For a
   non-AWS endpoint set `IETF_LLM_BLOB_ENDPOINT_URL`; credentials come from the standard AWS

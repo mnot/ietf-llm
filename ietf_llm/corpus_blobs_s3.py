@@ -12,14 +12,39 @@ store-special features. See `docs/storage.md`.
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Tuple, cast
+from typing import Callable, List, Optional, Tuple, TypeVar, cast
 
 import boto3  # type: ignore[import-untyped]
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from botocore.exceptions import (  # type: ignore[import-untyped]
+    ClientError,
+    NoCredentialsError,
+)
 
 from .corpus_blobs import BlobStore, _safe_key
 
 _NOT_FOUND = ("404", "NoSuchKey", "NotFound")
+
+#: S3/R2 error codes that mean "your credentials are missing, wrong, or lack
+#: access", as opposed to a transient or not-found condition.
+_AUTH_CODES = frozenset(
+    {
+        "403",
+        "AccessDenied",
+        "InvalidAccessKeyId",
+        "SignatureDoesNotMatch",
+        "InvalidToken",
+        "ExpiredToken",
+        "AccountProblem",
+    }
+)
+
+_T = TypeVar("_T")
+
+
+class S3AuthError(RuntimeError):
+    """The object store rejected our credentials (missing, invalid, or lacking
+    access). Not retryable — the fix is a configuration change, so the message
+    names the AWS credential chain rather than surfacing a botocore traceback."""
 
 
 def _parse_locator(locator: str) -> Tuple[str, str]:
@@ -44,6 +69,29 @@ class S3BlobStore(BlobStore):
         endpoint = endpoint_url or os.environ.get("IETF_LLM_BLOB_ENDPOINT_URL") or None
         self._s3 = boto3.client("s3", endpoint_url=endpoint)
 
+    def _call(self, what: str, fn: Callable[[], _T]) -> _T:
+        """Run an S3 operation, translating a rejected-credentials failure into
+        a clear `S3AuthError`. Non-auth errors (including not-found) propagate
+        unchanged for the caller to handle."""
+        try:
+            return fn()
+        except NoCredentialsError as err:
+            raise S3AuthError(
+                f"no credentials available to {what} on s3://{self._bucket}: set "
+                "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or an instance role)."
+            ) from err
+        except ClientError as err:
+            code = str(err.response.get("Error", {}).get("Code", ""))
+            if code in _AUTH_CODES:
+                raise S3AuthError(
+                    f"the object store rejected the request to {what} on "
+                    f"s3://{self._bucket} ({code}): the credentials are missing, "
+                    "invalid, or lack access. Check AWS_ACCESS_KEY_ID / "
+                    "AWS_SECRET_ACCESS_KEY (or the instance role) and the "
+                    "bucket policy."
+                ) from err
+            raise
+
     def _key(self, key: str) -> str:
         safe = _safe_key(key)
         return f"{self._prefix}/{safe}" if self._prefix else safe
@@ -56,15 +104,26 @@ class S3BlobStore(BlobStore):
         return s3_key[len(head) :] if s3_key.startswith(head) else s3_key
 
     def put(self, key: str, data: bytes) -> None:
-        self._s3.put_object(Bucket=self._bucket, Key=self._key(key), Body=data)
+        self._call(
+            "write an object",
+            lambda: self._s3.put_object(
+                Bucket=self._bucket, Key=self._key(key), Body=data
+            ),
+        )
 
     def get(self, key: str) -> bytes:
-        obj = self._s3.get_object(Bucket=self._bucket, Key=self._key(key))
+        obj = self._call(
+            "read an object",
+            lambda: self._s3.get_object(Bucket=self._bucket, Key=self._key(key)),
+        )
         return cast(bytes, obj["Body"].read())
 
     def exists(self, key: str) -> bool:
         try:
-            self._s3.head_object(Bucket=self._bucket, Key=self._key(key))
+            self._call(
+                "stat an object",
+                lambda: self._s3.head_object(Bucket=self._bucket, Key=self._key(key)),
+            )
             return True
         except ClientError as err:
             if err.response.get("Error", {}).get("Code") in _NOT_FOUND:
@@ -72,14 +131,17 @@ class S3BlobStore(BlobStore):
             raise
 
     def list_prefix(self, prefix: str) -> List[str]:
-        keys: List[str] = []
-        paginator = self._s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket=self._bucket, Prefix=self._prefixed(prefix)
-        ):
-            for obj in page.get("Contents", []):
-                keys.append(self._strip(obj["Key"]))
-        return sorted(keys)
+        def _list() -> List[str]:
+            keys: List[str] = []
+            paginator = self._s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(
+                Bucket=self._bucket, Prefix=self._prefixed(prefix)
+            ):
+                for obj in page.get("Contents", []):
+                    keys.append(self._strip(obj["Key"]))
+            return sorted(keys)
+
+        return self._call("list objects", _list)
 
     def materialise_prefix(self, prefix: str, dest_dir: str) -> None:
         strip = prefix.rstrip("/") + "/"

@@ -23,6 +23,20 @@ import requests
 
 from .utils import LogLevel, Verbosity, log
 
+#: HTTP statuses that mean "your credentials are missing/invalid/insufficient",
+#: not "try again later": 401 Unauthorized, 403 Forbidden, 407 Proxy Auth.
+_AUTH_STATUSES = frozenset({401, 403, 407})
+
+
+class UpstreamAuthError(RuntimeError):
+    """An OpenAI-compatible upstream rejected our credentials (HTTP 401/403/407).
+
+    Distinct from a transient error: retrying will not help — the fix is a
+    configuration change (a missing or wrong token / gateway header). Carries a
+    message that names the environment variables to check, so the failure reads
+    as actionable guidance rather than a raw ``requests`` traceback.
+    """
+
 
 def env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
@@ -123,12 +137,19 @@ def post_json_with_retry(
     *,
     timeout: float,
     max_retries: int,
+    auth_hint: str = "",
 ) -> dict[str, Any]:
     """POST ``payload`` as JSON, retrying 429 / 5xx and connection errors.
 
     Retries up to ``max_retries`` times, honouring ``Retry-After`` and
     otherwise backing off exponentially with jitter. Returns the parsed
     JSON body; raises the last error once retries are exhausted.
+
+    A 401/403/407 is treated as a credential failure: it is **not** retried
+    (a wait will not fix a bad token) and is raised as ``UpstreamAuthError``
+    with a message that names ``auth_hint`` — the environment variable(s) the
+    caller reads its token / gateway headers from — so the operator gets
+    actionable guidance instead of a bare ``requests`` traceback.
     """
     max_retries = max(0, max_retries)
     attempt = 0
@@ -141,6 +162,8 @@ def post_json_with_retry(
             _sleep_backoff(attempt, None)
             attempt += 1
             continue
+        if resp.status_code in _AUTH_STATUSES:
+            raise UpstreamAuthError(_auth_error_message(url, resp, auth_hint))
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt >= max_retries:
                 resp.raise_for_status()
@@ -149,3 +172,14 @@ def post_json_with_retry(
             continue
         resp.raise_for_status()
         return cast(dict[str, Any], resp.json())
+
+
+def _auth_error_message(url: str, resp: requests.Response, auth_hint: str) -> str:
+    """A specific, actionable message for a rejected-credentials response."""
+    reason = (getattr(resp, "reason", "") or "").strip()
+    status = f"HTTP {resp.status_code}" + (f" {reason}" if reason else "")
+    check = f" Check {auth_hint}." if auth_hint else ""
+    return (
+        f"{url} rejected the request ({status}): the credentials are missing, "
+        f"invalid, or lack access.{check}"
+    )

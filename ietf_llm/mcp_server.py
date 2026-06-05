@@ -2254,7 +2254,15 @@ def main() -> None:
     # from the installed skill available to Codex / Gemini / Cursor /
     # Zed / opencode — one source of truth, no parallel maintenance.
     server_instructions = _load_server_instructions()
-    server = FastMCP("ietf-llm", instructions=server_instructions)
+    # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
+    # so any replica answers any request) and an optional Host/Origin allow-list
+    # for DNS-rebinding protection when the server is fronted directly (#41).
+    server = FastMCP(
+        "ietf-llm",
+        instructions=server_instructions,
+        stateless_http=_stateless_http_enabled(),
+        transport_security=_transport_security_settings(),
+    )
 
     @server.tool()
     async def list_corpora() -> str:
@@ -3091,9 +3099,11 @@ def main() -> None:
               id, or exact name) or `new_drafts=True` (rolling window).
             - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
-            One gather per corpus runs at a time (a second call while one
-            is in flight reports "already running"); different corpora run
-            in parallel.
+            One gather per corpus runs at a time — including across hosts on
+            a shared deployment, where another client may have started it. A
+            call while one is in flight reports "already running": poll
+            `gather_status(corpus=...)` to watch it, don't retry or pass
+            `force` to "unstick" it. Different corpora run in parallel.
 
             A corpus gathered within the freshness window (default 6h) is
             **not** re-gathered — the call returns a "fresh, skipped" note.
@@ -3126,7 +3136,10 @@ def main() -> None:
                 github_label: Include only issues with these labels.
                 exclude_github_label: Exclude issues with these labels.
                 force: Re-gather even if the corpus is within the freshness
-                    window. Use only on an explicit request for fresh data.
+                    window (and mint a near-duplicate custom corpus despite an
+                    overlap hint). Overrides the freshness debounce only — it
+                    never starts a second gather while one is running. Use only
+                    on an explicit request for fresh data.
             """
             return await _offload(
                 tool_start_gather,
@@ -3343,6 +3356,60 @@ def _resolve_bind() -> "Tuple[str, int]":
     return host, port
 
 
+def _csv_env(name: str) -> "List[str]":
+    """A comma-separated env var as a list of stripped, non-empty items."""
+    return [
+        item.strip() for item in os.environ.get(name, "").split(",") if item.strip()
+    ]
+
+
+def _stateless_http_enabled() -> bool:
+    """Whether the HTTP transport runs stateless (no per-client session).
+
+    Default **on**: a stateless server keeps no `Mcp-Session-Id` state between
+    requests, so any replica behind a load balancer can answer any request with
+    no session affinity — the right shape for this read-mostly server, and what
+    a horizontally-scaled deployment wants. Set `IETF_LLM_MCP_STATELESS=0`
+    (or false/no/off) to restore stateful sessions. stdio ignores this.
+    """
+    raw = os.environ.get("IETF_LLM_MCP_STATELESS", "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+def _transport_security_settings() -> "Any":
+    """DNS-rebinding (Host/Origin) protection settings for the HTTP transport.
+
+    Off by default: the server assumes a trust boundary (proxy / firewall) in
+    front and does no Host validation itself (#41). This is an **explicit**
+    disable, not an omission — the MCP library otherwise defaults to a
+    loopback-only allow-list (`127.0.0.1:*` / `localhost:*` / `[::1]:*`), which
+    silently answers a fronted public-hostname deployment with `421 Invalid Host
+    header`. Returning a settings object with protection off restores the
+    documented "bind wide behind a proxy" shape.
+
+    When `IETF_LLM_MCP_ALLOWED_HOSTS` is set, enable validation and accept only
+    those `Host` values — each an exact `host` / `host:port`, or a `host:*`
+    wildcard that matches any port. `IETF_LLM_MCP_ALLOWED_ORIGINS` likewise
+    restricts the `Origin` header (browser callers); unset means any origin.
+    This lets an operator front the server directly (no proxy enforcing Host)
+    without exposure to DNS-rebinding, which is otherwise the proxy's job.
+    """
+    from mcp.server.transport_security import (  # pylint: disable=import-outside-toplevel,import-error
+        TransportSecuritySettings,
+    )
+
+    allowed_hosts = _csv_env("IETF_LLM_MCP_ALLOWED_HOSTS")
+    if not allowed_hosts:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=_csv_env("IETF_LLM_MCP_ALLOWED_ORIGINS"),
+    )
+
+
 def _effective_embed_model() -> str:
     """The embedding model the serve/gather paths would actually use.
 
@@ -3412,9 +3479,11 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
     """The always-logged boot posture: what this process is actually doing."""
     model = _effective_embed_model()
     backend = "remote" if is_remote_embed_model(model) else "local"
+    allowed_hosts = _csv_env("IETF_LLM_MCP_ALLOWED_HOSTS")
     return {
         "transport": "http",
         "bind": f"{host}:{port}",
+        "stateless": "yes" if _stateless_http_enabled() else "no",
         "gather": "on" if _gather_enabled() else "off",
         "embed_backend": backend,
         "embed_model": model,
@@ -3422,6 +3491,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
         "index_dir": get_index_dir(),
         "index_immutable": "yes" if _index_immutable_enabled() else "no",
         "store_backend": service_config.store_backend(),
+        "host_allowlist": ",".join(allowed_hosts) if allowed_hosts else "off",
     }
 
 

@@ -7,8 +7,24 @@ env_float coercers.
 
 from __future__ import annotations
 
+import pytest
+
 from ietf_llm import oai_compat
 from ietf_llm.utils import Verbosity
+
+
+class _Resp:
+    def __init__(self, status, reason="", data=None):
+        self.status_code = status
+        self.reason = reason
+        self._data = data if data is not None else {"ok": True}
+        self.headers = {}
+
+    def json(self):
+        return self._data
+
+    def raise_for_status(self):
+        pass
 
 
 def test_parse_retry_after_delta_seconds():
@@ -46,6 +62,50 @@ def test_build_headers_bad_json_ignored():
 def test_build_headers_non_object_json_ignored():
     h = oai_compat.build_headers("", "[1, 2]", "IETF_LLM_X_HEADERS", Verbosity.QUIET)
     assert h == {}
+
+
+@pytest.mark.parametrize("status", [401, 403, 407])
+def test_auth_status_raises_actionable_error_without_retrying(monkeypatch, status):
+    calls = {"n": 0}
+
+    def fake(url, headers, json, timeout):
+        calls["n"] += 1
+        return _Resp(status, reason="Unauthorized")
+
+    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    with pytest.raises(oai_compat.UpstreamAuthError) as exc:
+        oai_compat.post_json_with_retry(
+            "https://host/v1/embeddings", {}, {},
+            timeout=5.0, max_retries=5, auth_hint="IETF_LLM_EMBED_TOKEN",
+        )
+    # Not retried (a bad token will not fix itself), and names the env var.
+    assert calls["n"] == 1
+    assert "IETF_LLM_EMBED_TOKEN" in str(exc.value)
+    assert str(status) in str(exc.value)
+
+
+def test_non_auth_4xx_still_raises_for_status(monkeypatch):
+    # A 400 is a request bug, not an auth failure: it must not be wrapped as
+    # UpstreamAuthError, and (since it is not 429/5xx) is not retried.
+    monkeypatch.setattr(
+        oai_compat.requests, "post",
+        lambda url, headers, json, timeout: _BadReq(),
+    )
+    with pytest.raises(Exception) as exc:
+        oai_compat.post_json_with_retry(
+            "https://host/v1/embeddings", {}, {}, timeout=5.0, max_retries=2,
+        )
+    assert not isinstance(exc.value, oai_compat.UpstreamAuthError)
+
+
+class _BadReq(_Resp):
+    def __init__(self):
+        super().__init__(400, reason="Bad Request")
+
+    def raise_for_status(self):
+        import requests
+
+        raise requests.HTTPError("400")
 
 
 def test_env_int_and_float(monkeypatch):
