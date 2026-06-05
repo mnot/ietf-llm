@@ -191,19 +191,51 @@ def _blocking_gather(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
     return release
 
 
-def test_second_corpus_queues_behind_the_first(
+def test_two_corpora_run_concurrently(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # One gather runs at a time per host: a second corpus is accepted but waits.
+    # The default cap (3) lets a host run several gathers at once, so a second
+    # client's gather does not wait behind the first.
+    both_running = threading.Event()
+    release = threading.Event()
+    started: set[str] = set()
+    lock = threading.Lock()
+
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+        progress("mailing list", 1, 1)
+        with lock:
+            started.add(argv[0])
+            if len(started) >= 2:
+                both_running.set()
+        release.wait(timeout=5.0)
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", blocking_run)
+    first = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    second = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
+    assert first["started"] and first["queued_behind"] == 0
+    # ahead=1 < cap, so quic starts at once (does not wait behind tls).
+    assert second["started"] and second["queued_behind"] == 0
+    try:
+        assert both_running.wait(timeout=3.0), "gathers did not run concurrently"
+    finally:
+        release.set()
+    _wait_terminal("tls")
+    _wait_terminal("quic")
+
+
+def test_queued_behind_reported_at_cap(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the cap at 1, the first gather fills it; the second is reported as
+    # waiting behind 1 (the arithmetic the tool turns into a "queued" message).
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", "1")
     release = _blocking_gather(monkeypatch)
     first = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
-    assert first["started"] is True and first["queued_behind"] == 0
     try:
         second = gather_runner.start(gather_runner.GatherSpec(corpus="quic"))
-        assert second["started"] is True
+        assert first["queued_behind"] == 0
         assert second["queued_behind"] == 1
-        # quic waits (queued) while the single worker is busy with tls.
-        assert gather_runner.read_status("quic")["state"] == "queued"
     finally:
         release.set()
     _wait_terminal("tls")

@@ -217,16 +217,21 @@ dropping to a shell:
 
 ### Gather concurrency
 
-Gathers are serialised to stay polite to shared upstreams (datatracker,
-mailarchive, GitHub), under two nested caps:
+Gathers run capped to a few at once, to stay polite to shared upstreams
+(datatracker, mailarchive, GitHub) without making a second client wait behind
+the first. `IETF_LLM_GATHER_MAX_INFLIGHT` (default `3`) sets the cap two ways:
 
-- **Per host:** a single worker runs **one gather at a time**; further requests
-  queue (FIFO). `IETF_LLM_GATHER_QUEUE_MAX` bounds the backlog (default `16`);
-  past it, `start_gather` is refused rather than piling up unbounded work.
-- **Fleet-wide:** at most `IETF_LLM_GATHER_MAX_INFLIGHT` gathers run across the
-  whole deployment at once (default `1` — one gather anywhere at a time). The
-  cap is a global slot in the control plane, so it only applies on the **cloud
-  backend**; on the local backend the per-host worker is the only bound.
+- **Per host:** a pool of that many workers, so a single host runs up to N
+  gathers at once; beyond that, requests queue (FIFO).
+  `IETF_LLM_GATHER_QUEUE_MAX` bounds the backlog (default `16`); past it,
+  `start_gather` is refused rather than piling up unbounded work.
+- **Fleet-wide:** each running gather holds one of N per-job slots in the
+  control plane, so the whole deployment runs at most N at once — a single host
+  can use all N, a multi-host fleet shares them. The slot only applies on the
+  **cloud backend**; on the local backend the per-host worker pool is the bound.
+
+Set it to `1` for strictly serial gathering, or higher for more throughput at
+the cost of more concurrent upstream load.
 
 A request for a corpus already in flight (here or on another host) reports
 *already running*; a request for a different corpus when no slot is free is

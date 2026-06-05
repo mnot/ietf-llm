@@ -38,9 +38,10 @@ Two ways to gather, depending on what's available:
 **A gather in flight — or `queued` behind one — is a `gather_status`
 thing, not a retry thing.** Only one gather per corpus runs at a time,
 and on a shared server that one may have been started by another client
-or host. Gathers are also **serialised to stay polite to datatracker**:
-one at a time per host, and a small cap across the whole deployment — so a
-*different* corpus you ask for may report **`queued`** until a slot frees.
+or host. Gathers also run **capped to a few at once to stay polite to
+datatracker** (per host, and across the whole deployment) — so when that
+cap is reached, a *different* corpus you ask for may report **`queued`**
+until a slot frees.
 In every one of these cases — *already running*, *queued* — the move is
 the same: **poll `gather_status(corpus="<name>")`** until it reports
 `done`; do **not** re-issue `start_gather` or add `force=True` to "unstick"

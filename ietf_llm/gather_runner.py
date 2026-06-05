@@ -9,19 +9,23 @@ per-corpus status record (`~/.cache/ietf-llm/<corpus>/gather-status.json` and,
 on the cloud backend, the control plane) that the `gather_status` tool reads
 back.
 
-Concurrency model — two nested caps that keep the gather pipeline polite to
-shared upstreams (datatracker, mailarchive, GitHub):
+Concurrency model — `N = service_config.gather_max_inflight()` (default 3) caps
+gather concurrency two ways, keeping the pipeline polite to shared upstreams
+(datatracker, mailarchive, GitHub) while letting a second client's gather start
+without waiting behind the first:
 
-- **Per host:** a single worker drains a bounded FIFO queue, so each host runs
-  ONE gather at a time; further requests queue (an in-process registry answers
-  "already running / queued here?" and bounds the backlog).
-- **Fleet-wide:** the worker holds one of `service_config.gather_max_inflight()`
-  global slots in the control plane while running, so the whole deployment runs
-  at most that many gathers at once (default 1). On the local backend the slot
-  is a no-op grant — the single worker is the only bound.
+- **Per host:** a pool of N workers drains a bounded FIFO queue, so a host runs
+  up to N gathers at once; beyond that, requests queue (an in-process registry
+  answers "already running / queued here?" and bounds the backlog).
+- **Fleet-wide:** each running gather holds one of N per-job global slots in the
+  control plane, so the whole deployment runs at most N at once — a single host
+  can use all N, a multi-host fleet shares them. On the local backend the slot
+  is a no-op grant, so only the per-host pool applies.
 
-The per-corpus lease (cloud backend) is taken at *enqueue*, so it dedupes the
-same corpus across hosts and anchors the `queued`/`running` record's liveness.
+The gather pipeline is safe to run concurrently per corpus (HTTP egress metrics
+are thread-local, and each corpus has its own cache dir). The per-corpus lease
+(cloud backend) is taken at *enqueue*, so it dedupes the same corpus across
+hosts and anchors the `queued`/`running` record's liveness.
 """
 
 from __future__ import annotations
@@ -76,16 +80,17 @@ _DEFAULT_QUEUE_MAX = 16
 _VALID_CORPUS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MAX_CORPUS_LEN = 128
 
-# This host runs ONE gather at a time (the per-host cap): a single worker thread
-# drains a FIFO queue, and holds a global slot in the control plane while running
-# (the fleet-wide cap). `_jobs` maps corpus -> state ("queued" | "running") for
-# in-process dedup, queue-bound enforcement, and local-backend liveness.
+# This host runs up to N gathers at once (the per-host cap, N =
+# service_config.gather_max_inflight()): a pool of N worker threads drains a
+# shared FIFO queue, and each running gather holds a per-job global slot in the
+# control plane (the fleet-wide cap — N slots total, so the whole deployment
+# never exceeds N either). `_jobs` maps corpus -> state ("queued" | "running")
+# for in-process dedup, queue-bound enforcement, and local-backend liveness.
 _queue: "queue.Queue[GatherSpec]" = queue.Queue()
 _jobs: Dict[str, str] = {}
 _registry_lock = threading.Lock()
-#: The single worker thread, held in a dict so it can be (re)started without a
-#: module-level `global` rebind.
-_worker_state: Dict[str, Optional[threading.Thread]] = {"thread": None}
+#: The worker pool, mutated in place so it needs no module-level `global` rebind.
+_workers: "List[threading.Thread]" = []
 _heartbeat_stop = threading.Event()
 
 
@@ -355,7 +360,12 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     with _registry_lock:
         _queue.put(spec)
         _ensure_worker(owner)
-    return {"started": True, "queued_behind": ahead, "corpus": corpus}
+    # How many gathers this one actually waits behind: with N running
+    # concurrently, a free slot exists until `ahead` reaches N, so anything under
+    # that starts at once (wait 0). Reported so the tool can say "started" vs
+    # "queued behind k" truthfully.
+    wait_for = max(0, ahead - service_config.gather_max_inflight() + 1)
+    return {"started": True, "queued_behind": wait_for, "corpus": corpus}
 
 
 def _new_status(spec: GatherSpec, state: str) -> Dict[str, Any]:
@@ -410,18 +420,33 @@ def _store() -> Any:
     return corpus_store.get_corpus_store()
 
 
+def _slot_owner(owner: str, corpus: str) -> str:
+    """The fleet-slot key for one gather. Per-*job* (process owner + corpus), not
+    per-process, so N concurrent gathers on one host hold N distinct slots and
+    the fleet cap is counted correctly. A host gathers a given corpus at most
+    once at a time (deduped), so this is unique per concurrent gather."""
+    return f"{owner}:{corpus}"
+
+
 def _ensure_worker(owner: str) -> None:
-    """Lazily start the single gather worker and the lease/slot heartbeat.
-    Caller holds `_registry_lock`. Both are daemons that live for the process."""
-    existing = _worker_state["thread"]
-    if existing is not None and existing.is_alive():
+    """Ensure the gather worker pool is at least `gather_max_inflight()` strong,
+    and a lease/slot heartbeat is running. Caller holds `_registry_lock`. All are
+    daemons that live for the process. Grow-only: it never shrinks the pool (you
+    cannot un-start a thread), so in steady state — a fixed N — it grows once and
+    returns early thereafter; the fleet slot is the authoritative concurrency
+    cap, the pool just needs to be big enough not to be the bottleneck."""
+    alive = [w for w in _workers if w.is_alive()]
+    target = max(1, service_config.gather_max_inflight())
+    if len(alive) >= target:
         return
     _heartbeat_stop.clear()
-    worker = threading.Thread(
-        target=_worker_loop, args=(owner,), name="gather-worker", daemon=True
-    )
-    _worker_state["thread"] = worker
-    worker.start()
+    _workers[:] = alive
+    for i in range(len(alive), target):
+        worker = threading.Thread(
+            target=_worker_loop, args=(owner,), name=f"gather-worker-{i}", daemon=True
+        )
+        _workers.append(worker)
+        worker.start()
     threading.Thread(
         target=_heartbeat_loop,
         args=(owner, _heartbeat_stop),
@@ -431,27 +456,27 @@ def _ensure_worker(owner: str) -> None:
 
 
 def _heartbeat_loop(owner: str, stop: threading.Event) -> None:
-    """Renew every lease this host holds (queued + running jobs) and the active
-    gather slot, comfortably within the TTL, so a long gather — or a long wait
+    """Renew every lease this host holds (queued + running jobs) and each running
+    gather's slot, comfortably within the TTL, so a long gather — or a long wait
     for a fleet slot — cannot let the lease/slot lapse. No-ops on the local
     backend. Lives for the process (daemon); `stop` is a test seam."""
     while not stop.wait(_LEASE_HEARTBEAT_S):
         with _registry_lock:
-            corpora = list(_jobs.keys())
-            running = any(state == "running" for state in _jobs.values())
-        if not corpora:
+            items = list(_jobs.items())
+        if not items:
             continue
         store = _store()
-        for corpus in corpora:
+        for corpus, state in items:
             store.renew_lease(corpus, owner, _LEASE_TTL)
-        if running:
-            store.renew_gather_slot(owner, _LEASE_TTL)
+            if state == "running":
+                store.renew_gather_slot(_slot_owner(owner, corpus), _LEASE_TTL)
 
 
 def _worker_loop(owner: str) -> None:
-    """Drain the gather queue one job at a time (the per-host cap of 1). Each
-    job already holds its per-corpus lease (taken at enqueue); the worker waits
-    for a global slot, runs the pipeline, then releases slot and lease."""
+    """One worker of the pool: take the next queued job and run it (so up to N
+    workers run N gathers at once). Each job already holds its per-corpus lease
+    (taken at enqueue); the worker waits for a fleet slot, runs the pipeline,
+    then releases slot and lease."""
     while True:
         spec = _queue.get()
         corpus = spec.corpus
@@ -485,13 +510,14 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
 
     corpus = spec.corpus
+    slot_owner = _slot_owner(owner, corpus)
     status = _new_status(spec, "queued")
     # Wait for one of the fleet-wide gather slots. While queued, the heartbeat
     # renews the lease; re-publishing `queued` keeps `updated` fresh so a stale
     # record is distinguishable. On shutdown, bail without a terminal status —
     # the released lease lets liveness relabel the record `interrupted`.
     max_inflight = service_config.gather_max_inflight()
-    while not store.acquire_gather_slot(owner, corpus, _LEASE_TTL, max_inflight):
+    while not store.acquire_gather_slot(slot_owner, corpus, _LEASE_TTL, max_inflight):
         if _heartbeat_stop.is_set():
             return
         _write_status(store, status)
@@ -539,7 +565,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             status["finished"] = _now_iso()
             _write_status(store, status)
     finally:
-        store.release_gather_slot(owner)
+        store.release_gather_slot(slot_owner)
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:

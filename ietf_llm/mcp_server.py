@@ -2158,9 +2158,10 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
         ahead = result["queued_behind"]
         return (
             f"Queued '{corpus}' for gathering ({ahead} gather"
-            f"{'s' if ahead != 1 else ''} ahead of it). One gather runs at a "
-            "time per host, and the deployment caps how many run at once, so it "
-            f'starts when a slot frees. Poll `gather_status(corpus="{corpus}")`.'
+            f"{'s' if ahead != 1 else ''} ahead of it). Gathers are capped to a "
+            "few at once (per host and across the deployment) to stay polite to "
+            f"upstreams, so it starts when a slot frees. Poll "
+            f'`gather_status(corpus="{corpus}")`.'
         )
     return (
         f"Started gathering '{corpus}' in the background (this can take "
@@ -2195,7 +2196,7 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
     state = status.get("state", "?")
     parts = [f"**{corpus}** — {state}"]
     if state == "queued":
-        parts.append("waiting for a gather slot (one runs at a time per host)")
+        parts.append("waiting for a gather slot (gathers are capped to a few at once)")
     if state == "running":
         idx = status.get("stage_index") or 0
         total = status.get("stage_total")
@@ -3123,10 +3124,10 @@ def main() -> None:
             shared deployment, where another client may have started it. A call
             while that corpus is in flight reports "already running": poll
             `gather_status(corpus=...)` to watch it, don't retry or pass `force`
-            to "unstick" it. A *different* corpus is accepted but may report
-            "queued": gathers are serialised (one per host, and a small cap
-            across the whole deployment, to stay polite to datatracker), so it
-            starts when a slot frees — again, poll rather than retry.
+            to "unstick" it. A *different* corpus runs concurrently up to a small
+            cap (a few at once, per host and across the deployment, to stay
+            polite to datatracker); beyond that it reports "queued" and starts
+            when a slot frees — again, poll rather than retry.
 
             A corpus gathered within the freshness window (default 6h) is
             **not** re-gathered — the call returns a "fresh, skipped" note.

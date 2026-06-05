@@ -57,7 +57,7 @@ def test_path_keys_resolve_env_then_global_then_none(
 
 
 def test_gather_max_inflight_default(isolated_home: Path) -> None:
-    assert service_config.gather_max_inflight() == 1
+    assert service_config.gather_max_inflight() == 3
 
 
 def test_gather_max_inflight_from_env(
@@ -72,9 +72,9 @@ def test_gather_max_inflight_invalid_falls_back(
 ) -> None:
     for bad in ("0", "-2", "nope"):
         monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", bad)
-        assert service_config.gather_max_inflight() == 1
+        assert service_config.gather_max_inflight() == 3
 
 
 def test_gather_max_inflight_from_global_config(isolated_home: Path) -> None:
-    config.save_global({"gather_max_inflight": "3"})
-    assert service_config.gather_max_inflight() == 3
+    config.save_global({"gather_max_inflight": "5"})
+    assert service_config.gather_max_inflight() == 5

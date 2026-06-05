@@ -40,9 +40,10 @@ GATHER_MAX_INFLIGHT: Tuple[str, str] = (
 #: Default seconds to cache a current-version lookup on the cloud backend.
 _DEFAULT_RESOLVE_TTL = 10.0
 
-#: Default fleet-wide gather concurrency cap (one gather across the deployment
-#: at a time — maximally polite to shared upstreams; raise for more throughput).
-_DEFAULT_GATHER_MAX_INFLIGHT = 1
+#: Default max concurrent gathers (per host and fleet-wide). Small enough to
+#: stay polite to shared upstreams, but >1 so a second client's gather does not
+#: wait behind the first. Raise for more throughput, set 1 for strict serial.
+_DEFAULT_GATHER_MAX_INFLIGHT = 3
 
 
 def _resolve(key: Tuple[str, str], default: Optional[str]) -> Optional[str]:
@@ -105,11 +106,12 @@ def resolve_ttl() -> float:
 
 
 def gather_max_inflight() -> int:
-    """Maximum gathers running concurrently across the whole deployment (the
-    fleet-wide concurrency cap; default 1). Bounds aggregate load on shared
-    upstreams (datatracker, mailarchive, GitHub) — one gather fleet-wide at a
-    time by default. Only meaningful on the cloud backend, where the slot lives
-    in the control plane; on the local backend the per-host worker is the bound.
+    """Maximum gathers running concurrently (default 3). It bounds both the
+    per-host worker pool and the fleet-wide slot count, so a single host runs up
+    to this many at once and the whole deployment never exceeds it either. Keeps
+    aggregate load on shared upstreams (datatracker, mailarchive, GitHub)
+    bounded while letting a second client's gather start without waiting. On the
+    local backend only the per-host pool applies (no control-plane slots).
     Invalid or sub-1 values fall back to the default."""
     raw = _resolve(GATHER_MAX_INFLIGHT, None)
     if raw is None:

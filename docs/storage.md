@@ -77,7 +77,7 @@ version onto local scratch to serve reads. How it works is in
 | `IETF_LLM_BLOB_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | s3 |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 | `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
-| `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently across the whole deployment (default `1`) | — |
+| `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently — per host and fleet-wide (default `3`) | — |
 
 The non-secret knobs may instead go in the global `config.json` (`store_backend`, `control_db`,
 `blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. Secrets
