@@ -42,6 +42,12 @@ class D1Error(RuntimeError):
     """A D1 HTTP call failed (transport error, or a `success: false` body)."""
 
 
+class D1AuthError(D1Error):
+    """Cloudflare rejected the D1 API token (HTTP 401/403). Not retryable — the
+    fix is a configuration change (a missing, wrong, or under-scoped token), so
+    the message names the env var to check rather than surfacing a traceback."""
+
+
 def _rows(data: Any) -> List[Row]:
     """Extract array-rows from a D1 `/raw` response. `/raw` returns each result's
     rows as arrays; tolerate both the `{columns, rows}` object form and a bare
@@ -87,6 +93,12 @@ class D1Executor(SqlExecutor):
             headers={"Authorization": f"Bearer {self._token}"},
             timeout=_TIMEOUT,
         )
+        if resp.status_code in (401, 403):
+            raise D1AuthError(
+                f"Cloudflare rejected the D1 API token (HTTP {resp.status_code} "
+                f"{(resp.reason or '').strip()}): it is missing, wrong, or lacks "
+                f"D1 edit access for this database. Check IETF_LLM_CONTROL_DB_TOKEN."
+            )
         resp.raise_for_status()
         data = resp.json()
         if not data.get("success", False):

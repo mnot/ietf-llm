@@ -179,6 +179,7 @@ class _OpenAICompatEmbeddingModel:
                 self._headers,
                 timeout=self._timeout,
                 max_retries=self._max_retries,
+                auth_hint="IETF_LLM_EMBED_TOKEN / IETF_LLM_EMBED_HEADERS",
             )
             errored = False
         finally:

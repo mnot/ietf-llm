@@ -7,9 +7,10 @@ from typing import Iterator
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError, NoCredentialsError
 from moto import mock_aws
 
-from ietf_llm.corpus_blobs_s3 import S3BlobStore
+from ietf_llm.corpus_blobs_s3 import S3AuthError, S3BlobStore
 
 
 @pytest.fixture
@@ -66,3 +67,32 @@ def test_unsafe_key_rejected(s3_bucket: None) -> None:
 def test_invalid_locator() -> None:
     with pytest.raises(ValueError):
         S3BlobStore("not-s3://x")
+
+
+class _DenyClient:
+    """A stub S3 client that rejects credentials, to exercise the auth guard."""
+
+    def put_object(self, **_kw: object) -> None:
+        raise ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "PutObject"
+        )
+
+    def get_object(self, **_kw: object) -> None:
+        raise NoCredentialsError()
+
+
+def test_access_denied_raises_actionable_auth_error(s3_bucket: None) -> None:
+    store = S3BlobStore("s3://test-bucket/base")
+    store._s3 = _DenyClient()  # type: ignore[assignment]
+    with pytest.raises(S3AuthError) as exc:
+        store.put("k.md", b"x")
+    assert "AccessDenied" in str(exc.value)
+    assert "AWS_ACCESS_KEY_ID" in str(exc.value)
+
+
+def test_missing_credentials_raises_actionable_auth_error(s3_bucket: None) -> None:
+    store = S3BlobStore("s3://test-bucket/base")
+    store._s3 = _DenyClient()  # type: ignore[assignment]
+    with pytest.raises(S3AuthError) as exc:
+        store.get("k.md")
+    assert "AWS_ACCESS_KEY_ID" in str(exc.value)
