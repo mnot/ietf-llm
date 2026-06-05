@@ -21,8 +21,32 @@ def test_csv_env_splits_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_transport_security_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unset must EXPLICITLY disable protection, overriding the MCP library's
+    # loopback-only default (which 421s a fronted public-hostname deployment).
     monkeypatch.delenv("IETF_LLM_MCP_ALLOWED_HOSTS", raising=False)
-    assert mcp_server._transport_security_settings() is None
+    settings = mcp_server._transport_security_settings()
+    assert settings is not None
+    assert settings.enable_dns_rebinding_protection is False
+
+
+def test_any_host_accepted_when_unset_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With no allow-list, an arbitrary Host (what a proxy may forward) must not
+    # be rejected — the regression this guards against is a silent 421.
+    monkeypatch.delenv("IETF_LLM_MCP_ALLOWED_HOSTS", raising=False)
+    server = FastMCP(
+        "ietf-llm", instructions="x",
+        transport_security=mcp_server._transport_security_settings(),
+    )
+    headers = {"Accept": "application/json, text/event-stream",
+               "Content-Type": "application/json"}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    with TestClient(server.streamable_http_app()) as client:
+        resp = client.post(
+            "/mcp", json=body, headers={**headers, "Host": "public.example.org"}
+        )
+    assert resp.status_code != 421
 
 
 def test_transport_security_on_when_hosts_set(monkeypatch: pytest.MonkeyPatch) -> None:

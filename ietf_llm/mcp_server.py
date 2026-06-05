@@ -2257,14 +2257,12 @@ def main() -> None:
     # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
     # so any replica answers any request) and an optional Host/Origin allow-list
     # for DNS-rebinding protection when the server is fronted directly (#41).
-    fastmcp_kwargs: "Dict[str, Any]" = {
-        "instructions": server_instructions,
-        "stateless_http": _stateless_http_enabled(),
-    }
-    transport_security = _transport_security_settings()
-    if transport_security is not None:
-        fastmcp_kwargs["transport_security"] = transport_security
-    server = FastMCP("ietf-llm", **fastmcp_kwargs)
+    server = FastMCP(
+        "ietf-llm",
+        instructions=server_instructions,
+        stateless_http=_stateless_http_enabled(),
+        transport_security=_transport_security_settings(),
+    )
 
     @server.tool()
     async def list_corpora() -> str:
@@ -3380,24 +3378,31 @@ def _stateless_http_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _transport_security_settings() -> "Optional[Any]":
-    """DNS-rebinding (Host/Origin) protection for the HTTP transport, or None.
+def _transport_security_settings() -> "Any":
+    """DNS-rebinding (Host/Origin) protection settings for the HTTP transport.
 
-    Off by default (today's behaviour: the server assumes a trust boundary in
-    front, #41). When `IETF_LLM_MCP_ALLOWED_HOSTS` is set, enable validation and
-    accept only those `Host` values — each an exact `host` / `host:port`, or a
-    `host:*` wildcard that matches any port. `IETF_LLM_MCP_ALLOWED_ORIGINS`
-    likewise restricts the `Origin` header (browser callers); unset means any
-    origin. This lets an operator front the server directly (no proxy enforcing
-    Host) without exposure to DNS-rebinding, which is otherwise the proxy's job.
+    Off by default: the server assumes a trust boundary (proxy / firewall) in
+    front and does no Host validation itself (#41). This is an **explicit**
+    disable, not an omission — the MCP library otherwise defaults to a
+    loopback-only allow-list (`127.0.0.1:*` / `localhost:*` / `[::1]:*`), which
+    silently answers a fronted public-hostname deployment with `421 Invalid Host
+    header`. Returning a settings object with protection off restores the
+    documented "bind wide behind a proxy" shape.
+
+    When `IETF_LLM_MCP_ALLOWED_HOSTS` is set, enable validation and accept only
+    those `Host` values — each an exact `host` / `host:port`, or a `host:*`
+    wildcard that matches any port. `IETF_LLM_MCP_ALLOWED_ORIGINS` likewise
+    restricts the `Origin` header (browser callers); unset means any origin.
+    This lets an operator front the server directly (no proxy enforcing Host)
+    without exposure to DNS-rebinding, which is otherwise the proxy's job.
     """
-    allowed_hosts = _csv_env("IETF_LLM_MCP_ALLOWED_HOSTS")
-    if not allowed_hosts:
-        return None
     from mcp.server.transport_security import (  # pylint: disable=import-outside-toplevel,import-error
         TransportSecuritySettings,
     )
 
+    allowed_hosts = _csv_env("IETF_LLM_MCP_ALLOWED_HOSTS")
+    if not allowed_hosts:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=allowed_hosts,
