@@ -64,105 +64,52 @@ rewrites it in place.
 
 ## Corpus store backend (local vs cloud)
 
-By default ietf-llm reads and writes the cache directly — the **local** corpus store, where the
-live `<cache>/<corpus>` tree is the one and only version. The CLI and a single-box server use this
-and need none of the rest of this section.
+By default ietf-llm reads and writes the cache directly — the **local** store, where the live
+`<cache>/<corpus>` tree is the only version. The CLI and a single-box server use this and can skip the
+rest of this section.
 
-For a replicated, ephemeral deployment (many serving containers, gather driven by cron *and* by the
-in-session MCP tools), set `IETF_LLM_STORE_BACKEND=cloud`. The cloud store keeps durable state in
-two places — a transactional **control plane** (per-corpus version pointer, manifests, gather
-leases) and an immutable **blob store** (the versioned `files/` + `embeddings.db`) — and
-materialises the current version onto local scratch to serve reads. A gather publishes a new
-immutable version and flips the pointer in one transaction, so every replica sees the old version or
-the new (never a torn one), and a cross-host lease keeps a cron gather and an in-session gather from
-clobbering each other.
+Set `IETF_LLM_STORE_BACKEND=cloud` for a replicated, ephemeral deployment (many serving containers;
+gather driven by cron *and* by the in-session MCP tools). The cloud store keeps durable state in a
+**control plane** (a small SQL database of version pointers, manifests, and gather leases) and a
+**blob store** (the immutable, versioned `files/` + `embeddings.db`), materialising the current
+version onto local scratch to serve reads. How it works is in
+[architecture.md](architecture.md); what to set is here.
 
 | Variable | What | Required |
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
-| `IETF_LLM_CONTROL_DB` | control-plane locator: a filesystem path → local SQLite. A cloud database-API adapter (e.g. Cloudflare D1) plugs into the same SQL seam | cloud |
-| `IETF_LLM_BLOB_DIR` | blob-store locator: a directory path → `file://` (bundled), or `s3://bucket/prefix` → S3-compatible (needs `[s3]`) | cloud |
-| `IETF_LLM_BLOB_ENDPOINT_URL` | S3 endpoint URL for a non-AWS service (R2, MinIO); unset = AWS | s3 only |
+| `IETF_LLM_CONTROL_DB` | control-plane locator — a filesystem path (SQLite) or `d1://<account>/<database>` (Cloudflare D1) | cloud |
+| `IETF_LLM_CONTROL_DB_TOKEN` | API token for a `d1://` control DB (**secret**) | d1 |
+| `IETF_LLM_BLOB_DIR` | blob-store locator — a directory path (`file://`) or `s3://bucket/prefix` (needs `[s3]`) | cloud |
+| `IETF_LLM_BLOB_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | s3 |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
-| `IETF_LLM_RESOLVE_TTL` | seconds a replica caches a corpus's current-version lookup; `0` disables (default `10`) | — |
+| `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
 
-These non-secret knobs may instead be set in the global `config.json` (`store_backend`,
-`control_db`, `blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. Any secret (an
-object-store key, a database password) comes from the environment only and is never read from the
-config file.
-
-**Resolving the current version.** Every read first resolves the corpus's current version through
-the control plane, so a replica caches that lookup for `IETF_LLM_RESOLVE_TTL` seconds (default 10) to
-coalesce a burst of reads into one control-plane call. Versions are immutable and the pointer moves only
-on publish, so a stale hit just serves a valid older version for at most the TTL; the replica that
-publishes refreshes its own cache immediately, and others pick up a new version within the TTL. Set
-`0` to resolve on every read (immediate cross-replica visibility, more control-plane calls).
-
-**Choosing a control-plane backend.** `IETF_LLM_CONTROL_DB` selects the transactional control plane
-(version pointer, manifests, gather leases), reached through a pluggable **SQL executor** seam — the
-control-plane logic is identical across backends (the lease is a single conditional `RETURNING`
-upsert, and publish is one atomic two-statement batch — one round trip, no interactive transaction),
-so a stateless cloud database over HTTP behaves exactly like a local file.
-
-- A **filesystem path** (e.g. `/var/lib/ietf-llm/control.db`) selects the bundled **SQLite** backend.
-  You provide the path; the directory, the database file, and the schema are all created on first use
-  — nothing to migrate by hand. Being SQLite it must sit on a **local POSIX filesystem** (never
-  NFS/SMB or an object-store FUSE mount, where SQLite's locking is unreliable), and it coordinates any
-  number of *processes on one host* but **not writers across hosts**. So the SQLite backend fits a
-  **single host** (the serve process(es) and the cron gather sharing one local file) or development.
-- For **multiple hosts**, point it at a **SQLite-compatible cloud database reached over its HTTP
-  API**, via that backend's adapter. That is the configuration in which the cross-host behaviour
-  described above (every replica resolving the same pointer; one lease shared between a cron gather
-  and the serve fleet) actually holds. **Cloudflare D1** ships today: set
-  `IETF_LLM_CONTROL_DB=d1://<account_id>/<database_id>` and the API token in
-  `IETF_LLM_CONTROL_DB_TOKEN` (a **secret** — environment only, never `config.json`). The D1 adapter
-  uses only D1's HTTP API (no Workers binding), runs the lease as one `/raw` call and publish as one
-  atomic D1 `batch`, and pulls no extra dependency. Other SQLite-compatible cloud databases (e.g.
-  libSQL/Turso) plug in as additional adapters behind the same seam.
-
-**Choosing a blob backend.** `IETF_LLM_BLOB_DIR` selects the immutable blob store (the versioned
-`files/` + `embeddings.db`):
-
-- A **directory path** selects the bundled `file://` backend — fine for development or a shared
-  volume (whole-object writes + atomic rename), but not for a multi-host fleet.
-- An **`s3://bucket/prefix`** locator selects the S3-compatible backend (`pip install ietf-llm[s3]`),
-  which works against AWS S3, Cloudflare R2, or MinIO. For a non-AWS endpoint set
-  `IETF_LLM_BLOB_ENDPOINT_URL` (e.g. the R2 `https://<account>.r2.cloudflarestorage.com`).
-  Credentials come from the standard AWS environment / instance-role chain
-  (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) — **secret**, environment only. It uses only
-  whole-object GET/PUT/HEAD/LIST.
-
-A real cloud fleet needs the object-store blob backend *and* a cloud control plane — `file://` blobs
-or a local SQLite control DB each pin you to a single host.
-
-In every case the program is the storage *client* (no FUSE mounts), and the object store needs no
-special features because all atomicity lives in the control-plane pointer. The HTTP serve path
-validates these knobs at boot and refuses to start if `cloud` is selected but under-configured (see
+The non-secret knobs may instead go in the global `config.json` (`store_backend`, `control_db`,
+`blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. Secrets
+(`IETF_LLM_CONTROL_DB_TOKEN`, object-store keys) are environment-only. The HTTP serve path validates
+all of this at boot and refuses to start if `cloud` is under-configured (see
 [mcp-server.md](mcp-server.md)).
 
-## Scratch sizing, reaping, and the tmpfs trap
+**Single host vs fleet.** A `file://` blob dir or a SQLite control DB each pin you to one host —
+SQLite must be on a local POSIX filesystem (never NFS/SMB), coordinating processes on one box, not
+across hosts. A real fleet needs both:
 
-A cloud replica materialises the **whole** current version of each corpus it serves — the `files/`
-tree plus `embeddings.db` — into `IETF_LLM_SCRATCH_DIR`, and keeps it to serve later reads without
-re-fetching. Size scratch for roughly `Σ(actively-read corpora) × version-size × ~2`, where the `~2`
-is the switch window: just after a gather publishes, a replica briefly holds both the version its
-in-flight requests pinned and the new one it is materialising.
+- **Control DB** — point `IETF_LLM_CONTROL_DB` at a SQLite-compatible cloud database over HTTP.
+  **Cloudflare D1** ships today: `d1://<account_id>/<database_id>` plus the token in
+  `IETF_LLM_CONTROL_DB_TOKEN`. (libSQL/Turso and others can plug in behind the same seam.)
+- **Blob store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO; for a non-AWS
+  endpoint set `IETF_LLM_BLOB_ENDPOINT_URL`. Credentials come from the standard AWS
+  environment / instance-role chain.
 
-The replica reaps superseded versions on its own: when it materialises a new version of a corpus it
-deletes that corpus's older version dirs, keeping the current version, any version an in-flight
-request is still reading, and the one cached for imminent reads (`IETF_LLM_RESOLVE_TTL`). Reaping is
-per-replica and non-destructive — blobs are immutable and retained, so a reaped version
-re-materialises on demand if read again — so steady-state scratch stays bounded at the in-use
-versions per corpus, not one copy per gather.
+**Current-version cache.** A new version is visible to a replica within `IETF_LLM_RESOLVE_TTL`
+seconds of a publish (the publishing replica sees it at once). Raise it to cut control-plane calls,
+or set `0` for instant cross-replica visibility.
 
-**tmpfs is RAM.** Putting `IETF_LLM_SCRATCH_DIR` on tmpfs (`/dev/shm`) makes the materialised index
-fast, but every byte of scratch is then **memory** — size the pod for it, including the `~2×` switch
-window. The publish/materialise paths also move blobs whole-object, so peak heap during a publish or
-a cold first read is about the single largest file (usually `embeddings.db`), on top of scratch.
-
-Orphaned **blobs** are not reaped: a killed publish, and every superseded version, leaves bytes in
-the blob store. That is durable-cost growth, not a crash — drive it with a bucket lifecycle rule
-(retain the current version plus a grace window) on the object store.
+**Scratch.** A replica materialises whole versions into `IETF_LLM_SCRATCH_DIR` and reaps superseded
+ones automatically, so size it for roughly 2× the versions you actively read per corpus. **On tmpfs,
+scratch is RAM** — size the pod accordingly. Orphaned *blobs* are not reaped; set a bucket lifecycle
+rule (retain the current version plus a grace window) to cap object-store cost.
 
 ## Notes
 
