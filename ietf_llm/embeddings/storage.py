@@ -46,7 +46,23 @@ def _clean_title(title: str) -> str:
 def _db_path(wg: str) -> str:
     # The index root defaults to the cache root but can be pointed at fast
     # / RAM-backed storage (tmpfs) via IETF_LLM_INDEX_DIR; see get_index_dir.
+    # This is the *write* path (build_index); reads go through _db_path_ro.
     return os.path.join(get_index_dir(), wg, "embeddings.db")
+
+
+def _db_path_ro(wg: str) -> str:
+    """The index DB path for a *read*, resolved through the corpus store so a
+    cloud reader replica serves the current version's `embeddings.db`
+    (materialised onto local scratch) instead of an empty local index dir. The
+    local backend returns `<index_root>/<wg>`, so local reads are unchanged."""
+    from ..corpus_store import (  # pylint: disable=import-outside-toplevel
+        get_corpus_store,
+    )
+
+    index_dir = get_corpus_store().local_index_dir(wg)
+    if index_dir is None:
+        index_dir = os.path.join(get_index_dir(), wg)
+    return os.path.join(index_dir, "embeddings.db")
 
 
 # Wait up to this long for a lock instead of failing immediately, so a
@@ -91,7 +107,7 @@ def _connect_ro(wg: str) -> sqlite3.Connection:
     then reads the file directly, skipping WAL/-shm and locking. Only safe
     when nothing rewrites the file in place.
     """
-    path = _db_path(wg)
+    path = _db_path_ro(wg)
     if _index_immutable():
         uri = f"{Path(os.path.abspath(path)).as_uri()}?immutable=1"
         return sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_S)
@@ -260,7 +276,7 @@ def chunk_counts(wg: str) -> Dict[str, int]:
     consumer can see how many chunk_idx values are valid for each file
     instead of having to blind-probe.
     """
-    if not os.path.exists(_db_path(wg)):
+    if not os.path.exists(_db_path_ro(wg)):
         return {}
     conn = _connect_ro(wg)
     try:
@@ -287,7 +303,7 @@ def find_chunks_by_url(
     file. Callers (notably the MCP `fetch_by_url` tool) use the row
     count to decide whether to return a single chunk or the whole file.
     """
-    if not os.path.exists(_db_path(wg)):
+    if not os.path.exists(_db_path_ro(wg)):
         return []
     conn = _connect_ro(wg)
     try:
@@ -330,7 +346,7 @@ def get_messages(
     keys = list(items)
     if not keys:
         return {}
-    if not os.path.exists(_db_path(wg)):
+    if not os.path.exists(_db_path_ro(wg)):
         return {}
     conn = _connect_ro(wg)
     try:
@@ -372,7 +388,7 @@ def get_chunk(
     are 1-indexed and inclusive when known; they may be None for chunks
     indexed before line tracking was added (schema v1).
     """
-    if not os.path.exists(_db_path(wg)):
+    if not os.path.exists(_db_path_ro(wg)):
         return None
     conn = _connect_ro(wg)
     try:

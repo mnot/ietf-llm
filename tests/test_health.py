@@ -12,12 +12,13 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from ietf_llm import __version__, mcp_server
+from ietf_llm.utils import get_cache_dir
 
 
 def _seed_corpus(home: Any, wg: str, sentinel: str | None) -> None:
     """Materialise a corpus under the sandbox cache: a `files/` dir (what
     `_list_wgs` keys on) and, when given, a `last-gathered` sentinel."""
-    base = os.path.join(mcp_server.get_cache_dir(), wg)
+    base = os.path.join(get_cache_dir(), wg)
     os.makedirs(os.path.join(base, "files"), exist_ok=True)
     if sentinel is not None:
         with open(os.path.join(base, "last-gathered"), "w", encoding="utf-8") as fh:

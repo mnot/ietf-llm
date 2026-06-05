@@ -29,6 +29,7 @@ from .storage import (
     _SCHEMA_VERSION,
     _connect_ro,
     _db_path,
+    _db_path_ro,
     _open_db,
     _pack,
     _unpack_matrix,
@@ -471,7 +472,7 @@ def index_model(wg: str) -> Optional[str]:
     not bit-identical across runtimes). Read-only: never creates or
     migrates the DB.
     """
-    if not os.path.exists(_db_path(wg)):
+    if not os.path.exists(_db_path_ro(wg)):
         return None
     conn = _connect_ro(wg)
     try:
@@ -539,7 +540,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         wants visible inline. Applies to BOTH structured (table /
         list) and prose snippet paths.
     """
-    if not os.path.exists(_db_path(wg)):
+    if not os.path.exists(_db_path_ro(wg)):
         log(
             f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
             verbose,

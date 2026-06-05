@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -33,12 +35,22 @@ from .utils import (
     atomic_open,
     file_lock,
     get_cache_dir,
+    get_index_dir,
     lock_is_held,
     log,
 )
 
 _STATUS_NAME = "gather-status.json"
 _LOCK_NAME = ".gather.lock"
+
+#: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
+#: gather and renewed periodically (see `_LEASE_HEARTBEAT_S`), so even a gather
+#: longer than the TTL cannot let it lapse and admit a second writer.
+_LEASE_TTL = 3600.0
+
+#: How often the heartbeat thread renews the lease — comfortably under the TTL so
+#: a slow renew or a stalled stage still refreshes in time.
+_LEASE_HEARTBEAT_S = 900.0
 
 # A corpus name becomes a cache directory, so it must be a single safe path
 # segment: letters/digits/`.`/`-`/`_`, starting with an alphanumeric. This
@@ -54,6 +66,51 @@ _MAX_CORPUS_LEN = 128
 # can answer "already running" without racing on the file lock.
 _jobs: Dict[str, threading.Thread] = {}
 _registry_lock = threading.Lock()
+
+
+#: A random per-process nonce so the lease owner id is unique even if two
+#: replicas collide on hostname *and* pid (some orchestrators reuse pod
+#: hostnames) — without it, a renew/release could cross hosts.
+_PROCESS_NONCE = uuid.uuid4().hex[:8]
+
+
+def _owner() -> str:
+    """Identify this gather process for the cross-host lease: host + pid +
+    a per-process random nonce."""
+    return f"{socket.gethostname()}:{os.getpid()}:{_PROCESS_NONCE}"
+
+
+def _heartbeat_lease(
+    store: Any, corpus: str, owner: str, stop: threading.Event
+) -> None:
+    """Renew the gather lease periodically so a gather longer than the lease TTL
+    cannot let the lease lapse (which would admit a second writer). Exits when
+    `stop` is set or if the lease is lost (renew returns False). A no-op renew on
+    the local backend, so this thread is harmless there."""
+    while not stop.wait(_LEASE_HEARTBEAT_S):
+        if not store.renew_lease(corpus, owner, _LEASE_TTL):
+            break
+
+
+def _index_extra_files(corpus: str, workspace: str) -> Dict[str, str]:
+    """Index files that belong in the published version but live *outside*
+    `workspace` — the embeddings index when `IETF_LLM_INDEX_DIR` points away from
+    the cache. Returns `{}` when the index dir is inside the workspace (the
+    default layout), since the workspace walk already captures it. So a cloud
+    reader replica gets the version's `embeddings.db` regardless of where the
+    index is configured (G-2)."""
+    index_dir = os.path.join(get_index_dir(), corpus)
+    if not os.path.isdir(index_dir):
+        return {}
+    ws_real = os.path.realpath(workspace)
+    idx_real = os.path.realpath(index_dir)
+    if idx_real == ws_real or idx_real.startswith(ws_real + os.sep):
+        return {}  # inside the workspace; the walk already captures it
+    return {
+        name: os.path.join(index_dir, name)
+        for name in os.listdir(index_dir)
+        if os.path.isfile(os.path.join(index_dir, name))
+    }
 
 
 def valid_corpus_name(name: str) -> bool:
@@ -260,8 +317,11 @@ def _execute(spec: GatherSpec) -> None:
     # Imported lazily so the read-only serve path doesn't pull the gather
     # pipeline (and its many imports) unless gather is actually enabled.
     from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
 
     corpus = spec.corpus
+    store = corpus_store.get_corpus_store()
+    owner = _owner()
     status: Dict[str, Any] = {
         "corpus": corpus,
         "state": "running",
@@ -289,6 +349,17 @@ def _execute(spec: GatherSpec) -> None:
                 Verbosity.STATUS,
                 level=LogLevel.ERROR,
             )
+        # Also publish to the store so the status is fleet-visible (G-8): a
+        # no-op on the local backend, a control-plane write on the cloud backend.
+        # Never fail the gather on a status-publish error.
+        try:
+            store.put_gather_status(corpus, status)
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"gather_runner: could not publish status for {corpus}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.ERROR,
+            )
 
     def _progress(name: str, index: int, total: int) -> None:
         status["stage"] = name
@@ -297,11 +368,47 @@ def _execute(spec: GatherSpec) -> None:
         _persist()
 
     _persist()
+    # Cross-host gather lease: a no-op grant on the local backend (the file
+    # lock in `_run` already serialises a single box), a real lease on the
+    # cloud backend so a cron gather and the serve fleet's in-session gather
+    # cannot write the same corpus at once.
+    if not store.acquire_lease(corpus, owner, _LEASE_TTL):
+        status["state"] = "failed"
+        status["error"] = (
+            f"another host holds the gather lease for '{corpus}'; "
+            "a gather is already running elsewhere."
+        )
+        status["finished"] = _now_iso()
+        _persist()
+        return
+    # Keep the lease alive for the whole gather (G-4): a background heartbeat
+    # renews it well within the TTL, so a multi-hour gather cannot let the lease
+    # expire and let a second writer publish an orphaned version.
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_lease,
+        args=(store, corpus, owner, stop_heartbeat),
+        name=f"lease-heartbeat:{corpus}",
+        daemon=True,
+    )
+    heartbeat.start()
     try:
         ok = gather_main.run_gather(
             spec.to_argv(), Verbosity.STATUS, progress=_progress
         )
         if ok:
+            # Publish the gathered tree as a new version. A no-op finalise on
+            # the local backend (the cache already is the live version); on the
+            # cloud backend this uploads the corpus and flips the pointer
+            # atomically, making it visible fleet-wide. The index lives outside
+            # the cache when IETF_LLM_INDEX_DIR is split off, so include it
+            # explicitly (G-2) — otherwise a reader replica has no index.
+            workspace = os.path.join(get_cache_dir(), corpus)
+            store.publish(
+                corpus,
+                workspace,
+                extra_files=_index_extra_files(corpus, workspace) or None,
+            )
             status["state"] = "done"
         else:
             status["state"] = "failed"
@@ -314,6 +421,9 @@ def _execute(spec: GatherSpec) -> None:
         status["state"] = "failed"
         status["error"] = f"{type(err).__name__}: {err}"[:500]
     finally:
+        stop_heartbeat.set()
+        heartbeat.join(timeout=5.0)
+        store.release_lease(corpus, owner)
         status["finished"] = _now_iso()
         _persist()
 
@@ -322,17 +432,28 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     """Read one corpus's gather status, or None if none recorded (or the
     name is not a safe path segment).
 
-    A `running` record whose gather lock is provably free is relabelled
-    `interrupted`: the gather thread is a daemon, so a server restart/kill
-    leaves the status stuck at `running` forever otherwise. The lock is the
-    authoritative signal (`lock_is_held`) — it works across hosts sharing
-    the cache and is immune to pid reuse, and because the terminal
-    `done`/`failed` status is always written while still holding the lock, a
-    free lock under a `running` status means the gather died. When liveness
-    is undeterminable (`lock_is_held` -> None) the status is left as-is.
+    On the **cloud** backend the status comes from the control plane, so a
+    `gather_status` call answered by any replica sees the gather running on
+    another (G-8); its `running`→`interrupted` relabel keys off the cross-host
+    *lease* (the cloud topology shares the control plane, not the cache, so a
+    local file lock cannot answer for another host).
+
+    On the **local** backend status is the per-corpus `gather-status.json`, and
+    a `running` record whose gather *file lock* is provably free is relabelled
+    `interrupted`: the gather thread is a daemon, so a restart/kill would
+    otherwise leave it stuck at `running`. The lock is released by the OS the
+    instant its holder dies, and the terminal status is written while still
+    holding it, so a free lock under `running` means the gather died. When
+    liveness is undeterminable (`lock_is_held` -> None) the status is left as-is.
     """
     if not valid_corpus_name(corpus):
         return None
+    # Fleet-visible status first (cloud backend); None on the local backend.
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
+    fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
+    if fleet is not None:
+        return fleet
     try:
         with open(_status_path(corpus), "r", encoding="utf-8") as handle:
             data = json.load(handle)

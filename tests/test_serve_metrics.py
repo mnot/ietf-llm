@@ -20,6 +20,7 @@ from starlette.testclient import TestClient
 
 from ietf_llm import mcp_server, oai_compat, serve_metrics
 from ietf_llm.embeddings.models import _OpenAICompatEmbeddingModel
+from ietf_llm.utils import get_cache_dir
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +37,7 @@ class _FakeServer:
 
 
 def _seed_corpus(wg: str, sentinel: str | None) -> None:
-    base = os.path.join(mcp_server.get_cache_dir(), wg)
+    base = os.path.join(get_cache_dir(), wg)
     os.makedirs(os.path.join(base, "files"), exist_ok=True)
     if sentinel is not None:
         path = os.path.join(base, "last-gathered")

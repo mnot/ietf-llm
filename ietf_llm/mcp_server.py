@@ -59,9 +59,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio  # ships with `mcp`; used to offload blocking tools off-loop
 
-from . import __version__, _debug_log, _stdio_transport, config, serve_metrics
+from . import (
+    __version__,
+    _debug_log,
+    _stdio_transport,
+    config,
+    serve_metrics,
+    service_config,
+)
 from .catalog import render_efforts
 from .corpus import describe, kind_status
+from .corpus_store import get_corpus_store, pin_corpus_version
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -96,9 +104,7 @@ from .positions import (
 from .utils import (
     LogLevel,
     Verbosity,
-    get_cache_dir,
     get_index_dir,
-    get_wg_file_cache_dir,
     graceful_keyboard_interrupt,
     log,
 )
@@ -117,21 +123,30 @@ MAX_CHUNK_RANGE = 20
 
 
 def _list_wgs() -> List[str]:
-    root = get_cache_dir()
-    if not os.path.isdir(root):
-        return []
-    out = []
-    for name in sorted(os.listdir(root)):
-        if name.startswith("_") or name.startswith("."):
-            continue
-        if os.path.isdir(os.path.join(root, name, "files")):
-            out.append(name)
-    return out
+    return get_corpus_store().list_corpora()
+
+
+def _files_dir(wg: str) -> str:
+    """The local `files/` directory for `wg`'s current version, via the corpus
+    store — which materialises a cloud version onto local scratch, or returns
+    the live cache dir for the local backend. Every read tool is guarded by
+    `_requires_corpus`, so the corpus is known to exist by the time this is
+    called; a None here means it vanished mid-request and is a real error.
+
+    The version is resolved per call. Pinning one version across all of a
+    request's reads — so a concurrent publish cannot tear a multi-read tool —
+    is a later refinement (a request-scoped version context) and affects only
+    the cloud backend; the local backend is single-version.
+    """
+    cache = get_corpus_store().local_cache_dir(wg)
+    if cache is None:
+        raise FileNotFoundError(f"no current version for corpus {wg!r}")
+    return cache
 
 
 def _safe_path(wg: str, file: str) -> Optional[str]:
     """Resolve `file` inside the corpus's file cache; refuse path escapes."""
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     candidate = os.path.realpath(os.path.join(cache, file))
     if not candidate.startswith(os.path.realpath(cache) + os.sep):
         return None
@@ -146,14 +161,14 @@ _DIGEST_KINDS = ("index", "issues", "threads", "people", "timeline")
 def _digest_path(wg: str, kind: str) -> Optional[str]:
     if kind not in _DIGEST_KINDS:
         return None
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     path = digest_path(cache, kind)
     return path if os.path.isfile(path) else None
 
 
 def _available_digest_kinds(wg: str) -> List[str]:
     """The digest kinds this corpus actually has on disk."""
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     return [k for k in _DIGEST_KINDS if os.path.isfile(digest_path(cache, k))]
 
 
@@ -186,23 +201,29 @@ def _corpus_exists(wg: str) -> bool:
     """True if `wg` has a cache directory. Read-only: unlike
     `get_wg_file_cache_dir`, it never creates one — so a typo'd corpus
     name is not silently materialised by a query."""
-    return os.path.isdir(os.path.join(get_cache_dir(), wg, "files"))
+    return get_corpus_store().corpus_exists(wg)
 
 
 def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
-    """Guard a `tool_*(wg, ...)` so an unknown corpus returns a clear
-    message — rather than creating a junk cache dir and rendering a hollow
-    result from it."""
+    """Guard a `tool_*(wg, ...)` so an unknown corpus returns a clear message —
+    rather than creating a junk cache dir and rendering a hollow result from it.
+
+    Also resolves the corpus's current version **once** and pins it for the
+    whole tool call, so every read in the request (files and the search index)
+    stays on one version even if a publish lands mid-call (G-1). No-op pin on
+    the single-version local backend."""
 
     @functools.wraps(fn)
     def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
-        if not _corpus_exists(wg):
+        version = get_corpus_store().resolve_current(wg)
+        if version is None:
             return (
                 f"Unknown corpus '{wg}'. Nothing is cached under that name — "
                 f"run `ietf-llm {wg}` to gather it, or call `list_corpora` to "
                 "see what is available."
             )
-        return fn(wg, *args, **kwargs)
+        with pin_corpus_version(wg, version):
+            return fn(wg, *args, **kwargs)
 
     return wrapper
 
@@ -311,7 +332,7 @@ def tool_list_corpora() -> str:
 
 @_requires_corpus
 def tool_overview(wg: str) -> str:
-    return _with_freshness(wg, build_overview(wg, get_wg_file_cache_dir(wg)))
+    return _with_freshness(wg, build_overview(wg, _files_dir(wg)))
 
 
 def tool_read_ietf_norms() -> str:
@@ -343,7 +364,7 @@ def tool_list_labels(wg: str) -> str:
     groups (TLS, with `[mlkem]` / `[ech]`) cluster on the list. The
     consumer doesn't have to know which the WG uses — both render.
     """
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     labels = _label_frequencies(cache, wg)
     prefixes = _subject_prefix_frequencies(cache)
     if not labels and not prefixes:
@@ -404,7 +425,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     suffix stripped), so `draft-Foo-Bar-07` and `draft-foo-bar` both
     yield the same result.
     """
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     citations_md = digest_path(cache, "citations")
     if not os.path.isfile(citations_md):
         return _with_freshness(
@@ -442,7 +463,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
 
 @_requires_corpus
 def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
-    cache = get_wg_file_cache_dir(wg)
+    cache = _files_dir(wg)
     if not os.path.isdir(cache):
         return f"No cache for {wg}."
     # chunk_counts() is cheap (one GROUP BY) and lets the consumer bound
@@ -1157,7 +1178,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
     affiliation from the people digest when known — exposing the
     implementer-clustering signal alongside the raw count.
     """
-    cache_dir = get_wg_file_cache_dir(wg)
+    cache_dir = _files_dir(wg)
     if not file_supports_tally(file):
         return (
             f"`{file}` doesn't have the per-message section structure "
@@ -3400,6 +3421,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
         "no_embed": "yes" if _effective_no_embed() else "no",
         "index_dir": get_index_dir(),
         "index_immutable": "yes" if _index_immutable_enabled() else "no",
+        "store_backend": service_config.store_backend(),
     }
 
 
@@ -3467,6 +3489,31 @@ def _serve_config_problems(host: str) -> "Tuple[List[str], List[str]]":
                 "trigger cache writes and network egress."
             )
         warnings.append(msg)
+
+    # 3. Cloud corpus store selected but under-configured: reads (and any
+    # gather publish) would fail at request time. Validate the required knobs
+    # are present, upfront.
+    backend = service_config.store_backend()
+    if backend == "cloud":
+        missing = [
+            env
+            for env, value in (
+                ("IETF_LLM_CONTROL_DB", service_config.control_db()),
+                ("IETF_LLM_BLOB_DIR", service_config.blob_dir()),
+                ("IETF_LLM_SCRATCH_DIR", service_config.scratch_dir()),
+            )
+            if not value
+        ]
+        if missing:
+            errors.append(
+                "IETF_LLM_STORE_BACKEND=cloud but the corpus store is "
+                "under-configured: missing " + ", ".join(missing) + "."
+            )
+    elif backend != "local":
+        errors.append(
+            f"IETF_LLM_STORE_BACKEND={backend!r} is not recognised "
+            "(expected 'local' or 'cloud')."
+        )
 
     return errors, warnings
 
