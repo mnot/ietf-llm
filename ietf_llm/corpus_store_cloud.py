@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .corpus_blobs import BlobStore, FileBlobStore
 from .corpus_control import ControlPlane, SqliteControlPlane
-from .corpus_store import CorpusStore, pinned_version
+from .corpus_store import CorpusStore, pinned_version, pinned_versions_in_use
 
 #: Process-global current-version cache: (cache_key, corpus) -> (version,
 #: monotonic expiry). Keyed by the control-plane identity (its locator) so two
@@ -233,6 +233,40 @@ class CloudCorpusStore(CorpusStore):
         finally:
             if os.path.isdir(tmp):
                 shutil.rmtree(tmp, ignore_errors=True)
+        # A new version just landed on this replica's scratch; sweep older ones.
+        self._reap_scratch(corpus, version)
+
+    def _reap_scratch(self, corpus: str, current_version: str) -> None:
+        """Delete this replica's materialised version dirs for `corpus` that are
+        no longer in use, bounding scratch (otherwise every gather leaves one
+        full corpus copy on local disk forever — RAM, if scratch is tmpfs).
+
+        Keeps the version just materialised, the resolve-cache current one (about
+        to be served to imminent reads), and any pinned by an in-flight request —
+        so a live read is never reaped. Best-effort: a failure never breaks a
+        read, and reaping is non-destructive anyway — blobs are immutable and
+        retained, so a reaped version re-materialises on demand if read again.
+        (Scratch is per-replica, so each replica reaps its own; orphaned *blobs*
+        are a separate operator concern — a bucket lifecycle rule. See
+        `docs/storage.md`.)"""
+        keep = {current_version} | pinned_versions_in_use(corpus)
+        with _RESOLVE_LOCK:
+            cached = _RESOLVE_CACHE.get((self._cache_key, corpus))
+        if cached and cached[0]:
+            keep.add(cached[0])
+        corpus_root = os.path.join(self._scratch, corpus)
+        try:
+            names = os.listdir(corpus_root)
+        except OSError:
+            return
+        for name in names:
+            # Skip in-use versions and any `.tmp.` staging dir (an in-progress or
+            # crashed fetch; the owning materialise cleans its own).
+            if name in keep or ".tmp." in name:
+                continue
+            full = os.path.join(corpus_root, name)
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
 
     def publish(
         self,

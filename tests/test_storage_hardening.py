@@ -383,3 +383,46 @@ def test_index_extra_files_captures_split_index(
     extras = gr._index_extra_files("tls", str(ws))
     assert set(extras) == {"embeddings.db", "embeddings.db-wal"}
     assert extras["embeddings.db"] == str(split / "tls" / "embeddings.db")
+
+
+# --- scratch reaper: bound per-replica materialised versions ---
+
+
+def test_reaper_removes_superseded_version(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    for ver, content in (("v1", "a"), ("v2", "b")):
+        ws = tmp_path / f"ws-{ver}"
+        (ws / "files").mkdir(parents=True)
+        (ws / "files" / "x.md").write_text(content)
+        store.publish("tls", str(ws), version=ver)
+        store.local_cache_dir("tls")  # materialise the (new) current version
+    scratch = tmp_path / "scratch" / "tls"
+    versions = sorted(
+        p.name for p in scratch.iterdir() if p.is_dir() and ".tmp." not in p.name
+    )
+    assert versions == ["v2"]  # v1 reaped once v2 materialised
+
+
+def test_reaper_keeps_in_use_versions(tmp_path: Path) -> None:
+    from ietf_llm.corpus_store import pin_corpus_version
+
+    store = _cloud(tmp_path)
+    for ver in ("v1", "v2"):
+        (tmp_path / "scratch" / "tls" / ver / "files").mkdir(parents=True)
+    # v1 pinned by an in-flight request -> the reaper must keep it.
+    with pin_corpus_version("tls", "v1"):
+        store._reap_scratch("tls", "v2")
+        assert (tmp_path / "scratch" / "tls" / "v1").is_dir()
+    # Unpinned -> the next reap removes it, keeping the current version.
+    store._reap_scratch("tls", "v2")
+    assert not (tmp_path / "scratch" / "tls" / "v1").exists()
+    assert (tmp_path / "scratch" / "tls" / "v2").is_dir()
+
+
+def test_reaper_skips_tmp_staging_dirs(tmp_path: Path) -> None:
+    store = _cloud(tmp_path)
+    (tmp_path / "scratch" / "tls" / "v1" / "files").mkdir(parents=True)
+    (tmp_path / "scratch" / "tls" / "v2.tmp.deadbeef").mkdir(parents=True)
+    store._reap_scratch("tls", "v1")  # current is v1
+    # An in-progress / crashed staging dir is never touched by the reaper.
+    assert (tmp_path / "scratch" / "tls" / "v2.tmp.deadbeef").is_dir()

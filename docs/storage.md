@@ -141,6 +141,30 @@ special features because all atomicity lives in the control-plane pointer. The H
 validates these knobs at boot and refuses to start if `cloud` is selected but under-configured (see
 [mcp-server.md](mcp-server.md)).
 
+## Scratch sizing, reaping, and the tmpfs trap
+
+A cloud replica materialises the **whole** current version of each corpus it serves — the `files/`
+tree plus `embeddings.db` — into `IETF_LLM_SCRATCH_DIR`, and keeps it to serve later reads without
+re-fetching. Size scratch for roughly `Σ(actively-read corpora) × version-size × ~2`, where the `~2`
+is the switch window: just after a gather publishes, a replica briefly holds both the version its
+in-flight requests pinned and the new one it is materialising.
+
+The replica reaps superseded versions on its own: when it materialises a new version of a corpus it
+deletes that corpus's older version dirs, keeping the current version, any version an in-flight
+request is still reading, and the one cached for imminent reads (`IETF_LLM_RESOLVE_TTL`). Reaping is
+per-replica and non-destructive — blobs are immutable and retained, so a reaped version
+re-materialises on demand if read again — so steady-state scratch stays bounded at the in-use
+versions per corpus, not one copy per gather.
+
+**tmpfs is RAM.** Putting `IETF_LLM_SCRATCH_DIR` on tmpfs (`/dev/shm`) makes the materialised index
+fast, but every byte of scratch is then **memory** — size the pod for it, including the `~2×` switch
+window. The publish/materialise paths also move blobs whole-object, so peak heap during a publish or
+a cold first read is about the single largest file (usually `embeddings.db`), on top of scratch.
+
+Orphaned **blobs** are not reaped: a killed publish, and every superseded version, leaves bytes in
+the blob store. That is durable-cost growth, not a crash — drive it with a bucket lifecycle rule
+(retain the current version plus a grace window) on the object store.
+
 ## Notes
 
 - `IETF_LLM_CACHE_DIR` only needs to *exist* and be readable for a read-only consumer (the MCP

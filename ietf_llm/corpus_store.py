@@ -25,9 +25,10 @@ from __future__ import annotations
 import contextvars
 import importlib
 import os
+import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, cast
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
 from . import service_config
 from .utils import cached_wg_names, get_cache_dir, get_index_dir
@@ -54,19 +55,45 @@ _pinned_versions: contextvars.ContextVar[Dict[str, str]] = contextvars.ContextVa
 )
 
 
+#: Process-global refcount of versions pinned by an in-flight request, across
+#: all worker threads: (corpus, version) -> count. The scratch reaper consults
+#: it so it never deletes a version dir a request is still reading. (A ContextVar
+#: is per-context and not enumerable across threads, hence this explicit registry
+#: alongside it.)
+_pin_counts: Dict[Tuple[str, str], int] = {}
+_pin_lock = threading.Lock()
+
+
 @contextmanager
 def pin_corpus_version(corpus: str, version: str) -> Iterator[None]:
-    """Pin `corpus` to `version` for the duration of the block."""
+    """Pin `corpus` to `version` for the duration of the block (request-scoped),
+    and register it in the cross-thread in-use set the scratch reaper reads."""
     token = _pinned_versions.set({**_pinned_versions.get(), corpus: version})
+    key = (corpus, version)
+    with _pin_lock:
+        _pin_counts[key] = _pin_counts.get(key, 0) + 1
     try:
         yield
     finally:
         _pinned_versions.reset(token)
+        with _pin_lock:
+            remaining = _pin_counts.get(key, 0) - 1
+            if remaining > 0:
+                _pin_counts[key] = remaining
+            else:
+                _pin_counts.pop(key, None)
 
 
 def pinned_version(corpus: str) -> Optional[str]:
     """The version `corpus` is pinned to in this request, or None."""
     return _pinned_versions.get().get(corpus)
+
+
+def pinned_versions_in_use(corpus: str) -> Set[str]:
+    """Versions of `corpus` pinned by any in-flight request, across threads — the
+    set the scratch reaper must keep so an in-progress read is never reaped."""
+    with _pin_lock:
+        return {ver for (cor, ver), n in _pin_counts.items() if cor == corpus and n > 0}
 
 
 class CorpusStore(ABC):
