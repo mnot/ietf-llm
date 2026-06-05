@@ -93,8 +93,7 @@ config file.
 
 **Resolving the current version.** Every read first resolves the corpus's current version through
 the control plane, so a replica caches that lookup for `IETF_LLM_RESOLVE_TTL` seconds (default 10) to
-coalesce a burst of reads into one control-plane call — which also keeps the D1 HTTP path comfortably
-under the account-wide Cloudflare API rate limit. Versions are immutable and the pointer moves only
+coalesce a burst of reads into one control-plane call. Versions are immutable and the pointer moves only
 on publish, so a stale hit just serves a valid older version for at most the TTL; the replica that
 publishes refreshes its own cache immediately, and others pick up a new version within the TTL. Set
 `0` to resolve on every read (immediate cross-replica visibility, more control-plane calls).
