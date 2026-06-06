@@ -74,6 +74,14 @@ class HttpMetrics:
     host_requests: "Counter[str]" = field(default_factory=Counter)
     host_bytes: "Counter[str]" = field(default_factory=Counter)
     patterns: "Counter[str]" = field(default_factory=Counter)
+    #: Guards `record` so a parallel download fan-out (whose worker threads
+    #: all bind to the parent gather's accumulator via `set_current`) can
+    #: record concurrently without losing updates. Uncontended on the serial
+    #: path. Excluded from equality/repr so it stays a pure implementation
+    #: detail.
+    _lock: "threading.Lock" = field(
+        default_factory=threading.Lock, compare=False, repr=False
+    )
 
     @property
     def total(self) -> int:
@@ -89,19 +97,21 @@ class HttpMetrics:
     ) -> None:
         """Record one HTTP attempt. `error=True` marks a transport failure
         or non-2xx; otherwise `status_code` 304 counts as a revalidation
-        and anything else as a real transfer."""
+        and anything else as a real transfer. Thread-safe: workers in a
+        parallel fan-out may record into one accumulator at once."""
         host = urlsplit(url).netloc or "?"
-        self.host_requests[host] += 1
-        if error:
-            self.errors += 1
-        elif status_code == 304:
-            self.revalidated += 1
-        else:
-            self.ok += 1
         n_bytes = max(0, int(n_bytes or 0))
-        self.bytes_received += n_bytes
-        self.host_bytes[host] += n_bytes
-        self.patterns[url_pattern(url)] += 1
+        with self._lock:
+            self.host_requests[host] += 1
+            if error:
+                self.errors += 1
+            elif status_code == 304:
+                self.revalidated += 1
+            else:
+                self.ok += 1
+            self.bytes_received += n_bytes
+            self.host_bytes[host] += n_bytes
+            self.patterns[url_pattern(url)] += 1
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-serialisable snapshot for `<wg>/gather-metrics.json`."""
@@ -177,6 +187,17 @@ def current() -> HttpMetrics:
         metrics = HttpMetrics()
         _state.metrics = metrics
     return metrics
+
+
+def set_current(metrics: HttpMetrics) -> None:
+    """Bind `metrics` as the calling thread's accumulator.
+
+    The accumulator is thread-local so concurrent gathers stay isolated, but a
+    parallel download fan-out within one gather wants its worker threads to
+    record into the parent gather's accumulator, not their own. A worker calls
+    this with the parent's `current()` before issuing requests; `record` is
+    locked, so several workers sharing one accumulator is safe."""
+    _state.metrics = metrics
 
 
 def record(

@@ -1,7 +1,9 @@
 import os
 import re
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
+from .. import http_metrics
 from ..paths import drafts_dir
 from ..utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
 from .datatracker import (
@@ -212,6 +214,80 @@ def validate_draft_names(
     return valid
 
 
+#: Upper bound on concurrent document fetches. The per-host governor (see
+#: `http_governor`) is the real limiter — draft revisions all hit one host,
+#: RFCs another — so this just needs to be wide enough to keep both hosts
+#: busy at their caps.
+_DOWNLOAD_WORKERS = 8
+
+
+def _download_one(url: str, filepath: str, verbose: Verbosity) -> Optional[str]:
+    """Fetch one document to `filepath`; return the path if written, else None.
+    Caller guarantees the file is not already cached."""
+    log(
+        f"Downloading {os.path.basename(filepath)}...",
+        verbose,
+        level=LogLevel.PROGRESS,
+    )
+    res = fetch_resource(url)
+    if not res:
+        return None
+    try:
+        with open(filepath, "w", encoding="utf-8") as out_fh:
+            out_fh.write(str(res.text))
+    except OSError as err:
+        log(f"Error writing {filepath}: {err}", verbose, level=LogLevel.ERROR)
+        return None
+    return filepath
+
+
+def _download_files_parallel(
+    tasks: List[Tuple[str, str]], verbose: Verbosity
+) -> List[str]:
+    """Fetch each ``(url, filepath)`` task concurrently; return the paths
+    actually written.
+
+    Draft revisions and RFCs are independent, idempotent (skip-if-cached) GETs
+    against CDN-fronted hosts, so they parallelise cleanly. The per-host
+    governor bounds how many hit any one host at once, so the pool size is just
+    an upper bound on in-flight work. Worker threads bind to the parent
+    gather's egress accumulator (`set_current`) so their requests are still
+    counted in the run's network total."""
+    if not tasks:
+        return []
+    parent = http_metrics.current()
+
+    def _worker(url: str, filepath: str) -> Optional[str]:
+        http_metrics.set_current(parent)
+        return _download_one(url, filepath, verbose)
+
+    written: List[str] = []
+    workers = min(_DOWNLOAD_WORKERS, len(tasks))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_worker, url, fp) for url, fp in tasks]
+        for future in futures:
+            path = future.result()
+            if path:
+                written.append(path)
+    return written
+
+
+def _revision_tasks(
+    draft_name: str, max_rev: int, out_dir: str
+) -> List[Tuple[str, str]]:
+    """Build ``(url, filepath)`` tasks for each not-yet-cached revision
+    00..max_rev of one draft."""
+    tasks: List[Tuple[str, str]] = []
+    for rev in range(max_rev + 1):
+        rev_str = f"{rev:02d}"
+        filepath = os.path.join(out_dir, f"{draft_name}-{rev_str}.txt")
+        if os.path.exists(filepath):
+            continue
+        url = f"https://www.ietf.org/archive/id/{draft_name}-{rev_str}.txt"
+        tasks.append((url, filepath))
+    return tasks
+
+
 def _download_all_revisions(
     draft_name: str,
     max_rev: int,
@@ -221,26 +297,14 @@ def _download_all_revisions(
     """Pull every revision (00..max_rev) of one draft into out_dir.
     Returns the paths of newly-written files (skips revisions whose
     .txt is already cached)."""
-    updated: List[str] = []
     log(
         f"Processing draft: {draft_name} (revs 00 to {max_rev:02d})",
         verbose,
         level=LogLevel.STATUS,
     )
-    for rev in range(max_rev + 1):
-        rev_str = f"{rev:02d}"
-        filename = f"{draft_name}-{rev_str}.txt"
-        filepath = os.path.join(out_dir, filename)
-        if os.path.exists(filepath):
-            continue
-        url = f"https://www.ietf.org/archive/id/{draft_name}-{rev_str}.txt"
-        log(f"Downloading {filename}...", verbose, level=LogLevel.PROGRESS)
-        res = fetch_resource(url)
-        if res:
-            with open(filepath, "w", encoding="utf-8") as out_fh:
-                out_fh.write(str(res.text))
-            updated.append(filepath)
-    return updated
+    return _download_files_parallel(
+        _revision_tasks(draft_name, max_rev, out_dir), verbose
+    )
 
 
 def process_extra_drafts(
@@ -302,12 +366,18 @@ def process_documents(
     When `include_related` is True, also pulls active individual
     `draft-<author>-<wg>-<topic>` drafts (see `get_wg_documents`).
     """
-    updated = []
     docs = get_wg_documents(wg_name, verbose, include_related=include_related)
     out_dir = drafts_dir(destination)
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1. Process Drafts
+    # Collect every missing draft revision and RFC as a download task, then
+    # fetch them all in one parallel pass. Drafts hit www.ietf.org and RFCs
+    # www.rfc-editor.org, so the per-host governor keeps each polite while the
+    # fan-out hides the per-file latency that made this stage the slow part of
+    # a first gather.
+    tasks: List[Tuple[str, str]] = []
+
+    # 1. Drafts
     drafts = docs["drafts"]
     if drafts:
         # Record every draft (not only ones with an expiry): the manifest
@@ -326,30 +396,28 @@ def process_documents(
         for draft in drafts:
             name = str(draft["name"])
             max_rev = int(draft["max_rev"])
-            updated.extend(_download_all_revisions(name, max_rev, out_dir, verbose))
+            tasks.extend(_revision_tasks(name, max_rev, out_dir))
     else:
         log(f"No drafts found for {wg_name}.", verbose, level=LogLevel.STATUS)
 
-    # 2. Process RFCs
+    # 2. RFCs
     rfcs = docs["rfcs"]
     if rfcs:
         for rfc in rfcs:
             r_name = str(rfc["name"])
             r_num = str(rfc["number"])
-            filename = f"{r_name}.txt"
-            filepath = os.path.join(out_dir, filename)
-
+            filepath = os.path.join(out_dir, f"{r_name}.txt")
             if os.path.exists(filepath):
                 continue
-
             url = f"https://www.rfc-editor.org/rfc/rfc{r_num}.txt"
-            log(f"Downloading {filename}...", verbose, level=LogLevel.PROGRESS)
-            res = fetch_resource(url)
-            if res:
-                with open(filepath, "w", encoding="utf-8") as out_fh:
-                    out_fh.write(str(res.text))
-                updated.append(filepath)
+            tasks.append((url, filepath))
     else:
         log(f"No RFCs found for {wg_name}.", verbose, level=LogLevel.STATUS)
 
-    return updated
+    if tasks:
+        log(
+            f"Downloading {len(tasks)} document file(s)...",
+            verbose,
+            level=LogLevel.STATUS,
+        )
+    return _download_files_parallel(tasks, verbose)
