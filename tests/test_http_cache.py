@@ -8,11 +8,13 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
-from ietf_llm.gather.datatracker import _decode_cached, _HttpCache
+from ietf_llm.gather import datatracker
+from ietf_llm.gather.datatracker import _CACHE_MAX_AGE_DAYS, _decode_cached, _HttpCache
 from ietf_llm.utils import get_cache_dir
 
 
@@ -26,7 +28,11 @@ def test_http_cache_store_load_roundtrip(isolated_home: Path) -> None:
     # A fresh instance reads what the first one wrote.
     reloaded = _HttpCache()
     entry = reloaded.get("https://x/api?format=json")
-    assert entry == {"etag": 'W/"abc"', "body": '{"k": 1}'}
+    atexit.unregister(reloaded.flush)  # get() touches last_used → schedules a flush
+    assert entry is not None
+    assert entry["etag"] == 'W/"abc"'
+    assert entry["body"] == '{"k": 1}'
+    assert "last_used" in entry  # tracked for eviction
     # And it landed at the machinery path, not inside any WG corpus.
     assert os.path.isfile(os.path.join(get_cache_dir(), ".http-cache.json"))
 
@@ -75,6 +81,67 @@ def test_http_cache_tolerates_corrupt_file(isolated_home: Path) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("{broken")
     assert _HttpCache().get("anything") is None  # no crash → empty
+
+
+def test_evict_drops_stale_keeps_fresh() -> None:
+    """The age sweep drops entries unused past the window but keeps a fresh
+    one — so an infrequently-gathered endpoint isn't re-downloaded."""
+    now = time.time()
+    day = 86400.0
+    cache = _HttpCache()
+    cache._entries = {
+        "fresh": {"etag": "a", "body": "{}", "last_used": now - 5 * day},
+        "stale": {
+            "etag": "b",
+            "body": "{}",
+            "last_used": now - (_CACHE_MAX_AGE_DAYS + 1) * day,
+        },
+    }
+    cache._evict(now)
+    assert set(cache._entries) == {"fresh"}
+
+
+def test_evict_legacy_entry_without_timestamp_survives() -> None:
+    """An entry predating last_used tracking is treated as seen `now`, so a
+    legacy cache isn't wiped on the first post-change flush."""
+    now = time.time()
+    cache = _HttpCache()
+    cache._entries = {"legacy": {"etag": "a", "body": "{}"}}  # no last_used
+    cache._evict(now)
+    assert set(cache._entries) == {"legacy"}
+
+
+def test_evict_caps_entry_count_keeping_newest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past the entry cap, only the most-recently-used survive."""
+    monkeypatch.setattr(datatracker, "_CACHE_MAX_ENTRIES", 2)
+    now = time.time()
+    cache = _HttpCache()
+    cache._entries = {
+        f"u{i}": {"etag": "x", "body": "{}", "last_used": now - i}
+        for i in range(4)
+    }  # u0 newest … u3 oldest
+    cache._evict(now)
+    assert set(cache._entries) == {"u0", "u1"}
+
+
+def test_flush_then_reload_drops_stale_entry(isolated_home: Path) -> None:
+    """Round-trip: a stale entry is gone after flush, a fresh one persists."""
+    cache = _HttpCache()
+    cache.store("https://fresh/api?format=json", "a", "{}")
+    cache.store("https://stale/api?format=json", "b", "{}")
+    # Backdate the stale entry past the age window.
+    cache._entries["https://stale/api?format=json"]["last_used"] = (
+        time.time() - (_CACHE_MAX_AGE_DAYS + 1) * 86400.0
+    )
+    cache.flush()
+    atexit.unregister(cache.flush)
+
+    reloaded = _HttpCache()
+    assert reloaded.get("https://stale/api?format=json") is None
+    assert reloaded.get("https://fresh/api?format=json") is not None
+    atexit.unregister(reloaded.flush)  # get() touched last_used → scheduled a flush
 
 
 def test_decode_cached_parses_body() -> None:

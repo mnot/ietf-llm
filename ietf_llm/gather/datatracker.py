@@ -17,6 +17,7 @@ import atexit
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -80,21 +81,36 @@ _PERSON_ID_FROM_URL = re.compile(r"/person/person/(\d+)/?")
 # --- Conditional-GET cache -------------------------------------------------
 #
 # The Datatracker JSON API returns ETags and honours If-None-Match (304).
-# We persist {url: {"etag", "body"}} so re-gathers revalidate cheaply: an
-# unchanged endpoint comes back as an empty 304 and we reuse the cached
-# body. This is the bulk of the per-gather metadata chatter (document
-# lists, material revisions, the meeting batch, roles). The cache is
-# machinery: one shared file at ~/.cache/ietf-llm/.http-cache.json,
+# We persist {url: {"etag", "body", "last_used"}} so re-gathers revalidate
+# cheaply: an unchanged endpoint comes back as an empty 304 and we reuse
+# the cached body. This is the bulk of the per-gather metadata chatter
+# (document lists, material revisions, the meeting batch, roles). The cache
+# is machinery: one shared file at ~/.cache/ietf-llm/.http-cache.json,
 # loaded once and flushed atomically at exit.
+#
+# Eviction (applied at flush) keeps the file from growing without bound as
+# many WGs are gathered and paged URLs (id__in= chunks, &offset= pages)
+# mint many distinct keys. Every get() bumps the entry's last_used — even on
+# a 304 revalidation, since get() runs before the request — so an endpoint
+# that's still being gathered, however infrequently, never ages out; only
+# genuinely abandoned URLs go stale. The entry cap is a backstop against
+# pathological growth and keeps the most-recently-used.
+
+#: Drop ETag entries not requested within this many days (a generous window
+#: so an infrequently-gathered WG keeps its cache and doesn't re-download).
+_CACHE_MAX_AGE_DAYS = 90
+#: Hard cap on entry count, enforced after the age sweep (LRU: newest kept).
+_CACHE_MAX_ENTRIES = 10000
 
 
 class _HttpCache:
     """Lazy, process-wide ETag store. Loaded from disk on first use and
     flushed once atomically at interpreter exit (so a gather does one
-    write, not one per cached URL)."""
+    write, not one per cached URL). Stale and excess entries are evicted at
+    flush time; see the module comment above for the policy."""
 
     def __init__(self) -> None:
-        self._entries: Optional[Dict[str, Dict[str, str]]] = None
+        self._entries: Optional[Dict[str, Dict[str, Any]]] = None
         self._dirty = False
         self._dest: Optional[str] = None  # bound once, on first load
 
@@ -110,7 +126,7 @@ class _HttpCache:
             self._dest = os.path.join(get_cache_dir(), ".http-cache.json")
         return self._dest
 
-    def _load(self) -> Dict[str, Dict[str, str]]:
+    def _load(self) -> Dict[str, Dict[str, Any]]:
         if self._entries is None:
             try:
                 with open(self._path(), "r", encoding="utf-8") as fh:
@@ -120,18 +136,50 @@ class _HttpCache:
                 self._entries = {}
         return self._entries
 
-    def get(self, url: str) -> Optional[Dict[str, str]]:
-        return self._load().get(url)
-
-    def store(self, url: str, etag: str, body: str) -> None:
-        self._load()[url] = {"etag": etag, "body": body}
+    def _mark_dirty(self) -> None:
         if not self._dirty:
             self._dirty = True
             atexit.register(self.flush)
 
+    def get(self, url: str) -> Optional[Dict[str, Any]]:
+        entry = self._load().get(url)
+        if entry is not None:
+            # Touch on read — including the 304 path, which reuses the body
+            # without a store() — so an actively-gathered URL stays fresh.
+            entry["last_used"] = time.time()
+            self._mark_dirty()
+        return entry
+
+    def store(self, url: str, etag: str, body: str) -> None:
+        self._load()[url] = {"etag": etag, "body": body, "last_used": time.time()}
+        self._mark_dirty()
+
+    def _evict(self, now: float) -> None:
+        """Drop entries unused past the age window, then cap the count.
+
+        Entries predating last_used tracking (no timestamp) are treated as
+        seen `now`, giving legacy caches a full window before they age out.
+        """
+        entries = self._entries or {}
+        cutoff = now - _CACHE_MAX_AGE_DAYS * 86400.0
+        kept = {
+            url: entry
+            for url, entry in entries.items()
+            if float(entry.get("last_used", now)) >= cutoff
+        }
+        if len(kept) > _CACHE_MAX_ENTRIES:
+            ranked = sorted(
+                kept.items(),
+                key=lambda item: float(item[1].get("last_used", 0.0)),
+                reverse=True,
+            )
+            kept = dict(ranked[:_CACHE_MAX_ENTRIES])
+        self._entries = kept
+
     def flush(self) -> None:
         if self._entries is None or not self._dirty:
             return
+        self._evict(time.time())
         path = self._path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -191,7 +239,7 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
     return result
 
 
-def _decode_cached(entry: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+def _decode_cached(entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Decode a cached response body to a dict, or None."""
     if not entry:
         return None
