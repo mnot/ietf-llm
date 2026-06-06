@@ -2208,6 +2208,9 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
             parts.append(label)
         elif stage:
             parts.append(f"stage: {stage}")
+        detail = status.get("stage_detail")
+        if detail:
+            parts.append(str(detail))
     # An interrupted gather never finished, so its start->now span isn't a
     # meaningful "elapsed" (it would grow on every poll); omit it.
     if state != "interrupted":

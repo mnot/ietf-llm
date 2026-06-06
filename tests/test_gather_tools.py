@@ -152,6 +152,19 @@ def test_gather_status_one_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "stage 7/17 (github issues)" in out
 
 
+def test_gather_status_renders_stage_detail() -> None:
+    out = mcp_server._format_gather_status(
+        {
+            "corpus": "httpbis", "state": "running", "stage": "mailing list",
+            "stage_index": 3, "stage_total": 17,
+            "stage_detail": "ietf-http-wg: 1200/8000 messages downloaded",
+            "started": "2026-06-03T12:00:00Z", "finished": None,
+        }
+    )
+    assert "stage 3/17 (mailing list)" in out
+    assert "1200/8000 messages downloaded" in out
+
+
 def test_gather_status_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gather_runner, "read_status", lambda corpus: None)
     out = mcp_server.tool_gather_status("ghost")

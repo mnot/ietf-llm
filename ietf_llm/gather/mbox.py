@@ -7,7 +7,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ..paths import raw_dir, raw_mail_archive_path
 from ..utils import (
@@ -178,8 +178,11 @@ def _download_batches(
     missing_uids: List[bytes],
     cache_dir: str,
     verbose: Verbosity,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> int:
-    """Download messages in batches and save to cache. Returns count of new messages."""
+    """Download messages in batches and save to cache. Returns count of new
+    messages. `on_progress`, when given, is called after each batch with
+    `(downloaded_so_far, total_to_download)` for live progress reporting."""
     new_count = 0
     log(
         f"Downloading {len(missing_uids)} new messages in batches of {BATCH_SIZE}...",
@@ -225,6 +228,8 @@ def _download_batches(
                 verbose,
                 level=LogLevel.PROGRESS,
             )
+        if on_progress is not None:
+            on_progress(new_count, len(missing_uids))
     return new_count
 
 
@@ -233,6 +238,7 @@ def _sync_one_list(
     list_name: str,
     months: Optional[int],
     verbose: Verbosity,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[str]:
     """IMAP-sync a single list. Returns the UIDs (as strings) that
     fall within the search window for downstream processing. Per-list
@@ -283,7 +289,9 @@ def _sync_one_list(
         missing_uids = [uid for uid in uids if f"{uid.decode()}.eml" not in cached]
         new_count = 0
         if missing_uids:
-            new_count = _download_batches(mail, missing_uids, cache_dir, verbose)
+            new_count = _download_batches(
+                mail, missing_uids, cache_dir, verbose, on_progress
+            )
         mail.logout()
         if new_count > 0:
             log(
@@ -308,6 +316,7 @@ def sync_mailing_list(
     extra_lists: Optional[List[str]] = None,
     auto_discover: bool = True,
     verbose: Verbosity = Verbosity.STATUS,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> List[str]:
     """Sync the WG's mailing list(s) via IMAP and cache messages.
 
@@ -349,11 +358,22 @@ def sync_mailing_list(
     # Per-list IMAP sync + UID collection.
     per_list_uids: Dict[str, List[str]] = {}
     for list_name in list_names:
+        per_list_cb: Optional[Callable[[int, int], None]] = None
+        if on_progress is not None:
+            # Bind the list name so the caller can label progress when a WG
+            # follows several lists. Default-arg capture avoids the late-binding
+            # loop-variable trap.
+            def per_list_cb(  # pylint: disable=function-redefined
+                done: int, total: int, _name: str = list_name
+            ) -> None:
+                on_progress(_name, done, total)
+
         per_list_uids[list_name] = _sync_one_list(
             wg_name,
             list_name,
             months,
             verbose,
+            per_list_cb,
         )
 
     # Per-list year archives, then merge across lists into one file

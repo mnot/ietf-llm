@@ -12,10 +12,13 @@ from __future__ import annotations
 import argparse
 from typing import Callable, List, Optional
 
-#: A progress callback receives `(stage_name, index, total)` once as each
-#: gather stage begins (1-based index). The CLI passes None; the MCP gather
-#: runner passes a callback that writes the per-corpus status file.
-ProgressFn = Callable[[str, int, int], None]
+#: A progress callback receives `(stage_name, index, total, detail)`: once as
+#: each gather stage begins (1-based index, `detail=None`), and optionally again
+#: mid-stage with a human-readable `detail` string for long stages — e.g. the
+#: mailing-list download reporting "1240/8000 messages downloaded". The CLI
+#: passes None; the MCP gather runner passes a callback that writes the
+#: per-corpus status file.
+ProgressFn = Callable[[str, int, int, Optional[str]], None]
 
 
 def stage_plan(args: argparse.Namespace, group_backed: bool) -> List[str]:
@@ -64,6 +67,7 @@ class StageTracker:
         self._plan = plan
         self._progress = progress
         self._i = 0
+        self._name: Optional[str] = None
 
     def begin(self, name: str) -> None:
         expected = self._plan[self._i] if self._i < len(self._plan) else None
@@ -73,5 +77,14 @@ class StageTracker:
                 f"but stage_plan expects {expected!r}"
             )
         self._i += 1
+        self._name = name
         if self._progress is not None:
-            self._progress(name, self._i, len(self._plan))
+            self._progress(name, self._i, len(self._plan), None)
+
+    def detail(self, text: str) -> None:
+        """Report mid-stage progress for the stage currently in flight (e.g. a
+        download counter on a long stage). A no-op before any stage has begun or
+        when there is no progress sink. The reporter coalesces these — see the
+        MCP gather runner's `_progress` — so a chatty stage can call it freely."""
+        if self._progress is not None and self._name is not None:
+            self._progress(self._name, self._i, len(self._plan), text)

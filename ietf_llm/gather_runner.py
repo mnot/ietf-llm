@@ -67,6 +67,12 @@ _LEASE_HEARTBEAT_S = 900.0
 #: waiting for the fleet to free a slot.
 _SLOT_POLL_S = 5.0
 
+#: Minimum seconds between mid-stage detail writes (see `_progress`). A long
+#: stage (the mailing-list download) reports a counter per batch; coalescing to
+#: this interval keeps the status file / control plane from churning while still
+#: giving a poller fresh movement to show.
+_DETAIL_MIN_INTERVAL_S = 3.0
+
 #: Default bound on this host's pending-gather backlog (queued + running);
 #: overflow is refused so a runaway caller cannot pile up unbounded work.
 _DEFAULT_QUEUE_MAX = 16
@@ -381,6 +387,7 @@ def _new_status(spec: GatherSpec, state: str) -> Dict[str, Any]:
         "stage": None,
         "stage_index": 0,
         "stage_total": None,
+        "stage_detail": None,
         "error": None,
     }
 
@@ -528,10 +535,26 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         status["state"] = "running"
         _write_status(store, status)
 
-        def _progress(name: str, index: int, total: int) -> None:
+        last_detail_write = 0.0
+
+        def _progress(
+            name: str, index: int, total: int, detail: Optional[str] = None
+        ) -> None:
+            nonlocal last_detail_write
             status["stage"] = name
             status["stage_index"] = index
             status["stage_total"] = total
+            status["stage_detail"] = detail
+            # A stage transition (detail is None) always persists. Mid-stage
+            # detail updates can fire often on a long stage, so throttle the
+            # write/publish to keep a chatty stage from flooding the control
+            # plane — the next transition resets the detail to None and writes
+            # regardless, so a dropped intermediate count is harmless.
+            if detail is not None:
+                now = time.monotonic()
+                if now - last_detail_write < _DETAIL_MIN_INTERVAL_S:
+                    return
+                last_detail_write = now
             _write_status(store, status)
 
         try:

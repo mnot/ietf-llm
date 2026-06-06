@@ -77,16 +77,38 @@ def test_stage_plan_dynamic_drafts_count_as_drafts_stage() -> None:
 def test_stage_tracker_emits_index_and_total_in_order() -> None:
     plan = ["a", "b", "c"]
     seen: List[Any] = []
-    tracker = StageTracker(plan, lambda n, i, t: seen.append((n, i, t)))
+    tracker = StageTracker(plan, lambda n, i, t, d: seen.append((n, i, t, d)))
     tracker.begin("a")
     tracker.begin("b")
     tracker.begin("c")
-    assert seen == [("a", 1, 3), ("b", 2, 3), ("c", 3, 3)]
+    # Each stage begins with detail=None.
+    assert seen == [("a", 1, 3, None), ("b", 2, 3, None), ("c", 3, 3, None)]
+
+
+def test_stage_tracker_detail_reports_current_stage() -> None:
+    seen: List[Any] = []
+    tracker = StageTracker(["a", "b"], lambda n, i, t, d: seen.append((n, i, t, d)))
+    tracker.begin("a")
+    tracker.detail("1/10 done")  # mid-stage update for the in-flight stage
+    tracker.begin("b")
+    assert seen == [
+        ("a", 1, 2, None),
+        ("a", 1, 2, "1/10 done"),  # same stage/index, carries detail
+        ("b", 2, 2, None),
+    ]
+
+
+def test_stage_tracker_detail_before_any_stage_is_noop() -> None:
+    seen: List[Any] = []
+    tracker = StageTracker(["a"], lambda n, i, t, d: seen.append((n, i, t, d)))
+    tracker.detail("nope")  # no stage begun yet
+    assert seen == []
 
 
 def test_stage_tracker_none_progress_is_noop() -> None:
     tracker = StageTracker(["a"], None)
     tracker.begin("a")  # must not raise
+    tracker.detail("x")  # must not raise
 
 
 def test_stage_tracker_raises_on_drift() -> None:

@@ -58,7 +58,7 @@ def _stub_pipeline(
 def _emitted(args: Any) -> List[str]:
     seen: List[str] = []
     main_mod._gather_one(
-        args, Verbosity.QUIET, progress=lambda n, i, t: seen.append(n)
+        args, Verbosity.QUIET, progress=lambda n, i, t, d: seen.append(n)
     )
     return seen
 
@@ -130,6 +130,23 @@ def test_start_runs_to_done_with_progress(
     assert status["stage"] == "digests"
     assert status["stage_index"] == 2 and status["stage_total"] == 2
     assert status["started"] and status["finished"] and status["error"] is None
+
+
+def test_progress_detail_lands_in_status(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mid-stage detail call (4th arg) must surface in the published status so
+    # gather_status can show a long stage moving.
+    def fake_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+        progress("mailing list", 1, 2)
+        progress("mailing list", 1, 2, "ietf-http-wg: 5/10 messages downloaded")
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", fake_run)
+    gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    status = _wait_terminal("tls")
+    assert status["stage"] == "mailing list"
+    assert status["stage_detail"] == "ietf-http-wg: 5/10 messages downloaded"
 
 
 def test_start_records_failed_on_unusable_name(

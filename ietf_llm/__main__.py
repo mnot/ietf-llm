@@ -807,6 +807,12 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.
     tracker.begin("mailing list")
+
+    def _mail_progress(list_name: str, done: int, total: int) -> None:
+        # Surface the IMAP download as mid-stage detail so a poller sees this
+        # long stage moving (one stage covering tens of thousands of messages).
+        tracker.detail(f"{list_name}: {done}/{total} messages downloaded")
+
     sync_mailing_list(
         args.wg,
         cache_dir,
@@ -814,6 +820,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         extra_lists=args.mailing_list,
         auto_discover=group_backed,
         verbose=verbosity,
+        on_progress=_mail_progress,
     )
 
     if group_backed:
