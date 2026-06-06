@@ -20,11 +20,11 @@ import shutil
 import sys
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import __version__, canonical, config, corpus, http_metrics, paths
+from . import __version__, canonical, cli_list, config, http_metrics, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
-from .freshness import last_gathered, record_gather
+from .freshness import record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.catalog import ensure_catalog_index
 from .gather.charter import process_charter
@@ -63,7 +63,6 @@ from .utils import (
     DEFAULT_MONTHS,
     LogLevel,
     Verbosity,
-    cached_wg_names,
     fetch_group_object,
     get_cache_dir,
     get_wg_file_cache_dir,
@@ -354,7 +353,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         sys.exit(install())
 
     if args.list_wgs:
-        sys.exit(_print_cached_wgs())
+        sys.exit(cli_list.print_cached_wgs())
 
     if args.discover_github:
         if not args.wg:
@@ -384,7 +383,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         parser.error(months_error)
 
     if args.all:
-        targets = _discover_gathered_wgs()
+        targets = cli_list.discover_gathered_wgs()
         if not targets:
             print(
                 "No gathered corpora found under ~/.cache/ietf-llm/. "
@@ -407,51 +406,6 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     ensure_rfc_index(verbosity)
     ensure_catalog_index(verbosity)
     sync_if_pristine(verbosity)
-
-
-def _discover_gathered_wgs() -> List[str]:
-    """Acronyms of every WG with a files/ subdir in the cache.
-
-    Thin alias for `utils.cached_wg_names()` — kept as a local name
-    because `--all` and `--list` read naturally with it.
-    """
-    return cached_wg_names()
-
-
-def _print_cached_wgs() -> int:
-    """Print the cached corpora — name, kind, status, last-gathered —
-    to stdout. Returns 0 if any were found, 1 if the cache is empty.
-    """
-    wgs = _discover_gathered_wgs()
-    if not wgs:
-        print(
-            "No corpora cached yet. Run `ietf-llm <name>` "
-            "(e.g. `ietf-llm httpbis`) to gather one.",
-            file=sys.stderr,
-        )
-        return 1
-    rows = []
-    for wg in wgs:
-        kind, status = corpus.kind_status(wg)
-        when = last_gathered(wg)
-        date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
-        rows.append((wg, kind, status or "—", date_str, corpus.describe(wg)))
-    name_w = max(len(r[0]) for r in rows + [("corpus",)])
-    kind_w = max(len(r[1]) for r in rows + [("", "kind")])
-    status_w = max(len(r[2]) for r in rows + [("", "", "status")])
-    header = (
-        f"{'corpus'.ljust(name_w)}  {'kind'.ljust(kind_w)}  "
-        f"{'status'.ljust(status_w)}  {'last gathered'}  about"
-    )
-    print(header)
-    print("-" * len(header))
-    for name, kind, status, date_str, subject in rows:
-        line = (
-            f"{name.ljust(name_w)}  {kind.ljust(kind_w)}  "
-            f"{status.ljust(status_w)}  {date_str}  {subject}"
-        )
-        print(line.rstrip())
-    return 0
 
 
 def _resolve_corpus_shape(
