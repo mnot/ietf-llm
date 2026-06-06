@@ -23,7 +23,11 @@ IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993
 IMAP_USER = "anonymous"
 IMAP_PASS = "mnot+ietf-llm@ietf.org"
-BATCH_SIZE = 50
+# Messages per IMAP FETCH. Each batch is one command the server answers with a
+# single (multi-message) response, so a larger batch is both faster (fewer
+# round-trips on a first sync of a busy list) and gentler on the server (fewer
+# commands). Messages are small, so 200 per response stays modest in memory.
+BATCH_SIZE = 200
 # Socket timeout (seconds) so a stalled server can't hang a gather
 # indefinitely. Applies per blocking read, so it bounds stalls without
 # capping the total transfer time of a large (chunked) response.

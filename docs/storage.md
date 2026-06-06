@@ -78,9 +78,13 @@ version onto local scratch to serve reads. How it works is in
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 | `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently — per host and fleet-wide (default `3`) | — |
+| `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per host — non-datatracker (default `6`) | — |
+| `IETF_LLM_HTTP_MAX_DATATRACKER` | max gather HTTP requests in flight to datatracker (default `2`) | — |
 
 The non-secret knobs may instead go in the global `config.json` (`store_backend`, `control_db`,
-`blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. Secrets
+`blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. The two
+`IETF_LLM_HTTP_MAX_*` caps are environment-only (the governor that reads them
+sits below `config` in the import graph; see `ietf_llm/http_governor.py`). Secrets
 (`IETF_LLM_CONTROL_DB_TOKEN`, object-store keys) are environment-only. The HTTP serve path validates
 all of this at boot and refuses to start if `cloud` is under-configured (see
 [mcp-server.md](mcp-server.md)).

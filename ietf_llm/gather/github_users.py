@@ -51,7 +51,7 @@ from ..utils import (
     LogLevel,
     Verbosity,
     get_cache_dir,
-    http_session,
+    governed_get,
     log,
 )
 
@@ -184,7 +184,7 @@ def _fetch_one(  # pylint: disable=too-many-return-statements
     rather than raising — see _Outcome docstring."""
     url = _USER_API + login
     try:
-        response = http_session().get(url, headers=headers, timeout=10.0)
+        response = governed_get(url, headers=headers, timeout=10.0)
     except requests.RequestException as err:
         log(
             f"GitHub user lookup transient error for {login}: "

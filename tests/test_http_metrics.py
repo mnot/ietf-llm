@@ -187,14 +187,14 @@ def test_get_json_records_200_and_304(
 
     http_metrics.reset()
     monkeypatch.setattr(
-        datatracker.http_session(),
+        utils.http_session(),
         "get",
         lambda *a, **k: _FakeResp(200, b'{"a": 1}', {"a": 1}),
     )
     assert datatracker._get_json("/api/v1/x") == {"a": 1}
 
     monkeypatch.setattr(
-        datatracker.http_session(), "get", lambda *a, **k: _FakeResp(304, b"")
+        utils.http_session(), "get", lambda *a, **k: _FakeResp(304, b"")
     )
     datatracker._get_json("/api/v1/y")
     m = http_metrics.current()

@@ -28,7 +28,7 @@ from ..utils import (
     LogLevel,
     Verbosity,
     get_cache_dir,
-    http_session,
+    governed_get,
     log,
 )
 
@@ -166,7 +166,7 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         headers["If-None-Match"] = entry["etag"]
 
     try:
-        response = http_session().get(url, headers=headers, timeout=timeout)
+        response = governed_get(url, headers=headers, timeout=timeout)
     except requests.RequestException:
         http_metrics.record(url, 0, 0, error=True)
         return _decode_cached(entry)

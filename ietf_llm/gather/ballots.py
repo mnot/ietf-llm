@@ -152,6 +152,42 @@ def _fetch_person_name(person_url: str, cache: Dict[str, str]) -> str:
 # --- Public API -----------------------------------------------------------
 
 
+#: Docs per batched ballot-history query. `doc__name__in` takes a comma list;
+#: keep chunks modest so the URL stays a sane length.
+_BALLOT_DOC_CHUNK = 40
+
+
+def _fetch_ballot_bodies(
+    doc_names: List[str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch the full position-event history for many docs at once, grouped by
+    doc name.
+
+    Collapses what used to be one `doc__name=<doc>` request per in-scope doc
+    into ceil(len / chunk) `doc__name__in=<chunk>` requests, paging each chunk
+    through `meta.next` so a chunk whose combined history exceeds one page is
+    never truncated. This is the bulk of a balloted WG's per-gather datatracker
+    chatter, so the saving is direct upstream load relief."""
+    grouped: Dict[str, List[Dict[str, Any]]] = {name: [] for name in doc_names}
+    for start in range(0, len(doc_names), _BALLOT_DOC_CHUNK):
+        chunk = doc_names[start : start + _BALLOT_DOC_CHUNK]
+        path: Optional[str] = (
+            f"{_API_BASE}/doc/ballotpositiondocevent/"
+            f"?doc__name__in={','.join(chunk)}"
+            "&limit=500"
+        )
+        while path:
+            body = _get_json(path)
+            if not body:
+                break
+            for obj in body.get("objects") or []:
+                slug = _slug_from_doc_url(obj.get("doc") or "")
+                if slug in grouped:
+                    grouped[slug].append(obj)
+            path = (body.get("meta") or {}).get("next") or None
+    return grouped
+
+
 def fetch_ballots(
     wg: str, months: int, verbose: Verbosity = Verbosity.STATUS
 ) -> List[Ballot]:
@@ -200,20 +236,18 @@ def fetch_ballots(
         verbose,
         level=LogLevel.STATUS,
     )
-    # First pass: pull each in-scope doc's full ballot body and collect
-    # the distinct balloters across all of them.
+    # Pull every in-scope doc's full ballot history in batched
+    # `doc__name__in` queries (not one request per doc), then collect the
+    # distinct balloters across all of them.
+    grouped = _fetch_ballot_bodies(doc_names)
     bodies: List[Tuple[str, Dict[str, Any]]] = []
     balloters: set[str] = set()
     for doc_name in doc_names:
-        body = _get_json(
-            f"{_API_BASE}/doc/ballotpositiondocevent/"
-            f"?doc__name={doc_name}"
-            "&limit=500"
-        )
-        if not body or "objects" not in body:
+        objs = grouped.get(doc_name)
+        if not objs:
             continue
-        bodies.append((doc_name, body))
-        for obj in body["objects"]:
+        bodies.append((doc_name, {"objects": objs}))
+        for obj in objs:
             balloter = obj.get("balloter") or obj.get("by") or ""
             if balloter:
                 balloters.add(balloter)

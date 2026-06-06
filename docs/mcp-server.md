@@ -244,6 +244,25 @@ died is relabelled `interrupted` once its lease lapses.
 > slot, so a cron/shell gather runs alongside the cap rather than counting
 > toward it. Bringing the CLI under the same slot is a planned follow-up.
 
+### Per-host request governor
+
+The gather-count cap above bounds *how many gathers* run; a separate, finer cap
+bounds *how many HTTP requests* any one gather (or all of them in a process)
+keeps in flight to a single host. Every gather fetch routes through a per-host
+slot pool (`http_governor`), so a wide intra-gather fan-out — the draft / RFC
+text downloads run in parallel — can never exceed the budget for a host
+regardless of pipeline structure or concurrent gathers.
+
+- `IETF_LLM_HTTP_MAX_DATATRACKER` (default `2`) — cap for `datatracker.ietf.org`,
+  kept tight because it is a shared, database-backed community service.
+- `IETF_LLM_HTTP_MAX_PER_HOST` (default `6`) — cap for every other host (the
+  CDN-fronted draft / RFC text hosts, GitHub, the mirrors), which tolerate a
+  wider fan-out.
+
+These are operational knobs read from the environment only. Lowering them makes
+gathers gentler (and slower); raising the per-host cap speeds up the parallel
+document downloads against the static hosts.
+
 This is the one break from the read-only / no-network contract — leave it
 **off** for a shared HTTP replica or a read-only-mounted cache *on the local
 backend*, where a gathered corpus is only durable on the box that wrote it. On

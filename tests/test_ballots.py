@@ -107,7 +107,7 @@ def test_drafts_with_in_window_activity_get_full_ballot_fetched(
                 _position_event("draft-foo", 101, "noobj", recent),
             ],
         },
-        "doc__name=draft-foo": {
+        "doc__name__in=draft-foo": {
             "objects": [
                 _position_event("draft-foo", 101, "noobj", recent),
             ],
@@ -141,7 +141,7 @@ def test_latest_event_per_balloter_wins(
                 _position_event("draft-foo", 101, "noobj", late),
             ],
         },
-        "doc__name=draft-foo": {
+        "doc__name__in=draft-foo": {
             "objects": [
                 _position_event(
                     "draft-foo", 101, "discuss", early,
@@ -183,7 +183,7 @@ def test_pre_window_discuss_still_appears_when_ad_hasnt_revisited(
                 _position_event("draft-foo", 202, "noobj", recent),
             ],
         },
-        "doc__name=draft-foo": {
+        "doc__name__in=draft-foo": {
             "objects": [
                 _position_event(
                     "draft-foo", 101, "discuss", long_ago,
@@ -200,6 +200,39 @@ def test_pre_window_discuss_still_appears_when_ad_hasnt_revisited(
     assert "Alice Chen" in positions_by_name
     assert positions_by_name["Alice Chen"].pos_slug == "discuss"
     assert "Still standing." in positions_by_name["Alice Chen"].discuss
+
+
+# --- Batched fetch (no N+1) ----------------------------------------------
+
+
+def test_multiple_docs_fetched_in_one_batched_query(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two in-scope docs must be pulled with a single `doc__name__in` query
+    # whose body carries events for both, not one request per doc.
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    calls = _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {
+            "objects": [
+                _position_event("draft-foo", 101, "noobj", recent),
+                _position_event("draft-bar", 202, "discuss", recent),
+            ],
+        },
+        "doc__name__in=": {
+            "objects": [
+                _position_event("draft-foo", 101, "noobj", recent),
+                _position_event("draft-bar", 202, "discuss", recent),
+            ],
+        },
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/202/": {"name": "Bob Smith"},
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert {b.doc_name for b in out} == {"draft-foo", "draft-bar"}
+    # The batched history query was issued exactly once for both docs.
+    history_calls = [c for c in calls if "doc__name__in=" in c]
+    assert len(history_calls) == 1
 
 
 # --- Rendering -----------------------------------------------------------

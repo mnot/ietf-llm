@@ -272,7 +272,7 @@ def _install_stub(
         calls.append({"url": url, "headers": headers or {}})
         return handler(url, headers or {})
 
-    monkeypatch.setattr(gather_rfcs.http_session(), "get", fake_get)
+    monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)
     return calls
 
 
