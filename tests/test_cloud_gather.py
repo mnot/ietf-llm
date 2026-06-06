@@ -51,7 +51,7 @@ def test_cloud_gather_publishes_and_serves(
     # Stub the pipeline: write a files/ tree into the local cache (the gather's
     # natural output, which on a cloud node is ephemeral scratch), report
     # success. The worker then publishes that tree to the cloud backend.
-    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None) -> bool:
+    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> bool:
         corpus = argv[0]
         digests = Path(get_cache_dir()) / corpus / "files" / "digests"
         digests.mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,7 @@ def test_fleet_slot_blocks_a_gather_until_released(
     monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", "1")
     monkeypatch.setattr(gather_runner, "_SLOT_POLL_S", 0.02)
 
-    def _fake_run_gather(argv: list[str], _v: object, progress: object = None) -> bool:
+    def _fake_run_gather(argv: list[str], _v: object, progress: object = None, note_fn: object = None) -> bool:
         digests = Path(get_cache_dir()) / argv[0] / "files" / "digests"
         digests.mkdir(parents=True, exist_ok=True)
         (digests / "index.md").write_text("ok\n")

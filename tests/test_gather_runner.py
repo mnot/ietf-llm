@@ -139,7 +139,7 @@ def _wait_terminal(corpus: str, timeout: float = 5.0) -> dict:
 def test_start_runs_to_done_with_progress(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+    def fake_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
         progress("mailing list", 1, 2)
         progress("digests", 2, 2)
         return True
@@ -159,7 +159,9 @@ def test_progress_detail_lands_in_status(
 ) -> None:
     # A mid-stage detail call (4th arg) must surface in the published status so
     # gather_status can show a long stage moving.
-    def fake_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+    def fake_run(
+        argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None
+    ) -> bool:
         progress("mailing list", 1, 2)
         progress("mailing list", 1, 2, "ietf-http-wg: 5/10 messages downloaded")
         return True
@@ -169,6 +171,21 @@ def test_progress_detail_lands_in_status(
     status = _wait_terminal("tls")
     assert status["stage"] == "mailing list"
     assert status["stage_detail"] == "ietf-http-wg: 5/10 messages downloaded"
+
+
+def test_pipeline_notes_land_in_status(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(
+        argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None
+    ) -> bool:
+        note_fn("Auto-tracked 1 GitHub repo(s): httpwg/http-extensions.")
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", fake_run)
+    gather_runner.start(gather_runner.GatherSpec(corpus="httpbis"))
+    status = _wait_terminal("httpbis")
+    assert status["notes"] == ["Auto-tracked 1 GitHub repo(s): httpwg/http-extensions."]
 
 
 def test_start_returns_a_cancel_token(
@@ -186,7 +203,9 @@ def test_request_stop_cancels_running_gather(
     started = threading.Event()
     proceed = threading.Event()
 
-    def fake_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+    def fake_run(
+        argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None
+    ) -> bool:
         progress("mailing list", 1, 2)  # running; first cancel poll (none yet)
         started.set()
         proceed.wait(timeout=5.0)
@@ -255,7 +274,7 @@ def test_second_start_reports_already_running(
 ) -> None:
     release = threading.Event()
 
-    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
         progress("mailing list", 1, 1)
         release.wait(timeout=5.0)
         return True
@@ -277,7 +296,7 @@ def _blocking_gather(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
     flight while the test inspects the queue."""
     release = threading.Event()
 
-    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
         progress("mailing list", 1, 1)
         release.wait(timeout=5.0)
         return True
@@ -296,7 +315,7 @@ def test_two_corpora_run_concurrently(
     started: set[str] = set()
     lock = threading.Lock()
 
-    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
         progress("mailing list", 1, 1)
         with lock:
             started.add(argv[0])

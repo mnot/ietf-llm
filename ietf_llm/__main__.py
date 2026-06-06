@@ -20,11 +20,11 @@ import shutil
 import sys
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import __version__, canonical, config, corpus, http_metrics, paths
+from . import __version__, canonical, cli_list, config, http_metrics, paths
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
-from .freshness import last_gathered, record_gather
+from .freshness import record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.catalog import ensure_catalog_index
 from .gather.charter import process_charter
@@ -51,6 +51,7 @@ from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
+from .gather.repo_discovery import autotrack_github, print_discovery
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
@@ -62,7 +63,6 @@ from .utils import (
     DEFAULT_MONTHS,
     LogLevel,
     Verbosity,
-    cached_wg_names,
     fetch_group_object,
     get_cache_dir,
     get_wg_file_cache_dir,
@@ -148,6 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="List the corpora already cached under ~/.cache/ietf-llm/ "
         "(with kind, status, last-gathered date, and subject), then exit. "
         "Does not gather.",
+    )
+    parser.add_argument(
+        "--discover-github",
+        action="store_true",
+        dest="discover_github",
+        help="Discover and print the GitHub repos worth tracking for a Working "
+        "Group (Datatracker-org repos with draft sources + an active issue "
+        "tracker) and the matching `--github` flags, then exit. Writes nothing.",
     )
     parser.add_argument(
         "--completion",
@@ -345,7 +353,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         sys.exit(install())
 
     if args.list_wgs:
-        sys.exit(_print_cached_wgs())
+        sys.exit(cli_list.print_cached_wgs())
+
+    if args.discover_github:
+        if not args.wg:
+            parser.error("--discover-github needs a Working Group name")
+        sys.exit(print_discovery(args.wg))
 
     if args.all and args.wg:
         parser.error("--all is mutually exclusive with a positional NAME argument")
@@ -370,7 +383,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         parser.error(months_error)
 
     if args.all:
-        targets = _discover_gathered_wgs()
+        targets = cli_list.discover_gathered_wgs()
         if not targets:
             print(
                 "No gathered corpora found under ~/.cache/ietf-llm/. "
@@ -393,51 +406,6 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     ensure_rfc_index(verbosity)
     ensure_catalog_index(verbosity)
     sync_if_pristine(verbosity)
-
-
-def _discover_gathered_wgs() -> List[str]:
-    """Acronyms of every WG with a files/ subdir in the cache.
-
-    Thin alias for `utils.cached_wg_names()` — kept as a local name
-    because `--all` and `--list` read naturally with it.
-    """
-    return cached_wg_names()
-
-
-def _print_cached_wgs() -> int:
-    """Print the cached corpora — name, kind, status, last-gathered —
-    to stdout. Returns 0 if any were found, 1 if the cache is empty.
-    """
-    wgs = _discover_gathered_wgs()
-    if not wgs:
-        print(
-            "No corpora cached yet. Run `ietf-llm <name>` "
-            "(e.g. `ietf-llm httpbis`) to gather one.",
-            file=sys.stderr,
-        )
-        return 1
-    rows = []
-    for wg in wgs:
-        kind, status = corpus.kind_status(wg)
-        when = last_gathered(wg)
-        date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
-        rows.append((wg, kind, status or "—", date_str, corpus.describe(wg)))
-    name_w = max(len(r[0]) for r in rows + [("corpus",)])
-    kind_w = max(len(r[1]) for r in rows + [("", "kind")])
-    status_w = max(len(r[2]) for r in rows + [("", "", "status")])
-    header = (
-        f"{'corpus'.ljust(name_w)}  {'kind'.ljust(kind_w)}  "
-        f"{'status'.ljust(status_w)}  {'last gathered'}  about"
-    )
-    print(header)
-    print("-" * len(header))
-    for name, kind, status, date_str, subject in rows:
-        line = (
-            f"{name.ljust(name_w)}  {kind.ljust(kind_w)}  "
-            f"{status.ljust(status_w)}  {date_str}  {subject}"
-        )
-        print(line.rstrip())
-    return 0
 
 
 def _resolve_corpus_shape(
@@ -668,6 +636,7 @@ def run_gather(
     argv: List[str],
     verbosity: Verbosity = Verbosity.STATUS,
     progress: Optional[ProgressFn] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Programmatic gather entry point: gather one corpus from a CLI-style
     `argv` (`[corpus, "--mailing-list", "foo", ...]`).
@@ -676,16 +645,18 @@ def run_gather(
     CLI exactly, then runs the pipeline. Returns True on success, False if
     the corpus name was unusable (a typo'd WG that is neither a group, a
     known list, nor configured with sources). Used by the MCP gather
-    runner; not wired to any console script.
+    runner; not wired to any console script. `note_fn` forwards one-line
+    outcome notes (e.g. auto-tracked GitHub repos) to the caller's status.
     """
     args = build_parser().parse_args(argv)
-    return _gather_one(args, verbosity, progress=progress)
+    return _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
 
 
 def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     args: argparse.Namespace,
     verbosity: Verbosity,
     progress: Optional[ProgressFn] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Run the full gather pipeline for a single WG.
 
@@ -727,6 +698,10 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         args, persisted, "mailing_list", validate_list_names, verbosity
     )
     _validate_new_sources(args, persisted, "github", validate_github_repos, verbosity)
+
+    # First gather, no --github: auto-track the group's discovered draft repos
+    # (before config.merge folds args.github into the persisted set).
+    autotrack_github(args, persisted, group_backed, SCOPE, verbosity, note_fn=note_fn)
 
     config.merge(
         args,

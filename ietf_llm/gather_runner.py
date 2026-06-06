@@ -689,9 +689,16 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 last_detail_write = now
             _write_status(store, status)
 
+        def _note(message: str) -> None:
+            # Surface pipeline-level notes (e.g. which GitHub repos auto-track
+            # added, or that discovery was throttled) so the client sees them
+            # via gather_status instead of only in the server's stderr.
+            status.setdefault("notes", []).append(message)
+            _write_status(store, status)
+
         try:
             ok = gather_main.run_gather(
-                spec.to_argv(), Verbosity.STATUS, progress=_progress
+                spec.to_argv(), Verbosity.STATUS, progress=_progress, note_fn=_note
             )
             if ok:
                 # Publish the gathered tree as a new version. A no-op finalise on
