@@ -144,6 +144,12 @@ class ControlPlane(ABC):
     def get_gather_status(self, corpus: str) -> Optional[str]:
         """The stored gather status for `corpus`, or None if none recorded."""
 
+    @abstractmethod
+    def list_gather_statuses(self) -> List[Tuple[str, str]]:
+        """Every stored gather status as `(corpus, payload)` pairs, so a
+        no-corpus `gather_status` listing sees gathers on other replicas, not
+        just the locally-cached corpora this host knows about."""
+
 
 class SqlExecutor(ABC):
     """Runs SQLite-dialect SQL against a backend. Two primitives, each a single
@@ -322,6 +328,10 @@ class SqlControlPlane(ControlPlane):
             "SELECT status FROM corpus_status WHERE corpus=?", (corpus,)
         )
         return str(rows[0][0]) if rows else None
+
+    def list_gather_statuses(self) -> List[Tuple[str, str]]:
+        rows = self._sql.query("SELECT corpus, status FROM corpus_status")
+        return [(str(row[0]), str(row[1])) for row in rows]
 
 
 class SqliteExecutor(SqlExecutor):

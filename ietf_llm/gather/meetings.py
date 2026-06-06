@@ -18,6 +18,7 @@ from ..utils import (
     DEFAULT_HEADERS,
     LogLevel,
     Verbosity,
+    atomic_open_binary,
     clean_html,
     fetch_resource,
     format_filename,
@@ -564,7 +565,7 @@ def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
         c_type = p_res.headers.get("Content-Type", "").lower()
         if "application/pdf" in c_type:
             log(f"Downloading PDF: {dest_path}...", verbose, level=LogLevel.PROGRESS)
-            with open(dest_path, "wb") as pdf_fh:
+            with atomic_open_binary(dest_path) as pdf_fh:
                 for chunk in p_res.iter_content(chunk_size=8192):
                     pdf_fh.write(chunk)
             return True

@@ -228,6 +228,12 @@ class CorpusStore(ABC):
         locally (the local backend — callers then fall back to the local file)."""
         return None
 
+    def list_gather_statuses(self) -> List[Dict[str, Any]]:
+        """All fleet-visible gather statuses. Default empty: the local backend
+        keeps status in per-corpus files, which `gather_runner.all_statuses`
+        enumerates by walking the cache."""
+        return []
+
 
 class LocalCorpusStore(CorpusStore):
     """Filesystem backend: the live cache under `get_cache_dir()` is the corpus,

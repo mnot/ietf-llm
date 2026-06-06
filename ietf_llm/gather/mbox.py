@@ -13,6 +13,7 @@ from ..paths import raw_dir, raw_mail_archive_path
 from ..utils import (
     LogLevel,
     Verbosity,
+    atomic_open_binary,
     fetch_resource,
     get_cache_dir,
     get_mailing_list_name,
@@ -222,7 +223,7 @@ def _download_batches(
             if not isinstance(body, bytes):
                 continue
 
-            with open(cache_file, "wb") as file_handle:
+            with atomic_open_binary(cache_file) as file_handle:
                 file_handle.write(body)
             new_count += 1
 

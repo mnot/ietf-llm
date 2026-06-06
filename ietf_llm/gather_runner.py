@@ -777,16 +777,30 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
 
 
 def all_statuses() -> List[Dict[str, Any]]:
-    """Every recorded gather status, newest activity first."""
-    root = get_cache_dir()
+    """Every recorded gather status, newest activity first.
+
+    Merges the control plane's fleet-visible statuses (cloud backend; empty on
+    the local backend) with this host's per-corpus cache records, so a
+    no-corpus listing also sees gathers queued or running on other replicas,
+    not just the corpora cached locally.
+    """
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
     out: List[Dict[str, Any]] = []
-    if not os.path.isdir(root):
-        return out
-    for name in sorted(os.listdir(root)):
-        if name.startswith((".", "_")):
-            continue
-        status = read_status(name)
-        if status is not None:
+    seen: "set[str]" = set()
+    for status in corpus_store.get_corpus_store().list_gather_statuses():
+        corpus = status.get("corpus")
+        if isinstance(corpus, str) and corpus not in seen:
+            seen.add(corpus)
             out.append(status)
+    root = get_cache_dir()
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root)):
+            if name.startswith((".", "_")) or name in seen:
+                continue
+            local = read_status(name)
+            if local is not None:
+                seen.add(name)
+                out.append(local)
     out.sort(key=lambda s: str(s.get("updated") or ""), reverse=True)
     return out

@@ -348,7 +348,10 @@ def _timeline_file(tmp_path: Path) -> Path:
         "- **2026-05-14** — Issue #172 opened: \"RAG\"\n"
         "- **2026-04-27** — `draft-ietf-wg-vocab-06` published\n"
         "- **2026-04-19** — Issue #160 closed: \"3.2 Respecting Preferences\"\n"
-        "- **2026-03-16** — IETF 125 meeting held\n\n"
+        # Real writer renders a session as its label ("IETF NNN meeting"),
+        # not "meeting held" — the filter marker must match this, not a
+        # hand-invented variant.
+        "- **2026-03-16** — IETF 125 meeting\n\n"
         "## 2025\n\n"
         "- **2025-09-22** — WG Last Call thread\n"
     )
@@ -360,7 +363,7 @@ def _timeline_file(tmp_path: Path) -> Path:
 def test_timeline_filter_by_kind(tmp_path: Path) -> None:
     path = _timeline_file(tmp_path)
     out = query_digest(str(path), "timeline", event_kind="meeting")
-    assert "IETF 125 meeting held" in out
+    assert "IETF 125 meeting" in out
     assert "Issue #172" not in out
 
 

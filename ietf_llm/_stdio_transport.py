@@ -123,6 +123,10 @@ async def stdio_server_threaded_writer(
     write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
 
     write_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=max_queue_items)
+    # Set when the writer thread has exited (normally or on a broken pipe). A
+    # producer parked on a full queue watches this so it can never block
+    # forever behind a dead consumer that will never drain again.
+    writer_gone = threading.Event()
 
     def writer_thread() -> None:
         _set("writer_alive", True)
@@ -149,6 +153,7 @@ async def stdio_server_threaded_writer(
                     return
         finally:
             _set("writer_alive", False)
+            writer_gone.set()
 
     thread = threading.Thread(
         target=writer_thread, name="ietf-llm-stdio-writer", daemon=True
@@ -170,6 +175,17 @@ async def stdio_server_threaded_writer(
         except anyio.ClosedResourceError:  # pragma: no cover
             await anyio.lowlevel.checkpoint()
 
+    def _put_or_give_up(data: bytes) -> None:
+        # Block until the queue has room, waking periodically to check whether
+        # the writer thread has died. If it has, drop the message rather than
+        # park forever behind a consumer that will never drain again.
+        while not writer_gone.is_set():
+            try:
+                write_queue.put(data, timeout=0.25)
+                return
+            except queue.Full:
+                continue
+
     async def stdout_writer() -> None:
         try:
             async with write_stream_reader:
@@ -189,7 +205,7 @@ async def stdio_server_threaded_writer(
                         # an explicit, named stall instead of an
                         # invisible one.
                         before = time.monotonic()
-                        await anyio.to_thread.run_sync(write_queue.put, data)
+                        await anyio.to_thread.run_sync(_put_or_give_up, data)
                         _increment(
                             "blocked_on_put_ms",
                             (time.monotonic() - before) * 1000.0,

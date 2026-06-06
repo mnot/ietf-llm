@@ -587,11 +587,16 @@ class Registry:
         return list(self.persons)
 
     def leadership(self) -> List[Person]:
-        """Persons holding any formal WG role, sorted by role then name."""
+        """Persons holding any formal WG role, sorted by highest role then name.
+
+        A person with several roles (e.g. Chair *and* Area Director) ranks by
+        their most senior one — the minimum order value — not whichever role
+        happens to sort first alphabetically.
+        """
         return sorted(
             (p for p in self.persons if p.roles),
             key=lambda p: (
-                _LEADERSHIP_ROLE_ORDER.get(next(iter(sorted(p.roles))), 99),
+                min(_LEADERSHIP_ROLE_ORDER.get(r, 99) for r in p.roles),
                 p.canonical_name,
             ),
         )

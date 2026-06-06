@@ -303,9 +303,13 @@ class ChairStatement:
 # Thread message section header (mirrors chunking.py's _THREAD_MSG_RE,
 # but rewritten here to capture the bits this module cares about: the
 # message number and the sender. Date isn't needed — we sort by file
-# order, which is already chronological.)
+# order, which is already chronological.) The optional trailing
+# `_(opened issue)_` annotation an issue file appends to its opener must be
+# consumed here, or it leaks into the sender name and splits the opener's
+# identity from their commenter identity in the tally.
 _THREAD_MSG_RE = re.compile(
-    r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?) — (.+?)(?: \(reply to \[\d+\]\))?$",
+    r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?) — (.+?)"
+    r"(?:\s+_\(opened issue\)_)?(?: \(reply to \[\d+\]\))?$",
     re.MULTILINE,
 )
 # Sender display includes a role tag in parens — e.g. "Alice (Chair)".

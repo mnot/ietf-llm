@@ -184,11 +184,29 @@ class _OpenAICompatEmbeddingModel:
             errored = False
         finally:
             serve_metrics.record_embed(time.monotonic() - start, error=errored)
-        # OpenAI returns one object per input carrying an explicit `index`;
-        # sort by it so the output order matches the input regardless of
-        # what order the server happens to emit.
-        rows = sorted(body["data"], key=lambda d: int(d.get("index", 0)))
-        return [[float(x) for x in row["embedding"]] for row in rows]
+        # OpenAI returns one object per input carrying an explicit `index`.
+        # Place each at its index so the output lines up with the input
+        # positionally, and fail loudly on a count / index mismatch: silently
+        # accepting a short or misindexed response would misalign every
+        # chunk<->vector pair the caller zips together.
+        data = body["data"]
+        if len(data) != len(batch):
+            raise ValueError(
+                f"embed backend returned {len(data)} vectors for "
+                f"{len(batch)} inputs"
+            )
+        result: list[list[float]] = [[] for _ in batch]
+        filled = [False] * len(batch)
+        for row in data:
+            idx = int(row.get("index", 0))
+            if not 0 <= idx < len(batch) or filled[idx]:
+                raise ValueError(
+                    f"embed backend returned a bad or duplicate index {idx} "
+                    f"for a batch of {len(batch)}"
+                )
+            result[idx] = [float(x) for x in row["embedding"]]
+            filled[idx] = True
+        return result
 
 
 def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:

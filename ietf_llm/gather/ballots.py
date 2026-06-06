@@ -201,20 +201,29 @@ def fetch_ballots(
     """
     cutoff = _cutoff(months)
     cutoff_param = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    body = _get_json(
+    # Page through `meta.next` (like `_fetch_ballot_bodies`): a balloted WG can
+    # have more than 500 in-window position events, and a single capped request
+    # would drop the overflow — under-scoping which drafts are considered.
+    path: Optional[str] = (
         f"{_API_BASE}/doc/ballotpositiondocevent/"
         f"?doc__group__acronym={wg}"
         f"&time__gte={cutoff_param}"
         "&limit=500"
     )
-    if not body or "objects" not in body:
+    in_window: List[Dict[str, Any]] = []
+    while path:
+        body = _get_json(path)
+        if not body:
+            break
+        in_window.extend(body.get("objects") or [])
+        path = (body.get("meta") or {}).get("next") or None
+    if not in_window:
         log(
             f"No ballot data for {wg} from Datatracker.",
             verbose,
             level=LogLevel.PROGRESS,
         )
         return []
-    in_window = body["objects"]
     # Distinct doc names with any in-window position event.
     doc_names: List[str] = []
     seen: set[str] = set()

@@ -329,6 +329,17 @@ class CloudCorpusStore(CorpusStore):
     def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:
         self._control.set_gather_status(corpus, json.dumps(status, sort_keys=True))
 
+    def list_gather_statuses(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for _corpus, raw in self._control.list_gather_statuses():
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                out.append(parsed)
+        return out
+
     def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
         raw = self._control.get_gather_status(corpus)
         if raw is None:

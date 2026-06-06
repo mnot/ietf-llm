@@ -342,7 +342,12 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
                 "draft-published": "published",
                 "issue-opened": "opened",
                 "issue-closed": "closed",
-                "meeting": "meeting held",
+                # The timeline writer renders a session as its label
+                # ("IETF 125 meeting"), not "meeting held" — the old marker
+                # matched nothing. "meeting" catches IETF sessions; interim
+                # labels ("Interim 2026 #01") carry no common token, so those
+                # are not reliably matchable via substring.
+                "meeting": "meeting",
                 "wglc": "Last Call",
                 "adoption-call": "adoption",
             }
