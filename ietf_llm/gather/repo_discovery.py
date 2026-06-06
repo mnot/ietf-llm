@@ -110,9 +110,9 @@ class _GhClient:
     Distinguishing "GitHub said no such repo" (404) from "GitHub throttled
     or was unreachable" matters: the former is a real negative, the latter
     means the discovery result is incomplete and shouldn't be reported as
-    "nothing found". Rate-limit (403/429) and transport failures are
-    accumulated in `incidents` so the caller can caveat its output (and
-    suggest `GITHUB_TOKEN`, which lifts the 60/hr unauthenticated cap).
+    "nothing found". Rate-limit (403/429), server errors (5xx), and transport
+    failures are accumulated in `incidents` so the caller can caveat its output
+    (and suggest `GITHUB_TOKEN`, which lifts the 60/hr unauthenticated cap).
     """
 
     def __init__(self, token: Optional[str]) -> None:
@@ -125,8 +125,9 @@ class _GhClient:
         """GET a GitHub API URL. Returns ``(status_code, parsed_json)``.
 
         ``status_code`` is None on a transport error. ``parsed_json`` is
-        None on any non-200 or unparseable body. Rate-limit / unreachable
-        outcomes are also recorded in `self.incidents`.
+        None on any non-200 or unparseable body. Rate-limit (403/429),
+        server-error (5xx), and transport-failure outcomes are also recorded
+        in `self.incidents`.
         """
         headers = {**DEFAULT_HEADERS, "Accept": "application/vnd.github.v3+json"}
         if self.token:
@@ -138,6 +139,13 @@ class _GhClient:
             return None, None
         if resp.status_code in (403, 429):
             self.incidents.add("rate_limited")
+            return resp.status_code, None
+        if resp.status_code >= 500:
+            # A server-side GitHub failure (the shared session already retried
+            # the transient ones) is not a real negative — record it like an
+            # outage so a "nothing found" outcome stays inconclusive and the
+            # one-shot auto-track marker isn't burned on a partial scan.
+            self.incidents.add("unreachable")
             return resp.status_code, None
         if resp.status_code != 200:
             return resp.status_code, None
@@ -444,7 +452,9 @@ def format_discovery(result: DiscoveryResult) -> str:
         if cand.wg_draft_matches:
             bits.append(f"{len(cand.wg_draft_matches)} match active WG drafts")
         if cand.issues_active:
-            bits.append(f"{cand.open_issues} open issues, active")
+            # `open_issues_count` counts PRs too, so label it honestly rather
+            # than implying a pure issue count.
+            bits.append(f"{cand.open_issues} open issues/PRs, active")
         elif cand.has_issues:
             bits.append("issues quiet")
         lines.append(f"- [{mark}] `{cand.full_name}` — {'; '.join(bits)}")
@@ -494,8 +504,13 @@ def autotrack_github(
     config (preserving the marker alongside any `github` list it persists
     from `args.github`).
 
-    A scan left **incomplete** by a GitHub throttle / outage does *not* burn
-    the one-shot: the marker is withheld so the next gather retries.
+    A scan left **incomplete** by a GitHub throttle / outage that tracked
+    *nothing* does *not* burn the one-shot: the marker is withheld so the next
+    gather retries. If it did track some repos, those become the persisted set
+    and the marker is written as usual — so the throttled remainder is then
+    recovered with `--discover-github` / `suggest_github_repos` (a forced
+    re-gather won't re-run discovery, since the now-persisted `github` set
+    short-circuits it).
 
     `note_fn`, when given, receives a short human-readable summary of the
     outcome (repos tracked, or "throttled"). The gather runner routes it
@@ -530,21 +545,26 @@ def autotrack_github(
             "argument (CLI: `--github owner/repo`) to include them."
         )
     if result.incomplete:
-        # A throttle / outage left the scan partial. Surface it, and when it
-        # tracked nothing, leave the marker unset so the next gather retries
-        # rather than permanently skipping discovery.
-        token_hint = (
-            "Set GITHUB_TOKEN to avoid the unauthenticated GitHub rate limit, "
-            "then re-gather with force=True to pick up the rest."
-        )
+        # A throttle / outage left the scan partial.
         if result.high_confidence:
+            # Some repos were tracked, so the marker is written below and the
+            # persisted `github` set now owns the choice — a forced re-gather
+            # would short-circuit discovery, so point at an explicit re-scan
+            # (not force) to pick up whatever the throttle hid.
             _emit(
-                f"GitHub repo discovery was throttled; the list may be partial. {token_hint}"
+                "GitHub repo discovery was throttled; more draft repos may "
+                "exist than were auto-tracked. Set GITHUB_TOKEN to avoid the "
+                "unauthenticated rate limit, then run `--discover-github` (CLI) "
+                "or the `suggest_github_repos` tool to see the rest and add "
+                "them with the `github` argument."
             )
         else:
+            # Nothing tracked: withhold the marker so the next gather retries
+            # discovery rather than permanently skipping it.
             _emit(
                 "No GitHub repos were auto-tracked because discovery was "
-                f"throttled; it will retry on the next gather. {token_hint}"
+                "throttled; it will retry on the next gather. Set GITHUB_TOKEN "
+                "to avoid the unauthenticated GitHub rate limit."
             )
             return
     marker_cfg = config.load(args.wg, scope)

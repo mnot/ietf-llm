@@ -248,6 +248,28 @@ def test_discovery_rate_limited_is_incomplete(
     assert "rate-limited" in (result.note or "")
 
 
+def test_ghclient_records_5xx_as_incident(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A GitHub 5xx (after the session's own retries) is recorded as an
+    incident, not treated as a real negative — otherwise a partial scan looks
+    complete and burns the auto-track one-shot."""
+
+    class _Resp:
+        status_code = 503
+
+        @staticmethod
+        def json() -> Any:  # pragma: no cover - not reached on a 5xx
+            return None
+
+    monkeypatch.setattr(
+        rd, "http_session", lambda: type("S", (), {"get": lambda *a, **k: _Resp()})()
+    )
+    client = rd._GhClient(token=None)
+    status, data = client.get("https://api.github.com/orgs/fakewg/repos")
+    assert status == 503
+    assert data is None
+    assert "unreachable" in client.incidents
+
+
 # --- format_discovery -----------------------------------------------------
 
 
@@ -356,3 +378,31 @@ def test_autotrack_does_not_burn_oneshot_when_incomplete(
     assert "github_discovered" not in config.load("fakewg", "gather")
     # The throttle is surfaced (so the client isn't left thinking it has repos).
     assert any("throttled" in n for n in notes)
+
+
+def test_autotrack_commits_when_incomplete_but_some_found(
+    isolated_home: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial scan that still auto-tracked repos commits them: the marker is
+    written (the persisted set now owns the choice), and the note points at an
+    explicit re-scan rather than a forced re-gather, which would short-circuit
+    on that persisted set."""
+    monkeypatch.setattr(
+        rd,
+        "discover_group_repos",
+        lambda wg, verbose=Verbosity.STATUS: rd.DiscoveryResult(
+            wg=wg, high_confidence=["fakewg/spec-active"], incomplete=True
+        ),
+    )
+    args = _args()
+    notes: list = []
+    rd.autotrack_github(
+        args, {}, group_backed=True, scope="gather", verbose=Verbosity.QUIET,
+        note_fn=notes.append,
+    )
+    assert args.github == ["fakewg/spec-active"]
+    assert config.load("fakewg", "gather").get("github_discovered") is True
+    blob = " ".join(notes).lower()
+    assert "discover-github" in blob or "suggest_github_repos" in blob
+    # The misleading "re-gather with force" recovery hint is gone.
+    assert "force" not in blob

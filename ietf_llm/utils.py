@@ -697,9 +697,10 @@ def governed_get(url: str, **kwargs: Any) -> requests.Response:
     Every gather-side fetch routes through here — `fetch_resource` and the
     direct `http_session().get` call sites in `gather/*` — so that a wide
     fan-out or several concurrent gathers can never exceed the per-host budget,
-    datatracker especially. The slot is held only for the request itself, not
-    the body iteration; callers handle status, retries (via the adapter), and
-    metrics exactly as for a bare session GET."""
+    datatracker especially. The GET is non-streaming, so the slot is held for
+    the whole request including the body transfer — which is what bounds
+    concurrency through large draft / RFC downloads. Callers handle status,
+    retries (via the adapter), and metrics exactly as for a bare session GET."""
     with host_slot(url):
         return http_session().get(url, **kwargs)
 
