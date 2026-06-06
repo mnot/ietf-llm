@@ -45,6 +45,16 @@ Two ways to gather, depending on what's available:
   `ietf-llm <corpus>` (e.g. `ietf-llm httpbis`). `ietf-llm --list`
   shows what's cached.
 
+**GitHub repos are auto-discovered for a WG — you don't have to pass
+`github`.** A group-backed `start_gather` with no `github` finds, on the
+corpus's *first* gather, the repos in the WG's Datatracker org that hold
+Internet-Draft sources and an active issue tracker, and follows the
+high-confidence ones automatically (it runs once, then the user owns the
+`github` set). To preview or override that — or for a WG already gathered
+once — call `suggest_github_repos(corpus="<wg>")` (same opt-in gate) and
+pass its recommendation as `github=[...]`. From the shell, the dry run is
+`ietf-llm --discover-github <wg>`.
+
 **A gather in flight — or `queued` behind one — is a `gather_status`
 thing, not a retry thing.** Only one gather per corpus runs at a time,
 and on a shared server that one may have been started by another client

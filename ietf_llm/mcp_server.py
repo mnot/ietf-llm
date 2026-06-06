@@ -2308,6 +2308,21 @@ def _gather_elapsed(status: Dict[str, Any]) -> str:
     return f"{secs // 60}m{secs % 60:02d}s"
 
 
+def tool_suggest_github_repos(corpus: str) -> str:
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+    from .gather.repo_discovery import (  # pylint: disable=import-outside-toplevel
+        discover_group_repos,
+        format_discovery,
+    )
+
+    corpus = (corpus or "").strip()
+    if not corpus:
+        return "Provide a Working Group shortname (e.g. `tls`) to discover repos for."
+    if not gather_runner.valid_corpus_name(corpus):
+        return f"'{corpus}' is not a valid corpus name."
+    return format_discovery(discover_group_repos(corpus))
+
+
 @graceful_keyboard_interrupt
 def main() -> None:
     try:
@@ -3172,8 +3187,11 @@ def main() -> None:
             declare it:
             - **Working Group / RG / BoF**: pass just `corpus` as the
               shortname (`tls`, `cfrg`). The charter, drafts, RFCs,
-              meetings, mailing list, and any GitHub issues are
-              auto-discovered.
+              meetings, mailing list, and GitHub issues are auto-discovered
+              — including *which* repos to track: the first gather finds the
+              group's active draft repos and follows them automatically. To
+              preview or override that choice, call `suggest_github_repos`
+              and pass the result as `github`.
             - **Standalone mailing list**: pass `corpus` as the list name
               (`last-call`); auto-detected when it isn't a known group.
             - **Custom set**: any label as `corpus` plus explicit
@@ -3288,6 +3306,28 @@ def main() -> None:
                 token: The stop token returned by `start_gather`.
             """
             return await _offload(tool_stop_gather, corpus, token)
+
+        @server.tool()
+        async def suggest_github_repos(corpus: str) -> str:
+            """Discover which GitHub repos a Working Group's gather should
+            track, before calling `start_gather`.
+
+            A WG's Datatracker record points at a GitHub org that usually holds
+            many repos — only some are where drafts are actually discussed.
+            This reads that org, finds the repos that both carry Internet-Draft
+            sources and have an active issue tracker, and returns a ranked list
+            plus the exact `github=[...]` to pass to `start_gather`.
+
+            You don't *need* to call this first: a group-backed `start_gather`
+            with no `github` already auto-tracks the high-confidence repos on
+            the corpus's first gather. Use this to preview or override that
+            choice, to pick up 'maybe' repos it didn't auto-track, or for a
+            corpus that has already been gathered once.
+
+            Args:
+                corpus: The Working Group shortname (e.g. `tls`, `httpbis`).
+            """
+            return await _offload(tool_suggest_github_repos, corpus)
 
     _prewarm_embedding_model_async()
     if _resolve_transport() == "http":

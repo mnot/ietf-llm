@@ -51,6 +51,7 @@ from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
+from .gather.repo_discovery import autotrack_github, print_discovery
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
@@ -148,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="List the corpora already cached under ~/.cache/ietf-llm/ "
         "(with kind, status, last-gathered date, and subject), then exit. "
         "Does not gather.",
+    )
+    parser.add_argument(
+        "--discover-github",
+        action="store_true",
+        dest="discover_github",
+        help="Discover the GitHub repos worth tracking for a Working Group — "
+        "those in its Datatracker org that hold Internet-Draft sources and an "
+        "active issue tracker — print the ranked list and the matching "
+        "`--github` flags, then exit. Does not gather or write config.",
     )
     parser.add_argument(
         "--completion",
@@ -346,6 +356,11 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
     if args.list_wgs:
         sys.exit(_print_cached_wgs())
+
+    if args.discover_github:
+        if not args.wg:
+            parser.error("--discover-github needs a Working Group name")
+        sys.exit(print_discovery(args.wg))
 
     if args.all and args.wg:
         parser.error("--all is mutually exclusive with a positional NAME argument")
@@ -727,6 +742,11 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         args, persisted, "mailing_list", validate_list_names, verbosity
     )
     _validate_new_sources(args, persisted, "github", validate_github_repos, verbosity)
+
+    # First gather of a group-backed corpus with no --github: discover the
+    # group's active draft repos and auto-track the high-confidence ones,
+    # before config.merge folds args.github into the persisted set.
+    autotrack_github(args, persisted, group_backed, SCOPE, verbosity)
 
     config.merge(
         args,

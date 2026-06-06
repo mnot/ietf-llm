@@ -353,3 +353,36 @@ def test_format_interrupted_omits_growing_elapsed() -> None:
     # No elapsed token (it would grow on every poll); elapsed always has a
     # digit, and nothing else in an interrupted line does.
     assert not any(ch.isdigit() for ch in out)
+
+
+# --- tool_suggest_github_repos --------------------------------------------
+
+
+def test_suggest_github_repos_empty_corpus() -> None:
+    assert "Provide a Working Group shortname" in mcp_server.tool_suggest_github_repos("")
+
+
+def test_suggest_github_repos_invalid_name() -> None:
+    out = mcp_server.tool_suggest_github_repos("../etc")
+    assert "not a valid corpus name" in out
+
+
+def test_suggest_github_repos_renders_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ietf_llm.gather.repo_discovery as rd  # pylint: disable=import-outside-toplevel
+
+    cand = rd.RepoCandidate("httpwg/http-extensions", True, 101, "", False, False)
+    cand.draft_files = ["draft-ietf-httpbis-x.md"]
+    cand.wg_draft_matches = ["draft-ietf-httpbis-x"]
+    cand.issues_active = True
+    monkeypatch.setattr(
+        rd,
+        "discover_group_repos",
+        lambda wg, verbose=None: rd.DiscoveryResult(
+            wg=wg, candidates=[cand], high_confidence=["httpwg/http-extensions"]
+        ),
+    )
+    out = mcp_server.tool_suggest_github_repos("httpbis")
+    assert "httpwg/http-extensions" in out
+    assert 'github=["httpwg/http-extensions"]' in out
