@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import gather_runner
+from ietf_llm import corpus, gather_runner
 from ietf_llm.corpus_store import get_corpus_store
 from ietf_llm.utils import get_cache_dir
 
@@ -70,6 +70,47 @@ def test_cloud_gather_publishes_and_serves(
     cache = store.local_cache_dir("tls")
     assert cache is not None
     assert (Path(cache) / "digests" / "index.md").read_text() == "# Overview\nbody\n"
+
+
+def test_listing_classification_degrades_then_reads_through_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`kind_status` / `describe` (the `list_corpora` classification) must go
+    through the CorpusStore seam: never create a junk local cache dir and never
+    download a corpus's blobs just to classify it. A corpus not yet staged on
+    this replica degrades to the config-only path; once a real read stages it,
+    classification reads `group.md` from the staged tree."""
+    base = isolated_home / "store"
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
+    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
+    monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
+
+    # Publish a group corpus straight to the cloud store: a files/group.md
+    # carrying a name and status.
+    workspace = isolated_home / "ws"
+    (workspace / "files").mkdir(parents=True)
+    (workspace / "files" / "group.md").write_text(
+        "# tls\n**Name:** Transport Layer Security\n**Status:** active\n"
+    )
+    store = get_corpus_store()
+    store.publish("tls", str(workspace))
+
+    # Before any read materialises tls, classification degrades to config-only
+    # (no config -> custom / empty) WITHOUT downloading blobs or creating a dir.
+    assert corpus.kind_status("tls") == ("custom", "")
+    assert corpus.describe("tls") == ""
+    assert not (Path(get_cache_dir()) / "tls" / "files").exists()
+    assert not (base / "scratch" / "tls").exists()
+
+    # A real read stages the version onto scratch (the seam materialises here).
+    assert get_corpus_store().local_cache_dir("tls") is not None
+
+    # Now the same classification reads group.md through the staged tree.
+    assert corpus.kind_status("tls") == ("group", "active")
+    assert corpus.describe("tls") == "Transport Layer Security"
+    # Still no junk dir under the local cache root — the seam owns scratch.
+    assert not (Path(get_cache_dir()) / "tls" / "files").exists()
 
 
 def test_all_statuses_includes_control_plane_on_cloud(

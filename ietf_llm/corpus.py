@@ -20,7 +20,8 @@ import os
 from typing import Any, Dict, List, Tuple
 
 from . import config, paths
-from .utils import DEFAULT_MONTHS, get_wg_file_cache_dir, is_synthetic_wg
+from .corpus_store import get_corpus_store
+from .utils import DEFAULT_MONTHS, is_synthetic_wg
 
 # The gather CLI persists its config under this scope.
 _GATHER_SCOPE = "gather"
@@ -33,20 +34,27 @@ def kind_status(wg: str) -> Tuple[str, str]:
     / …) for group corpora, empty otherwise. Reads `group.md`, then
     falls back to charter / meetings artifacts for caches predating
     `group.md`, then to the persisted source config.
+
+    Resolves the corpus's files dir through the `CorpusStore` seam,
+    read-only: it never creates a dir, and on the cloud backend it reads
+    only an already-staged version (`materialised_cache_dir`) rather than
+    downloading every corpus's blobs for a listing — so a corpus not yet
+    materialised there degrades to the config-only classification below.
     """
     if is_synthetic_wg(wg):
         return ("synthetic", "")
-    cache = get_wg_file_cache_dir(wg)
-    gpath = paths.group_path(cache)
-    if os.path.isfile(gpath):
-        return ("group", _group_status(gpath))
-    # group.md absent on older caches; other Datatracker-sourced
-    # artifacts still mark a group corpus (status unknown until the
-    # next gather rewrites group.md).
-    if os.path.isfile(paths.charter_path(cache)) or os.path.isdir(
-        paths.meetings_dir(cache)
-    ):
-        return ("group", "")
+    cache = get_corpus_store().materialised_cache_dir(wg)
+    if cache is not None:
+        gpath = paths.group_path(cache)
+        if os.path.isfile(gpath):
+            return ("group", _group_status(gpath))
+        # group.md absent on older caches; other Datatracker-sourced
+        # artifacts still mark a group corpus (status unknown until the
+        # next gather rewrites group.md).
+        if os.path.isfile(paths.charter_path(cache)) or os.path.isdir(
+            paths.meetings_dir(cache)
+        ):
+            return ("group", "")
     cfg = config.load(wg, _GATHER_SCOPE)
     if cfg.get("mailing_list") and not cfg.get("draft") and not cfg.get("github"):
         return ("list", "")
@@ -83,7 +91,15 @@ def describe(wg: str) -> str:
     kind, _ = kind_status(wg)
     cfg = config.load(wg, _GATHER_SCOPE)
     if kind == "group":
-        return _group_field(paths.group_path(get_wg_file_cache_dir(wg)), "**Name:**")
+        # `kind == "group"` means kind_status read the corpus's files dir, so it
+        # is materialised; re-resolve through the seam (read-only) rather than
+        # the dir-creating utils helper. The None guard covers a publish/reap
+        # racing between the two calls — degrade to empty, as an older
+        # name-less group.md already does.
+        cache = get_corpus_store().materialised_cache_dir(wg)
+        if cache is not None:
+            return _group_field(paths.group_path(cache), "**Name:**")
+        return ""
     return _source_subject(cfg)
 
 
