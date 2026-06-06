@@ -156,13 +156,23 @@ def fetch_doc_events(
     # `time__gte` filters server-side so we don't drag down a full
     # group's history just to discard most of it.
     cutoff_param = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    body = _get_json(
+    # Page through `meta.next`: a long-running WG's in-window history can
+    # exceed one 500-row page, and a single capped request would silently drop
+    # the overflow (likely the newest events, given default ordering).
+    path: Optional[str] = (
         f"{_API_BASE}/doc/docevent/"
         f"?doc__group__acronym={wg}"
         f"&time__gte={cutoff_param}"
         "&limit=500"
     )
-    if not body or "objects" not in body:
+    objects: List[Dict[str, Any]] = []
+    while path:
+        body = _get_json(path)
+        if not body:
+            break
+        objects.extend(body.get("objects") or [])
+        path = (body.get("meta") or {}).get("next") or None
+    if not objects:
         log(
             f"No docevent data for {wg} from Datatracker.",
             verbose,
@@ -171,7 +181,7 @@ def fetch_doc_events(
         return []
 
     out: List[Event] = []
-    for obj in body["objects"]:
+    for obj in objects:
         when = _parse_dt_time(obj.get("time"))
         if when is None or when < cutoff:
             continue

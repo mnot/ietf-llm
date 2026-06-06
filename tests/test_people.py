@@ -445,6 +445,19 @@ def test_leadership_orders_chairs_before_ads(isolated_home: Path) -> None:
     ]
 
 
+def test_leadership_ranks_multi_role_person_by_highest(isolated_home: Path) -> None:
+    # A Chair who is also an Area Director must rank with the chairs (their
+    # most senior role), not be demoted by the alphabetically-first role
+    # "Area Director".
+    r = Registry()
+    r.add_datatracker_role("Plain Chair", "pc@x", "Chair")
+    r.add_datatracker_role("Dual Hat", "dh@x", "Area Director")
+    r.add_datatracker_role("Dual Hat", "dh@x", "Chair")
+    r.add_datatracker_role("Pure AD", "ad@x", "Area Director")
+    leaders = [p.canonical_name for p in r.leadership()]
+    assert leaders == ["Dual Hat", "Plain Chair", "Pure AD"]
+
+
 def test_people_digest_includes_leadership_section(isolated_home: Path) -> None:
     r = Registry()
     r.add_email_message("Mark Nottingham <mnot@mnot.net>", None)

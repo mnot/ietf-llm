@@ -133,26 +133,47 @@ def test_validate_draft_names_drops_unresolved(
     assert valid == ["draft-real-thing"]
 
 
-def test_validate_list_names_drops_unknown(
+class _StatusResp:
+    def __init__(self, status: int) -> None:
+        self.status_code = status
+
+
+def test_validate_list_names_drops_only_on_404(
     isolated_home: Path, monkeypatch: object,
 ) -> None:
     from ietf_llm.gather import mbox  # pylint: disable=import-outside-toplevel
     from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
 
-    def fake_fetch(url: str, headers: object = None) -> object:
-        # Simulate mailarchive: only `httpbis` exists.
-        return object() if "/arch/browse/httpbis/" in url else None
+    def fake_get(url: str, **_kwargs: object) -> _StatusResp:
+        # Simulate mailarchive: `httpbis` exists (200); `ghost` is a real 404.
+        return _StatusResp(200 if "/arch/browse/httpbis/" in url else 404)
 
-    # mbox binds `fetch_resource` at import time (from ..utils import
-    # fetch_resource), so patch the name where it's looked up.
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "ietf_llm.gather.mbox.fetch_resource", fake_fetch,
+        "ietf_llm.gather.mbox.governed_get", fake_get,
     )
     valid = mbox.validate_list_names(
         ["httpbis@ietf.org", "ghost@ietf.org"],
         verbose=Verbosity.QUIET,
     )
     assert valid == ["httpbis@ietf.org"]
+
+
+def test_validate_list_names_keeps_on_transient_failure(
+    isolated_home: Path, monkeypatch: object,
+) -> None:
+    # Regression: a network blip (RequestException) must NOT drop a list the
+    # user explicitly passed — only a definitive 404 does.
+    from ietf_llm.gather import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
+
+    def boom(url: str, **_kwargs: object) -> object:
+        raise requests.ConnectionError("network down")
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "ietf_llm.gather.mbox.governed_get", boom,
+    )
+    valid = mbox.validate_list_names(["foo@ietf.org"], verbose=Verbosity.QUIET)
+    assert valid == ["foo@ietf.org"]
 
 
 def test_draft_and_mailing_list_union_across_runs(isolated_home: Path) -> None:
@@ -261,3 +282,40 @@ def test_download_github_issues_owner_starting_with_http(
     # The bug sent the bare 'httpwg/drafts' to requests.get; the fix resolves
     # it to the gh-pages archive URL instead.
     assert seen == ["https://httpwg.github.io/drafts/archive.json"]
+
+
+class _JsonResp:
+    def __init__(self, data: object) -> None:
+        self.status_code = 200
+        self._data = data
+
+    def json(self) -> object:
+        return self._data
+
+
+def test_fetch_issue_comments_paginates(monkeypatch: object) -> None:
+    # Regression: GitHub returns issue comments 30-at-a-time (we request 100);
+    # without paging, an issue with >100 comments silently lost the rest —
+    # including the closing comment used as the resolution downstream.
+    pages = {
+        1: [
+            {"user": {"login": f"u{i}"}, "created_at": "t", "body": f"c{i}"}
+            for i in range(100)
+        ],
+        2: [{"user": {"login": "closer"}, "created_at": "t", "body": "final"}],
+    }
+    seen_pages: list = []
+
+    def fake_get(url: str, **kwargs: object) -> _JsonResp:
+        page = kwargs["params"]["page"]  # type: ignore[index]
+        seen_pages.append(page)
+        return _JsonResp(pages.get(page, []))
+
+    monkeypatch.setattr(github, "governed_get", fake_get)  # type: ignore[attr-defined]
+    out = github._fetch_issue_comments(  # pylint: disable=protected-access
+        "https://api.github.com/repos/o/r/issues/1/comments", {}
+    )
+    assert len(out) == 101
+    assert out[-1]["author"] == "closer"
+    # Stopped after the short second page; did not request a third.
+    assert seen_pages == [1, 2]

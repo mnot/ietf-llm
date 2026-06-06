@@ -110,6 +110,9 @@ _registry_lock = threading.Lock()
 #: The worker pool, mutated in place so it needs no module-level `global` rebind.
 _workers: "List[threading.Thread]" = []
 _heartbeat_stop = threading.Event()
+#: The single lease/slot heartbeat thread. Tracked so a pool regrow (after a
+#: worker died) doesn't spawn a second heartbeat alongside the first.
+_heartbeat_thread: "Optional[threading.Thread]" = None  # pylint: disable=invalid-name
 
 #: Cooperative-cancel state, keyed by corpus, guarded by `_registry_lock`.
 #: `_cancel_tokens` holds the SHA-256 of each in-flight gather's stop token so
@@ -356,7 +359,7 @@ def _queue_max() -> int:
     return value if value >= 1 else _DEFAULT_QUEUE_MAX
 
 
-def start(spec: GatherSpec) -> Dict[str, Any]:
+def start(spec: GatherSpec) -> Dict[str, Any]:  # pylint: disable=too-many-return-statements
     """Enqueue a background gather for `spec.corpus`.
 
     Returns `{"started": True, "corpus": ..., "queued_behind": N}` when the
@@ -415,9 +418,25 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     queued_status = _new_status(spec, "queued")
     queued_status["cancel_token_sha256"] = token_hash
     _write_status(store, queued_status)
-    with _registry_lock:
-        _queue.put(spec)
-        _ensure_worker(owner)
+    try:
+        with _registry_lock:
+            _queue.put(spec)
+            _ensure_worker(owner)
+    except BaseException:  # pylint: disable=broad-except
+        # Enqueue or worker spawn failed (e.g. RuntimeError under thread/FD
+        # exhaustion). The worker's finally is the only place that frees the
+        # reservation, and no worker will ever run this spec — so roll back here
+        # or the corpus is stranded as 'already running' with its lease held
+        # forever.
+        with _registry_lock:
+            _jobs.pop(corpus, None)
+            _cancel_tokens.pop(corpus, None)
+            _cancel_events.pop(corpus, None)
+        try:
+            store.release_lease(corpus, owner)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return {"started": False, "reason": "could not start gather", "corpus": corpus}
     # How many gathers this one actually waits behind: with N running
     # concurrently, a free slot exists until `ahead` reaches N, so anything under
     # that starts at once (wait 0). Reported so the tool can say "started" vs
@@ -547,6 +566,7 @@ def _ensure_worker(owner: str) -> None:
     cannot un-start a thread), so in steady state — a fixed N — it grows once and
     returns early thereafter; the fleet slot is the authoritative concurrency
     cap, the pool just needs to be big enough not to be the bottleneck."""
+    global _heartbeat_thread  # pylint: disable=global-statement
     alive = [w for w in _workers if w.is_alive()]
     target = max(1, service_config.gather_max_inflight())
     if len(alive) >= target:
@@ -559,12 +579,16 @@ def _ensure_worker(owner: str) -> None:
         )
         _workers.append(worker)
         worker.start()
-    threading.Thread(
-        target=_heartbeat_loop,
-        args=(owner, _heartbeat_stop),
-        name="gather-heartbeat",
-        daemon=True,
-    ).start()
+    # Exactly one heartbeat: only (re)start it when none is running, so a pool
+    # regrow doesn't leave two heartbeats racing on the shared stop event.
+    if _heartbeat_thread is None or not _heartbeat_thread.is_alive():
+        _heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            args=(owner, _heartbeat_stop),
+            name="gather-heartbeat",
+            daemon=True,
+        )
+        _heartbeat_thread.start()
 
 
 def _heartbeat_loop(owner: str, stop: threading.Event) -> None:
@@ -777,16 +801,30 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
 
 
 def all_statuses() -> List[Dict[str, Any]]:
-    """Every recorded gather status, newest activity first."""
-    root = get_cache_dir()
+    """Every recorded gather status, newest activity first.
+
+    Merges the control plane's fleet-visible statuses (cloud backend; empty on
+    the local backend) with this host's per-corpus cache records, so a
+    no-corpus listing also sees gathers queued or running on other replicas,
+    not just the corpora cached locally.
+    """
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
     out: List[Dict[str, Any]] = []
-    if not os.path.isdir(root):
-        return out
-    for name in sorted(os.listdir(root)):
-        if name.startswith((".", "_")):
-            continue
-        status = read_status(name)
-        if status is not None:
+    seen: "set[str]" = set()
+    for status in corpus_store.get_corpus_store().list_gather_statuses():
+        corpus = status.get("corpus")
+        if isinstance(corpus, str) and corpus not in seen:
+            seen.add(corpus)
             out.append(status)
+    root = get_cache_dir()
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root)):
+            if name.startswith((".", "_")) or name in seen:
+                continue
+            local = read_status(name)
+            if local is not None:
+                seen.add(name)
+                out.append(local)
     out.sort(key=lambda s: str(s.get("updated") or ""), reverse=True)
     return out

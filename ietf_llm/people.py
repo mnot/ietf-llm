@@ -47,7 +47,7 @@ import email.utils
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .gather.datatracker import fetch_wg_roles
@@ -587,11 +587,16 @@ class Registry:
         return list(self.persons)
 
     def leadership(self) -> List[Person]:
-        """Persons holding any formal WG role, sorted by role then name."""
+        """Persons holding any formal WG role, sorted by highest role then name.
+
+        A person with several roles (e.g. Chair *and* Area Director) ranks by
+        their most senior one — the minimum order value — not whichever role
+        happens to sort first alphabetically.
+        """
         return sorted(
             (p for p in self.persons if p.roles),
             key=lambda p: (
-                _LEADERSHIP_ROLE_ORDER.get(next(iter(sorted(p.roles))), 99),
+                min(_LEADERSHIP_ROLE_ORDER.get(r, 99) for r in p.roles),
                 p.canonical_name,
             ),
         )
@@ -738,9 +743,15 @@ def _maybe_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # A zone-less timestamp parses tz-naive; force UTC so a later comparison
+    # against the tz-aware mail-derived dates can't raise TypeError and abort
+    # the GitHub ingest pass.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 # --- _people.md digest -----------------------------------------------------

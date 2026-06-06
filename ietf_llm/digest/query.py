@@ -342,7 +342,12 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
                 "draft-published": "published",
                 "issue-opened": "opened",
                 "issue-closed": "closed",
-                "meeting": "meeting held",
+                # The timeline writer renders a session as its label
+                # ("IETF 125 meeting"), not "meeting held" — the old marker
+                # matched nothing. "meeting" catches IETF sessions; interim
+                # labels ("Interim 2026 #01") carry no common token, so those
+                # are not reliably matchable via substring.
+                "meeting": "meeting",
                 "wglc": "Last Call",
                 "adoption-call": "adoption",
             }
@@ -412,7 +417,10 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
             # so the agent isn't looking at empty headers.
             continue
         out_parts.append(render_section(filtered))
-    return "\n".join(out_parts) if out_parts else text
+    # Filters were active (the no-filter case returned `text` above), so a
+    # falsy `out_parts` means the filter legitimately matched nothing — return
+    # the empty result, never the full unfiltered digest.
+    return "\n".join(out_parts)
 
 
 def _extract_preamble(text: str) -> str:

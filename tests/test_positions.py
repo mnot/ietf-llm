@@ -14,6 +14,8 @@ from pathlib import Path
 
 from ietf_llm import mcp_server
 from ietf_llm.positions import (
+    _SENDER_ROLE_SUFFIX,
+    _THREAD_MSG_RE,
     extract_position,
     file_supports_tally,
     tally_thread,
@@ -21,6 +23,25 @@ from ietf_llm.positions import (
 from ietf_llm.utils import get_wg_file_cache_dir
 
 from conftest import write_cache_file
+
+
+def _sender_of(header_line: str) -> str:
+    match = _THREAD_MSG_RE.search(header_line)
+    assert match is not None, header_line
+    return _SENDER_ROLE_SUFFIX.sub("", match.group(2)).strip()
+
+
+def test_opener_annotation_does_not_pollute_sender() -> None:
+    # An issue file's opener header carries a trailing `_(opened issue)_`
+    # annotation; without consuming it, "Alice _(opened issue)_" becomes a
+    # distinct identity from "Alice" the commenter, splitting the tally.
+    assert _sender_of("### [1] 2026-05-14 — Alice _(opened issue)_") == "Alice"
+    assert (
+        _sender_of("### [1] 2026-05-14 00:00 — Bob (Chair) _(opened issue)_") == "Bob"
+    )
+    # The existing reply-to and role-suffix handling still works.
+    assert _sender_of("### [3] 2026-05-14 — Carol (reply to [1])") == "Carol"
+    assert _sender_of("### [2] 2026-05-14 — Dave (Author)") == "Dave"
 
 
 # --- extract_position ------------------------------------------------------

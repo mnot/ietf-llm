@@ -285,6 +285,22 @@ def test_query_digest_handles_missing_file(tmp_path: Path) -> None:
     assert query_digest(str(tmp_path / "nope.md"), "issues") == ""
 
 
+def test_query_digest_empty_filter_does_not_return_full_file(tmp_path: Path) -> None:
+    # Regression: a digest with no leading preamble (starts at a sub-heading)
+    # plus a filter that matches nothing must return empty, not fall back to
+    # dumping the entire unfiltered digest.
+    path = tmp_path / "wg-_issues.md"
+    path.write_text(
+        "## org/repo\n\n"
+        "| # | State | Title |\n"
+        "|---|-------|-------|\n"
+        "| 1 | CLOSED | Done thing |\n"
+    )
+    out = query_digest(str(path), "issues", state="open")
+    assert "Done thing" not in out
+    assert out.strip() == ""
+
+
 def _threads_digest_file(tmp_path: Path) -> Path:
     # A single-table digest whose table sits directly under the `# `
     # title with no `## ` sub-heading — the threads / people shape.
@@ -348,7 +364,10 @@ def _timeline_file(tmp_path: Path) -> Path:
         "- **2026-05-14** — Issue #172 opened: \"RAG\"\n"
         "- **2026-04-27** — `draft-ietf-wg-vocab-06` published\n"
         "- **2026-04-19** — Issue #160 closed: \"3.2 Respecting Preferences\"\n"
-        "- **2026-03-16** — IETF 125 meeting held\n\n"
+        # Real writer renders a session as its label ("IETF NNN meeting"),
+        # not "meeting held" — the filter marker must match this, not a
+        # hand-invented variant.
+        "- **2026-03-16** — IETF 125 meeting\n\n"
         "## 2025\n\n"
         "- **2025-09-22** — WG Last Call thread\n"
     )
@@ -360,7 +379,7 @@ def _timeline_file(tmp_path: Path) -> Path:
 def test_timeline_filter_by_kind(tmp_path: Path) -> None:
     path = _timeline_file(tmp_path)
     out = query_digest(str(path), "timeline", event_kind="meeting")
-    assert "IETF 125 meeting held" in out
+    assert "IETF 125 meeting" in out
     assert "Issue #172" not in out
 
 

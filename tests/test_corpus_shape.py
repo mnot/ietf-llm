@@ -126,6 +126,30 @@ def test_persisted_sources_count_on_rerun(
     ) == (False, False)
 
 
+def test_all_isolates_args_per_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression: `--all` must give each corpus its own args object. _gather_one
+    # -> config.merge mutates args in place (folding a corpus's persisted
+    # sources onto it), so a shared Namespace would leak corpus A's repos into
+    # corpus B's merge. Simulate that mutation and assert B starts clean.
+    monkeypatch.setattr(main_mod.cli_list, "discover_gathered_wgs", lambda: ["aa", "bb"])
+    monkeypatch.setattr(main_mod, "ensure_rfc_index", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod, "ensure_catalog_index", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod, "sync_if_pristine", lambda *a, **k: None)
+    seen: List[tuple] = []
+
+    def fake_gather_one(args: argparse.Namespace, _verbosity: Any, **_kw: Any) -> bool:
+        seen.append((args.wg, list(args.github or [])))
+        # Stand in for config.merge folding this corpus's persisted repos.
+        args.github = list(args.github or []) + [f"{args.wg}/repo"]
+        return True
+
+    monkeypatch.setattr(main_mod, "_gather_one", fake_gather_one)
+    monkeypatch.setattr(main_mod.sys, "argv", ["ietf-llm", "--all"])
+    main_mod.main()
+    # Under the bug, bb would arrive carrying ["aa/repo"].
+    assert seen == [("aa", []), ("bb", [])]
+
+
 # --- gather plan summary (shown at gather start) --------------------------
 
 

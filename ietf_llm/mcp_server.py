@@ -745,8 +745,12 @@ def _parse_reply_graph(text: str) -> Dict[int, List[int]]:
 def _descendants(graph: Dict[int, List[int]], root: int) -> List[int]:
     """All transitive children of `root` in the reply graph, BFS order."""
     out: List[int] = []
-    queue = list(graph.get(root, []))
-    seen = set(queue)
+    # Seed `seen` with the root so a malformed self-reply marker
+    # (`[5] … (reply to [5])` → graph[5] = [5]) can't list the root as its own
+    # descendant, and the walk stays cycle-safe regardless of marker damage.
+    seen = {root}
+    queue = [child for child in graph.get(root, []) if child not in seen]
+    seen.update(queue)
     while queue:
         node = queue.pop(0)
         out.append(node)
@@ -1619,9 +1623,14 @@ def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
 
     total = 0
     for req in requests:
-        start = int(req.get("chunk_idx", 0))
-        end = req.get("end_chunk_idx")
-        span = (int(end) - start + 1) if end is not None else 1
+        if not isinstance(req, dict):
+            return f"Each request must be an object; got {req!r}."
+        try:
+            start = int(req.get("chunk_idx", 0))
+            end = req.get("end_chunk_idx")
+            span = (int(end) - start + 1) if end is not None else 1
+        except (TypeError, ValueError):
+            return "chunk_idx and end_chunk_idx must be integers in request " f"{req}."
         if span < 1:
             return (
                 f"end_chunk_idx must be >= chunk_idx in request "
@@ -1863,18 +1872,23 @@ def _prewarm_embedding_model_async() -> None:
         db_path = os.path.join(root, name, "embeddings.db")
         if not os.path.isfile(db_path):
             continue
+        # Busy timeout so this read waits out a concurrent gather write
+        # instead of erroring with "database is locked". A sqlite3 connection
+        # used as a context manager only scopes the transaction, not the
+        # connection, so close it explicitly to avoid leaking one fd per
+        # corpus scanned before a model is found.
+        conn = None
         try:
-            # Busy timeout so this read waits out a concurrent gather
-            # write instead of erroring with "database is locked".
-            with sqlite3.connect(db_path, timeout=30.0) as conn:
-                row = conn.execute(
-                    "SELECT value FROM meta WHERE key='model'"
-                ).fetchone()
-                if row:
-                    model_name = row[0]
-                    break
+            conn = sqlite3.connect(db_path, timeout=30.0)
+            row = conn.execute("SELECT value FROM meta WHERE key='model'").fetchone()
+            if row:
+                model_name = row[0]
+                break
         except sqlite3.Error:
             continue
+        finally:
+            if conn is not None:
+                conn.close()
     if not model_name:
         return
 

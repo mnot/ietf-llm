@@ -34,7 +34,7 @@ import json
 import os
 from typing import Dict, Mapping, Optional
 
-from ..utils import get_cache_dir
+from ..utils import atomic_open, get_cache_dir
 
 #: A single draft's record: ISO expiry (or "") and Datatracker state slug
 #: (or None when unknown — e.g. captured during an API outage).
@@ -84,10 +84,8 @@ def save_documents_manifest(wg: str, manifest: Mapping[str, DocumentRecord]) -> 
     (tmp + rename, so a concurrent reader never sees a half-written file)."""
     path = _manifest_path(wg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with atomic_open(path) as fh:
         json.dump(dict(manifest), fh, indent=2, sort_keys=True)
-    os.replace(tmp, path)
 
 
 def skip_embed_draft_names(wg: str) -> set[str]:

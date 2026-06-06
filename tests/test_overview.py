@@ -87,6 +87,40 @@ def test_overview_caps_open_issues_at_five(tmp_path: Path) -> None:
     assert "Sixth open" not in out  # 6th of 6 open is dropped at limit=5
 
 
+def test_overview_open_issues_projects_wide_writer_rows(tmp_path: Path) -> None:
+    # Regression: the issues digest writer emits 10-11 columns (Participants,
+    # Dup-of, File, Summary), but the overview's open-issues table declares
+    # only 7. Seed the REAL writer header (verbatim from gather/issues.py) so a
+    # hand-built 7-column fixture can't mask the mismatch, and assert each
+    # rendered row is projected down to 7 aligned cells with the extra columns
+    # dropped.
+    _seed_digests(tmp_path)
+    (tmp_path / "digests/issues.md").write_text(
+        "# wg: issues\n\n"
+        "## org/repo\n\n"
+        "| # | State | Title | Labels | Comments | Updated | "
+        "Author | Participants | Dup-of | File | Summary |\n"
+        "|---|-------|-------|--------|----------|---------|"
+        "--------|--------------|--------|------|---------|\n"
+        "| 1 | OPEN | First open | x | 2 | 2026-05-14 | Mark | "
+        "Mark, Bob | | `i1.md` | SUMMARY_SENTINEL_ONE |\n"
+        "| 2 | OPEN | Second open | y | 0 | 2026-05-13 | Bob | "
+        "Bob | #1 | `i2.md` | SUMMARY_SENTINEL_TWO |\n"
+    )
+    out = build_overview("wg", str(tmp_path))
+    section = out.split("## 5 most-recently-updated open issues", 1)[1].split(
+        "\n## ", 1
+    )[0]
+    data_rows = [ln for ln in section.splitlines() if ln.startswith("| ")][2:]
+    assert data_rows, "expected projected open-issue rows"
+    for row in data_rows:
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        assert len(cells) == 7, f"row not projected to 7 cells: {row!r}"
+    # The projected-out columns must not leak into the overview table.
+    assert "SUMMARY_SENTINEL" not in section
+    assert "i1.md" not in section and "i2.md" not in section
+
+
 def test_overview_active_threads_excludes_single_message(tmp_path: Path) -> None:
     _seed_digests(tmp_path)
     out = build_overview("wg", str(tmp_path))

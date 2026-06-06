@@ -170,6 +170,11 @@ def _table_preview(text: str, max_chars: int) -> Optional[str]:
         # call to verify completeness.
         if len(parts) - 1 < n_data_total:
             preview = preview + " [truncated]"
+        # A single header row wider than the budget would overrun it (the
+        # greedy loop only gates *added* rows, never the seed header). Clamp to
+        # honour make_snippet's single-line, within-budget contract.
+        if len(preview) > max_chars:
+            preview = preview[: max_chars - len(" [truncated]")] + " [truncated]"
         return preview
     return None
 

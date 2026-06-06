@@ -54,7 +54,17 @@ def _resolve_email(email: str, verbose: Verbosity) -> Optional[Tuple[int, str]]:
             level=LogLevel.ERROR,
         )
         return None
-    person_id = int(str(person_uri).rstrip("/").rsplit("/", 1)[-1])
+    tail = str(person_uri).rstrip("/").rsplit("/", 1)[-1]
+    try:
+        person_id = int(tail)
+    except ValueError:
+        log(
+            f"Datatracker person URI for '{email}' has no numeric id: "
+            f"{person_uri!r}.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return None
     person = _get_json(str(person_uri)) or {}
     return (person_id, str(person.get("name") or email))
 

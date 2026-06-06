@@ -194,9 +194,21 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
     manifest = _read_manifest()
     pristine = manifest is not None and manifest.get("sha256") == installed
     if pristine:
-        shutil.rmtree(dest)
-        shutil.copytree(src, dest)
-        os.chmod(dest, 0o755)
+        # Copy into a temp sibling and swap atomically rather than rmtree-ing
+        # the live skill before copying: a failure mid-copy must never leave
+        # the installed skill destroyed.
+        staged = dest.with_name(f"{dest.name}.tmp-{os.getpid()}")
+        retired = dest.with_name(f"{dest.name}.old-{os.getpid()}")
+        shutil.rmtree(staged, ignore_errors=True)
+        shutil.copytree(src, staged)
+        os.chmod(staged, 0o755)
+        os.replace(dest, retired)
+        try:
+            os.replace(staged, dest)
+        except OSError:
+            os.replace(retired, dest)  # roll back to the original on failure
+            raise
+        shutil.rmtree(retired, ignore_errors=True)
         _write_manifest(bundled)
         log(
             f"Updated the installed ietf-llm Claude skill at {dest} "
