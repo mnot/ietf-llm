@@ -31,6 +31,16 @@ Two ways to gather, depending on what's available:
   minutes; one gather per corpus at a time. This tool is opt-in
   (`IETF_LLM_ENABLE_GATHER=1`) and writes/reaches the network, unlike
   the rest of the server — so it isn't always present.
+  - `gather_status` reports the current stage and, on the long
+    mailing-list download, a live message counter — so a slow gather is
+    visibly *moving*, not hung. The `start_gather` reply also returns a
+    **stop token**: if a gather is taking too long or was started by
+    mistake (e.g. too wide a `months` window on a busy list), call
+    `stop_gather(corpus="<name>", token="<token>")` to cancel it. The
+    token is required (it stops only *your* gather), the stop is
+    cooperative (it ends at the next stage / download batch, so poll until
+    `cancelled`), and the partial download is discarded — any previously
+    gathered snapshot is left intact.
 - **Otherwise**, tell the user to gather it from their shell:
   `ietf-llm <corpus>` (e.g. `ietf-llm httpbis`). `ietf-llm --list`
   shows what's cached.

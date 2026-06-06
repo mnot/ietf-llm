@@ -66,6 +66,65 @@ def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "already running" in out
 
 
+def test_start_gather_surfaces_stop_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus, "cancel_token": "tok123"},
+    )
+    out = mcp_server.tool_start_gather("tls")
+    assert "stop_gather" in out and "tok123" in out
+
+
+# --- tool_stop_gather -----------------------------------------------------
+
+
+def test_stop_gather_forwards_and_reports_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_stop(corpus: str, token: str) -> Dict[str, Any]:
+        captured["args"] = (corpus, token)
+        return {"stopped": True, "corpus": corpus}
+
+    monkeypatch.setattr(gather_runner, "request_stop", fake_stop)
+    out = mcp_server.tool_stop_gather("tls", "tok123")
+    assert captured["args"] == ("tls", "tok123")
+    assert "Requested stop for 'tls'" in out and "gather_status" in out
+
+
+def test_stop_gather_bad_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gather_runner, "request_stop",
+        lambda corpus, token: {"stopped": False, "reason": "bad token"},
+    )
+    out = mcp_server.tool_stop_gather("tls", "wrong")
+    assert "does not match" in out
+
+
+def test_stop_gather_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gather_runner, "request_stop",
+        lambda corpus, token: {"stopped": False, "reason": "not running", "state": "done"},
+    )
+    out = mcp_server.tool_stop_gather("tls", "tok")
+    assert "nothing to stop" in out and "done" in out
+
+
+def test_stop_gather_rejects_unsafe_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    def fake_stop(corpus: str, token: str) -> Dict[str, Any]:
+        nonlocal called
+        called = True
+        return {"stopped": True}
+
+    monkeypatch.setattr(gather_runner, "request_stop", fake_stop)
+    out = mcp_server.tool_stop_gather("../etc", "tok")
+    assert "not a valid corpus name" in out
+    assert called is False
+
+
 def test_start_gather_forwards_force(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: Dict[str, Any] = {}
 
@@ -163,6 +222,28 @@ def test_gather_status_renders_stage_detail() -> None:
     )
     assert "stage 3/17 (mailing list)" in out
     assert "1200/8000 messages downloaded" in out
+
+
+def test_gather_status_running_notes_stop_requested() -> None:
+    out = mcp_server._format_gather_status(
+        {
+            "corpus": "tls", "state": "running", "stage": "mailing list",
+            "stage_index": 3, "stage_total": 17, "cancel_requested": True,
+            "started": "2026-06-03T12:00:00Z", "finished": None,
+        }
+    )
+    assert "stop requested" in out
+
+
+def test_gather_status_renders_cancelled() -> None:
+    out = mcp_server._format_gather_status(
+        {
+            "corpus": "tls", "state": "cancelled",
+            "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:01:00Z",
+        }
+    )
+    assert "**tls**" in out and "cancelled" in out
+    assert "partial gather discarded" in out
 
 
 def test_gather_status_missing(monkeypatch: pytest.MonkeyPatch) -> None:

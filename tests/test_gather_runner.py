@@ -108,7 +108,7 @@ def _wait_terminal(corpus: str, timeout: float = 5.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = gather_runner.read_status(corpus)
-        if status and status.get("state") in ("done", "failed"):
+        if status and status.get("state") in ("done", "failed", "cancelled"):
             return status
         time.sleep(0.01)
     raise AssertionError(f"gather for {corpus} did not finish in {timeout}s")
@@ -147,6 +147,62 @@ def test_progress_detail_lands_in_status(
     status = _wait_terminal("tls")
     assert status["stage"] == "mailing list"
     assert status["stage_detail"] == "ietf-http-wg: 5/10 messages downloaded"
+
+
+def test_start_returns_a_cancel_token(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert isinstance(result.get("cancel_token"), str) and result["cancel_token"]
+    _wait_terminal("tls")
+
+
+def test_request_stop_cancels_running_gather(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = threading.Event()
+    proceed = threading.Event()
+
+    def fake_run(argv: List[str], verbosity: Any, progress: Any = None) -> bool:
+        progress("mailing list", 1, 2)  # running; first cancel poll (none yet)
+        started.set()
+        proceed.wait(timeout=5.0)
+        progress("digests", 2, 2)  # stage transition: polls, sees stop, raises
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", fake_run)
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    token = result["cancel_token"]
+    assert started.wait(timeout=5.0)
+    stop_result = gather_runner.request_stop("tls", token)
+    assert stop_result["stopped"] is True
+    proceed.set()
+    status = _wait_terminal("tls")
+    assert status["state"] == "cancelled"
+    assert status["cancel_requested"] is True
+
+
+def test_request_stop_rejects_bad_token(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = _blocking_gather(monkeypatch)
+    gather_runner.start(gather_runner.GatherSpec(corpus="httpbis"))
+    try:
+        # The token hash is set at enqueue, so a wrong token is refused even
+        # before the worker reaches "running".
+        result = gather_runner.request_stop("httpbis", "not-the-token")
+        assert result["stopped"] is False
+        assert result["reason"] == "bad token"
+    finally:
+        release.set()
+    assert _wait_terminal("httpbis")["state"] == "done"  # not cancelled
+
+
+def test_request_stop_no_active_gather(isolated_home: Path) -> None:
+    result = gather_runner.request_stop("ghost", "tok")
+    assert result["stopped"] is False
+    assert result["reason"] == "not running"
 
 
 def test_start_records_failed_on_unusable_name(
