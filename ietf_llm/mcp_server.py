@@ -107,6 +107,8 @@ from .utils import (
     get_index_dir,
     graceful_keyboard_interrupt,
     log,
+    months_request_caution,
+    months_request_error,
 )
 
 MAX_LINES_DEFAULT = 400
@@ -2109,6 +2111,9 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
             "'.', '-' or '_' (no path separators or spaces), starting with a "
             "letter or digit."
         )
+    months_error = months_request_error(months, force)
+    if months_error:
+        return months_error
     spec = gather_runner.GatherSpec(
         corpus=corpus,
         mailing_list=list(mailing_list or []),
@@ -2123,7 +2128,12 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         include_related_drafts=include_related_drafts,
         force=force,
     )
-    return _format_start_result(gather_runner.start(spec), corpus)
+    result = gather_runner.start(spec)
+    out = _format_start_result(result, corpus)
+    caution = months_request_caution(months)
+    if result.get("started") and caution:
+        out = f"{out} {caution}"
+    return out
 
 
 def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
@@ -2154,6 +2164,13 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
             f"A gather for '{corpus}' is already running. "
             f'Poll `gather_status(corpus="{corpus}")` for progress.'
         )
+    token = result.get("cancel_token")
+    stop_hint = (
+        f' To stop it, call `stop_gather(corpus="{corpus}", token="{token}")` '
+        "(this token is the only way to cancel it — keep it for this gather)."
+        if token
+        else ""
+    )
     if result.get("queued_behind"):
         ahead = result["queued_behind"]
         return (
@@ -2161,12 +2178,12 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
             f"{'s' if ahead != 1 else ''} ahead of it). Gathers are capped to a "
             "few at once (per host and across the deployment) to stay polite to "
             f"upstreams, so it starts when a slot frees. Poll "
-            f'`gather_status(corpus="{corpus}")`.'
+            f'`gather_status(corpus="{corpus}")`.{stop_hint}'
         )
     return (
         f"Started gathering '{corpus}' in the background (this can take "
         f'minutes). Poll `gather_status(corpus="{corpus}")` for stage-level '
-        "progress; the corpus is queryable once it reports `done`."
+        f"progress; the corpus is queryable once it reports `done`.{stop_hint}"
     )
 
 
@@ -2190,6 +2207,42 @@ def tool_gather_status(corpus: Optional[str] = None) -> str:
     return "\n".join(_format_gather_status(s) for s in statuses)
 
 
+def tool_stop_gather(corpus: str, token: str) -> str:
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    corpus = (corpus or "").strip()
+    if not corpus:
+        return "Provide the corpus name of the gather to stop."
+    if not gather_runner.valid_corpus_name(corpus):
+        return f"'{corpus}' is not a valid corpus name."
+    return _format_stop_result(
+        gather_runner.request_stop(corpus, (token or "").strip()), corpus
+    )
+
+
+def _format_stop_result(result: Dict[str, Any], corpus: str) -> str:
+    """Render `gather_runner.request_stop`'s result dict as the tool's reply."""
+    if result.get("stopped"):
+        return (
+            f"Requested stop for '{corpus}'. It ends at the next stage boundary "
+            f'(download batch / stage); poll `gather_status(corpus="{corpus}")` '
+            "until it reports `cancelled`. The partial gather is not published, "
+            "so the corpus keeps its previous contents (if any)."
+        )
+    reason = result.get("reason")
+    if reason == "not running":
+        state = result.get("state")
+        tail = f" (it is `{state}`)" if state else ""
+        return f"No gather is running for '{corpus}'{tail}, so nothing to stop."
+    if reason == "bad token":
+        return (
+            f"That token does not match the running gather for '{corpus}', so it "
+            "was not stopped. Use the token returned by the `start_gather` call "
+            "that began it."
+        )
+    return f"'{corpus}' is not a valid corpus name."
+
+
 def _format_gather_status(status: Dict[str, Any]) -> str:
     """One compact line for a gather status record."""
     corpus = status.get("corpus", "?")
@@ -2208,6 +2261,11 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
             parts.append(label)
         elif stage:
             parts.append(f"stage: {stage}")
+        detail = status.get("stage_detail")
+        if detail:
+            parts.append(str(detail))
+        if status.get("cancel_requested"):
+            parts.append("stop requested; finishing the current stage")
     # An interrupted gather never finished, so its start->now span isn't a
     # meaningful "elapsed" (it would grow on every poll); omit it.
     if state != "interrupted":
@@ -2216,6 +2274,8 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
             parts.append(elapsed)
     if state == "interrupted":
         parts.append("the gather process ended before completion; re-run it")
+    if state == "cancelled":
+        parts.append("stopped on request; partial gather discarded, re-run to retry")
     if state == "failed" and status.get("error"):
         parts.append(f"error: {status['error']}")
     return " · ".join(parts)
@@ -3104,7 +3164,9 @@ def main() -> None:
             Use this when a corpus the user asks about isn't cached yet
             (`list_corpora` doesn't show it). Returns immediately; the
             gather runs for minutes. Poll `gather_status(corpus=...)` until
-            it reports `done`, then the normal read tools work on it.
+            it reports `done`, then the normal read tools work on it. The
+            reply includes a stop token — pass it to `stop_gather` to cancel a
+            gather that is taking too long.
 
             The corpus **shape is inferred** from what you pass — you don't
             declare it:
@@ -3152,7 +3214,9 @@ def main() -> None:
                     person; email is the unambiguous form).
                 new_drafts: Make this a rolling 'new Internet-Drafts'
                     subscription over the `months` window.
-                months: Months of mailing-list / meeting history to fetch.
+                months: Months of mailing-list / meeting history to fetch
+                    (default 12). 0 means all history — an unbounded, slow
+                    gather, so it is refused unless `force=True`.
                 add_mentioned_drafts: Also pull in drafts the corpus cites
                     but doesn't already have.
                 include_related_drafts: Also gather related (un-adopted)
@@ -3199,6 +3263,31 @@ def main() -> None:
                 corpus: The corpus to report on. Omit to list all.
             """
             return await _offload(tool_gather_status, corpus)
+
+        @server.tool()
+        async def stop_gather(corpus: str, token: str) -> str:
+            """Stop an in-flight gather started with `start_gather`.
+
+            Cooperative and best-effort: the gather ends at its next stage
+            boundary or download batch, so this reports that a stop was
+            *requested* — poll `gather_status(corpus=...)` until it reports
+            `cancelled`. The partial download is discarded (not published), so a
+            previously-gathered snapshot of the corpus is left intact.
+
+            Requires the `token` returned by the `start_gather` call that began
+            this gather: it is the only capability that can stop it, so one
+            client cannot cancel another client's gather. A wrong or missing
+            token is refused, as is a corpus with no gather in flight.
+
+            Use this when a gather is taking too long or was started by mistake
+            (e.g. an over-wide `months` window on a busy list) and you want to
+            free the slot rather than wait it out.
+
+            Args:
+                corpus: The corpus whose gather to stop.
+                token: The stop token returned by `start_gather`.
+            """
+            return await _offload(tool_stop_gather, corpus, token)
 
     _prewarm_embedding_model_async()
     if _resolve_transport() == "http":

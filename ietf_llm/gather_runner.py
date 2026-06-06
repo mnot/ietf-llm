@@ -30,10 +30,12 @@ hosts and anchors the `queued`/`running` record's liveness.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
 import re
+import secrets
 import socket
 import threading
 import time
@@ -67,6 +69,22 @@ _LEASE_HEARTBEAT_S = 900.0
 #: waiting for the fleet to free a slot.
 _SLOT_POLL_S = 5.0
 
+#: Minimum seconds between mid-stage detail writes (see `_progress`). A long
+#: stage (the mailing-list download) reports a counter per batch; coalescing to
+#: this interval keeps the status file / control plane from churning while still
+#: giving a poller fresh movement to show.
+_DETAIL_MIN_INTERVAL_S = 3.0
+
+#: Minimum seconds between cooperative cancel polls on a chatty stage. A stage
+#: transition always polls (they are infrequent); mid-stage detail updates poll
+#: at most this often so a per-batch reporter does not hammer the control plane.
+_CANCEL_POLL_S = 4.0
+
+#: Bytes of entropy in a gather's stop token. `secrets.token_urlsafe` renders
+#: ~1.3 chars per byte, so 9 bytes is a ~12-char token — unguessable enough to
+#: keep one client from stopping another's gather, short enough to echo back.
+_CANCEL_TOKEN_BYTES = 9
+
 #: Default bound on this host's pending-gather backlog (queued + running);
 #: overflow is refused so a runaway caller cannot pile up unbounded work.
 _DEFAULT_QUEUE_MAX = 16
@@ -92,6 +110,37 @@ _registry_lock = threading.Lock()
 #: The worker pool, mutated in place so it needs no module-level `global` rebind.
 _workers: "List[threading.Thread]" = []
 _heartbeat_stop = threading.Event()
+
+#: Cooperative-cancel state, keyed by corpus, guarded by `_registry_lock`.
+#: `_cancel_tokens` holds the SHA-256 of each in-flight gather's stop token so
+#: `request_stop` can authenticate a request without the raw token being stored.
+#: `_cancel_events` is a same-process fast path: a stop landing on the host
+#: running the gather sets the event (race-free); a stop on another host (cloud
+#: backend) instead rides the published status record's `cancel_requested` flag,
+#: which the worker polls — best-effort cross-host (see `request_stop`).
+_cancel_tokens: Dict[str, str] = {}
+_cancel_events: Dict[str, threading.Event] = {}
+
+
+class GatherCancelled(BaseException):
+    """Raised inside the gather worker when a stop has been requested, to unwind
+    the pipeline to a terminal `cancelled` status. Subclasses `BaseException` so
+    a stage's broad `except Exception` cannot swallow the stop signal."""
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _cancel_requested(corpus: str) -> bool:
+    """True if a stop has been requested for `corpus`: the in-process event (same
+    host) or the published status's `cancel_requested` flag (cross-host)."""
+    with _registry_lock:
+        event = _cancel_events.get(corpus)
+    if event is not None and event.is_set():
+        return True
+    status = read_status(corpus)
+    return bool(status and status.get("cancel_requested"))
 
 
 #: A random per-process nonce so the lease owner id is unique even if two
@@ -349,6 +398,13 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
             return {"started": False, "reason": "already running", "corpus": corpus}
         ahead = len(_jobs)
         _jobs[corpus] = "queued"
+        # Mint this gather's stop token. Only its hash is persisted (in the
+        # status record, below) so the raw token returned to the caller is the
+        # sole capability that can stop it. The event is the same-host fast path.
+        token = secrets.token_urlsafe(_CANCEL_TOKEN_BYTES)
+        token_hash = _hash_token(token)
+        _cancel_tokens[corpus] = token_hash
+        _cancel_events[corpus] = threading.Event()
     # Publish `queued` BEFORE enqueueing, then enqueue, then ensure the worker is
     # up. Ordering matters: the worker only ever writes `running`/terminal, and
     # it can only dequeue after the put below — so this `queued` write always
@@ -356,7 +412,9 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     # (which, with a fast gather, would otherwise leave the record stuck at
     # `queued`). It also makes the queued state fleet-visible at once (a client
     # checking status on another replica sees it, not just the enqueuing host).
-    _write_status(store, _new_status(spec, "queued"))
+    queued_status = _new_status(spec, "queued")
+    queued_status["cancel_token_sha256"] = token_hash
+    _write_status(store, queued_status)
     with _registry_lock:
         _queue.put(spec)
         _ensure_worker(owner)
@@ -365,7 +423,58 @@ def start(spec: GatherSpec) -> Dict[str, Any]:
     # that starts at once (wait 0). Reported so the tool can say "started" vs
     # "queued behind k" truthfully.
     wait_for = max(0, ahead - service_config.gather_max_inflight() + 1)
-    return {"started": True, "queued_behind": wait_for, "corpus": corpus}
+    return {
+        "started": True,
+        "queued_behind": wait_for,
+        "corpus": corpus,
+        "cancel_token": token,
+    }
+
+
+def request_stop(corpus: str, token: str) -> Dict[str, Any]:
+    """Request cancellation of an in-flight gather for `corpus`.
+
+    Authenticated by the `token` `start` returned — only its holder can stop the
+    gather, so one client cannot cancel another's. Cooperative and best-effort:
+    the worker honours it at its next stage boundary or download batch (see
+    `_progress`), so this reports "stopping", not "stopped". The same-host case
+    is race-free (an in-process event); cross-host (cloud backend) rides the
+    published `cancel_requested` flag, which the worker polls — a stop set in the
+    brief window before the worker republishes its status can be missed and need
+    re-issuing.
+
+    Returns `{"stopped": True, "corpus": ...}` when accepted, else
+    `{"stopped": False, "reason": ...}`: `"invalid name"`, `"not running"` (no
+    active gather), or `"bad token"` (missing or incorrect token)."""
+    if not valid_corpus_name(corpus):
+        return {"stopped": False, "reason": "invalid name", "corpus": corpus}
+    status = read_status(corpus)
+    if status is None or status.get("state") not in ("queued", "running"):
+        return {
+            "stopped": False,
+            "reason": "not running",
+            "corpus": corpus,
+            "state": status.get("state") if status else None,
+        }
+    expected = status.get("cancel_token_sha256")
+    if (
+        not token
+        or not expected
+        or not secrets.compare_digest(_hash_token(token), str(expected))
+    ):
+        return {"stopped": False, "reason": "bad token", "corpus": corpus}
+    # Same-host fast path: set the in-process event (race-free). Always also
+    # write the flag so a worker on another host (cloud backend) sees it.
+    with _registry_lock:
+        event = _cancel_events.get(corpus)
+    if event is not None:
+        event.set()
+    from . import corpus_store  # pylint: disable=import-outside-toplevel
+
+    store = corpus_store.get_corpus_store()
+    status["cancel_requested"] = True
+    _write_status(store, status)
+    return {"stopped": True, "corpus": corpus, "state": status.get("state")}
 
 
 def _new_status(spec: GatherSpec, state: str) -> Dict[str, Any]:
@@ -381,6 +490,9 @@ def _new_status(spec: GatherSpec, state: str) -> Dict[str, Any]:
         "stage": None,
         "stage_index": 0,
         "stage_total": None,
+        "stage_detail": None,
+        "cancel_token_sha256": None,
+        "cancel_requested": False,
         "error": None,
     }
 
@@ -497,6 +609,8 @@ def _worker_loop(owner: str) -> None:
                 pass
             with _registry_lock:
                 _jobs.pop(corpus, None)
+                _cancel_tokens.pop(corpus, None)
+                _cancel_events.pop(corpus, None)
             _queue.task_done()
 
 
@@ -512,6 +626,10 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     corpus = spec.corpus
     slot_owner = _slot_owner(owner, corpus)
     status = _new_status(spec, "queued")
+    # Carry the stop-token hash minted at enqueue (same process) so request_stop
+    # can authenticate a cancel against the record the worker keeps republishing.
+    with _registry_lock:
+        status["cancel_token_sha256"] = _cancel_tokens.get(corpus)
     # Wait for one of the fleet-wide gather slots. While queued, the heartbeat
     # renews the lease; re-publishing `queued` keeps `updated` fresh so a stale
     # record is distinguishable. On shutdown, bail without a terminal status —
@@ -519,6 +637,14 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     max_inflight = service_config.gather_max_inflight()
     while not store.acquire_gather_slot(slot_owner, corpus, _LEASE_TTL, max_inflight):
         if _heartbeat_stop.is_set():
+            return
+        if _cancel_requested(corpus):
+            # Stopped before it ever got a slot — no slot/pipeline to unwind,
+            # so finalise the terminal record directly.
+            status["state"] = "cancelled"
+            status["cancel_requested"] = True
+            status["finished"] = _now_iso()
+            _write_status(store, status)
             return
         _write_status(store, status)
         time.sleep(_SLOT_POLL_S)
@@ -528,10 +654,39 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         status["state"] = "running"
         _write_status(store, status)
 
-        def _progress(name: str, index: int, total: int) -> None:
+        last_detail_write = 0.0
+        last_cancel_poll = 0.0
+
+        def _progress(
+            name: str, index: int, total: int, detail: Optional[str] = None
+        ) -> None:
+            nonlocal last_detail_write, last_cancel_poll
+            now = time.monotonic()
+            # Cooperative cancellation checkpoint. Reached at every stage
+            # boundary (detail is None) and every download batch (detail set).
+            # Poll on each transition, and at most every `_CANCEL_POLL_S` on a
+            # chatty stage, so a stop is honoured promptly without a store read
+            # per message. Record the request in-memory first so the terminal
+            # write preserves it, then unwind via GatherCancelled.
+            if detail is None or now - last_cancel_poll >= _CANCEL_POLL_S:
+                last_cancel_poll = now
+                if _cancel_requested(corpus):
+                    status["cancel_requested"] = True
+                    raise GatherCancelled(corpus)
             status["stage"] = name
             status["stage_index"] = index
             status["stage_total"] = total
+            status["stage_detail"] = detail
+            # A stage transition (detail is None) always persists. Mid-stage
+            # detail updates can fire often on a long stage, so throttle the
+            # write/publish to keep a chatty stage from flooding the control
+            # plane — the next transition resets the detail to None and writes
+            # regardless, so a dropped intermediate count is harmless.
+            if detail is not None:
+                now = time.monotonic()
+                if now - last_detail_write < _DETAIL_MIN_INTERVAL_S:
+                    return
+                last_detail_write = now
             _write_status(store, status)
 
         try:
@@ -558,6 +713,13 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                     "Group, a known mailing list, a draft/repo set, or a "
                     "synthetic (x-) corpus. Check the spelling or add sources."
                 )
+        except GatherCancelled:
+            # Stop requested: do not publish (the cache is partial); leave it
+            # for the next gather to overwrite. A cancelled record is terminal,
+            # so liveness never relabels it.
+            status["state"] = "cancelled"
+            status["cancel_requested"] = True
+            status["error"] = None
         except BaseException as err:  # pylint: disable=broad-except
             status["state"] = "failed"
             status["error"] = f"{type(err).__name__}: {err}"[:500]

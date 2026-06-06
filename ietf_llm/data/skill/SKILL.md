@@ -31,6 +31,16 @@ Two ways to gather, depending on what's available:
   minutes; one gather per corpus at a time. This tool is opt-in
   (`IETF_LLM_ENABLE_GATHER=1`) and writes/reaches the network, unlike
   the rest of the server — so it isn't always present.
+  - `gather_status` reports the current stage and, on the long
+    mailing-list download, a live message counter — so a slow gather is
+    visibly *moving*, not hung. The `start_gather` reply also returns a
+    **stop token**: if a gather is taking too long or was started by
+    mistake (e.g. too wide a `months` window on a busy list), call
+    `stop_gather(corpus="<name>", token="<token>")` to cancel it. The
+    token is required (it stops only *your* gather), the stop is
+    cooperative (it ends at the next stage / download batch, so poll until
+    `cancelled`), and the partial download is discarded — any previously
+    gathered snapshot is left intact.
 - **Otherwise**, tell the user to gather it from their shell:
   `ietf-llm <corpus>` (e.g. `ietf-llm httpbis`). `ietf-llm --list`
   shows what's cached.
@@ -66,6 +76,14 @@ for fresh data; on a shared server, prefer the cached snapshot. A
 **instead of** starting one — that is success, not failure: query the
 existing snapshot, don't retry the gather. Pass `force=True` (CLI:
 `--force`) only on an explicit request for fresh data.
+
+**`months` bounds how far back a gather reaches** (default 12). Leave it
+alone unless the user asks for a specific span — a larger window is a
+proportionally slower gather on an active list. `months=0` means *all
+history*, an unbounded gather that on a busy list is tens of thousands of
+messages; it is **refused unless `force=True`**, so don't reach for it to
+mean "recent" or "default". A window well past the default still runs,
+just expect it to take longer (watch `gather_status`).
 
 Reaching out to a live IETF resource (datatracker.ietf.org,
 mailarchive.ietf.org, a draft URL, GitHub) is occasionally

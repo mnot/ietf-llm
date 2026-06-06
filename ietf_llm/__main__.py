@@ -70,7 +70,9 @@ from .utils import (
     is_synthetic_wg,
     log,
     maybe_autocomplete,
+    months_request_error,
     print_completion_snippet,
+    resolve_months,
     wg_completer,
 )
 
@@ -247,7 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MONTHS,
         help=f"Months of mailing list / meeting history to fetch "
-        f"(default: {DEFAULT_MONTHS}).",
+        f"(default: {DEFAULT_MONTHS}). 0 means all history — an unbounded, slow "
+        "gather, so it requires --force.",
     )
     parser.add_argument(
         "--summarize",
@@ -361,6 +364,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         verbosity = Verbosity.QUIET
     elif args.verbose:
         verbosity = Verbosity.VERBOSE
+
+    months_error = months_request_error(args.months, args.force)
+    if months_error:
+        parser.error(months_error)
 
     if args.all:
         targets = _discover_gathered_wgs()
@@ -749,6 +756,12 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # config > default), not per-WG.
     config.merge_global(args, GLOBAL_SCALARS)
 
+    # Degrade a stored months=0 (all history) to the default on an unforced run
+    # so a past forced `--months 0` does not make every refresh unbounded.
+    args.months, months_note = resolve_months(args.months, args.force)
+    if months_note:
+        log(f"{args.wg}: {months_note}.", verbosity, level=LogLevel.STATUS)
+
     wg_cache_dir = os.path.join(get_cache_dir(), args.wg)
     cache_dir = get_wg_file_cache_dir(args.wg)
     if args.clear_cache:
@@ -807,6 +820,12 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.
     tracker.begin("mailing list")
+
+    def _mail_progress(list_name: str, done: int, total: int) -> None:
+        # Surface the IMAP download as mid-stage detail so a poller sees this
+        # long stage moving (one stage covering tens of thousands of messages).
+        tracker.detail(f"{list_name}: {done}/{total} messages downloaded")
+
     sync_mailing_list(
         args.wg,
         cache_dir,
@@ -814,6 +833,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         extra_lists=args.mailing_list,
         auto_discover=group_backed,
         verbose=verbosity,
+        on_progress=_mail_progress,
     )
 
     if group_backed:
