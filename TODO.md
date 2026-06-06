@@ -203,3 +203,41 @@ Yield per WG (how many real continuity-merges) is unmeasured. Guess: a handful,
 not dozens — most participants use one address and the name-merge already
 catches the rest. Report before/after on httpbis when built, same as PR #27.
 
+## ETag http-cache is host-local; degrades with fleet size (noted 2026-06-06)
+
+The Datatracker conditional-GET store (`gather/datatracker.py` `_HttpCache`,
+one file at `~/.cache/ietf-llm/.http-cache.json`) is plain gather machinery: it
+is written directly to `get_cache_dir()` and **never routed through the
+`CorpusStore` / publish seam**, so it is per-host. A bounded-eviction policy
+(last-used age window + LRU entry cap, applied at flush) now keeps each host's
+file from growing without bound — see `_HttpCache._evict`.
+
+The open item is cross-host *effectiveness*, not size. Gathers have **no host
+affinity**: any host's `start_gather` runs the gather on that host, and the
+per-corpus `gather_lease` (`corpus_control.py`) only serialises concurrent
+writes — it does not pin or route a corpus to a "home" host. So a corpus
+gathered on host A warms only A's ETag store; if the next gather of that corpus
+lands on host B, B is cold and re-downloads full bodies (no 304s). Hit rate is
+therefore whatever fraction of repeat gathers happen to land on the same host,
+and it falls as the fleet grows. Fine for single-host / dev; a tax on bandwidth
+in a symmetric multi-host fleet.
+
+### Options if cross-host ETag reuse ever matters
+
+- **Route the cache through `CorpusStore`** (the clean fit): small ETag /
+  last-used rows on the control plane (the `SqlExecutor` seam already there for
+  the version pointer and lease), bodies on the blob plane. Gets cross-host
+  reuse *and* the same atomicity/lease story the corpus store has, instead of a
+  shared mutable file.
+- **Do NOT** just point `IETF_LLM_CACHE_DIR` at a shared mount. That technically
+  shares the file but neither the existing `flush()` nor the new eviction is
+  concurrency-safe across hosts: the atomic `os.replace` prevents corruption but
+  is last-writer-wins, so concurrent flushes lose each other's entries (→ extra
+  re-downloads; never incorrect, since revalidation still gates on the live
+  response). The touch-on-`get` added with eviction widens that lost-update
+  window slightly.
+
+Not warranted by current usage — bandwidth from cold re-gathers is modest and
+the eviction bound already removes the unbounded-growth risk. Revisit only if a
+multi-host deployment shows the re-download cost is real.
+
