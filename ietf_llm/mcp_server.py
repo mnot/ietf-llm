@@ -2486,11 +2486,15 @@ def main() -> None:
         **Skip overview and go straight to the specialised tool for
         TOPICAL questions:**
           - "arguments for/against X" / "scope debate about X" →
-            `search_corpus(corpus, "X", label="...")` — issue labels are
-            the corpus's own curation.
+            `read_digest(corpus, kind="issues", label="...",
+            include_bodies=True)` — the issue catalogue plus each
+            opening description in one call beats semantic search for
+            coverage (`list_labels` first if you don't know the labels).
           - "what did the WG decide about X?" / "what's the WG's
-            position on X?" → `search_corpus(corpus, "X", state="closed")`
-            — the chairs' resolution lives in closed issues.
+            position on X?" → the outcome is whatever the chairs
+            declared, so go to their words: `search_corpus(corpus, "X",
+            role="Chair")` and `tally_positions(corpus, "<thread or
+            issue file>")`. This corpus does not compute consensus.
           - "what's open?" / "who chairs this?" / "what happened in
             May?" → `read_digest(corpus, kind=..., ...filters)`.
           - "what did Alice say about X?" → `search_corpus` (semantic
@@ -2652,7 +2656,9 @@ def main() -> None:
                             Datatracker governance: "charter-approved" /
                             "chair-appointed" / "group-state" /
                             "doc-adopted" / "doc-iesg" / "doc-rfc" /
-                            "doc-wglc"), limit.
+                            "doc-wglc" / "ballot"), limit. A standing
+                            "ballot" DISCUSS holds publication — report
+                            it as blocked, not approved.
                             `exclude_mechanical=True` drops the routine
                             machine events (I-D Action publications and
                             individual IESG ballot positions) so the human
@@ -2769,8 +2775,9 @@ def main() -> None:
         skipped only with `--no-embed`).
 
         Optional facets:
-          - file_pattern: SQL LIKE pattern (e.g. "%mailing-list%" to
-            restrict to the mailing list, "%github%" for GitHub issues).
+          - file_pattern: SQL LIKE pattern over the relative path
+            (e.g. "threads/%" to restrict to mailing-list threads,
+            "issues/%" for GitHub issues, "drafts/%" for drafts).
             % is wildcard.
           - since / until: ISO 8601 dates (e.g. "2026-01-01"). Only
             mailing-list and GitHub chunks have dates; windowed draft
