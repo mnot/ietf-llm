@@ -2278,7 +2278,13 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
         parts.append("stopped on request; partial gather discarded, re-run to retry")
     if state == "failed" and status.get("error"):
         parts.append(f"error: {status['error']}")
-    return " · ".join(parts)
+    line = " · ".join(parts)
+    # Pipeline notes (e.g. GitHub repos auto-tracked, or that discovery was
+    # throttled) printed under the status line so the client can act on them.
+    notes = status.get("notes")
+    if isinstance(notes, list) and notes:
+        line += "".join(f"\n  - {note}" for note in notes)
+    return line
 
 
 def _parse_iso(value: Any) -> "Optional[datetime.datetime]":
@@ -3189,9 +3195,13 @@ def main() -> None:
               shortname (`tls`, `cfrg`). The charter, drafts, RFCs,
               meetings, mailing list, and GitHub issues are auto-discovered
               — including *which* repos to track: the first gather finds the
-              group's active draft repos and follows them automatically. To
-              preview or override that choice, call `suggest_github_repos`
-              and pass the result as `github`.
+              group's active draft repos and follows them automatically
+              (`gather_status` reports which were added). To preview or
+              override that choice, call `suggest_github_repos` and pass the
+              result as `github`. Repo discovery calls the GitHub API, so the
+              server should have `GITHUB_TOKEN` set; without it a busy host
+              can be rate-limited and track no repos (the status notes say so,
+              and it retries next gather).
             - **Standalone mailing list**: pass `corpus` as the list name
               (`last-call`); auto-detected when it isn't a known group.
             - **Custom set**: any label as `corpus` plus explicit
@@ -3323,6 +3333,10 @@ def main() -> None:
             the corpus's first gather. Use this to preview or override that
             choice, to pick up 'maybe' repos it didn't auto-track, or for a
             corpus that has already been gathered once.
+
+            Hits the GitHub API, so the server should have `GITHUB_TOKEN` set
+            (strongly encouraged); without it the call can be rate-limited and
+            the result will say so and may be incomplete.
 
             Args:
                 corpus: The Working Group shortname (e.g. `tls`, `httpbis`).

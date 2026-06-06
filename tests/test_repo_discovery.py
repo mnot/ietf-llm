@@ -297,9 +297,15 @@ def test_autotrack_folds_high_confidence_and_marks_done(
         ),
     )
     args = _args()
-    rd.autotrack_github(args, {}, group_backed=True, scope="gather", verbose=Verbosity.QUIET)
+    notes: list = []
+    rd.autotrack_github(
+        args, {}, group_backed=True, scope="gather", verbose=Verbosity.QUIET,
+        note_fn=notes.append,
+    )
     assert args.github == ["fakewg/spec-active"]
     assert config.load("fakewg", "gather").get("github_discovered") is True
+    # The outcome is surfaced for the status record, not just stderr.
+    assert any("fakewg/spec-active" in n for n in notes)
 
 
 def test_autotrack_skips_when_github_already_configured(
@@ -340,7 +346,13 @@ def test_autotrack_does_not_burn_oneshot_when_incomplete(
         ),
     )
     args = _args()
-    rd.autotrack_github(args, {}, group_backed=True, scope="gather", verbose=Verbosity.QUIET)
+    notes: list = []
+    rd.autotrack_github(
+        args, {}, group_backed=True, scope="gather", verbose=Verbosity.QUIET,
+        note_fn=notes.append,
+    )
     assert args.github is None
     # Marker withheld so the next gather retries discovery.
     assert "github_discovered" not in config.load("fakewg", "gather")
+    # The throttle is surfaced (so the client isn't left thinking it has repos).
+    assert any("throttled" in n for n in notes)

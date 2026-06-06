@@ -35,7 +35,10 @@ A name that is none of these and has no configured sources is rejected as a like
 
 **Sources** (what to gather; all repeatable / persisted):
 
-- `--github OWNER/REPO` — a GitHub repo whose issues to include.
+- `--github OWNER/REPO` — a GitHub repo whose issues to include. For a Working Group you usually
+  don't need this: the first gather auto-discovers the group's active draft repos (those in its
+  Datatracker GitHub org that hold Internet-Draft sources and have a live issue tracker) and tracks
+  the high-confidence ones. Use `--github` to override or extend that set.
 - `--draft DRAFT-NAME` — an extra Internet-Draft to track, beyond a WG's own documents. Version
   suffix stripped; every revision gathered.
 - `--mailing-list LIST` — an extra list to sync (any archived at mailarchive.ietf.org). A bare name
@@ -72,16 +75,23 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
   group name, list, or tracked author), then exit.
 - `--clear-cache` — wipe this corpus's cache and re-download.
 - `--clear-config` — clear this corpus's persisted config.
+- `--discover-github NAME` — print the GitHub repos discovery recommends tracking for a WG (those
+  with Internet-Draft sources and an active issue tracker), and the matching `--github` flags, then
+  exit. A dry run — gathers nothing, writes no config.
 - `--quiet` / `--verbose`.
 
 Per-corpus settings live in `~/.config/ietf-llm/<name>/gather.json`; tool-wide settings live in
 `~/.config/ietf-llm/config.json`. To put any of these directories elsewhere, see
 [Storage & locations](storage.md).
 
-**GitHub auth.** Set `GITHUB_TOKEN` on the gather invocation (a fine-scoped read-only token is
-plenty); without one you'll hit anonymous API rate limits quickly on large WGs. Prefer
-inline-passing over exporting in your shell rc so the token doesn't leak into every other
-subprocess:
+**GitHub auth.** Setting `GITHUB_TOKEN` on the gather invocation (a fine-scoped read-only token is
+plenty) is **strongly encouraged** — without one you'll hit the anonymous 60-requests/hour API
+limit quickly. This matters more now that a WG's first gather auto-discovers its draft repos
+(extra API calls): when discovery is rate-limited it can't see the repos, so a tokenless gather on
+a busy host may silently track none of them (the `gather_status` notes say so, and it retries on
+the next gather). The same `GITHUB_TOKEN` covers discovery, the MCP `suggest_github_repos` tool,
+and issue downloads. Prefer inline-passing over exporting in your shell rc so the token doesn't
+leak into every other subprocess:
 
 ```bash
 GITHUB_TOKEN=ghp_... ietf-llm httpbis

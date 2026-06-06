@@ -50,10 +50,14 @@ Two ways to gather, depending on what's available:
 corpus's *first* gather, the repos in the WG's Datatracker org that hold
 Internet-Draft sources and an active issue tracker, and follows the
 high-confidence ones automatically (it runs once, then the user owns the
-`github` set). To preview or override that — or for a WG already gathered
-once — call `suggest_github_repos(corpus="<wg>")` (same opt-in gate) and
-pass its recommendation as `github=[...]`. From the shell, the dry run is
-`ietf-llm --discover-github <wg>`.
+`github` set). `gather_status` reports which repos were auto-tracked. To
+preview or override that — or for a WG already gathered once — call
+`suggest_github_repos(corpus="<wg>")` (same opt-in gate) and pass its
+recommendation as `github=[...]`. From the shell, the dry run is
+`ietf-llm --discover-github <wg>`. Discovery uses the GitHub API, so the
+server should have `GITHUB_TOKEN` set (strongly encouraged); without it a
+gather can be rate-limited and track no repos — `gather_status` says when
+that happens, and the next gather retries.
 
 **A gather in flight — or `queued` behind one — is a `gather_status`
 thing, not a retry thing.** Only one gather per corpus runs at a time,

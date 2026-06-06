@@ -28,7 +28,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -480,6 +480,7 @@ def autotrack_github(
     group_backed: bool,
     scope: str,
     verbose: Verbosity,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> None:
     """On a group-backed corpus's first gather with no `--github` set, fold
     the high-confidence discovered repos into `args.github` so they're
@@ -495,7 +496,19 @@ def autotrack_github(
 
     A scan left **incomplete** by a GitHub throttle / outage does *not* burn
     the one-shot: the marker is withheld so the next gather retries.
+
+    `note_fn`, when given, receives a short human-readable summary of the
+    outcome (repos tracked, or "throttled"). The gather runner routes it
+    into the status record so the MCP client can see what discovery did —
+    otherwise auto-tracking is invisible until the issues simply appear (or,
+    on a throttle, silently don't). Always also logged to stderr.
     """
+
+    def _emit(msg: str) -> None:
+        log(msg, verbose, level=LogLevel.STATUS)
+        if note_fn is not None:
+            note_fn(msg)
+
     if not group_backed:
         return
     # Skip when the user already controls the github set this run, has one
@@ -506,30 +519,34 @@ def autotrack_github(
     result = discover_group_repos(args.wg, verbose=verbose)
     if result.high_confidence:
         args.github = list(result.high_confidence)
-        log(
-            f"{args.wg}: auto-tracking {len(result.high_confidence)} GitHub "
-            f"repo(s) from discovery: {', '.join(result.high_confidence)}.",
-            verbose,
-            level=LogLevel.STATUS,
+        _emit(
+            f"Auto-tracked {len(result.high_confidence)} GitHub repo(s) from "
+            f"discovery: {', '.join(result.high_confidence)}."
         )
     if result.suggestions:
-        log(
-            f"{args.wg}: also found draft repos not auto-tracked: "
-            f"{', '.join(result.suggestions)}. Add with `--github owner/repo` "
-            "to include them.",
-            verbose,
-            level=LogLevel.STATUS,
+        _emit(
+            "Also found draft repos not auto-tracked: "
+            f"{', '.join(result.suggestions)}. Add them with the `github` "
+            "argument (CLI: `--github owner/repo`) to include them."
         )
-    if result.incomplete and not result.high_confidence:
-        # Throttled with nothing to show — leave the marker unset so the next
-        # gather tries again rather than permanently skipping discovery.
-        log(
-            f"{args.wg}: GitHub repo discovery was throttled; will retry on the "
-            "next gather. Set GITHUB_TOKEN to avoid the unauthenticated limit.",
-            verbose,
-            level=LogLevel.STATUS,
+    if result.incomplete:
+        # A throttle / outage left the scan partial. Surface it, and when it
+        # tracked nothing, leave the marker unset so the next gather retries
+        # rather than permanently skipping discovery.
+        token_hint = (
+            "Set GITHUB_TOKEN to avoid the unauthenticated GitHub rate limit, "
+            "then re-gather with force=True to pick up the rest."
         )
-        return
+        if result.high_confidence:
+            _emit(
+                f"GitHub repo discovery was throttled; the list may be partial. {token_hint}"
+            )
+        else:
+            _emit(
+                "No GitHub repos were auto-tracked because discovery was "
+                f"throttled; it will retry on the next gather. {token_hint}"
+            )
+            return
     marker_cfg = config.load(args.wg, scope)
     marker_cfg["github_discovered"] = True
     config.save(args.wg, scope, marker_cfg)

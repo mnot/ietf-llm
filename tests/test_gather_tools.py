@@ -343,6 +343,20 @@ def test_elapsed_handles_missing_timestamps() -> None:
     assert mcp_server._gather_elapsed({}) == ""
 
 
+def test_format_done_renders_pipeline_notes() -> None:
+    out = mcp_server._format_gather_status(
+        {
+            "corpus": "httpbis", "state": "done",
+            "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:03:20Z",
+            "notes": ["Auto-tracked 1 GitHub repo(s) from discovery: httpwg/http-extensions."],
+        }
+    )
+    assert "**httpbis** — done" in out
+    # Notes render on their own indented line below the status line.
+    assert "\n  - Auto-tracked 1 GitHub repo(s)" in out
+    assert "httpwg/http-extensions" in out
+
+
 def test_format_interrupted_omits_growing_elapsed() -> None:
     out = mcp_server._format_gather_status(
         {"corpus": "tls", "state": "interrupted",

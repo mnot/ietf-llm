@@ -154,10 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--discover-github",
         action="store_true",
         dest="discover_github",
-        help="Discover the GitHub repos worth tracking for a Working Group — "
-        "those in its Datatracker org that hold Internet-Draft sources and an "
-        "active issue tracker — print the ranked list and the matching "
-        "`--github` flags, then exit. Does not gather or write config.",
+        help="Discover and print the GitHub repos worth tracking for a Working "
+        "Group (Datatracker-org repos with draft sources + an active issue "
+        "tracker) and the matching `--github` flags, then exit. Writes nothing.",
     )
     parser.add_argument(
         "--completion",
@@ -683,6 +682,7 @@ def run_gather(
     argv: List[str],
     verbosity: Verbosity = Verbosity.STATUS,
     progress: Optional[ProgressFn] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Programmatic gather entry point: gather one corpus from a CLI-style
     `argv` (`[corpus, "--mailing-list", "foo", ...]`).
@@ -691,16 +691,18 @@ def run_gather(
     CLI exactly, then runs the pipeline. Returns True on success, False if
     the corpus name was unusable (a typo'd WG that is neither a group, a
     known list, nor configured with sources). Used by the MCP gather
-    runner; not wired to any console script.
+    runner; not wired to any console script. `note_fn` forwards one-line
+    outcome notes (e.g. auto-tracked GitHub repos) to the caller's status.
     """
     args = build_parser().parse_args(argv)
-    return _gather_one(args, verbosity, progress=progress)
+    return _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
 
 
 def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     args: argparse.Namespace,
     verbosity: Verbosity,
     progress: Optional[ProgressFn] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Run the full gather pipeline for a single WG.
 
@@ -743,10 +745,9 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     )
     _validate_new_sources(args, persisted, "github", validate_github_repos, verbosity)
 
-    # First gather of a group-backed corpus with no --github: discover the
-    # group's active draft repos and auto-track the high-confidence ones,
-    # before config.merge folds args.github into the persisted set.
-    autotrack_github(args, persisted, group_backed, SCOPE, verbosity)
+    # First gather, no --github: auto-track the group's discovered draft repos
+    # (before config.merge folds args.github into the persisted set).
+    autotrack_github(args, persisted, group_backed, SCOPE, verbosity, note_fn=note_fn)
 
     config.merge(
         args,
