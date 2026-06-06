@@ -113,6 +113,28 @@ def test_listing_classification_degrades_then_reads_through_seam(
     assert not (Path(get_cache_dir()) / "tls" / "files").exists()
 
 
+def test_all_statuses_includes_control_plane_on_cloud(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On the cloud backend, a no-corpus gather_status listing must see gathers
+    # recorded in the control plane by other replicas, not only the corpora
+    # cached on this host (which here is none).
+    base = isolated_home / "store"
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
+    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
+    monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
+    store = get_corpus_store()
+    store.put_gather_status(
+        "tls", {"corpus": "tls", "state": "running", "updated": "2026-06-06T00:00:00Z"}
+    )
+    store.put_gather_status(
+        "quic", {"corpus": "quic", "state": "queued", "updated": "2026-06-06T00:01:00Z"}
+    )
+    corpora = {s.get("corpus") for s in gather_runner.all_statuses()}
+    assert {"tls", "quic"} <= corpora
+
+
 def test_fleet_slot_blocks_a_gather_until_released(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

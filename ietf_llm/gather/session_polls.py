@@ -31,7 +31,7 @@ from ..paths import (
     poll_path,
     polls_dir,
 )
-from ..utils import LogLevel, Verbosity, fetch_resource, log
+from ..utils import LogLevel, Verbosity, atomic_open, fetch_resource, log
 from .datatracker import iter_group_documents
 
 #: Datatracker polls document name: `polls-<meeting>-<wg>-<YYYYMMDDHHmm>`.
@@ -94,7 +94,7 @@ def process_session_polls(
             source_url=poll_url,
             body=body,
         )
-        with open(path, "w", encoding="utf-8") as fh:
+        with atomic_open(path) as fh:
             fh.write(markdown)
         log(
             f"Wrote {os.path.relpath(path, dest)}",

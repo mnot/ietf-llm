@@ -49,6 +49,7 @@ from .utils import (
     get_wg_file_cache_dir,
     get_wg_title,
     log,
+    write_if_changed,
 )
 
 # Files we mirror / upload. JSON archives are internal and excluded;
@@ -240,16 +241,10 @@ def directory(
     # free (no copy, no mtime churn).
     for content, flat, _kind in sources:
         dst = os.path.join(destination, flat)
-        if os.path.exists(dst):
-            try:
-                with open(dst, "r", encoding="utf-8", errors="replace") as fh:
-                    if fh.read() == content:
-                        continue
-            except OSError:
-                pass
-        with open(dst, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        changes += 1
+        # write_if_changed skips an unchanged re-export (no mtime churn) and
+        # writes atomically, so a crash mid-export can't truncate a file.
+        if write_if_changed(dst, content):
+            changes += 1
 
     # Prune anything in the destination that isn't in the cache (and
     # isn't a hidden file the user might have dropped there).

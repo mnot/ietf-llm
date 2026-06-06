@@ -9,14 +9,18 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
 from typing import Callable, Dict, List, Optional
 
+import requests
+
 from ..paths import raw_dir, raw_mail_archive_path
 from ..utils import (
     LogLevel,
     Verbosity,
-    fetch_resource,
+    atomic_open_binary,
     get_cache_dir,
     get_mailing_list_name,
+    governed_get,
     log,
+    write_if_changed,
 )
 
 IMAP_SERVER = "imap.ietf.org"
@@ -58,7 +62,11 @@ def validate_list_names(
             )
             continue
         url = f"https://mailarchive.ietf.org/arch/browse/{norm}/"
-        if fetch_resource(url) is None:
+        try:
+            status: Optional[int] = governed_get(url, timeout=30).status_code
+        except requests.RequestException:
+            status = None
+        if status == 404:
             log(
                 f"--mailing-list {raw}: not found on "
                 "mailarchive.ietf.org; not persisting.",
@@ -66,6 +74,16 @@ def validate_list_names(
                 level=LogLevel.STATUS,
             )
             continue
+        if status != 200:
+            # A transient failure (network / 5xx) must not drop a name the user
+            # explicitly asked for — only a definitive 404 does. Keep it and let
+            # the gather surface any real problem later.
+            log(
+                f"--mailing-list {raw}: could not verify "
+                f"(status {status}); keeping it anyway.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
         valid.append(raw)
     return valid
 
@@ -222,7 +240,7 @@ def _download_batches(
             if not isinstance(body, bytes):
                 continue
 
-            with open(cache_file, "wb") as file_handle:
+            with atomic_open_binary(cache_file) as file_handle:
                 file_handle.write(body)
             new_count += 1
 
@@ -405,13 +423,10 @@ def sync_mailing_list(
         # uses internally so the merged archive looks uniform.
         merged = "\n=====\n\n".join(parts)
         output_file = raw_mail_archive_path(dest_folder, year)
-        if os.path.exists(output_file):
-            with open(output_file, "r", encoding="utf-8") as in_fh:
-                if in_fh.read() == merged:
-                    continue
-        with open(output_file, "w", encoding="utf-8") as out_fh:
-            out_fh.write(merged)
-        updated_files.append(output_file)
+        # write_if_changed both skips an unchanged rewrite and writes
+        # atomically (temp + rename), so a crash can't truncate the archive.
+        if write_if_changed(output_file, merged):
+            updated_files.append(output_file)
     return updated_files
 
 

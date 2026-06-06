@@ -9,6 +9,8 @@ import json
 import os
 from typing import Dict, Mapping
 
+from ..utils import atomic_open
+
 
 def load_json_dict(path: str) -> Dict[str, str]:
     """Return the `{str: str}` map at `path`, or {} if absent/unreadable."""
@@ -21,10 +23,10 @@ def load_json_dict(path: str) -> Dict[str, str]:
 
 
 def save_json_dict(path: str, data: Mapping[str, str]) -> None:
-    """Persist `data` atomically (tmp + rename, so a concurrent reader
-    never sees a half-written file)."""
+    """Persist `data` atomically (tmp + rename, so a concurrent reader never
+    sees a half-written file). The temp name carries the pid and a counter, so
+    two gathers of the same WG cannot collide on a shared temp and clobber each
+    other's rename."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with atomic_open(path) as fh:
         json.dump(dict(data), fh, indent=2, sort_keys=True)
-    os.replace(tmp, path)

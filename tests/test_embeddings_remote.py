@@ -63,6 +63,28 @@ def test_embed_multi_preserves_input_order(monkeypatch):
     assert [v[0] for v in out] == [1.0, 2.0, 3.0]
 
 
+def test_embed_multi_raises_on_short_response(monkeypatch):
+    # A server returning fewer vectors than inputs would misalign every
+    # chunk<->vector pair the caller zips; the backend must fail loudly.
+    monkeypatch.setattr(oai_compat.requests, "post",
+                        lambda url, headers, json, timeout: _FakeResp(200, _echo(json["input"])[:-1]))
+    with pytest.raises(ValueError):
+        _model().embed_multi(["a", "bb", "ccc"])
+
+
+def test_embed_multi_raises_on_duplicate_index(monkeypatch):
+    # Two rows claiming the same index leave another input with no vector;
+    # silently accepting it would shift the alignment.
+    def dup(url, headers, json, timeout):
+        rows = _echo(json["input"])
+        rows[1]["index"] = 0
+        return _FakeResp(200, rows)
+
+    monkeypatch.setattr(oai_compat.requests, "post", dup)
+    with pytest.raises(ValueError):
+        _model().embed_multi(["a", "bb", "ccc"])
+
+
 def test_embed_multi_batches_to_configured_size(monkeypatch):
     calls = []
 

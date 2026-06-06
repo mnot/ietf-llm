@@ -15,6 +15,7 @@ For local-folder mirroring or NotebookLM Enterprise upload, see
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import shutil
 import sys
@@ -396,9 +397,17 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
                 f"Refreshing {len(targets)} corpora: {', '.join(targets)}",
                 file=sys.stderr,
             )
+        # Each corpus needs its own args object: _gather_one -> config.merge
+        # mutates args in place (folding the corpus's persisted sources back
+        # onto it) and persists the result. A shared Namespace would carry
+        # corpus A's github/draft/mailing-list sources and flags into corpus
+        # B's merge — union'ing them into B's saved config and compounding on
+        # each --all run — and would also suppress B's repo auto-discovery.
+        base = vars(args)
         for wg in targets:
-            args.wg = wg
-            _gather_one(args, verbosity)
+            one = argparse.Namespace(**copy.deepcopy(base))
+            one.wg = wg
+            _gather_one(one, verbosity)
     else:
         _gather_one(args, verbosity)
 
@@ -824,7 +833,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             months=args.months,
             meeting_clusters=meeting_clusters,
         )
-        enrich_transcripts(cache_dir, verbose=verbosity)
+        enrich_transcripts(cache_dir, verbose=verbosity, wg=args.wg)
 
         # Documents (drafts & RFCs) — only auto-discoverable for real WGs.
         tracker.begin("documents")

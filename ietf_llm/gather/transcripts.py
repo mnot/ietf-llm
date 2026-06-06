@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, List, Optional
 
 from ..paths import transcript_path, transcripts_dir
-from ..utils import LogLevel, Verbosity, file_lock, get_cache_dir, log
+from ..utils import LogLevel, Verbosity, atomic_open, file_lock, get_cache_dir, log
 
 if TYPE_CHECKING:
     from .meetings import MeetingCluster
@@ -103,10 +103,12 @@ def process_transcripts(
         if cutoff_date:
             try:
                 file_date = datetime.strptime(date_str, "%Y%m%d")
-                if file_date < cutoff_date:
-                    continue
             except ValueError:
-                pass
+                # Undatable file under an explicit date window: exclude it
+                # (fail-safe) rather than slipping it past the cutoff.
+                continue
+            if file_date < cutoff_date:
+                continue
 
         src_path = os.path.join(transcripts_path, file)
         # Numbered meetings map straight to `ietf<N>`. Interim
@@ -142,7 +144,7 @@ def process_transcripts(
             try:
                 with open(src_path, "r", encoding="utf-8") as f_in:
                     content = f_in.read()
-                with open(dest_path, "w", encoding="utf-8") as f_out:
+                with atomic_open(dest_path) as f_out:
                     f_out.write(content)
                 updated_files.append(dest_path)
             except OSError as err:

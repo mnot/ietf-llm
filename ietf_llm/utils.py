@@ -403,6 +403,29 @@ def atomic_open(
         raise
 
 
+@contextmanager
+def atomic_open_binary(path: str) -> "Iterator[Any]":
+    """Binary counterpart of `atomic_open`: yields a file handle opened for
+    `wb` writing into a same-directory temp that is `os.replace`d into place
+    only on clean close. On error (including a download that raises partway)
+    the temp is removed and any prior file is left intact — so a crash or a
+    truncated transfer never leaves a partial blob cached under the final name.
+    """
+    tmp = f"{path}.{os.getpid()}.{next(_atomic_tmp_counter)}.tmp"
+    handle = open(tmp, "wb")  # pylint: disable=consider-using-with
+    try:
+        yield handle
+        handle.close()
+        os.replace(tmp, path)
+    except BaseException:
+        handle.close()
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_if_changed(path: str, content: str) -> bool:
     """Write `content` to `path` only if it differs from what's there
     (or the file is missing). Returns True if a write happened.

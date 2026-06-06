@@ -5,7 +5,14 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, governed_get, log
+from ..utils import (
+    DEFAULT_HEADERS,
+    LogLevel,
+    Verbosity,
+    atomic_open,
+    governed_get,
+    log,
+)
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
@@ -85,7 +92,12 @@ def process_github_issues(
             state = issue.get("state", "(Unknown State)")
             author = issue.get("author", "(Unknown Author)")
             created_at = format_date(issue.get("createdAt"))
-            issue_labels = issue.get("labels", [])
+            # A third-party gh-pages archive is ingested verbatim; coerce
+            # labels to a list of strings so a malformed shape (objects, a
+            # dict) degrades to no labels rather than raising on join/membership.
+            issue_labels = [
+                lbl for lbl in (issue.get("labels") or []) if isinstance(lbl, str)
+            ]
             labels_str = ", ".join(issue_labels)
             body = (issue.get("body") or "").strip()
 
@@ -214,7 +226,7 @@ def download_github_issues(
         try:
             response = governed_get(repo_short, headers=DEFAULT_HEADERS, timeout=60)
             response.raise_for_status()
-            with open(dest_path, "w", encoding="utf-8") as json_file:
+            with atomic_open(dest_path) as json_file:
                 json_file.write(response.text)
             return True
         except (requests.RequestException, OSError) as err:
@@ -261,7 +273,7 @@ def download_github_issues(
                         "timestamp": datetime.now().isoformat(),
                         "issues": [archive_data],
                     }
-                with open(dest_path, "w", encoding="utf-8") as json_fh:
+                with atomic_open(dest_path) as json_fh:
                     json.dump(archive_data, json_fh, indent=2)
                 return True
             except (json.JSONDecodeError, TypeError) as err:
@@ -295,7 +307,7 @@ def download_github_issues(
             "timestamp": datetime.now().isoformat(),
             "issues": all_issues,
         }
-        with open(dest_path, "w", encoding="utf-8") as json_fh:
+        with atomic_open(dest_path) as json_fh:
             json.dump(export_data, json_fh, indent=2)
         return True
     except (requests.RequestException, OSError) as err:
@@ -351,16 +363,35 @@ def _fetch_all_issues(
 def _fetch_issue_comments(
     comments_url: str, headers: Dict[str, str]
 ) -> List[Dict[str, Any]]:
-    """Fetch comments for a specific issue."""
-    c_res = governed_get(comments_url, headers=headers, timeout=30)
-    if c_res.status_code == 200:
+    """Fetch every comment for a specific issue, paging the API.
+
+    GitHub's issue-comments endpoint defaults to 30 per page; without paging,
+    an active issue's later comments were silently dropped — including the
+    actual closing comment that downstream rendering uses as the resolution.
+    """
+    out: List[Dict[str, Any]] = []
+    page = 1
+    while True:
+        c_res = governed_get(
+            comments_url,
+            headers=headers,
+            params={"per_page": 100, "page": page},
+            timeout=30,
+        )
+        if c_res.status_code != 200:
+            break
         comments = c_res.json()
-        return [
+        if not comments:
+            break
+        out.extend(
             {
                 "author": comment.get("user", {}).get("login"),
                 "createdAt": comment.get("created_at"),
                 "body": comment.get("body"),
             }
             for comment in comments
-        ]
-    return []
+        )
+        if len(comments) < 100:
+            break
+        page += 1
+    return out
