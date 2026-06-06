@@ -18,6 +18,7 @@ from ..utils import (
     get_cache_dir,
     get_mailing_list_name,
     log,
+    write_if_changed,
 )
 
 IMAP_SERVER = "imap.ietf.org"
@@ -406,13 +407,10 @@ def sync_mailing_list(
         # uses internally so the merged archive looks uniform.
         merged = "\n=====\n\n".join(parts)
         output_file = raw_mail_archive_path(dest_folder, year)
-        if os.path.exists(output_file):
-            with open(output_file, "r", encoding="utf-8") as in_fh:
-                if in_fh.read() == merged:
-                    continue
-        with open(output_file, "w", encoding="utf-8") as out_fh:
-            out_fh.write(merged)
-        updated_files.append(output_file)
+        # write_if_changed both skips an unchanged rewrite and writes
+        # atomically (temp + rename), so a crash can't truncate the archive.
+        if write_if_changed(output_file, merged):
+            updated_files.append(output_file)
     return updated_files
 
 

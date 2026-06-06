@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, List, Optional
 
 from ..paths import transcript_path, transcripts_dir
-from ..utils import LogLevel, Verbosity, file_lock, get_cache_dir, log
+from ..utils import LogLevel, Verbosity, atomic_open, file_lock, get_cache_dir, log
 
 if TYPE_CHECKING:
     from .meetings import MeetingCluster
@@ -142,7 +142,7 @@ def process_transcripts(
             try:
                 with open(src_path, "r", encoding="utf-8") as f_in:
                     content = f_in.read()
-                with open(dest_path, "w", encoding="utf-8") as f_out:
+                with atomic_open(dest_path) as f_out:
                     f_out.write(content)
                 updated_files.append(dest_path)
             except OSError as err:

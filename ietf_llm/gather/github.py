@@ -5,7 +5,14 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from ..utils import DEFAULT_HEADERS, LogLevel, Verbosity, governed_get, log
+from ..utils import (
+    DEFAULT_HEADERS,
+    LogLevel,
+    Verbosity,
+    atomic_open,
+    governed_get,
+    log,
+)
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
@@ -214,7 +221,7 @@ def download_github_issues(
         try:
             response = governed_get(repo_short, headers=DEFAULT_HEADERS, timeout=60)
             response.raise_for_status()
-            with open(dest_path, "w", encoding="utf-8") as json_file:
+            with atomic_open(dest_path) as json_file:
                 json_file.write(response.text)
             return True
         except (requests.RequestException, OSError) as err:
@@ -261,7 +268,7 @@ def download_github_issues(
                         "timestamp": datetime.now().isoformat(),
                         "issues": [archive_data],
                     }
-                with open(dest_path, "w", encoding="utf-8") as json_fh:
+                with atomic_open(dest_path) as json_fh:
                     json.dump(archive_data, json_fh, indent=2)
                 return True
             except (json.JSONDecodeError, TypeError) as err:
@@ -295,7 +302,7 @@ def download_github_issues(
             "timestamp": datetime.now().isoformat(),
             "issues": all_issues,
         }
-        with open(dest_path, "w", encoding="utf-8") as json_fh:
+        with atomic_open(dest_path) as json_fh:
             json.dump(export_data, json_fh, indent=2)
         return True
     except (requests.RequestException, OSError) as err:
