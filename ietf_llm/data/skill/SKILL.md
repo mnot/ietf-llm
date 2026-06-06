@@ -45,6 +45,20 @@ Two ways to gather, depending on what's available:
   `ietf-llm <corpus>` (e.g. `ietf-llm httpbis`). `ietf-llm --list`
   shows what's cached.
 
+**Until the gather reports `done`, treat the corpus as unqueryable.**
+Poll `gather_status(corpus="<name>")` (or, for a shell gather, wait for
+`ietf-llm <corpus>` to return). On the cloud backend nothing is visible
+before the final atomic publish; on the local backend files appear stage
+by stage, but the layers you'll actually query come last — the
+**embedding index is the final stage**, so `search_corpus` /
+`search_corpora` / `read_topic` are empty or partial until the end, and
+the **digests** (`overview`, `read_digest`, `list_labels`) are built in
+the stage before it. Mid-gather, at most `list_files` /
+`read_file_section` see raw `threads/`, `issues/`, and `drafts/` files.
+The move is always the same: wait for `done`, then query. (`gather_status`
+names the current stage only so a slow gather is visibly *moving* — not
+as a cue to start querying early.)
+
 **GitHub repos are auto-discovered for a WG — you don't have to pass
 `github`.** A group-backed `start_gather` with no `github` finds, on the
 corpus's *first* gather, the repos in the WG's Datatracker org that hold
@@ -60,18 +74,13 @@ gather can be rate-limited and track no repos — `gather_status` says when
 that happens, and the next gather retries.
 
 **A gather in flight — or `queued` behind one — is a `gather_status`
-thing, not a retry thing.** Only one gather per corpus runs at a time,
-and on a shared server that one may have been started by another client
-or host. Gathers also run **capped to a few at once to stay polite to
-datatracker** (per host, and across the whole deployment) — so when that
-cap is reached, a *different* corpus you ask for may report **`queued`**
-until a slot frees.
-In every one of these cases — *already running*, *queued* — the move is
-the same: **poll `gather_status(corpus="<name>")`** until it reports
-`done`; do **not** re-issue `start_gather` or add `force=True` to "unstick"
-it. `force` overrides the *freshness debounce* (re-gather a recently-cached
-corpus) only — it never starts a second concurrent gather or jumps the
-queue, so spamming it just wastes calls.
+thing, not a retry thing.** Only one gather per corpus runs at a time
+(across hosts on a shared server, so another client may have started it),
+and a small concurrency cap means a *different* corpus may report
+`queued` until a slot frees. In both cases — *already running*, *queued* —
+poll `gather_status` until `done`; don't re-issue `start_gather` or add
+`force=True` to "unstick" it. `force` overrides only the freshness
+debounce, never the one-at-a-time or queue limits.
 
 This applies to any sign of IETF list traffic, not just a named
 WG: a `mailarchive.ietf.org` URL, a `datatracker.ietf.org` URL, an
@@ -378,24 +387,15 @@ Filters beyond the obvious `since`/`until`/`label`/`state`/
 
 ## Across several efforts: `search_corpora(corpora, query)`
 
-When a question spans **multiple** gathered efforts ("what is the IETF
-doing around AI?"), don't run `search_corpus` N times and merge by hand
-— `search_corpora(corpora=[...], query)` fans the same search across the
-bounded set you name and returns one merged, rank-ordered list, each hit
-tagged `corpus=`. `corpora` is **required** — the few efforts you chose
-(typically `find_efforts` output), never a blind scan; unknown / un-indexed
-corpora and anything past the 12-corpus cap are reported, not dropped.
-`k` bounds the **total** hits. Facets mirror `search_corpus`
-(`since`/`until`/`label`/`state`/`author`/`role`/`snippet_chars`/
-`collapse_versions`); the depth-only knobs (`sort`, `group_by`,
-`file_pattern`) are deliberately absent — scope a single corpus for those.
-
-Scores are comparable only **within** one embedding model: when the
-corpora share a model the result is a single ranking; when they differ,
-hits are grouped by model and the groups are interleaved by rank (the
-header says which). Treat it as **breadth** — it locates *where* a topic
-lives; pivot to `read_topic` / `tally_positions` / `read_digest` /
-`search_corpus` (using the `corpus=` tag) for the decisions and narrative.
+When a question spans **multiple** gathered efforts, `search_corpora`
+fans one semantic search across the bounded set you name and returns a
+single merged, rank-ordered list (each hit tagged `corpus=`) — instead of
+N `search_corpus` calls merged by hand. It's the **breadth** step in the
+`find_efforts` playbook above: it locates *where* a topic lives, then you
+pivot to `read_topic` / `tally_positions` / `read_digest` / `search_corpus`
+(via the `corpus=` tag) for depth. `corpora` is required (the few you
+chose, never a blind scan). See the tool's description for the facets, the
+12-corpus cap, and how cross-model scores are ranked.
 
 ## RFC-series lookups: `rfc_search` / `get_rfc`
 
