@@ -171,6 +171,22 @@ class CorpusStore(ABC):
         read-only, creates nothing."""
         return self.resolve_current(corpus) is not None
 
+    def materialised_cache_dir(self, corpus: str) -> Optional[str]:
+        """Local `files/` dir for the current version **only if it is already
+        present on local disk** — never fetches, never creates. None otherwise.
+
+        This is the accessor for cheap discovery paths (the corpus-listing
+        classification in `corpus.py`): unlike `local_cache_dir`, it must not
+        trigger a per-corpus blob download when a listing classifies every
+        corpus the control plane knows about. Callers degrade gracefully when
+        it returns None (classify from config alone).
+
+        The default delegates to `local_cache_dir`, correct for any backend
+        whose `local_cache_dir` does not itself fetch — the local backend,
+        whose `local_cache_dir` is already a read-only existence check. The
+        cloud backend overrides it to consult only staged scratch."""
+        return self.local_cache_dir(corpus)
+
     # --- write-side gather lease (default: no-op single writer) -----------
 
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:

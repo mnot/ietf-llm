@@ -193,6 +193,18 @@ class CloudCorpusStore(CorpusStore):
         files_dir = os.path.join(dest_root, "files")
         return files_dir if os.path.isdir(files_dir) else None
 
+    def materialised_cache_dir(self, corpus: str) -> Optional[str]:
+        # Read-only, non-fetching: return the version's files dir only if it is
+        # already staged on this replica's scratch. Cheap discovery paths (the
+        # `list_corpora` classification) use this so they never download every
+        # corpus's blobs just to read group.md — they degrade to config-only on
+        # a None. (Unlike `local_cache_dir`, which materialises on a miss.)
+        version = pinned_version(corpus) or self.resolve_current(corpus)
+        if version is None:
+            return None
+        files_dir = os.path.join(self._scratch, corpus, version, "files")
+        return files_dir if os.path.isdir(files_dir) else None
+
     def local_index_dir(self, corpus: str) -> Optional[str]:
         version = pinned_version(corpus) or self.resolve_current(corpus)
         if version is None:
