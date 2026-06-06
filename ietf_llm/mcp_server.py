@@ -107,6 +107,8 @@ from .utils import (
     get_index_dir,
     graceful_keyboard_interrupt,
     log,
+    months_request_caution,
+    months_request_error,
 )
 
 MAX_LINES_DEFAULT = 400
@@ -2109,6 +2111,9 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
             "'.', '-' or '_' (no path separators or spaces), starting with a "
             "letter or digit."
         )
+    months_error = months_request_error(months, force)
+    if months_error:
+        return months_error
     spec = gather_runner.GatherSpec(
         corpus=corpus,
         mailing_list=list(mailing_list or []),
@@ -2123,7 +2128,12 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         include_related_drafts=include_related_drafts,
         force=force,
     )
-    return _format_start_result(gather_runner.start(spec), corpus)
+    result = gather_runner.start(spec)
+    out = _format_start_result(result, corpus)
+    caution = months_request_caution(months)
+    if result.get("started") and caution:
+        out = f"{out} {caution}"
+    return out
 
 
 def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
@@ -3204,7 +3214,9 @@ def main() -> None:
                     person; email is the unambiguous form).
                 new_drafts: Make this a rolling 'new Internet-Drafts'
                     subscription over the `months` window.
-                months: Months of mailing-list / meeting history to fetch.
+                months: Months of mailing-list / meeting history to fetch
+                    (default 12). 0 means all history — an unbounded, slow
+                    gather, so it is refused unless `force=True`.
                 add_mentioned_drafts: Also pull in drafts the corpus cites
                     but doesn't already have.
                 include_related_drafts: Also gather related (un-adopted)

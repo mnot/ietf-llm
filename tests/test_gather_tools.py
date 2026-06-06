@@ -66,6 +66,45 @@ def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "already running" in out
 
 
+def test_start_gather_refuses_zero_months_without_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def fake_start(spec: gather_runner.GatherSpec) -> Dict[str, Any]:
+        nonlocal called
+        called = True
+        return {"started": True, "corpus": spec.corpus}
+
+    monkeypatch.setattr(gather_runner, "start", fake_start)
+    out = mcp_server.tool_start_gather("tls", months=0)
+    assert "force" in out
+    assert called is False  # refused before a slot is spent
+
+
+def test_start_gather_allows_zero_months_with_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus},
+    )
+    out = mcp_server.tool_start_gather("tls", months=0, force=True)
+    assert "Started gathering 'tls'" in out
+
+
+def test_start_gather_cautions_on_large_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus},
+    )
+    out = mcp_server.tool_start_gather("tls", months=36)
+    assert "Started gathering 'tls'" in out
+    assert "36-month window" in out
+
+
 def test_start_gather_surfaces_stop_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         gather_runner, "start",

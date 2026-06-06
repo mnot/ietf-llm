@@ -77,6 +77,14 @@ for fresh data; on a shared server, prefer the cached snapshot. A
 existing snapshot, don't retry the gather. Pass `force=True` (CLI:
 `--force`) only on an explicit request for fresh data.
 
+**`months` bounds how far back a gather reaches** (default 12). Leave it
+alone unless the user asks for a specific span — a larger window is a
+proportionally slower gather on an active list. `months=0` means *all
+history*, an unbounded gather that on a busy list is tens of thousands of
+messages; it is **refused unless `force=True`**, so don't reach for it to
+mean "recent" or "default". A window well past the default still runs,
+just expect it to take longer (watch `gather_status`).
+
 Reaching out to a live IETF resource (datatracker.ietf.org,
 mailarchive.ietf.org, a draft URL, GitHub) is occasionally
 necessary — e.g. to confirm a draft's *current* state, which the

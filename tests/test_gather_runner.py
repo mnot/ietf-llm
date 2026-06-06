@@ -63,6 +63,28 @@ def _emitted(args: Any) -> List[str]:
     return seen
 
 
+def test_stored_zero_months_degrades_without_force(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A prior forced `--months 0` persists 0; an unforced refresh must not
+    # silently inherit all-history — it degrades to the default window.
+    _stub_pipeline(monkeypatch, (False, True))
+    config.save("myorg", main_mod.SCOPE, {"months": 0})
+    args = main_mod.build_parser().parse_args(["myorg"])
+    main_mod._gather_one(args, Verbosity.QUIET)
+    assert args.months == utils.DEFAULT_MONTHS
+
+
+def test_stored_zero_months_kept_with_force(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_pipeline(monkeypatch, (False, True))
+    config.save("myorg", main_mod.SCOPE, {"months": 0})
+    args = main_mod.build_parser().parse_args(["myorg", "--force"])
+    main_mod._gather_one(args, Verbosity.QUIET)
+    assert args.months == 0  # all-history honoured for this run
+
+
 def test_emitted_stages_match_plan_group(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
