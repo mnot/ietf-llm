@@ -270,16 +270,28 @@ def _load_citation_counts(cache_dir: str) -> dict[str, int]:
     return out
 
 
+#: The columns the overview's open-issues table declares, by lowercased name.
+#: The issues digest carries more (Participants, Dup-of, File, Summary); rows
+#: are projected down to these or the wider rows spill past the 7-column header
+#: and break the rendered table.
+_OPEN_ISSUE_COLUMNS = ["#", "state", "title", "labels", "comments", "updated", "author"]
+
+
 def _recent_open_issues(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
-    """Filter the issues digest to the most recently updated open ones."""
+    """Filter the issues digest to the most recently updated open ones,
+    projected to the columns the overview table shows (`_OPEN_ISSUE_COLUMNS`)."""
     issues_path = _digest_path(cache_dir, wg, "issues")
     if not os.path.isfile(issues_path):
         return []
     filtered_md = query_digest(issues_path, "issues", state="open", limit=limit)
-    sections = parse_md_tables(filtered_md)
     rows: List[List[str]] = []
-    for section in sections:
-        rows.extend(section.rows)
+    for section in parse_md_tables(filtered_md):
+        cols = [c.lower() for c in section.columns]
+        idx = [cols.index(n) if n in cols else None for n in _OPEN_ISSUE_COLUMNS]
+        for row in section.rows:
+            rows.append([row[i] if i is not None and i < len(row) else "" for i in idx])
+            if len(rows) >= limit:
+                break
         if len(rows) >= limit:
             break
     return rows[:limit]

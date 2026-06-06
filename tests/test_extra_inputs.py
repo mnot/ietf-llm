@@ -261,3 +261,40 @@ def test_download_github_issues_owner_starting_with_http(
     # The bug sent the bare 'httpwg/drafts' to requests.get; the fix resolves
     # it to the gh-pages archive URL instead.
     assert seen == ["https://httpwg.github.io/drafts/archive.json"]
+
+
+class _JsonResp:
+    def __init__(self, data: object) -> None:
+        self.status_code = 200
+        self._data = data
+
+    def json(self) -> object:
+        return self._data
+
+
+def test_fetch_issue_comments_paginates(monkeypatch: object) -> None:
+    # Regression: GitHub returns issue comments 30-at-a-time (we request 100);
+    # without paging, an issue with >100 comments silently lost the rest —
+    # including the closing comment used as the resolution downstream.
+    pages = {
+        1: [
+            {"user": {"login": f"u{i}"}, "created_at": "t", "body": f"c{i}"}
+            for i in range(100)
+        ],
+        2: [{"user": {"login": "closer"}, "created_at": "t", "body": "final"}],
+    }
+    seen_pages: list = []
+
+    def fake_get(url: str, **kwargs: object) -> _JsonResp:
+        page = kwargs["params"]["page"]  # type: ignore[index]
+        seen_pages.append(page)
+        return _JsonResp(pages.get(page, []))
+
+    monkeypatch.setattr(github, "governed_get", fake_get)  # type: ignore[attr-defined]
+    out = github._fetch_issue_comments(  # pylint: disable=protected-access
+        "https://api.github.com/repos/o/r/issues/1/comments", {}
+    )
+    assert len(out) == 101
+    assert out[-1]["author"] == "closer"
+    # Stopped after the short second page; did not request a third.
+    assert seen_pages == [1, 2]

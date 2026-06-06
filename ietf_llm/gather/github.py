@@ -351,16 +351,35 @@ def _fetch_all_issues(
 def _fetch_issue_comments(
     comments_url: str, headers: Dict[str, str]
 ) -> List[Dict[str, Any]]:
-    """Fetch comments for a specific issue."""
-    c_res = governed_get(comments_url, headers=headers, timeout=30)
-    if c_res.status_code == 200:
+    """Fetch every comment for a specific issue, paging the API.
+
+    GitHub's issue-comments endpoint defaults to 30 per page; without paging,
+    an active issue's later comments were silently dropped — including the
+    actual closing comment that downstream rendering uses as the resolution.
+    """
+    out: List[Dict[str, Any]] = []
+    page = 1
+    while True:
+        c_res = governed_get(
+            comments_url,
+            headers=headers,
+            params={"per_page": 100, "page": page},
+            timeout=30,
+        )
+        if c_res.status_code != 200:
+            break
         comments = c_res.json()
-        return [
+        if not comments:
+            break
+        out.extend(
             {
                 "author": comment.get("user", {}).get("login"),
                 "createdAt": comment.get("created_at"),
                 "body": comment.get("body"),
             }
             for comment in comments
-        ]
-    return []
+        )
+        if len(comments) < 100:
+            break
+        page += 1
+    return out
