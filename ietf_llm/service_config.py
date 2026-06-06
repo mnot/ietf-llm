@@ -17,6 +17,12 @@ knobs; the table below is authoritative. See `docs/storage.md`.
 | scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
 | resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
 | gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
+
+The per-host gather egress caps (`IETF_LLM_HTTP_MAX_PER_HOST`,
+`IETF_LLM_HTTP_MAX_DATATRACKER`) are deliberately *not* read here: `http_governor`
+owns them and reads them straight from the environment, because it sits below
+`config` in the import graph (this module imports `config`, which imports
+`utils`, which the governor wraps) and must not depend on it.
 """
 
 from __future__ import annotations

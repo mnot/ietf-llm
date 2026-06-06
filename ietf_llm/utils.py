@@ -23,8 +23,14 @@ except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
     _fcntl = None  # type: ignore[assignment]
 
 from . import __version__, http_metrics
+from .http_governor import host_slot
 
-DEFAULT_HEADERS = {"User-Agent": f"ietf-llm/{__version__}"}
+# Identify the client and give upstream operators a contact path. A shared
+# community service (datatracker especially) would rather reach the tool's
+# author than blind-block a misbehaving User-Agent; the repo URL is that path.
+DEFAULT_HEADERS = {
+    "User-Agent": f"ietf-llm/{__version__} (+https://github.com/mnot/ietf-llm)"
+}
 DEFAULT_MONTHS = 12
 
 
@@ -629,6 +635,20 @@ def log(
     print(f"{prefix}{message}", file=sys.stderr)
 
 
+def governed_get(url: str, **kwargs: Any) -> requests.Response:
+    """GET `url` through the shared session while holding a per-host
+    concurrency slot (see `http_governor`).
+
+    Every gather-side fetch routes through here — `fetch_resource` and the
+    direct `http_session().get` call sites in `gather/*` — so that a wide
+    fan-out or several concurrent gathers can never exceed the per-host budget,
+    datatracker especially. The slot is held only for the request itself, not
+    the body iteration; callers handle status, retries (via the adapter), and
+    metrics exactly as for a bare session GET."""
+    with host_slot(url):
+        return http_session().get(url, **kwargs)
+
+
 def fetch_resource(
     url: str, headers: Optional[Dict[str, str]] = None
 ) -> Optional[requests.Response]:
@@ -637,7 +657,7 @@ def fetch_resource(
     if headers:
         combined_headers.update(headers)
     try:
-        res = http_session().get(url, headers=combined_headers, timeout=30)
+        res = governed_get(url, headers=combined_headers, timeout=30)
         res.raise_for_status()
         http_metrics.record(url, res.status_code, len(res.content))
         return res

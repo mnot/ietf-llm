@@ -306,7 +306,7 @@ def _install_stub(monkeypatch: pytest.MonkeyPatch, handler: Any) -> List[Dict[st
         calls.append({"url": url, "headers": headers or {}})
         return handler(url, headers or {})
 
-    monkeypatch.setattr(gather_catalog.http_session(), "get", fake_get)
+    monkeypatch.setattr(gather_catalog, "governed_get", fake_get)
     return calls
 
 
