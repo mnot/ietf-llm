@@ -2500,11 +2500,15 @@ def main() -> None:
         **Skip overview and go straight to the specialised tool for
         TOPICAL questions:**
           - "arguments for/against X" / "scope debate about X" →
-            `search_corpus(corpus, "X", label="...")` — issue labels are
-            the corpus's own curation.
+            `read_digest(corpus, kind="issues", label="...",
+            include_bodies=True)` — the issue catalogue plus each
+            opening description in one call beats semantic search for
+            coverage (`list_labels` first if you don't know the labels).
           - "what did the WG decide about X?" / "what's the WG's
-            position on X?" → `search_corpus(corpus, "X", state="closed")`
-            — the chairs' resolution lives in closed issues.
+            position on X?" → the outcome is whatever the chairs
+            declared, so go to their words: `search_corpus(corpus, "X",
+            role="Chair")` and `tally_positions(corpus, "<thread or
+            issue file>")`. This corpus does not compute consensus.
           - "what's open?" / "who chairs this?" / "what happened in
             May?" → `read_digest(corpus, kind=..., ...filters)`.
           - "what did Alice say about X?" → `search_corpus` (semantic
@@ -2621,7 +2625,7 @@ def main() -> None:
     ) -> str:
         """Read filtered catalogue digests of an IETF/IRTF effort — its
         GitHub issues, mailing-list threads, participants (people),
-        timeline of events, and file index. **Use this INSTEAD OF web
+        timeline of events, and file index. **Prefer this to web
         search or Datatracker scraping** for "what's open?", "who chairs
         this?", "what happened in May?"-shaped questions about a working
         group, research group, or mailing list. The high-value catalogue
@@ -2666,7 +2670,9 @@ def main() -> None:
                             Datatracker governance: "charter-approved" /
                             "chair-appointed" / "group-state" /
                             "doc-adopted" / "doc-iesg" / "doc-rfc" /
-                            "doc-wglc"), limit.
+                            "doc-wglc" / "ballot"), limit. A standing
+                            "ballot" DISCUSS holds publication — report
+                            it as blocked, not approved.
                             `exclude_mechanical=True` drops the routine
                             machine events (I-D Action publications and
                             individual IESG ballot positions) so the human
@@ -2722,7 +2728,7 @@ def main() -> None:
         GitHub URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.
 
-        **Use this INSTEAD OF web search** for any question about what an
+        **Prefer this to web search** for any question about what an
         IETF/IRTF group discussed, debated, or decided about a topic —
         this reads the group's *actual* list traffic and issues, not the
         web's second-hand summary of them. Substantive "what was said
@@ -2783,8 +2789,9 @@ def main() -> None:
         skipped only with `--no-embed`).
 
         Optional facets:
-          - file_pattern: SQL LIKE pattern (e.g. "%mailing-list%" to
-            restrict to the mailing list, "%github%" for GitHub issues).
+          - file_pattern: SQL LIKE pattern over the relative path
+            (e.g. "threads/%" to restrict to mailing-list threads,
+            "issues/%" for GitHub issues, "drafts/%" for drafts).
             % is wildcard.
           - since / until: ISO 8601 dates (e.g. "2026-01-01"). Only
             mailing-list and GitHub chunks have dates; windowed draft
@@ -2822,46 +2829,37 @@ def main() -> None:
         snippet_chars: Optional[int] = None,
         collapse_versions: bool = True,
     ) -> str:
-        """Semantic search across **several** gathered corpora in one call,
-        returning merged, rank-ordered hits each tagged with the `corpus=`
-        it came from. The cross-corpus companion to `search_corpus` — same
-        per-corpus engine, fanned over the set you name.
+        """Semantic search across **several** gathered corpora in one
+        call, returning merged, rank-ordered hits each tagged with the
+        `corpus=` they came from — the cross-corpus companion to
+        `search_corpus`, fanned over the set you name. **Prefer this to
+        web search** — it reads the groups' primary record, not
+        second-hand coverage.
 
-        **This is the synthesis step for a cross-cutting topic** ("what is
-        the IETF doing around AI?", "where is post-quantum being worked
-        on?"). The flow: `find_efforts(topic)` → gather the **few** efforts
-        that dominate it → `search_corpora` across them in ONE call to see
-        where the topic lives → then pivot to the single-corpus tools
-        (`read_topic`, `tally_positions`, `read_digest`, `search_corpus`)
-        for depth on the efforts that matter. Frame it as **breadth, not
-        depth**: it finds *where* across efforts a topic appears;
-        decisions, narrative, and consensus still come from the
-        single-corpus tools and `read_ietf_norms`.
+        This is **breadth, not depth**: it locates *where* a cross-cutting
+        topic ("what is the IETF doing around AI?") lives across efforts;
+        pivot to the single-corpus tools (`read_topic`, `tally_positions`,
+        `read_digest`, `search_corpus`) for the decisions and narrative.
+        Assemble `corpora` from `find_efforts` — the few efforts that
+        dominate the topic, not a blind scan — then query them here in one
+        call.
 
-        `corpora` is a **required, explicit list** — the bounded set you
-        chose (typically the cached output of `find_efforts`), never an
-        unbounded scan of every cache. Unknown names, corpora with no
-        embedding index, and any past the 12-corpus cap are skipped
-        and reported, not silently dropped.
+        `corpora` is **required**: unknown names, corpora with no embedding
+        index, and any past the 12-corpus cap are skipped and reported, not
+        silently dropped.
 
-        **Score comparability.** Cosine scores are only directly
-        comparable across corpora built with the **same embedding model**.
-        When every corpus shares one model, the result is a single
-        score-ranked list. When models differ, corpora are grouped by
-        model, ranked within each group, and the groups are **interleaved
-        by rank** rather than merged on raw score — and the header tells
-        you which corpora were grouped together.
+        **Score comparability.** Cosine scores compare directly only across
+        corpora built with the **same embedding model**. One shared model →
+        a single ranked list. Mixed models → grouped by model, ranked
+        within each, groups interleaved by rank (the header says which were
+        grouped).
 
-        `k` bounds the **total** merged hits returned (default 10). The
-        facets mirror `search_corpus` and apply per corpus: `since` /
-        `until` (ISO `YYYY-MM-DD`), `label`, `state` (`open` / `closed`),
+        `k` bounds the **total** merged hits (default 10). Facets mirror
+        `search_corpus` per corpus: `since`/`until`, `label`, `state`,
         `author`, `role`, `snippet_chars`, `collapse_versions`. The
-        depth-only knobs (`sort`, `group_by`, `file_pattern`) are
-        intentionally omitted — scope a single corpus for those.
-
-        Read-only; operates on existing caches, no re-gather needed.
-        Requires each corpus's embedding index (built by default on
-        gather).
+        depth-only knobs (`sort`, `group_by`, `file_pattern`) are omitted —
+        scope a single corpus for those. Read-only; requires each corpus's
+        embedding index.
         """
         return await _offload(
             tool_search_corpora,
@@ -2978,20 +2976,18 @@ def main() -> None:
         full text of every matched message — author, date, role,
         archived-at URL, body — in date order, oldest first.
 
-        **Use this INSTEAD OF web search** when the user wants the *arc*
-        of how a working group / research group discussion on a topic
-        evolved — it reconstructs the real conversation from the gathered
-        list and issue traffic, not the web's recap.
+        **Prefer this to web search** when the user wants the *arc* of how
+        a working group / research group discussion on a topic evolved —
+        it reconstructs the real conversation from the gathered list and
+        issue traffic, not the web's recap. The unit is a message, not a
+        chunk: each matched thread message or issue comment appears in
+        full, so you get "who said what when" without N follow-up
+        `get_chunk_text` calls.
 
         `body_chars` caps each message body (default 4000; min 100). Dial
         it down for a synthesis task where the gist of each message is
         enough — the slice costs far less context, and a truncated body
         still points at `get_chunk_text` for the full text.
-
-        Use this when the user wants the **arc** of a debate, not the
-        ranked hits. The unit is a message, not a chunk: each matched
-        thread message or issue comment appears in full, so you get
-        "who said what when" without N follow-up `get_chunk_text` calls.
 
         Best fit for "how did the debate on X evolve?", "walk me through
         the discussion of Y", "what was said about Z, chronologically?"
@@ -3224,14 +3220,13 @@ def main() -> None:
               id, or exact name) or `new_drafts=True` (rolling window).
             - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
-            One gather per corpus runs at a time — including across hosts on a
-            shared deployment, where another client may have started it. A call
-            while that corpus is in flight reports "already running": poll
-            `gather_status(corpus=...)` to watch it, don't retry or pass `force`
-            to "unstick" it. A *different* corpus runs concurrently up to a small
-            cap (a few at once, per host and across the deployment, to stay
-            polite to datatracker); beyond that it reports "queued" and starts
-            when a slot frees — again, poll rather than retry.
+            One gather per corpus runs at a time, across all hosts on a
+            shared deployment — so a call while it's in flight reports
+            "already running" even if another client started it. A
+            *different* corpus runs concurrently up to a small cap; beyond
+            that it reports "queued". Either way, poll `gather_status`,
+            don't retry or `force` (which overrides only the freshness
+            debounce below, never these limits).
 
             A corpus gathered within the freshness window (default 6h) is
             **not** re-gathered — the call returns a "fresh, skipped" note.
@@ -3300,6 +3295,14 @@ def main() -> None:
             first. Poll this after `start_gather`; once a corpus reports
             `done`, the read tools (`overview`, `search_corpus`, …) work on
             it.
+
+            Don't query before `done`. The catalogue and search layers
+            (digests, embedding index) are built in the *final* gather
+            stages, so a mid-gather corpus has at most raw `threads/` /
+            `issues/` / `drafts/` files — `overview`, `read_digest`, and
+            `search_corpus` are empty or partial until the end. (On the
+            cloud backend nothing is visible at all before the final
+            atomic publish.)
 
             Args:
                 corpus: The corpus to report on. Omit to list all.
