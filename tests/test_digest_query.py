@@ -285,6 +285,22 @@ def test_query_digest_handles_missing_file(tmp_path: Path) -> None:
     assert query_digest(str(tmp_path / "nope.md"), "issues") == ""
 
 
+def test_query_digest_empty_filter_does_not_return_full_file(tmp_path: Path) -> None:
+    # Regression: a digest with no leading preamble (starts at a sub-heading)
+    # plus a filter that matches nothing must return empty, not fall back to
+    # dumping the entire unfiltered digest.
+    path = tmp_path / "wg-_issues.md"
+    path.write_text(
+        "## org/repo\n\n"
+        "| # | State | Title |\n"
+        "|---|-------|-------|\n"
+        "| 1 | CLOSED | Done thing |\n"
+    )
+    out = query_digest(str(path), "issues", state="open")
+    assert "Done thing" not in out
+    assert out.strip() == ""
+
+
 def _threads_digest_file(tmp_path: Path) -> Path:
     # A single-table digest whose table sits directly under the `# `
     # title with no `## ` sub-heading — the threads / people shape.

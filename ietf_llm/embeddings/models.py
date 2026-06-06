@@ -189,7 +189,11 @@ class _OpenAICompatEmbeddingModel:
         # positionally, and fail loudly on a count / index mismatch: silently
         # accepting a short or misindexed response would misalign every
         # chunk<->vector pair the caller zips together.
-        data = body["data"]
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise ValueError(
+                f"embed backend returned no 'data' list: {str(body)[:200]}"
+            )
         if len(data) != len(batch):
             raise ValueError(
                 f"embed backend returned {len(data)} vectors for "

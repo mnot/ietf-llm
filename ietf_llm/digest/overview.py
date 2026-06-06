@@ -471,18 +471,24 @@ def _label_frequencies(cache_dir: str, wg: str) -> List[tuple[str, int]]:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
-def _recent_threads(cache_dir: str, wg: str, limit: int) -> List[List[str]]:
+def _recent_threads(cache_dir: str, wg: str, limit: int) -> Tuple[List[List[str]], str]:
+    """Recent threads plus the actual label of the 6th column. The threads
+    writer emits `File` (no summariser) or `Summary` (summariser active) there;
+    returning the real label lets the caller's header match the cell contents
+    instead of hardcoding `File`."""
     threads_path = _digest_path(cache_dir, wg, "threads")
     if not os.path.isfile(threads_path):
-        return []
+        return [], "File"
     filtered_md = query_digest(threads_path, "threads", limit=limit)
-    sections = parse_md_tables(filtered_md)
     rows: List[List[str]] = []
-    for section in sections:
+    last_label = "File"
+    for section in parse_md_tables(filtered_md):
+        if len(section.columns) >= 6:
+            last_label = section.columns[5]
         rows.extend(section.rows)
         if len(rows) >= limit:
             break
-    return rows[:limit]
+    return rows[:limit], last_label
 
 
 def _iso_date(cell: str) -> str:
@@ -739,10 +745,12 @@ def build_overview(wg: str, cache_dir: str) -> str:
             out.append("| " + " | ".join(row) + " |")
         out.append("")
     else:
-        recent_threads = _recent_threads(cache_dir, wg, limit=5)
+        recent_threads, last_label = _recent_threads(cache_dir, wg, limit=5)
         if recent_threads:
             out.append("## 5 most recent mailing list threads")
-            out.append("| Subject | Msgs | Participants | First | Last | File |")
+            out.append(
+                f"| Subject | Msgs | Participants | First | Last | {last_label} |"
+            )
             out.append("|---|---|---|---|---|---|")
             for row in recent_threads:
                 out.append("| " + " | ".join(row) + " |")

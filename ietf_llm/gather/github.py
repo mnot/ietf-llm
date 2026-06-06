@@ -92,7 +92,12 @@ def process_github_issues(
             state = issue.get("state", "(Unknown State)")
             author = issue.get("author", "(Unknown Author)")
             created_at = format_date(issue.get("createdAt"))
-            issue_labels = issue.get("labels", [])
+            # A third-party gh-pages archive is ingested verbatim; coerce
+            # labels to a list of strings so a malformed shape (objects, a
+            # dict) degrades to no labels rather than raising on join/membership.
+            issue_labels = [
+                lbl for lbl in (issue.get("labels") or []) if isinstance(lbl, str)
+            ]
             labels_str = ", ".join(issue_labels)
             body = (issue.get("body") or "").strip()
 

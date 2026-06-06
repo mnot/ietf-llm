@@ -47,7 +47,7 @@ import email.utils
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .gather.datatracker import fetch_wg_roles
@@ -743,9 +743,15 @@ def _maybe_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # A zone-less timestamp parses tz-naive; force UTC so a later comparison
+    # against the tz-aware mail-derived dates can't raise TypeError and abort
+    # the GitHub ingest pass.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 # --- _people.md digest -----------------------------------------------------

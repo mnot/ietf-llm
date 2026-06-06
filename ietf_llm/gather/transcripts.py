@@ -103,10 +103,12 @@ def process_transcripts(
         if cutoff_date:
             try:
                 file_date = datetime.strptime(date_str, "%Y%m%d")
-                if file_date < cutoff_date:
-                    continue
             except ValueError:
-                pass
+                # Undatable file under an explicit date window: exclude it
+                # (fail-safe) rather than slipping it past the cutoff.
+                continue
+            if file_date < cutoff_date:
+                continue
 
         src_path = os.path.join(transcripts_path, file)
         # Numbered meetings map straight to `ietf<N>`. Interim

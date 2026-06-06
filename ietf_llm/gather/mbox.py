@@ -9,14 +9,16 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
 from typing import Callable, Dict, List, Optional
 
+import requests
+
 from ..paths import raw_dir, raw_mail_archive_path
 from ..utils import (
     LogLevel,
     Verbosity,
     atomic_open_binary,
-    fetch_resource,
     get_cache_dir,
     get_mailing_list_name,
+    governed_get,
     log,
     write_if_changed,
 )
@@ -60,7 +62,11 @@ def validate_list_names(
             )
             continue
         url = f"https://mailarchive.ietf.org/arch/browse/{norm}/"
-        if fetch_resource(url) is None:
+        try:
+            status: Optional[int] = governed_get(url, timeout=30).status_code
+        except requests.RequestException:
+            status = None
+        if status == 404:
             log(
                 f"--mailing-list {raw}: not found on "
                 "mailarchive.ietf.org; not persisting.",
@@ -68,6 +74,16 @@ def validate_list_names(
                 level=LogLevel.STATUS,
             )
             continue
+        if status != 200:
+            # A transient failure (network / 5xx) must not drop a name the user
+            # explicitly asked for — only a definitive 404 does. Keep it and let
+            # the gather surface any real problem later.
+            log(
+                f"--mailing-list {raw}: could not verify "
+                f"(status {status}); keeping it anyway.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
         valid.append(raw)
     return valid
 

@@ -417,7 +417,10 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
             # so the agent isn't looking at empty headers.
             continue
         out_parts.append(render_section(filtered))
-    return "\n".join(out_parts) if out_parts else text
+    # Filters were active (the no-filter case returned `text` above), so a
+    # falsy `out_parts` means the filter legitimately matched nothing — return
+    # the empty result, never the full unfiltered digest.
+    return "\n".join(out_parts)
 
 
 def _extract_preamble(text: str) -> str:

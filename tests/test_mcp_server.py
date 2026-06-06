@@ -801,6 +801,32 @@ def test_get_chunks_batch_rejects_inverted_range(
     assert "must be >= chunk_idx" in out
 
 
+def test_get_chunks_batch_rejects_non_numeric_index(
+    isolated_home: Path,
+) -> None:
+    # A non-numeric chunk_idx must return a clean message, not raise an opaque
+    # protocol error out of the worker thread.
+    write_cache_file(isolated_home, "wg", "x.txt", "hi")
+    out = mcp_server.tool_get_chunks_batch("wg", [
+        {"file": "f.md", "chunk_idx": "first"},
+    ])
+    assert "must be integers" in out
+    # A non-dict entry is also handled gracefully.
+    out2 = mcp_server.tool_get_chunks_batch("wg", ["not-a-dict"])
+    assert "must be an object" in out2
+
+
+def test_descendants_is_cycle_safe() -> None:
+    from ietf_llm.mcp_server import _descendants  # pylint: disable=import-outside-toplevel
+
+    # A malformed self-reply (graph[5] = [5]) must not list the root as its own
+    # descendant, and a cycle must not loop forever.
+    assert _descendants({5: [5]}, 5) == []
+    assert sorted(_descendants({1: [2], 2: [1]}, 1)) == [2]
+    # Normal trees still resolve in BFS order.
+    assert _descendants({1: [2, 3], 2: [4]}, 1) == [2, 3, 4]
+
+
 def test_get_chunks_batch_tolerates_single_dict_input(
     isolated_home: Path,
 ) -> None:

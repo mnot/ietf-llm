@@ -162,7 +162,7 @@ def build_index(
         return _build_index_locked(wg, cache_dir, model, model_name, rebuild, verbose)
 
 
-def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements
+def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,too-many-branches
     wg: str,
     cache_dir: str,
     model: Any,
@@ -370,30 +370,55 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements
             )
             continue
 
-        for chunk, vec in zip(chunks, vectors):
-            cur.execute(
-                "INSERT INTO chunks "
-                "(file, chunk_idx, sub_idx, title, text, embedding, "
-                " start_line, end_line, chunk_date, labels, state, "
-                " url, duplicate_of, closing_rationale) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    chunk.file,
-                    chunk.chunk_idx,
-                    chunk.sub_idx,
-                    chunk.title,
-                    chunk.text,
-                    _pack(vec),
-                    chunk.start_line,
-                    chunk.end_line,
-                    chunk.chunk_date,
-                    chunk.labels,
-                    chunk.state,
-                    chunk.url,
-                    chunk.duplicate_of,
-                    chunk.closing_rationale,
-                ),
+        # A short vector list would silently drop the trailing chunks (zip
+        # stops at the shorter sequence) while the mtime stamp below would mark
+        # the file fully indexed. Skip instead, so it is retried next run.
+        if len(vectors) != len(chunks):
+            log(
+                f"Embedding returned {len(vectors)} vectors for {len(chunks)} "
+                f"chunks in {relpath}; skipping (retried next run).",
+                verbose,
+                level=LogLevel.ERROR,
             )
+            continue
+
+        try:
+            for chunk, vec in zip(chunks, vectors):
+                cur.execute(
+                    "INSERT INTO chunks "
+                    "(file, chunk_idx, sub_idx, title, text, embedding, "
+                    " start_line, end_line, chunk_date, labels, state, "
+                    " url, duplicate_of, closing_rationale) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        chunk.file,
+                        chunk.chunk_idx,
+                        chunk.sub_idx,
+                        chunk.title,
+                        chunk.text,
+                        _pack(vec),
+                        chunk.start_line,
+                        chunk.end_line,
+                        chunk.chunk_date,
+                        chunk.labels,
+                        chunk.state,
+                        chunk.url,
+                        chunk.duplicate_of,
+                        chunk.closing_rationale,
+                    ),
+                )
+        except sqlite3.IntegrityError as err:
+            # A duplicate (file, chunk_idx, sub_idx) — a renderer bug or a
+            # corrupted cache file with two `[N]` sections — must not abort the
+            # whole corpus build. Skip this file (its partial chunks were
+            # DELETEd above and are not committed under a fresh mtime), leaving
+            # the rest of the corpus to index.
+            log(
+                f"Duplicate chunk key in {relpath} ({err}); skipping file.",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            continue
         cur.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
             (mtime_key, str(file_mtime)),

@@ -307,8 +307,11 @@ class ChairStatement:
 # `_(opened issue)_` annotation an issue file appends to its opener must be
 # consumed here, or it leaks into the sender name and splits the opener's
 # identity from their commenter identity in the tally.
+# The date group is optional: a message whose timestamp rendered empty leaves
+# `### [N]  — Sender`, and a required date token would drop that message from
+# the tally (and the coverage denominator) entirely.
 _THREAD_MSG_RE = re.compile(
-    r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?) — (.+?)"
+    r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?)? — (.+?)"
     r"(?:\s+_\(opened issue\)_)?(?: \(reply to \[\d+\]\))?$",
     re.MULTILINE,
 )
