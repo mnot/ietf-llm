@@ -3,8 +3,31 @@ fleet slots, and status. Mirrors the old SQL control-plane behaviour."""
 
 from __future__ import annotations
 
+import threading
+from typing import Callable, List
+
 from ietf_llm.kv_control import KvControlPlane
 from ietf_llm.kv_store import InMemoryKvStore
+
+
+def _race(n: int, attempt: Callable[[int], bool]) -> int:
+    """Run `attempt(i)` on `n` threads released together; return how many won."""
+    barrier = threading.Barrier(n)
+    wins: List[bool] = []
+    lock = threading.Lock()
+
+    def worker(i: int) -> None:
+        barrier.wait()
+        won = attempt(i)
+        with lock:
+            wins.append(won)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return sum(wins)
 
 
 def _cp() -> KvControlPlane:
@@ -71,6 +94,22 @@ def test_gather_slot_expiry_and_release_reclaim() -> None:
     cp.release_gather_slot("B")
     assert cp.acquire_gather_slot("A", "tls", 10.0, 1, now=1016.0) is True
     assert cp.renew_gather_slot("ZZZ", 10.0) is False
+
+
+def test_concurrent_lease_acquire_has_one_winner() -> None:
+    # The headline property the InMemoryKvStore lock exists to make testable:
+    # many nodes racing for one corpus's lease, exactly one wins.
+    cp = _cp()
+    wins = _race(16, lambda i: cp.acquire_lease("tls", f"node-{i}", 100.0, now=1000.0))
+    assert wins == 1
+    assert cp.lease_holder("tls", now=1000.0) is not None
+
+
+def test_concurrent_gather_slot_respects_cap() -> None:
+    # Cap of 1, sixteen nodes racing for a fleet slot: exactly one is admitted.
+    cp = _cp()
+    wins = _race(16, lambda i: cp.acquire_gather_slot(f"n{i}", "tls", 100.0, 1, now=1000.0))
+    assert wins == 1
 
 
 def test_gather_status_roundtrip_and_listing() -> None:

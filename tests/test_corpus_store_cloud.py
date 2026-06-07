@@ -40,6 +40,21 @@ def test_publish_then_read_roundtrip(tmp_path: Path) -> None:
     assert (Path(cache) / "digests" / "index.md").read_text() == "hello"
 
 
+def test_manifest_is_a_blob_but_stripped_from_the_served_tree(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _workspace(tmp_path, "ws", "hi"), version="v1")
+    cache = store.local_cache_dir("tls")
+    assert cache is not None
+    version_root = Path(cache).parent  # scratch/tls/v1
+    # The manifest is persisted as a blob in the version prefix...
+    blob = tmp_path / "bucket" / "corpora" / "tls" / "versions" / "v1"
+    assert (blob / "manifest.json").exists()
+    # ...but stripped from the materialised tree, so a re-gather workspace seeded
+    # from it never re-uploads it as content.
+    assert not (version_root / "manifest.json").exists()
+    assert not (Path(cache) / "manifest.json").exists()
+
+
 def test_local_cache_dir_absent_corpus(tmp_path: Path) -> None:
     store, _ = _store(tmp_path)
     assert store.resolve_current("ghost") is None

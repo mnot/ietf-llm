@@ -84,3 +84,29 @@ def test_failed_precondition_returns_none(bucket: S3Bucket) -> None:
     bucket.client = _PreconditionClient()  # type: ignore[assignment]
     assert kv.put("k", b"1", expect=ABSENT) is None
     assert kv.put("k", b"1", expect='"deadbeef"') is None
+
+
+class _CapturingClient:
+    """A stub S3 client that records the kwargs of each put_object."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def put_object(self, **kw: object) -> dict[str, str]:
+        self.calls.append(kw)
+        return {"ETag": '"etag"'}
+
+
+def test_put_maps_precondition_to_the_right_header(bucket: S3Bucket) -> None:
+    # moto does not enforce the conditional headers, so assert directly that the
+    # precondition is translated to the correct S3 header — a swapped or dropped
+    # header would otherwise pass the whole suite.
+    kv = S3KvStore(bucket)
+    cap = _CapturingClient()
+    bucket.client = cap  # type: ignore[assignment]
+    kv.put("k", b"v", expect=ABSENT)
+    kv.put("k", b"v", expect='"abc"')
+    kv.put("k", b"v")  # ANY: unconditional
+    assert cap.calls[0].get("IfNoneMatch") == "*" and "IfMatch" not in cap.calls[0]
+    assert cap.calls[1].get("IfMatch") == '"abc"' and "IfNoneMatch" not in cap.calls[1]
+    assert "IfNoneMatch" not in cap.calls[2] and "IfMatch" not in cap.calls[2]
