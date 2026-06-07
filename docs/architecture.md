@@ -738,14 +738,31 @@ structured one-line JSON records on stderr (no secrets), for a log
 collector; `IETF_LLM_DEBUG_LOG` retains the per-request timing telemetry.
 `GET /health` reports binary readiness plus build version and a bounded
 per-corpus freshness summary (no upstream call; R18). `GET /metrics`
-exposes a fleet-aggregate Prometheus view — RED per tool (request /
-error counts + latency histogram, recorded at the `_offload` chokepoint),
-the remote `/embeddings` backend's call / error counts + latency
-(`serve_metrics.py`, recorded in `embeddings/models.py`), and a
-per-corpus `last-gathered` age gauge derived at scrape time. It is
-zero-dependency (the text exposition is emitted by hand) and read-only;
-the registry is process-global and accumulates harmlessly even on the
-stdio path, where nothing scrapes it.
+exposes a fleet-aggregate Prometheus view (`serve_metrics.py`):
+
+- **RED per tool** — request / error counts + a latency histogram,
+  recorded at the `_offload` chokepoint; `tool_timeouts_total` separates
+  deadline hits from raised exceptions (both still count as errors). The
+  latency buckets reach the 120s tool deadline so a near-timeout call is
+  not lost in `+Inf`.
+- **The remote `/embeddings` backend** — call / error counts + latency
+  (recorded in `embeddings/models.py`); the one paid, metered upstream.
+- **The corpus-store seam** — request / error counts + latency per
+  operation (`resolve_current`, `corpus_exists`, `list_corpora`,
+  `local_cache_dir`, `local_index_dir`), recorded via `timed_store` at
+  the serve read boundary. Near-idle on the local backend; on the cloud
+  backend this is where object-store reads become visible.
+- **In-session gather** — an in-flight gauge, started / terminal-outcome
+  counters (`gathers_total{state=…}`), and a minute-scale duration
+  histogram, recorded at the `gather_runner` state transitions. Lets an
+  operator see the one write+network path that the per-tool RED cannot.
+- **Process** — `build_info{version=…}`, an in-flight-requests
+  saturation gauge, and a per-corpus `last-gathered` age gauge derived
+  at scrape time.
+
+It is zero-dependency (the text exposition is emitted by hand) and
+read-only; the registry is process-global and accumulates harmlessly
+even on the stdio path, where nothing scrapes it.
 
 The HTTP serve path runs **boot-time config validation** before binding
 (`_validate_serve_config`), so a contradictory or under-provisioned
