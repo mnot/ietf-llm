@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import List, NamedTuple, Optional, Tuple
 
+from ..freshness import gather_suggestion
 from ..gather.documents_manifest import load_documents_manifest
 from ..paths import ballots_dir, charter_path, group_path, threads_dir
 from .query import (
@@ -627,7 +628,10 @@ def build_overview(wg: str, cache_dir: str) -> str:
     Cheap to call.
     """
     if not os.path.isdir(cache_dir):
-        return f"No cache for {wg}. " f"Run `ietf-llm {wg}` first to gather materials."
+        return (
+            f"No cache for {wg} — "
+            f"{gather_suggestion(wg, purpose='first to gather materials')}."
+        )
 
     out: List[str] = []
     out.append(f"# {wg} — overview\n")

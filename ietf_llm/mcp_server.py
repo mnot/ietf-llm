@@ -89,7 +89,13 @@ from .embeddings import (
     probe_index,
     search,
 )
-from .freshness import freshness_line, last_gathered, staleness_warning
+from .freshness import (
+    freshness_line,
+    gather_enabled,
+    gather_suggestion,
+    last_gathered,
+    staleness_warning,
+)
 from .rfcs import render_rfc, render_search
 from .gather.citations import normalize_draft_name
 from .paths import digest_kind_from_relpath, digest_path
@@ -189,18 +195,33 @@ def _missing_digest_message(wg: str, kind: str) -> str:
         )
     available = _available_digest_kinds(wg)
     if not available:
-        return f"No digests for {wg} yet. Run `ietf-llm {wg}` to generate them."
+        return (
+            f"No digests for {wg} yet — "
+            f"{gather_suggestion(wg, purpose='to generate them')}."
+        )
     hint = ""
     if kind == "issues":
+        add_repos = (
+            f'`start_gather(corpus="{wg}", github=["owner/repo"])`'
+            if gather_enabled()
+            else f"`ietf-llm {wg} --github owner/repo`"
+        )
         hint = (
             " (Issues come from GitHub; none were gathered for this corpus — "
-            "add repos with `ietf-llm "
-            f"{wg} --github owner/repo`.)"
+            f"add repos with {add_repos}.)"
         )
     return (
         f"{wg} has no '{kind}' digest. "
         f"This corpus has: {', '.join(available)}.{hint}"
     )
+
+
+def _regather_call(wg: str) -> str:
+    """The in-session re-gather call used in index / rebuild hints: `force`,
+    since the corpus is already cached and a fresh gather rebuilds the search
+    index in its final stages. Distinct from `gather_suggestion`'s shell form,
+    which names the index-specific CLI flag the in-session path doesn't have."""
+    return f'`start_gather(corpus="{wg}", force=True)`'
 
 
 def _corpus_exists(wg: str) -> bool:
@@ -236,8 +257,8 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
         if version is None:
             return (
                 f"Unknown corpus '{wg}'. Nothing is cached under that name — "
-                f"run `ietf-llm {wg}` to gather it, or call `list_corpora` to "
-                "see what is available."
+                f"{gather_suggestion(wg, purpose='to gather it')}, or call "
+                "`list_corpora` to see what is available."
             )
         try:
             with pin_corpus_version(wg, version):
@@ -330,7 +351,7 @@ _NEXT_TOOLS_HINT = (
 def tool_list_corpora() -> str:
     wgs = _list_wgs()
     if not wgs:
-        return "(no corpora gathered yet — run `ietf-llm <name>`)"
+        return f"(no corpora gathered yet — {gather_suggestion('<name>')})"
     rows = []
     for wg in wgs:
         kind, status = kind_status(wg)
@@ -460,7 +481,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
             wg,
             f"No citations digest for {wg}. Either no thread / issue "
             "files reference any drafts, or this corpus was gathered with "
-            f"an older version. Re-run `ietf-llm {wg}` to rebuild.",
+            f"an older version — {gather_suggestion(wg, purpose='to rebuild', force=True)}.",
         )
     normalised = normalize_draft_name(draft_name)
     try:
@@ -910,10 +931,12 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        return _with_freshness(
-            wg,
-            f"(no results for {query!r} — has `ietf-llm {wg} --embed` " "been run?)",
+        no_index = (
+            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"has `ietf-llm {wg} --embed` been run?"
         )
+        return _with_freshness(wg, f"(no results for {query!r} — {no_index})")
 
     # Keep only chunks from thread/issue files that have a date — those
     # are the only chunks that represent a "message" in a debate.
@@ -1292,10 +1315,12 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        return _with_freshness(
-            wg,
-            f"(no results — has `ietf-llm {wg} --embed` been run?)",
+        no_index = (
+            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"has `ietf-llm {wg} --embed` been run?"
         )
+        return _with_freshness(wg, f"(no results — {no_index})")
     dropped = 0
     if collapse_versions:
         hits, dropped = _collapse_draft_versions(hits)
@@ -1475,9 +1500,12 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
     if unknown:
         skip_notes.append(f"unknown (not gathered): {', '.join(unknown)}")
     if no_index:
-        skip_notes.append(
-            "no embedding index — run `ietf-llm <name>`: " + ", ".join(no_index)
+        how = (
+            're-gather each with `start_gather(corpus="<name>", force=True)`'
+            if gather_enabled()
+            else "run `ietf-llm <name>`"
         )
+        skip_notes.append(f"no embedding index — {how}: " + ", ".join(no_index))
     if empty:
         skip_notes.append(f"no matching hits: {', '.join(empty)}")
     if dropped_for_cap:
@@ -1705,6 +1733,11 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
     """
     matches = find_chunks_by_url(wg, url)
     if not matches:
+        reindex = (
+            f"re-gather it with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"run `ietf-llm {wg} --rebuild-embeddings`"
+        )
         return (
             f"No cached chunk for {url}. fetch_by_url resolves the URL forms "
             "stamped in the corpus: mailing-list permalinks "
@@ -1712,8 +1745,7 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
             "on each thread message) and GitHub issue URLs. A "
             "`mailarchive.ietf.org` URL will not match — use the message's "
             "`Archived-At:` link instead. If you expected a match, the index "
-            f"may predate the `url` column (run `ietf-llm {wg} "
-            "--rebuild-embeddings`)."
+            f"may predate the `url` column ({reindex})."
         )
     if len(matches) == 1:
         file, chunk_idx, title, text, start_line, end_line = matches[0]
@@ -1797,11 +1829,15 @@ def _chunk_not_found_hint(wg: str, file: str, chunk_idx: int) -> str:
     counts = chunk_counts(wg)
     available = counts.get(file)
     if available is None:
+        no_index = (
+            f"the search index hasn't been built — re-gather it with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"`ietf-llm {wg} --embed` hasn't been run"
+        )
         return (
             f"No chunks indexed for `{file}` in {wg}. "
             "Either the file isn't in the embedding index "
-            f"(check `list_files('{wg}')`), or "
-            f"`ietf-llm {wg} --embed` hasn't been run."
+            f"(check `list_files('{wg}')`), or {no_index}."
         )
     return (
         f"Chunk {chunk_idx} not found in `{file}`. "
@@ -2127,9 +2163,11 @@ def _gather_enabled() -> bool:
     which the rest of the server never does. Leaving it off preserves the
     read-only / no-network guarantee for the shared HTTP deployment; local
     users who want in-session gathering turn it on.
+
+    Delegates to `freshness.gather_enabled` (one source of truth) so the
+    user-facing gather hints in other modules name the same path.
     """
-    raw = os.environ.get("IETF_LLM_ENABLE_GATHER", "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    return gather_enabled()
 
 
 def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -2226,10 +2264,15 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
             f"upstreams, so it starts when a slot frees. Poll "
             f'`gather_status(corpus="{corpus}")`.{stop_hint}'
         )
+    timing = (
+        "re-gathers are usually quick — only new material is fetched"
+        if _corpus_exists(corpus)
+        else "a first gather of a corpus can take minutes"
+    )
     return (
-        f"Started gathering '{corpus}' in the background (this can take "
-        f'minutes). Poll `gather_status(corpus="{corpus}")` for stage-level '
-        f"progress; the corpus is queryable once it reports `done`.{stop_hint}"
+        f"Started gathering '{corpus}' in the background ({timing}). Poll "
+        f'`gather_status(corpus="{corpus}")` for stage-level progress; the '
+        f"corpus is queryable once it reports `done`.{stop_hint}"
     )
 
 
@@ -3225,11 +3268,12 @@ def main() -> None:
             """Gather a new corpus into the local cache, in the background.
 
             Use this when a corpus the user asks about isn't cached yet
-            (`list_corpora` doesn't show it). Returns immediately; the
-            gather runs for minutes. Poll `gather_status(corpus=...)` until
-            it reports `done`, then the normal read tools work on it. The
-            reply includes a stop token — pass it to `stop_gather` to cancel a
-            gather that is taking too long.
+            (`list_corpora` doesn't show it). Returns immediately. The
+            *first* gather of a corpus can run for minutes; later re-gathers
+            are quicker, fetching only what changed since last time. Poll
+            `gather_status(corpus=...)` until it reports `done`, then the
+            normal read tools work on it. The reply includes a stop token —
+            pass it to `stop_gather` to cancel a gather that is taking too long.
 
             The corpus **shape is inferred** from what you pass — you don't
             declare it:
