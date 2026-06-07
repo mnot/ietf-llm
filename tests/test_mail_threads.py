@@ -327,19 +327,55 @@ def test_crosspost_duplicate_renders_once_in_file(isolated_home: Path) -> None:
     assert "### [2]" not in text
 
 
-def test_self_referential_in_reply_to_terminates(isolated_home: Path) -> None:
+def test_self_referential_in_reply_to_produces_no_thread(
+    isolated_home: Path,
+) -> None:
     # A malformed message whose In-Reply-To is its own Message-Id resolves
-    # to a self-parent edge. _collect_subtree's visited guard must keep
-    # this from looping even though the message is then non-root.
+    # to a self-parent edge, so it is non-root (parent_id is set) and never
+    # anchors a thread: build_threads returns []. This does NOT reach
+    # _collect_subtree (no root points at it) — the visited guard is covered
+    # directly by test_collect_subtree_* below. This case just pins the
+    # public-API behaviour for self-referential input.
     _write_eml(
         isolated_home, "wg", 1,
         subject="Self loop", sender="A <a@x>",
         date="Mon, 01 Jan 2025 10:00:00 +0000",
         message_id="<self@x>", in_reply_to="<self@x>",
     )
-    # Must terminate; the self-parented message has no valid root to anchor
-    # a thread, so it simply produces no thread (rather than hanging).
     assert build_threads("wg") == []
+
+
+def _bare_msg(message_id: str) -> "Message":
+    from ietf_llm.gather.mail_threads import Message
+
+    return Message(
+        message_id=message_id, subject="s", sender="A", date=None, body=""
+    )
+
+
+def test_collect_subtree_terminates_on_self_edge() -> None:
+    # Direct coverage for the visited guard: a self-edge in the children map
+    # (child id == its own parent id) would loop forever without it. Dedup in
+    # build_threads makes this unreachable via the public API, so exercise the
+    # guard at the unit level.
+    from ietf_llm.gather.mail_threads import _collect_subtree
+
+    root = _bare_msg("<a@x>")
+    children = {"<a@x>": [root]}  # a points to itself
+    out = _collect_subtree(root, children)
+    assert [m.message_id for m in out] == ["<a@x>"]
+
+
+def test_collect_subtree_terminates_on_mutual_edge() -> None:
+    # Two messages that parent each other form a 2-cycle in the children map.
+    # The guard must visit each id at most once and terminate.
+    from ietf_llm.gather.mail_threads import _collect_subtree
+
+    a = _bare_msg("<a@x>")
+    b = _bare_msg("<b@x>")
+    children = {"<a@x>": [b], "<b@x>": [a]}  # a <-> b cycle
+    out = _collect_subtree(a, children)
+    assert sorted(m.message_id for m in out) == ["<a@x>", "<b@x>"]
 
 
 def test_no_messages_returns_empty(isolated_home: Path) -> None:
