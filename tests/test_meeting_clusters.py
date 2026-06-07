@@ -14,13 +14,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+import ietf_llm.gather.meetings as meetings
 from ietf_llm.gather.meetings import (
     MeetingCluster,
     cluster_meetings,
     _absorb_meeting_dir,
     _collision_free_path,
+    _download_slide,
 )
 from ietf_llm.gather.transcripts import _match_interim_cluster
+from ietf_llm.utils import Verbosity
 
 
 def _row(number: str, date: str) -> Dict[str, Any]:
@@ -218,3 +221,54 @@ def test_absorb_no_op_when_src_is_dst(tmp_path: Path) -> None:
     _absorb_meeting_dir(str(d), str(d))
     # Must NOT delete itself.
     assert (d / "slides" / "deck.pdf").exists()
+
+
+# --- _download_slide skip-check -------------------------------------------
+
+
+def test_download_slide_skips_when_pdf_exists(tmp_path: Path, monkeypatch) -> None:
+    # Local mode: an existing .pdf means skip the download (unchanged).
+    out = tmp_path / "slides"
+    out.mkdir()
+    (out / "deck.pdf").write_bytes(b"%PDF-1.4 stub")
+    called = {"n": 0}
+
+    def fake_dl(url: str, dest: str, verbose: Verbosity) -> bool:
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(meetings, "_download_if_pdf", fake_dl)
+    assert _download_slide("https://x/deck.pdf", str(out), Verbosity.QUIET) is False
+    assert called["n"] == 0
+
+
+def test_download_slide_skips_when_txt_exists(tmp_path: Path, monkeypatch) -> None:
+    # Suppressed mode dropped the .pdf but kept .pdf.txt — the .txt is the
+    # idempotency token, so a re-gather must not re-download the deck.
+    out = tmp_path / "slides"
+    out.mkdir()
+    (out / "deck.pdf.txt").write_text("extracted")
+    called = {"n": 0}
+
+    def fake_dl(url: str, dest: str, verbose: Verbosity) -> bool:
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(meetings, "_download_if_pdf", fake_dl)
+    assert _download_slide("https://x/deck.pdf", str(out), Verbosity.QUIET) is False
+    assert called["n"] == 0
+
+
+def test_download_slide_downloads_when_neither_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    out = tmp_path / "slides"
+    called = {"n": 0}
+
+    def fake_dl(url: str, dest: str, verbose: Verbosity) -> bool:
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(meetings, "_download_if_pdf", fake_dl)
+    assert _download_slide("https://x/deck.pdf", str(out), Verbosity.QUIET) is True
+    assert called["n"] == 1

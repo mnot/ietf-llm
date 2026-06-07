@@ -547,7 +547,10 @@ def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
     if not base.lower().endswith(".pdf"):
         base += ".pdf"
     pdf_dest = os.path.join(out_dir, base)
-    if os.path.exists(pdf_dest):
+    # Skip if the .pdf is already present (local mode) OR its extracted
+    # .pdf.txt is (suppressed mode dropped the .pdf, so the .txt is the
+    # idempotency token — don't re-download a deck we've already extracted).
+    if os.path.exists(pdf_dest) or os.path.exists(pdf_dest + ".txt"):
         return False
     return _download_if_pdf(url, pdf_dest, verbose)
 

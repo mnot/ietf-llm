@@ -264,6 +264,11 @@ class GatherSpec:
             # Propagate the bypass to the background thread's _gather_one,
             # which re-checks the debounce; start() already decided to run.
             argv.append("--force")
+        # An MCP-initiated gather is an agent/server context — it never needs
+        # the local grep / NotebookLM raw/ dumps, nor the slide-deck .pdf
+        # sources (the indexed .pdf.txt is kept). Always suppress both so the
+        # served version stays lean.
+        argv += ["--no-raw", "--no-pdf"]
         return argv
 
     def to_dict(self) -> Dict[str, Any]:

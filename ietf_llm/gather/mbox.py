@@ -1,6 +1,7 @@
 import email
 import email.policy
 import email.utils
+import glob
 import html
 import imaplib
 import os
@@ -339,6 +340,7 @@ def sync_mailing_list(
     auto_discover: bool = True,
     verbose: Verbosity = Verbosity.STATUS,
     on_progress: Optional[Callable[[str, int, int], None]] = None,
+    suppress_raw: bool = False,
 ) -> List[str]:
     """Sync the WG's mailing list(s) via IMAP and cache messages.
 
@@ -354,7 +356,11 @@ def sync_mailing_list(
 
     Returns the list of `raw/mail-archive-<year>.txt` files written.
     Year dumps are merged across all lists — they're for human grep
-    / NotebookLM upload, not for indexed retrieval.
+    / NotebookLM upload, not for indexed retrieval. When `suppress_raw`
+    is set those merged dumps are skipped entirely (the per-list IMAP
+    `.eml` cache, which is the real efficiency token and the source the
+    thread reconstruction reads, is always written); returns []
+    accordingly.
     """
     list_names: List[str] = []
     seen: set[str] = set()
@@ -401,7 +407,22 @@ def sync_mailing_list(
     # Per-list year archives, then merge across lists into one file
     # per year so the consumer doesn't have to know which list a
     # message came from at grep time. (Threading uses the .eml files
-    # directly and naturally interleaves anyway.)
+    # directly and naturally interleaves anyway.) Skipped under
+    # suppress_raw: the merged dumps are regenerable, never indexed,
+    # and never read by a tool — the .eml cache synced above is what
+    # the thread reconstruction reads. Sweep any dumps an earlier
+    # non-suppressed gather left behind so a cache migrated to the
+    # cloud backend doesn't carry stale raw/ bulk forward (mirrors the
+    # .pdf sweep in extract_all_pdfs).
+    if suppress_raw:
+        for stale in glob.glob(
+            os.path.join(raw_dir(dest_folder), "mail-archive-*.txt")
+        ):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        return []
     combined: Dict[int, List[str]] = {}
     for list_name, uids in per_list_uids.items():
         cache_dir = os.path.join(

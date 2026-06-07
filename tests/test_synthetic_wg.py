@@ -99,3 +99,58 @@ def test_sync_mailing_list_auto_discover_false_skips_get_list_name(
         verbose=Verbosity.QUIET,
     )
     assert calls == ["httpbis"]
+
+
+# --- sync_mailing_list raw/ suppression (#92) -----------------------------
+
+
+def _stub_mail_sync(monkeypatch: Any) -> None:
+    """Stub the IMAP sync + cache read so sync_mailing_list reaches the
+    merge/write step with one year of content, without any network."""
+    from ietf_llm.gather import mbox
+
+    monkeypatch.setattr(mbox, "get_mailing_list_name", lambda wg: f"{wg}-list")
+    # Non-empty UIDs so the per-list branch runs process_cache.
+    monkeypatch.setattr(mbox, "_sync_one_list", lambda *a, **kw: ["1", "2"])
+    monkeypatch.setattr(mbox, "process_cache", lambda *a, **kw: {2025: "body"})
+
+
+def test_sync_mailing_list_writes_raw_by_default(
+    isolated_home: Path, monkeypatch: Any,
+) -> None:
+    _stub_mail_sync(monkeypatch)
+    dest = isolated_home / "files"
+    written = sync_mailing_list("httpbis", str(dest), verbose=Verbosity.QUIET)
+    archive = dest / "raw" / "mail-archive-2025.txt"
+    assert archive.exists()
+    assert str(archive) in written
+
+
+def test_sync_mailing_list_suppress_raw_skips_archive(
+    isolated_home: Path, monkeypatch: Any,
+) -> None:
+    _stub_mail_sync(monkeypatch)
+    dest = isolated_home / "files"
+    written = sync_mailing_list(
+        "httpbis", str(dest), verbose=Verbosity.QUIET, suppress_raw=True
+    )
+    assert written == []
+    assert not (dest / "raw").exists()
+
+
+def test_sync_mailing_list_suppress_raw_sweeps_preexisting(
+    isolated_home: Path, monkeypatch: Any,
+) -> None:
+    # A cache gathered before suppression carries a merged dump; a later
+    # suppressed gather must sweep it so it doesn't ride into the served
+    # version (mirrors the .pdf sweep).
+    _stub_mail_sync(monkeypatch)
+    dest = isolated_home / "files"
+    stale = dest / "raw" / "mail-archive-2024.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old dump")
+    written = sync_mailing_list(
+        "httpbis", str(dest), verbose=Verbosity.QUIET, suppress_raw=True
+    )
+    assert written == []
+    assert not stale.exists()
