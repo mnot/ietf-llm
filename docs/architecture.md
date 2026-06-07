@@ -345,6 +345,7 @@ ietf_llm/
 │   ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
 │   ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
 │   ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
+│   ├── cache_sync.py           # cloud: round-trip gather accelerator caches to the KvStore (issue #82)
 │   ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
 │   ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
 │   ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
@@ -487,7 +488,14 @@ version. `get_corpus_store()` picks the backend from service config
   immutable inputs and, via the content-hash index above, re-embedding of
   unchanged files — instead of starting cold; a no-op on the local backend
   (where the workspace already is the live cache), and a seed failure degrades
-  to a full gather rather than failing it.
+  to a full gather rather than failing it. Alongside the seed, `hydrate_gather_caches` /
+  `persist_gather_caches` (`gather/cache_sync.py`) round-trip the gather
+  accelerator caches through the `KvStore` — the datatracker ETag store sharded
+  per corpus (`corpora/<name>/gather-cache/`, lease-serialised plain RMW), the
+  shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
+  the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins)
+  — so an ephemeral host revalidates rather than re-hitting rate-limited upstreams
+  after scale-to-zero (issue #82); no-ops on local, all best-effort.
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
   the version blobs): every key is either a *published fact* (pointer, manifest,
