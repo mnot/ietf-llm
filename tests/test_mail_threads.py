@@ -261,6 +261,87 @@ def test_subject_fallback_merges_orphan_reply(isolated_home: Path) -> None:
     assert len(threads[0].members) == 2
 
 
+def test_crosspost_duplicate_msgid_does_not_loop(isolated_home: Path) -> None:
+    # Regression: a thread *starter* cross-posted to two lists is cached
+    # once per list, so the same Message-Id lands twice under
+    # imap-cache/<wg>/. Both copies parse as roots; the subject-merge used
+    # to set the second copy's parent_id to its own (shared) id, a
+    # self-edge that made _collect_subtree loop forever, growing without
+    # bound until the process OOMed (~45GB on the real tls cache). The
+    # duplicate is now collapsed by Message-Id, so this must terminate and
+    # produce a single, single-instance thread. (No timeout primitive in
+    # the suite — if the loop regresses, the test hangs, which is the
+    # signal.)
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="[TLS] Complaint about the chairs", sender="Dan <d@x>",
+        date="Mon, 19 May 2025 11:00:00 +0000",
+        message_id="<root@cr.yp.to>",  # the cross-posted starter
+    )
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="[Last-Call] Complaint about the chairs", sender="Dan <d@x>",
+        date="Mon, 19 May 2025 11:00:00 +0000",
+        message_id="<root@cr.yp.to>",  # SAME id, the last-call copy
+    )
+    _write_eml(
+        isolated_home, "wg", 3,
+        subject="Re: Complaint about the chairs", sender="Bob <b@x>",
+        date="Tue, 20 May 2025 10:00:00 +0000",
+        message_id="<reply@x>",
+        in_reply_to="<root@cr.yp.to>",
+    )
+    threads = build_threads("wg")
+    assert len(threads) == 1
+    members = threads[0].members
+    # The duplicate root is collapsed: exactly the root + the one reply,
+    # and the root id appears once.
+    assert len(members) == 2
+    assert sum(1 for m in members if m.message_id == "<root@cr.yp.to>") == 1
+    assert any(m.message_id == "<reply@x>" for m in members)
+
+
+def test_crosspost_duplicate_renders_once_in_file(isolated_home: Path) -> None:
+    # Writer->reader round-trip for the same crosspost case: the rendered
+    # per-thread file carries the root message exactly once (not duplicated
+    # by the second cached copy).
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="[TLS] Crosspost topic", sender="Dan <d@x>",
+        date="Mon, 19 May 2025 11:00:00 +0000",
+        message_id="<dup@x>", body="The starting message.",
+    )
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="[Last-Call] Crosspost topic", sender="Dan <d@x>",
+        date="Mon, 19 May 2025 11:00:00 +0000",
+        message_id="<dup@x>", body="The starting message.",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    assert len(paths) == 1
+    text = Path(paths[0]).read_text()
+    assert text.count("The starting message.") == 1
+    # One message in the thread -> a single numbered section.
+    assert text.count("### [1]") == 1
+    assert "### [2]" not in text
+
+
+def test_self_referential_in_reply_to_terminates(isolated_home: Path) -> None:
+    # A malformed message whose In-Reply-To is its own Message-Id resolves
+    # to a self-parent edge. _collect_subtree's visited guard must keep
+    # this from looping even though the message is then non-root.
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Self loop", sender="A <a@x>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000",
+        message_id="<self@x>", in_reply_to="<self@x>",
+    )
+    # Must terminate; the self-parented message has no valid root to anchor
+    # a thread, so it simply produces no thread (rather than hanging).
+    assert build_threads("wg") == []
+
+
 def test_no_messages_returns_empty(isolated_home: Path) -> None:
     assert build_threads("wg") == []
 

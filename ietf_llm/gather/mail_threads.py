@@ -8,6 +8,13 @@ legible than grepping through `<wg>-mailing-list-YYYY.txt`.
 
 Threading uses the same approach every mail client does:
 
+  0. De-duplicate by `Message-Id`. A message cross-posted to two lists
+     (e.g. tls + last-call) is cached once under each list, so the same
+     id appears more than once under `imap-cache/<wg>/`. Collapsing to
+     one object per id keeps the parent/children graph a forest — two
+     copies of a thread *root* would otherwise self-parent during the
+     subject-merge below and send the subtree walk into an unbounded
+     loop.
   1. Parse `Message-Id`, `In-Reply-To`, and `References` from each
      cached `.eml`. These headers are what RFC 5322 designed for the
      job; using them is far more reliable than subject-string matching.
@@ -142,9 +149,17 @@ def parse_eml(path: str, registry: Optional[Registry] = None) -> Optional[Messag
     date = _parse_date(msg.get("Date"))
     msgid = _normalize_msgid(msg.get("Message-Id"))
     if not msgid:
-        # Synthetic id keyed off the .eml's path so the message is
-        # still identifiable in the graph (with no parent).
-        msgid = f"<synthetic-{os.path.basename(path)}@local>"
+        # Synthetic id keyed off the .eml's path so the message is still
+        # identifiable in the graph (with no parent). Include the parent
+        # (list) directory, not just the basename: a WG with several lists
+        # caches each under its own subdir and UIDs restart per list, so the
+        # basename alone collides across lists — and build_threads now
+        # de-duplicates by Message-Id, which would wrongly merge two distinct
+        # no-Message-Id messages that happen to share a UID.
+        rel = os.path.join(
+            os.path.basename(os.path.dirname(path)), os.path.basename(path)
+        )
+        msgid = f"<synthetic-{rel}@local>"
     in_reply_to = _normalize_msgid(msg.get("In-Reply-To"))
     references = _extract_references(msg.get("References"))
     archived_at = _normalize_archived_at(msg.get("Archived-At"))
@@ -315,7 +330,13 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
 
 
 def _walk_imap_cache(wg: str) -> List[str]:
-    """Return absolute paths of every .eml in the WG's IMAP cache."""
+    """Return absolute paths of every .eml in the WG's IMAP cache.
+
+    Sorted so the order is deterministic across runs and machines (os.walk
+    order is filesystem-dependent). build_threads relies on this: when the
+    same Message-Id is cached under two lists (a cross-post), the first copy
+    in this order is the one kept, so a stable order means a stable choice.
+    """
     root = os.path.join(get_cache_dir(), "imap-cache", wg)
     if not os.path.isdir(root):
         return []
@@ -324,7 +345,19 @@ def _walk_imap_cache(wg: str) -> List[str]:
         for name in filenames:
             if name.endswith(".eml"):
                 out.append(os.path.join(dirpath, name))
-    return out
+    return sorted(out)
+
+
+def _threads_better(new: Message, old: Message) -> bool:
+    """Whether `new` is a better copy to keep than `old` for two messages
+    that share a Message-Id (a cross-post cached under two lists).
+
+    Prefer a copy that carries a threading signal (In-Reply-To /
+    References) over one that doesn't, so the surviving copy links into
+    its thread. Otherwise keep the first seen (return False)."""
+    new_signal = bool(new.in_reply_to or new.references)
+    old_signal = bool(old.in_reply_to or old.references)
+    return new_signal and not old_signal
 
 
 def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
@@ -333,15 +366,27 @@ def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
     Pass `registry` (from `people.build_registry()`) to render senders
     using consolidated canonical names instead of raw display strings.
     """
-    msgs: List[Message] = []
+    # De-duplicate by Message-Id as we parse. A message cross-posted to two
+    # lists (e.g. tls + last-call) is cached once under each list, so the
+    # same Message-Id appears more than once under imap-cache/<wg>/. Keeping
+    # both copies would render the message twice in its thread and — far
+    # worse — let the subject-merge below set parent_id == message_id on a
+    # second root copy, a self-edge that makes _collect_subtree loop forever
+    # (a cycle in the message-id graph; the cause of a 45GB OOM). One object
+    # per id keeps the parent/children graph a forest, so no cycle is
+    # reachable from a root. dict insertion order is preserved when a value
+    # is replaced, so this stays deterministic given _walk_imap_cache's sort.
+    by_id: Dict[str, Message] = {}
     for path in _walk_imap_cache(wg):
         parsed = parse_eml(path, registry=registry)
-        if parsed is not None:
-            msgs.append(parsed)
-    if not msgs:
+        if parsed is None:
+            continue
+        prev = by_id.get(parsed.message_id)
+        if prev is None or _threads_better(parsed, prev):
+            by_id[parsed.message_id] = parsed
+    if not by_id:
         return []
-
-    by_id: Dict[str, Message] = {msg.message_id: msg for msg in msgs}
+    msgs: List[Message] = list(by_id.values())
 
     # Resolve parent via In-Reply-To, falling back to References.
     for msg in msgs:
@@ -395,9 +440,18 @@ def _collect_subtree(
     root: Message, children: Dict[str, List[Message]]
 ) -> List[Message]:
     out = [root]
+    # Visited guard, keyed by the same message_id the children map is keyed
+    # by. build_threads de-duplicates ids so this graph is a forest and the
+    # guard is normally a no-op — but it makes the walk O(n) and immune to
+    # any cycle (a self- or mutual-parent edge would otherwise loop forever,
+    # growing `out` without bound). Defense in depth against the OOM.
+    seen: set[str] = {root.message_id}
     stack = list(children.get(root.message_id, []))
     while stack:
         node = stack.pop()
+        if node.message_id in seen:
+            continue
+        seen.add(node.message_id)
         out.append(node)
         stack.extend(children.get(node.message_id, []))
     return out
