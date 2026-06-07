@@ -76,13 +76,16 @@ the hard way.
   (the `_files_dir` / `_corpus_exists` boundary in `mcp_server`, which also keeps
   the read-only existence check above), and a gather publishes via
   `store.publish`. The default `local` backend is today's filesystem — no
-  behaviour change. The opt-in `cloud` backend (`IETF_LLM_STORE_BACKEND=cloud`)
-  puts the control plane behind a pluggable `SqlExecutor` seam (`query` + atomic
-  `batch`, SQLite dialect): a local SQLite file (single-host/dev) or a
-  SQLite-compatible cloud database over HTTP (e.g. a Cloudflare D1 adapter) for
-  multi-host; the blob plane is `file://`. It makes publish the explicit
-  write→read handoff (atomic version pointer flip) and the gather lease
-  cross-host. So on the cloud backend the
-  reader-side vs write-side line above is mediated by *publish*: a re-gather is
-  not visible to readers until it publishes a new version. See
-  `docs/architecture.md` ("The storage seam").
+  behaviour change. The opt-in `cloud` backend (`IETF_LLM_STORE_BACKEND=cloud`,
+  `IETF_LLM_STORE_URL=s3://…`) is **object-store only**: one S3-compatible bucket
+  holds both the immutable version content (the blob plane) and the control plane
+  — a `KvControlPlane` over the `KvStore` compare-and-swap seam (`get` + a
+  conditional `put`; no SQL, no transaction). `S3KvStore` and `S3BlobStore` share
+  one `S3Bucket`. Per-corpus control lives under `corpora/<name>/{pointer,lease,
+  status}`, content (and its manifest) under `corpora/<name>/versions/<version>/`,
+  and the one cross-corpora key — the gather-slot semaphore — at `fleet/slots`.
+  publish is the explicit write→read handoff (a compare-and-swap pointer flip),
+  and the gather lease is cross-host. So on the cloud backend the reader-side vs
+  write-side line above is mediated by *publish*: a re-gather is not visible to
+  readers until it publishes a new version. See `docs/architecture.md` ("The
+  storage seam").

@@ -8,12 +8,13 @@ from typing import Tuple
 import pytest
 
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.kv_control import KvControlPlane
+from ietf_llm.kv_store import InMemoryKvStore
 
 
-def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, SqliteControlPlane]:
-    control = SqliteControlPlane(str(tmp_path / "control.db"))
+def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, KvControlPlane]:
+    control = KvControlPlane(InMemoryKvStore())
     blobs = FileBlobStore(str(tmp_path / "bucket"))
     store = CloudCorpusStore(control, blobs, str(tmp_path / "scratch"))
     return store, control
@@ -37,6 +38,21 @@ def test_publish_then_read_roundtrip(tmp_path: Path) -> None:
     cache = store.local_cache_dir("tls")
     assert cache is not None
     assert (Path(cache) / "digests" / "index.md").read_text() == "hello"
+
+
+def test_manifest_is_a_blob_but_stripped_from_the_served_tree(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _workspace(tmp_path, "ws", "hi"), version="v1")
+    cache = store.local_cache_dir("tls")
+    assert cache is not None
+    version_root = Path(cache).parent  # scratch/tls/v1
+    # The manifest is persisted as a blob in the version prefix...
+    blob = tmp_path / "bucket" / "corpora" / "tls" / "versions" / "v1"
+    assert (blob / "manifest.json").exists()
+    # ...but stripped from the materialised tree, so a re-gather workspace seeded
+    # from it never re-uploads it as content.
+    assert not (version_root / "manifest.json").exists()
+    assert not (Path(cache) / "manifest.json").exists()
 
 
 def test_local_cache_dir_absent_corpus(tmp_path: Path) -> None:
@@ -64,7 +80,7 @@ def test_abandoned_publish_leaves_prior_version(tmp_path: Path) -> None:
         raise RuntimeError("pointer flip failed")
 
     # Simulate a crash after blobs are staged but before the pointer flips.
-    control.publish_version = _boom  # type: ignore[method-assign]
+    control.set_current = _boom  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         store.publish("tls", _workspace(tmp_path, "ws2", "second"), version="v2")
 

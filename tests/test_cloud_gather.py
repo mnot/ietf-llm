@@ -1,17 +1,21 @@
 """Feature 6 capstone: an in-session gather publishes to the cloud backend, and
 the published version is then served by the read path — gather to read, end to
-end, through the sqlite + file:// stand-in."""
+end, over an S3-compatible object store (moto in-process)."""
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Iterator
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from ietf_llm import __main__ as main_mod
 from ietf_llm import corpus, gather_runner
 from ietf_llm.corpus_store import get_corpus_store
+from ietf_llm.corpus_store_cloud import _clear_resolve_cache
 from ietf_llm.utils import get_cache_dir
 
 
@@ -27,8 +31,7 @@ def _wait_done(corpus: str, timeout: float = 5.0) -> None:
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",
-    "IETF_LLM_CONTROL_DB",
-    "IETF_LLM_BLOB_DIR",
+    "IETF_LLM_STORE_URL",
     "IETF_LLM_SCRATCH_DIR",
 )
 
@@ -39,15 +42,30 @@ def _clear_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
-def test_cloud_gather_publishes_and_serves(
+@pytest.fixture
+def cloud_s3(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+) -> Iterator[None]:
+    """Select the cloud backend over an in-process moto S3 bucket that holds
+    both the version content and the control-plane keys."""
     base = isolated_home / "store"
     monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
-    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
-    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
+    monkeypatch.setenv("IETF_LLM_STORE_URL", "s3://test-bucket")
     monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.delenv("IETF_LLM_STORE_ENDPOINT_URL", raising=False)
+    _clear_resolve_cache()  # the resolve cache is keyed by store URL; isolate
+    with mock_aws():
+        boto3.client("s3").create_bucket(Bucket="test-bucket")
+        yield
+    _clear_resolve_cache()
 
+
+def test_cloud_gather_publishes_and_serves(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Stub the pipeline: write a files/ tree into the local cache (the gather's
     # natural output, which on a cloud node is ephemeral scratch), report
     # success. The worker then publishes that tree to the cloud backend.
@@ -73,7 +91,7 @@ def test_cloud_gather_publishes_and_serves(
 
 
 def test_listing_classification_degrades_then_reads_through_seam(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+    cloud_s3: None, isolated_home: Path
 ) -> None:
     """`kind_status` / `describe` (the `list_corpora` classification) must go
     through the CorpusStore seam: never create a junk local cache dir and never
@@ -81,11 +99,6 @@ def test_listing_classification_degrades_then_reads_through_seam(
     this replica degrades to the config-only path; once a real read stages it,
     classification reads `group.md` from the staged tree."""
     base = isolated_home / "store"
-    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
-    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
-    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
-    monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
-
     # Publish a group corpus straight to the cloud store: a files/group.md
     # carrying a name and status.
     workspace = isolated_home / "ws"
@@ -113,17 +126,10 @@ def test_listing_classification_degrades_then_reads_through_seam(
     assert not (Path(get_cache_dir()) / "tls" / "files").exists()
 
 
-def test_all_statuses_includes_control_plane_on_cloud(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_all_statuses_includes_control_plane_on_cloud(cloud_s3: None) -> None:
     # On the cloud backend, a no-corpus gather_status listing must see gathers
     # recorded in the control plane by other replicas, not only the corpora
     # cached on this host (which here is none).
-    base = isolated_home / "store"
-    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
-    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
-    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
-    monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
     store = get_corpus_store()
     store.put_gather_status(
         "tls", {"corpus": "tls", "state": "running", "updated": "2026-06-06T00:00:00Z"}
@@ -136,13 +142,8 @@ def test_all_statuses_includes_control_plane_on_cloud(
 
 
 def test_fleet_slot_blocks_a_gather_until_released(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    base = isolated_home / "store"
-    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
-    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
-    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
-    monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
     monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", "1")
     monkeypatch.setattr(gather_runner, "_SLOT_POLL_S", 0.02)
 

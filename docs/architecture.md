@@ -293,10 +293,12 @@ ietf_llm/
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── corpus_store.py         # CorpusStore seam: port + LocalCorpusStore + factory
-├── corpus_control.py       # control plane: ControlPlane + SqlExecutor seam + SQLite
-├── corpus_control_d1.py    # Cloudflare D1 executor (cloud control plane over HTTP)
+├── kv_store.py             # KvStore compare-and-swap seam + in-memory double
+├── kv_control.py           # cloud control plane: pointer / lease / slot / status over KvStore
+├── kv_store_s3.py          # S3-backed KvStore (object-store conditional writes; [s3])
 ├── corpus_blobs.py         # cloud blob plane: immutable whole-object store (file://)
 ├── corpus_blobs_s3.py      # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
+├── s3_backend.py           # shared S3Bucket: one boto3 client for blob + control planes
 ├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read + seed
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
 ├── freshness.py            # last-gathered sentinel + staleness warnings
@@ -471,33 +473,38 @@ version. `get_corpus_store()` picks the backend from service config
   the single version: `resolve_current` is a sentinel, `local_cache_dir` is the
   existing files dir, `publish` is a no-op finalise, the gather lease is a no-op
   grant. The laptop CLI is unchanged.
-- **`CloudCorpusStore`** — composes a transactional **control plane**
-  (`ControlPlane`: per-corpus version pointer, manifests, gather leases) and an
-  immutable **blob plane** (`BlobStore`: whole-object, versioned-prefix),
+- **`CloudCorpusStore`** — composes a **control plane** (`KvControlPlane`: the
+  per-corpus version pointer, gather lease, fleet gather-slot, and gather status)
+  and an immutable **blob plane** (`BlobStore`: whole-object, versioned-prefix),
   materialising a version onto local scratch for reads (a replica reaps
-  superseded versions to keep scratch bounded). `publish` stages blobs
-  to a fresh version prefix, then flips the pointer in one transaction — a reader
-  sees the old version or the new, never a torn one, and a killed publish leaves
-  the prior version live. Symmetrically, `seed_workspace` materialises the
+  superseded versions to keep scratch bounded). `publish` stages content blobs —
+  and the manifest, itself a blob — to a fresh version prefix, then flips the
+  pointer with a single compare-and-swap; a reader sees the old version or the
+  new, never a torn one, and a killed publish leaves the prior version live.
+  Symmetrically, `seed_workspace` materialises the
   current version into the *gather* workspace before a gather runs, so a
   re-gather on a fresh replica builds on prior output — skipping re-download of
   immutable inputs and, via the content-hash index above, re-embedding of
   unchanged files — instead of starting cold; a no-op on the local backend
   (where the workspace already is the live cache), and a seed failure degrades
-  to a full gather rather than failing it. Both planes are **interfaces with
-  pluggable backends**.
-  The control plane is a `SqlControlPlane` over a small **`SqlExecutor`** seam —
-  two primitives, `query` (one statement) and `batch` (several atomically, one
-  round trip) — and all SQLite-dialect, with its atomic ops shaped for a
-  stateless HTTP database: the lease is a single conditional `RETURNING` upsert
-  and publish is a one-round-trip two-statement batch (no interactive
-  transaction). So the same control-plane logic runs over `SqliteExecutor` (a
-  local file, single-host/dev) or a SQLite-compatible cloud database reached over
-  its HTTP API (e.g. a Cloudflare D1 adapter) for the multi-host case. The blob
-  plane is `FileBlobStore` (local / shared volume) or `S3BlobStore` (the `[s3]`
-  extra; AWS S3 / Cloudflare R2 / MinIO). The program stays the storage client (no FUSE),
-  and the store needs no special features because all atomicity lives in the
-  pointer. Reads resolve the current version through the control plane behind a
+  to a full gather rather than failing it.
+  Both planes are **object-store only**. The control plane is a `KvControlPlane`
+  over a small **`KvStore`** seam — `get`, `put` with an optional precondition,
+  `delete`, `list_children` — which is exactly what an object store with
+  conditional writes (`If-Match` / `If-None-Match`) provides natively. Every
+  control-plane operation is one `get` plus one conditional `put` (the lease is a
+  read + compare-and-swap; the fleet semaphore a bounded CAS loop on one key);
+  there is no transaction and no SQL, and release needs only conditional PUT
+  (a lease is freed by stamping it expired, never a conditional DELETE). The
+  control plane and the blob plane share one S3-compatible bucket — `S3KvStore`
+  and `S3BlobStore` over one `S3Bucket` (one client, endpoint, credential set);
+  tests use an in-memory KvStore plus `file://` blobs. Bucket layout: per-corpus
+  control under `corpora/<name>/{pointer,lease,status}`, immutable content (and
+  its manifest) under `corpora/<name>/versions/<version>/`, and the one
+  cross-corpora key — the gather-slot semaphore — at `fleet/slots`. The program
+  stays the storage client (no FUSE), and the store needs no special features
+  because all atomicity lives in the pointer's compare-and-swap. Reads resolve
+  the current version through the control plane behind a
   short per-replica TTL cache (`IETF_LLM_RESOLVE_TTL`, default 10s), so a burst of
   reads coalesces to one round trip; immutable versions make a stale hit harmless,
   and a publish refreshes the publishing replica immediately. This is the path
@@ -622,10 +629,10 @@ servers) can run at once. The safety model:
 - **Cross-host writers (cloud backend).** The `file_lock` above serialises
   gathers on one host; *across* hosts (a cron gather and the serve fleet's
   in-session gather) the cloud backend's per-corpus **gather lease**
-  (`ControlPlane`, owner + TTL) is the mutual-exclusion primitive, and
-  publish-by-transaction replaces shared-filesystem atomic writes for
-  cross-object atomicity. Both are no-ops on the local backend, which relies on
-  the flock as before.
+  (`KvControlPlane`, owner + TTL) is the mutual-exclusion primitive, and
+  publish (a compare-and-swap pointer flip over immutable, already-staged blobs)
+  replaces shared-filesystem atomic writes for cross-object atomicity. Both are
+  no-ops on the local backend, which relies on the flock as before.
 
 ### `ietf-llm` (gather) has no `--update` flag
 

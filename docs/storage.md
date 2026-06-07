@@ -62,51 +62,66 @@ By default ietf-llm reads and writes the cache directly — the **local** store,
 rest of this section.
 
 Set `IETF_LLM_STORE_BACKEND=cloud` for a replicated, ephemeral deployment (many serving containers;
-gather driven by cron *and* by the in-session MCP tools). The cloud store keeps durable state in a
-**control plane** (a small SQL database of version pointers, manifests, and gather leases) and a
-**blob store** (the immutable, versioned `files/` + `embeddings.db`), materialising the current
-version onto local scratch to serve reads. How it works is in
-[architecture.md](architecture.md); what to set is here.
+gather driven by cron *and* by the in-session MCP tools). The cloud store is **object-store only**:
+one S3-compatible bucket holds both the immutable, versioned content (`files/` + `embeddings.db`)
+and the **control plane** — the compare-and-swap keys for version pointers, gather leases, and
+status. A replica materialises the current version onto local scratch to serve reads. How it works
+is in [architecture.md](architecture.md); what to set is here.
+
+### What's in the control plane
+
+The control plane is the only linearizable, cross-host state. It holds **no corpus content** (that's
+the version blobs) — only *which version of each corpus is live* and *who may gather right now*. It
+is a handful of small keys in the same bucket, never SQL; each operation is a `get` plus a
+conditional `put`. Three concerns:
+
+- **Version directory — which bytes are live.** `corpora/<name>/pointer` (corpus → current version;
+  the hot read every request resolves, cached for `IETF_LLM_RESOLVE_TTL`). The immutable manifest
+  `{version, files[]}` travels with the content as a blob under `corpora/<name>/versions/<version>/`,
+  so superseded versions stay readable for in-flight requests.
+- **Gather coordination — who may write.** `corpora/<name>/lease` (per-corpus mutex with a TTL in the
+  value — one gather per corpus across the fleet; a crashed gatherer's lease self-releases) and
+  `fleet/slots` (the fleet-wide concurrency cap from `IETF_LLM_GATHER_MAX_INFLIGHT` — a TTL'd counted
+  semaphore in one key; a *queued* gather holds its lease but no slot). `fleet/slots` is the only
+  cross-corpora key — it lives outside any corpus prefix.
+- **Gather observability — what's happening.** `corpora/<name>/status` (last-known gather progress,
+  written by whichever replica runs the gather and readable by all, so `gather_status` is fleet-wide;
+  a non-terminal status with no live lease means the gather crashed).
+
+Everything is either a published fact (pointer, manifest, status — last-writer-wins) or an ephemeral
+TTL lock (lease, slot — compare-and-swap); there are no joins, range scans, or secondary indexes. The
+seam that backs it is in [architecture.md](architecture.md).
 
 | Variable | What | Required |
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
-| `IETF_LLM_CONTROL_DB` | control-plane locator — a filesystem path (SQLite) or `d1://<account>/<database>` (Cloudflare D1) | cloud |
-| `IETF_LLM_CONTROL_DB_TOKEN` | API token for a `d1://` control DB (**secret**) | d1 |
-| `IETF_LLM_BLOB_DIR` | blob-store locator — a directory path (`file://`) or `s3://bucket/prefix` (needs `[s3]`) | cloud |
-| `IETF_LLM_BLOB_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | s3 |
+| `IETF_LLM_STORE_URL` | object-store locator `s3://bucket/prefix` — holds content **and** control (needs `[s3]`) | cloud |
+| `IETF_LLM_STORE_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | s3 |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 | `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently — per host and fleet-wide (default `3`) | — |
 | `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per host — non-datatracker (default `6`) | — |
 | `IETF_LLM_HTTP_MAX_DATATRACKER` | max gather HTTP requests in flight to datatracker (default `2`) | — |
 
-The non-secret knobs may instead go in the global `config.json` (`store_backend`, `control_db`,
-`blob_dir`, `scratch_dir`, `resolve_ttl`); the environment wins. The two
+The non-secret knobs may instead go in the global `config.json` (`store_backend`, `store_url`,
+`scratch_dir`, `resolve_ttl`); the environment wins. The two
 `IETF_LLM_HTTP_MAX_*` caps are environment-only (the governor that reads them
-sits below `config` in the import graph; see `ietf_llm/http_governor.py`). Secrets
-(`IETF_LLM_CONTROL_DB_TOKEN`, object-store keys) are environment-only. The HTTP serve path validates
-all of this at boot and refuses to start if `cloud` is under-configured (see
-[mcp-server.md](mcp-server.md)).
+sits below `config` in the import graph; see `ietf_llm/http_governor.py`). Object-store credentials
+are environment-only (the standard AWS chain). The HTTP serve path validates all of this at boot and
+refuses to start if `cloud` is under-configured (see [mcp-server.md](mcp-server.md)).
 
-**Single host vs fleet.** A `file://` blob dir or a SQLite control DB each pin you to one host —
-SQLite must be on a local POSIX filesystem (never NFS/SMB), coordinating processes on one box, not
-across hosts. A real fleet needs both:
+**Single host vs fleet.** The cloud store is object-store only, so it is a fleet store by
+construction — point `IETF_LLM_STORE_URL` at an S3-compatible bucket and any number of replicas share
+it. There is no `file://` / single-host control plane; for one box or local development use the
+default **local** backend instead.
 
-- **Control DB** — point `IETF_LLM_CONTROL_DB` at a SQLite-compatible cloud database over HTTP.
-  **Cloudflare D1** ships today: `d1://<account_id>/<database_id>` plus the token in
-  `IETF_LLM_CONTROL_DB_TOKEN`. (libSQL/Turso and others can plug in behind the same seam.)
-  Both locator segments are **IDs from the Cloudflare dashboard, not names**:
-  - `<account_id>` — the Account ID (a 32-char hex string), not the account name.
-  - `<database_id>` — the **Database ID**, a UUID like `0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d`
-    shown on the database's page. This is the common slip: it is **not** the database name you
-    chose when creating it. A name here is rejected at startup with a message saying so.
-  - `IETF_LLM_CONTROL_DB_TOKEN` — a Cloudflare **API token** (not the account's Global API Key)
-    scoped with D1 edit permission.
-- **Blob store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO. It needs the
-  `s3` extra: `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the brackets). For a
-  non-AWS endpoint set `IETF_LLM_BLOB_ENDPOINT_URL`; credentials come from the standard AWS
-  environment / instance-role chain.
+- **Object store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO, and holds
+  both the version content and the control-plane keys. It needs the `s3` extra:
+  `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the brackets). For a non-AWS
+  endpoint set `IETF_LLM_STORE_ENDPOINT_URL`; credentials come from the standard AWS environment /
+  instance-role chain. The bucket's conditional-write support (`If-Match` / `If-None-Match`) is what
+  makes the control-plane compare-and-swap work — confirm it on your target object store (notably
+  Cloudflare R2).
 
 **Current-version cache.** A new version is visible to a replica within `IETF_LLM_RESOLVE_TTL`
 seconds of a publish (the publishing replica sees it at once). Raise it to cut control-plane calls,

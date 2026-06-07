@@ -6,13 +6,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.kv_control import KvControlPlane
+from ietf_llm.kv_store import InMemoryKvStore
 
 
 def _cloud(tmp_path: Path) -> CloudCorpusStore:
-    control = SqliteControlPlane(str(tmp_path / "control.db"))
+    control = KvControlPlane(InMemoryKvStore())
     blobs = FileBlobStore(str(tmp_path / "bucket"))
     return CloudCorpusStore(control, blobs, str(tmp_path / "scratch"))
 

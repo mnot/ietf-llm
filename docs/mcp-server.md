@@ -64,7 +64,7 @@ shape — it validates cross-knob *consistency*:
   gather with a local torch-backed embed model on a torch-free image and no `--no-embed` (the embed
   step would crash mid-pipeline); a remote `openai-embed/...` model with no `IETF_LLM_EMBED_BASE_URL`
   (the read path would fail at request time); `IETF_LLM_STORE_BACKEND=cloud` with the cloud store
-  under-configured (missing `IETF_LLM_CONTROL_DB` / `IETF_LLM_BLOB_DIR` / `IETF_LLM_SCRATCH_DIR`), or
+  under-configured (missing `IETF_LLM_STORE_URL` / `IETF_LLM_SCRATCH_DIR`), or
   an unrecognised backend name.
 - **Warn but never block** when the bind host is non-loopback — the no-auth / no-rate-limit posture
   above is the operator's risk to own; the warning is louder when gather is also on.

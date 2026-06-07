@@ -11,17 +11,16 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from ietf_llm import corpus_control
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
 from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.gather_runner import _owner
+from ietf_llm.kv_control import KvControlPlane
+from ietf_llm.kv_store import InMemoryKvStore
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",
-    "IETF_LLM_CONTROL_DB",
-    "IETF_LLM_BLOB_DIR",
+    "IETF_LLM_STORE_URL",
     "IETF_LLM_SCRATCH_DIR",
 )
 
@@ -51,19 +50,9 @@ def test_owner_has_per_process_nonce() -> None:
     assert len(parts) == 3 and all(parts)
 
 
-# G-3: the SQLite schema is ensured at most once per process per db path.
-def test_sqlite_schema_ensured_once(tmp_path: Path) -> None:
-    path = str(tmp_path / "c.db")
-    corpus_control._sqlite_schema_ensured.discard(path)
-    SqliteControlPlane(path)
-    assert path in corpus_control._sqlite_schema_ensured
-    # A second construction is a no-op for ensure_schema (still works).
-    SqliteControlPlane(path).resolve_current("nope")
-
-
 def _cloud(tmp_path: Path) -> CloudCorpusStore:
     return CloudCorpusStore(
-        SqliteControlPlane(str(tmp_path / "c.db")),
+        KvControlPlane(InMemoryKvStore()),
         FileBlobStore(str(tmp_path / "bucket")),
         str(tmp_path / "scratch"),
     )
@@ -93,7 +82,18 @@ def test_materialise_fails_on_missing_blob(tmp_path: Path) -> None:
     store = _cloud(tmp_path)
     _publish_tls(store, tmp_path)
     # Simulate a lost/durability-gap blob: delete one object from the bucket.
-    (tmp_path / "bucket" / "tls" / "v1" / "files" / "digests" / "index.md").unlink()
+    blob = (
+        tmp_path
+        / "bucket"
+        / "corpora"
+        / "tls"
+        / "versions"
+        / "v1"
+        / "files"
+        / "digests"
+        / "index.md"
+    )
+    blob.unlink()
     with pytest.raises(FileNotFoundError):
         store.local_cache_dir("tls")
 
@@ -238,7 +238,7 @@ def _counting_cloud(
     counter, with caching keyed by `name` (so stores don't share entries)."""
     base = tmp_path / name
     base.mkdir(parents=True, exist_ok=True)
-    control = SqliteControlPlane(str(base / "c.db"))
+    control = KvControlPlane(InMemoryKvStore())
     counter: Dict[str, int] = {"n": 0}
     real = control.resolve_current
 

@@ -10,8 +10,7 @@ from ietf_llm import config, service_config
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",
-    "IETF_LLM_CONTROL_DB",
-    "IETF_LLM_BLOB_DIR",
+    "IETF_LLM_STORE_URL",
     "IETF_LLM_SCRATCH_DIR",
 )
 
@@ -49,11 +48,10 @@ def test_env_beats_global_config(
 def test_path_keys_resolve_env_then_global_then_none(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config.save_global({"control_db": "/cfg/c.db", "blob_dir": "/cfg/bucket"})
-    monkeypatch.setenv("IETF_LLM_CONTROL_DB", "/env/c.db")
-    assert service_config.control_db() == "/env/c.db"  # env wins
-    assert service_config.blob_dir() == "/cfg/bucket"  # global used when env unset
-    assert service_config.scratch_dir() is None  # unset everywhere
+    config.save_global({"store_url": "s3://cfg-bucket", "scratch_dir": "/cfg/scr"})
+    monkeypatch.setenv("IETF_LLM_STORE_URL", "s3://env-bucket")
+    assert service_config.store_url() == "s3://env-bucket"  # env wins
+    assert service_config.scratch_dir() == "/cfg/scr"  # global used when env unset
 
 
 def test_gather_max_inflight_default(isolated_home: Path) -> None:
