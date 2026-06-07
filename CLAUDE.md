@@ -31,6 +31,48 @@ the hard way.
   "unexpected EOF". Reword to avoid apostrophes, or commit another way.
 - One feature per commit; commit/branch only when asked.
 
+## PR checklist (walk this before opening a PR)
+
+Most items point to a section below for the detail — this is the scan, not
+the spec. Skip an item only when you can say *why* it doesn't apply.
+
+- **Reader-side vs write-side?** Does this change what gather *writes*? If so
+  existing caches are stale until re-gathered (cloud: until *published*) —
+  flag it in the PR. See the section below.
+- **Local backend.** Default `local` (filesystem) path still works and is
+  unchanged in behaviour? This is the path almost everyone runs.
+- **Cloud backend.** Touch `corpus_store` / S3 / the control plane? Re-check
+  the CAS pointer flip, the gather lease, the `fleet/slots` semaphore, and
+  the accelerator caches. See "Conventions that are load-bearing".
+- **Concurrency.** Cloud is multi-host: any new shared state needs a
+  CAS/lease story (no SQL, no transaction — `get` + conditional `put`). Local
+  is single-process — don't assume that on cloud.
+- **Read-only boundary.** Read tools stay read-only and offline. New
+  network/write code belongs only on the gather path (or the opt-in
+  `start_gather` / `gather_status` tools). Don't materialise a cache from a
+  read tool.
+- **NotebookLM / export use case.** `ietf_llm/export.py` mirrors the `.txt`/
+  `.md` files under a corpus's `files/` (bundled by year/repo) for NotebookLM.
+  Changing what gather writes there changes the export — it's write-side. And
+  the serve path must stay **torch-free** (`tests/test_serve_torch_free.py`):
+  remote `openai-embed/` embeddings (`embeddings/models.py`) and HTTP transport
+  must keep working without importing torch.
+- **Operability.** New failure mode that needs to be diagnosable in the cloud
+  deployment? Wire it into what exists — no external logging/metrics libs, all
+  hand-rolled: structured logs (`IETF_LLM_LOG_FORMAT=json`, `utils.log`),
+  Prometheus RED metrics at `GET /metrics` (`serve_metrics.py`), `GET /health`
+  readiness, per-gather egress in `gather-metrics.json` (`http_metrics.py`),
+  and opt-in request telemetry (`IETF_LLM_DEBUG_LOG`, `get_session_log`).
+- **Dead code sweep.** Remove anything this change orphans — old branches,
+  now-unused helpers, superseded config.
+- **Docs.** `README.md` (usage) and `docs/architecture.md` (design) still
+  accurate? Update them in the same PR.
+- **SKILL.md + tool docstrings.** `data/skill/SKILL.md` is the routing brain
+  (MCP `instructions` *and* the installed skill). Update it and the affected
+  tool docstrings whenever behaviour changes.
+- **The gate.** `make test lint typecheck` clean (pylint 10.00/10), and
+  `ietf_llm/` is black-clean. See "The gate" above.
+
 ## Reader-side vs write-side (matters for "does this need a re-gather?")
 
 - Changes to how tools **render** (overview, `digest/query`,
