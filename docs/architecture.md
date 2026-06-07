@@ -493,23 +493,22 @@ version. `get_corpus_store()` picks the backend from service config
   `delete`, `list_children` — which is exactly what an object store with
   conditional writes (`If-Match` / `If-None-Match`) provides natively. Every
   control-plane operation is one `get` plus one conditional `put` (the lease is a
-  read + compare-and-swap; the fleet semaphore a bounded CAS loop on one key);
-  there is no transaction and no SQL, and release needs only conditional PUT
-  (a lease is freed by stamping it expired, never a conditional DELETE). The
+  read + compare-and-swap; the fleet semaphore a bounded CAS loop on one key), and
+  release needs only a conditional `put` — a lease is freed by stamping it expired,
+  never a conditional `delete`. The
   control plane and the blob plane share one S3-compatible bucket — `S3KvStore`
   and `S3BlobStore` over one `S3Bucket` (one client, endpoint, credential set);
   tests use an in-memory KvStore plus `file://` blobs. Bucket layout: per-corpus
   control under `corpora/<name>/{pointer,lease,status}`, immutable content (and
   its manifest) under `corpora/<name>/versions/<version>/`, and the one
   cross-corpora key — the gather-slot semaphore — at `fleet/slots`. The program
-  stays the storage client (no FUSE), and the store needs no special features
-  because all atomicity lives in the pointer's compare-and-swap. Reads resolve
+  stays the storage client (no FUSE); all atomicity lives in the pointer's
+  compare-and-swap. Reads resolve
   the current version through the control plane behind a
   short per-replica TTL cache (`IETF_LLM_RESOLVE_TTL`, default 10s), so a burst of
   reads coalesces to one round trip; immutable versions make a stale hit harmless,
-  and a publish refreshes the publishing replica immediately. This is the path
-  that closes the MCP-driven-gather durability/coherence hole on an ephemeral,
-  replicated serve fleet. Operator setup: [storage.md](storage.md).
+  and a publish refreshes the publishing replica immediately. Operator setup:
+  [storage.md](storage.md).
 
 ### Use the Datatracker API; do not scrape HTML
 

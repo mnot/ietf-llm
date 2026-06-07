@@ -110,18 +110,13 @@ sits below `config` in the import graph; see `ietf_llm/http_governor.py`). Objec
 are environment-only (the standard AWS chain). The HTTP serve path validates all of this at boot and
 refuses to start if `cloud` is under-configured (see [mcp-server.md](mcp-server.md)).
 
-**Single host vs fleet.** The cloud store is object-store only, so it is a fleet store by
-construction — point `IETF_LLM_STORE_URL` at an S3-compatible bucket and any number of replicas share
-it. There is no `file://` / single-host control plane; for one box or local development use the
-default **local** backend instead.
-
-- **Object store** — `s3://bucket/prefix` works against AWS S3, Cloudflare R2, or MinIO, and holds
-  both the version content and the control-plane keys. It needs the `s3` extra:
-  `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the brackets). For a non-AWS
-  endpoint set `IETF_LLM_STORE_ENDPOINT_URL`; credentials come from the standard AWS environment /
-  instance-role chain. The bucket's conditional-write support (`If-Match` / `If-None-Match`) is what
-  makes the control-plane compare-and-swap work — confirm it on your target object store (notably
-  Cloudflare R2).
+**The bucket.** `IETF_LLM_STORE_URL=s3://bucket/prefix` works against AWS S3, Cloudflare R2, or
+MinIO; it needs the `s3` extra: `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the
+brackets). For a non-AWS endpoint set `IETF_LLM_STORE_ENDPOINT_URL`; credentials come from the
+standard AWS environment / instance-role chain. The bucket must support conditional writes (`If-Match`
+/ `If-None-Match`) — that is what makes the control-plane compare-and-swap work, so confirm it on your
+target object store (notably Cloudflare R2). There is no single-host (`file://`) control plane; for
+one box or local development use the default **local** backend.
 
 **Current-version cache.** A new version is visible to a replica within `IETF_LLM_RESOLVE_TTL`
 seconds of a publish (the publishing replica sees it at once). Raise it to cut control-plane calls,

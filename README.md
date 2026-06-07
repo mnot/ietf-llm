@@ -1,8 +1,9 @@
 # ietf-llm
 
-Maintain a local, queryable corpus of an [IETF](https://www.ietf.org/) Working Group's public
-record — charter, drafts, RFCs, meeting agendas, minutes, slides, transcripts, mailing list
-archives, and GitHub issues — for use with LLM-based tools.
+Maintain a local, queryable corpus of an [IETF](https://www.ietf.org/) effort's public record — a
+Working Group, an [IRTF](https://irtf.org/) Research Group, a mailing list, or a set of drafts. It
+pulls together charter, drafts, RFCs, meeting agendas, minutes, slides, transcripts, mailing list
+archives, and GitHub issues for use with LLM-based tools.
 
 ## What it's for
 
@@ -19,8 +20,8 @@ gathered into one queryable corpus, an LLM can help you:
 - **Fact-check assertions** about what's happened so far — grounded in the actual list traffic and
   chair statements, not someone's recollection.
 
-> ***Not just WGs***: ietf-llm also works with [IRTF](https://irtf.org/) Research Groups. Pass the
-> RG's shortname (e.g. `cfrg`, `hrpc`, `pearg`) wherever the docs use `<name>`.
+> **Tip:** for an IRTF Research Group, pass its shortname (e.g. `cfrg`, `hrpc`, `pearg`) wherever the
+> docs use `<name>` — it works the same as a WG.
 
 
 ## Modes of operation
