@@ -565,9 +565,13 @@ affordances; we use all three:
 `mail_threads`, `issue_files`, `ballots`, and the digest/minutes
 writers regenerate content every gather but write a file only when its
 bytes actually changed (`utils.write_if_changed`). A byte-identical
-re-render leaves mtime untouched — load-bearing because the embedder
-re-embeds any file whose mtime advanced. The mtime rule alone can't
-catch a file that becomes *ineligible* without changing — a removed
+re-render leaves the file (and its mtime) untouched, avoiding needless
+I/O and churn. The embedder keys its incremental skip on each file's
+content hash — stable across hosts, so a cloud replica that materialises
+a published version onto fresh local files still recognises the bytes as
+already-embedded rather than re-embedding the whole corpus. The hash
+check alone can't catch a file that becomes *ineligible* without
+changing — a removed
 thread/issue, or a draft that flips to `rfc`/`repl` and is now skipped
 (see `embeddings.db` above) — so `build_index` opens with a prune: it drops chunks
 for any indexed file no longer in the eligible set. That keeps stale

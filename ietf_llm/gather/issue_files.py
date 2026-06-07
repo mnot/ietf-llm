@@ -296,8 +296,8 @@ def write_issue_files(
         return []
 
     # Write-if-changed (NOT wipe-and-rewrite): a byte-identical
-    # re-render must leave the file's mtime untouched so the
-    # incremental embedder doesn't re-embed every issue each gather.
+    # re-render leaves the file untouched, avoiding needless I/O and
+    # mtime churn (the embedder keys its skip on content hash anyway).
     # `expected` (relative path under issues/) drives orphan cleanup.
     out_root = issues_dir(cache_dir)
     all_paths: List[str] = []

@@ -568,8 +568,9 @@ def write_thread_files(
     os.makedirs(out_dir, exist_ok=True)
 
     # Write-if-changed (NOT wipe-and-rewrite): a byte-identical
-    # re-render must leave the file's mtime untouched, or the
-    # incremental embedder re-embeds every thread on every gather.
+    # re-render leaves the file untouched, avoiding needless I/O and
+    # mtime churn. (The embedder keys its skip on content hash, so an
+    # unchanged re-render is a no-op for embedding regardless.)
     all_paths: List[str] = []
     changed: List[str] = []
     expected: set[str] = set()
