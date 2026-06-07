@@ -33,7 +33,8 @@ harmless counters no one reads.
 from __future__ import annotations
 
 import threading
-from typing import Dict, Iterable, List, Optional, Tuple
+import time
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, TypeVar
 
 #: Histogram bucket upper bounds in seconds (the implicit +Inf bucket is
 #: emitted last). Spans a sub-10ms cache hit through a multi-second
@@ -100,6 +101,12 @@ class _Histogram:
 _LOCK = threading.Lock()
 #: tool name -> its RED histogram (carries request count + errors + latency)
 _tools: Dict[str, _Histogram] = {}
+#: corpus-store operation -> its RED histogram. The CorpusStore seam is the
+#: read path's other I/O dependency: on the cloud backend, resolving a version
+#: pointer or materialising a corpus' files/index hits object storage, which
+#: the per-tool latency absorbs but cannot attribute. On the local backend
+#: these are cheap stat() calls and the series are near-idle — harmless.
+_store: Dict[str, _Histogram] = {}
 #: the remote /embeddings backend (a single unlabelled series)
 _embed = _Histogram()
 #: tool calls currently executing in `_offload` (the saturation "U" the RED
@@ -133,6 +140,33 @@ def record_embed(elapsed: float, *, error: bool) -> None:
         _embed.observe(elapsed, error=error)
 
 
+def record_store(op: str, elapsed: float, *, error: bool) -> None:
+    """Record one corpus-store read operation (`op` is its method name)."""
+    with _LOCK:
+        hist = _store.get(op)
+        if hist is None:
+            hist = _Histogram()
+            _store[op] = hist
+        hist.observe(elapsed, error=error)
+
+
+_T = TypeVar("_T")
+
+
+def timed_store(op: str, fn: Callable[[], _T]) -> _T:
+    """Run a corpus-store read `fn`, recording its latency under `op` and
+    whether it raised — so the serve read boundary times its store calls
+    without each call site repeating the try/finally."""
+    start = time.monotonic()
+    errored = True
+    try:
+        result = fn()
+        errored = False
+        return result
+    finally:
+        record_store(op, time.monotonic() - start, error=errored)
+
+
 def adjust_inflight(delta: int) -> None:
     """Bump the in-flight tool-call gauge by `delta` (+1 entering `_offload`,
     -1 in its `finally`)."""
@@ -144,6 +178,7 @@ def reset() -> None:
     """Clear all counters. For tests; the server never calls this."""
     with _LOCK:
         _tools.clear()
+        _store.clear()
         _embed.reset()
         _inflight[0] = 0
 
@@ -258,6 +293,25 @@ def _render_locked(
     lines.append("# HELP ietf_llm_embed_latency_seconds Remote /embeddings latency.")
     lines.append("# TYPE ietf_llm_embed_latency_seconds histogram")
     _emit_histogram(lines, "ietf_llm_embed_latency_seconds", "", _embed)
+
+    # Corpus-store RED (the cloud backend's object-store reads; near-idle on
+    # the local backend). Labelled by operation, like the per-tool series.
+    store = sorted(_store.items())
+    lines.append("# HELP ietf_llm_store_requests_total Corpus-store read ops.")
+    lines.append("# TYPE ietf_llm_store_requests_total counter")
+    for op, hist in store:
+        lab = f'op="{_escape_label(op)}"'
+        lines.append(f"ietf_llm_store_requests_total{{{lab}}} {hist.count}")
+    lines.append("# HELP ietf_llm_store_errors_total Failed corpus-store reads.")
+    lines.append("# TYPE ietf_llm_store_errors_total counter")
+    for op, hist in store:
+        lab = f'op="{_escape_label(op)}"'
+        lines.append(f"ietf_llm_store_errors_total{{{lab}}} {hist.errors}")
+    lines.append("# HELP ietf_llm_store_latency_seconds Corpus-store read latency.")
+    lines.append("# TYPE ietf_llm_store_latency_seconds histogram")
+    for op, hist in store:
+        lab = f'op="{_escape_label(op)}"'
+        _emit_histogram(lines, "ietf_llm_store_latency_seconds", lab, hist)
 
     # Index freshness, computed by the caller from the last-gathered
     # sentinels (no upstream call; R18).

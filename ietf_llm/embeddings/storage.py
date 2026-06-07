@@ -23,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
+from .. import serve_metrics
 from ..utils import get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
@@ -59,7 +60,9 @@ def _db_path_ro(wg: str) -> str:
         get_corpus_store,
     )
 
-    index_dir = get_corpus_store().local_index_dir(wg)
+    index_dir = serve_metrics.timed_store(
+        "local_index_dir", lambda: get_corpus_store().local_index_dir(wg)
+    )
     if index_dir is None:
         index_dir = os.path.join(get_index_dir(), wg)
     return os.path.join(index_dir, "embeddings.db")

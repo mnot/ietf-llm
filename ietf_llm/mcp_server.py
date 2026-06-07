@@ -125,7 +125,9 @@ MAX_CHUNK_RANGE = 20
 
 
 def _list_wgs() -> List[str]:
-    return get_corpus_store().list_corpora()
+    return serve_metrics.timed_store(
+        "list_corpora", lambda: get_corpus_store().list_corpora()
+    )
 
 
 def _files_dir(wg: str) -> str:
@@ -140,7 +142,9 @@ def _files_dir(wg: str) -> str:
     is a later refinement (a request-scoped version context) and affects only
     the cloud backend; the local backend is single-version.
     """
-    cache = get_corpus_store().local_cache_dir(wg)
+    cache = serve_metrics.timed_store(
+        "local_cache_dir", lambda: get_corpus_store().local_cache_dir(wg)
+    )
     if cache is None:
         raise FileNotFoundError(f"no current version for corpus {wg!r}")
     return cache
@@ -203,7 +207,9 @@ def _corpus_exists(wg: str) -> bool:
     """True if `wg` has a cache directory. Read-only: unlike
     `get_wg_file_cache_dir`, it never creates one — so a typo'd corpus
     name is not silently materialised by a query."""
-    return get_corpus_store().corpus_exists(wg)
+    return serve_metrics.timed_store(
+        "corpus_exists", lambda: get_corpus_store().corpus_exists(wg)
+    )
 
 
 def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
@@ -224,7 +230,9 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
 
     @functools.wraps(fn)
     def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
-        version = get_corpus_store().resolve_current(wg)
+        version = serve_metrics.timed_store(
+            "resolve_current", lambda: get_corpus_store().resolve_current(wg)
+        )
         if version is None:
             return (
                 f"Unknown corpus '{wg}'. Nothing is cached under that name — "

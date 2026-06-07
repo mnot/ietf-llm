@@ -158,6 +158,44 @@ def test_freshness_gauge_emitted_for_passed_ages():
     ) == 10
 
 
+def test_timed_store_records_success_and_error():
+    assert serve_metrics.timed_store("resolve_current", lambda: "v1") == "v1"
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_store_requests_total{op="resolve_current"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_store_errors_total{op="resolve_current"}'
+    ) == 0
+
+    def boom():
+        raise RuntimeError("object store down")
+
+    with pytest.raises(RuntimeError):
+        serve_metrics.timed_store("local_cache_dir", boom)
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_store_errors_total{op="local_cache_dir"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_store_latency_seconds_count{op="local_cache_dir"}'
+    ) == 1
+
+
+def test_serve_boundary_records_store_op(isolated_home):
+    # Going through the serve read boundary records the store op it invoked.
+    _seed_corpus("tls", "2025-01-01T00:00:00Z")
+    assert "tls" in mcp_server._list_wgs()
+    assert mcp_server._corpus_exists("tls")
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_store_requests_total{op="list_corpora"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_store_requests_total{op="corpus_exists"}'
+    ) == 1
+
+
 def test_build_info_emitted_only_when_version_passed():
     assert "ietf_llm_build_info" not in serve_metrics.render()
     body = serve_metrics.render(version="9.9.9")
