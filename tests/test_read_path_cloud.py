@@ -10,7 +10,7 @@ import pytest
 
 from ietf_llm import mcp_server
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.kv_control import KvControlPlane
 from ietf_llm.kv_store import InMemoryKvStore
 
@@ -46,6 +46,42 @@ def test_read_tools_serve_cloud_backend(
     out = mcp_server.tool_list_files("tls")
     assert "digests/index.md" in out
     assert "threads/2026-06-01-hello.md" in out
+
+
+def _publish_version(store: CloudCorpusStore, root: Path, version: str, body: str) -> None:
+    ws = root / f"ws-{version}"
+    (ws / "files" / "digests").mkdir(parents=True)
+    (ws / "files" / "digests" / "index.md").write_text("# Overview\n")
+    (ws / "files" / "threads").mkdir(parents=True)
+    (ws / "files" / "threads" / f"{version}.md").write_text(body)
+    store.publish("tls", str(ws), version=version)
+
+
+def test_tool_call_retries_when_pinned_version_is_reaped(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two replicas over one control plane + bucket: the reader caches v1 as
+    # current (TTL 100s) while the writer publishes v2 and reaps v1's blobs.
+    # The tool wrapper pins the stale v1, the read raises VersionVanished, and
+    # the wrapper re-runs the whole call once on the now-current v2.
+    _clear_resolve_cache()
+    root = isolated_home / "cloud"
+    control = KvControlPlane(InMemoryKvStore())
+    blobs = FileBlobStore(str(root / "bucket"))
+    reader = CloudCorpusStore(
+        control, blobs, str(root / "scratch-r"), resolve_ttl=100.0, cache_key="r"
+    )
+    writer = CloudCorpusStore(
+        control, blobs, str(root / "scratch-w"), retain_versions=1, cache_key="w"
+    )
+    _publish_version(reader, root, "v1", "from v1")
+    _publish_version(writer, root, "v2", "from v2")
+    monkeypatch.setattr(mcp_server, "get_corpus_store", lambda: reader)
+
+    out = mcp_server.tool_list_files("tls")
+    # The retry served v2: its thread file is listed, v1's is gone.
+    assert "threads/v2.md" in out
+    assert "threads/v1.md" not in out
 
 
 def test_files_dir_raises_without_current_version(

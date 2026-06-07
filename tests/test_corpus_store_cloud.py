@@ -8,7 +8,8 @@ from typing import Tuple
 import pytest
 
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.corpus_store import VersionVanished, pin_corpus_version
+from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.kv_control import KvControlPlane
 from ietf_llm.kv_store import InMemoryKvStore
 
@@ -89,6 +90,150 @@ def test_abandoned_publish_leaves_prior_version(tmp_path: Path) -> None:
     cache = store.local_cache_dir("tls")
     assert cache is not None
     assert (Path(cache) / "digests" / "index.md").read_text() == "first"
+
+
+# --- GC: reap superseded version blobs on publish (keep current + previous) ---
+
+
+def test_publish_reaps_old_versions_keeping_current_and_previous(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _workspace(tmp_path, "w1", "1"), version="v1")
+    store.publish("tls", _workspace(tmp_path, "w2", "2"), version="v2")
+    store.publish("tls", _workspace(tmp_path, "w3", "3"), version="v3")
+    # Default retain=2 → keep v3 (current) + v2 (previous); v1 is reaped.
+    assert store._list_versions("tls") == ["v2", "v3"]
+    # The current version is still fully readable after the reap.
+    cache = store.local_cache_dir("tls")
+    assert cache is not None
+    assert (Path(cache) / "digests" / "index.md").read_text() == "3"
+
+
+def test_retain_versions_knob_keeps_more(tmp_path: Path) -> None:
+    control = KvControlPlane(InMemoryKvStore())
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
+    store = CloudCorpusStore(
+        control, blobs, str(tmp_path / "scratch"), retain_versions=3
+    )
+    for n in range(1, 5):
+        store.publish("tls", _workspace(tmp_path, f"w{n}", str(n)), version=f"v{n}")
+    # retain=3 → keep v4, v3, v2; only v1 reaped.
+    assert store._list_versions("tls") == ["v2", "v3", "v4"]
+
+
+def test_retain_versions_floor_is_one(tmp_path: Path) -> None:
+    control = KvControlPlane(InMemoryKvStore())
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
+    # A sub-1 value is floored to 1 (the current version is never reaped).
+    store = CloudCorpusStore(
+        control, blobs, str(tmp_path / "scratch"), retain_versions=0
+    )
+    store.publish("tls", _workspace(tmp_path, "w1", "1"), version="v1")
+    store.publish("tls", _workspace(tmp_path, "w2", "2"), version="v2")
+    assert store._list_versions("tls") == ["v2"]
+
+
+def test_reap_ranks_current_off_pointer_not_id_age(tmp_path: Path) -> None:
+    # An old-id version that is *still current* must survive even though a
+    # higher-id prefix exists — the keep-set ranks current off the pointer, not
+    # the version id's embedded timestamp (issue #87 trap 1).
+    store, control = _store(tmp_path)
+    store._retain_versions = 1
+    store._blobs.put("corpora/tls/versions/2020-current/manifest.json", b"{}")
+    store._blobs.put("corpora/tls/versions/2026-orphan/manifest.json", b"{}")
+    control.set_current("tls", "2020-current")
+    store._reap_versions("tls", "2020-current")
+    assert store._list_versions("tls") == ["2020-current"]
+
+
+def test_publish_reaps_failed_publish_orphan(tmp_path: Path) -> None:
+    control = KvControlPlane(InMemoryKvStore())
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
+    store = CloudCorpusStore(
+        control, blobs, str(tmp_path / "scratch"), retain_versions=1
+    )
+    store.publish("tls", _workspace(tmp_path, "w1", "1"), version="v1")
+    # A prefix staged by a publish whose pointer flip never landed: it carries a
+    # version id but is referenced by nothing.
+    store._blobs.put("corpora/tls/versions/orphan/manifest.json", b"{}")
+    store._blobs.put("corpora/tls/versions/orphan/files/x.md", b"x")
+    store.publish("tls", _workspace(tmp_path, "w2", "2"), version="v2")
+    # retain=1 keeps only the current version; v1 and the orphan are both gone.
+    assert store._list_versions("tls") == ["v2"]
+
+
+def test_reap_failure_never_fails_an_already_succeeded_publish(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _workspace(tmp_path, "w1", "1"), version="v1")
+
+    def _boom(_prefix: str) -> None:
+        raise RuntimeError("delete failed")
+
+    store._blobs.delete_prefix = _boom  # type: ignore[method-assign]
+    # The pointer still flips and publish returns normally despite the reap error.
+    assert store.publish("tls", _workspace(tmp_path, "w2", "2"), version="v2") == "v2"
+    assert store.resolve_current("tls") == "v2"
+
+
+# --- vanished-version recovery on the read path (couples with version GC) -----
+
+
+def _two_replicas(
+    tmp_path: Path,
+    *,
+    reader_ttl: float = 0.0,
+) -> Tuple[CloudCorpusStore, CloudCorpusStore, KvControlPlane]:
+    """A reader and a writer replica over one shared control plane + blob store,
+    each with its own scratch and resolve-cache scope — so a publish by the
+    writer reaps blobs the reader may still believe are current."""
+    _clear_resolve_cache()
+    control = KvControlPlane(InMemoryKvStore())
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
+    reader = CloudCorpusStore(
+        control, blobs, str(tmp_path / "scratch-r"), resolve_ttl=reader_ttl, cache_key="r"
+    )
+    writer = CloudCorpusStore(
+        control, blobs, str(tmp_path / "scratch-w"), retain_versions=1, cache_key="w"
+    )
+    return reader, writer, control
+
+
+def test_unpinned_read_recovers_from_reaped_version(tmp_path: Path) -> None:
+    # The reader caches v1 as current (TTL 100s), then the writer publishes v2
+    # and reaps v1's blobs. An unpinned read on the reader hits the dead v1,
+    # re-resolves the pointer cache-bypassing, and retries on v2 transparently.
+    reader, writer, _ = _two_replicas(tmp_path, reader_ttl=100.0)
+    reader.publish("tls", _workspace(tmp_path, "w1", "first"), version="v1")
+    writer.publish("tls", _workspace(tmp_path, "w2", "second"), version="v2")
+    cache = reader.local_cache_dir("tls")
+    assert cache is not None
+    assert (Path(cache) / "digests" / "index.md").read_text() == "second"
+
+
+def test_pinned_read_raises_version_vanished(tmp_path: Path) -> None:
+    # A request pinned to v1 cannot silently swap versions; the reaped v1 surfaces
+    # as a typed VersionVanished naming the now-current v2.
+    reader, writer, _ = _two_replicas(tmp_path)
+    reader.publish("tls", _workspace(tmp_path, "w1", "first"), version="v1")
+    writer.publish("tls", _workspace(tmp_path, "w2", "second"), version="v2")
+    with pin_corpus_version("tls", "v1"):
+        with pytest.raises(VersionVanished) as exc:
+            reader.local_cache_dir("tls")
+    assert exc.value.old_version == "v1"
+    assert exc.value.new_version == "v2"
+    # It stays a FileNotFoundError, so unaware callers still catch it.
+    assert isinstance(exc.value, FileNotFoundError)
+
+
+def test_genuine_loss_of_live_version_reraises_plain(tmp_path: Path) -> None:
+    # The live version's own blobs are gone but the pointer still names it: this
+    # is real data loss, not supersession, so it re-raises a plain
+    # FileNotFoundError rather than a VersionVanished.
+    store, _ = _store(tmp_path)
+    store.publish("tls", _workspace(tmp_path, "w1", "first"), version="v1")
+    store._blobs.delete_prefix("corpora/tls/versions/v1/")
+    with pytest.raises(FileNotFoundError) as exc:
+        store.local_cache_dir("tls")
+    assert not isinstance(exc.value, VersionVanished)
 
 
 # --- seed_workspace: pre-populate a gather workspace from the current version

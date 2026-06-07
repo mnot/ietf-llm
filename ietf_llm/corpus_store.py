@@ -39,6 +39,28 @@ from .utils import cached_wg_names, get_cache_dir, get_index_dir
 LOCAL_VERSION = "local"
 
 
+class VersionVanished(FileNotFoundError):
+    """The pinned version of a corpus was reaped out from under an in-flight
+    read: a concurrent re-gather published a newer version and the version GC
+    deleted the one this request pinned, and a *different* version is now
+    current (so this is supersession, not genuine corruption of the live data).
+
+    Subclasses FileNotFoundError so an unaware `except FileNotFoundError` caller
+    still treats it as a missing read; the MCP tool wrapper catches it
+    specifically to re-run the whole call once on a fresh pin (the pin only
+    lasts one tool call, so a retry simply re-resolves and re-pins). Only the
+    cloud backend raises it — the local backend is single-version."""
+
+    def __init__(self, corpus: str, old_version: str, new_version: str) -> None:
+        super().__init__(
+            f"version {old_version} of {corpus!r} vanished mid-request; "
+            f"{new_version} is now current — re-run the request"
+        )
+        self.corpus = corpus
+        self.old_version = old_version
+        self.new_version = new_version
+
+
 def _local_files_dir(corpus: str) -> str:
     """The `<cache>/<corpus>/files` path under the local cache root. Pure path
     construction — does not touch the filesystem (so it never creates a dir)."""

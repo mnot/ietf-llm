@@ -17,6 +17,7 @@ authoritative. See `docs/storage.md`.
 | scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
 | resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
 | gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
+| retain versions | IETF_LLM_RETAIN_VERSIONS   | retain_versions    | no     |
 
 The S3 endpoint for a non-AWS service (R2, MinIO) is `IETF_LLM_STORE_ENDPOINT_URL`
 (env only), read by `s3_backend`.
@@ -44,9 +45,18 @@ GATHER_MAX_INFLIGHT: Tuple[str, str] = (
     "IETF_LLM_GATHER_MAX_INFLIGHT",
     "gather_max_inflight",
 )
+RETAIN_VERSIONS: Tuple[str, str] = ("IETF_LLM_RETAIN_VERSIONS", "retain_versions")
 
 #: Default seconds to cache a current-version lookup on the cloud backend.
 _DEFAULT_RESOLVE_TTL = 10.0
+
+#: Default number of published versions a cloud publish keeps before reaping the
+#: rest (current + previous). Two is the safe floor: a replica re-resolves every
+#: `resolve_ttl` (≤10s) and publishes are ≥`gather_min_interval` (6h) apart, so a
+#: replica can be at most one version behind — keeping the previous one means
+#: every version any replica could still believe is current still exists. Raise
+#: it for a paranoid deployment; the floor is 1.
+_DEFAULT_RETAIN_VERSIONS = 2
 
 #: Default max concurrent gathers (per host and fleet-wide). Small enough to
 #: stay polite to shared upstreams, but >1 so a second client's gather does not
@@ -116,3 +126,22 @@ def gather_max_inflight() -> int:
     except ValueError:
         return _DEFAULT_GATHER_MAX_INFLIGHT
     return value if value >= 1 else _DEFAULT_GATHER_MAX_INFLIGHT
+
+
+def retain_versions() -> int:
+    """Number of published versions a cloud publish keeps before reaping older
+    ones (default 2: the current version plus the immediately-previous one).
+    Keeping the previous version preserves the never-torn-read guarantee — a
+    replica can be at most one version behind, so the version it still believes
+    is current must outlive the publish that superseded it. Raise it for a
+    deployment that wants more headroom (e.g. forced back-to-back re-gathers);
+    invalid or sub-1 values fall back to the default, and 1 is the hard floor
+    (the current version is never reaped)."""
+    raw = _resolve(RETAIN_VERSIONS, None)
+    if raw is None:
+        return _DEFAULT_RETAIN_VERSIONS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_RETAIN_VERSIONS
+    return value if value >= 1 else _DEFAULT_RETAIN_VERSIONS

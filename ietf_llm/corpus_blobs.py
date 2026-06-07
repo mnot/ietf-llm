@@ -12,6 +12,7 @@ atomicity lives in the control-plane pointer, never here. See `docs/storage.md`.
 from __future__ import annotations
 
 import os
+import shutil
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -52,6 +53,12 @@ class BlobStore(ABC):
     def materialise_prefix(self, prefix: str, dest_dir: str) -> None:
         """Copy every object under `prefix` into `dest_dir`, stripping `prefix`
         from each key to form the destination-relative path."""
+
+    @abstractmethod
+    def delete_prefix(self, prefix: str) -> None:
+        """Delete every object under `prefix`. Used to reap a superseded version's
+        whole content tree (and any failed-publish orphan prefix). A no-op when
+        nothing is stored under `prefix`."""
 
 
 class FileBlobStore(BlobStore):
@@ -102,3 +109,8 @@ class FileBlobStore(BlobStore):
                     data = src_handle.read()
                 with open(dest, "wb") as dest_handle:
                     dest_handle.write(data)
+
+    def delete_prefix(self, prefix: str) -> None:
+        root = os.path.join(self._base, _safe_key(prefix.rstrip("/")))
+        if os.path.isdir(root):
+            shutil.rmtree(root, ignore_errors=True)

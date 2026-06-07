@@ -482,6 +482,17 @@ version. `get_corpus_store()` picks the backend from service config
   and the manifest, itself a blob — to a fresh version prefix, then flips the
   pointer with a single compare-and-swap; a reader sees the old version or the
   new, never a torn one, and a killed publish leaves the prior version live.
+  After the flip — under the gather lease, best-effort — it reaps superseded
+  version blobs (and any failed-publish orphan), keeping the current version plus
+  the previous one (`IETF_LLM_RETAIN_VERSIONS`, default 2), so durable storage is
+  bounded by the application, not a bucket lifecycle rule. Keeping the *previous*
+  version preserves never-torn-read: a replica re-resolves the pointer every
+  resolve-TTL while publishes are hours apart, so it is at most one version
+  behind. If a concurrent re-gather does reap the version a cold read resolved,
+  the read re-resolves cache-bypassing and retries on the new version (unpinned),
+  or raises a typed `VersionVanished` that the tool wrapper turns into a one-shot
+  retry of the whole call on a fresh pin (pinned); a *same*-version failure is
+  treated as genuine data loss and surfaced, not masked.
   Symmetrically, `seed_workspace` materialises the
   current version into the *gather* workspace before a gather runs, so a
   re-gather on a fresh replica builds on prior output — skipping re-download of

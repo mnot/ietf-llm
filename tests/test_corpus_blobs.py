@@ -48,3 +48,21 @@ def test_materialise_prefix(tmp_path: Path) -> None:
     store.materialise_prefix("tls/v1/files/", str(dest))
     assert (dest / "digests" / "index.md").read_bytes() == b"idx"
     assert (dest / "group.md").read_bytes() == b"grp"
+
+
+def test_delete_prefix(tmp_path: Path) -> None:
+    store = FileBlobStore(str(tmp_path / "bucket"))
+    store.put("tls/v1/a.md", b"1")
+    store.put("tls/v1/sub/b.md", b"2")
+    store.put("tls/v2/c.md", b"3")
+    store.delete_prefix("tls/v1/")
+    # Only v1's tree is gone; v2 is untouched.
+    assert store.list_prefix("tls/v1") == []
+    assert store.exists("tls/v1/a.md") is False
+    assert store.exists("tls/v2/c.md") is True
+
+
+def test_delete_prefix_absent_is_noop(tmp_path: Path) -> None:
+    store = FileBlobStore(str(tmp_path / "bucket"))
+    # Nothing stored under the prefix — must not raise.
+    store.delete_prefix("tls/ghost/")
