@@ -434,19 +434,21 @@ def write_if_changed(path: str, content: str) -> bool:
     MCP tool reading the corpus while a gather runs — sees either the
     old bytes or the new, never a truncated file.
 
-    Also load-bearing for the incremental embedder, which re-embeds any
-    file whose mtime advanced. The per-thread / per-issue writers
-    regenerate every file each gather; without this guard a byte-
-    identical re-render would still bump mtime and force a full
-    re-embed of the whole corpus on every update.
+    Still useful to the incremental embedder, though no longer load-
+    bearing for it: the embedder keys its skip on each file's content
+    hash, so a byte-identical re-render is a no-op for embedding whether
+    or not it rewrites. The per-thread / per-issue writers regenerate
+    every file each gather; this guard avoids the needless rewrite (and
+    the mtime churn other consumers may watch) when the render is
+    unchanged.
 
     Line endings are normalised to LF. Source data carries CRLF (GitHub
     comment bodies, RFC 5322 mail) which would otherwise re-trigger a
     write every gather: the file is stored with CRLF, but reading it
     back in text mode translates CRLF→LF (universal newlines), so a
-    naive `read() == content` never matched and the file churned (and
-    re-embedded) forever. Normalising both the stored bytes and the
-    comparison to LF fixes that and keeps the corpus single-newline.
+    naive `read() == content` never matched and the file churned
+    forever. Normalising both the stored bytes and the comparison to LF
+    fixes that and keeps the corpus single-newline.
     """
     normalised = content.replace("\r\n", "\n").replace("\r", "\n")
     data = normalised.encode("utf-8")

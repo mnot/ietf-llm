@@ -2,8 +2,11 @@
 
 `build_index(wg, cache_dir, ...)` walks the cache, chunks each eligible
 file, embeds the chunks, and stores them in the WG's sqlite DB. The
-operation is incremental: a file whose mtime hasn't advanced since the
-last indexed timestamp is skipped.
+operation is incremental: a file whose content hash matches the one
+recorded at its last embed is skipped. Keying on content (not mtime)
+keeps the skip stable across hosts -- a cloud replica that materialises
+a published version onto fresh local files recognises the identical
+bytes as already-embedded, so it doesn't re-embed the whole corpus.
 
 `search(wg, query, ...)` reads back every stored embedding, computes
 cosine similarity against a freshly-embedded query (single numpy
@@ -13,6 +16,7 @@ matmul; vectors were stored normalised), and returns the top-k hits.
 from __future__ import annotations
 
 import gc
+import hashlib
 import os
 import sqlite3
 import time
@@ -138,6 +142,25 @@ class Hit:
     # comment on a closed issue, useful as a one-line "why" indicator.
     duplicate_of: Optional[int] = None
     closing_rationale: Optional[str] = None
+
+
+def _file_hash(path: str) -> Optional[str]:
+    """SHA-256 hex digest of a file's bytes, or None if it can't be read.
+
+    The incremental-rebuild key: a file whose hash matches the value stored at
+    its last embed is unchanged and skipped. Content-based (not mtime) so the
+    skip survives a cross-host copy -- a cloud replica materialises a published
+    version onto fresh local files (new mtimes, identical bytes) and still
+    recognises them as already-embedded. Streamed so a large draft doesn't load
+    whole into memory."""
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def build_index(
@@ -269,8 +292,8 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
 
     # Prune chunks for files no longer eligible: a draft that has since
     # become `rfc`/`repl` (now skipped by _eligible_files) or a file
-    # removed from the cache. The incremental path keys on mtime, so it
-    # would otherwise never re-touch these and their stale chunks would
+    # removed from the cache. The incremental path keys on content hash, so
+    # it would otherwise never re-touch these and their stale chunks would
     # linger. Doing it here migrates an existing index on the next gather
     # with no --rebuild. (No-op after a rebuild — chunks was just cleared.)
     eligible_rel = {os.path.relpath(p, cache_dir) for p in files}
@@ -285,6 +308,21 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             level=LogLevel.STATUS,
         )
 
+    # Content hashes for every eligible file, computed once and reused by both
+    # the pending-count pass and the embed pass below, so each file is read at
+    # most once for hashing. None means the file couldn't be read; treated as
+    # changed so it is retried (the chunker then skips it cleanly).
+    file_hashes: Dict[str, Optional[str]] = {
+        os.path.relpath(p, cache_dir): _file_hash(p) for p in files
+    }
+
+    # One-time migration: older indexes keyed incremental skips on file mtime
+    # (`mtime:<relpath>` rows). The switch to content hashes makes those rows
+    # dead weight, and their absence as `hash:` rows means every file re-embeds
+    # once on this first post-upgrade gather (correct — same effect as a
+    # rebuild, file by file). Sweep the stale rows so meta carries one scheme.
+    cur.execute("DELETE FROM meta WHERE key LIKE 'mtime:%'")
+
     # Quick first pass: how many files actually need re-embedding?
     # The cache is incremental, so most re-gathers touch only a handful
     # of files — let the user see that up front instead of waiting
@@ -292,11 +330,11 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     pending = 0
     for path in files:
         relpath = os.path.relpath(path, cache_dir)
-        mtime_key = f"mtime:{relpath}"
-        file_mtime = os.path.getmtime(path)
-        cur.execute("SELECT value FROM meta WHERE key=?", (mtime_key,))
+        hash_key = f"hash:{relpath}"
+        cur_hash = file_hashes[relpath]
+        cur.execute("SELECT value FROM meta WHERE key=?", (hash_key,))
         prev = cur.fetchone()
-        if relpath in already and prev and float(prev[0]) >= file_mtime:
+        if relpath in already and prev and cur_hash is not None and prev[0] == cur_hash:
             continue
         pending += 1
     if pending == 0:
@@ -337,13 +375,13 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     for path in files:
         # Relative path within the WG cache is what we store as
         # chunks.file, what consumers pass to get_chunk_text /
-        # read_file_section, and what mtime tracking keys on.
+        # read_file_section, and what the content-hash skip keys on.
         relpath = os.path.relpath(path, cache_dir)
-        mtime_key = f"mtime:{relpath}"
-        file_mtime = os.path.getmtime(path)
-        cur.execute("SELECT value FROM meta WHERE key=?", (mtime_key,))
+        hash_key = f"hash:{relpath}"
+        cur_hash = file_hashes[relpath]
+        cur.execute("SELECT value FROM meta WHERE key=?", (hash_key,))
         prev = cur.fetchone()
-        if relpath in already and prev and float(prev[0]) >= file_mtime:
+        if relpath in already and prev and cur_hash is not None and prev[0] == cur_hash:
             continue  # unchanged
 
         chunks = _chunk_file(path, relpath)
@@ -371,7 +409,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             continue
 
         # A short vector list would silently drop the trailing chunks (zip
-        # stops at the shorter sequence) while the mtime stamp below would mark
+        # stops at the shorter sequence) while the hash stamp below would mark
         # the file fully indexed. Skip instead, so it is retried next run.
         if len(vectors) != len(chunks):
             log(
@@ -411,7 +449,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             # A duplicate (file, chunk_idx, sub_idx) — a renderer bug or a
             # corrupted cache file with two `[N]` sections — must not abort the
             # whole corpus build. Skip this file (its partial chunks were
-            # DELETEd above and are not committed under a fresh mtime), leaving
+            # DELETEd above and are not committed under a fresh hash), leaving
             # the rest of the corpus to index.
             log(
                 f"Duplicate chunk key in {relpath} ({err}); skipping file.",
@@ -419,10 +457,15 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                 level=LogLevel.ERROR,
             )
             continue
-        cur.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-            (mtime_key, str(file_mtime)),
-        )
+        # Stamp the file's hash so an unchanged file is skipped next run.
+        # cur_hash is None only if hashing failed (a rare read race); leave it
+        # unstamped then so the file is retried rather than stored as NULL
+        # (meta.value is NOT NULL).
+        if cur_hash is not None:
+            cur.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                (hash_key, cur_hash),
+            )
         total_new += len(chunks)
         files_done += 1
         chunks_since_flush += len(chunks)

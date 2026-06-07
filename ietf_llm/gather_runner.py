@@ -359,7 +359,9 @@ def _queue_max() -> int:
     return value if value >= 1 else _DEFAULT_QUEUE_MAX
 
 
-def start(spec: GatherSpec) -> Dict[str, Any]:  # pylint: disable=too-many-return-statements
+def start(  # pylint: disable=too-many-return-statements
+    spec: GatherSpec,
+) -> Dict[str, Any]:
     """Enqueue a background gather for `spec.corpus`.
 
     Returns `{"started": True, "corpus": ..., "queued_behind": N}` when the
@@ -720,6 +722,23 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             status.setdefault("notes", []).append(message)
             _write_status(store, status)
 
+        # Seed the workspace from the current published version before gathering
+        # so an incremental gather on a fresh replica skips re-downloading
+        # immutable inputs and re-embedding unchanged files. A no-op on the local
+        # backend (the workspace already is the live cache). A seed failure must
+        # not fail the gather — it just means a cold (full) gather — so swallow
+        # and note it.
+        workspace = os.path.join(get_cache_dir(), corpus)
+        try:
+            seeded = store.seed_workspace(corpus, workspace)
+            if seeded:
+                _note(f"seeded workspace from published version {seeded}")
+        except Exception as err:  # pylint: disable=broad-except
+            _note(
+                f"workspace seed skipped ({type(err).__name__}: {err}); "
+                "gathering from scratch"
+            )
+
         try:
             ok = gather_main.run_gather(
                 spec.to_argv(), Verbosity.STATUS, progress=_progress, note_fn=_note
@@ -730,7 +749,6 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 # the cloud backend this uploads the corpus and flips the pointer
                 # atomically. The index lives outside the cache when
                 # IETF_LLM_INDEX_DIR is split off, so include it explicitly (G-2).
-                workspace = os.path.join(get_cache_dir(), corpus)
                 store.publish(
                     corpus,
                     workspace,

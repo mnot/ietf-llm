@@ -432,8 +432,8 @@ def write_ballot_files(
         return []
     os.makedirs(out_dir, exist_ok=True)
 
-    # Write-if-changed so a byte-identical ballot doesn't bump mtime
-    # and trigger a re-embed. `expected` drives orphan cleanup —
+    # Write-if-changed so a byte-identical ballot isn't needlessly
+    # rewritten. `expected` drives orphan cleanup —
     # drafts that fall out of the window must have their stale ballot
     # files removed (even when `ballots` is now empty), or they'd
     # linger as misleading current state.

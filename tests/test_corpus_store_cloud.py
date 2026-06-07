@@ -73,3 +73,72 @@ def test_abandoned_publish_leaves_prior_version(tmp_path: Path) -> None:
     cache = store.local_cache_dir("tls")
     assert cache is not None
     assert (Path(cache) / "digests" / "index.md").read_text() == "first"
+
+
+# --- seed_workspace: pre-populate a gather workspace from the current version
+
+
+def _versioned_workspace(tmp_path: Path, name: str, draft: str, db: str) -> str:
+    """A workspace shaped like a real published version: a `files/` tree plus a
+    top-level `embeddings.db` (the index)."""
+    ws = tmp_path / name
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "d.txt").write_text(draft)
+    (ws / "embeddings.db").write_text(db)
+    return str(ws)
+
+
+def test_seed_workspace_default_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _versioned_workspace(tmp_path, "src", "draft", "IDX"), "v1")
+
+    # Index dir == workspace parent: the default layout, where embeddings.db
+    # belongs inside the swapped workspace.
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "cache"))
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == "draft"
+    assert (dest / "embeddings.db").read_text() == "IDX"
+
+
+def test_seed_workspace_split_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _versioned_workspace(tmp_path, "src", "draft", "IDX"), "v1")
+
+    # Split index (IETF_LLM_INDEX_DIR off the cache): the DB must land where
+    # build_index reads it, not in the workspace.
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == "draft"
+    assert not (dest / "embeddings.db").exists()
+    assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == "IDX"
+
+
+def test_seed_workspace_no_published_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _ = _store(tmp_path)
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "cache"))
+    dest = tmp_path / "cache" / "ghost"
+    assert store.seed_workspace("ghost", str(dest)) is None
+    assert not dest.exists()
+
+
+def test_seed_workspace_replaces_stale_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _versioned_workspace(tmp_path, "src", "v1draft", "IDX"), "v1")
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "cache"))
+    dest = tmp_path / "cache" / "tls"
+    # A stale workspace from an older gather: a file absent in v1.
+    (dest / "files" / "drafts").mkdir(parents=True)
+    (dest / "files" / "drafts" / "old.txt").write_text("stale")
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == "v1draft"
+    assert not (dest / "files" / "drafts" / "old.txt").exists()

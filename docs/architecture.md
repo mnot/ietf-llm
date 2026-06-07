@@ -297,7 +297,7 @@ ietf_llm/
 ├── corpus_control_d1.py    # Cloudflare D1 executor (cloud control plane over HTTP)
 ├── corpus_blobs.py         # cloud blob plane: immutable whole-object store (file://)
 ├── corpus_blobs_s3.py      # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
-├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read
+├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read + seed
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
@@ -478,7 +478,14 @@ version. `get_corpus_store()` picks the backend from service config
   superseded versions to keep scratch bounded). `publish` stages blobs
   to a fresh version prefix, then flips the pointer in one transaction — a reader
   sees the old version or the new, never a torn one, and a killed publish leaves
-  the prior version live. Both planes are **interfaces with pluggable backends**.
+  the prior version live. Symmetrically, `seed_workspace` materialises the
+  current version into the *gather* workspace before a gather runs, so a
+  re-gather on a fresh replica builds on prior output — skipping re-download of
+  immutable inputs and, via the content-hash index above, re-embedding of
+  unchanged files — instead of starting cold; a no-op on the local backend
+  (where the workspace already is the live cache), and a seed failure degrades
+  to a full gather rather than failing it. Both planes are **interfaces with
+  pluggable backends**.
   The control plane is a `SqlControlPlane` over a small **`SqlExecutor`** seam —
   two primitives, `query` (one statement) and `batch` (several atomically, one
   round trip) — and all SQLite-dialect, with its atomic ops shaped for a
@@ -565,9 +572,13 @@ affordances; we use all three:
 `mail_threads`, `issue_files`, `ballots`, and the digest/minutes
 writers regenerate content every gather but write a file only when its
 bytes actually changed (`utils.write_if_changed`). A byte-identical
-re-render leaves mtime untouched — load-bearing because the embedder
-re-embeds any file whose mtime advanced. The mtime rule alone can't
-catch a file that becomes *ineligible* without changing — a removed
+re-render leaves the file (and its mtime) untouched, avoiding needless
+I/O and churn. The embedder keys its incremental skip on each file's
+content hash — stable across hosts, so a cloud replica that materialises
+a published version onto fresh local files still recognises the bytes as
+already-embedded rather than re-embedding the whole corpus. The hash
+check alone can't catch a file that becomes *ineligible* without
+changing — a removed
 thread/issue, or a draft that flips to `rfc`/`repl` and is now skipped
 (see `embeddings.db` above) — so `build_index` opens with a prune: it drops chunks
 for any indexed file no longer in the eligible set. That keeps stale

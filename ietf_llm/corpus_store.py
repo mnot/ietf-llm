@@ -187,6 +187,26 @@ class CorpusStore(ABC):
         cloud backend overrides it to consult only staged scratch."""
         return self.local_cache_dir(corpus)
 
+    def seed_workspace(self, corpus: str, dest_root: str) -> Optional[str]:
+        """Pre-populate a gather workspace at `dest_root` with the current
+        published version of `corpus`, before the gather runs. Returns the
+        seeded version token, or None when there is nothing to seed (no current
+        version) or the backend needs no seeding.
+
+        This is what makes an incremental gather pay off on a *fresh* host: with
+        the prior version's `files/` and `embeddings.db` in place, the gather
+        skips re-downloading immutable inputs (drafts, RFCs — existence-checked)
+        and skips re-embedding unchanged files (the index keys on content hash,
+        so identical bytes are recognised even on new local files). Without it,
+        a second gather on a different replica starts cold on every axis.
+
+        Default (local backend): a no-op returning None — the live cache under
+        `dest_root` already *is* the workspace, so there is nothing to fetch.
+        The cloud backend overrides this to materialise the current version's
+        blobs into `dest_root` (and the index into its configured dir). It only
+        reads the published version; it never publishes."""
+        return None
+
     # --- write-side gather lease (default: no-op single writer) -----------
 
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:

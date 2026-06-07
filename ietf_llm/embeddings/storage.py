@@ -9,8 +9,8 @@ the cache root; see utils.get_index_dir), with two tables:
 
   meta(key, value)
       Per-index metadata: the model id used to produce the vectors,
-      and one `mtime:<filename>` row per indexed file for incremental
-      re-embedding.
+      and one `hash:<filename>` row (the file's SHA-256) per indexed
+      file for incremental re-embedding.
 """
 
 from __future__ import annotations
