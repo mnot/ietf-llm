@@ -1,6 +1,7 @@
 import email
 import email.policy
 import email.utils
+import glob
 import html
 import imaplib
 import os
@@ -409,8 +410,18 @@ def sync_mailing_list(
     # directly and naturally interleaves anyway.) Skipped under
     # suppress_raw: the merged dumps are regenerable, never indexed,
     # and never read by a tool — the .eml cache synced above is what
-    # the thread reconstruction reads.
+    # the thread reconstruction reads. Sweep any dumps an earlier
+    # non-suppressed gather left behind so a cache migrated to the
+    # cloud backend doesn't carry stale raw/ bulk forward (mirrors the
+    # .pdf sweep in extract_all_pdfs).
     if suppress_raw:
+        for stale in glob.glob(
+            os.path.join(raw_dir(dest_folder), "mail-archive-*.txt")
+        ):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
         return []
     combined: Dict[int, List[str]] = {}
     for list_name, uids in per_list_uids.items():

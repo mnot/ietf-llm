@@ -136,3 +136,21 @@ def test_sync_mailing_list_suppress_raw_skips_archive(
     )
     assert written == []
     assert not (dest / "raw").exists()
+
+
+def test_sync_mailing_list_suppress_raw_sweeps_preexisting(
+    isolated_home: Path, monkeypatch: Any,
+) -> None:
+    # A cache gathered before suppression carries a merged dump; a later
+    # suppressed gather must sweep it so it doesn't ride into the served
+    # version (mirrors the .pdf sweep).
+    _stub_mail_sync(monkeypatch)
+    dest = isolated_home / "files"
+    stale = dest / "raw" / "mail-archive-2024.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old dump")
+    written = sync_mailing_list(
+        "httpbis", str(dest), verbose=Verbosity.QUIET, suppress_raw=True
+    )
+    assert written == []
+    assert not stale.exists()

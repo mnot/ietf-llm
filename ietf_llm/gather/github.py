@@ -327,7 +327,8 @@ def download_github_archives(
     so the .txt is rendered after the registry exists (canonical names).
     The `github/<repo>.json` archive (used by the issues digest) is always
     written; under `suppress_raw` the regenerable `raw/github-<repo>.txt`
-    dump is not, so those entries drop from the returned list.
+    dump is not, so those entries drop from the returned list — and any
+    such dump an earlier non-suppressed gather left behind is swept.
     """
     pending: List[tuple[str, str]] = []
     if not repos:
@@ -341,6 +342,14 @@ def download_github_archives(
             repo_short = "/".join(repo_short.rstrip("/").split("/")[-2:])
         gh_json = paths.github_archive_path(cache_dir, repo_short)
         gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
+        if suppress_raw and os.path.exists(gh_txt):
+            # Sweep a dump an earlier non-suppressed gather left behind
+            # so a cache migrated to the cloud backend doesn't carry
+            # stale raw/ bulk forward (mirrors the .pdf sweep).
+            try:
+                os.remove(gh_txt)
+            except OSError:
+                pass
         if download_github_issues(repo_short, gh_json, verbose=verbosity):
             if not suppress_raw:  # raw/ text dump only; the JSON is kept
                 pending.append((gh_json, gh_txt))

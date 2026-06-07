@@ -87,6 +87,28 @@ def test_download_github_archives_suppress_raw_keeps_json(
     assert not os.path.exists(paths.raw_dir(cache))
 
 
+def test_download_github_archives_suppress_raw_sweeps_preexisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import paths
+    from ietf_llm.gather.github import download_github_archives
+
+    _stub_github_download(monkeypatch)
+    cache = str(tmp_path)
+    # A dump an earlier non-suppressed gather left behind.
+    stale = paths.raw_github_text_path(cache, "o/r")
+    os.makedirs(paths.raw_dir(cache), exist_ok=True)
+    with open(stale, "w", encoding="utf-8") as handle:
+        handle.write("old dump")
+    pending = download_github_archives(
+        ["o/r"], cache, Verbosity.QUIET, suppress_raw=True
+    )
+    # The stale dump is swept; the JSON archive is still written.
+    assert not os.path.exists(stale)
+    assert os.path.exists(paths.github_archive_path(cache, "o/r"))
+    assert pending == []
+
+
 # --- writer-side drift guard ----------------------------------------------
 
 
