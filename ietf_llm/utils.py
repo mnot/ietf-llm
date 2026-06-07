@@ -1,9 +1,7 @@
-import filecmp
 import itertools
 import json
 import os
 import re
-import shutil
 import sys
 import threading
 from contextlib import contextmanager
@@ -277,22 +275,6 @@ def get_wg_file_cache_dir(wg_name: str) -> str:
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
-
-
-def copy_if_updated(src_path: str, dest_path: str) -> bool:
-    """
-    Copy file from src to dest only if it's new or the content has changed.
-    Returns True if copied, False otherwise.
-    """
-    if not os.path.exists(src_path):
-        return False
-
-    if os.path.exists(dest_path):
-        if filecmp.cmp(src_path, dest_path, shallow=False):
-            return False
-
-    shutil.copy2(src_path, dest_path)
-    return True
 
 
 class LockHeld(Exception):

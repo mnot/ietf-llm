@@ -268,13 +268,6 @@ def directory(
     return changes
 
 
-def _same_bytes(path_a: str, path_b: str) -> bool:
-    if os.path.getsize(path_a) != os.path.getsize(path_b):
-        return False
-    with open(path_a, "rb") as fa, open(path_b, "rb") as fb:
-        return fa.read() == fb.read()
-
-
 def notebooklm(
     wg: str,
     gcp_project: str,

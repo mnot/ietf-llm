@@ -48,9 +48,6 @@ _ROLE_LABELS = {
     "delegate": "Delegate",
 }
 
-#: Roles we surface prominently. Everything else collects under "Other".
-_LEADERSHIP_ROLES = {"chair", "ad", "techadv", "secr"}
-
 
 @dataclass
 class Role:
@@ -65,10 +62,6 @@ class Role:
 def label_for(role_slug: str) -> str:
     """Human-readable label for a Datatracker role slug."""
     return _ROLE_LABELS.get(role_slug, role_slug.capitalize())
-
-
-def is_leadership(role_slug: str) -> bool:
-    return role_slug in _LEADERSHIP_ROLES
 
 
 # --- API client ------------------------------------------------------------
