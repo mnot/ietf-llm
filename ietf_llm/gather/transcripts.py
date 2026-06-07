@@ -1,14 +1,101 @@
+import io
 import os
 import re
-import subprocess
+import shutil
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, List, Optional
+
+from dulwich import porcelain
 
 from ..paths import transcript_path, transcripts_dir
 from ..utils import LogLevel, Verbosity, atomic_open, file_lock, get_cache_dir, log
 
 if TYPE_CHECKING:
     from .meetings import MeetingCluster
+
+# Transcripts live on the `cache` branch of this data repo, one flat markdown
+# file per session under `transcripts/`. We sync it with dulwich (a pure-Python
+# git client) rather than shelling out to a `git` binary or using the GitHub
+# REST API: gather stays a single `pip install` with no external tools (the
+# cloud deployment has no git), and the smart-HTTP git protocol dulwich speaks
+# is not subject to the REST API's 60/hr rate limit.
+_TRANSCRIPTS_REPO_URL = "https://github.com/ietf-minutes/ietf-minutes-data.git"
+_TRANSCRIPTS_BRANCH = b"cache"
+
+
+def _clone_transcripts_repo(repo_dir: str, verbose: Verbosity) -> bool:
+    """Shallow-clone the transcripts data repo. Returns True on success; on
+    failure logs and drops any partial checkout so the next attempt is clean."""
+    log(
+        f"Cloning {_TRANSCRIPTS_REPO_URL} "
+        f"(branch {_TRANSCRIPTS_BRANCH.decode()})...",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    try:
+        porcelain.clone(
+            _TRANSCRIPTS_REPO_URL,
+            repo_dir,
+            branch=_TRANSCRIPTS_BRANCH,
+            depth=1,
+            errstream=io.BytesIO(),
+        ).close()
+        return True
+    except Exception as err:  # pylint: disable=broad-except
+        log(f"Error cloning transcripts repo: {err}", level=LogLevel.ERROR)
+        # Drop any partial checkout so the next gather re-clones clean.
+        shutil.rmtree(repo_dir, ignore_errors=True)
+        return False
+
+
+def _sync_transcripts_repo(repo_dir: str, verbose: Verbosity) -> bool:
+    """Clone or update the transcripts data repo in place, in pure Python.
+
+    A shallow (`depth=1`) clone the first time, then a forward-only pull:
+    git advertises our existing tip, so the server sends only the objects
+    new since it and a routine re-gather is cheap (the pull itself is not
+    re-bounded by depth — dulwich's `porcelain.pull` has no depth knob — but
+    the local tip already bounds the fetch). Returns True if a usable
+    `transcripts/` checkout is present afterwards. Transcripts are optional,
+    so any failure degrades to "no transcripts" (or the existing cached copy)
+    rather than aborting the whole gather — hence the guarded broad excepts:
+    dulwich surfaces network trouble as several unrelated exception types
+    (protocol, urllib3, socket).
+    """
+    # The clone is shared across all WGs, so serialise clone/pull across
+    # concurrent gathers — two writers in one working tree race on refs.
+    with file_lock(f"{repo_dir}.lock"):
+        if not os.path.exists(repo_dir):
+            if not _clone_transcripts_repo(repo_dir, verbose):
+                return False
+        else:
+            log("Updating transcripts repo...", verbose, level=LogLevel.PROGRESS)
+            try:
+                porcelain.pull(
+                    repo_dir,
+                    _TRANSCRIPTS_REPO_URL,
+                    refspecs=[b"refs/heads/" + _TRANSCRIPTS_BRANCH],
+                    errstream=io.BytesIO(),
+                )
+            except porcelain.DivergedBranches:
+                # The remote `cache` branch was rewound/rebuilt, so a
+                # fast-forward pull can never succeed again. Discard the stale
+                # checkout and re-clone — otherwise transcripts would freeze at
+                # the old tip on every future gather, with no path to recover.
+                log(
+                    "Transcripts branch diverged from remote; re-cloning...",
+                    verbose,
+                    level=LogLevel.STATUS,
+                )
+                shutil.rmtree(repo_dir, ignore_errors=True)
+                if not _clone_transcripts_repo(repo_dir, verbose):
+                    return False
+            except Exception as err:  # pylint: disable=broad-except
+                # Transient (network) failure: keep the cached copy — it is
+                # usually still usable — and try again on the next gather.
+                log(f"Error updating transcripts repo: {err}", level=LogLevel.ERROR)
+
+    return os.path.isdir(os.path.join(repo_dir, "transcripts"))
 
 
 def process_transcripts(
@@ -21,57 +108,15 @@ def process_transcripts(
     """
     Fetch transcripts for a WG from the ietf-minutes-data repo and write to destination.
     """
-    repo_url = "https://github.com/ietf-minutes/ietf-minutes-data.git"
     repo_dir = os.path.join(get_cache_dir(), "transcripts-repo")
-    branch = "cache"
+    if not _sync_transcripts_repo(repo_dir, verbose):
+        log("No transcripts available.", verbose, level=LogLevel.STATUS)
+        return []
 
-    # 1. Sync the repo. The clone is shared across all WGs, so serialise
-    # clone/pull across concurrent gathers — two git processes mutating
-    # one working tree collide on index.lock and corrupt it.
-    with file_lock(f"{repo_dir}.lock"):
-        if not os.path.exists(repo_dir):
-            log(
-                f"Cloning {repo_url} (branch {branch})...",
-                verbose,
-                level=LogLevel.STATUS,
-            )
-            try:
-                subprocess.run(
-                    ["git", "clone", "-b", branch, "--depth", "1", repo_url, repo_dir],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as err:
-                log(
-                    f"Error cloning transcripts repo: {err.stderr}",
-                    level=LogLevel.ERROR,
-                )
-                return []
-        else:
-            log("Updating transcripts repo...", verbose, level=LogLevel.PROGRESS)
-            try:
-                subprocess.run(
-                    ["git", "-C", repo_dir, "pull", "origin", branch],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as err:
-                log(
-                    f"Error updating transcripts repo: {err.stderr}",
-                    level=LogLevel.ERROR,
-                )
-                # Continue anyway, maybe the cache is usable
-
-    # 2. Find transcripts for the WG
-    # The repo structure is: transcripts/IETF{num}-{WG}-{date}-{time}.md
+    # Find transcripts for the WG. The repo layout is flat:
+    # transcripts/IETF{num}-{WG}-{date}-{time}.md
     updated_files = []
     transcripts_path = os.path.join(repo_dir, "transcripts")
-
-    if not os.path.exists(transcripts_path):
-        log(f"Transcripts directory not found in {repo_dir}", level=LogLevel.ERROR)
-        return []
 
     # WG name in the filename is uppercase in the repo (e.g., AIPREF)
     wg_upper = wg_name.upper()

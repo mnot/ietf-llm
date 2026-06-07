@@ -19,6 +19,12 @@ dependencies = [
     "requests",
     "beautifulsoup4",
     "pypdf",
+    # Pure-Python git client used to sync the meeting-transcripts data repo,
+    # so gather needs no `git` binary and isn't subject to the GitHub REST
+    # API rate limit (it speaks the smart-HTTP git protocol). Floor: 0.21.7
+    # is the oldest release whose `porcelain.pull` updates the working tree
+    # (older releases only moved refs, leaving the checkout stale).
+    "dulwich>=0.21.7",
     # NotebookLM Enterprise export (Google auth) is the optional `notebooklm`
     # extra -- mirror-mode export needs none of it; only the push does.
     # Digests, semantic search index, MCP server — all first-class features.
