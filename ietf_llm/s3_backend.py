@@ -6,7 +6,7 @@ the blob plane (`S3BlobStore`) for immutable version content, and the control
 plane (`S3KvStore`) for the compare-and-swap pointer / lease / slot / status
 keys. Sharing the connection is the point — one client, one endpoint, one
 credential set. Addressed by an `s3://<bucket>/<prefix>` locator; for a non-AWS
-endpoint (R2, MinIO) set `IETF_LLM_BLOB_ENDPOINT_URL`. Credentials come from the
+endpoint (R2, MinIO) set `IETF_LLM_STORE_ENDPOINT_URL`. Credentials come from the
 standard AWS environment / instance-role chain. See `docs/storage.md`.
 """
 
@@ -70,7 +70,7 @@ class S3Bucket:
 
     def __init__(self, locator: str, endpoint_url: Optional[str] = None) -> None:
         self.bucket, self.prefix = parse_locator(locator)
-        endpoint = endpoint_url or os.environ.get("IETF_LLM_BLOB_ENDPOINT_URL") or None
+        endpoint = endpoint_url or os.environ.get("IETF_LLM_STORE_ENDPOINT_URL") or None
         self.client = boto3.client("s3", endpoint_url=endpoint)
 
     def call(self, what: str, fn: Callable[[], _T]) -> _T:

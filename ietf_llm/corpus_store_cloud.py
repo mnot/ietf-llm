@@ -1,20 +1,24 @@
-"""The cloud CorpusStore backend: a control plane + a blob plane composed.
+"""The cloud CorpusStore backend: a control plane + a blob plane, both in one
+object store.
 
 `CloudCorpusStore` is the CorpusStore implementation a cloud deployment uses.
-It holds no storage logic of its own — it composes a `ControlPlane`
-(transactional versions / pointer / leases) and a `BlobStore` (immutable
-whole-object blobs), and stages materialised versions onto a local scratch
-directory. Both planes are pluggable: the control plane is a `SqlControlPlane`
-over a `SqlExecutor` (a local SQLite file, or a SQLite-compatible cloud database
-over HTTP such as Cloudflare D1); the blob plane is `file://`. This class is
-backend-agnostic — it depends only on the `ControlPlane` and `BlobStore`
-interfaces. See `docs/storage.md`.
+It holds no storage logic of its own — it composes a `KvControlPlane` (the
+compare-and-swap pointer / lease / slot / status keys) and a `BlobStore`
+(immutable whole-object version content), and stages materialised versions onto
+a local scratch directory. In production both are one S3-compatible bucket
+(`S3KvStore` + `S3BlobStore` over a shared `S3Bucket`); in tests they are an
+in-memory KvStore and a `file://` blob dir. The bucket layout (see
+`docs/storage.md`):
 
-Publish ordering is the load-bearing invariant: blobs go to a *fresh* version
-prefix first (invisible — nothing references it), then the control plane records
-the version and flips the pointer in one transaction. An interruption before
-that flip leaves the prior version current and the staged blobs orphaned, never
-a torn read.
+    corpora/<name>/pointer | lease | status    control keys (compare-and-swap)
+    corpora/<name>/versions/<version>/...       immutable version content
+    corpora/<name>/versions/<version>/manifest.json  the version's manifest
+    fleet/slots                                 the cross-corpora gather semaphore
+
+Publish ordering is the load-bearing invariant: content blobs (and the
+manifest) go to a *fresh* version prefix first (invisible — nothing references
+it), then the pointer is flipped. An interruption before that flip leaves the
+prior version current and the staged blobs orphaned, never a torn read.
 """
 
 from __future__ import annotations
@@ -28,10 +32,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from .corpus_blobs import BlobStore, FileBlobStore
-from .corpus_control import ControlPlane, SqliteControlPlane
+from .corpus_blobs import BlobStore
 from .corpus_store import CorpusStore, pinned_version, pinned_versions_in_use
+from .kv_control import KvControlPlane
 from .utils import get_index_dir
+
+#: Per-version manifest, stored as a blob inside the version prefix and stripped
+#: from the materialised tree so it never re-enters a re-gather workspace.
+_MANIFEST = "manifest.json"
 
 #: Process-global current-version cache: (cache_key, corpus) -> (version,
 #: monotonic expiry). Keyed by the control-plane identity (its locator) so two
@@ -56,50 +64,25 @@ def _new_version() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
-def _build_control_plane(locator: str) -> ControlPlane:
-    """Build the control-plane backend from `locator`'s scheme: `d1://…` selects
-    the Cloudflare D1 adapter; a filesystem path selects the local SQLite
-    backend."""
-    if locator.startswith("d1://"):
-        from .corpus_control_d1 import (  # pylint: disable=import-outside-toplevel
-            D1ControlPlane,
-        )
-
-        return D1ControlPlane(locator)
-    return SqliteControlPlane(locator)
-
-
-def _build_blob_store(locator: str) -> BlobStore:
-    """Build the blob backend from `locator`'s scheme: `s3://bucket/prefix`
-    selects the S3-compatible backend (the `[s3]` extra); a directory path
-    selects the bundled `file://` backend."""
-    if locator.startswith("s3://"):
-        try:
-            from .corpus_blobs_s3 import (  # pylint: disable=import-outside-toplevel
-                S3BlobStore,
-            )
-        except ImportError as err:
-            raise ValueError(
-                "an s3:// blob store needs the 's3' extra (pip install ietf-llm[s3])"
-            ) from err
-        return S3BlobStore(locator)
-    return FileBlobStore(locator)
+def _content_prefix(corpus: str, version: str) -> str:
+    """The blob prefix holding one version's immutable content (and manifest)."""
+    return f"corpora/{corpus}/versions/{version}/"
 
 
 def build_cloud_store() -> "CloudCorpusStore":
-    """Construct the cloud backend from service config, or raise ValueError if
-    it is selected but under-configured. The serve path surfaces this earlier
-    via boot-time validation; this guards the CLI / gather path too."""
+    """Construct the cloud backend from service config, or raise ValueError if it
+    is selected but under-configured. The control plane and the blob plane share
+    one S3-compatible bucket (object-store only — no SQL control plane). The
+    serve path surfaces config problems earlier via boot-time validation; this
+    guards the CLI / gather path too."""
     from . import service_config  # pylint: disable=import-outside-toplevel
 
-    control = service_config.control_db()
-    blobs = service_config.blob_dir()
+    store_url = service_config.store_url()
     scratch = service_config.scratch_dir()
     missing = [
         env
         for env, value in (
-            ("IETF_LLM_CONTROL_DB", control),
-            ("IETF_LLM_BLOB_DIR", blobs),
+            ("IETF_LLM_STORE_URL", store_url),
             ("IETF_LLM_SCRATCH_DIR", scratch),
         )
         if not value
@@ -109,13 +92,31 @@ def build_cloud_store() -> "CloudCorpusStore":
             "cloud corpus store selected but not configured: missing "
             + ", ".join(missing)
         )
-    assert control and blobs and scratch  # narrowed by the check above
+    assert store_url and scratch  # narrowed by the check above
+    if not store_url.startswith("s3://"):
+        raise ValueError(
+            "the cloud store is object-store only: IETF_LLM_STORE_URL must be an "
+            f"s3:// locator (got {store_url!r})"
+        )
+    try:
+        from .kv_store_s3 import (  # pylint: disable=import-outside-toplevel
+            S3KvStore,
+        )
+        from .corpus_blobs_s3 import (  # pylint: disable=import-outside-toplevel
+            S3BlobStore,
+        )
+        from .s3_backend import S3Bucket  # pylint: disable=import-outside-toplevel
+    except ImportError as err:
+        raise ValueError(
+            "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
+        ) from err
+    bucket = S3Bucket(store_url)
     return CloudCorpusStore(
-        _build_control_plane(control),
-        _build_blob_store(blobs),
+        KvControlPlane(S3KvStore(bucket)),
+        S3BlobStore(bucket),
         scratch,
         resolve_ttl=service_config.resolve_ttl(),
-        cache_key=control,
+        cache_key=store_url,
     )
 
 
@@ -125,7 +126,7 @@ class CloudCorpusStore(CorpusStore):
 
     def __init__(
         self,
-        control: ControlPlane,
+        control: KvControlPlane,
         blobs: BlobStore,
         scratch_dir: str,
         *,
@@ -218,12 +219,22 @@ class CloudCorpusStore(CorpusStore):
         return dest_root
 
     def _fetch_version_to(self, corpus: str, version: str, tmp: str) -> None:
-        """Materialise a version's blobs into `tmp` and verify every file the
-        manifest lists is present. Raises FileNotFoundError on an incomplete
-        version (a lost blob) so a caller never stages a partial tree as whole."""
-        manifest = self._control.get_manifest(corpus, version) or {}
+        """Materialise a version's content into `tmp` and verify every file the
+        manifest lists is present. The manifest travels with the content (a blob
+        in the version prefix); it is read for the expected-file list and then
+        removed from `tmp`, so it never lands in the served tree or re-enters a
+        re-gather workspace. Raises FileNotFoundError on an incomplete version (a
+        lost manifest or blob) so a caller never stages a partial tree as whole."""
+        self._blobs.materialise_prefix(_content_prefix(corpus, version), tmp)
+        manifest_path = os.path.join(tmp, _MANIFEST)
+        if not os.path.isfile(manifest_path):
+            raise FileNotFoundError(
+                f"version {version} of '{corpus}' is incomplete: no manifest"
+            )
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        os.remove(manifest_path)
         expected = list(manifest.get("files") or [])
-        self._blobs.materialise_prefix(f"{corpus}/{version}/", tmp)
         missing = [f for f in expected if not os.path.isfile(os.path.join(tmp, f))]
         if missing:
             raise FileNotFoundError(
@@ -349,7 +360,7 @@ class CloudCorpusStore(CorpusStore):
         extra_files: Optional[Dict[str, str]] = None,
     ) -> str:
         version = version or _new_version()
-        prefix = f"{corpus}/{version}/"
+        prefix = _content_prefix(corpus, version)
         staged: Dict[str, str] = {}
         # Stage every file in the workspace to the fresh version prefix, plus any
         # extra_files (e.g. an index living outside the cache), keyed by their
@@ -367,11 +378,17 @@ class CloudCorpusStore(CorpusStore):
             with open(abs_path, "rb") as handle:
                 self._blobs.put(prefix + rel, handle.read())
             files.append(rel)
-        # Atomically record the version and flip the pointer. If this raises,
-        # the staged blobs are orphaned and the prior version stays current.
-        self._control.publish_version(
-            corpus, version, {"version": version, "files": sorted(files)}
+        # The manifest is a blob in the version prefix — immutable content, like
+        # the files it lists. Written before the pointer flip.
+        self._blobs.put(
+            prefix + _MANIFEST,
+            json.dumps(
+                {"version": version, "files": sorted(files)}, sort_keys=True
+            ).encode("utf-8"),
         )
+        # Flip the pointer last. If this raises, the staged blobs are orphaned and
+        # the prior version stays current — never a torn read.
+        self._control.set_current(corpus, version)
         # Write-through so this process serves the version it just published
         # immediately, without waiting out the resolve TTL. Other replicas /
         # processes pick it up within the TTL.

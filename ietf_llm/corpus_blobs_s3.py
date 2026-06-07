@@ -1,147 +1,83 @@
 """S3-compatible object store for the cloud blob plane.
 
 `S3BlobStore` implements the `BlobStore` interface against any S3-compatible
-service (AWS S3, Cloudflare R2, MinIO) using `boto3` (the `[s3]` extra). It is
-addressed by an `IETF_LLM_BLOB_DIR` locator of the form `s3://<bucket>/<prefix>`;
-for a non-AWS endpoint (R2, MinIO) set `IETF_LLM_BLOB_ENDPOINT_URL`. Credentials
-come from the standard AWS environment / instance-role chain (a secret — the
-environment only). Only whole-object operations are used, so it needs no
-store-special features. See `docs/storage.md`.
+service (AWS S3, Cloudflare R2, MinIO) using `boto3` (the `[s3]` extra). It
+shares one `S3Bucket` (`s3_backend`) — and so one boto3 client, endpoint, and
+credential set — with the control plane's `S3KvStore`. Addressed by an
+`IETF_LLM_STORE_URL` locator of the form `s3://<bucket>/<prefix>`; for a non-AWS
+endpoint (R2, MinIO) set `IETF_LLM_STORE_ENDPOINT_URL`. Credentials come from the
+standard AWS environment / instance-role chain (a secret — the environment
+only). Only whole-object operations are used, so it needs no store-special
+features. See `docs/storage.md`.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Callable, List, Optional, Tuple, TypeVar, cast
+from typing import List, Union, cast
 
-import boto3  # type: ignore[import-untyped]
-from botocore.exceptions import (  # type: ignore[import-untyped]
-    ClientError,
-    NoCredentialsError,
-)
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
-from .corpus_blobs import BlobStore, _safe_key
+from .corpus_blobs import BlobStore
+from .s3_backend import NOT_FOUND, S3AuthError, S3Bucket
 
-_NOT_FOUND = ("404", "NoSuchKey", "NotFound")
-
-#: S3/R2 error codes that mean "your credentials are missing, wrong, or lack
-#: access", as opposed to a transient or not-found condition.
-_AUTH_CODES = frozenset(
-    {
-        "403",
-        "AccessDenied",
-        "InvalidAccessKeyId",
-        "SignatureDoesNotMatch",
-        "InvalidToken",
-        "ExpiredToken",
-        "AccountProblem",
-    }
-)
-
-_T = TypeVar("_T")
-
-
-class S3AuthError(RuntimeError):
-    """The object store rejected our credentials (missing, invalid, or lacking
-    access). Not retryable — the fix is a configuration change, so the message
-    names the AWS credential chain rather than surfacing a botocore traceback."""
-
-
-def _parse_locator(locator: str) -> Tuple[str, str]:
-    """`s3://bucket/prefix...` → (bucket, prefix); prefix may be empty."""
-    if not locator.startswith("s3://"):
-        raise ValueError(
-            f"invalid S3 locator (expected s3://bucket[/prefix]): {locator!r}"
-        )
-    bucket, _, prefix = locator[len("s3://") :].partition("/")
-    if not bucket:
-        raise ValueError(f"invalid S3 locator (no bucket): {locator!r}")
-    return bucket, prefix.strip("/")
+# Re-exported for callers / tests that import it from here.
+__all__ = ["S3AuthError", "S3BlobStore"]
 
 
 class S3BlobStore(BlobStore):
     """`BlobStore` over an S3-compatible bucket. Keys are stored under the
-    locator's prefix; the public key space is the same base-relative one as
-    `FileBlobStore`."""
+    bucket's prefix; the public key space is the same base-relative one as
+    `FileBlobStore`. Accepts a shared `S3Bucket` (so it uses the same client as
+    the control plane) or, for convenience, an `s3://` locator string."""
 
-    def __init__(self, locator: str, endpoint_url: Optional[str] = None) -> None:
-        self._bucket, self._prefix = _parse_locator(locator)
-        endpoint = endpoint_url or os.environ.get("IETF_LLM_BLOB_ENDPOINT_URL") or None
-        self._s3 = boto3.client("s3", endpoint_url=endpoint)
-
-    def _call(self, what: str, fn: Callable[[], _T]) -> _T:
-        """Run an S3 operation, translating a rejected-credentials failure into
-        a clear `S3AuthError`. Non-auth errors (including not-found) propagate
-        unchanged for the caller to handle."""
-        try:
-            return fn()
-        except NoCredentialsError as err:
-            raise S3AuthError(
-                f"no credentials available to {what} on s3://{self._bucket}: set "
-                "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or an instance role)."
-            ) from err
-        except ClientError as err:
-            code = str(err.response.get("Error", {}).get("Code", ""))
-            if code in _AUTH_CODES:
-                raise S3AuthError(
-                    f"the object store rejected the request to {what} on "
-                    f"s3://{self._bucket} ({code}): the credentials are missing, "
-                    "invalid, or lack access. Check AWS_ACCESS_KEY_ID / "
-                    "AWS_SECRET_ACCESS_KEY (or the instance role) and the "
-                    "bucket policy."
-                ) from err
-            raise
-
-    def _key(self, key: str) -> str:
-        safe = _safe_key(key)
-        return f"{self._prefix}/{safe}" if self._prefix else safe
-
-    def _prefixed(self, prefix: str) -> str:
-        return f"{self._prefix}/{prefix}" if self._prefix else prefix
-
-    def _strip(self, s3_key: str) -> str:
-        head = f"{self._prefix}/" if self._prefix else ""
-        return s3_key[len(head) :] if s3_key.startswith(head) else s3_key
+    def __init__(self, bucket: Union[str, S3Bucket]) -> None:
+        self._b = S3Bucket(bucket) if isinstance(bucket, str) else bucket
+        # Exposed so a test can swap the client to exercise the auth guard.
+        self._s3 = self._b.client
 
     def put(self, key: str, data: bytes) -> None:
-        self._call(
+        bkt = self._b
+        bkt.call(
             "write an object",
-            lambda: self._s3.put_object(
-                Bucket=self._bucket, Key=self._key(key), Body=data
-            ),
+            lambda: self._s3.put_object(Bucket=bkt.bucket, Key=bkt.key(key), Body=data),
         )
 
     def get(self, key: str) -> bytes:
-        obj = self._call(
+        bkt = self._b
+        obj = bkt.call(
             "read an object",
-            lambda: self._s3.get_object(Bucket=self._bucket, Key=self._key(key)),
+            lambda: self._s3.get_object(Bucket=bkt.bucket, Key=bkt.key(key)),
         )
         return cast(bytes, obj["Body"].read())
 
     def exists(self, key: str) -> bool:
+        bkt = self._b
         try:
-            self._call(
+            bkt.call(
                 "stat an object",
-                lambda: self._s3.head_object(Bucket=self._bucket, Key=self._key(key)),
+                lambda: self._s3.head_object(Bucket=bkt.bucket, Key=bkt.key(key)),
             )
             return True
         except ClientError as err:
-            if err.response.get("Error", {}).get("Code") in _NOT_FOUND:
+            if err.response.get("Error", {}).get("Code") in NOT_FOUND:
                 return False
             raise
 
     def list_prefix(self, prefix: str) -> List[str]:
+        bkt = self._b
+
         def _list() -> List[str]:
             keys: List[str] = []
             paginator = self._s3.get_paginator("list_objects_v2")
             for page in paginator.paginate(
-                Bucket=self._bucket, Prefix=self._prefixed(prefix)
+                Bucket=bkt.bucket, Prefix=bkt.prefixed(prefix)
             ):
                 for obj in page.get("Contents", []):
-                    keys.append(self._strip(obj["Key"]))
+                    keys.append(bkt.strip(obj["Key"]))
             return sorted(keys)
 
-        return self._call("list objects", _list)
+        return bkt.call("list objects", _list)
 
     def materialise_prefix(self, prefix: str, dest_dir: str) -> None:
         strip = prefix.rstrip("/") + "/"

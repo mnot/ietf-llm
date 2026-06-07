@@ -3,20 +3,23 @@ deployment, not of a corpus.
 
 Each non-secret key resolves **env > global config.json > default** — so an
 operator can set it via the container environment, bake it into the shared
-config file, or mix the two. Secrets come from the environment only and are
-never read from a file (the file:// + SQLite slice has none yet — an S3 access
-key / SQL password would be env-only). This is the single place that reads these
-knobs; the table below is authoritative. See `docs/storage.md`.
+config file, or mix the two. The cloud store is object-store only: one
+`IETF_LLM_STORE_URL` (an `s3://` locator) holds both the immutable version
+content and the compare-and-swap control keys. Its credentials are a secret,
+read from the standard AWS environment / instance-role chain only, never a file.
+This is the single place that reads these knobs; the table below is
+authoritative. See `docs/storage.md`.
 
 | key             | env var                    | global config.json | secret |
 |-----------------|----------------------------|--------------------|--------|
 | store backend   | IETF_LLM_STORE_BACKEND     | store_backend      | no     |
-| control DB      | IETF_LLM_CONTROL_DB        | control_db         | no     |
-| control DB token| IETF_LLM_CONTROL_DB_TOKEN  | —                  | YES    |
-| blob dir        | IETF_LLM_BLOB_DIR          | blob_dir           | no     |
+| store URL       | IETF_LLM_STORE_URL         | store_url          | no     |
 | scratch dir     | IETF_LLM_SCRATCH_DIR       | scratch_dir        | no     |
 | resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
 | gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
+
+The S3 endpoint for a non-AWS service (R2, MinIO) is `IETF_LLM_STORE_ENDPOINT_URL`
+(env only), read by `s3_backend`.
 
 The per-host gather egress caps (`IETF_LLM_HTTP_MAX_PER_HOST`,
 `IETF_LLM_HTTP_MAX_DATATRACKER`) are deliberately *not* read here: `http_governor`
@@ -34,8 +37,7 @@ from . import config
 
 #: (environment variable, global-config key) for each non-secret service knob.
 STORE_BACKEND: Tuple[str, str] = ("IETF_LLM_STORE_BACKEND", "store_backend")
-CONTROL_DB: Tuple[str, str] = ("IETF_LLM_CONTROL_DB", "control_db")
-BLOB_DIR: Tuple[str, str] = ("IETF_LLM_BLOB_DIR", "blob_dir")
+STORE_URL: Tuple[str, str] = ("IETF_LLM_STORE_URL", "store_url")
 SCRATCH_DIR: Tuple[str, str] = ("IETF_LLM_SCRATCH_DIR", "scratch_dir")
 RESOLVE_TTL: Tuple[str, str] = ("IETF_LLM_RESOLVE_TTL", "resolve_ttl")
 GATHER_MAX_INFLIGHT: Tuple[str, str] = (
@@ -68,25 +70,20 @@ def store_backend() -> str:
     return _resolve(STORE_BACKEND, "local") or "local"
 
 
-def control_db() -> Optional[str]:
-    """Locator for the control-plane database, or None if unset.
-
-    A filesystem path selects the local SQLite backend (created on first use); a
-    cloud database-API locator (e.g. Cloudflare D1) selects that adapter."""
-    return _resolve(CONTROL_DB, None)
+def store_url() -> Optional[str]:
+    """Locator for the cloud object store (None if unset). An `s3://bucket/prefix`
+    locator naming the bucket that holds both the version content and the
+    control-plane keys. Credentials come from the AWS environment / instance-role
+    chain; a non-AWS endpoint (R2, MinIO) is set via `IETF_LLM_STORE_ENDPOINT_URL`."""
+    return _resolve(STORE_URL, None)
 
 
 def control_db_token() -> Optional[str]:
-    """API token for a cloud control-plane database (e.g. a Cloudflare D1 token),
-    or None if unset. A **secret**: read from the environment only, never the
-    config file."""
+    """Deprecated: API token for the old Cloudflare D1 control plane, removed with
+    the D1 adapter. Read from the environment only. Retained until that adapter
+    is deleted."""
     raw = os.environ.get("IETF_LLM_CONTROL_DB_TOKEN")
     return raw.strip() if raw and raw.strip() else None
-
-
-def blob_dir() -> Optional[str]:
-    """Base location of the cloud blob store (None if unset)."""
-    return _resolve(BLOB_DIR, None)
 
 
 def scratch_dir() -> Optional[str]:

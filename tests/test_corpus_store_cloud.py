@@ -8,12 +8,13 @@ from typing import Tuple
 import pytest
 
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.kv_control import KvControlPlane
+from ietf_llm.kv_store import InMemoryKvStore
 
 
-def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, SqliteControlPlane]:
-    control = SqliteControlPlane(str(tmp_path / "control.db"))
+def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, KvControlPlane]:
+    control = KvControlPlane(InMemoryKvStore())
     blobs = FileBlobStore(str(tmp_path / "bucket"))
     store = CloudCorpusStore(control, blobs, str(tmp_path / "scratch"))
     return store, control
@@ -64,7 +65,7 @@ def test_abandoned_publish_leaves_prior_version(tmp_path: Path) -> None:
         raise RuntimeError("pointer flip failed")
 
     # Simulate a crash after blobs are staged but before the pointer flips.
-    control.publish_version = _boom  # type: ignore[method-assign]
+    control.set_current = _boom  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         store.publish("tls", _workspace(tmp_path, "ws2", "second"), version="v2")
 

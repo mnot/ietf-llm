@@ -1,6 +1,6 @@
 """Feature 4: the MCP read path resolves and materialises through the corpus
-store, so the same read tools serve a cloud (sqlite + file://) backend — not
-just the local cache."""
+store, so the same read tools serve a cloud backend (in-memory control plane +
+file:// blobs here) — not just the local cache."""
 
 from __future__ import annotations
 
@@ -10,12 +10,13 @@ import pytest
 
 from ietf_llm import mcp_server
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
+from ietf_llm.kv_control import KvControlPlane
+from ietf_llm.kv_store import InMemoryKvStore
 
 
 def _cloud_store(root: Path) -> CloudCorpusStore:
-    control = SqliteControlPlane(str(root / "control.db"))
+    control = KvControlPlane(InMemoryKvStore())
     blobs = FileBlobStore(str(root / "bucket"))
     return CloudCorpusStore(control, blobs, str(root / "scratch"))
 

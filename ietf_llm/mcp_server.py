@@ -3752,8 +3752,7 @@ def _serve_config_problems(host: str) -> "Tuple[List[str], List[str]]":
         missing = [
             env
             for env, value in (
-                ("IETF_LLM_CONTROL_DB", service_config.control_db()),
-                ("IETF_LLM_BLOB_DIR", service_config.blob_dir()),
+                ("IETF_LLM_STORE_URL", service_config.store_url()),
                 ("IETF_LLM_SCRATCH_DIR", service_config.scratch_dir()),
             )
             if not value

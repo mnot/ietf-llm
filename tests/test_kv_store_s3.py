@@ -26,7 +26,7 @@ def bucket(monkeypatch: pytest.MonkeyPatch) -> Iterator[S3Bucket]:
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    monkeypatch.delenv("IETF_LLM_BLOB_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("IETF_LLM_STORE_ENDPOINT_URL", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="test-bucket")
         yield S3Bucket("s3://test-bucket/ctl")

@@ -12,8 +12,7 @@ from ietf_llm.corpus_store_cloud import CloudCorpusStore, build_cloud_store
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",
-    "IETF_LLM_CONTROL_DB",
-    "IETF_LLM_BLOB_DIR",
+    "IETF_LLM_STORE_URL",
     "IETF_LLM_SCRATCH_DIR",
 )
 
@@ -26,9 +25,12 @@ def _clear_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _select_cloud(base: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
-    monkeypatch.setenv("IETF_LLM_CONTROL_DB", str(base / "control.db"))
-    monkeypatch.setenv("IETF_LLM_BLOB_DIR", str(base / "bucket"))
+    monkeypatch.setenv("IETF_LLM_STORE_URL", "s3://test-bucket/prefix")
     monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(base / "scratch"))
+    # Construction makes a boto3 client (no network call); give it a region.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
 
 def test_default_backend_is_local(isolated_home: Path) -> None:

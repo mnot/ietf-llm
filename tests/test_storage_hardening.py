@@ -17,11 +17,12 @@ from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
 from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.gather_runner import _owner
+from ietf_llm.kv_control import KvControlPlane
+from ietf_llm.kv_store import InMemoryKvStore
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",
-    "IETF_LLM_CONTROL_DB",
-    "IETF_LLM_BLOB_DIR",
+    "IETF_LLM_STORE_URL",
     "IETF_LLM_SCRATCH_DIR",
 )
 
@@ -63,7 +64,7 @@ def test_sqlite_schema_ensured_once(tmp_path: Path) -> None:
 
 def _cloud(tmp_path: Path) -> CloudCorpusStore:
     return CloudCorpusStore(
-        SqliteControlPlane(str(tmp_path / "c.db")),
+        KvControlPlane(InMemoryKvStore()),
         FileBlobStore(str(tmp_path / "bucket")),
         str(tmp_path / "scratch"),
     )
@@ -93,7 +94,18 @@ def test_materialise_fails_on_missing_blob(tmp_path: Path) -> None:
     store = _cloud(tmp_path)
     _publish_tls(store, tmp_path)
     # Simulate a lost/durability-gap blob: delete one object from the bucket.
-    (tmp_path / "bucket" / "tls" / "v1" / "files" / "digests" / "index.md").unlink()
+    blob = (
+        tmp_path
+        / "bucket"
+        / "corpora"
+        / "tls"
+        / "versions"
+        / "v1"
+        / "files"
+        / "digests"
+        / "index.md"
+    )
+    blob.unlink()
     with pytest.raises(FileNotFoundError):
         store.local_cache_dir("tls")
 
@@ -238,7 +250,7 @@ def _counting_cloud(
     counter, with caching keyed by `name` (so stores don't share entries)."""
     base = tmp_path / name
     base.mkdir(parents=True, exist_ok=True)
-    control = SqliteControlPlane(str(base / "c.db"))
+    control = KvControlPlane(InMemoryKvStore())
     counter: Dict[str, int] = {"n": 0}
     real = control.resolve_current
 
