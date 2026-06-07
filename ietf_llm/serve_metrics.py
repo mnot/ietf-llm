@@ -102,6 +102,12 @@ _LOCK = threading.Lock()
 _tools: Dict[str, _Histogram] = {}
 #: the remote /embeddings backend (a single unlabelled series)
 _embed = _Histogram()
+#: tool calls currently executing in `_offload` (the saturation "U" the RED
+#: latency histograms can't show on their own): incremented on the way in,
+#: decremented in the `finally`, so a scrape sees concurrent in-flight work.
+#: A one-element list so it is mutated in place under the lock (like `_embed`),
+#: not rebound — no module-level `global`.
+_inflight = [0]
 
 
 def record_tool(
@@ -127,11 +133,19 @@ def record_embed(elapsed: float, *, error: bool) -> None:
         _embed.observe(elapsed, error=error)
 
 
+def adjust_inflight(delta: int) -> None:
+    """Bump the in-flight tool-call gauge by `delta` (+1 entering `_offload`,
+    -1 in its `finally`)."""
+    with _LOCK:
+        _inflight[0] += delta
+
+
 def reset() -> None:
     """Clear all counters. For tests; the server never calls this."""
     with _LOCK:
         _tools.clear()
         _embed.reset()
+        _inflight[0] = 0
 
 
 # --- Prometheus text exposition --------------------------------------------
@@ -166,25 +180,45 @@ def _emit_histogram(
     lines.append(f"{name}_count{suffix} {hist.count}")
 
 
-def render(corpus_ages: Optional[Iterable[Tuple[str, int]]] = None) -> str:
+def render(
+    corpus_ages: Optional[Iterable[Tuple[str, int]]] = None,
+    *,
+    version: Optional[str] = None,
+) -> str:
     """Render the full Prometheus text exposition.
 
     `corpus_ages` is `(corpus, age_seconds)` pairs the endpoint derives
     from the `last-gathered` sentinels at scrape time (only tracked
     corpora; untracked ones are omitted). Passed in rather than computed
     here so this module needs nothing from `mcp_server` / `freshness`.
+    `version` is the package version for the `build_info` series, passed in
+    for the same reason (the endpoint already holds `__version__`).
 
     The whole body is built under the lock so a single scrape is a
     consistent snapshot; scrapes are infrequent and recorders only block
     for the few microseconds it takes to format some lines.
     """
     with _LOCK:
-        return _render_locked(corpus_ages)
+        return _render_locked(corpus_ages, version)
 
 
-def _render_locked(corpus_ages: Optional[Iterable[Tuple[str, int]]]) -> str:
+def _render_locked(
+    corpus_ages: Optional[Iterable[Tuple[str, int]]], version: Optional[str]
+) -> str:
     tools = sorted(_tools.items())
     lines: List[str] = []
+
+    # Build identity (constant 1; the version rides in the label, the
+    # standard Prometheus way to expose a build string for a `count by`).
+    if version is not None:
+        lines.append("# HELP ietf_llm_build_info Build version (value is always 1).")
+        lines.append("# TYPE ietf_llm_build_info gauge")
+        lines.append(f'ietf_llm_build_info{{version="{_escape_label(version)}"}} 1')
+
+    # In-flight tool calls right now (saturation).
+    lines.append("# HELP ietf_llm_inflight_requests Tool calls executing now.")
+    lines.append("# TYPE ietf_llm_inflight_requests gauge")
+    lines.append(f"ietf_llm_inflight_requests {_inflight[0]}")
 
     # RED per tool.
     lines.append("# HELP ietf_llm_tool_requests_total MCP tool invocations.")

@@ -2045,6 +2045,7 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     partial = functools.partial(_instrumented)
     timeout = _tool_timeout_seconds()
     status = "unknown"
+    serve_metrics.adjust_inflight(1)
     try:
         if timeout <= 0:
             result = cast(
@@ -2066,6 +2067,7 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         status = "exception"
         raise
     finally:
+        serve_metrics.adjust_inflight(-1)
         elapsed = time.monotonic() - t0
         _debug_log.log_event(
             req_id,
@@ -3530,7 +3532,7 @@ async def _metrics_endpoint(_request: Any) -> Any:
     # pylint: disable=import-outside-toplevel
     from starlette.responses import PlainTextResponse
 
-    body = serve_metrics.render(_corpus_ages())
+    body = serve_metrics.render(_corpus_ages(), version=__version__)
     # Prometheus text exposition format v0.0.4.
     return PlainTextResponse(
         body, media_type="text/plain; version=0.0.4; charset=utf-8"

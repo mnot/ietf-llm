@@ -158,6 +158,21 @@ def test_freshness_gauge_emitted_for_passed_ages():
     ) == 10
 
 
+def test_build_info_emitted_only_when_version_passed():
+    assert "ietf_llm_build_info" not in serve_metrics.render()
+    body = serve_metrics.render(version="9.9.9")
+    assert 'ietf_llm_build_info{version="9.9.9"} 1' in body
+
+
+def test_inflight_gauge_tracks_adjustments():
+    assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 0
+    serve_metrics.adjust_inflight(1)
+    serve_metrics.adjust_inflight(1)
+    assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 2
+    serve_metrics.adjust_inflight(-1)
+    assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 1
+
+
 # --- chokepoint wiring ------------------------------------------------------
 
 
@@ -172,6 +187,8 @@ def test_offload_records_tool_metric():
         body, 'ietf_llm_tool_requests_total{tool="my_tool"}'
     ) == 1
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="my_tool"}') == 0
+    # The in-flight gauge is balanced back to zero once the call returns.
+    assert _metric_value(body, "ietf_llm_inflight_requests") == 0
 
 
 def test_offload_records_error_on_raise():
@@ -252,6 +269,9 @@ def test_metrics_route_content_type_and_families(isolated_home):
     assert "version=0.0.4" in resp.headers["content-type"]
     assert "ietf_llm_tool_latency_seconds" in resp.text
     assert "ietf_llm_embed_requests_total" in resp.text
+    # The route passes the package version through, so build_info is present.
+    assert "ietf_llm_build_info{version=" in resp.text
+    assert "ietf_llm_inflight_requests" in resp.text
 
 
 def test_metrics_route_freshness_gauge(isolated_home):
