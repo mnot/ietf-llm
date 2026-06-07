@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -131,11 +131,6 @@ def _row_field(row: List[str], columns: List[str], name: str) -> str:
     if pos is None or pos >= len(row):
         return ""
     return row[pos]
-
-
-def _substr_filter(needle: str) -> Callable[[str], bool]:
-    needle_lower = needle.lower()
-    return lambda value: needle_lower in value.lower()
 
 
 def _parse_date_cell(value: str) -> str:

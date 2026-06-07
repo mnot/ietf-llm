@@ -135,11 +135,6 @@ def slides_dir(cache_dir: str, code: str) -> str:
     return os.path.join(meeting_dir(cache_dir, code), SUBDIR_SLIDES)
 
 
-def slide_path(cache_dir: str, code: str, slug: str) -> str:
-    """A single slide PDF. `slug` is the slide deck name (without .pdf)."""
-    return os.path.join(slides_dir(cache_dir, code), f"{slug}.pdf")
-
-
 def transcripts_dir(cache_dir: str, code: Optional[str]) -> str:
     """Where transcripts for a meeting live. None / empty `code`
     routes to the `_orphans/transcripts/` dir."""
@@ -206,14 +201,6 @@ def digest_kind_from_relpath(relpath: str) -> Optional[str]:
     return relpath[len(DIR_DIGESTS) + 1 : -len(".md")] or None
 
 
-def is_issue_relpath(relpath: str) -> bool:
-    return relpath.startswith(f"{DIR_ISSUES}/") and relpath.endswith(".md")
-
-
-def is_thread_relpath(relpath: str) -> bool:
-    return relpath.startswith(f"{DIR_THREADS}/") and relpath.endswith(".md")
-
-
 def is_transcript_relpath(relpath: str) -> bool:
     """Transcripts live in any `meetings/<code>/transcripts/<dt>.md`."""
     return (
@@ -221,22 +208,6 @@ def is_transcript_relpath(relpath: str) -> bool:
         and f"/{SUBDIR_TRANSCRIPTS}/" in relpath
         and relpath.endswith(".md")
     )
-
-
-def is_minutes_relpath(relpath: str) -> bool:
-    """Minutes are `meetings/<code>/minutes.md`."""
-    if not relpath.startswith(f"{DIR_MEETINGS}/"):
-        return False
-    return relpath.endswith("/minutes.md")
-
-
-def is_raw_relpath(relpath: str) -> bool:
-    """raw/* files are not indexed."""
-    return relpath.startswith(f"{DIR_RAW}/")
-
-
-def is_github_archive_relpath(relpath: str) -> bool:
-    return relpath.startswith(f"{DIR_GITHUB}/") and relpath.endswith(".json")
 
 
 # --- Helpers --------------------------------------------------------------
