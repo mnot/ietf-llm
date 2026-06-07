@@ -37,7 +37,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 #: Histogram bucket upper bounds in seconds (the implicit +Inf bucket is
 #: emitted last). Spans a sub-10ms cache hit through a multi-second
-#: embedding-model cold load up to the tool deadline's neighbourhood.
+#: embedding-model cold load up to the tool deadline. The top bounds (60,
+#: 120) reach the default `IETF_LLM_TOOL_TIMEOUT` (120s): without them a
+#: call crawling toward its deadline — or a slow remote embedding call,
+#: which over a network easily exceeds 30s — would land in +Inf and the
+#: histogram would lose all resolution in exactly the range that matters
+#: when something is going wrong.
 _BUCKETS: Tuple[float, ...] = (
     0.01,
     0.05,
@@ -49,6 +54,8 @@ _BUCKETS: Tuple[float, ...] = (
     5.0,
     10.0,
     30.0,
+    60.0,
+    120.0,
 )
 
 

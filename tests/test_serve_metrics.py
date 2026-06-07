@@ -102,6 +102,23 @@ def test_histogram_buckets_are_cumulative():
     ) == 2
 
 
+def test_histogram_buckets_reach_the_tool_deadline():
+    # A near-deadline call (default IETF_LLM_TOOL_TIMEOUT is 120s) must land
+    # in a real bucket, not collapse into +Inf — so the 60/120 bounds exist
+    # and a 90s observation sits above le="60" but at/below le="120".
+    serve_metrics.record_tool("slow", 90.0, error=False)
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_tool_latency_seconds_bucket{tool="slow",le="60"}'
+    ) == 0
+    assert _metric_value(
+        body, 'ietf_llm_tool_latency_seconds_bucket{tool="slow",le="120"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_tool_latency_seconds_bucket{tool="slow",le="+Inf"}'
+    ) == 1
+
+
 def test_embed_metrics_recorded():
     serve_metrics.record_embed(0.05, error=False)
     serve_metrics.record_embed(0.5, error=True)
