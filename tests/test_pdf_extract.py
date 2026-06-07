@@ -74,6 +74,50 @@ def test_extract_all_pdfs_writes_sibling_txt(tmp_path: Path) -> None:
     assert "Hello AIPREF" in out_path.read_text()
 
 
+def test_suppress_pdf_drops_source_after_extraction(tmp_path: Path) -> None:
+    # A freshly-extracted deck: the .pdf.txt is written, the .pdf dropped.
+    pdf = tmp_path / "slides.pdf"
+    pdf.write_bytes(MINIMAL_PDF)
+    written = extract_all_pdfs(str(tmp_path), suppress_pdf=True)
+    txt = tmp_path / "slides.pdf.txt"
+    assert txt.exists()
+    assert "Hello AIPREF" in txt.read_text()
+    assert not pdf.exists()
+    assert str(txt) in written
+
+
+def test_suppress_pdf_sweeps_preexisting_pdf(tmp_path: Path) -> None:
+    # A cache gathered before this change: the .pdf.txt is already up to
+    # date so _needs_extraction skips re-extraction — the sweep still
+    # removes the now-dead .pdf.
+    pdf = tmp_path / "slides.pdf"
+    pdf.write_bytes(MINIMAL_PDF)
+    extract_all_pdfs(str(tmp_path))  # non-suppressed: keeps the .pdf
+    assert pdf.exists()
+    extract_all_pdfs(str(tmp_path), suppress_pdf=True)
+    assert not pdf.exists()
+    assert (tmp_path / "slides.pdf.txt").exists()
+
+
+def test_suppress_pdf_drops_unextractable_source(tmp_path: Path) -> None:
+    # An image-only / unextractable deck still gets a stub .txt, and its
+    # .pdf is dropped when suppressing.
+    pdf = tmp_path / "bad.pdf"
+    pdf.write_bytes(b"\x00\x01 not a pdf")
+    extract_all_pdfs(str(tmp_path), suppress_pdf=True)
+    assert (tmp_path / "bad.pdf.txt").exists()
+    assert not pdf.exists()
+
+
+def test_no_suppress_keeps_pdf(tmp_path: Path) -> None:
+    # Default (no suppression): the .pdf is kept alongside the .txt.
+    pdf = tmp_path / "slides.pdf"
+    pdf.write_bytes(MINIMAL_PDF)
+    extract_all_pdfs(str(tmp_path))
+    assert pdf.exists()
+    assert (tmp_path / "slides.pdf.txt").exists()
+
+
 def test_extract_all_pdfs_skips_when_txt_is_newer(tmp_path: Path) -> None:
     pdf = tmp_path / "slides.pdf"
     pdf.write_bytes(MINIMAL_PDF)

@@ -22,6 +22,7 @@ import sys
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import __version__, canonical, cli_list, config, http_metrics, paths
+from . import service_config
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index
@@ -41,7 +42,7 @@ from .gather.drafts import (
     validate_draft_names,
 )
 from .gather.github import (
-    download_github_issues,
+    download_github_archives,
     process_github_issues,
     validate_github_repos,
 )
@@ -308,6 +309,20 @@ def build_parser() -> argparse.ArgumentParser:
         "per-chunk column.",
     )
     parser.add_argument(
+        "--no-raw",
+        action="store_true",
+        help="Don't write the regenerable raw/ text dumps (merged "
+        "mail-archive-<year>.txt and github-<repo>.txt) — never indexed or "
+        "read by a tool. Auto-enabled for MCP gathers and the cloud backend.",
+    )
+    parser.add_argument(
+        "--no-pdf",
+        action="store_true",
+        help="Don't keep slide-deck .pdf sources: still extract each "
+        "deck's .pdf.txt (the served, indexed content), then drop the .pdf. "
+        "Auto-enabled for MCP gathers and the cloud backend; local keeps them.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-gather even if the corpus is within the freshness window "
@@ -473,29 +488,6 @@ def _resolve_corpus_shape(
             )
             return None
     return (False, False)  # custom / list corpus
-
-
-def _download_github_archives(
-    repos: "Optional[List[str]]", cache_dir: str, verbosity: Verbosity
-) -> "List[tuple[str, str]]":
-    """Download each configured repo's issue archive JSON. Returns
-    `[(json_path, raw_txt_path)]` for the ones that downloaded, deferred
-    so the .txt is rendered after the registry exists (canonical names).
-    """
-    pending: List[tuple[str, str]] = []
-    if not repos:
-        return pending
-    os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
-    os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
-    for repo_short in repos:
-        if repo_short.startswith(("http://", "https://")):
-            # URL form — the last two path segments are "<owner>/<repo>".
-            repo_short = "/".join(repo_short.rstrip("/").split("/")[-2:])
-        gh_json = paths.github_archive_path(cache_dir, repo_short)
-        gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
-        if download_github_issues(repo_short, gh_json, verbose=verbosity):
-            pending.append((gh_json, gh_txt))
-    return pending
 
 
 def _present_draft_names(cache_dir: str) -> "set[str]":
@@ -677,6 +669,12 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     stage begins (see `_stage_plan`).
     """
     http_metrics.reset()  # fresh per-corpus egress accounting; see `http_metrics`
+
+    # Suppress regenerable / non-served bulk when the CLI flag (always set by
+    # an MCP gather via to_argv) OR a cloud backend asks for it (a cloud-served
+    # version is never grepped locally). Computed once, threaded as a boolean.
+    on_cloud = service_config.store_backend() == "cloud"
+    suppress_pdf = bool(args.no_pdf) or on_cloud
 
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
@@ -860,14 +858,14 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # them up — slides become searchable content rather than invisible
     # binaries.
     tracker.begin("pdf text")
-    extract_all_pdfs(cache_dir, verbose=verbosity)
+    extract_all_pdfs(cache_dir, verbose=verbosity, suppress_pdf=suppress_pdf)
 
     # GitHub issues — download the raw JSON archives first, but defer
     # rendering the .txt files until after the registry is built so the
     # Author / Comment-by lines can use canonical names.
     if args.github:
         tracker.begin("github archives")
-    gh_pending = _download_github_archives(args.github, cache_dir, verbosity)
+    gh_pending = download_github_archives(args.github, cache_dir, verbosity)
 
     # Identity registry — consolidates mail/GitHub/Datatracker/draft
     # surface forms into canonical actors. Built BEFORE the github .txt

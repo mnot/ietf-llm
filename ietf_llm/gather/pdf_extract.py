@@ -233,19 +233,28 @@ def extract_pdf_text(pdf_path: str) -> str:
 
 
 def extract_all_pdfs(
-    cache_dir: str, verbose: Verbosity = Verbosity.STATUS
+    cache_dir: str,
+    verbose: Verbosity = Verbosity.STATUS,
+    suppress_pdf: bool = False,
 ) -> List[str]:
     """Walk the cache (recursively), extract every PDF that needs it.
 
     Idempotent: re-runs only touch PDFs whose .txt is missing or stale.
     Walks recursively because slide PDFs now live under
     `meetings/<code>/slides/`, not flat at the top of the cache.
+
+    When `suppress_pdf` is set the served version stays lean: the sibling
+    .pdf.txt is still written (it's the indexed content), but the source
+    .pdf is dropped — both for a freshly-extracted deck and for any
+    pre-existing .pdf whose .pdf.txt is already present (a cache gathered
+    before this change, which `_needs_extraction` would otherwise skip).
     """
     if not os.path.isdir(cache_dir):
         return []
     written: List[str] = []
     skipped_empty = 0
     failed = 0
+    swept = 0
     for dirpath, _dirnames, filenames in os.walk(cache_dir):
         for name in sorted(filenames):
             if not name.lower().endswith(".pdf"):
@@ -256,6 +265,12 @@ def extract_all_pdfs(
                 continue
             txt_path = _output_path(pdf_path)
             if not _needs_extraction(pdf_path, txt_path):
+                # Already extracted. When suppressing, sweep the now-dead
+                # source .pdf that an earlier (non-suppressed) gather left
+                # behind — the .txt is up to date so no re-extraction is lost.
+                if suppress_pdf:
+                    _remove_if_exists(pdf_path)
+                    swept += 1
                 continue
 
             # One malformed deck must not abort the whole gather. Any
@@ -267,6 +282,11 @@ def extract_all_pdfs(
                 if _extract_one(pdf_path, relpath, txt_path, cache_dir):
                     skipped_empty += 1
                 written.append(txt_path)
+                # The .pdf.txt is now written; drop the source .pdf so it
+                # never enters the served version.
+                if suppress_pdf:
+                    _remove_if_exists(pdf_path)
+                    swept += 1
             except Exception as exc:  # pylint: disable=broad-except
                 failed += 1
                 # A failed write may have left a truncated/empty .txt;
@@ -280,10 +300,12 @@ def extract_all_pdfs(
                     level=LogLevel.STATUS,
                 )
 
-    if written or failed:
+    if written or failed or swept:
+        sweep_note = f", {swept} .pdf dropped" if suppress_pdf else ""
         log(
             f"PDF extraction: {len(written)} files "
-            f"({skipped_empty} with no extractable text, {failed} failed)",
+            f"({skipped_empty} with no extractable text, {failed} failed"
+            f"{sweep_note})",
             verbose,
             level=LogLevel.STATUS,
         )

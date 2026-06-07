@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
+from .. import paths
 from ..utils import (
     DEFAULT_HEADERS,
     LogLevel,
@@ -313,6 +314,29 @@ def download_github_issues(
     except (requests.RequestException, OSError) as err:
         log(f"Error fetching GitHub issues: {err}", verbose, level=LogLevel.ERROR)
         return False
+
+
+def download_github_archives(
+    repos: "Optional[List[str]]", cache_dir: str, verbosity: Verbosity
+) -> "List[tuple[str, str]]":
+    """Download each configured repo's issue archive JSON. Returns
+    `[(json_path, raw_txt_path)]` for the ones that downloaded, deferred
+    so the .txt is rendered after the registry exists (canonical names).
+    """
+    pending: List[tuple[str, str]] = []
+    if not repos:
+        return pending
+    os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
+    os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
+    for repo_short in repos:
+        if repo_short.startswith(("http://", "https://")):
+            # URL form — the last two path segments are "<owner>/<repo>".
+            repo_short = "/".join(repo_short.rstrip("/").split("/")[-2:])
+        gh_json = paths.github_archive_path(cache_dir, repo_short)
+        gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
+        if download_github_issues(repo_short, gh_json, verbose=verbosity):
+            pending.append((gh_json, gh_txt))
+    return pending
 
 
 def _fetch_all_issues(

@@ -25,6 +25,17 @@ from ietf_llm.gather_stages import stage_plan
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
 
+# --- to_argv suppression flags --------------------------------------------
+
+
+def test_to_argv_always_suppresses_raw_and_pdf() -> None:
+    # An MCP gather is the only caller of to_argv; it never wants the local
+    # grep/NotebookLM dumps or the slide .pdf sources.
+    argv = gather_runner.GatherSpec(corpus="httpbis").to_argv()
+    assert "--no-raw" in argv
+    assert "--no-pdf" in argv
+
+
 # --- writer-side drift guard ----------------------------------------------
 
 
@@ -45,7 +56,7 @@ def _stub_pipeline(
     ):
         monkeypatch.setattr(main_mod, name, lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "process_meetings", lambda *a, **k: [])
-    monkeypatch.setattr(main_mod, "_download_github_archives", lambda *a, **k: [])
+    monkeypatch.setattr(main_mod, "download_github_archives", lambda *a, **k: [])
     monkeypatch.setattr(main_mod, "build_registry", lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "scan_citations", lambda *a, **k: {})
     monkeypatch.setattr(main_mod, "validate_draft_names", lambda names, v: list(names))
@@ -113,6 +124,56 @@ def test_emitted_stages_match_plan_custom_with_sources(
     assert "github archives" in emitted and "github issues" in emitted
     assert "drafts" in emitted
     assert "embedding index" not in emitted
+
+
+# --- suppression threading: flags + cloud auto-trip -----------------------
+
+
+def _capture_suppress_pdf(
+    monkeypatch: pytest.MonkeyPatch, shape: Tuple[bool, bool]
+) -> dict:
+    """Stub the pipeline and capture the suppress_pdf boolean extract_all_pdfs
+    receives, so we can assert the flag/cloud plumbing."""
+    _stub_pipeline(monkeypatch, shape)
+    seen: dict = {}
+
+    def grab_pdf(*_a: Any, **k: Any) -> list:
+        seen["pdf"] = k.get("suppress_pdf")
+        return []
+
+    monkeypatch.setattr(main_mod, "extract_all_pdfs", grab_pdf)
+    return seen
+
+
+def test_suppress_pdf_off_by_default_local(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "local")
+    seen = _capture_suppress_pdf(monkeypatch, (False, True))
+    args = main_mod.build_parser().parse_args(["myorg"])
+    main_mod._gather_one(args, Verbosity.QUIET)
+    assert seen == {"pdf": False}
+
+
+def test_suppress_pdf_follows_cli_flag(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "local")
+    seen = _capture_suppress_pdf(monkeypatch, (False, True))
+    args = main_mod.build_parser().parse_args(["myorg", "--no-pdf"])
+    main_mod._gather_one(args, Verbosity.QUIET)
+    assert seen == {"pdf": True}
+
+
+def test_cloud_backend_trips_pdf_without_flag(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A CLI gather against a cloud backend suppresses even with no flags.
+    monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "cloud")
+    seen = _capture_suppress_pdf(monkeypatch, (False, True))
+    args = main_mod.build_parser().parse_args(["myorg"])
+    main_mod._gather_one(args, Verbosity.QUIET)
+    assert seen == {"pdf": True}
 
 
 def test_gather_one_returns_false_on_unusable_name(
