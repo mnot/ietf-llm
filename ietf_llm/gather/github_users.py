@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -54,6 +55,7 @@ from ..utils import (
     governed_get,
     log,
 )
+from . import identity_cache
 
 _CACHE_FILENAME = "_github-users.json"
 _USER_API = "https://api.github.com/users/"
@@ -147,9 +149,11 @@ def resolve_logins(
                 company=outcome.company,
             )
     if n_requested:
-        # Persist whatever we learned. Best-effort: a write failure
-        # just means next run repeats the requests.
-        _save_cache(cache)
+        # Persist whatever we learned. Merge under a lock against the current
+        # on-disk file so a concurrent same-process gather's additions are not
+        # clobbered (load-modify-save would race; issue #82 review). Best-effort:
+        # a write failure just means next run repeats the requests.
+        _merge_save(cache)
         log(
             f"GitHub user lookups: {n_requested} requested, "
             f"{len(cache)} now cached" + (" (rate limited)" if rate_limited else ""),
@@ -243,6 +247,35 @@ def _cache_path() -> str:
     return os.path.join(get_cache_dir(), _CACHE_FILENAME)
 
 
+def cache_path() -> str:
+    """Public alias of the cache-file path, for the cloud gather-cache sync
+    (`gather.cache_sync`), which round-trips this shared identity map to durable
+    storage across a scale-to-zero wipe (issue #82)."""
+    return _cache_path()
+
+
+def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two `login -> {name, company, fetched_at}` maps losslessly.
+
+    The map is append-mostly and corpus-independent, so a concurrent fleet
+    gather may have added logins to `remote` that this gather's `local` lacks,
+    and vice versa. Union both; on a login both hold, keep the newer `fetched_at`
+    (a later lookup may have filled in a previously-null name). Entries are only
+    kept when they are dicts, mirroring `_load_cache`'s validation."""
+    merged: Dict[str, Any] = {
+        login: entry for login, entry in remote.items() if isinstance(entry, dict)
+    }
+    for login, entry in local.items():
+        if not isinstance(entry, dict):
+            continue
+        current = merged.get(login)
+        if current is None or str(entry.get("fetched_at", "")) >= str(
+            current.get("fetched_at", "")
+        ):
+            merged[login] = entry
+    return merged
+
+
 def _load_cache() -> Dict[str, Dict[str, Any]]:
     """Parse the cache file. Returns empty dict on any read / parse
     error — we'd rather refetch than block on stale state."""
@@ -258,18 +291,18 @@ def _load_cache() -> Dict[str, Dict[str, Any]]:
 
 
 def _save_cache(cache: Dict[str, Dict[str, Any]]) -> None:
-    """Write the cache. Atomic-rename pattern so a crash mid-write
-    can't corrupt the file."""
-    path = _cache_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(cache, fh, indent=2, sort_keys=True)
-        os.replace(tmp, path)
-    except OSError:
-        # Best-effort. Next run repeats the work.
-        pass
+    identity_cache.save(_cache_path(), cache)
+
+
+#: Serialises the reload-merge-save so the runner's concurrent same-process
+#: gathers don't clobber each other's local additions.
+_CACHE_LOCK = threading.Lock()
+
+
+def _merge_save(cache: Dict[str, Dict[str, Any]]) -> None:
+    identity_cache.merge_save(
+        _CACHE_LOCK, _cache_path(), _load_cache, merge_cache, cache
+    )
 
 
 def _now_iso() -> str:

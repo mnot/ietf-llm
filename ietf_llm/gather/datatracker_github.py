@@ -37,11 +37,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ..utils import LogLevel, Verbosity, get_cache_dir, log
+from . import identity_cache
 from .datatracker import _get_json
 
 _CACHE_FILENAME = "_datatracker-github.json"
@@ -124,7 +126,7 @@ def resolve_via_datatracker(
             out[login] = resolved
 
     if dirty:
-        _save_cache(cache)
+        _merge_save(cache)
     if n_requested:
         log(
             f"Datatracker github_username lookups: {n_requested} resolved",
@@ -171,7 +173,7 @@ def _ensure_index(
 
     cache[_INDEX_KEY] = index
     cache[_INDEX_STAMP_KEY] = _now_iso()
-    _save_cache(cache)
+    _merge_save(cache)
     log(
         f"Built Datatracker github_username index: {len(index)} logins",
         verbose,
@@ -213,6 +215,44 @@ def _cache_path() -> str:
     return os.path.join(get_cache_dir(), _CACHE_FILENAME)
 
 
+def cache_path() -> str:
+    """Public alias of the cache-file path, for the cloud gather-cache sync
+    (`gather.cache_sync`), which round-trips this shared identity map to durable
+    storage across a scale-to-zero wipe (issue #82)."""
+    return _cache_path()
+
+
+def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two caches losslessly. The map holds the global `github_username`
+    index (`_index` + `_index_fetched_at`) plus per-login entries (`{name,
+    emails, fetched_at}`, or `None` for "confirmed not on Datatracker").
+
+    Keep the index with the newer stamp (it is rebuilt wholesale, so last-built
+    wins rather than merged). Union the per-login entries; on a login both hold,
+    keep the newer `fetched_at` — a real resolution (which carries a stamp) thus
+    beats a bare `None` miss. Concurrent fleet gathers each add disjoint logins,
+    so the union is what makes the round-trip lossless."""
+    merged: Dict[str, Any] = {}
+    if str(remote.get(_INDEX_STAMP_KEY, "")) >= str(local.get(_INDEX_STAMP_KEY, "")):
+        index_src = remote
+    else:
+        index_src = local
+    if _INDEX_KEY in index_src:
+        merged[_INDEX_KEY] = index_src[_INDEX_KEY]
+    if _INDEX_STAMP_KEY in index_src:
+        merged[_INDEX_STAMP_KEY] = index_src[_INDEX_STAMP_KEY]
+
+    def _stamp(entry: Any) -> str:
+        return str(entry.get("fetched_at", "")) if isinstance(entry, dict) else ""
+
+    for key, entry in list(remote.items()) + list(local.items()):
+        if key in (_INDEX_KEY, _INDEX_STAMP_KEY):
+            continue
+        if key not in merged or _stamp(entry) >= _stamp(merged[key]):
+            merged[key] = entry
+    return merged
+
+
 def _load_cache() -> Dict[str, Any]:
     path = _cache_path()
     try:
@@ -224,15 +264,18 @@ def _load_cache() -> Dict[str, Any]:
 
 
 def _save_cache(cache: Dict[str, Any]) -> None:
-    path = _cache_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(cache, fh, indent=2, sort_keys=True)
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    identity_cache.save(_cache_path(), cache)
+
+
+#: Serialises the reload-merge-save so the runner's concurrent same-process
+#: gathers don't clobber each other's local additions (index or per-login).
+_CACHE_LOCK = threading.Lock()
+
+
+def _merge_save(cache: Dict[str, Any]) -> None:
+    identity_cache.merge_save(
+        _CACHE_LOCK, _cache_path(), _load_cache, merge_cache, cache
+    )
 
 
 def _now_iso() -> str:

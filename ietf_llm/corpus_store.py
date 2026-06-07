@@ -207,6 +207,23 @@ class CorpusStore(ABC):
         reads the published version; it never publishes."""
         return None
 
+    # --- gather accelerator caches (default: persistent local disk) -------
+
+    def hydrate_gather_caches(self, corpus: str) -> None:
+        """Pull the gather accelerator caches (the datatracker ETag store, the
+        GitHub/datatracker identity maps, and the effort catalog) into the local
+        cache dir before a gather of `corpus`, so an ephemeral host revalidates
+        instead of re-hitting rate-limited upstreams to rebuild them (issue #82).
+
+        Default no-op: the local backend keeps these caches on persistent disk
+        under `get_cache_dir()`, so there is nothing to fetch. The cloud backend
+        overrides this to restore them from durable object storage."""
+
+    def persist_gather_caches(self, corpus: str) -> None:
+        """Push the gather accelerator caches back to durable storage after a
+        gather of `corpus`. Default no-op (local backend); the cloud backend
+        overrides it. Best-effort — a failure must never fail the gather."""
+
     # --- write-side gather lease (default: no-op single writer) -----------
 
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:

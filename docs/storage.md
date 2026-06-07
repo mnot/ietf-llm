@@ -157,6 +157,54 @@ environment-only. Object-store credentials are environment-only (the AWS chain).
 validates all of this at boot and refuses to start if `cloud` is under-configured — see
 [mcp-server.md](mcp-server.md#boot-time-config-validation).
 
+### Gather accelerator caches
+
+Alongside the control plane the same bucket holds the **gather accelerator caches** — not control
+state, but mutable shared data that, left only on ephemeral local scratch, would be wiped on
+scale-to-zero and rebuilt by re-hitting rate-limited upstreams (datatracker, GitHub REST). The cloud
+backend round-trips them through the `KvStore` (`gather.cache_sync`): each is hydrated into local
+scratch before a gather and persisted after. Each is scoped to the unit that already guarantees a
+single writer, so the write-conflict policy falls out:
+
+- `corpora/<name>/gather-cache/http-cache.json` — the datatracker conditional-GET/ETag store, **sharded
+  per corpus**. The per-corpus gather lease already serialises writers, so it is a plain
+  read-modify-write (no CAS, and no lost delta from a shared blob).
+- `fleet/gather-cache/github-users.json`, `fleet/gather-cache/datatracker-github.json` — the
+  corpus-independent GitHub/datatracker identity maps, **shared** at the fleet prefix. Two
+  different-corpus gathers can run at once, so persist does a bounded compare-and-swap *merge*
+  (lossless; the maps are append-mostly so contention is rare). `fleet/`-prefixed, like `fleet/slots`.
+- `fleet/catalog/…` — the `find_efforts` effort catalog (the Datatracker group collection — the same
+  rate-limited upstream as the ETag store). A **shared fleet singleton**, a directory of a few files
+  (raw source slices + the derived `catalog.json`, each with its `.etag` sidecar) stored one key per
+  file. Mirrored once per gather; every gather writes identical content, so **last-writer-wins** — no
+  CAS, no merge. The restored `.etag` sidecars let the next gather revalidate (304) rather than
+  re-fetch.
+
+The sync is best-effort — a failure just means a cold rebuild, never a failed gather. The large caches
+stay ephemeral: `imap-cache/` is genuinely per-corpus (and gathered mail is published as version
+content), and `_rfc/` is deferred — it mirrors a CDN, not a rate-limited API, so re-fetching it costs
+bandwidth, not API quota (`_catalog/` is the same shape but hits a *rate-limited* API, hence included).
+(Issue #82.)
+
+At a glance — the local path a gather reads/writes, the cloud key it round-trips to, and the policy;
+plus what stays ephemeral:
+
+| Local (gather scratch) | Cloud key | Policy |
+|---|---|---|
+| `.http-cache/<corpus>.json` | `corpora/<name>/gather-cache/http-cache.json` | per-corpus; lease-serialised RMW |
+| `_github-users.json` | `fleet/gather-cache/github-users.json` | shared; bounded CAS-merge |
+| `_datatracker-github.json` | `fleet/gather-cache/datatracker-github.json` | shared; bounded CAS-merge |
+| `_catalog/` (`*.json` + `.etag`) | `fleet/catalog/…` (one key per file) | shared singleton; last-writer-wins |
+| `_rfc/` | *(not synced)* | deferred — CDN mirror, costs bandwidth not API quota |
+| `imap-cache/<wg>/…` | *(not synced)* | per-corpus; gathered mail published as version content |
+
+The paths differ but the **granularity matches** on both backends: the ETag store is per-corpus either
+way (a bound gather writes `.http-cache/<corpus>.json` — distinct from the unbound process-default
+`.http-cache.json` — mirroring the per-corpus cloud key), and the fleet singletons are one shared
+instance either way. The divergence is naming, not structure — so there is nothing to migrate: an
+existing local cache keeps working untouched (the sync is a cloud-backend no-op on local), and a fresh
+cloud deployment simply populates the keys on its first gather.
+
 ### Publish visibility
 
 A new version is visible to a replica within `IETF_LLM_RESOLVE_TTL` seconds of a publish (the

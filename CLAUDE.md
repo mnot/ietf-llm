@@ -84,6 +84,15 @@ the hard way.
   one `S3Bucket`. Per-corpus control lives under `corpora/<name>/{pointer,lease,
   status}`, content (and its manifest) under `corpora/<name>/versions/<version>/`,
   and the one cross-corpora key — the gather-slot semaphore — at `fleet/slots`.
+  The same bucket also holds the **gather accelerator caches** (`gather/cache_sync.py`),
+  hydrated before a gather and persisted after so an ephemeral host doesn't re-hit
+  rate-limited upstreams: `.http-cache.json` sharded per corpus at
+  `corpora/<name>/gather-cache/` (lease-serialised, plain RMW), the shared
+  GitHub/datatracker identity maps at `fleet/gather-cache/` (CAS-merge), and the
+  effort catalog (`_catalog/`) at `fleet/catalog/` (a shared fleet singleton, one
+  key per file, last-writer-wins). These are gather-only (the read path never
+  touches them) and best-effort. `_rfc/` is deferred (non-rate-limited CDN
+  mirror). See issue #82.
   publish is the explicit write→read handoff (a compare-and-swap pointer flip),
   and the gather lease is cross-host. So on the cloud backend the reader-side vs
   write-side line above is mediated by *publish*: a re-gather is not visible to
