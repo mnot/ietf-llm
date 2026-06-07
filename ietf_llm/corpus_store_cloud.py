@@ -428,14 +428,13 @@ class CloudCorpusStore(CorpusStore):
         superseded has an ancient id but its predecessor is the one a stale
         replica might still read, so the rule is `current + next-newest`, never
         `anything newer than X`."""
+        versions = self._list_versions(corpus)
         keep = {current_version}
         # Next-newest first; current may or may not be the lexically-highest
         # (it usually is), so exclude it before taking the previous ones.
-        others = [
-            v for v in reversed(self._list_versions(corpus)) if v != current_version
-        ]
+        others = [v for v in reversed(versions) if v != current_version]
         keep.update(others[: max(0, self._retain_versions - 1)])
-        for version in self._list_versions(corpus):
+        for version in versions:
             if version in keep:
                 continue
             self._blobs.delete_prefix(_content_prefix(corpus, version))
