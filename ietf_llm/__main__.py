@@ -675,6 +675,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # version is never grepped locally). Computed once, threaded as a boolean.
     on_cloud = service_config.store_backend() == "cloud"
     suppress_pdf = bool(args.no_pdf) or on_cloud
+    suppress_raw = bool(args.no_raw) or on_cloud
 
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
@@ -816,6 +817,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         auto_discover=group_backed,
         verbose=verbosity,
         on_progress=_mail_progress,
+        suppress_raw=suppress_raw,
     )
 
     if group_backed:
@@ -865,7 +867,9 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # Author / Comment-by lines can use canonical names.
     if args.github:
         tracker.begin("github archives")
-    gh_pending = download_github_archives(args.github, cache_dir, verbosity)
+    gh_pending = download_github_archives(
+        args.github, cache_dir, verbosity, suppress_raw=suppress_raw
+    )
 
     # Identity registry — consolidates mail/GitHub/Datatracker/draft
     # surface forms into canonical actors. Built BEFORE the github .txt

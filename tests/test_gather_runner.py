@@ -36,6 +36,57 @@ def test_to_argv_always_suppresses_raw_and_pdf() -> None:
     assert "--no-pdf" in argv
 
 
+# --- github raw/ suppression (#92) ----------------------------------------
+
+
+def _stub_github_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub download_github_issues to "write" the JSON archive and report
+    success, so download_github_archives reaches its raw/.txt decision."""
+    from ietf_llm.gather import github
+
+    def fake_download(repo: str, json_path: str, verbose: Any = None) -> bool:
+        with open(json_path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        return True
+
+    monkeypatch.setattr(github, "download_github_issues", fake_download)
+
+
+def test_download_github_archives_writes_raw_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import paths
+    from ietf_llm.gather.github import download_github_archives
+
+    _stub_github_download(monkeypatch)
+    cache = str(tmp_path)
+    pending = download_github_archives(["o/r"], cache, Verbosity.QUIET)
+    # The JSON archive is always written; the raw .txt is deferred (rendered
+    # later) so it appears in the pending list.
+    assert os.path.exists(paths.github_archive_path(cache, "o/r"))
+    assert pending == [
+        (paths.github_archive_path(cache, "o/r"), paths.raw_github_text_path(cache, "o/r"))
+    ]
+
+
+def test_download_github_archives_suppress_raw_keeps_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import paths
+    from ietf_llm.gather.github import download_github_archives
+
+    _stub_github_download(monkeypatch)
+    cache = str(tmp_path)
+    pending = download_github_archives(
+        ["o/r"], cache, Verbosity.QUIET, suppress_raw=True
+    )
+    # github/<repo>.json (used by the issues digest) still written; the
+    # raw/ text dump is neither created nor queued for rendering.
+    assert os.path.exists(paths.github_archive_path(cache, "o/r"))
+    assert pending == []
+    assert not os.path.exists(paths.raw_dir(cache))
+
+
 # --- writer-side drift guard ----------------------------------------------
 
 
@@ -129,11 +180,12 @@ def test_emitted_stages_match_plan_custom_with_sources(
 # --- suppression threading: flags + cloud auto-trip -----------------------
 
 
-def _capture_suppress_pdf(
+def _capture_suppress(
     monkeypatch: pytest.MonkeyPatch, shape: Tuple[bool, bool]
 ) -> dict:
-    """Stub the pipeline and capture the suppress_pdf boolean extract_all_pdfs
-    receives, so we can assert the flag/cloud plumbing."""
+    """Stub the pipeline and capture the suppress_* booleans the leaf
+    writers receive (extract_all_pdfs / sync_mailing_list), so we can
+    assert the flag/cloud plumbing for both dimensions."""
     _stub_pipeline(monkeypatch, shape)
     seen: dict = {}
 
@@ -141,39 +193,44 @@ def _capture_suppress_pdf(
         seen["pdf"] = k.get("suppress_pdf")
         return []
 
+    def grab_mail(*_a: Any, **k: Any) -> list:
+        seen["raw"] = k.get("suppress_raw")
+        return []
+
     monkeypatch.setattr(main_mod, "extract_all_pdfs", grab_pdf)
+    monkeypatch.setattr(main_mod, "sync_mailing_list", grab_mail)
     return seen
 
 
-def test_suppress_pdf_off_by_default_local(
+def test_suppress_off_by_default_local(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "local")
-    seen = _capture_suppress_pdf(monkeypatch, (False, True))
+    seen = _capture_suppress(monkeypatch, (False, True))
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)
-    assert seen == {"pdf": False}
+    assert seen == {"pdf": False, "raw": False}
 
 
-def test_suppress_pdf_follows_cli_flag(
+def test_suppress_follows_cli_flags(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "local")
-    seen = _capture_suppress_pdf(monkeypatch, (False, True))
-    args = main_mod.build_parser().parse_args(["myorg", "--no-pdf"])
+    seen = _capture_suppress(monkeypatch, (False, True))
+    args = main_mod.build_parser().parse_args(["myorg", "--no-raw", "--no-pdf"])
     main_mod._gather_one(args, Verbosity.QUIET)
-    assert seen == {"pdf": True}
+    assert seen == {"pdf": True, "raw": True}
 
 
-def test_cloud_backend_trips_pdf_without_flag(
+def test_cloud_backend_trips_both_without_flags(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A CLI gather against a cloud backend suppresses even with no flags.
     monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "cloud")
-    seen = _capture_suppress_pdf(monkeypatch, (False, True))
+    seen = _capture_suppress(monkeypatch, (False, True))
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)
-    assert seen == {"pdf": True}
+    assert seen == {"pdf": True, "raw": True}
 
 
 def test_gather_one_returns_false_on_unusable_name(
