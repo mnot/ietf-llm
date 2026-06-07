@@ -51,6 +51,31 @@ def test_materialise_prefix(s3_bucket: None, tmp_path: Path) -> None:
     assert (dest / "group.md").read_bytes() == b"grp"
 
 
+def test_delete_prefix(s3_bucket: None) -> None:
+    store = S3BlobStore("s3://test-bucket/base")
+    store.put("tls/v1/a.md", b"1")
+    store.put("tls/v1/sub/b.md", b"2")
+    store.put("tls/v2/c.md", b"3")
+    store.delete_prefix("tls/v1/")
+    assert store.list_prefix("tls/v1") == []
+    assert store.exists("tls/v1/a.md") is False
+    assert store.exists("tls/v2/c.md") is True
+
+
+def test_delete_prefix_batches_over_1000_keys(s3_bucket: None) -> None:
+    # More than one DeleteObjects page (cap is 1000/call); all must go.
+    store = S3BlobStore("s3://test-bucket/base")
+    for i in range(1050):
+        store.put(f"tls/v1/f{i:04d}.md", b"x")
+    store.delete_prefix("tls/v1/")
+    assert store.list_prefix("tls/v1") == []
+
+
+def test_delete_prefix_absent_is_noop(s3_bucket: None) -> None:
+    store = S3BlobStore("s3://test-bucket/base")
+    store.delete_prefix("tls/ghost/")
+
+
 def test_no_prefix_locator(s3_bucket: None) -> None:
     store = S3BlobStore("s3://test-bucket")
     store.put("k.md", b"v")

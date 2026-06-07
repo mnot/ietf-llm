@@ -14,7 +14,8 @@ features. See `docs/storage.md`.
 from __future__ import annotations
 
 import os
-from typing import List, Union, cast
+from functools import partial
+from typing import Dict, List, Union, cast
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
@@ -88,3 +89,18 @@ class S3BlobStore(BlobStore):
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as handle:
                 handle.write(self.get(key))
+
+    def delete_prefix(self, prefix: str) -> None:
+        bkt = self._b
+        keys = self.list_prefix(prefix)
+
+        def _delete(objects: List[Dict[str, str]]) -> None:
+            self._s3.delete_objects(
+                Bucket=bkt.bucket, Delete={"Objects": objects, "Quiet": True}
+            )
+
+        # S3 DeleteObjects takes at most 1000 keys per request; a version is a
+        # whole corpus copy, so chunk. `Quiet` suppresses the per-key result list.
+        for start in range(0, len(keys), 1000):
+            batch = [{"Key": bkt.key(k)} for k in keys[start : start + 1000]]
+            bkt.call("delete objects", partial(_delete, batch))

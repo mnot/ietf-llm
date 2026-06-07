@@ -134,9 +134,17 @@ grant the equivalent read/write/list rights — the operations are the same.)
 and reaps superseded versions automatically. Size it for roughly **2× the versions you actively read
 per corpus**. **On tmpfs, scratch is RAM** — size the pod accordingly.
 
-**A bucket lifecycle rule.** Superseded *version blobs* are not reaped by the replica (only local
-scratch is). Set a lifecycle rule to retain the current version plus a grace window and expire older
-ones, so object-store cost stays bounded.
+**No bucket lifecycle rule needed.** Superseded *version blobs* are reaped by the application: each
+publish, after the pointer flip, deletes older versions in the object store, keeping the current
+version plus the immediately-previous one (`IETF_LLM_RETAIN_VERSIONS`, default `2`) and sweeping up any
+failed-publish orphan prefix at the same time. So object-store cost is bounded without an age-based
+lifecycle rule — which would be unsafe here anyway (age-based, not reference-based, it can expire the
+current version's blobs out from under readers if a corpus goes a long time without a re-gather).
+Keeping the *previous* version is what preserves the never-torn-read guarantee: a replica re-resolves
+the pointer every `IETF_LLM_RESOLVE_TTL` (≤10s) while publishes are hours apart, so it is at most one
+version behind, and the version it still believes is current must outlive the publish that superseded
+it. Raise `IETF_LLM_RETAIN_VERSIONS` for more headroom (e.g. forced back-to-back re-gathers); the floor
+is `1`.
 
 ### Configuration
 
@@ -147,12 +155,13 @@ ones, so object-store cost stays bounded.
 | `IETF_LLM_STORE_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | non-AWS |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 | `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
+| `IETF_LLM_RETAIN_VERSIONS` | published versions a publish keeps before reaping older blobs (default `2`, floor `1`) | — |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently — per host and fleet-wide (default `3`) | — |
 | `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per host — non-datatracker (default `6`) | — |
 | `IETF_LLM_HTTP_MAX_DATATRACKER` | max gather HTTP requests in flight to datatracker (default `2`) | — |
 
 The non-secret store knobs may instead go in the global `config.json` (`store_backend`, `store_url`,
-`scratch_dir`, `resolve_ttl`); the environment wins. The two `IETF_LLM_HTTP_MAX_*` caps are
+`scratch_dir`, `resolve_ttl`, `retain_versions`); the environment wins. The two `IETF_LLM_HTTP_MAX_*` caps are
 environment-only. Object-store credentials are environment-only (the AWS chain). The HTTP serve path
 validates all of this at boot and refuses to start if `cloud` is under-configured — see
 [mcp-server.md](mcp-server.md#boot-time-config-validation).

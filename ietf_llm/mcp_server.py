@@ -69,7 +69,7 @@ from . import (
 )
 from .catalog import render_efforts
 from .corpus import describe, kind_status
-from .corpus_store import get_corpus_store, pin_corpus_version
+from .corpus_store import VersionVanished, get_corpus_store, pin_corpus_version
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -213,7 +213,14 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
     Also resolves the corpus's current version **once** and pins it for the
     whole tool call, so every read in the request (files and the search index)
     stays on one version even if a publish lands mid-call (G-1). No-op pin on
-    the single-version local backend."""
+    the single-version local backend.
+
+    If a concurrent re-gather reaps the pinned version mid-call (only possible on
+    the cloud backend, and only when two publishes land during a single call — a
+    correctness backstop, not a hot path), the read raises `VersionVanished`; we
+    re-run the whole call once on a fresh pin of the now-current version. The pin
+    lasts only one call, so this is just 're-resolve and retry'. If the retry
+    also can't get a good version, surface the actionable message instead."""
 
     @functools.wraps(fn)
     def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
@@ -224,8 +231,19 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
                 f"run `ietf-llm {wg}` to gather it, or call `list_corpora` to "
                 "see what is available."
             )
-        with pin_corpus_version(wg, version):
-            return fn(wg, *args, **kwargs)
+        try:
+            with pin_corpus_version(wg, version):
+                return fn(wg, *args, **kwargs)
+        except VersionVanished as vanished:
+            try:
+                with pin_corpus_version(wg, vanished.new_version):
+                    return fn(wg, *args, **kwargs)
+            except VersionVanished:
+                return (
+                    f"Corpus '{wg}' was re-gathered while this request ran and "
+                    "the version being read was retired before a new one settled. "
+                    "Re-run the request."
+                )
 
     return wrapper
 

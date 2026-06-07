@@ -30,10 +30,15 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .corpus_blobs import BlobStore
-from .corpus_store import CorpusStore, pinned_version, pinned_versions_in_use
+from .corpus_store import (
+    CorpusStore,
+    VersionVanished,
+    pinned_version,
+    pinned_versions_in_use,
+)
 from .kv_control import KvControlPlane
 from .utils import get_index_dir
 
@@ -67,6 +72,11 @@ def _new_version() -> str:
 def _content_prefix(corpus: str, version: str) -> str:
     """The blob prefix holding one version's immutable content (and manifest)."""
     return f"corpora/{corpus}/versions/{version}/"
+
+
+def _versions_prefix(corpus: str) -> str:
+    """The blob prefix under which every one of `corpus`'s version trees lives."""
+    return f"corpora/{corpus}/versions/"
 
 
 def build_cloud_store() -> "CloudCorpusStore":
@@ -116,6 +126,7 @@ def build_cloud_store() -> "CloudCorpusStore":
         S3BlobStore(bucket),
         scratch,
         resolve_ttl=service_config.resolve_ttl(),
+        retain_versions=service_config.retain_versions(),
         cache_key=store_url,
     )
 
@@ -131,6 +142,7 @@ class CloudCorpusStore(CorpusStore):
         scratch_dir: str,
         *,
         resolve_ttl: float = 0.0,
+        retain_versions: int = 2,
         cache_key: str = "",
     ) -> None:
         self._control = control
@@ -140,6 +152,10 @@ class CloudCorpusStore(CorpusStore):
         # configured to a short TTL by `build_cloud_store`. `cache_key` scopes the
         # process-global cache to this control plane.
         self._resolve_ttl = resolve_ttl
+        # How many published versions a publish keeps before reaping older blobs
+        # (current + previous by default); floored at 1 so the current version is
+        # never a reap candidate. See `service_config.retain_versions`.
+        self._retain_versions = max(1, retain_versions)
         self._cache_key = cache_key
 
     def list_corpora(self) -> List[str]:
@@ -180,19 +196,54 @@ class CloudCorpusStore(CorpusStore):
                 time.monotonic() + self._resolve_ttl,
             )
 
-    def local_cache_dir(self, corpus: str) -> Optional[str]:
-        # Honour a request-scoped pin so all of a request's reads stay on one
-        # version even if a publish lands mid-request (G-1); otherwise resolve
-        # through the cache.
-        version = pinned_version(corpus) or self.resolve_current(corpus)
-        if version is None:
-            return None
+    def _staged_root(self, corpus: str, version: str) -> str:
+        """Stage `version` on this replica's scratch and return its root dir.
+        Versions are immutable, so a materialised copy is reusable — only fetch
+        on a miss. Raises FileNotFoundError if the version's blobs are absent or
+        incomplete (e.g. reaped by version GC)."""
         dest_root = os.path.join(self._scratch, corpus, version)
-        # Versions are immutable, so a materialised copy is reusable: only fetch
-        # if this version is not already staged locally.
         if not os.path.isdir(dest_root):
             self._materialise_version(corpus, version, dest_root)
-        files_dir = os.path.join(dest_root, "files")
+        return dest_root
+
+    def _stage_current(self, corpus: str) -> Optional[Tuple[str, str]]:
+        """Resolve `corpus`'s version (honouring a request-scoped pin so all of a
+        request's reads stay on one version even if a publish lands mid-request,
+        G-1) and stage it, returning (version, dest_root) — or None when the
+        corpus has no current version.
+
+        Recovers from the version being reaped out from under a cold read (the
+        couple-with-GC case): on a FileNotFoundError from materialise, re-resolve
+        the pointer **cache-bypassing** and write it through the resolve cache
+        (without the write-through, every retry re-resolves the same dead version
+        until the TTL lapses). Then:
+          - a *different* version is now current → the read was stale: for an
+            unpinned read retry the materialise once on it; for a pinned read
+            raise VersionVanished so the tool wrapper can re-run on a fresh pin
+            (we must not silently swap versions inside one pinned read).
+          - the *same* version comes back → it is still the live pointer, so this
+            is genuine data loss, not supersession: re-raise the hard error
+            rather than dressing it up as 'a newer version exists'."""
+        pinned = pinned_version(corpus)
+        version = pinned or self.resolve_current(corpus)
+        if version is None:
+            return None
+        try:
+            return version, self._staged_root(corpus, version)
+        except FileNotFoundError:
+            fresh = self._control.resolve_current(corpus)
+            self._cache_version(corpus, fresh)
+            if fresh is None or fresh == version:
+                raise
+            if pinned is not None:
+                raise VersionVanished(corpus, version, fresh) from None
+            return fresh, self._staged_root(corpus, fresh)
+
+    def local_cache_dir(self, corpus: str) -> Optional[str]:
+        staged = self._stage_current(corpus)
+        if staged is None:
+            return None
+        files_dir = os.path.join(staged[1], "files")
         return files_dir if os.path.isdir(files_dir) else None
 
     def materialised_cache_dir(self, corpus: str) -> Optional[str]:
@@ -208,15 +259,10 @@ class CloudCorpusStore(CorpusStore):
         return files_dir if os.path.isdir(files_dir) else None
 
     def local_index_dir(self, corpus: str) -> Optional[str]:
-        version = pinned_version(corpus) or self.resolve_current(corpus)
-        if version is None:
-            return None
-        dest_root = os.path.join(self._scratch, corpus, version)
-        # Materialise the version (idempotent — shared with local_cache_dir);
-        # the version's `embeddings.db` sits directly under dest_root.
-        if not os.path.isdir(dest_root):
-            self._materialise_version(corpus, version, dest_root)
-        return dest_root
+        # Same resolve-and-stage path as local_cache_dir (with vanished-version
+        # recovery); the version's `embeddings.db` sits directly under its root.
+        staged = self._stage_current(corpus)
+        return staged[1] if staged is not None else None
 
     def _fetch_version_to(self, corpus: str, version: str, tmp: str) -> None:
         """Materialise a version's content into `tmp` and verify every file the
@@ -329,9 +375,9 @@ class CloudCorpusStore(CorpusStore):
         so a live read is never reaped. Best-effort: a failure never breaks a
         read, and reaping is non-destructive anyway — blobs are immutable and
         retained, so a reaped version re-materialises on demand if read again.
-        (Scratch is per-replica, so each replica reaps its own; orphaned *blobs*
-        are a separate operator concern — a bucket lifecycle rule. See
-        `docs/storage.md`.)"""
+        (Scratch is per-replica, so each replica reaps its own local copies; the
+        durable *blobs* are reaped separately on the write path by
+        `_reap_versions` after each publish. See `docs/storage.md`.)"""
         keep = {current_version} | pinned_versions_in_use(corpus)
         with _RESOLVE_LOCK:
             cached = _RESOLVE_CACHE.get((self._cache_key, corpus))
@@ -350,6 +396,49 @@ class CloudCorpusStore(CorpusStore):
             full = os.path.join(corpus_root, name)
             if os.path.isdir(full):
                 shutil.rmtree(full, ignore_errors=True)
+
+    def _list_versions(self, corpus: str) -> List[str]:
+        """Every version id that has content staged under `corpus`'s versions
+        prefix, sorted ascending (the id embeds a UTC timestamp, so sort order is
+        publish order). Includes failed-publish prefixes that were never pointed
+        to — they carry a version id too, and the reaper treats them like any
+        other non-retained version."""
+        prefix = _versions_prefix(corpus)
+        seen: Set[str] = set()
+        for key in self._blobs.list_prefix(prefix):
+            rest = key[len(prefix) :] if key.startswith(prefix) else ""
+            head = rest.split("/", 1)[0]
+            if head:
+                seen.add(head)
+        return sorted(seen)
+
+    def _reap_versions(self, corpus: str, current_version: str) -> None:
+        """Delete the blob content of `corpus`'s superseded versions, keeping the
+        current one plus the next-newest `retain_versions - 1` by sort order.
+
+        Run on the write path **after** the pointer flip, under the gather lease,
+        so no other publish is staging a prefix for this corpus concurrently —
+        which means every non-retained prefix is either a fully-superseded version
+        or a dead orphan from a failed publish, both safe to drop. Best-effort: a
+        failure here never fails the already-succeeded publish, and blobs are
+        immutable, so a missed reap just leaves cost to clean up on the next one.
+
+        The keep-set ranks the *current* version off the control-plane pointer
+        (not its id age): a version that stayed current for months then got
+        superseded has an ancient id but its predecessor is the one a stale
+        replica might still read, so the rule is `current + next-newest`, never
+        `anything newer than X`."""
+        keep = {current_version}
+        # Next-newest first; current may or may not be the lexically-highest
+        # (it usually is), so exclude it before taking the previous ones.
+        others = [
+            v for v in reversed(self._list_versions(corpus)) if v != current_version
+        ]
+        keep.update(others[: max(0, self._retain_versions - 1)])
+        for version in self._list_versions(corpus):
+            if version in keep:
+                continue
+            self._blobs.delete_prefix(_content_prefix(corpus, version))
 
     def publish(
         self,
@@ -393,6 +482,14 @@ class CloudCorpusStore(CorpusStore):
         # immediately, without waiting out the resolve TTL. Other replicas /
         # processes pick it up within the TTL.
         self._cache_version(corpus, version)
+        # Reap superseded version blobs (and any failed-publish orphans), keeping
+        # current + previous. Best-effort: the publish has already succeeded, so a
+        # reap failure must never surface as a publish failure (mirrors
+        # `_reap_scratch`'s stance for local scratch).
+        try:
+            self._reap_versions(corpus, version)
+        except Exception:  # pylint: disable=broad-except
+            pass
         return version
 
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:

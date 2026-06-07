@@ -76,3 +76,27 @@ def test_gather_max_inflight_invalid_falls_back(
 def test_gather_max_inflight_from_global_config(isolated_home: Path) -> None:
     config.save_global({"gather_max_inflight": "5"})
     assert service_config.gather_max_inflight() == 5
+
+
+def test_retain_versions_default(isolated_home: Path) -> None:
+    assert service_config.retain_versions() == 2
+
+
+def test_retain_versions_from_env(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("IETF_LLM_RETAIN_VERSIONS", "4")
+    assert service_config.retain_versions() == 4
+
+
+def test_retain_versions_invalid_falls_back(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for bad in ("0", "-2", "nope"):
+        monkeypatch.setenv("IETF_LLM_RETAIN_VERSIONS", bad)
+        assert service_config.retain_versions() == 2
+
+
+def test_retain_versions_from_global_config(isolated_home: Path) -> None:
+    config.save_global({"retain_versions": "3"})
+    assert service_config.retain_versions() == 3
