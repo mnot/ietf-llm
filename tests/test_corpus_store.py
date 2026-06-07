@@ -58,6 +58,15 @@ def test_absent_corpus_is_never_materialised(isolated_home: Path) -> None:
     assert not (isolated_home / ".cache" / "ietf-llm" / "ghost").exists()
 
 
+def test_seed_workspace_is_noop_on_local(isolated_home: Path) -> None:
+    # The local cache already *is* the workspace, so seeding is a no-op that
+    # returns None and creates nothing.
+    store = LocalCorpusStore()
+    dest = isolated_home / ".cache" / "ietf-llm" / "tls"
+    assert store.seed_workspace("tls", str(dest)) is None
+    assert not dest.exists()
+
+
 def test_get_corpus_store_returns_local_backend() -> None:
     store = get_corpus_store()
     assert isinstance(store, CorpusStore)

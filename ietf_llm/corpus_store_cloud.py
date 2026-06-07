@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .corpus_blobs import BlobStore, FileBlobStore
 from .corpus_control import ControlPlane, SqliteControlPlane
 from .corpus_store import CorpusStore, pinned_version, pinned_versions_in_use
+from .utils import get_index_dir
 
 #: Process-global current-version cache: (cache_key, corpus) -> (version,
 #: monotonic expiry). Keyed by the control-plane identity (its locator) so two
@@ -216,6 +217,20 @@ class CloudCorpusStore(CorpusStore):
             self._materialise_version(corpus, version, dest_root)
         return dest_root
 
+    def _fetch_version_to(self, corpus: str, version: str, tmp: str) -> None:
+        """Materialise a version's blobs into `tmp` and verify every file the
+        manifest lists is present. Raises FileNotFoundError on an incomplete
+        version (a lost blob) so a caller never stages a partial tree as whole."""
+        manifest = self._control.get_manifest(corpus, version) or {}
+        expected = list(manifest.get("files") or [])
+        self._blobs.materialise_prefix(f"{corpus}/{version}/", tmp)
+        missing = [f for f in expected if not os.path.isfile(os.path.join(tmp, f))]
+        if missing:
+            raise FileNotFoundError(
+                f"version {version} of '{corpus}' is incomplete: missing "
+                + ", ".join(sorted(missing)[:5])
+            )
+
     def _materialise_version(self, corpus: str, version: str, dest_root: str) -> None:
         """Materialise a version onto local scratch **atomically and verified**:
         fetch into a temp dir, check every file the manifest lists is present,
@@ -223,17 +238,9 @@ class CloudCorpusStore(CorpusStore):
         verified copy — a crash or a concurrent fetch cannot leave a partial tree
         that a reader serves as if whole, and a lost blob fails loudly rather than
         silently dropping a file from the materialised tree."""
-        manifest = self._control.get_manifest(corpus, version) or {}
-        expected = list(manifest.get("files") or [])
         tmp = f"{dest_root}.tmp.{uuid.uuid4().hex[:8]}"
         try:
-            self._blobs.materialise_prefix(f"{corpus}/{version}/", tmp)
-            missing = [f for f in expected if not os.path.isfile(os.path.join(tmp, f))]
-            if missing:
-                raise FileNotFoundError(
-                    f"version {version} of '{corpus}' is incomplete: missing "
-                    + ", ".join(sorted(missing)[:5])
-                )
+            self._fetch_version_to(corpus, version, tmp)
             os.makedirs(os.path.dirname(dest_root), exist_ok=True)
             try:
                 os.rename(tmp, dest_root)
@@ -247,6 +254,59 @@ class CloudCorpusStore(CorpusStore):
                 shutil.rmtree(tmp, ignore_errors=True)
         # A new version just landed on this replica's scratch; sweep older ones.
         self._reap_scratch(corpus, version)
+
+    def seed_workspace(self, corpus: str, dest_root: str) -> Optional[str]:
+        # Materialise the current published version into the gather workspace so
+        # an incremental gather on a fresh replica builds on prior output
+        # instead of starting cold. Returns the version seeded, or None if none
+        # is published yet (first-ever gather — nothing to seed).
+        version = self.resolve_current(corpus)
+        if version is None:
+            return None
+        index_dir = os.path.join(get_index_dir(), corpus)
+        # In the default layout the index dir *is* the workspace, so the
+        # version's top-level `embeddings.db` belongs in the swapped tree. When
+        # IETF_LLM_INDEX_DIR splits the index onto a separate (e.g. tmpfs) dir,
+        # the DB must instead land where build_index reads/writes it.
+        split_index = os.path.realpath(index_dir) != os.path.realpath(dest_root)
+        tmp = f"{dest_root}.seed.{uuid.uuid4().hex[:8]}"
+        old: Optional[str] = None
+        try:
+            self._fetch_version_to(corpus, version, tmp)
+            if split_index:
+                # The version tree is `files/` (a dir) plus the index file(s) at
+                # the top level; relocate the latter so only `files/` is swapped
+                # into the workspace.
+                os.makedirs(index_dir, exist_ok=True)
+                for name in os.listdir(tmp):
+                    src = os.path.join(tmp, name)
+                    if not os.path.isfile(src):
+                        continue
+                    dst = os.path.join(index_dir, name)
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    shutil.move(src, dst)
+            os.makedirs(os.path.dirname(dest_root), exist_ok=True)
+            # Atomic-ish swap: move any existing workspace aside, rename the
+            # freshly staged tree into place, then drop the old one. On a rename
+            # failure the prior workspace is restored, so the gather is never
+            # left with a half-populated tree.
+            if os.path.exists(dest_root):
+                old = f"{dest_root}.old.{uuid.uuid4().hex[:8]}"
+                os.rename(dest_root, old)
+            try:
+                os.rename(tmp, dest_root)
+            except OSError:
+                if old is not None:
+                    os.rename(old, dest_root)
+                    old = None
+                raise
+        finally:
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            if old is not None and os.path.isdir(old):
+                shutil.rmtree(old, ignore_errors=True)
+        return version
 
     def _reap_scratch(self, corpus: str, current_version: str) -> None:
         """Delete this replica's materialised version dirs for `corpus` that are
