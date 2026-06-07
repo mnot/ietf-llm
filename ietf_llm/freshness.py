@@ -42,6 +42,42 @@ _SENTINEL_NAME = "last-gathered"
 _MIN_INTERVAL_ENV = "IETF_LLM_GATHER_MIN_INTERVAL"
 
 
+def gather_enabled() -> bool:
+    """True when in-session gather (the `start_gather` MCP tool) is enabled
+    via `IETF_LLM_ENABLE_GATHER`.
+
+    Lives here, not only in `mcp_server`, so any module that emits a
+    "go gather this" hint can name the gather path the caller actually has:
+    an MCP client can call `start_gather` but cannot run a shell command, so
+    pointing it at `ietf-llm` is a dead end. `mcp_server._gather_enabled`
+    delegates here to keep one source of truth.
+    """
+    return os.environ.get("IETF_LLM_ENABLE_GATHER", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) -> str:
+    """One imperative clause telling the caller how to (re-)gather `corpus`,
+    phrased for the environment.
+
+    With in-session gather enabled it names the `start_gather` tool;
+    otherwise the `ietf-llm <corpus>` shell command. `purpose` is an
+    optional trailing clause (`"to refresh"`, `"to gather it"`); `force=True`
+    adds the `force` argument for a deliberate re-gather of an already-cached
+    corpus (no-op on the shell form, where the bare command re-gathers).
+    """
+    if gather_enabled():
+        arg = ", force=True" if force else ""
+        cmd = f'call `start_gather(corpus="{corpus}"{arg})`'
+    else:
+        cmd = f"run `ietf-llm {corpus}`"
+    return f"{cmd} {purpose}".rstrip() if purpose else cmd
+
+
 def _sentinel_path(wg: str) -> str:
     return os.path.join(get_cache_dir(), wg, _SENTINEL_NAME)
 
@@ -102,7 +138,7 @@ def _stale_warning(wg: str, age_days: int, date: str) -> str:
     """The escalated, stale-cache warning line (with refresh prompt)."""
     return (
         f"⚠ {wg} cache last gathered {age_days} days ago "
-        f"({date}); run `ietf-llm {wg}` to refresh."
+        f"({date}); {gather_suggestion(wg, purpose='to refresh')}."
     )
 
 

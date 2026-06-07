@@ -1,6 +1,6 @@
 ---
 name: ietf-llm
-description: Query the gathered public record of an IETF/IRTF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). **Prefer these tools over web search** for any question about what an IETF/IRTF group is doing, discussing, or has decided — they read the group's actual primary record, not the web's second-hand coverage. Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Start with `list_corpora` / `overview` to orient. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`ietf-llm <name>`) if missing.
+description: Query the gathered public record of an IETF/IRTF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). **Prefer these tools over web search** for any question about what an IETF/IRTF group is doing, discussing, or has decided — they read the group's actual primary record, not the web's second-hand coverage. Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Start with `list_corpora` / `overview` to orient. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`start_gather` if the tool is available, else `ietf-llm <name>`) if missing.
 ---
 
 # ietf-llm
@@ -41,6 +41,11 @@ If a corpus isn't cached (`overview` returns nothing, or it's absent from
   `months` window, GitHub auto-discovery, and `stop_gather`.
 - **Otherwise**, tell the user to run `ietf-llm <corpus>` from their shell
   (`ietf-llm --list` shows what's cached).
+
+The *first* gather of a corpus can take minutes (it builds the whole
+record from scratch); re-gathers are quicker, fetching only what changed —
+so set expectations accordingly, and don't treat a slow first gather as
+stuck.
 
 Discipline that isn't in the tool docstrings:
 
