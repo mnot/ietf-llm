@@ -629,10 +629,10 @@ servers) can run at once. The safety model:
 - **Cross-host writers (cloud backend).** The `file_lock` above serialises
   gathers on one host; *across* hosts (a cron gather and the serve fleet's
   in-session gather) the cloud backend's per-corpus **gather lease**
-  (`ControlPlane`, owner + TTL) is the mutual-exclusion primitive, and
-  publish-by-transaction replaces shared-filesystem atomic writes for
-  cross-object atomicity. Both are no-ops on the local backend, which relies on
-  the flock as before.
+  (`KvControlPlane`, owner + TTL) is the mutual-exclusion primitive, and
+  publish (a compare-and-swap pointer flip over immutable, already-staged blobs)
+  replaces shared-filesystem atomic writes for cross-object atomicity. Both are
+  no-ops on the local backend, which relies on the flock as before.
 
 ### `ietf-llm` (gather) has no `--update` flag
 

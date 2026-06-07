@@ -147,10 +147,10 @@ class CloudCorpusStore(CorpusStore):
 
     def resolve_current(self, corpus: str) -> Optional[str]:
         # A short-TTL cache so a burst of reads coalesces to one control-plane
-        # call (the cloud control plane is a per-request HTTP hop, and the D1
-        # REST path shares the account-wide API rate limit). Versions are
-        # immutable and the pointer changes only on publish, so a stale hit just
-        # serves a valid older version for up to the TTL; the publishing process
+        # call (the cloud control plane is a per-request HTTP hop to the object
+        # store). Versions are immutable and the pointer changes only on publish,
+        # so a stale hit just serves a valid older version for up to the TTL;
+        # the publishing process
         # refreshes its own entry immediately (see `publish`). Concurrent misses
         # may each resolve within the window — no single-flight, which a short
         # TTL makes cheap.
