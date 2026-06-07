@@ -78,14 +78,6 @@ def store_url() -> Optional[str]:
     return _resolve(STORE_URL, None)
 
 
-def control_db_token() -> Optional[str]:
-    """Deprecated: API token for the old Cloudflare D1 control plane, removed with
-    the D1 adapter. Read from the environment only. Retained until that adapter
-    is deleted."""
-    raw = os.environ.get("IETF_LLM_CONTROL_DB_TOKEN")
-    return raw.strip() if raw and raw.strip() else None
-
-
 def scratch_dir() -> Optional[str]:
     """Local directory where the cloud backend materialises versions."""
     return _resolve(SCRATCH_DIR, None)

@@ -11,9 +11,7 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from ietf_llm import corpus_control
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_control import SqliteControlPlane
 from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
 from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.gather_runner import _owner
@@ -50,16 +48,6 @@ def test_default_backend_is_still_local(isolated_home: Path) -> None:
 def test_owner_has_per_process_nonce() -> None:
     parts = _owner().split(":")
     assert len(parts) == 3 and all(parts)
-
-
-# G-3: the SQLite schema is ensured at most once per process per db path.
-def test_sqlite_schema_ensured_once(tmp_path: Path) -> None:
-    path = str(tmp_path / "c.db")
-    corpus_control._sqlite_schema_ensured.discard(path)
-    SqliteControlPlane(path)
-    assert path in corpus_control._sqlite_schema_ensured
-    # A second construction is a no-op for ensure_schema (still works).
-    SqliteControlPlane(path).resolve_current("nope")
 
 
 def _cloud(tmp_path: Path) -> CloudCorpusStore:
