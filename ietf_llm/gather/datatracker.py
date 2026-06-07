@@ -141,6 +141,15 @@ class _HttpCache:
             self._dirty = True
             atexit.register(self.flush)
 
+    def reset(self) -> None:
+        """Forget the loaded entries and the bound destination, so the next
+        access reloads from disk and re-resolves the cache dir. Used by the cloud
+        gather-cache sync to rebind the store to a freshly-hydrated per-corpus
+        file between gathers in a long-lived worker."""
+        self._entries = None
+        self._dirty = False
+        self._dest = None
+
     def get(self, url: str) -> Optional[Dict[str, Any]]:
         entry = self._load().get(url)
         if entry is not None:
@@ -192,6 +201,31 @@ class _HttpCache:
 
 
 _HTTP_CACHE = _HttpCache()
+
+
+def http_cache_path() -> str:
+    """Local path of the conditional-GET/ETag cache file. Public so the cloud
+    backend's gather-cache sync (`gather.cache_sync`) can round-trip it to
+    durable storage across a scale-to-zero wipe (issue #82)."""
+    return os.path.join(get_cache_dir(), ".http-cache.json")
+
+
+def flush_http_cache() -> None:
+    """Force the process-wide ETag store to disk now. The store otherwise
+    flushes only at interpreter exit, which never fires between gathers in the
+    long-lived serve worker — so the cloud sync calls this before persisting the
+    cache, to capture this gather's entries."""
+    _HTTP_CACHE.flush()
+
+
+def reset_http_cache() -> None:
+    """Drop the in-memory ETag store so the next access reloads it from disk.
+
+    The cloud sync hydrates a *per-corpus* cache file before each gather; resetting
+    here makes the long-lived worker reload that corpus's freshly-hydrated file
+    instead of carrying the previous corpus's entries in memory (per-corpus
+    scoping). A no-op concern on the local CLI, which never calls this."""
+    _HTTP_CACHE.reset()
 
 
 def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:

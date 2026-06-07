@@ -213,6 +213,44 @@ def _cache_path() -> str:
     return os.path.join(get_cache_dir(), _CACHE_FILENAME)
 
 
+def cache_path() -> str:
+    """Public alias of the cache-file path, for the cloud gather-cache sync
+    (`gather.cache_sync`), which round-trips this shared identity map to durable
+    storage across a scale-to-zero wipe (issue #82)."""
+    return _cache_path()
+
+
+def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two caches losslessly. The map holds the global `github_username`
+    index (`_index` + `_index_fetched_at`) plus per-login entries (`{name,
+    emails, fetched_at}`, or `None` for "confirmed not on Datatracker").
+
+    Keep the index with the newer stamp (it is rebuilt wholesale, so last-built
+    wins rather than merged). Union the per-login entries; on a login both hold,
+    keep the newer `fetched_at` — a real resolution (which carries a stamp) thus
+    beats a bare `None` miss. Concurrent fleet gathers each add disjoint logins,
+    so the union is what makes the round-trip lossless."""
+    merged: Dict[str, Any] = {}
+    if str(remote.get(_INDEX_STAMP_KEY, "")) >= str(local.get(_INDEX_STAMP_KEY, "")):
+        index_src = remote
+    else:
+        index_src = local
+    if _INDEX_KEY in index_src:
+        merged[_INDEX_KEY] = index_src[_INDEX_KEY]
+    if _INDEX_STAMP_KEY in index_src:
+        merged[_INDEX_STAMP_KEY] = index_src[_INDEX_STAMP_KEY]
+
+    def _stamp(entry: Any) -> str:
+        return str(entry.get("fetched_at", "")) if isinstance(entry, dict) else ""
+
+    for key, entry in list(remote.items()) + list(local.items()):
+        if key in (_INDEX_KEY, _INDEX_STAMP_KEY):
+            continue
+        if key not in merged or _stamp(entry) >= _stamp(merged[key]):
+            merged[key] = entry
+    return merged
+
+
 def _load_cache() -> Dict[str, Any]:
     path = _cache_path()
     try:

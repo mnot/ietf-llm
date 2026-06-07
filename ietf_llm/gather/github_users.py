@@ -243,6 +243,35 @@ def _cache_path() -> str:
     return os.path.join(get_cache_dir(), _CACHE_FILENAME)
 
 
+def cache_path() -> str:
+    """Public alias of the cache-file path, for the cloud gather-cache sync
+    (`gather.cache_sync`), which round-trips this shared identity map to durable
+    storage across a scale-to-zero wipe (issue #82)."""
+    return _cache_path()
+
+
+def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two `login -> {name, company, fetched_at}` maps losslessly.
+
+    The map is append-mostly and corpus-independent, so a concurrent fleet
+    gather may have added logins to `remote` that this gather's `local` lacks,
+    and vice versa. Union both; on a login both hold, keep the newer `fetched_at`
+    (a later lookup may have filled in a previously-null name). Entries are only
+    kept when they are dicts, mirroring `_load_cache`'s validation."""
+    merged: Dict[str, Any] = {
+        login: entry for login, entry in remote.items() if isinstance(entry, dict)
+    }
+    for login, entry in local.items():
+        if not isinstance(entry, dict):
+            continue
+        current = merged.get(login)
+        if current is None or str(entry.get("fetched_at", "")) >= str(
+            current.get("fetched_at", "")
+        ):
+            merged[login] = entry
+    return merged
+
+
 def _load_cache() -> Dict[str, Dict[str, Any]]:
     """Parse the cache file. Returns empty dict on any read / parse
     error — we'd rather refetch than block on stale state."""

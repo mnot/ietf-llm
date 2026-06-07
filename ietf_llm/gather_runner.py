@@ -739,6 +739,15 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 "gathering from scratch"
             )
 
+        # Restore the gather accelerator caches (datatracker ETag store, GitHub /
+        # datatracker identity maps) so a fresh replica revalidates instead of
+        # re-hitting rate-limited upstreams (issue #82). A no-op on the local
+        # backend; best-effort, like the seed above.
+        try:
+            store.hydrate_gather_caches(corpus)
+        except Exception as err:  # pylint: disable=broad-except
+            _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
+
         try:
             ok = gather_main.run_gather(
                 spec.to_argv(), Verbosity.STATUS, progress=_progress, note_fn=_note
@@ -754,6 +763,13 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                     workspace,
                     extra_files=_index_extra_files(corpus, workspace) or None,
                 )
+                # Persist the gather accelerator caches to durable storage so the
+                # next cold gather builds on them (issue #82). A no-op on the
+                # local backend; best-effort — never fail a completed gather on it.
+                try:
+                    store.persist_gather_caches(corpus)
+                except Exception as err:  # pylint: disable=broad-except
+                    _note(f"gather-cache persist skipped ({type(err).__name__}: {err})")
                 status["state"] = "done"
             else:
                 status["state"] = "failed"

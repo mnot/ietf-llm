@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .corpus_blobs import BlobStore
 from .corpus_store import CorpusStore, pinned_version, pinned_versions_in_use
 from .kv_control import KvControlPlane
+from .kv_store import KvStore
 from .utils import get_index_dir
 
 #: Per-version manifest, stored as a blob inside the version prefix and stripped
@@ -111,12 +112,17 @@ def build_cloud_store() -> "CloudCorpusStore":
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
         ) from err
     bucket = S3Bucket(store_url)
+    # One KvStore over the bucket, shared by the control plane (pointer / lease /
+    # slot / status) and the gather-cache sync (the auxiliary accelerator-cache
+    # keys). The blob plane shares the same bucket via its own handle.
+    kv = S3KvStore(bucket)
     return CloudCorpusStore(
-        KvControlPlane(S3KvStore(bucket)),
+        KvControlPlane(kv),
         S3BlobStore(bucket),
         scratch,
         resolve_ttl=service_config.resolve_ttl(),
         cache_key=store_url,
+        kv=kv,
     )
 
 
@@ -132,10 +138,15 @@ class CloudCorpusStore(CorpusStore):
         *,
         resolve_ttl: float = 0.0,
         cache_key: str = "",
+        kv: Optional[KvStore] = None,
     ) -> None:
         self._control = control
         self._blobs = blobs
         self._scratch = scratch_dir
+        # The raw KvStore, for the gather-cache sync's auxiliary keys. Optional so
+        # tests can construct a store without one (gather-cache sync then no-ops);
+        # `build_cloud_store` always supplies the bucket-backed store.
+        self._kv = kv
         # Current-version caching is opt-in: off (ttl 0) for direct construction,
         # configured to a short TTL by `build_cloud_store`. `cache_key` scopes the
         # process-global cache to this control plane.
@@ -318,6 +329,24 @@ class CloudCorpusStore(CorpusStore):
             if old is not None and os.path.isdir(old):
                 shutil.rmtree(old, ignore_errors=True)
         return version
+
+    def hydrate_gather_caches(self, corpus: str) -> None:
+        # Restore the gather accelerator caches from the KvStore before a gather,
+        # so a fresh replica revalidates instead of re-hitting rate-limited
+        # upstreams. Lazily imported so the read-only serve path never pulls the
+        # gather modules (consistent with the import dodge in get_corpus_store).
+        if self._kv is None:
+            return
+        from .gather import cache_sync  # pylint: disable=import-outside-toplevel
+
+        cache_sync.hydrate(self._kv, corpus)
+
+    def persist_gather_caches(self, corpus: str) -> None:
+        if self._kv is None:
+            return
+        from .gather import cache_sync  # pylint: disable=import-outside-toplevel
+
+        cache_sync.persist(self._kv, corpus)
 
     def _reap_scratch(self, corpus: str, current_version: str) -> None:
         """Delete this replica's materialised version dirs for `corpus` that are
