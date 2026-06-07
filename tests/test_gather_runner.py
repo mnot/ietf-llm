@@ -20,7 +20,7 @@ from typing import Any, List, Tuple
 import pytest
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import config, freshness, gather_runner, utils
+from ietf_llm import config, freshness, gather_runner, serve_metrics, utils
 from ietf_llm.gather_stages import stage_plan
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -292,6 +292,46 @@ def test_start_runs_to_done_with_progress(
     assert status["stage"] == "digests"
     assert status["stage_index"] == 2 and status["stage_total"] == 2
     assert status["started"] and status["finished"] and status["error"] is None
+
+
+def test_gather_records_lifecycle_metrics(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A run-to-done gather increments started + done and balances the gauge.
+    # The terminal status is written in the inner finally and the metric in the
+    # outer one, so poll the metric rather than racing it.
+    serve_metrics.reset()
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert _wait_terminal("tls")["state"] == "done"
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        body = serve_metrics.render()
+        if 'ietf_llm_gathers_total{state="done"} 1' in body:
+            break
+        time.sleep(0.01)
+    assert 'ietf_llm_gathers_total{state="done"} 1' in body
+    assert "ietf_llm_gathers_started_total 1" in body
+    assert "ietf_llm_gathers_inflight 0" in body
+
+
+def test_gather_records_failed_outcome_metric(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve_metrics.reset()
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: False)
+    gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert _wait_terminal("tls")["state"] == "failed"
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        body = serve_metrics.render()
+        if 'ietf_llm_gathers_total{state="failed"} 1' in body:
+            break
+        time.sleep(0.01)
+    assert 'ietf_llm_gathers_total{state="failed"} 1' in body
+    assert "ietf_llm_gathers_inflight 0" in body
 
 
 def test_progress_detail_lands_in_status(

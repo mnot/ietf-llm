@@ -83,6 +83,20 @@ def test_record_tool_counts_requests_and_errors():
     ) == pytest.approx(0.5)
 
 
+def test_timeout_counts_as_error_and_timeout():
+    serve_metrics.record_tool("search_corpus", 0.1, error=False)
+    serve_metrics.record_tool("search_corpus", 99.0, error=True, timeout=True)
+    serve_metrics.record_tool("search_corpus", 0.2, error=True)  # plain exception
+    body = serve_metrics.render()
+    # Two failures total (one timeout, one exception); one of them a timeout.
+    assert _metric_value(
+        body, 'ietf_llm_tool_errors_total{tool="search_corpus"}'
+    ) == 2
+    assert _metric_value(
+        body, 'ietf_llm_tool_timeouts_total{tool="search_corpus"}'
+    ) == 1
+
+
 def test_histogram_buckets_are_cumulative():
     # 0.2 lands in le="0.25"+; 3.0 lands in le="5"+; both in +Inf.
     serve_metrics.record_tool("t", 0.2, error=False)
@@ -100,6 +114,23 @@ def test_histogram_buckets_are_cumulative():
     assert _metric_value(
         body, 'ietf_llm_tool_latency_seconds_bucket{tool="t",le="+Inf"}'
     ) == 2
+
+
+def test_histogram_buckets_reach_the_tool_deadline():
+    # A near-deadline call (default IETF_LLM_TOOL_TIMEOUT is 120s) must land
+    # in a real bucket, not collapse into +Inf — so the 60/120 bounds exist
+    # and a 90s observation sits above le="60" but at/below le="120".
+    serve_metrics.record_tool("slow", 90.0, error=False)
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_tool_latency_seconds_bucket{tool="slow",le="60"}'
+    ) == 0
+    assert _metric_value(
+        body, 'ietf_llm_tool_latency_seconds_bucket{tool="slow",le="120"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_tool_latency_seconds_bucket{tool="slow",le="+Inf"}'
+    ) == 1
 
 
 def test_embed_metrics_recorded():
@@ -127,6 +158,97 @@ def test_freshness_gauge_emitted_for_passed_ages():
     ) == 10
 
 
+def test_timed_store_records_success_and_error():
+    assert serve_metrics.timed_store("resolve_current", lambda: "v1") == "v1"
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_store_requests_total{op="resolve_current"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_store_errors_total{op="resolve_current"}'
+    ) == 0
+
+    def boom():
+        raise RuntimeError("object store down")
+
+    with pytest.raises(RuntimeError):
+        serve_metrics.timed_store("local_cache_dir", boom)
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_store_errors_total{op="local_cache_dir"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_store_latency_seconds_count{op="local_cache_dir"}'
+    ) == 1
+
+
+def test_serve_boundary_records_store_op(isolated_home):
+    # Going through the serve read boundary records the store op it invoked.
+    _seed_corpus("tls", "2025-01-01T00:00:00Z")
+    assert "tls" in mcp_server._list_wgs()
+    assert mcp_server._corpus_exists("tls")
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_store_requests_total{op="list_corpora"}'
+    ) == 1
+    assert _metric_value(
+        body, 'ietf_llm_store_requests_total{op="corpus_exists"}'
+    ) == 1
+
+
+def test_build_info_emitted_only_when_version_passed():
+    assert "ietf_llm_build_info" not in serve_metrics.render()
+    body = serve_metrics.render(version="9.9.9")
+    assert 'ietf_llm_build_info{version="9.9.9"} 1' in body
+
+
+def test_inflight_gauge_tracks_adjustments():
+    assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 0
+    serve_metrics.adjust_inflight(1)
+    serve_metrics.adjust_inflight(1)
+    assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 2
+    serve_metrics.adjust_inflight(-1)
+    assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 1
+
+
+def test_gather_lifecycle_metrics():
+    # Nothing yet: gauge 0, no terminal series.
+    body = serve_metrics.render()
+    assert _metric_value(body, "ietf_llm_gathers_inflight") == 0
+    assert _metric_value(body, "ietf_llm_gathers_started_total") == 0
+
+    serve_metrics.record_gather_started()
+    serve_metrics.record_gather_started()
+    body = serve_metrics.render()
+    assert _metric_value(body, "ietf_llm_gathers_inflight") == 2
+    assert _metric_value(body, "ietf_llm_gathers_started_total") == 2
+
+    serve_metrics.record_gather_finished("done", 42.0)
+    serve_metrics.record_gather_finished("failed", 5.0)
+    body = serve_metrics.render()
+    # Both finished: gauge back to 0, one of each outcome recorded.
+    assert _metric_value(body, "ietf_llm_gathers_inflight") == 0
+    assert _metric_value(body, 'ietf_llm_gathers_total{state="done"}') == 1
+    assert _metric_value(body, 'ietf_llm_gathers_total{state="failed"}') == 1
+    assert _metric_value(body, "ietf_llm_gather_duration_seconds_count") == 2
+    assert _metric_value(
+        body, "ietf_llm_gather_duration_seconds_sum"
+    ) == pytest.approx(47.0)
+
+
+def test_gather_duration_uses_coarse_buckets():
+    # A 20-minute gather must land in a real bucket, not +Inf — the per-call
+    # buckets (max 120s) would pin every gather there.
+    serve_metrics.record_gather_finished("done", 1200.0)
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_gather_duration_seconds_bucket{le="600"}'
+    ) == 0
+    assert _metric_value(
+        body, 'ietf_llm_gather_duration_seconds_bucket{le="1200"}'
+    ) == 1
+
+
 # --- chokepoint wiring ------------------------------------------------------
 
 
@@ -141,6 +263,8 @@ def test_offload_records_tool_metric():
         body, 'ietf_llm_tool_requests_total{tool="my_tool"}'
     ) == 1
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="my_tool"}') == 0
+    # The in-flight gauge is balanced back to zero once the call returns.
+    assert _metric_value(body, "ietf_llm_inflight_requests") == 0
 
 
 def test_offload_records_error_on_raise():
@@ -151,6 +275,33 @@ def test_offload_records_error_on_raise():
         asyncio.run(mcp_server._offload(boom))
     body = serve_metrics.render()
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="boom"}') == 1
+
+
+def test_offload_records_timeout_as_timeout_and_error(monkeypatch):
+    import time as _time
+
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0.05")
+
+    def slow() -> str:
+        _time.sleep(0.5)
+        return "too late"
+
+    result = asyncio.run(mcp_server._offload(slow))
+    assert "timed out" in result.lower()
+    body = serve_metrics.render()
+    assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="slow"}') == 1
+    assert _metric_value(body, 'ietf_llm_tool_timeouts_total{tool="slow"}') == 1
+
+
+def test_offload_exception_is_error_but_not_timeout():
+    def boom() -> str:
+        raise ValueError("nope")
+
+    with pytest.raises(ValueError):
+        asyncio.run(mcp_server._offload(boom))
+    body = serve_metrics.render()
+    assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="boom"}') == 1
+    assert _metric_value(body, 'ietf_llm_tool_timeouts_total{tool="boom"}') == 0
 
 
 def _model() -> _OpenAICompatEmbeddingModel:
@@ -194,6 +345,9 @@ def test_metrics_route_content_type_and_families(isolated_home):
     assert "version=0.0.4" in resp.headers["content-type"]
     assert "ietf_llm_tool_latency_seconds" in resp.text
     assert "ietf_llm_embed_requests_total" in resp.text
+    # The route passes the package version through, so build_info is present.
+    assert "ietf_llm_build_info{version=" in resp.text
+    assert "ietf_llm_inflight_requests" in resp.text
 
 
 def test_metrics_route_freshness_gauge(isolated_home):

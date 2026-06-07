@@ -125,7 +125,9 @@ MAX_CHUNK_RANGE = 20
 
 
 def _list_wgs() -> List[str]:
-    return get_corpus_store().list_corpora()
+    return serve_metrics.timed_store(
+        "list_corpora", lambda: get_corpus_store().list_corpora()
+    )
 
 
 def _files_dir(wg: str) -> str:
@@ -140,7 +142,9 @@ def _files_dir(wg: str) -> str:
     is a later refinement (a request-scoped version context) and affects only
     the cloud backend; the local backend is single-version.
     """
-    cache = get_corpus_store().local_cache_dir(wg)
+    cache = serve_metrics.timed_store(
+        "local_cache_dir", lambda: get_corpus_store().local_cache_dir(wg)
+    )
     if cache is None:
         raise FileNotFoundError(f"no current version for corpus {wg!r}")
     return cache
@@ -203,7 +207,9 @@ def _corpus_exists(wg: str) -> bool:
     """True if `wg` has a cache directory. Read-only: unlike
     `get_wg_file_cache_dir`, it never creates one — so a typo'd corpus
     name is not silently materialised by a query."""
-    return get_corpus_store().corpus_exists(wg)
+    return serve_metrics.timed_store(
+        "corpus_exists", lambda: get_corpus_store().corpus_exists(wg)
+    )
 
 
 def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
@@ -224,7 +230,9 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
 
     @functools.wraps(fn)
     def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
-        version = get_corpus_store().resolve_current(wg)
+        version = serve_metrics.timed_store(
+            "resolve_current", lambda: get_corpus_store().resolve_current(wg)
+        )
         if version is None:
             return (
                 f"Unknown corpus '{wg}'. Nothing is cached under that name — "
@@ -2045,6 +2053,7 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     partial = functools.partial(_instrumented)
     timeout = _tool_timeout_seconds()
     status = "unknown"
+    serve_metrics.adjust_inflight(1)
     try:
         if timeout <= 0:
             result = cast(
@@ -2066,6 +2075,7 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         status = "exception"
         raise
     finally:
+        serve_metrics.adjust_inflight(-1)
         elapsed = time.monotonic() - t0
         _debug_log.log_event(
             req_id,
@@ -2074,11 +2084,15 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
             elapsed=round(elapsed, 6),
         )
         # RED per tool for the /metrics scrape (issue #40). `status` is
-        # "ok" on success; "timeout"/"exception" both count as errors.
+        # "ok" on success; "timeout"/"exception" both count as errors, and
+        # a "timeout" is additionally counted on its own series so a
+        # deadline hit (slow upstream / cold embedding / cache contention)
+        # is distinguishable from a raised exception (a bug).
         serve_metrics.record_tool(
             getattr(fn, "__name__", "tool"),
             elapsed,
             error=status != "ok",
+            timeout=status == "timeout",
         )
     # Reached only when the deadline cancelled the await above; the worker
     # thread is abandoned (it finishes and frees its slot on its own).
@@ -3526,7 +3540,7 @@ async def _metrics_endpoint(_request: Any) -> Any:
     # pylint: disable=import-outside-toplevel
     from starlette.responses import PlainTextResponse
 
-    body = serve_metrics.render(_corpus_ages())
+    body = serve_metrics.render(_corpus_ages(), version=__version__)
     # Prometheus text exposition format v0.0.4.
     return PlainTextResponse(
         body, media_type="text/plain; version=0.0.4; charset=utf-8"

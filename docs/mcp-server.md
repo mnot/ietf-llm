@@ -178,8 +178,12 @@ The JSON body also carries two operator-facing fields that don't gate readiness:
   staleness floor — a replica can be perfectly ready while serving a corpus that went stale days ago,
   and this is how an operator sees that at a glance.
 
-`GET /metrics` exposes a Prometheus scrape (RED per tool, the embedding backend's call/error/latency,
-and a per-corpus `last-gathered` age gauge); it is read-only and zero-dependency.
+`GET /metrics` exposes a Prometheus scrape; it is read-only and zero-dependency. It carries RED per
+tool (with `tool_timeouts_total` separating deadline hits from exceptions, and latency buckets that
+reach the 120s deadline), the embedding backend's call/error/latency, per-operation RED for the
+corpus-store seam (`store_*` — where the cloud backend's object-store reads become visible), the
+in-session gather lifecycle (`gathers_inflight`, `gathers_total{state=…}`, gather duration), and
+process gauges (`build_info{version=…}`, in-flight requests, and a per-corpus `last-gathered` age).
 
 ## Cache freshness and degraded mode
 
