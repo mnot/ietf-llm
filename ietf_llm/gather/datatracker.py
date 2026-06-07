@@ -17,6 +17,7 @@ import atexit
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
@@ -104,32 +105,31 @@ _CACHE_MAX_ENTRIES = 10000
 
 
 class _HttpCache:
-    """Lazy, process-wide ETag store. Loaded from disk on first use and
-    flushed once atomically at interpreter exit (so a gather does one
-    write, not one per cached URL). Stale and excess entries are evicted at
-    flush time; see the module comment above for the policy."""
+    """Lazy ETag store. Loaded from disk on first use and flushed atomically
+    (once at interpreter exit for the process-default store, or explicitly by the
+    cloud gather-cache sync for a per-corpus store) — so a gather does one write,
+    not one per cached URL. Stale and excess entries are evicted at flush time;
+    see the module comment above for the policy."""
 
-    def __init__(self) -> None:
+    def __init__(self, dest: str, *, persist_at_exit: bool = True) -> None:
+        # `dest` is captured at construction, not re-resolved later: a flush may
+        # be deferred to interpreter exit, and re-resolving get_cache_dir() there
+        # would pick up a different cache dir if HOME changed in between (tests
+        # revert their HOME monkeypatch before atexit fires).
+        self._dest = dest
         self._entries: Optional[Dict[str, Dict[str, Any]]] = None
         self._dirty = False
-        self._dest: Optional[str] = None  # bound once, on first load
-
-    def _path(self) -> str:
-        # Resolve the destination exactly once, on first load, while
-        # get_cache_dir() still points where the caller intends. The
-        # flush is deferred to interpreter exit via atexit; re-resolving
-        # get_cache_dir() there would pick up a *different* cache dir
-        # whenever HOME changed in between (tests revert their HOME
-        # monkeypatch before atexit fires) and write these in-memory
-        # entries over the user's real ~/.cache/ietf-llm/.http-cache.json.
-        if self._dest is None:
-            self._dest = os.path.join(get_cache_dir(), ".http-cache.json")
-        return self._dest
+        # Per-corpus stores are flushed explicitly by the cloud sync, so they
+        # skip atexit — that keeps a dropped per-corpus store collectable (an
+        # atexit-registered bound method would pin it for the life of the
+        # process). The process-default store has no explicit flush, so it does
+        # register atexit.
+        self._persist_at_exit = persist_at_exit
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
         if self._entries is None:
             try:
-                with open(self._path(), "r", encoding="utf-8") as fh:
+                with open(self._dest, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
                 self._entries = data if isinstance(data, dict) else {}
             except (OSError, ValueError):
@@ -139,16 +139,8 @@ class _HttpCache:
     def _mark_dirty(self) -> None:
         if not self._dirty:
             self._dirty = True
-            atexit.register(self.flush)
-
-    def reset(self) -> None:
-        """Forget the loaded entries and the bound destination, so the next
-        access reloads from disk and re-resolves the cache dir. Used by the cloud
-        gather-cache sync to rebind the store to a freshly-hydrated per-corpus
-        file between gathers in a long-lived worker."""
-        self._entries = None
-        self._dirty = False
-        self._dest = None
+            if self._persist_at_exit:
+                atexit.register(self.flush)
 
     def get(self, url: str) -> Optional[Dict[str, Any]]:
         entry = self._load().get(url)
@@ -189,7 +181,7 @@ class _HttpCache:
         if self._entries is None or not self._dirty:
             return
         self._evict(time.time())
-        path = self._path()
+        path = self._dest
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = f"{path}.tmp"
@@ -200,32 +192,63 @@ class _HttpCache:
             pass
 
 
-_HTTP_CACHE = _HttpCache()
+#: The process-default ETag store: corpus-agnostic, on persistent disk at the
+#: cache root. Used by the local CLI and any gather that has not bound a corpus.
+#: Lazy so get_cache_dir() is read on first use, not at import.
+_DEFAULT_CACHE: Optional[_HttpCache] = None
+_default_lock = threading.Lock()
+
+#: The active per-corpus ETag store for *this thread*. The runner gathers up to
+#: N corpora concurrently, one per worker thread; binding the store per thread
+#: keeps two concurrent gathers off one shared store and one shared file. Set by
+#: the cloud gather-cache sync at hydrate; unset means "use the default store".
+_active = threading.local()
 
 
-def http_cache_path() -> str:
-    """Local path of the conditional-GET/ETag cache file. Public so the cloud
-    backend's gather-cache sync (`gather.cache_sync`) can round-trip it to
-    durable storage across a scale-to-zero wipe (issue #82)."""
+def _default_http_cache() -> _HttpCache:
+    global _DEFAULT_CACHE  # pylint: disable=global-statement
+    with _default_lock:
+        if _DEFAULT_CACHE is None:
+            _DEFAULT_CACHE = _HttpCache(http_cache_path())
+        return _DEFAULT_CACHE
+
+
+def _active_http_cache() -> _HttpCache:
+    """This thread's ETag store: a bound per-corpus store if one is set (a
+    concurrent gather), else the process-default store."""
+    cache = getattr(_active, "cache", None)
+    return cache if cache is not None else _default_http_cache()
+
+
+def http_cache_path(corpus: Optional[str] = None) -> str:
+    """Local path of the conditional-GET/ETag cache file for `corpus` (or the
+    process-default cache when None). Public so the cloud gather-cache sync
+    (`gather.cache_sync`) can round-trip it to durable storage across a
+    scale-to-zero wipe (issue #82). A per-corpus path lives *outside* any corpus
+    workspace (a dot-prefixed sibling dir), so it is never published as version
+    content nor mistaken for a corpus by the cache lister."""
+    if corpus:
+        return os.path.join(get_cache_dir(), ".http-cache", f"{corpus}.json")
     return os.path.join(get_cache_dir(), ".http-cache.json")
 
 
+def bind_gather_corpus(corpus: Optional[str]) -> None:
+    """Bind this thread's ETag store to `corpus`'s own file — a *fresh* instance,
+    so it reloads the just-hydrated per-corpus file rather than carrying stale
+    in-memory entries from a prior gather on this reused worker thread. Pass None
+    to unbind (back to the process-default store) and release the per-corpus one.
+    Called by the cloud gather-cache sync; a no-op concern on the local CLI,
+    which never binds and so shares the default store as before."""
+    _active.cache = (
+        _HttpCache(http_cache_path(corpus), persist_at_exit=False) if corpus else None
+    )
+
+
 def flush_http_cache() -> None:
-    """Force the process-wide ETag store to disk now. The store otherwise
+    """Force this thread's active ETag store to disk now. The store otherwise
     flushes only at interpreter exit, which never fires between gathers in the
-    long-lived serve worker — so the cloud sync calls this before persisting the
-    cache, to capture this gather's entries."""
-    _HTTP_CACHE.flush()
-
-
-def reset_http_cache() -> None:
-    """Drop the in-memory ETag store so the next access reloads it from disk.
-
-    The cloud sync hydrates a *per-corpus* cache file before each gather; resetting
-    here makes the long-lived worker reload that corpus's freshly-hydrated file
-    instead of carrying the previous corpus's entries in memory (per-corpus
-    scoping). A no-op concern on the local CLI, which never calls this."""
-    _HTTP_CACHE.reset()
+    long-lived serve worker — so the cloud sync calls this before persisting."""
+    _active_http_cache().flush()
 
 
 def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
@@ -242,7 +265,8 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
     )
     url = url + ("&format=json" if "?" in url else "?format=json")
 
-    entry = _HTTP_CACHE.get(url)
+    cache = _active_http_cache()
+    entry = cache.get(url)
     headers = dict(DEFAULT_HEADERS)
     if entry and entry.get("etag"):
         headers["If-None-Match"] = entry["etag"]
@@ -269,7 +293,7 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         return None
     etag = response.headers.get("ETag")
     if etag:
-        _HTTP_CACHE.store(url, etag, response.text)
+        cache.store(url, etag, response.text)
     return result
 
 

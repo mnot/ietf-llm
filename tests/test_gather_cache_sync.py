@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -27,18 +28,21 @@ from ietf_llm.kv_store import ANY, InMemoryKvStore, KvStore, Record
 
 
 @pytest.fixture(autouse=True)
-def _reset_http_singleton():
-    # The ETag store is a process-global singleton; reset it around each test so
-    # a bound cache dir / loaded entries never leak between tests.
-    datatracker.reset_http_cache()
+def _reset_http_caches():
+    # The ETag store is per-thread (bound) + a lazy process-default; reset both
+    # around each test so a binding / cache dir never leaks between tests.
+    datatracker.bind_gather_corpus(None)
+    datatracker._DEFAULT_CACHE = None
     yield
-    datatracker.reset_http_cache()
+    datatracker.bind_gather_corpus(None)
+    datatracker._DEFAULT_CACHE = None
 
 
 def _cache_dir(monkeypatch, path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("IETF_LLM_CACHE_DIR", str(path))
-    datatracker.reset_http_cache()  # rebind to the new dir on next access
+    datatracker.bind_gather_corpus(None)
+    datatracker._DEFAULT_CACHE = None  # rebuild from the new dir on next access
     return path
 
 
@@ -49,27 +53,30 @@ def test_http_cache_roundtrip_across_a_cold_start(monkeypatch, tmp_path):
     kv = InMemoryKvStore()
     url = "https://datatracker.ietf.org/api/v1/group/?format=json"
     _cache_dir(monkeypatch, tmp_path / "warm")
-    datatracker._HTTP_CACHE.store(url, "etag-1", '{"hit": true}')
-    cache_sync.persist(kv, "tls")
+    # Bind the per-corpus store (as hydrate would) and record an entry.
+    datatracker.bind_gather_corpus("tls")
+    datatracker._active_http_cache().store(url, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")  # flushes + uploads, then unbinds
 
-    # Cold host: fresh, empty cache dir; the singleton knows nothing.
+    # Cold host: fresh, empty cache dir; nothing local.
     _cache_dir(monkeypatch, tmp_path / "cold")
-    assert datatracker._HTTP_CACHE.get(url) is None
-    cache_sync.hydrate(kv, "tls")
+    cache_sync.hydrate(kv, "tls")  # restores the per-corpus file + binds "tls"
 
-    assert os.path.exists(datatracker.http_cache_path())
-    restored = datatracker._HTTP_CACHE.get(url)
+    assert os.path.exists(datatracker.http_cache_path("tls"))
+    restored = datatracker._active_http_cache().get(url)
     assert restored is not None and restored["etag"] == "etag-1"
 
 
 def test_http_cache_is_sharded_per_corpus(monkeypatch, tmp_path):
     kv = InMemoryKvStore()
     _cache_dir(monkeypatch, tmp_path / "a")
-    datatracker._HTTP_CACHE.store("u-a", "etag-a", "{}")
+    datatracker.bind_gather_corpus("alpha")
+    datatracker._active_http_cache().store("u-a", "etag-a", "{}")
     cache_sync.persist(kv, "alpha")
 
     _cache_dir(monkeypatch, tmp_path / "b")
-    datatracker._HTTP_CACHE.store("u-b", "etag-b", "{}")
+    datatracker.bind_gather_corpus("beta")
+    datatracker._active_http_cache().store("u-b", "etag-b", "{}")
     cache_sync.persist(kv, "beta")
 
     # Each corpus has its own key; beta's gather did not clobber alpha's delta.
@@ -78,6 +85,31 @@ def test_http_cache_is_sharded_per_corpus(monkeypatch, tmp_path):
     beta = kv.get("corpora/beta/gather-cache/http-cache.json")
     assert beta is not None and "u-b" in json.loads(beta[0])
     assert "u-a" not in json.loads(beta[0])
+
+
+def test_concurrent_threads_get_isolated_http_caches(monkeypatch, tmp_path):
+    # The runner gathers up to N corpora concurrently, one per worker thread.
+    # Binding the ETag store per thread must keep two overlapping gathers off one
+    # shared in-memory store (the bug #1 in the review).
+    _cache_dir(monkeypatch, tmp_path / "host")
+    started = threading.Barrier(2)
+    seen = {}
+
+    def run(corpus, mine, theirs):
+        datatracker.bind_gather_corpus(corpus)
+        cache = datatracker._active_http_cache()
+        cache.store(mine, "e", "{}")
+        started.wait()  # both have stored before either inspects
+        seen[corpus] = (cache.get(mine) is not None, cache.get(theirs) is not None)
+
+    t1 = threading.Thread(target=run, args=("alpha", "u-alpha", "u-beta"))
+    t2 = threading.Thread(target=run, args=("beta", "u-beta", "u-alpha"))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert seen["alpha"] == (True, False)
+    assert seen["beta"] == (True, False)
 
 
 # --- identity maps: shared CAS-merge --------------------------------------
@@ -110,6 +142,32 @@ def test_identity_map_merge_is_lossless_under_concurrent_writes(monkeypatch, tmp
 
     merged = json.loads(kv.get(key)[0])
     assert set(merged) == {"alice", "bob", "carol"}  # no delta lost
+
+
+def test_local_merge_save_reloads_before_writing(monkeypatch, tmp_path):
+    # #3: a concurrent same-process gather's local additions must not be clobbered
+    # by another gather's load-modify-save. _merge_save reloads the current file
+    # and merges, rather than overwriting with a stale in-memory snapshot.
+    _cache_dir(monkeypatch, tmp_path / "host")
+    # Gather A landed alice on disk after gather B took its empty start-snapshot.
+    github_users._save_cache({"alice": {"name": "A", "fetched_at": "2026-01-01"}})
+    # Gather B persists only its own learned bob.
+    github_users._merge_save({"bob": {"name": "B", "fetched_at": "2026-02-02"}})
+    assert set(github_users._load_cache()) == {"alice", "bob"}
+
+
+def test_datatracker_github_merge_save_preserves_concurrent_index(monkeypatch, tmp_path):
+    _cache_dir(monkeypatch, tmp_path / "host")
+    datatracker_github._save_cache(
+        {"_index": {"a": "/p/1"}, "_index_fetched_at": "2026-05-05", "a": None}
+    )
+    # An older in-memory snapshot must not overwrite the newer on-disk index.
+    datatracker_github._merge_save(
+        {"_index": {}, "_index_fetched_at": "2026-01-01", "b": None}
+    )
+    on_disk = datatracker_github._load_cache()
+    assert on_disk["_index"] == {"a": "/p/1"}  # newer index kept
+    assert "a" in on_disk and "b" in on_disk  # both per-login misses retained
 
 
 def test_github_users_merge_prefers_newer_fetched_at():
@@ -181,7 +239,8 @@ class _RaisingKv(KvStore):
 
 def test_sync_swallows_kvstore_errors(monkeypatch, tmp_path):
     _cache_dir(monkeypatch, tmp_path / "host")
-    datatracker._HTTP_CACHE.store("u", "e", "{}")
+    datatracker.bind_gather_corpus("tls")
+    datatracker._active_http_cache().store("u", "e", "{}")
     # Neither hydrate nor persist may raise on a broken store.
     cache_sync.hydrate(_RaisingKv(), "tls")
     cache_sync.persist(_RaisingKv(), "tls")
@@ -207,7 +266,8 @@ def test_cloud_seam_delegates_to_sync(monkeypatch, tmp_path):
         kv=kv,
     )
     _cache_dir(monkeypatch, tmp_path / "host")
-    datatracker._HTTP_CACHE.store("u", "e", "{}")
+    datatracker.bind_gather_corpus("tls")
+    datatracker._active_http_cache().store("u", "e", "{}")
     store.persist_gather_caches("tls")
     assert kv.get("corpora/tls/gather-cache/http-cache.json") is not None
 

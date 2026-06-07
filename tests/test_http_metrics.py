@@ -181,7 +181,8 @@ def test_get_json_records_200_and_304(
 ) -> None:
     # Hermetic cache dir so the shared on-disk ETag store is untouched.
     monkeypatch.setenv("IETF_LLM_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(datatracker._HTTP_CACHE, "_entries", {})
+    # Force the lazy process-default ETag store to rebuild from the empty dir.
+    monkeypatch.setattr(datatracker, "_DEFAULT_CACHE", None)
     # Undo conftest's blanket `_get_json` stub for this test.
     monkeypatch.setattr(datatracker, "_get_json", _REAL_GET_JSON)
 

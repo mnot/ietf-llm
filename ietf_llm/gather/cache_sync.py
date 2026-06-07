@@ -7,10 +7,12 @@ caches on persistent disk and needs no sync. The caches have different
 contention profiles, so each is scoped to the unit that already guarantees a
 single writer:
 
-  - `.http-cache.json` — the datatracker ETag store. Sharded **per corpus**
-    under that corpus's prefix; #85's per-corpus gather lease already serialises
-    writers, so hydrate -> gather -> flush -> persist is a plain
-    read-modify-write (no CAS, and no lost delta from a shared blob).
+  - `.http-cache.json` — the datatracker ETag store. Sharded **per corpus** under
+    that corpus's prefix. #85's per-corpus gather lease serialises writers across
+    the fleet, and `bind_gather_corpus` binds a per-corpus ETag store to *this
+    thread* so the runner's up-to-N concurrent in-process gathers each write their
+    own corpus file (not one shared root file). Together that makes hydrate ->
+    gather -> flush -> persist a plain read-modify-write — no CAS, no lost delta.
   - `_github-users.json` / `_datatracker-github.json` — corpus-independent
     identity maps, **shared** at a fleet prefix. Two different-corpus gathers can
     run at once, so persist does a bounded compare-and-swap merge: lossless, and
@@ -60,11 +62,14 @@ def hydrate(kv: KvStore, corpus: str) -> None:
     """Pull the persisted caches into the local cache dir before a gather, so the
     gather revalidates (304s) and reuses identity lookups instead of re-fetching.
     Never raises."""
-    _restore(kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path())
-    # Rebind the process-wide ETag store to the freshly-hydrated per-corpus file,
-    # so a long-lived worker doesn't carry the previous corpus's entries.
+    _restore(
+        kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
+    )
+    # Bind this thread's ETag store to the freshly-hydrated per-corpus file. The
+    # runner gathers up to N corpora concurrently, one per worker thread, so a
+    # per-thread per-corpus store is what keeps them off one shared file.
     try:
-        datatracker.reset_http_cache()
+        datatracker.bind_gather_corpus(corpus)
     except Exception:  # pylint: disable=broad-except
         pass
     _restore(kv, _GITHUB_USERS_KEY, github_users.cache_path())
@@ -80,7 +85,15 @@ def persist(kv: KvStore, corpus: str) -> None:
         datatracker.flush_http_cache()
     except Exception:  # pylint: disable=broad-except
         pass
-    _put_plain(kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path())
+    _put_plain(
+        kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
+    )
+    # Unbind this thread's per-corpus store (release it; the next gather on this
+    # reused worker binds its own).
+    try:
+        datatracker.bind_gather_corpus(None)
+    except Exception:  # pylint: disable=broad-except
+        pass
     _cas_merge(
         kv, _GITHUB_USERS_KEY, github_users.cache_path(), github_users.merge_cache
     )
@@ -163,7 +176,12 @@ def _restore_tree(kv: KvStore, prefix: str, local_dir: str) -> None:
 def _persist_tree(kv: KvStore, prefix: str, local_dir: str) -> None:
     """Upload every regular file in `local_dir` to `prefix` unconditionally
     (last-writer-wins: every gather mirrors identical upstream content, so no CAS
-    is needed). Skips atomic-write `.tmp` leftovers."""
+    is needed). Skips atomic-write `.tmp` leftovers.
+
+    Additive only — it never deletes store keys. A file dropped from the local
+    tree upstream therefore lingers under `prefix` and keeps being re-hydrated.
+    Acceptable because the catalog's filename set is stable (the source slices and
+    the derived `catalog.json`); revisit with a prune step if that set churns."""
     try:
         names = os.listdir(local_dir)
     except OSError:

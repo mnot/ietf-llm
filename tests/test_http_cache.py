@@ -18,15 +18,20 @@ from ietf_llm.gather.datatracker import _CACHE_MAX_AGE_DAYS, _decode_cached, _Ht
 from ietf_llm.utils import get_cache_dir
 
 
+def _new_cache() -> _HttpCache:
+    """A cache bound to the default on-disk path under the (isolated) cache dir."""
+    return _HttpCache(os.path.join(get_cache_dir(), ".http-cache.json"))
+
+
 def test_http_cache_store_load_roundtrip(isolated_home: Path) -> None:
-    cache = _HttpCache()
+    cache = _new_cache()
     cache.store("https://x/api?format=json", 'W/"abc"', '{"k": 1}')
     cache.flush()
     # store() schedules a deferred flush at interpreter exit; drop it so
     # this test instance can't write again after isolated_home tears down.
     atexit.unregister(cache.flush)
     # A fresh instance reads what the first one wrote.
-    reloaded = _HttpCache()
+    reloaded = _new_cache()
     entry = reloaded.get("https://x/api?format=json")
     atexit.unregister(reloaded.flush)  # get() touches last_used → schedules a flush
     assert entry is not None
@@ -37,22 +42,21 @@ def test_http_cache_store_load_roundtrip(isolated_home: Path) -> None:
     assert os.path.isfile(os.path.join(get_cache_dir(), ".http-cache.json"))
 
 
-def test_flush_targets_load_time_cache_dir_not_exit_time(
+def test_flush_targets_construction_dir_not_exit_time(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    """Regression: the deferred flush must write to the cache dir resolved
-    when the cache was first used, not re-resolve get_cache_dir() at flush
-    time.
+    """Regression: the deferred flush must write to the cache dir captured when
+    the cache was constructed, not re-resolve get_cache_dir() at flush time.
 
-    The corruption this guards against: `make test` exercises an
-    `_HttpCache` under isolated_home (HOME -> tmp), then the monkeypatch is
-    reverted, and only later does the atexit flush fire — re-resolving
-    get_cache_dir() to the developer's real ~/.cache/ietf-llm/ and
-    overwriting their live .http-cache.json with the test's junk entries.
+    The corruption this guards against: `make test` exercises an `_HttpCache`
+    under isolated_home (HOME -> tmp), then the monkeypatch is reverted, and only
+    later does the atexit flush fire — re-resolving get_cache_dir() to the
+    developer's real ~/.cache/ietf-llm/ and overwriting their live
+    .http-cache.json with the test's junk entries.
     """
-    cache = _HttpCache()
+    cache = _new_cache()  # dest captured now, under isolated_home
     cache.store("https://x/api?format=json", 'W/"abc"', '{"k": 1}')
     bound = os.path.join(get_cache_dir(), ".http-cache.json")
 
@@ -66,21 +70,21 @@ def test_flush_targets_load_time_cache_dir_not_exit_time(
     cache.flush()
     atexit.unregister(cache.flush)
 
-    # The entries landed where the cache first loaded, not under the new HOME.
+    # The entries landed where the cache was constructed, not under the new HOME.
     assert os.path.isfile(bound)
     stray = os.path.join(get_cache_dir(), ".http-cache.json")
     assert not os.path.exists(stray)
 
 
 def test_http_cache_missing_url_is_none(isolated_home: Path) -> None:
-    assert _HttpCache().get("https://nope/") is None
+    assert _new_cache().get("https://nope/") is None
 
 
 def test_http_cache_tolerates_corrupt_file(isolated_home: Path) -> None:
     path = os.path.join(get_cache_dir(), ".http-cache.json")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("{broken")
-    assert _HttpCache().get("anything") is None  # no crash → empty
+    assert _new_cache().get("anything") is None  # no crash → empty
 
 
 def test_evict_drops_stale_keeps_fresh() -> None:
@@ -88,7 +92,7 @@ def test_evict_drops_stale_keeps_fresh() -> None:
     one — so an infrequently-gathered endpoint isn't re-downloaded."""
     now = time.time()
     day = 86400.0
-    cache = _HttpCache()
+    cache = _HttpCache("unused")  # _evict works on _entries; never touches disk
     cache._entries = {
         "fresh": {"etag": "a", "body": "{}", "last_used": now - 5 * day},
         "stale": {
@@ -105,7 +109,7 @@ def test_evict_legacy_entry_without_timestamp_survives() -> None:
     """An entry predating last_used tracking is treated as seen `now`, so a
     legacy cache isn't wiped on the first post-change flush."""
     now = time.time()
-    cache = _HttpCache()
+    cache = _HttpCache("unused")
     cache._entries = {"legacy": {"etag": "a", "body": "{}"}}  # no last_used
     cache._evict(now)
     assert set(cache._entries) == {"legacy"}
@@ -117,7 +121,7 @@ def test_evict_caps_entry_count_keeping_newest(
     """Past the entry cap, only the most-recently-used survive."""
     monkeypatch.setattr(datatracker, "_CACHE_MAX_ENTRIES", 2)
     now = time.time()
-    cache = _HttpCache()
+    cache = _HttpCache("unused")
     cache._entries = {
         f"u{i}": {"etag": "x", "body": "{}", "last_used": now - i}
         for i in range(4)
@@ -128,7 +132,7 @@ def test_evict_caps_entry_count_keeping_newest(
 
 def test_flush_then_reload_drops_stale_entry(isolated_home: Path) -> None:
     """Round-trip: a stale entry is gone after flush, a fresh one persists."""
-    cache = _HttpCache()
+    cache = _new_cache()
     cache.store("https://fresh/api?format=json", "a", "{}")
     cache.store("https://stale/api?format=json", "b", "{}")
     # Backdate the stale entry past the age window.
@@ -138,7 +142,7 @@ def test_flush_then_reload_drops_stale_entry(isolated_home: Path) -> None:
     cache.flush()
     atexit.unregister(cache.flush)
 
-    reloaded = _HttpCache()
+    reloaded = _new_cache()
     assert reloaded.get("https://stale/api?format=json") is None
     assert reloaded.get("https://fresh/api?format=json") is not None
     atexit.unregister(reloaded.flush)  # get() touched last_used → scheduled a flush
