@@ -83,6 +83,20 @@ def test_record_tool_counts_requests_and_errors():
     ) == pytest.approx(0.5)
 
 
+def test_timeout_counts_as_error_and_timeout():
+    serve_metrics.record_tool("search_corpus", 0.1, error=False)
+    serve_metrics.record_tool("search_corpus", 99.0, error=True, timeout=True)
+    serve_metrics.record_tool("search_corpus", 0.2, error=True)  # plain exception
+    body = serve_metrics.render()
+    # Two failures total (one timeout, one exception); one of them a timeout.
+    assert _metric_value(
+        body, 'ietf_llm_tool_errors_total{tool="search_corpus"}'
+    ) == 2
+    assert _metric_value(
+        body, 'ietf_llm_tool_timeouts_total{tool="search_corpus"}'
+    ) == 1
+
+
 def test_histogram_buckets_are_cumulative():
     # 0.2 lands in le="0.25"+; 3.0 lands in le="5"+; both in +Inf.
     serve_metrics.record_tool("t", 0.2, error=False)
@@ -168,6 +182,33 @@ def test_offload_records_error_on_raise():
         asyncio.run(mcp_server._offload(boom))
     body = serve_metrics.render()
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="boom"}') == 1
+
+
+def test_offload_records_timeout_as_timeout_and_error(monkeypatch):
+    import time as _time
+
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0.05")
+
+    def slow() -> str:
+        _time.sleep(0.5)
+        return "too late"
+
+    result = asyncio.run(mcp_server._offload(slow))
+    assert "timed out" in result.lower()
+    body = serve_metrics.render()
+    assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="slow"}') == 1
+    assert _metric_value(body, 'ietf_llm_tool_timeouts_total{tool="slow"}') == 1
+
+
+def test_offload_exception_is_error_but_not_timeout():
+    def boom() -> str:
+        raise ValueError("nope")
+
+    with pytest.raises(ValueError):
+        asyncio.run(mcp_server._offload(boom))
+    body = serve_metrics.render()
+    assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="boom"}') == 1
+    assert _metric_value(body, 'ietf_llm_tool_timeouts_total{tool="boom"}') == 0
 
 
 def _model() -> _OpenAICompatEmbeddingModel:

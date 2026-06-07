@@ -60,14 +60,18 @@ _BUCKETS: Tuple[float, ...] = (
 
 
 class _Histogram:
-    """A minimal Prometheus-style histogram plus an error counter.
+    """A minimal Prometheus-style histogram plus error/timeout counters.
 
     `counts[i]` is the cumulative "<= _BUCKETS[i]" observation count, so
-    each bucket renders directly. `errors` rides along here rather than in
-    a parallel map so a tool's RED triplet (requests/errors/latency) lives
-    in one object."""
+    each bucket renders directly. `errors` and `timeouts` ride along here
+    rather than in a parallel map so a tool's RED triplet
+    (requests/errors/latency) lives in one object. A timeout counts as an
+    error *and* as a timeout: `errors` stays the inclusive failure total
+    (don't subtract), while `timeouts` isolates deadline hits from raised
+    exceptions — they point at different causes (a slow upstream / cold
+    embedding load / cache contention vs. a bug)."""
 
-    __slots__ = ("counts", "sum", "count", "errors")
+    __slots__ = ("counts", "sum", "count", "errors", "timeouts")
 
     def __init__(self) -> None:
         self.reset()
@@ -77,12 +81,15 @@ class _Histogram:
         self.sum: float = 0.0
         self.count: int = 0
         self.errors: int = 0
+        self.timeouts: int = 0
 
-    def observe(self, value: float, *, error: bool) -> None:
+    def observe(self, value: float, *, error: bool, timeout: bool = False) -> None:
         self.count += 1
         self.sum += value
         if error:
             self.errors += 1
+        if timeout:
+            self.timeouts += 1
         for i, bound in enumerate(_BUCKETS):
             if value <= bound:
                 self.counts[i] += 1
@@ -97,17 +104,21 @@ _tools: Dict[str, _Histogram] = {}
 _embed = _Histogram()
 
 
-def record_tool(tool: str, elapsed: float, *, error: bool) -> None:
+def record_tool(
+    tool: str, elapsed: float, *, error: bool, timeout: bool = False
+) -> None:
     """Record one MCP tool invocation: its latency and whether it errored.
 
     Called from `_offload` in `mcp_server.py` for every tool, on the way
-    out (the `finally`), so a timeout or exception is still counted."""
+    out (the `finally`), so a timeout or exception is still counted. A
+    deadline hit passes `timeout=True` (and `error=True`): it lands in
+    both the errors total and the separate timeouts total."""
     with _LOCK:
         hist = _tools.get(tool)
         if hist is None:
             hist = _Histogram()
             _tools[tool] = hist
-        hist.observe(elapsed, error=error)
+        hist.observe(elapsed, error=error, timeout=timeout)
 
 
 def record_embed(elapsed: float, *, error: bool) -> None:
@@ -187,6 +198,15 @@ def _render_locked(corpus_ages: Optional[Iterable[Tuple[str, int]]]) -> str:
     for tool, hist in tools:
         lab = f'tool="{_escape_label(tool)}"'
         lines.append(f"ietf_llm_tool_errors_total{{{lab}}} {hist.errors}")
+
+    lines.append(
+        "# HELP ietf_llm_tool_timeouts_total Tool calls killed by the deadline "
+        "(a subset of errors)."
+    )
+    lines.append("# TYPE ietf_llm_tool_timeouts_total counter")
+    for tool, hist in tools:
+        lab = f'tool="{_escape_label(tool)}"'
+        lines.append(f"ietf_llm_tool_timeouts_total{{{lab}}} {hist.timeouts}")
 
     lines.append("# HELP ietf_llm_tool_latency_seconds MCP tool latency.")
     lines.append("# TYPE ietf_llm_tool_latency_seconds histogram")

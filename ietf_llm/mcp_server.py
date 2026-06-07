@@ -2074,11 +2074,15 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
             elapsed=round(elapsed, 6),
         )
         # RED per tool for the /metrics scrape (issue #40). `status` is
-        # "ok" on success; "timeout"/"exception" both count as errors.
+        # "ok" on success; "timeout"/"exception" both count as errors, and
+        # a "timeout" is additionally counted on its own series so a
+        # deadline hit (slow upstream / cold embedding / cache contention)
+        # is distinguishable from a raised exception (a bug).
         serve_metrics.record_tool(
             getattr(fn, "__name__", "tool"),
             elapsed,
             error=status != "ok",
+            timeout=status == "timeout",
         )
     # Reached only when the deadline cancelled the await above; the worker
     # thread is abandoned (it finishes and frees its slot on its own).
