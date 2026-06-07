@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import canonical, freshness, service_config
+from . import canonical, freshness, serve_metrics, service_config
 from .utils import (
     LogLevel,
     Verbosity,
@@ -674,11 +674,19 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             return
         _write_status(store, status)
         time.sleep(_SLOT_POLL_S)
+    # Gather lifecycle for /metrics: started once we go `running`, finished in
+    # the outer `finally` below. `run_start` stays None until then so the
+    # finally only records (and balances the in-flight gauge) for a gather that
+    # actually started — and it does so for *every* such gather, even if seed /
+    # hydrate raise before the pipeline's own try/finally.
+    run_start: Optional[float] = None
     try:
         with _registry_lock:
             _jobs[corpus] = "running"
         status["state"] = "running"
         _write_status(store, status)
+        serve_metrics.record_gather_started()
+        run_start = time.monotonic()
 
         last_detail_write = 0.0
         last_cancel_poll = 0.0
@@ -793,6 +801,10 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             _write_status(store, status)
     finally:
         store.release_gather_slot(slot_owner)
+        if run_start is not None:
+            serve_metrics.record_gather_finished(
+                str(status["state"]), time.monotonic() - run_start
+            )
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:

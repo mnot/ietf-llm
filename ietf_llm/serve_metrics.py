@@ -59,6 +59,23 @@ _BUCKETS: Tuple[float, ...] = (
     120.0,
 )
 
+#: Coarser bucket bounds (seconds) for in-session gather duration: a gather is
+#: a minutes-long background job, not a request, so it needs a range reaching
+#: the ~hour a large cold gather can take — the per-call buckets above would
+#: pin every gather in +Inf.
+_GATHER_BUCKETS: Tuple[float, ...] = (
+    5.0,
+    15.0,
+    30.0,
+    60.0,
+    120.0,
+    300.0,
+    600.0,
+    1200.0,
+    1800.0,
+    3600.0,
+)
+
 
 class _Histogram:
     """A minimal Prometheus-style histogram plus error/timeout counters.
@@ -72,13 +89,14 @@ class _Histogram:
     exceptions — they point at different causes (a slow upstream / cold
     embedding load / cache contention vs. a bug)."""
 
-    __slots__ = ("counts", "sum", "count", "errors", "timeouts")
+    __slots__ = ("buckets", "counts", "sum", "count", "errors", "timeouts")
 
-    def __init__(self) -> None:
+    def __init__(self, buckets: Tuple[float, ...] = _BUCKETS) -> None:
+        self.buckets = buckets
         self.reset()
 
     def reset(self) -> None:
-        self.counts: List[int] = [0] * len(_BUCKETS)
+        self.counts: List[int] = [0] * len(self.buckets)
         self.sum: float = 0.0
         self.count: int = 0
         self.errors: int = 0
@@ -91,7 +109,7 @@ class _Histogram:
             self.errors += 1
         if timeout:
             self.timeouts += 1
-        for i, bound in enumerate(_BUCKETS):
+        for i, bound in enumerate(self.buckets):
             if value <= bound:
                 self.counts[i] += 1
 
@@ -109,6 +127,16 @@ _tools: Dict[str, _Histogram] = {}
 _store: Dict[str, _Histogram] = {}
 #: the remote /embeddings backend (a single unlabelled series)
 _embed = _Histogram()
+#: in-session gather lifecycle (opt-in `IETF_LLM_ENABLE_GATHER`). The gather
+#: is the server's one write+network path and runs for minutes in the
+#: background, so its liveness is invisible to the per-tool RED above. We track
+#: how many run concurrently, how many have started, the terminal outcomes by
+#: state, and a duration histogram. Near-idle when gather is disabled.
+_gather_inflight = [0]
+_gather_started = [0]
+#: terminal state ("done" | "failed" | "cancelled") -> count
+_gather_outcomes: Dict[str, int] = {}
+_gather_duration = _Histogram(_GATHER_BUCKETS)
 #: tool calls currently executing in `_offload` (the saturation "U" the RED
 #: latency histograms can't show on their own): incremented on the way in,
 #: decremented in the `finally`, so a scrape sees concurrent in-flight work.
@@ -167,6 +195,24 @@ def timed_store(op: str, fn: Callable[[], _T]) -> _T:
         record_store(op, time.monotonic() - start, error=errored)
 
 
+def record_gather_started() -> None:
+    """One in-session gather entered the `running` state."""
+    with _LOCK:
+        _gather_started[0] += 1
+        _gather_inflight[0] += 1
+
+
+def record_gather_finished(state: str, duration: float) -> None:
+    """One in-session gather reached a terminal state (`done` / `failed` /
+    `cancelled`) after `duration` seconds running. Balances the in-flight
+    gauge bumped by `record_gather_started`."""
+    with _LOCK:
+        if _gather_inflight[0] > 0:
+            _gather_inflight[0] -= 1
+        _gather_outcomes[state] = _gather_outcomes.get(state, 0) + 1
+        _gather_duration.observe(duration, error=state == "failed")
+
+
 def adjust_inflight(delta: int) -> None:
     """Bump the in-flight tool-call gauge by `delta` (+1 entering `_offload`,
     -1 in its `finally`)."""
@@ -181,6 +227,10 @@ def reset() -> None:
         _store.clear()
         _embed.reset()
         _inflight[0] = 0
+        _gather_inflight[0] = 0
+        _gather_started[0] = 0
+        _gather_outcomes.clear()
+        _gather_duration.reset()
 
 
 # --- Prometheus text exposition --------------------------------------------
@@ -207,7 +257,7 @@ def _emit_histogram(
     `label` is a pre-rendered `key="value"` fragment (or ""). Buckets are
     emitted directly because `hist.counts` is already cumulative."""
     inner = f"{label}," if label else ""
-    for bound, count in zip(_BUCKETS, hist.counts):
+    for bound, count in zip(hist.buckets, hist.counts):
         lines.append(f'{name}_bucket{{{inner}le="{_fmt(bound)}"}} {count}')
     lines.append(f'{name}_bucket{{{inner}le="+Inf"}} {hist.count}')
     suffix = f"{{{label}}}" if label else ""
@@ -312,6 +362,22 @@ def _render_locked(
     for op, hist in store:
         lab = f'op="{_escape_label(op)}"'
         _emit_histogram(lines, "ietf_llm_store_latency_seconds", lab, hist)
+
+    # In-session gather lifecycle (opt-in; near-idle when disabled).
+    lines.append("# HELP ietf_llm_gathers_inflight Gathers running now.")
+    lines.append("# TYPE ietf_llm_gathers_inflight gauge")
+    lines.append(f"ietf_llm_gathers_inflight {_gather_inflight[0]}")
+    lines.append("# HELP ietf_llm_gathers_started_total Gathers that began running.")
+    lines.append("# TYPE ietf_llm_gathers_started_total counter")
+    lines.append(f"ietf_llm_gathers_started_total {_gather_started[0]}")
+    lines.append("# HELP ietf_llm_gathers_total Gathers that reached a terminal state.")
+    lines.append("# TYPE ietf_llm_gathers_total counter")
+    for state, outcome_count in sorted(_gather_outcomes.items()):
+        lab = f'state="{_escape_label(state)}"'
+        lines.append(f"ietf_llm_gathers_total{{{lab}}} {outcome_count}")
+    lines.append("# HELP ietf_llm_gather_duration_seconds Completed-gather duration.")
+    lines.append("# TYPE ietf_llm_gather_duration_seconds histogram")
+    _emit_histogram(lines, "ietf_llm_gather_duration_seconds", "", _gather_duration)
 
     # Index freshness, computed by the caller from the last-gathered
     # sentinels (no upstream call; R18).

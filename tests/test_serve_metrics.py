@@ -211,6 +211,44 @@ def test_inflight_gauge_tracks_adjustments():
     assert _metric_value(serve_metrics.render(), "ietf_llm_inflight_requests") == 1
 
 
+def test_gather_lifecycle_metrics():
+    # Nothing yet: gauge 0, no terminal series.
+    body = serve_metrics.render()
+    assert _metric_value(body, "ietf_llm_gathers_inflight") == 0
+    assert _metric_value(body, "ietf_llm_gathers_started_total") == 0
+
+    serve_metrics.record_gather_started()
+    serve_metrics.record_gather_started()
+    body = serve_metrics.render()
+    assert _metric_value(body, "ietf_llm_gathers_inflight") == 2
+    assert _metric_value(body, "ietf_llm_gathers_started_total") == 2
+
+    serve_metrics.record_gather_finished("done", 42.0)
+    serve_metrics.record_gather_finished("failed", 5.0)
+    body = serve_metrics.render()
+    # Both finished: gauge back to 0, one of each outcome recorded.
+    assert _metric_value(body, "ietf_llm_gathers_inflight") == 0
+    assert _metric_value(body, 'ietf_llm_gathers_total{state="done"}') == 1
+    assert _metric_value(body, 'ietf_llm_gathers_total{state="failed"}') == 1
+    assert _metric_value(body, "ietf_llm_gather_duration_seconds_count") == 2
+    assert _metric_value(
+        body, "ietf_llm_gather_duration_seconds_sum"
+    ) == pytest.approx(47.0)
+
+
+def test_gather_duration_uses_coarse_buckets():
+    # A 20-minute gather must land in a real bucket, not +Inf — the per-call
+    # buckets (max 120s) would pin every gather there.
+    serve_metrics.record_gather_finished("done", 1200.0)
+    body = serve_metrics.render()
+    assert _metric_value(
+        body, 'ietf_llm_gather_duration_seconds_bucket{le="600"}'
+    ) == 0
+    assert _metric_value(
+        body, 'ietf_llm_gather_duration_seconds_bucket{le="1200"}'
+    ) == 1
+
+
 # --- chokepoint wiring ------------------------------------------------------
 
 
