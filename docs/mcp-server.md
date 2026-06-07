@@ -284,6 +284,40 @@ or concurrent gathers.
 Lowering them makes gathers gentler (and slower); raising the per-host cap speeds up the parallel
 document downloads against the static hosts.
 
+### Keeping a gather alive on a scale-to-zero platform
+
+`start_gather` returns immediately and the gather runs as an in-process background task on the replica
+that accepted it; it only becomes durable at **publish** (on the cloud backend, the atomic pointer
+flip), so until then the in-progress tree lives on that replica's ephemeral local scratch. A long,
+quiet gather — a first-time full gather is the worst case (whole-list mbox download plus the index
+build) — emits no inbound requests for minutes. On a platform that sleeps or evicts an instance after
+an idle window — notably Cloudflare Containers, which defaults to `sleepAfter: "10m"` of *request*
+inactivity — the instance can sleep mid-gather, dropping the unpublished scratch. The gather's lease
+then lapses and `gather_status` relabels it `interrupted`; the work restarts from scratch on the next
+attempt, possibly never reaching publish.
+
+A live background thread does **not** count as activity on these platforms, and the container process
+cannot keep itself awake — only the controlling runtime can reset the idle timer (on Cloudflare,
+`renewActivityTimeout()`, called from the Worker / Durable Object side, not from inside the
+container). So this is a **deployment-side** requirement, not something the server does for you (and
+keeping it out of the server is what holds the no-platform-specific-code line):
+
+- **Keep the gathering instance awake for the duration of a gather.** Either raise the platform's idle
+  window beyond the longest expected gather, or have the controlling runtime renew the idle timer in a
+  loop while a gather is running. `gather_status` is the activity signal: poll it, and renew (or count
+  the poll as activity) while it reports `queued`/`running`.
+- **The keepalive must reach the *same* instance.** The gather is in-process on one specific replica; a
+  poll or renew that lands on another replica does nothing for it. With instance-addressed routing
+  (e.g. a Durable Object per gather) this is automatic; behind a naive load balancer it is not — route
+  the keepalive to the replica that owns the gather.
+- **This narrows the window; it does not close it.** A deploy, eviction, crash, or a gather that
+  outruns the idle window still loses the unpublished scratch. The gather accelerator caches (see
+  [storage.md](storage.md#gather-accelerator-caches)) blunt the *re-fetch* cost of a restart, but the
+  first-time full gather — nothing published to seed from, caches not yet persisted — is unprotected.
+  A robust fix is resumable gather (periodically checkpointing the in-progress tree to the store so a
+  restart continues rather than starting over), or running gather as a dedicated cron-triggered
+  invocation where the runtime owns the renew loop, rather than in-session inside a serving replica.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
