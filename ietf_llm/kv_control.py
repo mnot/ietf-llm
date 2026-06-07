@@ -104,12 +104,15 @@ class KvControlPlane:
         return self._kv.put(key, _dumps(held), expect=token) is not None
 
     def release_lease(self, corpus: str, owner: str) -> None:
+        # Free the lease by stamping it expired (compare-and-swap on our token),
+        # so release needs only a conditional PUT, never a conditional DELETE.
         record = self._kv.get(_lease_key(corpus))
         if record is None:
             return
         held, token = _loads(record)
         if held["owner"] == owner:
-            self._kv.delete(_lease_key(corpus), expect=token)
+            held["expires_at"] = 0.0
+            self._kv.put(_lease_key(corpus), _dumps(held), expect=token)
 
     def lease_holder(self, corpus: str, now: Optional[float] = None) -> Optional[str]:
         clock = time.time() if now is None else now

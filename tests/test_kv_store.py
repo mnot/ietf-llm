@@ -38,16 +38,13 @@ def test_put_cas_on_token() -> None:
     assert kv.get("k")[0] == b"2"
 
 
-def test_delete_cas_and_idempotent() -> None:
+def test_delete_is_unconditional_and_idempotent() -> None:
     kv = InMemoryKvStore()
-    t1 = kv.put("k", b"1")
-    # Wrong token does not delete.
-    assert kv.delete("k", expect="bogus") is False
-    assert kv.get("k") is not None
-    assert kv.delete("k", expect=t1) is True
+    kv.put("k", b"1")
+    kv.delete("k")
     assert kv.get("k") is None
-    # Unconditional delete of an absent key is an idempotent success.
-    assert kv.delete("k") is True
+    # Deleting an absent key is an idempotent no-op.
+    kv.delete("k")
 
 
 def test_list_children_one_level() -> None:

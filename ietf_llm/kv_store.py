@@ -45,10 +45,10 @@ class KvStore(ABC):
         token, or None if the precondition failed."""
 
     @abstractmethod
-    def delete(self, key: str, *, expect: object = ANY) -> bool:
-        """Delete `key` subject to `expect`. True on success (including an
-        idempotent delete of an absent key when `expect` is `ANY`); False if the
-        precondition failed."""
+    def delete(self, key: str) -> None:
+        """Delete `key` if present; idempotent (a no-op if absent). Unconditional
+        by design — the control plane never needs a conditional delete, so an
+        object store is not asked to support one."""
 
     @abstractmethod
     def list_children(self, prefix: str) -> List[str]:
@@ -86,16 +86,9 @@ class InMemoryKvStore(KvStore):
             self._data[key] = (value, token)
             return token
 
-    def delete(self, key: str, *, expect: object = ANY) -> bool:
+    def delete(self, key: str) -> None:
         with self._lock:
-            current = self._data.get(key)
-            if expect is ANY:
-                self._data.pop(key, None)
-                return True
-            if current is None or current[1] != expect:
-                return False
-            del self._data[key]
-            return True
+            self._data.pop(key, None)
 
     def list_children(self, prefix: str) -> List[str]:
         with self._lock:
