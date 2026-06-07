@@ -488,7 +488,12 @@ version. `get_corpus_store()` picks the backend from service config
   unchanged files — instead of starting cold; a no-op on the local backend
   (where the workspace already is the live cache), and a seed failure degrades
   to a full gather rather than failing it.
-  Both planes are **object-store only**. The control plane is a `KvControlPlane`
+  Both planes are **object-store only**. The control plane is the only
+  linearizable, cross-host state, and it holds **no corpus content** (that lives in
+  the version blobs): every key is either a *published fact* (pointer, manifest,
+  status — last-writer-wins) or an *ephemeral TTL lock* (lease, slot —
+  compare-and-swap), with no joins, range scans, or secondary indexes. That is why
+  an object store suffices and no database is needed. It is a `KvControlPlane`
   over a small **`KvStore`** seam — `get`, `put` with an optional precondition,
   `delete`, `list_children` — which is exactly what an object store with
   conditional writes (`If-Match` / `If-None-Match`) provides natively. Every
