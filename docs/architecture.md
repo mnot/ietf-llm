@@ -498,9 +498,13 @@ version. `get_corpus_store()` picks the backend from service config
   after scale-to-zero (issue #82); no-ops on local, all best-effort.
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
-  the version blobs): every key is either a *published fact* (pointer, manifest,
-  status — last-writer-wins) or an *ephemeral TTL lock* (lease, slot —
-  compare-and-swap), with no joins, range scans, or secondary indexes. That is why
+  the version blobs): every *control* key is either a *published fact* (pointer,
+  manifest, status — last-writer-wins) or an *ephemeral TTL lock* (lease, slot —
+  compare-and-swap), with no joins, range scans, or secondary indexes. (The same
+  `KvStore` also carries the gather accelerator caches above —
+  `corpora/<name>/gather-cache/`, `fleet/gather-cache/`, `fleet/catalog/` — but
+  those are a separate, gather-only, mutable-data use of it, not control state, and
+  are never read on the serve path.) That is why
   an object store suffices and no database is needed. It is a `KvControlPlane`
   over a small **`KvStore`** seam — `get`, `put` with an optional precondition,
   `delete`, `list_children` — which is exactly what an object store with
