@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -329,31 +330,97 @@ def download_github_archives(
     written; under `suppress_raw` the regenerable `raw/github-<repo>.txt`
     dump is not, so those entries drop from the returned list — and any
     such dump an earlier non-suppressed gather left behind is swept.
+
+    Finally, any archive / raw dump / per-issue dir belonging to a repo
+    *not* in `repos` is pruned, so a corpus that drops a repo (or inherited
+    files an older / leaked gather wrote for one it never tracked) heals on
+    the next gather — symmetric with the thread and ballot stages.
     """
     pending: List[tuple[str, str]] = []
-    if not repos:
-        return pending
-    os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
-    if not suppress_raw:
-        os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
-    for repo_short in repos:
-        if repo_short.startswith(("http://", "https://")):
-            # URL form — the last two path segments are "<owner>/<repo>".
-            repo_short = "/".join(repo_short.rstrip("/").split("/")[-2:])
+    normalized = [_normalize_repo(r) for r in repos or []]
+    if normalized:
+        os.makedirs(paths.github_dir(cache_dir), exist_ok=True)
+        if not suppress_raw:
+            os.makedirs(paths.raw_dir(cache_dir), exist_ok=True)
+    for repo_short in normalized:
         gh_json = paths.github_archive_path(cache_dir, repo_short)
         gh_txt = paths.raw_github_text_path(cache_dir, repo_short)
         if suppress_raw and os.path.exists(gh_txt):
             # Sweep a dump an earlier non-suppressed gather left behind
             # so a cache migrated to the cloud backend doesn't carry
             # stale raw/ bulk forward (mirrors the .pdf sweep).
-            try:
-                os.remove(gh_txt)
-            except OSError:
-                pass
+            _remove_quietly(gh_txt)
         if download_github_issues(repo_short, gh_json, verbose=verbosity):
             if not suppress_raw:  # raw/ text dump only; the JSON is kept
                 pending.append((gh_json, gh_txt))
+    _prune_github_orphans(normalized, cache_dir, verbosity)
     return pending
+
+
+def _normalize_repo(repo: str) -> str:
+    """`owner/repo` as-is; a full URL → its last two path segments."""
+    if repo.startswith(("http://", "https://")):
+        return "/".join(repo.rstrip("/").split("/")[-2:])
+    return repo
+
+
+def _remove_quietly(path: str) -> None:
+    """Best-effort file removal; a missing file is fine."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _prune_github_orphans(
+    repos: "List[str]", cache_dir: str, verbose: Verbosity
+) -> None:
+    """Remove archive JSONs, raw dumps, and per-issue dirs for repos this
+    corpus no longer tracks. Keyed off the tracked `repos` set (already
+    URL-normalised). An empty `repos` is a valid "track nothing": persisted
+    repos survive config.merge and a throttled discovery never clears them,
+    so an empty set means genuinely none (see autotrack_github), not an
+    outage that would make this delete live data.
+    """
+    keep_json = {
+        os.path.basename(paths.github_archive_path(cache_dir, r)) for r in repos
+    }
+    keep_raw = {
+        os.path.basename(paths.raw_github_text_path(cache_dir, r)) for r in repos
+    }
+    keep_issue_dir = {
+        os.path.basename(paths.issue_repo_dir(cache_dir, r)) for r in repos
+    }
+    removed = 0
+    gh_dir = paths.github_dir(cache_dir)
+    if os.path.isdir(gh_dir):
+        for name in os.listdir(gh_dir):
+            if name.endswith(".json") and name not in keep_json:
+                _remove_quietly(os.path.join(gh_dir, name))
+                removed += 1
+    raw = paths.raw_dir(cache_dir)
+    if os.path.isdir(raw):
+        for name in os.listdir(raw):
+            if (
+                name.startswith("github-")
+                and name.endswith(".txt")
+                and name not in keep_raw
+            ):
+                _remove_quietly(os.path.join(raw, name))
+                removed += 1
+    iss_dir = paths.issues_dir(cache_dir)
+    if os.path.isdir(iss_dir):
+        for name in os.listdir(iss_dir):
+            sub = os.path.join(iss_dir, name)
+            if os.path.isdir(sub) and name not in keep_issue_dir:
+                shutil.rmtree(sub, ignore_errors=True)
+                removed += 1
+    if removed:
+        log(
+            f"Pruned {removed} orphaned GitHub artifact(s) for untracked repos.",
+            verbose,
+            level=LogLevel.STATUS,
+        )
 
 
 def _fetch_all_issues(
