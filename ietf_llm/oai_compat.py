@@ -116,18 +116,20 @@ def build_headers(
 
 
 def _sleep_backoff(attempt: int, resp: requests.Response | None) -> None:
-    # Honour Retry-After when the server sends it, else exponential
-    # backoff with jitter. The rate limit is account-level, so several
-    # concurrent callers share the budget -- jitter de-synchronises their
-    # retries instead of having them all wake together.
+    # Honour Retry-After when the server sends it, else exponential backoff.
+    # Either way add jitter before sleeping: the rate limit is account-level,
+    # so several concurrent callers share the budget and tend to be throttled
+    # together -- a Retry-After value is identical across them, so without the
+    # jitter they would all wake at the same instant and re-collide. The jitter
+    # spreads the retries out.
     delay = 0.0
     if resp is not None:
         retry_after = resp.headers.get("Retry-After")
         if retry_after:
             delay = parse_retry_after(retry_after)
     if delay <= 0.0:
-        delay = min(30.0, 2.0**attempt) + random.uniform(0.0, 1.0)
-    time.sleep(delay)
+        delay = min(30.0, 2.0**attempt)
+    time.sleep(delay + random.uniform(0.0, 1.0))
 
 
 def post_json_with_retry(

@@ -21,6 +21,7 @@ import time
 from typing import Any, Iterable, Sequence
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .. import oai_compat, serve_metrics
 from ..utils import LogLevel, Verbosity, log
@@ -47,6 +48,29 @@ def is_remote_embed_model(model_name: str) -> bool:
     nothing to load, and a network round-trip must not gate readiness.
     """
     return model_name.startswith(_OPENAI_EMBED_PREFIX)
+
+
+# requests' default per-host connection pool. We never size the remote
+# embedding session below this, so the single-input query path keeps the
+# stock headroom even when a gather asks for less concurrency.
+_DEFAULT_POOL_MAXSIZE = 10
+
+
+def embed_concurrency() -> int:
+    """How many files a gather embeds in parallel on the remote backend.
+
+    A remote embed is a network round-trip, and a gather sends one per file;
+    for a mail-heavy corpus that serial wait is the bulk of the wall-clock,
+    so the index build overlaps the round-trips through a bounded pool. This
+    same number sizes the embedding session's connection pool (see
+    `_OpenAICompatEmbeddingModel`), so the keep-alive connections never run
+    short of the fan-out. Only the remote backend uses it (the on-device
+    model is GPU-bound and stays serial). Override with
+    `IETF_LLM_EMBED_CONCURRENCY`; floored at 1 (serial)."""
+    try:
+        return max(1, int(os.environ.get("IETF_LLM_EMBED_CONCURRENCY", "8")))
+    except ValueError:
+        return 8
 
 
 # Process-level cache of loaded embedding models, keyed by full model id.
@@ -146,6 +170,7 @@ class _OpenAICompatEmbeddingModel:
         batch_size: int,
         timeout: float,
         max_retries: int,
+        pool_maxsize: int = _DEFAULT_POOL_MAXSIZE,
     ) -> None:
         self._model_id = model_id
         self._url = base_url.rstrip("/") + "/embeddings"
@@ -156,7 +181,14 @@ class _OpenAICompatEmbeddingModel:
         # One keep-alive session for the model's lifetime (it is process-cached
         # in _MODEL_CACHE): a bulk index fires many batches back-to-back at one
         # host, so reusing the connection drops a TCP + TLS handshake per batch.
+        # A gather embeds up to `embed_concurrency()` files at once, so size the
+        # per-host pool to match: with the stock pool (10) a higher concurrency
+        # would exhaust it and urllib3 would discard the surplus connections
+        # after each use, quietly undoing the keep-alive saving on most batches.
         self._session = requests.Session()
+        adapter = HTTPAdapter(pool_maxsize=max(1, pool_maxsize))
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
 
     def embed(self, text: str) -> list[float]:
         return self._embed_batch([text])[0]
@@ -252,6 +284,9 @@ def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
         batch_size=oai_compat.env_int("IETF_LLM_EMBED_BATCH", 96),
         timeout=oai_compat.env_float("IETF_LLM_EMBED_TIMEOUT", 10.0),
         max_retries=oai_compat.env_int("IETF_LLM_EMBED_RETRIES", 3),
+        # Never below requests' stock pool, so the query path keeps its
+        # headroom; raised to the fan-out when a gather embeds concurrently.
+        pool_maxsize=max(_DEFAULT_POOL_MAXSIZE, embed_concurrency()),
     )
 
 

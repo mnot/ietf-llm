@@ -56,9 +56,15 @@ service, a gateway, a self-hosted vLLM / TEI) works; the URL and token are all t
 | `IETF_LLM_EMBED_BATCH` | inputs per request (default 96) |
 | `IETF_LLM_EMBED_TIMEOUT` | per-request timeout, seconds (default 10) |
 | `IETF_LLM_EMBED_RETRIES` | retries on `429` / `5xx`, with backoff (default 3) |
+| `IETF_LLM_EMBED_CONCURRENCY` | files embedded in parallel during a gather (default 8, floor 1 = serial) |
 
 The token comes from the environment only and is never written to disk. Bulk ingest batches to
-`IETF_LLM_EMBED_BATCH` inputs per request and backs off on rate-limit / server errors.
+`IETF_LLM_EMBED_BATCH` inputs per request and backs off on rate-limit / server errors. Because each
+request is a network round-trip, a gather embeds up to `IETF_LLM_EMBED_CONCURRENCY` files at once
+(the index write stays single-threaded); raise it for more throughput against a generous endpoint,
+lower it (or `1`) if the endpoint rate-limits. The embedding session's connection pool is sized to
+this value (never below the default 10), so raising it scales the keep-alive connections with the
+fan-out instead of exhausting the pool. The on-device model ignores this — it embeds serially.
 
 ### One index, one backend
 
