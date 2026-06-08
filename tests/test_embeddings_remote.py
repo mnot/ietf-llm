@@ -1,10 +1,11 @@
 """Tests for the OpenAI-compatible remote embedding backend.
 
-No network: requests.post is stubbed. Verifies the embed / embed_multi
-surface, input-order preservation when the server reorders, batching to
-the configured size, and 429 / 5xx retry-then-succeed, plus that
-_load_openai_compat reads endpoint + header-map config from the env and
-self-disables when the base URL is missing.
+No network: requests.Session.post is stubbed (the backend reuses one
+keep-alive session, so that — not the module-level requests.post — is the
+seam). Verifies the embed / embed_multi surface, input-order preservation
+when the server reorders, batching to the configured size, and 429 / 5xx
+retry-then-succeed, plus that _load_openai_compat reads endpoint + header-map
+config from the env and self-disables when the base URL is missing.
 """
 
 from __future__ import annotations
@@ -50,15 +51,15 @@ def _model(**kw):
 
 
 def test_embed_single(monkeypatch):
-    monkeypatch.setattr(oai_compat.requests, "post",
-                        lambda url, headers, json, timeout: _FakeResp(200, _echo(json["input"])))
+    monkeypatch.setattr(requests.Session, "post",
+                        lambda self, url, headers, json, timeout: _FakeResp(200, _echo(json["input"])))
     assert _model().embed("hello") == [5.0, 1.0]
 
 
 def test_embed_multi_preserves_input_order(monkeypatch):
     # Server returns rows in reversed index order; backend must reorder.
-    monkeypatch.setattr(oai_compat.requests, "post",
-                        lambda url, headers, json, timeout: _FakeResp(200, _echo(json["input"], reverse=True)))
+    monkeypatch.setattr(requests.Session, "post",
+                        lambda self, url, headers, json, timeout: _FakeResp(200, _echo(json["input"], reverse=True)))
     out = _model().embed_multi(["a", "bb", "ccc"])
     assert [v[0] for v in out] == [1.0, 2.0, 3.0]
 
@@ -66,8 +67,8 @@ def test_embed_multi_preserves_input_order(monkeypatch):
 def test_embed_multi_raises_on_short_response(monkeypatch):
     # A server returning fewer vectors than inputs would misalign every
     # chunk<->vector pair the caller zips; the backend must fail loudly.
-    monkeypatch.setattr(oai_compat.requests, "post",
-                        lambda url, headers, json, timeout: _FakeResp(200, _echo(json["input"])[:-1]))
+    monkeypatch.setattr(requests.Session, "post",
+                        lambda self, url, headers, json, timeout: _FakeResp(200, _echo(json["input"])[:-1]))
     with pytest.raises(ValueError):
         _model().embed_multi(["a", "bb", "ccc"])
 
@@ -75,12 +76,12 @@ def test_embed_multi_raises_on_short_response(monkeypatch):
 def test_embed_multi_raises_on_duplicate_index(monkeypatch):
     # Two rows claiming the same index leave another input with no vector;
     # silently accepting it would shift the alignment.
-    def dup(url, headers, json, timeout):
+    def dup(self, url, headers, json, timeout):
         rows = _echo(json["input"])
         rows[1]["index"] = 0
         return _FakeResp(200, rows)
 
-    monkeypatch.setattr(oai_compat.requests, "post", dup)
+    monkeypatch.setattr(requests.Session, "post", dup)
     with pytest.raises(ValueError):
         _model().embed_multi(["a", "bb", "ccc"])
 
@@ -88,24 +89,40 @@ def test_embed_multi_raises_on_duplicate_index(monkeypatch):
 def test_embed_multi_batches_to_configured_size(monkeypatch):
     calls = []
 
-    def fake(url, headers, json, timeout):
+    def fake(self, url, headers, json, timeout):
         calls.append(len(json["input"]))
         return _FakeResp(200, _echo(json["input"]))
 
-    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    monkeypatch.setattr(requests.Session, "post", fake)
     out = _model(batch_size=2).embed_multi(["a", "b", "c", "d", "e"])
     assert calls == [2, 2, 1]
     assert len(out) == 5
 
 
+def test_reuses_one_session_across_batches(monkeypatch):
+    # Connection reuse is the point: every batch goes through the model's one
+    # keep-alive session, not a fresh connection per call.
+    sessions = []
+
+    def fake(self, url, headers, json, timeout):
+        sessions.append(self)
+        return _FakeResp(200, _echo(json["input"]))
+
+    monkeypatch.setattr(requests.Session, "post", fake)
+    m = _model(batch_size=1)
+    m.embed_multi(["a", "b", "c"])
+    assert len(sessions) == 3
+    assert all(s is m._session for s in sessions)
+
+
 def test_url_model_id_and_header_map_sent(monkeypatch):
     seen = {}
 
-    def fake(url, headers, json, timeout):
+    def fake(self, url, headers, json, timeout):
         seen.update(url=url, headers=headers, model=json["model"])
         return _FakeResp(200, _echo(json["input"]))
 
-    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    monkeypatch.setattr(requests.Session, "post", fake)
     _OpenAICompatEmbeddingModel(
         "@cf/baai/bge-small-en-v1.5", "https://host/v1",
         {"Authorization": "Bearer tok", "cf-aig-authorization": "g"},
@@ -122,19 +139,19 @@ def test_retry_then_succeed(monkeypatch, status):
     monkeypatch.setattr(oai_compat.time, "sleep", lambda *a, **k: None)
     n = {"i": 0}
 
-    def fake(url, headers, json, timeout):
+    def fake(self, url, headers, json, timeout):
         n["i"] += 1
         return _FakeResp(status) if n["i"] <= 2 else _FakeResp(200, _echo(json["input"]))
 
-    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    monkeypatch.setattr(requests.Session, "post", fake)
     assert _model(max_retries=3).embed("hi") == [2.0, 1.0]
     assert n["i"] == 3
 
 
 def test_retry_exhausted_raises(monkeypatch):
     monkeypatch.setattr(oai_compat.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(oai_compat.requests, "post",
-                        lambda url, headers, json, timeout: _FakeResp(500))
+    monkeypatch.setattr(requests.Session, "post",
+                        lambda self, url, headers, json, timeout: _FakeResp(500))
     with pytest.raises(requests.HTTPError):
         _model(max_retries=1).embed("hi")
 
