@@ -50,3 +50,27 @@ def test_progress_hidden_at_status_verbosity(monkeypatch, capsys):
     monkeypatch.setenv("IETF_LLM_LOG_FORMAT", "json")
     log("detail", verbosity=Verbosity.STATUS, level=LogLevel.PROGRESS)
     assert capsys.readouterr().err == ""
+
+
+def test_json_fields_merged(monkeypatch, capsys):
+    monkeypatch.setenv("IETF_LLM_LOG_FORMAT", "json")
+    log("tool overview ok 12ms", level=LogLevel.STATUS, fields={"tool": "overview"})
+    rec = json.loads(capsys.readouterr().err.strip())
+    assert rec["tool"] == "overview"
+    assert rec["msg"] == "tool overview ok 12ms"
+    assert rec["level"] == "status"
+
+
+def test_json_fixed_keys_win_over_fields(monkeypatch, capsys):
+    # A field can't clobber the fixed ts/level/msg shape every record carries.
+    monkeypatch.setenv("IETF_LLM_LOG_FORMAT", "json")
+    log("real", level=LogLevel.STATUS, fields={"msg": "spoof", "level": "error"})
+    rec = json.loads(capsys.readouterr().err.strip())
+    assert rec["msg"] == "real"
+    assert rec["level"] == "status"
+
+
+def test_text_mode_ignores_fields(monkeypatch, capsys):
+    monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
+    log("summary", level=LogLevel.STATUS, fields={"tool": "overview"})
+    assert capsys.readouterr().err.strip() == "summary"

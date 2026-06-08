@@ -96,6 +96,53 @@ def test_stateless_setting_flows_to_fastmcp(monkeypatch: pytest.MonkeyPatch) -> 
     assert server.settings.stateless_http is False
 
 
+def test_log_verbosity_default_quiet_on_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IETF_LLM_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
+    assert mcp_server._log_verbosity() is mcp_server.Verbosity.QUIET
+
+
+def test_log_verbosity_default_status_on_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IETF_LLM_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")
+    assert mcp_server._log_verbosity() is mcp_server.Verbosity.STATUS
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("quiet", "QUIET"),
+        ("status", "STATUS"),
+        ("verbose", "VERBOSE"),
+        ("progress", "VERBOSE"),
+        ("2", "VERBOSE"),
+        ("  Status  ", "STATUS"),
+    ],
+)
+def test_log_verbosity_explicit_override(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: str
+) -> None:
+    # An explicit level overrides the transport default in either direction.
+    monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")
+    monkeypatch.setenv("IETF_LLM_LOG_LEVEL", value)
+    assert mcp_server._log_verbosity().name == expected
+
+
+def test_log_verbosity_unrecognised_falls_back_to_transport_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IETF_LLM_LOG_LEVEL", "loud")
+    monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")
+    assert mcp_server._log_verbosity() is mcp_server.Verbosity.STATUS
+    monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
+    assert mcp_server._log_verbosity() is mcp_server.Verbosity.QUIET
+
+
+def test_posture_reports_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IETF_LLM_LOG_LEVEL", "verbose")
+    assert mcp_server._serve_posture("0.0.0.0", 8000)["log_level"] == "verbose"
+
+
 def test_posture_reports_stateless(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
     assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "yes"

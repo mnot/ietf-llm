@@ -2130,6 +2130,23 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
             error=status != "ok",
             timeout=status == "timeout",
         )
+        # Per-request access record on the structured stream. /metrics shows
+        # the aggregate; this is the per-call line a hosted deployment needs to
+        # query individual requests by field (tool / status / duration). Gated
+        # by the serve verbosity, so stdio/local stays silent by default while
+        # the HTTP container emits one queryable line per tool call.
+        tool_name = getattr(fn, "__name__", "tool")
+        log(
+            f"tool {tool_name} {status} {elapsed * 1000:.0f}ms",
+            _log_verbosity(),
+            level=LogLevel.STATUS,
+            fields={
+                "event": "tool_call",
+                "tool": tool_name,
+                "status": status,
+                "duration_ms": round(elapsed * 1000, 1),
+            },
+        )
     # Reached only when the deadline cancelled the await above; the worker
     # thread is abandoned (it finishes and frees its slot on its own).
     name = getattr(fn, "__name__", "tool")
@@ -3492,6 +3509,39 @@ def _resolve_transport() -> str:
     return "http" if transport in ("http", "streamable-http") else "stdio"
 
 
+#: Accepted IETF_LLM_LOG_LEVEL spellings -> the serve verbosity they select.
+#: Numeric aliases match the Verbosity enum values; `progress` is a convenience
+#: spelling for the most verbose level (it is the level the chattiest log calls
+#: carry).
+_LOG_LEVEL_NAMES: "Dict[str, Verbosity]" = {
+    "quiet": Verbosity.QUIET,
+    "0": Verbosity.QUIET,
+    "status": Verbosity.STATUS,
+    "1": Verbosity.STATUS,
+    "verbose": Verbosity.VERBOSE,
+    "progress": Verbosity.VERBOSE,
+    "2": Verbosity.VERBOSE,
+}
+
+
+def _log_verbosity() -> Verbosity:
+    """Resolve the verbosity the serve path logs at.
+
+    `IETF_LLM_LOG_LEVEL` (quiet / status / verbose) is the explicit override.
+    When it is unset the default is transport-aware: the HTTP serve path
+    defaults to STATUS so a hosted container emits per-request access records
+    and notable events on the structured stream out of the box (the platform
+    captures stderr and there is no other operational signal there), while
+    stdio — the local CLI / desktop client — defaults to QUIET so an
+    interactive session stays silent. An unrecognised value falls back to that
+    same transport default rather than guessing. Cheap enough to call per
+    request (a couple of env reads)."""
+    raw = os.environ.get("IETF_LLM_LOG_LEVEL", "").strip().lower()
+    if raw in _LOG_LEVEL_NAMES:
+        return _LOG_LEVEL_NAMES[raw]
+    return Verbosity.STATUS if _resolve_transport() == "http" else Verbosity.QUIET
+
+
 def _corpora_freshness() -> "dict[str, Any]":
     """Bounded freshness summary across all cached corpora (R18).
 
@@ -3560,6 +3610,11 @@ def _readiness() -> "tuple[bool, dict[str, Any]]":
         "embed_endpoint_configured": bool(
             os.environ.get("IETF_LLM_EMBED_BASE_URL", "").strip()
         ),
+        # In-session gathers running now. A stable JSON field so a fronting
+        # proxy can decide whether to keep an idle-timing-out container alive
+        # past its window (a background gather publishes nothing until it
+        # finishes) without scraping/parsing the `/metrics` text format.
+        "gathers_inflight": serve_metrics.gathers_inflight(),
         "corpora": _corpora_freshness(),
     }
 
@@ -3764,6 +3819,7 @@ def _serve_posture(host: str, port: int) -> "Dict[str, str]":
         "index_immutable": "yes" if _index_immutable_enabled() else "no",
         "store_backend": service_config.store_backend(),
         "host_allowlist": ",".join(allowed_hosts) if allowed_hosts else "off",
+        "log_level": _log_verbosity().name.lower(),
     }
 
 

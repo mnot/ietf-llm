@@ -736,7 +736,14 @@ path).
 For a hosted deployment, `IETF_LLM_LOG_FORMAT=json` switches `log()` to
 structured one-line JSON records on stderr (no secrets), for a log
 collector; `IETF_LLM_DEBUG_LOG` retains the per-request timing telemetry.
-`GET /health` reports binary readiness plus build version and a bounded
+`IETF_LLM_LOG_LEVEL` sets the serve verbosity (default `status` on HTTP,
+`quiet` on stdio): at `status` the HTTP path emits a per-request access
+record (`event=tool_call` with tool / status / `duration_ms`) at the
+`_offload` chokepoint, so requests are queryable by field without a
+`/metrics` scrape. `GET /health` reports binary readiness plus build
+version, an in-session `gathers_inflight` count (a stable JSON field a
+fronting proxy keys container-lifetime decisions off, so it need not parse
+the `ietf_llm_gathers_inflight` Prometheus series), and a bounded
 per-corpus freshness summary (no upstream call; R18). `GET /metrics`
 exposes a fleet-aggregate Prometheus view (`serve_metrics.py`):
 

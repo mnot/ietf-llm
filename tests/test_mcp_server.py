@@ -297,6 +297,58 @@ def test_offload_timeout_disabled_by_zero(monkeypatch: object) -> None:
     assert anyio.run(run) == "ran"
 
 
+def test_offload_emits_access_record_at_status(
+    monkeypatch: object, capsys: object
+) -> None:
+    # On the HTTP serve path (default STATUS verbosity) every tool call leaves
+    # a structured per-request line carrying tool / status / duration_ms.
+    import json
+
+    import anyio
+
+    monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")  # type: ignore[attr-defined]
+    monkeypatch.setenv("IETF_LLM_LOG_FORMAT", "json")  # type: ignore[attr-defined]
+    monkeypatch.delenv("IETF_LLM_LOG_LEVEL", raising=False)  # type: ignore[attr-defined]
+
+    def tool_overview() -> str:
+        return "ok"
+
+    async def run() -> str:
+        return await mcp_server._offload(tool_overview)
+
+    assert anyio.run(run) == "ok"
+    records = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()  # type: ignore[attr-defined]
+        if line.strip()
+    ]
+    access = [r for r in records if r.get("event") == "tool_call"]
+    assert len(access) == 1
+    assert access[0]["tool"] == "tool_overview"
+    assert access[0]["status"] == "ok"
+    assert isinstance(access[0]["duration_ms"], (int, float))
+
+
+def test_offload_access_record_silent_on_stdio(
+    monkeypatch: object, capsys: object
+) -> None:
+    # stdio/local default is QUIET, so an interactive session emits no
+    # per-request access line.
+    import anyio
+
+    monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)  # type: ignore[attr-defined]
+    monkeypatch.delenv("IETF_LLM_LOG_LEVEL", raising=False)  # type: ignore[attr-defined]
+
+    def tool_overview() -> str:
+        return "ok"
+
+    async def run() -> str:
+        return await mcp_server._offload(tool_overview)
+
+    assert anyio.run(run) == "ok"
+    assert "tool_call" not in capsys.readouterr().err  # type: ignore[attr-defined]
+
+
 def test_collapse_draft_versions_single_rev_kept() -> None:
     from ietf_llm.mcp_server import _collapse_draft_versions
 
