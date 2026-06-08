@@ -20,8 +20,9 @@ import hashlib
 import os
 import sqlite3
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -161,6 +162,132 @@ def _file_hash(path: str) -> Optional[str]:
         return digest.hexdigest()
     except OSError:
         return None
+
+
+def _embed_concurrency() -> int:
+    """How many files to embed in parallel on the remote backend.
+
+    A remote embed is a network round-trip, and a gather sends one per file
+    serially — for a mail-heavy corpus that is the bulk of the wall-clock.
+    Overlapping the round-trips collapses it. Only used for the remote
+    backend (the on-device model is GPU-bound and runs serially). Override
+    with `IETF_LLM_EMBED_CONCURRENCY`; floored at 1 (serial)."""
+    try:
+        return max(1, int(os.environ.get("IETF_LLM_EMBED_CONCURRENCY", "8")))
+    except ValueError:
+        return 8
+
+
+@dataclass
+class _FilePlan:
+    """One file's embedding work, prepared on the main thread (DB skip-check
+    + chunking) so only the network embed runs off-thread."""
+
+    relpath: str
+    hash_key: str
+    cur_hash: Optional[str]
+    chunks: List[Any]
+    texts: List[str]
+
+
+def _plan_file(
+    cur: sqlite3.Cursor,
+    path: str,
+    cache_dir: str,
+    file_hashes: Dict[str, Optional[str]],
+    already: "set[str]",
+) -> Optional[_FilePlan]:
+    """Skip-check (unchanged content already indexed) and chunk one file.
+
+    Returns a `_FilePlan` for a file that needs (re-)embedding, or None to
+    skip. Runs on the main thread — it reads the cursor and the chunker, but
+    never embeds, so the slow network call can be dispatched off-thread."""
+    relpath = os.path.relpath(path, cache_dir)
+    hash_key = f"hash:{relpath}"
+    cur_hash = file_hashes[relpath]
+    cur.execute("SELECT value FROM meta WHERE key=?", (hash_key,))
+    prev = cur.fetchone()
+    if relpath in already and prev and cur_hash is not None and prev[0] == cur_hash:
+        return None  # unchanged
+    chunks = _chunk_file(path, relpath)
+    if not chunks:
+        return None
+    # A split section's sub_idx 0 stores the full message in `text` but sets
+    # `embed_text` to just its first window, so we embed the window — the tail
+    # is covered by the later sub_idx fragments' own vectors.
+    texts = [c.embed_text if c.embed_text is not None else c.text for c in chunks]
+    return _FilePlan(relpath, hash_key, cur_hash, chunks, texts)
+
+
+def _write_file(
+    cur: sqlite3.Cursor, plan: _FilePlan, vectors: List[Any], verbose: Verbosity
+) -> int:
+    """Replace one file's chunk rows with the freshly embedded set and stamp
+    its content hash. Returns chunks written, or 0 when the file is skipped
+    (a vector/chunk count mismatch or a duplicate key). DB-only and
+    main-thread; the caller owns commit cadence and progress."""
+    if len(vectors) != len(plan.chunks):
+        # A short vector list would silently drop the trailing chunks (zip
+        # stops at the shorter sequence) while a hash stamp would mark the file
+        # fully indexed. Skip instead, so it is retried next run.
+        log(
+            f"Embedding returned {len(vectors)} vectors for {len(plan.chunks)} "
+            f"chunks in {plan.relpath}; skipping (retried next run).",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return 0
+    try:
+        # Drop any stale chunks for this file, then insert the new set.
+        cur.execute("DELETE FROM chunks WHERE file=?", (plan.relpath,))
+        for chunk, vec in zip(plan.chunks, vectors):
+            cur.execute(
+                "INSERT INTO chunks "
+                "(file, chunk_idx, sub_idx, title, text, embedding, "
+                " start_line, end_line, chunk_date, labels, state, "
+                " url, duplicate_of, closing_rationale) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    chunk.file,
+                    chunk.chunk_idx,
+                    chunk.sub_idx,
+                    chunk.title,
+                    chunk.text,
+                    _pack(vec),
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.chunk_date,
+                    chunk.labels,
+                    chunk.state,
+                    chunk.url,
+                    chunk.duplicate_of,
+                    chunk.closing_rationale,
+                ),
+            )
+    except sqlite3.IntegrityError as err:
+        # A duplicate (file, chunk_idx, sub_idx) — a renderer bug or a corrupt
+        # cache file with two `[N]` sections — must not abort the whole build.
+        # Skip this file (its partial rows carry no hash stamp, so it retries).
+        log(
+            f"Duplicate chunk key in {plan.relpath} ({err}); skipping file.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return 0
+    # Stamp the file's hash so an unchanged file is skipped next run. cur_hash
+    # is None only if hashing failed (a rare read race); leave it unstamped
+    # then so the file is retried rather than stored as NULL (value NOT NULL).
+    if plan.cur_hash is not None:
+        cur.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            (plan.hash_key, plan.cur_hash),
+        )
+    log(
+        f"  embedded {plan.relpath}: {len(plan.chunks)} chunks",
+        verbose,
+        level=LogLevel.PROGRESS,
+    )
+    return len(plan.chunks)
 
 
 def build_index(
@@ -372,117 +499,29 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         mps_empty, mps_current = None, None
     else:
         mps_empty, mps_current = _mps_mem_tools()
-    for path in files:
-        # Relative path within the WG cache is what we store as
-        # chunks.file, what consumers pass to get_chunk_text /
-        # read_file_section, and what the content-hash skip keys on.
-        relpath = os.path.relpath(path, cache_dir)
-        hash_key = f"hash:{relpath}"
-        cur_hash = file_hashes[relpath]
-        cur.execute("SELECT value FROM meta WHERE key=?", (hash_key,))
-        prev = cur.fetchone()
-        if relpath in already and prev and cur_hash is not None and prev[0] == cur_hash:
-            continue  # unchanged
+    # Embed the planned files and write each result on this (main) thread, so
+    # SQLite stays single-writer. On the remote backend each embed is a network
+    # round-trip, so we overlap them through a bounded pool; the on-device model
+    # is GPU-bound and so stays serial.
+    workers = _embed_concurrency() if is_remote_embed_model(model_name) else 1
 
-        chunks = _chunk_file(path, relpath)
-        if not chunks:
-            continue
-
-        # If we had stale chunks for this file, drop them first.
-        cur.execute("DELETE FROM chunks WHERE file=?", (relpath,))
-
-        # Embed in batches; llm models support embed_multi. A split
-        # section's sub_idx 0 stores the full message in `text` but sets
-        # `embed_text` to just its first window, so we embed the window —
-        # the tail is covered by the later sub_idx fragments' own vectors.
-        texts = [c.embed_text if c.embed_text is not None else c.text for c in chunks]
-        try:
-            vectors = list(model.embed_multi(texts))
-        except Exception as err:  # pylint: disable=broad-except
-            # Embedding failures vary by provider (HTTP errors, OOM,
-            # rate limits, …) and don't share a typed hierarchy.
-            log(
-                f"Embedding failed for {relpath}: {type(err).__name__}: {err}",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            continue
-
-        # A short vector list would silently drop the trailing chunks (zip
-        # stops at the shorter sequence) while the hash stamp below would mark
-        # the file fully indexed. Skip instead, so it is retried next run.
-        if len(vectors) != len(chunks):
-            log(
-                f"Embedding returned {len(vectors)} vectors for {len(chunks)} "
-                f"chunks in {relpath}; skipping (retried next run).",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            continue
-
-        try:
-            for chunk, vec in zip(chunks, vectors):
-                cur.execute(
-                    "INSERT INTO chunks "
-                    "(file, chunk_idx, sub_idx, title, text, embedding, "
-                    " start_line, end_line, chunk_date, labels, state, "
-                    " url, duplicate_of, closing_rationale) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        chunk.file,
-                        chunk.chunk_idx,
-                        chunk.sub_idx,
-                        chunk.title,
-                        chunk.text,
-                        _pack(vec),
-                        chunk.start_line,
-                        chunk.end_line,
-                        chunk.chunk_date,
-                        chunk.labels,
-                        chunk.state,
-                        chunk.url,
-                        chunk.duplicate_of,
-                        chunk.closing_rationale,
-                    ),
-                )
-        except sqlite3.IntegrityError as err:
-            # A duplicate (file, chunk_idx, sub_idx) — a renderer bug or a
-            # corrupted cache file with two `[N]` sections — must not abort the
-            # whole corpus build. Skip this file (its partial chunks were
-            # DELETEd above and are not committed under a fresh hash), leaving
-            # the rest of the corpus to index.
-            log(
-                f"Duplicate chunk key in {relpath} ({err}); skipping file.",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            continue
-        # Stamp the file's hash so an unchanged file is skipped next run.
-        # cur_hash is None only if hashing failed (a rare read race); leave it
-        # unstamped then so the file is retried rather than stored as NULL
-        # (meta.value is NOT NULL).
-        if cur_hash is not None:
-            cur.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-                (hash_key, cur_hash),
-            )
-        total_new += len(chunks)
+    def _record(plan: _FilePlan, vectors: List[Any]) -> None:
+        """Write one file's result and advance the flush / progress cadence.
+        Both the serial and concurrent paths call this from the main thread, so
+        the counters and the cursor need no locking."""
+        nonlocal total_new, files_done, chunks_since_flush, last_status
+        written = _write_file(cur, plan, vectors, verbose)
+        if not written:
+            return
+        total_new += written
         files_done += 1
-        chunks_since_flush += len(chunks)
-        log(
-            f"  embedded {relpath}: {len(chunks)} chunks",
-            verbose,
-            level=LogLevel.PROGRESS,
-        )
+        chunks_since_flush += written
         # Periodic maintenance: commit so a crash doesn't discard the whole
-        # build (we'd otherwise commit only at the end, and a WAL rollback
-        # loses every embedded file), and evict the MPS allocator cache so a
-        # long run's memory high-water mark doesn't climb into swap and hang
-        # the machine. Dual cadence: the chunk count bounds the MPS peak (it
-        # scales with chunks since the last evict, not files), the file count
-        # is a durability floor for long stretches of sparse files. gc.collect()
-        # first so Python-side tensor refs are gone before empty_cache() returns
-        # the freed blocks to the OS.
+        # build (we'd otherwise commit only at the end, and a WAL rollback loses
+        # every embedded file), and evict the MPS allocator cache so a long
+        # run's high-water mark doesn't climb into swap. Dual cadence: the chunk
+        # count bounds the MPS peak (it scales with chunks since the last
+        # evict), the file count is a durability floor over sparse files.
         if (
             chunks_since_flush >= _FLUSH_EVERY_CHUNKS
             or files_done % _FLUSH_EVERY_FILES == 0
@@ -492,10 +531,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             if mps_empty is not None:
                 mps_empty()
             chunks_since_flush = 0
-        # Light-touch STATUS pulse so the user sees progress on long
-        # embeds without --verbose. Only fires when we've actually done
-        # work (the skip-unchanged branch above continues without
-        # incrementing files_done).
+        # Light-touch STATUS pulse so the user sees progress without --verbose.
         now = time.time()
         if files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS:
             elapsed = now - start
@@ -512,6 +548,67 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                 level=LogLevel.STATUS,
             )
             last_status = now
+
+    # Lazily plan (skip-check + chunk) each file on the main thread; the embed
+    # call is the only off-thread work. The skip-unchanged and empty-file cases
+    # fall out as a None plan.
+    plans: Iterator[_FilePlan] = (
+        plan
+        for plan in (
+            _plan_file(cur, path, cache_dir, file_hashes, already) for path in files
+        )
+        if plan is not None
+    )
+
+    if workers == 1:
+        for plan in plans:
+            try:
+                vectors = list(model.embed_multi(plan.texts))
+            except Exception as err:  # pylint: disable=broad-except
+                # Failures vary by provider (HTTP, OOM, rate limits) and share
+                # no typed hierarchy; log and move on so one file can't abort
+                # the build (it carries no hash stamp, so it retries next run).
+                log(
+                    f"Embedding failed for {plan.relpath}: "
+                    f"{type(err).__name__}: {err}",
+                    verbose,
+                    level=LogLevel.ERROR,
+                )
+                continue
+            _record(plan, vectors)
+    else:
+        # Bounded fan-out: keep at most 2x workers in flight so memory stays
+        # bounded (only that many files' chunks held at once), writing each
+        # result as it completes. Planning and writing stay on this thread;
+        # only embed_multi runs in the pool. Completion order is arbitrary —
+        # the DB content is order-independent.
+        max_inflight = workers * 2
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            inflight: Dict[Any, _FilePlan] = {}
+
+            def _fill() -> None:
+                for plan in plans:
+                    inflight[pool.submit(model.embed_multi, plan.texts)] = plan
+                    if len(inflight) >= max_inflight:
+                        return
+
+            _fill()
+            while inflight:
+                done, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    plan = inflight.pop(fut)
+                    try:
+                        vectors = list(fut.result())
+                    except Exception as err:  # pylint: disable=broad-except
+                        log(
+                            f"Embedding failed for {plan.relpath}: "
+                            f"{type(err).__name__}: {err}",
+                            verbose,
+                            level=LogLevel.ERROR,
+                        )
+                        continue
+                    _record(plan, vectors)
+                _fill()
 
     conn.commit()
     # Fold the WAL back into the main DB file and truncate it, so the
