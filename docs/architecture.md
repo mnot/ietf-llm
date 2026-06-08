@@ -199,6 +199,12 @@ Key invariants:
   subdir per list, since a WG can follow several).
 - **`last-gathered`** is an ISO-8601 sentinel `freshness.py` writes at
   the end of each gather; consumers surface staleness from it.
+  `coverage.py` pairs it with the persisted `months` to report the
+  *start* of the window (gather date minus the window) alongside a
+  source inventory read from on-disk artifacts — both reader-side, so a
+  client knows how far back a corpus reaches and what it holds without a
+  re-gather. The window bounds mailing-list / meeting recency only;
+  GitHub issues and drafts are the full set.
 - **`gather-metrics.json`** records the upstream HTTP load of the last
   run — request counts (transferred / revalidated / error), bytes, a
   per-host breakdown, and a top-N of URL patterns. `http_metrics.py`
@@ -302,6 +308,7 @@ ietf_llm/
 ├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read + seed
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
 ├── freshness.py            # last-gathered sentinel + staleness warnings
+├── coverage.py             # reader-side window + source inventory (no network)
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
 ├── people.py               # actor/identity registry (roles, affiliations, domains)
 ├── people_linking.py       # attach GitHub logins to identities (Datatracker, then name)
