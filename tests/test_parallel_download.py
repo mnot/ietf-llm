@@ -84,3 +84,22 @@ def test_parallel_download_skips_failed_fetches(
     written = drafts._download_files_parallel(tasks, Verbosity.QUIET)
     assert sorted(os.path.basename(p) for p in written) == ["ok-1.txt", "ok-2.txt"]
     assert not os.path.exists(tmp_path / "bad-1.txt")
+
+
+def test_revision_tasks_latest_only_vs_full(tmp_path: Path) -> None:
+    # A WG gather fetches only the current revision; the full-stack form
+    # (used by `--draft`) enumerates every revision 00..max_rev. Either way,
+    # an already-cached revision is skipped.
+    out = str(tmp_path)
+    latest = drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True)
+    assert [os.path.basename(fp) for _u, fp in latest] == ["draft-ietf-wg-x-05.txt"]
+
+    full = drafts._revision_tasks("draft-ietf-wg-x", 2, out)
+    assert [os.path.basename(fp) for _u, fp in full] == [
+        "draft-ietf-wg-x-00.txt",
+        "draft-ietf-wg-x-01.txt",
+        "draft-ietf-wg-x-02.txt",
+    ]
+
+    (tmp_path / "draft-ietf-wg-x-05.txt").write_text("cached")
+    assert drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True) == []

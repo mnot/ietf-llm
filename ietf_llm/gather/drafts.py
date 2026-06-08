@@ -273,12 +273,19 @@ def _download_files_parallel(
 
 
 def _revision_tasks(
-    draft_name: str, max_rev: int, out_dir: str
+    draft_name: str, max_rev: int, out_dir: str, latest_only: bool = False
 ) -> List[Tuple[str, str]]:
-    """Build ``(url, filepath)`` tasks for each not-yet-cached revision
-    00..max_rev of one draft."""
+    """Build ``(url, filepath)`` tasks for not-yet-cached revisions of one
+    draft: only the latest (``latest_only``) or every revision 00..max_rev.
+
+    A WG gather wants just the current revision — the embedding index never
+    indexes the older ones anyway, so fetching the whole revision stack was
+    download (and disk) spent on history a reader rarely asks for. The
+    explicit ``--draft`` add path keeps the full stack (its caller leaves
+    ``latest_only`` False)."""
+    revs = [max_rev] if latest_only else list(range(max_rev + 1))
     tasks: List[Tuple[str, str]] = []
-    for rev in range(max_rev + 1):
+    for rev in revs:
         rev_str = f"{rev:02d}"
         filepath = os.path.join(out_dir, f"{draft_name}-{rev_str}.txt")
         if os.path.exists(filepath):
@@ -358,11 +365,15 @@ def process_documents(
     include_related: bool = False,
     include_rfc_bodies: bool = False,
 ) -> List[str]:
-    """Download WG draft revisions (and, opt-in, RFC bodies) as text.
+    """Download the latest revision of each WG draft (and, opt-in, RFC
+    bodies) as text.
 
     Drafts live under `drafts/` in the WG cache. The `destination`
     argument is the WG's `files/` dir; we materialise the `drafts/`
-    subdir as needed.
+    subdir as needed. Only each draft's current revision is fetched — the
+    older revisions are not indexed and are rarely read, so the full stack
+    was wasted download. (`--draft <name>` still pulls every revision of a
+    specifically named draft.)
 
     RFC bodies are NOT gathered by default. The published series is a
     global singleton reachable via `rfc_search` / `get_rfc`, so mirroring
@@ -410,7 +421,7 @@ def process_documents(
         for draft in drafts:
             name = str(draft["name"])
             max_rev = int(draft["max_rev"])
-            tasks.extend(_revision_tasks(name, max_rev, out_dir))
+            tasks.extend(_revision_tasks(name, max_rev, out_dir, latest_only=True))
     else:
         log(f"No drafts found for {wg_name}.", verbose, level=LogLevel.STATUS)
 
