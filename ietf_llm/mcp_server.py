@@ -1791,6 +1791,9 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
       (file-level URL). Returned as the file's concatenated content,
       since the consumer almost certainly wants the issue, not just
       its frontmatter header.
+    - **Draft / charter URL** (file-level) → a draft's
+      `https://datatracker.ietf.org/doc/<name>/` page or a charter's
+      `Source:` URL. Returned as the file's concatenated content.
 
     One unbridged gap: a `mailarchive.ietf.org/arch/msg/<token>` link
     will not resolve against a message stored under its `www.w3.org/mid`
@@ -1808,8 +1811,9 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
             f"No cached chunk for {url}. fetch_by_url resolves the URL forms "
             "stamped in the corpus: mailing-list `Archived-At:` permalinks "
             "(either `https://mailarchive.ietf.org/arch/msg/<list>/<token>` "
-            "or `https://www.w3.org/mid/<message-id>`, depending on the list) "
-            "and GitHub issue URLs. Matching tolerates trailing-slash, "
+            "or `https://www.w3.org/mid/<message-id>`, depending on the list), "
+            "GitHub issue URLs, and draft `datatracker.ietf.org/doc/<name>/` / "
+            "charter `Source:` URLs. Matching tolerates trailing-slash, "
             "scheme, and `www.` differences. Two reasons a well-formed "
             "permalink still misses: the message lives in a different corpus "
             "(gather that list and retry), or the link uses the opposite "

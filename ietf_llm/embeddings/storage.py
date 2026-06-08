@@ -363,6 +363,12 @@ def find_chunks_by_url(
         # than crash; the worst case is a split message matching as
         # several rows until the next `--rebuild-embeddings`.
         have = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
+        # A genuinely pre-v6 cache has no `url` column at all — there is
+        # nothing to resolve against, so miss gracefully (the tool's
+        # "index may predate the url column" message then reads true)
+        # rather than raise OperationalError on the WHERE clause.
+        if "url" not in have:
+            return []
         sub_idx_clause = " AND sub_idx = 0" if "sub_idx" in have else ""
         variants = _citation_url_variants(url)
         placeholders = ",".join("?" * len(variants))
