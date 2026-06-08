@@ -1,8 +1,10 @@
 # How the IETF works
 
-Interpretive norms for reading an IETF corpus. Call `read_ietf_norms`
-before characterising decisions, attributing positions, or summarising
-where a Working Group stands.
+Interpretive norms for reading an IETF corpus. Call
+`read_ietf_interpretation_norms` before characterising decisions,
+attributing positions, or summarising where a Working Group stands. For
+the write side — helping a human draft list mail, issues, or comments —
+see `read_ietf_participation_norms` (PARTICIPATING.md).
 
 ## Individuals, not employers — but implementer signal is real
 
