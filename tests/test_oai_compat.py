@@ -43,6 +43,31 @@ def test_parse_retry_after_unparseable():
     assert oai_compat.parse_retry_after("") == 0.0
 
 
+def _capture_backoff(monkeypatch, jitter=0.4):
+    slept = []
+    monkeypatch.setattr(oai_compat.random, "uniform", lambda _a, _b: jitter)
+    monkeypatch.setattr(oai_compat.time, "sleep", slept.append)
+    return slept
+
+
+def test_backoff_jitters_on_top_of_retry_after(monkeypatch):
+    # An account-level limit throttles concurrent callers together and hands
+    # them the same Retry-After; the jitter must spread their wake-ups, so the
+    # actual sleep is Retry-After + jitter, not the bare header value.
+    slept = _capture_backoff(monkeypatch, jitter=0.4)
+    resp = _Resp(429)
+    resp.headers = {"Retry-After": "5"}
+    oai_compat._sleep_backoff(0, resp)
+    assert slept == [5.4]
+
+
+def test_backoff_jitters_on_exponential_path(monkeypatch):
+    # No Retry-After: exponential base (min(30, 2**attempt)) plus the jitter.
+    slept = _capture_backoff(monkeypatch, jitter=0.4)
+    oai_compat._sleep_backoff(2, None)
+    assert slept == [4.4]
+
+
 def test_build_headers_bearer_and_map():
     h = oai_compat.build_headers("tok", '{"cf-aig-authorization": "g"}',
                                  "IETF_LLM_X_HEADERS", Verbosity.QUIET)
