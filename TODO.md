@@ -143,6 +143,56 @@ Yield per WG (how many real continuity-merges) is unmeasured. Guess: a handful,
 not dozens — most participants use one address and the name-merge already
 catches the rest. Report before/after on httpbis when built, same as PR #27.
 
+## Further embedding reuse: clustering, routing, novelty (planned 2026-06-09)
+
+Follow-ons to the reader-side embedding work that shipped this round —
+`find_related` (nearest-neighbour-by-example), MMR diversification of
+`search_corpus` (default on), and thread↔issue cross-surface bridging
+(`find_related` + `file_pattern`). Those reuse the per-corpus vector
+matrix with no schema change and no re-gather. The three items below need
+more: an offline clustering pass and (for 5/6) a write-side artifact.
+
+They share one primitive — a per-corpus vector loader + a **hand-rolled
+mini-batch k-means in numpy** (no sklearn; stays torch-free). Build it
+once; 6 reuses 5's centroids, 7 reuses the historical matrix + dates.
+Build order: primitive → 5 → 6 → 7.
+
+### 1. Topic map for `overview` (write-side)
+
+Cluster a corpus's vectors — over **per-thread/issue centroids**, not raw
+chunks, for cleaner themes — and label each cluster (centroid-nearest
+titles, or tf-idf top terms over members). Surface in `overview` as the
+WG's main discussion themes. **Decision (made): compute at gather time**
+into a `topics.json` sidecar — `overview` is a hot read path, so
+clustering per call wastes work. That makes it write-side (re-gather to
+populate; rides the export / cloud-publish path) — flag in the PR.
+
+### 2. Per-corpus centroid routing
+
+Store k centroids per corpus (reuse 5's cluster centroids — a single mean
+washes out a broad WG, so score a corpus as `max` over its centroids).
+Embed an incoming question, compare to centroids, rank corpora — a cheap
+signal for `find_efforts` and `search_corpora` selection, and the "which
+corpus did they mean" problem `SKILL.md` calls out. **Gate:** centroids
+only compare *within one embedding-model id* — `search_corpora` already
+groups by `index_model()` for this reason; routing must respect the same
+grouping. On cloud the centroid set is cross-corpora → needs the fleet
+CAS story, not a local file.
+
+### 3. Novelty detection: `find_novel` (reader-side first)
+
+A thread/issue semantically unlike anything before it. Candidates = dated
+chunks in `[since, until]`; prior = dated chunks before `since`;
+`novelty = 1 − max cosine(candidate, prior)`. Score per chunk, roll up to
+one row per thread/issue (report the file's most-novel chunk). Caller
+shape mirrors `search` hits, plus the **load-bearing `nearest prior`
+line** — the closest past chunk and its similarity — so the caller can
+tell a genuinely new work item from off-topic/low-content noise (which
+also scores "novel"). Needs a content-length floor. Ship as a reader-side
+tool (computes on the fly — no re-gather); fold into the digest writer
+only once it earns its place. Default the window (~90 days) when `since`
+is omitted — "what's new lately" is the common ask.
+
 ## ETag http-cache is host-local; degrades with fleet size (noted 2026-06-06)
 
 The Datatracker conditional-GET store (`gather/datatracker.py` `_HttpCache`,

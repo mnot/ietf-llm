@@ -88,6 +88,7 @@ from .embeddings import (
     get_messages,
     index_model,
     probe_index,
+    related,
     search,
 )
 from .freshness import (
@@ -1460,6 +1461,61 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     # to one row per file with hit count + best chunk; the per-chunk
     # view stays the default for depth questions.
     return _with_freshness(wg, _render_hits(hits, k, group_by) + note)
+
+
+def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    wg: str,
+    file: str,
+    chunk_idx: int,
+    k: int = 10,
+    file_pattern: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    label: Optional[str] = None,
+    state: Optional[str] = None,
+    group_by: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
+    diversify: bool = True,
+) -> str:
+    for field, value in (("since", since), ("until", until)):
+        date_error = _invalid_date_message(value, field)
+        if date_error:
+            return date_error
+    try:
+        k = max(1, min(int(k), _MAX_SEARCH_K))
+    except (TypeError, ValueError):
+        k = 10
+    try:
+        chunk_idx = int(chunk_idx)
+    except (TypeError, ValueError):
+        return f"(invalid chunk_idx {chunk_idx!r} — must be an integer)"
+    # `group_by="file"` rolls up per file, so over-fetch to keep enough
+    # material to reach `k` distinct files (mirrors tool_search).
+    fetch_k = max(k * 4, 20) if group_by == "file" else k
+    hits = related(
+        wg,
+        file,
+        chunk_idx,
+        k=fetch_k,
+        file_pattern=file_pattern,
+        since=since,
+        until=until,
+        label=label,
+        state=state,
+        snippet_chars=snippet_chars,
+        diversify=diversify and group_by != "file",
+        verbose=Verbosity.QUIET,
+    )
+    if not hits:
+        no_index = (
+            f"no search index, or no chunk {chunk_idx} in {file} — "
+            f"re-gather with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"no chunk {chunk_idx} in {file}, or `ietf-llm {wg} --embed` "
+            "has not been run"
+        )
+        return _with_freshness(wg, f"(no related chunks — {no_index})")
+    return _with_freshness(wg, _render_hits(hits, k, group_by))
 
 
 #: Upper bound on how many corpora one `search_corpora` call will fan
@@ -2994,6 +3050,67 @@ def main() -> None:
             role=role,
             snippet_chars=snippet_chars,
             collapse_versions=collapse_versions,
+            diversify=diversify,
+        )
+
+    @server.tool()
+    async def find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        corpus: str,
+        file: str,
+        chunk_idx: int,
+        k: int = 10,
+        file_pattern: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        label: Optional[str] = None,
+        state: Optional[str] = None,
+        group_by: Optional[str] = None,
+        snippet_chars: Optional[int] = None,
+        diversify: bool = True,
+    ) -> str:
+        """Find the chunks most similar to one you already have — a
+        nearest-neighbour-by-example search over the same index
+        `search_corpus` uses. Where `search_corpus` takes a query
+        *string*, this takes an existing chunk (`file` + `chunk_idx`, the
+        identity in every search hit and `get_chunk_text` call) and
+        returns the others closest to it in meaning. The seed chunk is
+        excluded from its own results.
+
+        Reach for this after a search or a read when you want "more like
+        this": other threads making the same argument, prior issues on
+        the same point, the drafts a message is really about — without
+        having to guess the right query words.
+
+        **Cross-surface bridging** is the highest-value use. A topic is
+        usually discussed in BOTH the mailing list and a GitHub issue;
+        they sit close together in the index but aren't linked. Seed on a
+        thread message and pass `file_pattern="issues/%"` to surface the
+        issue(s) that capture it (add `group_by="file"` for one row per
+        issue) — or seed on an issue comment with `file_pattern="threads/%"`
+        for the list discussion behind it.
+
+        Facets (`file_pattern`, `since`/`until`, `label`, `state`,
+        `group_by`, `snippet_chars`, `diversify`) behave as in
+        `search_corpus`. Unlike `search_corpus` this needs no query
+        embedding — it reads the seed's stored vector — so it answers
+        even when the embedding backend is unavailable.
+
+        `chunk_idx` is the 0-based index shown in search hits
+        (`chunk=N`). Use `list_files` to see how many chunks a file has.
+        """
+        return await _offload(
+            tool_find_related,
+            corpus,
+            file,
+            chunk_idx,
+            k=k,
+            file_pattern=file_pattern,
+            since=since,
+            until=until,
+            label=label,
+            state=state,
+            group_by=group_by,
+            snippet_chars=snippet_chars,
             diversify=diversify,
         )
 

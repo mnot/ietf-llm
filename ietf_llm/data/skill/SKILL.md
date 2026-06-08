@@ -24,9 +24,9 @@ minutes / GitHub issues — far cheaper than one HTTP request per message.
 
 **Loading the tools.** If your client loads MCP tools lazily, load the
 core set in one search rather than one at a time: `overview`,
-`read_digest`, `search_corpus`, `search_corpora`, `read_topic`,
-`tally_positions`, `find_replies`, `find_citations`, `list_corpora`,
-`list_labels`, `list_files`, `find_efforts`.
+`read_digest`, `search_corpus`, `search_corpora`, `find_related`,
+`read_topic`, `tally_positions`, `find_replies`, `find_citations`,
+`list_corpora`, `list_labels`, `list_files`, `find_efforts`.
 
 ## Gathering a missing corpus
 
@@ -140,6 +140,8 @@ caveats are in each tool's docstring):
 |---|---|
 | arguments for/against X; scope debate | `read_digest(kind="issues", label=…, include_bodies=True)` — for *coverage* the bodies digest beats semantic search; `list_labels` first |
 | what was said about X | `search_corpus(corpus, "X")`, then `get_chunk_text` / `read_file_section` |
+| more like this hit / has this been discussed before | `find_related(corpus, file, chunk_idx)` — nearest chunks to one you already have, no query words needed |
+| the GitHub issue behind a thread (or vice versa) | `find_related(corpus, file, chunk_idx, file_pattern="issues/%", group_by="file")` — the same topic lives on the list *and* in an issue; this bridges them |
 | how the debate on X evolved (chronological) | `read_topic(corpus, "X")` |
 | what's open / closed / labelled; who's a chair; what happened in May | `read_digest(corpus, kind=…, …filters)` |
 | other threads on a topic / a `[xxx]` cluster | `list_labels` **first**, then `read_digest(kind="threads", subject=…)` |

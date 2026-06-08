@@ -794,14 +794,17 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     where_args: List[str],
     sort: Optional[str] = None,
     snippet_chars: Optional[int] = None,
+    exclude: Optional["set[Tuple[str, int]]"] = None,
     diversify: bool = True,
 ) -> List[Hit]:
     """Score every candidate chunk against `q_vec`, collapse a long
     message's sub_idx fragments to one logical hit, select k (diversified
     by default), and build the `Hit` list.
 
-    Factored out of `search` so the query vector is the only thing a
-    caller varies — `search` embeds a query string into it.
+    The query vector is the only thing that varies between callers:
+    `search` embeds a query string, `related` reads an existing chunk's
+    stored vector. `exclude` drops (file, chunk_idx) keys from the result
+    (used to keep a `related` seed from being its own top hit).
     """
     cur = conn.cursor()
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
@@ -826,6 +829,8 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     best_by_key: Dict[Tuple[str, int], int] = {}
     for i, row in enumerate(rows):
         key = (row[0], row[1])
+        if exclude and key in exclude:
+            continue
         best = best_by_key.get(key)
         if best is None or scores[i] > scores[best]:
             best_by_key[key] = i
@@ -997,6 +1002,79 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             where_args=where_args,
             sort=sort,
             snippet_chars=snippet_chars,
+            diversify=diversify,
+        )
+    finally:
+        conn.close()
+
+
+def related(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    wg: str,
+    file: str,
+    chunk_idx: int,
+    k: int = 10,
+    file_pattern: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    label: Optional[str] = None,
+    state: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
+    diversify: bool = True,
+    verbose: Verbosity = Verbosity.STATUS,
+) -> List[Hit]:
+    """Return the top-k chunks most similar to an existing chunk — a
+    nearest-neighbour-by-example search. Returns [] if no index exists or
+    the seed chunk isn't in it.
+
+    The seed is identified by `(file, chunk_idx)` — the same identity the
+    reader tools use (get_chunk_text, read_file_section). Its stored
+    vector is read straight from the index (a long message's sub_idx
+    fragments are averaged into one representative), so unlike `search`
+    this needs no embedding backend and works even when the model can't
+    load. The seed itself is excluded from the results.
+
+    The faceted arguments (`file_pattern`, `since`/`until`, `label`,
+    `state`, `snippet_chars`, `diversify`) behave exactly as in `search`.
+    `file_pattern` is the lever for cross-surface bridging: seed on a
+    mailing-list thread with `file_pattern="issues/%"` to find the GitHub
+    issue(s) that capture the same topic, or the reverse.
+    """
+    conn = _open_query_db(wg, verbose)
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT embedding FROM chunks WHERE file=? AND chunk_idx=?",
+            (file, chunk_idx),
+        )
+        vecs = [r[0] for r in cur.fetchall()]
+        if not vecs:
+            log(
+                f"No chunk {chunk_idx} in {file!r} for {wg}.",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            return []
+        # A split message owns several fragment vectors; average them into
+        # one representative of the whole message, then renormalise so the
+        # dot product against the (normalised) corpus stays a cosine.
+        seed = _unpack_matrix(vecs).mean(axis=0)
+        seed_norm = float(np.linalg.norm(seed))
+        if seed_norm:
+            seed = seed / seed_norm
+
+        where_clauses, where_args = _build_where(
+            file_pattern, since, until, label, state, None, None, None
+        )
+        return _rank(
+            conn,
+            seed,
+            k=k,
+            where_clauses=where_clauses,
+            where_args=where_args,
+            snippet_chars=snippet_chars,
+            exclude={(file, chunk_idx)},
             diversify=diversify,
         )
     finally:
