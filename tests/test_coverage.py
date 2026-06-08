@@ -60,6 +60,13 @@ def test_window_months_reads_persisted(isolated_home: Path) -> None:
     assert coverage.window_months("wg") == 6
 
 
+def test_window_months_preserves_zero(isolated_home: Path) -> None:
+    # A forced `--months 0` persists 0 (all history); it must not be rounded
+    # up to the default, which would mis-report unbounded coverage as 12 months.
+    config.save("wg", SCOPE, {"months": 0})
+    assert coverage.window_months("wg") == 0
+
+
 # --- coverage_start_label --------------------------------------------------
 
 
@@ -80,7 +87,14 @@ def test_start_label_uses_default_window(isolated_home: Path) -> None:
     assert coverage.coverage_start_label("wg") == "2025-06"
 
 
-# --- github_repos ----------------------------------------------------------
+def test_start_label_none_for_all_history(isolated_home: Path) -> None:
+    # months=0 is unbounded: there's no floor to report, even with a sentinel.
+    _set_gathered("wg", "2026-06-08T00:00:00Z")
+    config.save("wg", SCOPE, {"months": 0})
+    assert coverage.coverage_start_label("wg") is None
+
+
+# --- github_repos / github_repo_count --------------------------------------
 
 
 def test_github_repos_reads_verbatim_name(isolated_home: Path) -> None:
@@ -107,6 +121,18 @@ def test_github_repos_empty_without_archives(isolated_home: Path) -> None:
     assert coverage.github_repos(_files_dir("wg")) == []
 
 
+def test_github_repo_count_counts_without_parsing(isolated_home: Path) -> None:
+    # The count is by filename, so even an unparseable archive still counts —
+    # it's one tracked repo whose JSON happens to be malformed.
+    _write_archive(isolated_home, "wg", "a", "org/a")
+    write_cache_file(isolated_home, "wg", "github/bad.json", "{not json")
+    assert coverage.github_repo_count(_files_dir("wg")) == 2
+
+
+def test_github_repo_count_zero_without_archives(isolated_home: Path) -> None:
+    assert coverage.github_repo_count(_files_dir("wg")) == 0
+
+
 # --- detect_sources --------------------------------------------------------
 
 
@@ -119,6 +145,7 @@ def test_detect_sources_full(isolated_home: Path) -> None:
     src = coverage.detect_sources(_files_dir("wg"))
     assert src.mailing_list and src.drafts and src.rfcs and src.meetings
     assert src.repos == ["org/repo"]
+    assert src.repo_count == 1
 
 
 def test_detect_sources_drafts_only(isolated_home: Path) -> None:
@@ -126,6 +153,21 @@ def test_detect_sources_drafts_only(isolated_home: Path) -> None:
     src = coverage.detect_sources(_files_dir("wg"))
     assert src.drafts
     assert not src.rfcs and not src.mailing_list and not src.meetings
+    assert src.repos == []
+    assert src.repo_count == 0
+
+
+def test_detect_sources_compact_counts_repos_without_names(
+    isolated_home: Path,
+) -> None:
+    # The compact scan reports presence and a repo count, but doesn't parse
+    # archives for verbatim names — `repos` stays empty, `repo_count` is set.
+    write_cache_file(isolated_home, "wg", "threads/2026-01-01-x.md", "t")
+    _write_archive(isolated_home, "wg", "a", "org/a")
+    _write_archive(isolated_home, "wg", "b", "org/b")
+    src = coverage.detect_sources_compact(_files_dir("wg"))
+    assert src.mailing_list
+    assert src.repo_count == 2
     assert src.repos == []
 
 
@@ -141,7 +183,34 @@ def test_window_line_for_list_corpus(isolated_home: Path) -> None:
     assert "mailing-list activity" in line
     assert "~2025-12" in line
     assert "6-mo window" in line
-    assert "full set, not windowed" in line
+    # A list-only corpus has no non-windowed sources, so the full-set caveat
+    # is omitted — the line must not cite issues/drafts it doesn't hold.
+    assert "full set" not in line
+
+
+def test_window_line_fullset_clause_names_present_sources(
+    isolated_home: Path,
+) -> None:
+    _set_gathered("wg", "2026-06-08T00:00:00Z")
+    write_cache_file(isolated_home, "wg", "threads/2026-01-01-x.md", "t")
+    write_cache_file(isolated_home, "wg", "drafts/draft-foo-00.txt", "d")
+    _write_archive(isolated_home, "wg", "org-repo", "org/repo")
+    line = coverage.window_line("wg", _files_dir("wg"))
+    assert line is not None
+    assert "GitHub issues and drafts are the full set, not windowed" in line
+
+
+def test_window_line_fullset_clause_omits_absent_source(
+    isolated_home: Path,
+) -> None:
+    # Drafts present but no GitHub issues: the caveat names drafts only.
+    _set_gathered("wg", "2026-06-08T00:00:00Z")
+    write_cache_file(isolated_home, "wg", "threads/2026-01-01-x.md", "t")
+    write_cache_file(isolated_home, "wg", "drafts/draft-foo-00.txt", "d")
+    line = coverage.window_line("wg", _files_dir("wg"))
+    assert line is not None
+    assert "drafts are the full set, not windowed" in line
+    assert "GitHub issues" not in line
 
 
 def test_window_line_names_both_when_present(isolated_home: Path) -> None:

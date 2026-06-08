@@ -302,7 +302,9 @@ _MAX_SEARCH_K = 100
 # --- Tool implementations (plain functions, also usable for unit tests) -----
 
 
-def _with_freshness(wg: str, body: str) -> str:
+def _with_freshness(
+    wg: str, body: str, *, sources: "coverage.Sources | None" = None
+) -> str:
     """Prepend the freshness line (gather date, escalating to a refresh
     warning when stale) plus the coverage window floor to a tool response.
 
@@ -312,12 +314,15 @@ def _with_freshness(wg: str, body: str) -> str:
     resolving the files dir (e.g. a version vanished mid-request) just omits
     the coverage line, like a missing freshness sentinel.
 
+    `sources` lets a caller that has already inventoried the corpus (overview)
+    pass it in, so the window line reuses that scan instead of redoing it.
+
     Top-level tools call this; pivot tools (get_chunk_text,
     read_file_section) skip it because the line has already been seen on
     the call that surfaced the file in the first place.
     """
     try:
-        window = coverage.window_line(wg, _files_dir(wg))
+        window = coverage.window_line(wg, _files_dir(wg), sources=sources)
     except OSError:
         window = None
     head = "\n".join(part for part in (freshness_line(wg), window) if part)
@@ -409,8 +414,11 @@ def tool_list_corpora() -> str:
 def tool_overview(wg: str) -> str:
     files_dir = _files_dir(wg)
     body = build_overview(wg, files_dir)
-    sources = coverage.sources_line(files_dir)
-    if sources:
+    # One full scan (incl. verbatim repo names) reused by both the inventory
+    # below and the window line in _with_freshness.
+    src = coverage.detect_sources(files_dir)
+    inventory = coverage.sources_line(files_dir, sources=src)
+    if inventory:
         deeper = (
             f'`start_gather(corpus="{wg}", months=N)`'
             if gather_enabled()
@@ -418,13 +426,13 @@ def tool_overview(wg: str) -> str:
         )
         body += (
             "\n\n## Coverage\n\n"
-            f"**Sources:** {sources}.\n\n"
+            f"**Sources:** {inventory}.\n\n"
             "_GitHub issues and drafts are the full set, not limited by the "
             "gather window. For activity older than the window above, "
             f"re-gather deeper with {deeper} — don't read absence as proof it "
             "didn't happen._"
         )
-    return _with_freshness(wg, body)
+    return _with_freshness(wg, body, sources=src)
 
 
 def tool_read_ietf_norms() -> str:

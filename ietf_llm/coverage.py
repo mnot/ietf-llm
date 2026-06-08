@@ -49,7 +49,10 @@ class Sources:
     near-universal and low-signal; this is about the queryable content."""
 
     mailing_list: bool
-    repos: List[str]  # GitHub issue repos, verbatim owner/repo, sorted
+    repos: List[str]  # GitHub issue repos, verbatim owner/repo, sorted; empty
+    # on the compact path (which counts archives rather than parsing names)
+    repo_count: int  # tracked GitHub issue repos — `len(repos)` on the full
+    # path, a filename count on the compact one (where `repos` is unfilled)
     drafts: bool
     rfcs: bool
     meetings: bool
@@ -59,24 +62,32 @@ class Sources:
 
 
 def window_months(wg: str) -> int:
-    """The gather window in months for `wg`.
+    """The gather window in months for `wg`. `0` means an all-history gather
+    (`--months 0`), which is unbounded — callers treat it as "no floor".
 
     A default-window gather doesn't persist `months` (config only writes back
-    non-default scalars), so an absent value means the default was used.
+    non-default scalars), so an absent value means the default was used. A
+    persisted `0` is preserved (it is *not* the default), so an all-history
+    corpus isn't mis-reported as a 12-month window.
     """
     months = load_config(wg, _GATHER_SCOPE).get("months")
-    if isinstance(months, int) and months > 0:
+    if isinstance(months, int) and months >= 0:
         return months
     return DEFAULT_MONTHS
 
 
 def coverage_start_label(wg: str) -> Optional[str]:
     """`YYYY-MM` for the start of the windowed coverage (gather date minus the
-    window), or None when there's no gather record to anchor it."""
+    window), or None when there's no gather record to anchor it — or when the
+    window is unbounded (`months == 0`, all history), which has no floor to
+    report."""
+    months = window_months(wg)
+    if months == 0:
+        return None
     when = last_gathered(wg)
     if when is None:
         return None
-    start = when - timedelta(days=_DAYS_PER_MONTH * window_months(wg))
+    start = when - timedelta(days=_DAYS_PER_MONTH * months)
     return start.strftime("%Y-%m")
 
 
@@ -107,12 +118,45 @@ def github_repos(files_dir: str) -> List[str]:
     return sorted(repos)
 
 
+def github_repo_count(files_dir: str) -> int:
+    """How many GitHub issue archives are present — one `github/<slug>.json`
+    per tracked repo — counted from filenames without parsing them. The compact
+    `list_corpora` inventory and the windowed coverage line need only the count,
+    so they skip the full `json.load` that `github_repos` does to recover the
+    verbatim names (a parse of every archive, on every tool response)."""
+    gh_dir = paths.github_dir(files_dir)
+    try:
+        return sum(1 for name in os.listdir(gh_dir) if name.endswith(".json"))
+    except OSError:
+        return 0
+
+
 def detect_sources(files_dir: str) -> Sources:
-    """Inventory the substantive sources present in `files_dir`, on-disk only."""
+    """Full inventory of `files_dir`, on-disk only — including verbatim GitHub
+    repo names (a parse of every archive). Use `detect_sources_compact` when
+    only presence and counts are needed (the windowed line, `list_corpora`)."""
+    has_drafts, has_rfcs = _draft_kinds(paths.drafts_dir(files_dir))
+    repos = github_repos(files_dir)
+    return Sources(
+        mailing_list=_dir_nonempty(paths.threads_dir(files_dir)),
+        repos=repos,
+        repo_count=len(repos),
+        drafts=has_drafts,
+        rfcs=has_rfcs,
+        meetings=_dir_nonempty(paths.meetings_dir(files_dir)),
+    )
+
+
+def detect_sources_compact(files_dir: str) -> Sources:
+    """Cheap inventory: presence flags plus a GitHub repo *count* by filename,
+    never parsing archives for names. Drives the windowed coverage line (on
+    every tool response) and the `list_corpora` column, where verbatim repo
+    names aren't shown — only `overview` needs those, via `detect_sources`."""
     has_drafts, has_rfcs = _draft_kinds(paths.drafts_dir(files_dir))
     return Sources(
         mailing_list=_dir_nonempty(paths.threads_dir(files_dir)),
-        repos=github_repos(files_dir),
+        repos=[],
+        repo_count=github_repo_count(files_dir),
         drafts=has_drafts,
         rfcs=has_rfcs,
         meetings=_dir_nonempty(paths.meetings_dir(files_dir)),
@@ -161,21 +205,36 @@ def _windowed_subject(sources: Sources) -> Optional[str]:
     return " & ".join(parts) + " activity"
 
 
+def _fullset_clause(sources: Sources) -> str:
+    """The trailing `; … the full set, not windowed` caveat, naming only the
+    non-windowed sources actually present (GitHub issues, drafts) — empty when
+    the corpus has neither, so the line never cites a source it lacks."""
+    full: List[str] = []
+    if sources.repo_count:
+        full.append("GitHub issues")
+    if sources.drafts:
+        full.append("drafts")
+    if not full:
+        return ""
+    return f"; {' and '.join(full)} are the full set, not windowed"
+
+
 def window_line(
     wg: str, files_dir: str, *, sources: Optional[Sources] = None
 ) -> Optional[str]:
     """A one-line italic coverage floor for top-level tool responses, or None
-    when there's no gather record or nothing windowed to report."""
+    when there's no gather record or nothing windowed to report. Detects sources
+    cheaply (no archive parse) unless a precomputed `sources` is passed in."""
     start = coverage_start_label(wg)
     if start is None:
         return None
-    subject = _windowed_subject(sources or detect_sources(files_dir))
+    src = sources or detect_sources_compact(files_dir)
+    subject = _windowed_subject(src)
     if subject is None:
         return None
     return (
         f"_Coverage: {subject} reaches back to ~{start} "
-        f"({window_months(wg)}-mo window); GitHub issues and drafts are the "
-        "full set, not windowed._"
+        f"({window_months(wg)}-mo window){_fullset_clause(src)}._"
     )
 
 
@@ -211,13 +270,15 @@ def sources_line(
 
 def compact_sources_line(files_dir: str, *, sources: Optional[Sources] = None) -> str:
     """A terse inventory for the `list_corpora` table — counts, not repo names
-    (`list · issues×2 · drafts · RFCs · minutes`). Empty when nothing present."""
-    src = sources or detect_sources(files_dir)
+    (`list · issues×2 · drafts · RFCs · minutes`). Empty when nothing present.
+    Detects cheaply (counts archives, never parses them) unless a precomputed
+    `sources` is passed in."""
+    src = sources or detect_sources_compact(files_dir)
     parts: List[str] = []
     if src.mailing_list:
         parts.append("list")
-    if src.repos:
-        parts.append(f"issues×{len(src.repos)}" if len(src.repos) > 1 else "issues")
+    if src.repo_count:
+        parts.append(f"issues×{src.repo_count}" if src.repo_count > 1 else "issues")
     if src.drafts:
         parts.append("drafts")
     if src.rfcs:
