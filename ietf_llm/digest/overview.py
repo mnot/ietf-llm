@@ -159,17 +159,23 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
 
     active_drafts: List[str] = []
     concluded_drafts = 0
-    rfcs: List[tuple[str, int]] = []
+    # RFC names come from the documents manifest (recorded at gather time
+    # from the global series index) unioned with any RFCs still in the
+    # author table — the latter covers a cache gathered before RFC bodies
+    # were dropped, so it keeps its RFC listing until the next gather.
+    # Bodies are no longer required on disk.
+    rfc_names = {name for name in manifest if _RFC_RE.match(name)}
     for doc, authors in sorted(docs.items()):
-        cited = citation_counts.get(doc.lower()) or 0
         if _RFC_RE.match(doc):
-            rfcs.append((doc, cited))
+            rfc_names.add(doc)
             continue
         if _draft_concluded(doc, manifest, now):
             concluded_drafts += 1
             continue
+        cited = citation_counts.get(doc.lower()) or 0
         cite_tag = f"  _(cited in {cited})_" if cited else ""
         active_drafts.append(f"- `{doc}` — {', '.join(sorted(authors))}{cite_tag}")
+    rfcs = sorted((name, citation_counts.get(name.lower()) or 0) for name in rfc_names)
     return _DocSummary(
         active_drafts, concluded_drafts, len(rfcs), _rfc_summary_lines(rfcs)
     )

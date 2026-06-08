@@ -11,7 +11,7 @@ from .datatracker import (
     iter_active_drafts_by_name,
     iter_group_documents,
 )
-from .documents_manifest import save_documents_manifest
+from .documents_manifest import DocumentRecord, save_documents_manifest
 
 # `draft-foo-bar-07.txt` / `draft-foo-bar-07` / `draft-foo-bar.txt` /
 # `draft-foo-bar` all normalise to `draft-foo-bar`. Used by both
@@ -356,12 +356,21 @@ def process_documents(
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
     include_related: bool = False,
+    include_rfc_bodies: bool = False,
 ) -> List[str]:
-    """Download all revisions of WG drafts and RFCs as text.
+    """Download WG draft revisions (and, opt-in, RFC bodies) as text.
 
-    Drafts and RFCs live under `drafts/` in the WG cache. The
-    `destination` argument is the WG's `files/` dir; we materialise
-    the `drafts/` subdir as needed.
+    Drafts live under `drafts/` in the WG cache. The `destination`
+    argument is the WG's `files/` dir; we materialise the `drafts/`
+    subdir as needed.
+
+    RFC bodies are NOT gathered by default. The published series is a
+    global singleton reachable via `rfc_search` / `get_rfc`, so mirroring
+    every WG's RFCs into its corpus (and its embedding index) is wasted
+    download, storage, and embed time. Set `include_rfc_bodies` (the
+    `--rfcs` flag) to restore the old behaviour. Either way the WG's RFC
+    *names* are recorded in the documents manifest, so the overview's
+    Published-RFCs section survives without the bodies on disk.
 
     When `include_related` is True, also pulls active individual
     `draft-<author>-<wg>-<topic>` drafts (see `get_wg_documents`).
@@ -370,29 +379,34 @@ def process_documents(
     out_dir = drafts_dir(destination)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Collect every missing draft revision and RFC as a download task, then
-    # fetch them all in one parallel pass. Drafts hit www.ietf.org and RFCs
-    # www.rfc-editor.org, so the per-host governor keeps each polite while the
-    # fan-out hides the per-file latency that made this stage the slow part of
-    # a first gather.
+    # Collect every missing draft revision (and, opt-in, RFC body) as a
+    # download task, then fetch them all in one parallel pass. Drafts hit
+    # www.ietf.org and RFCs www.rfc-editor.org, so the per-host governor
+    # keeps each polite while the fan-out hides the per-file latency that
+    # made this stage the slow part of a first gather.
     tasks: List[Tuple[str, str]] = []
 
-    # 1. Drafts
     drafts = docs["drafts"]
+    rfcs = docs["rfcs"]
+
+    # Documents manifest: every draft (with expiry/state — it drives which
+    # revision stacks the embedding index skips, and a concluded draft may
+    # carry no expiry) plus the WG's published RFCs as bare `rfc` markers.
+    # Recording RFC names here lets the overview list them without their
+    # bodies on disk. Saved unconditionally so the RFC listing is never lost.
+    manifest: Dict[str, DocumentRecord] = {
+        str(d["name"]): {
+            "expires": str(d.get("expires") or ""),
+            "state": d.get("state"),
+        }
+        for d in drafts
+    }
+    for rfc in rfcs:
+        manifest[str(rfc["name"])] = {"expires": "", "state": "rfc"}
+    save_documents_manifest(wg_name, manifest)
+
+    # 1. Drafts
     if drafts:
-        # Record every draft (not only ones with an expiry): the manifest
-        # now also drives which drafts the embedding index skips, keyed on
-        # Datatracker state, and a concluded draft may carry no expiry.
-        save_documents_manifest(
-            wg_name,
-            {
-                str(d["name"]): {
-                    "expires": str(d.get("expires") or ""),
-                    "state": d.get("state"),
-                }
-                for d in drafts
-            },
-        )
         for draft in drafts:
             name = str(draft["name"])
             max_rev = int(draft["max_rev"])
@@ -400,19 +414,20 @@ def process_documents(
     else:
         log(f"No drafts found for {wg_name}.", verbose, level=LogLevel.STATUS)
 
-    # 2. RFCs
-    rfcs = docs["rfcs"]
-    if rfcs:
-        for rfc in rfcs:
-            r_name = str(rfc["name"])
-            r_num = str(rfc["number"])
-            filepath = os.path.join(out_dir, f"{r_name}.txt")
-            if os.path.exists(filepath):
-                continue
-            url = f"https://www.rfc-editor.org/rfc/rfc{r_num}.txt"
-            tasks.append((url, filepath))
-    else:
-        log(f"No RFCs found for {wg_name}.", verbose, level=LogLevel.STATUS)
+    # 2. RFC bodies — opt-in only (see docstring); the names are already in
+    # the manifest above, so the overview lists them regardless.
+    if include_rfc_bodies:
+        if rfcs:
+            for rfc in rfcs:
+                r_name = str(rfc["name"])
+                r_num = str(rfc["number"])
+                filepath = os.path.join(out_dir, f"{r_name}.txt")
+                if os.path.exists(filepath):
+                    continue
+                url = f"https://www.rfc-editor.org/rfc/rfc{r_num}.txt"
+                tasks.append((url, filepath))
+        else:
+            log(f"No RFCs found for {wg_name}.", verbose, level=LogLevel.STATUS)
 
     if tasks:
         log(

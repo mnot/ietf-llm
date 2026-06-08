@@ -2798,7 +2798,9 @@ def main() -> None:
         """Search the gathered record of an IETF/IRTF effort — a working
         group, research group, mailing list, or set of Internet-Drafts —
         semantically across its mailing-list debate, GitHub issues,
-        drafts, RFCs, slides, transcripts, and minutes. Returns top-k
+        drafts, slides, transcripts, and minutes. (Published RFC bodies
+        aren't indexed here by default — search the series with
+        `rfc_search` and read one with `get_rfc`.) Returns top-k
         chunks with file, chunk_idx, title, score, snippet, line range,
         GitHub URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.
@@ -3195,8 +3197,9 @@ def main() -> None:
         max_lines: int = MAX_LINES_DEFAULT,
     ) -> str:
         """Read a bounded section of any file in a corpus's
-        ietf-llm cache (per-thread files, per-issue files, drafts, RFCs,
-        slides, transcripts, minutes). Default 400 lines per call; the
+        ietf-llm cache (per-thread files, per-issue files, drafts,
+        slides, transcripts, minutes; RFC bodies only when gathered with
+        `--rfcs` — otherwise use `get_rfc`). Default 400 lines per call; the
         caller can raise `max_lines` up to a hard cap of 5000 so the
         context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.
@@ -3278,8 +3281,10 @@ def main() -> None:
             The corpus **shape is inferred** from what you pass — you don't
             declare it:
             - **Working Group / RG / BoF**: pass just `corpus` as the
-              shortname (`tls`, `cfrg`). The charter, drafts, RFCs,
-              meetings, mailing list, and GitHub issues are auto-discovered
+              shortname (`tls`, `cfrg`). The charter, drafts, meetings,
+              mailing list, and GitHub issues are auto-discovered (the WG's
+              published RFCs are listed in the overview but their bodies stay
+              in the global series — `rfc_search` / `get_rfc`)
               — including *which* repos to track: the first gather finds the
               group's active draft repos and follows them automatically
               (`gather_status` reports which were added). To preview or

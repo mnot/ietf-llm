@@ -175,8 +175,10 @@ per-file chunk counts (inventory only — not a way to find answers).
   history. Frontmatter carries `**Duplicate of:** #N`, and a
   `**Closing rationale:**` when closed — both load-bearing for "what did
   the WG decide".
-- **`drafts/draft-…-NN.txt`, `drafts/rfc<N>.txt`** — large documents; read
-  by line range with `read_file_section`.
+- **`drafts/draft-…-NN.txt`** — large documents; read by line range with
+  `read_file_section`. (RFC bodies are *not* gathered into a corpus by
+  default — use `get_rfc` / the rfc-editor link; a gather run with `--rfcs`
+  is the only time `drafts/rfc<N>.txt` is present.)
 - **`meetings/<code>/`** — `minutes.md`, `agenda.md` (what was *planned*
   vs. what happened), `slides/<name>.pdf.txt`, `transcripts/<ts>.md`,
   `polls/<ts>.md` (room signal, not consensus).
