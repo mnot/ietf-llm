@@ -38,7 +38,8 @@ If a corpus isn't cached (`overview` returns nothing, or it's absent from
   `gather_status(corpus="<name>")` until `done`. Add `mailing_list` /
   `draft` / `github` / `author` / `new_drafts` for non-WG shapes — the
   shape is inferred. The `start_gather` docstring covers shapes, the
-  `months` window, GitHub auto-discovery, and `stop_gather`.
+  `months` window, GitHub auto-discovery, and `stop_gather`. (LLM
+  summarisation of threads / issues is CLI/env-only — not an MCP option.)
 - **Otherwise**, tell the user to run `ietf-llm <corpus>` from their shell
   (`ietf-llm --list` shows what's cached).
 

@@ -3320,6 +3320,13 @@ def main() -> None:
             reuse hint instead of gathering — prefer the existing corpus;
             `force=True` mints the near-duplicate anyway.
 
+            LLM summarisation (one-line digests of threads / issues) is
+            deliberately **not** an option here: it needs an LLM key and is the
+            slowest gather step, and an MCP-initiated gather stays lean. It is
+            CLI/env-only — set `IETF_LLM_SUMMARIZE` (and optionally
+            `IETF_LLM_SUMMARIZE_MODEL`) on the gather host, or run
+            `ietf-llm <corpus> --summarize`.
+
             Args:
                 corpus: Corpus name — a WG/RG/BoF shortname, a mailing-list
                     name, or any label for a custom/synthetic corpus.
