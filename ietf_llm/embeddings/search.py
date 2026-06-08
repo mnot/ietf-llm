@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """Build the per-WG embedding index, and query it.
 
 `build_index(wg, cache_dir, ...)` walks the cache, chunks each eligible
@@ -640,125 +641,31 @@ def index_model(wg: str) -> Optional[str]:
     return row[0] if row else None
 
 
-def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
-    wg: str,
-    query: str,
-    model_name: Optional[str] = None,
-    k: int = 10,
-    file_pattern: Optional[str] = None,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-    label: Optional[str] = None,
-    state: Optional[str] = None,
-    sort: Optional[str] = None,
-    author: Optional[str] = None,
-    role: Optional[str] = None,
-    snippet_chars: Optional[int] = None,
-    verbose: Verbosity = Verbosity.STATUS,
-) -> List[Hit]:
-    """Return top-k chunks for a query. Returns [] if no index exists.
+#: Relevance/diversity tradeoff for MMR result selection. 1.0 is pure
+#: relevance (the old top-k behaviour); 0.0 is pure novelty. 0.7 keeps
+#: relevance dominant while breaking up near-duplicate clusters — the
+#: common failure mode of plain top-k, where five chunks of one thread
+#: crowd out the other threads that also matched.
+_MMR_LAMBDA = 0.7
+#: MMR selects its diverse k from the top-N candidates by relevance, so
+#: a genuinely off-topic-but-novel chunk can't be promoted over the
+#: relevant set. Also bounds the pairwise-similarity cost (an N×k matmul).
+_MMR_POOL = 50
 
-    Optional facets:
-      - file_pattern: SQL LIKE pattern matched against the file column
-        (e.g. "%-thread-%" or "%-issue-%"). % is wildcard.
-      - since / until: ISO 8601 date strings; only chunks whose
-        chunk_date falls in the range are considered. Chunks with
-        chunk_date NULL (e.g. windowed draft chunks) are excluded when
-        either bound is set, since they have no time semantics.
-      - label: substring match against the (lowercased, comma-separated)
-        labels column. Restricts to issue chunks tagged with that
-        GitHub label — the curation work the WG already did.
-      - state: 'open' or 'closed' — restricts to issue chunks with
-        that resolution status. Useful for preferring the chairs'
-        decision (closed issues) over older mid-debate threads, or
-        vice versa.
-      - sort: None (default) returns top-k by relevance.
-        'date' returns the top-k by relevance then re-sorts the
-        survivors chronologically (oldest first), so a consumer
-        reading top-to-bottom sees how a debate evolved rather than
-        what's currently most salient. NULL-dated chunks (drafts,
-        transcripts, windowed) are excluded under 'date' since they
-        have no place in the chronology.
-      - author: substring match against the chunk title, which for
-        thread / issue chunks contains the sender / commenter name
-        ("Alice Chen"). Lets a consumer ask "what did Alice say
-        about X" without knowing the file. Windowed draft / transcript
-        chunks have no author in the title so the filter drops them.
-      - role: substring match against the chunk title's role tag —
-        the registry renders role-bearing messages as
-        "... — Alice Chen (Chair)" / "(Chair/Author)" / "(Editor)" /
-        etc. `role="Chair"` shortlists messages by people the WG
-        considers procedurally responsible — high-value for "what
-        did the chairs say about X" / "did anyone with formal
-        responsibility weigh in" questions.
-      - snippet_chars: override the default snippet budget. Useful
-        when the default snippet truncates content the consumer
-        wants visible inline. Applies to BOTH structured (table /
-        list) and prose snippet paths.
-    """
-    if not os.path.exists(_db_path_ro(wg)):
-        log(
-            f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
-            verbose,
-            level=LogLevel.ERROR,
-        )
-        return []
 
-    # Read-only path: the index is built and migrated by gather
-    # (build_index); the server never writes. _connect_ro avoids the
-    # makedirs / WAL / ALTER-TABLE migration _open_db performs, which is
-    # unnecessary for a query and unsafe against an immutable index.
-    conn = _connect_ro(wg)
-    cur = conn.cursor()
-    # We cannot migrate read-only, so if the on-disk schema predates this
-    # version the faceted columns this query selects may be absent -- bail
-    # with guidance rather than erroring on a missing column.
-    cur.execute("SELECT value FROM meta WHERE key='schema_version'")
-    sv_row = cur.fetchone()
-    if (int(sv_row[0]) if sv_row else 1) < _SCHEMA_VERSION:
-        log(
-            f"Embeddings index for {wg} is an older schema; re-run "
-            f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
-            verbose,
-            level=LogLevel.ERROR,
-        )
-        conn.close()
-        return []
-    cur.execute("SELECT value FROM meta WHERE key='model'")
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return []
-    indexed_model = row[0]
-    if model_name and model_name != indexed_model:
-        log(
-            f"Query model '{model_name}' != index model '{indexed_model}'; "
-            "using index model.",
-            verbose,
-            level=LogLevel.PROGRESS,
-        )
-    use_model = indexed_model
-
-    model = _get_embed_model(use_model, verbose)
-    if model is None:
-        conn.close()
-        return []
-
-    try:
-        q_vec = np.asarray(list(model.embed(query)), dtype=np.float32)
-    except Exception as err:  # pylint: disable=broad-except
-        # Same provider-variability story as build_index().
-        log(
-            f"Query embedding failed: {type(err).__name__}: {err}",
-            verbose,
-            level=LogLevel.ERROR,
-        )
-        conn.close()
-        return []
-    q_norm = float(np.linalg.norm(q_vec))
-    if q_norm:
-        q_vec = q_vec / q_norm
-
+def _build_where(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    file_pattern: Optional[str],
+    since: Optional[str],
+    until: Optional[str],
+    label: Optional[str],
+    state: Optional[str],
+    sort: Optional[str],
+    author: Optional[str],
+    role: Optional[str],
+) -> Tuple[List[str], List[str]]:
+    """Translate the faceted-search arguments into a list of SQL WHERE
+    clauses and their bind args. Shared by `search` (query-string) and
+    `related` (by-example) so both honour the same facets."""
     where_clauses: List[str] = []
     where_args: List[str] = []
     if file_pattern:
@@ -799,6 +706,104 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         # the body of an unrelated chunk.
         where_clauses.append("title LIKE ?")
         where_args.append(f"%({role}%")
+    return where_clauses, where_args
+
+
+def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
+    """Open `wg`'s index read-only for a query, or return None with a
+    logged reason (no index on disk, or a schema older than this build can
+    read). Shared by `search` and `related`.
+
+    Read-only path: the index is built and migrated by gather
+    (build_index); the server never writes. `_connect_ro` avoids the
+    makedirs / WAL / ALTER-TABLE migration `_open_db` performs, which is
+    unnecessary for a query and unsafe against an immutable index.
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        log(
+            f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return None
+    conn = _connect_ro(wg)
+    # We cannot migrate read-only, so if the on-disk schema predates this
+    # version the faceted columns this query selects may be absent -- bail
+    # with guidance rather than erroring on a missing column.
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM meta WHERE key='schema_version'")
+    sv_row = cur.fetchone()
+    if (int(sv_row[0]) if sv_row else 1) < _SCHEMA_VERSION:
+        log(
+            f"Embeddings index for {wg} is an older schema; re-run "
+            f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        conn.close()
+        return None
+    return conn
+
+
+def _mmr_select(
+    order: List[int],
+    scores: "np.ndarray[Any, np.dtype[np.float32]]",
+    embs: "np.ndarray[Any, np.dtype[np.float32]]",
+    k: int,
+    lam: float = _MMR_LAMBDA,
+) -> List[int]:
+    """Maximal Marginal Relevance: greedily pick k row indices from
+    `order` (pre-sorted by descending relevance) that trade query
+    relevance against similarity to the already-picked results, so the
+    returned set covers the query rather than clustering on its single
+    most-relevant facet.
+
+    `embs` are L2-normalised, so a dot product is cosine similarity. The
+    candidate set is capped at `_MMR_POOL` by relevance; if k runs past
+    the pool the remainder is filled in plain relevance order.
+    """
+    pool = order[:_MMR_POOL]
+    selected: List[int] = []
+    remaining = list(pool)
+    while remaining and len(selected) < k:
+        if not selected:
+            # Seed with the single most relevant candidate.
+            selected.append(remaining.pop(0))
+            continue
+        sel_vecs = embs[selected]  # (s, dim)
+        cand_vecs = embs[remaining]  # (c, dim)
+        # Each candidate's similarity to its nearest already-picked result.
+        max_sim = (cand_vecs @ sel_vecs.T).max(axis=1)  # (c,)
+        rel = scores[remaining]  # (c,)
+        mmr = lam * rel - (1.0 - lam) * max_sim
+        selected.append(remaining.pop(int(np.argmax(mmr))))
+    # k beyond the diversified pool: top up in relevance order.
+    for i in order[_MMR_POOL:]:
+        if len(selected) >= k:
+            break
+        selected.append(i)
+    return selected
+
+
+def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    conn: sqlite3.Connection,
+    q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
+    *,
+    k: int,
+    where_clauses: List[str],
+    where_args: List[str],
+    sort: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
+    diversify: bool = True,
+) -> List[Hit]:
+    """Score every candidate chunk against `q_vec`, collapse a long
+    message's sub_idx fragments to one logical hit, select k (diversified
+    by default), and build the `Hit` list.
+
+    Factored out of `search` so the query vector is the only thing a
+    caller varies — `search` embeds a query string into it.
+    """
+    cur = conn.cursor()
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         "SELECT file, chunk_idx, title, text, embedding, "
@@ -809,7 +814,6 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     )
     rows = cur.fetchall()
     if not rows:
-        conn.close()
         return []
 
     embs = _unpack_matrix([r[4] for r in rows])
@@ -825,7 +829,15 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         best = best_by_key.get(key)
         if best is None or scores[i] > scores[best]:
             best_by_key[key] = i
-    top: List[int] = sorted(best_by_key.values(), key=lambda i: -scores[i])[:k]
+    order: List[int] = sorted(best_by_key.values(), key=lambda i: -scores[i])
+    # Diversify by default (MMR), so a breadth query doesn't return the
+    # same thread five times. Suppressed under sort="date": that mode is a
+    # timeline, and dropping topically-adjacent messages would break the
+    # early-objection → settled-position arc it exists to show.
+    if diversify and sort != "date" and len(order) > k:
+        top = _mmr_select(order, scores, embs, k)
+    else:
+        top = order[:k]
     # Chronological mode: pick top-k by relevance (so the query still
     # filters what's "about" the topic), then re-order those survivors
     # by date so the consumer reads early-objection → settled-position
@@ -872,5 +884,120 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
                 closing_rationale=closing_rationale if closing_rationale else None,
             )
         )
-    conn.close()
     return hits
+
+
+def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+    wg: str,
+    query: str,
+    model_name: Optional[str] = None,
+    k: int = 10,
+    file_pattern: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    label: Optional[str] = None,
+    state: Optional[str] = None,
+    sort: Optional[str] = None,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+    snippet_chars: Optional[int] = None,
+    diversify: bool = True,
+    verbose: Verbosity = Verbosity.STATUS,
+) -> List[Hit]:
+    """Return top-k chunks for a query. Returns [] if no index exists.
+
+    Optional facets:
+      - file_pattern: SQL LIKE pattern matched against the file column
+        (e.g. "%-thread-%" or "%-issue-%"). % is wildcard.
+      - since / until: ISO 8601 date strings; only chunks whose
+        chunk_date falls in the range are considered. Chunks with
+        chunk_date NULL (e.g. windowed draft chunks) are excluded when
+        either bound is set, since they have no time semantics.
+      - label: substring match against the (lowercased, comma-separated)
+        labels column. Restricts to issue chunks tagged with that
+        GitHub label — the curation work the WG already did.
+      - state: 'open' or 'closed' — restricts to issue chunks with
+        that resolution status. Useful for preferring the chairs'
+        decision (closed issues) over older mid-debate threads, or
+        vice versa.
+      - sort: None (default) returns top-k by relevance.
+        'date' returns the top-k by relevance then re-sorts the
+        survivors chronologically (oldest first), so a consumer
+        reading top-to-bottom sees how a debate evolved rather than
+        what's currently most salient. NULL-dated chunks (drafts,
+        transcripts, windowed) are excluded under 'date' since they
+        have no place in the chronology.
+      - author: substring match against the chunk title, which for
+        thread / issue chunks contains the sender / commenter name
+        ("Alice Chen"). Lets a consumer ask "what did Alice say
+        about X" without knowing the file. Windowed draft / transcript
+        chunks have no author in the title so the filter drops them.
+      - role: substring match against the chunk title's role tag —
+        the registry renders role-bearing messages as
+        "... — Alice Chen (Chair)" / "(Chair/Author)" / "(Editor)" /
+        etc. `role="Chair"` shortlists messages by people the WG
+        considers procedurally responsible — high-value for "what
+        did the chairs say about X" / "did anyone with formal
+        responsibility weigh in" questions.
+      - snippet_chars: override the default snippet budget. Useful
+        when the default snippet truncates content the consumer
+        wants visible inline. Applies to BOTH structured (table /
+        list) and prose snippet paths.
+      - diversify: when True (default), select the top-k with Maximal
+        Marginal Relevance so the results cover the query rather than
+        clumping on its single most-relevant facet (five chunks of one
+        thread crowding out the others). Pass False for the plain
+        relevance top-k. Ignored under sort="date" (a timeline must keep
+        topically-adjacent messages).
+    """
+    conn = _open_query_db(wg, verbose)
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM meta WHERE key='model'")
+        row = cur.fetchone()
+        if not row:
+            return []
+        indexed_model = row[0]
+        if model_name and model_name != indexed_model:
+            log(
+                f"Query model '{model_name}' != index model '{indexed_model}'; "
+                "using index model.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+
+        model = _get_embed_model(indexed_model, verbose)
+        if model is None:
+            return []
+
+        try:
+            q_vec = np.asarray(list(model.embed(query)), dtype=np.float32)
+        except Exception as err:  # pylint: disable=broad-except
+            # Same provider-variability story as build_index().
+            log(
+                f"Query embedding failed: {type(err).__name__}: {err}",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            return []
+        q_norm = float(np.linalg.norm(q_vec))
+        if q_norm:
+            q_vec = q_vec / q_norm
+
+        where_clauses, where_args = _build_where(
+            file_pattern, since, until, label, state, sort, author, role
+        )
+        return _rank(
+            conn,
+            q_vec,
+            k=k,
+            where_clauses=where_clauses,
+            where_args=where_args,
+            sort=sort,
+            snippet_chars=snippet_chars,
+            diversify=diversify,
+        )
+    finally:
+        conn.close()

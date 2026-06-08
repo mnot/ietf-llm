@@ -409,8 +409,13 @@ job:
   "recent activity" sections reuse.
 - **Search:** `search_corpus(query, …)` with `label`/`state`/`author`/
   `role`/`file_pattern`/`since`/`until`/`sort="date"`/`group_by="file"`/
-  `snippet_chars`/`collapse_versions` facets (`collapse_versions`,
-  default on, hides older draft revisions of a matched draft).
+  `snippet_chars`/`collapse_versions`/`diversify` facets
+  (`collapse_versions`, default on, hides older draft revisions of a
+  matched draft; `diversify`, default on, selects the top-k by Maximal
+  Marginal Relevance so the results cover the matching threads/issues
+  instead of clumping on the single most-relevant one — bypassed under
+  `sort="date"`, which must keep adjacent messages, and `group_by="file"`,
+  already one row per file).
   `search_corpora(corpora=[…], query, …)` fans the same search across a
   **bounded, explicit** set of gathered corpora and returns one merged,
   rank-ordered list tagged by corpus — the breadth companion to the
@@ -891,7 +896,8 @@ cache files.
 
 Coverage spans: config; the digest builders and `query` filters;
 people/identity consolidation and affiliations; embeddings chunking and
-faceted search (with a stub model); the MCP tools (`overview`,
+faceted search (with a stub model); MMR search diversification (with a
+keyword stub that can actually rank); the MCP tools (`overview`,
 `read_topic`, `find_replies`, `tally_positions`, `find_citations`,
 search facets, `read_file_section` caps); positions/poll heuristics;
 ballots; citations; meeting clustering; synthetic-WG routing; the

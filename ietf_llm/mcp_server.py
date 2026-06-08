@@ -764,6 +764,72 @@ def _render_file_grouped(hits: List[Any], limit: int) -> str:
     return "\n".join(out)
 
 
+def _render_hits(hits: List[Any], k: int, group_by: Optional[str]) -> str:
+    """Render a list of `Hit`s to the text block shown to the caller.
+
+    Shared by `tool_search` and `tool_find_related`. `group_by="file"`
+    collapses to one row per file; otherwise the per-chunk view, led by a
+    result-set state summary when every hit shares one issue state.
+    """
+    if group_by == "file":
+        return _render_file_grouped(hits, k)
+    hits = hits[:k]
+    lines: List[str] = []
+    # Result-set state summary. When every hit comes from a closed issue,
+    # the answer the consumer cares about is "this debate is resolved"
+    # — surfacing that once at the top stops an LLM from presenting an
+    # archived debate as if it were live (and saves the per-hit `[closed]`
+    # tags from being noise on a uniform result set).
+    states = {h.state for h in hits if h.state}
+    files_with_state = sum(1 for h in hits if h.state)
+    if states and len(states) == 1 and files_with_state == len(hits):
+        only_state = next(iter(states))
+        lines.append(
+            f"_All {len(hits)} hits are from {only_state} issues. "
+            + (
+                "This topic appears resolved; closed issues hold the "
+                "chairs' resolution."
+                if only_state == "closed"
+                else "These issues are still under discussion."
+            )
+            + "_"
+        )
+        lines.append("")
+    for i, hit in enumerate(hits, 1):
+        loc = (
+            f" lines={hit.start_line}-{hit.end_line}"
+            if hit.start_line is not None
+            else ""
+        )
+        # State goes on the header line — it's a one-word signal that
+        # changes how the caller should weight the hit. Labels (longer
+        # and only sometimes present) get their own line below.
+        state_tag = f"  [{hit.state}]" if hit.state else ""
+        lines.append(
+            f"[{i}] score={hit.score:.3f}  file={hit.file}  "
+            f"chunk={hit.chunk_idx}{loc}{state_tag}"
+        )
+        lines.append(f"     {hit.title}")
+        if hit.labels:
+            lines.append(f"     labels: {hit.labels}")
+        # Cluster signals — saves a follow-up file read when scanning
+        # results. dup-of nudges the LLM to skip duplicate issues;
+        # the closing-rationale preview surfaces the "why" without
+        # the consumer having to open the file.
+        if hit.duplicate_of is not None:
+            lines.append(f"     duplicate of: #{hit.duplicate_of}")
+        if hit.closing_rationale:
+            preview = _flatten_rationale(hit.closing_rationale, 140)
+            lines.append(f"     closing: {preview}")
+        # Citation URL straight from the chunk: GitHub URL for issue
+        # chunks, IETF Archived-At permalink for thread message chunks.
+        # NULL for drafts/transcripts and pre-v6 indexes — silently skip.
+        if hit.url:
+            lines.append(f"     url: {hit.url}")
+        lines.append(f"     {hit.snippet}")
+    return "\n".join(lines)
+
+
 # --- read_topic --------------------------------------------------------------
 #
 # Cross-file chronological view for one topic. The mailing-list / GitHub
@@ -1334,6 +1400,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     role: Optional[str] = None,
     snippet_chars: Optional[int] = None,
     collapse_versions: bool = True,
+    diversify: bool = True,
 ) -> str:
     for field, value in (("since", since), ("until", until)):
         date_error = _invalid_date_message(value, field)
@@ -1363,6 +1430,10 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         author=author,
         role=role,
         snippet_chars=snippet_chars,
+        # `group_by="file"` is already a coarse diversification (one row
+        # per file), so MMR on top of it is redundant churn — let the
+        # rollup do the de-duplication and keep the per-file best chunks.
+        diversify=diversify and group_by != "file",
         verbose=Verbosity.QUIET,
     )
     if not hits:
@@ -1388,63 +1459,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     # thread five times — wasting context. group_by="file" collapses
     # to one row per file with hit count + best chunk; the per-chunk
     # view stays the default for depth questions.
-    if group_by == "file":
-        return _with_freshness(wg, _render_file_grouped(hits, k) + note)
-    hits = hits[:k]
-    lines = []
-    # Result-set state summary. When every hit comes from a closed issue,
-    # the answer the consumer cares about is "this debate is resolved"
-    # — surfacing that once at the top stops an LLM from presenting an
-    # archived debate as if it were live (and saves the per-hit `[closed]`
-    # tags from being noise on a uniform result set).
-    states = {h.state for h in hits if h.state}
-    files_with_state = sum(1 for h in hits if h.state)
-    if states and len(states) == 1 and files_with_state == len(hits):
-        only_state = next(iter(states))
-        lines.append(
-            f"_All {len(hits)} hits are from {only_state} issues. "
-            + (
-                "This topic appears resolved; closed issues hold the "
-                "chairs' resolution."
-                if only_state == "closed"
-                else "These issues are still under discussion."
-            )
-            + "_"
-        )
-        lines.append("")
-    for i, hit in enumerate(hits, 1):
-        loc = (
-            f" lines={hit.start_line}-{hit.end_line}"
-            if hit.start_line is not None
-            else ""
-        )
-        # State goes on the header line — it's a one-word signal that
-        # changes how the caller should weight the hit. Labels (longer
-        # and only sometimes present) get their own line below.
-        state_tag = f"  [{hit.state}]" if hit.state else ""
-        lines.append(
-            f"[{i}] score={hit.score:.3f}  file={hit.file}  "
-            f"chunk={hit.chunk_idx}{loc}{state_tag}"
-        )
-        lines.append(f"     {hit.title}")
-        if hit.labels:
-            lines.append(f"     labels: {hit.labels}")
-        # Cluster signals — saves a follow-up file read when scanning
-        # results. dup-of nudges the LLM to skip duplicate issues;
-        # the closing-rationale preview surfaces the "why" without
-        # the consumer having to open the file.
-        if hit.duplicate_of is not None:
-            lines.append(f"     duplicate of: #{hit.duplicate_of}")
-        if hit.closing_rationale:
-            preview = _flatten_rationale(hit.closing_rationale, 140)
-            lines.append(f"     closing: {preview}")
-        # Citation URL straight from the chunk: GitHub URL for issue
-        # chunks, IETF Archived-At permalink for thread message chunks.
-        # NULL for drafts/transcripts and pre-v6 indexes — silently skip.
-        if hit.url:
-            lines.append(f"     url: {hit.url}")
-        lines.append(f"     {hit.snippet}")
-    return _with_freshness(wg, "\n".join(lines) + note)
+    return _with_freshness(wg, _render_hits(hits, k, group_by) + note)
 
 
 #: Upper bound on how many corpora one `search_corpora` call will fan
@@ -2874,6 +2889,7 @@ def main() -> None:
         role: Optional[str] = None,
         snippet_chars: Optional[int] = None,
         collapse_versions: bool = True,
+        diversify: bool = True,
     ) -> str:
         """Search the gathered record of an IETF/IRTF effort — a working
         group, research group, mailing list, or set of Internet-Drafts —
@@ -2942,6 +2958,14 @@ def main() -> None:
         `-02`, `-22`. Set it False, or pin a revision with `file_pattern`
         (e.g. `"drafts/%-04.txt"`), to search a specific older revision.
 
+        `diversify=True` (the default) spreads the results across the
+        threads/issues that match instead of returning five chunks of
+        the one most-relevant thread — better for "what are the angles
+        on X?". Set False for the raw relevance ranking when you want
+        every closely-matching chunk even if they overlap. Has no effect
+        under `sort="date"` (a timeline keeps adjacent messages) or
+        `group_by="file"` (already one row per file).
+
         Requires the embedding index (built by default on gather;
         skipped only with `--no-embed`).
 
@@ -2970,6 +2994,7 @@ def main() -> None:
             role=role,
             snippet_chars=snippet_chars,
             collapse_versions=collapse_versions,
+            diversify=diversify,
         )
 
     @server.tool()
