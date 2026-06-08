@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 
-from ietf_llm.corpus_blobs import FileBlobStore
+from ietf_llm.corpus_blobs import FileBlobStore, parallel_each
 
 
 def test_put_get_exists_roundtrip(tmp_path: Path) -> None:
@@ -66,3 +67,42 @@ def test_delete_prefix_absent_is_noop(tmp_path: Path) -> None:
     store = FileBlobStore(str(tmp_path / "bucket"))
     # Nothing stored under the prefix — must not raise.
     store.delete_prefix("tls/ghost/")
+
+
+def test_parallel_each_applies_to_every_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force the concurrent path (>1 worker, >1 item) and confirm every item is
+    # processed exactly once.
+    monkeypatch.setenv("IETF_LLM_S3_CONCURRENCY", "4")
+    seen: set[int] = set()
+    lock = threading.Lock()
+
+    def _record(item: int) -> None:
+        with lock:
+            seen.add(item)
+
+    parallel_each(_record, list(range(20)))
+    assert seen == set(range(20))
+
+
+def test_parallel_each_reraises_first_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The publish/materialise safety property: any worker failure propagates,
+    # so a partial upload never lets the pointer flip.
+    monkeypatch.setenv("IETF_LLM_S3_CONCURRENCY", "4")
+
+    def _boom(item: int) -> None:
+        if item == 7:
+            raise RuntimeError("blob lost")
+
+    with pytest.raises(RuntimeError, match="blob lost"):
+        parallel_each(_boom, list(range(20)))
+
+
+def test_parallel_each_serial_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IETF_LLM_S3_CONCURRENCY", "1")
+    order: list[int] = []
+    parallel_each(order.append, [3, 1, 2])
+    assert order == [3, 1, 2]  # serial preserves submission order

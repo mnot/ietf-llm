@@ -19,7 +19,7 @@ from typing import Dict, List, Union, cast
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
-from .corpus_blobs import BlobStore
+from .corpus_blobs import BlobStore, parallel_each
 from .s3_backend import NOT_FOUND, S3AuthError, S3Bucket
 
 # Re-exported for callers / tests that import it from here.
@@ -82,13 +82,19 @@ class S3BlobStore(BlobStore):
 
     def materialise_prefix(self, prefix: str, dest_dir: str) -> None:
         strip = prefix.rstrip("/") + "/"
-        for key in self.list_prefix(prefix):
-            if not key.startswith(strip):
-                continue
+        keys = [k for k in self.list_prefix(prefix) if k.startswith(strip)]
+
+        def _fetch(key: str) -> None:
             dest = os.path.join(dest_dir, key[len(strip) :])
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            data = self.get(key)
             with open(dest, "wb") as handle:
-                handle.write(self.get(key))
+                handle.write(data)
+
+        # Per-object GETs over the network: fan out so a version's hundreds of
+        # blobs don't download one-round-trip-at-a-time (the cold-replica
+        # `overview` hydration stall). Raises on the first lost blob.
+        parallel_each(_fetch, keys)
 
     def delete_prefix(self, prefix: str) -> None:
         bkt = self._b

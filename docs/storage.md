@@ -153,6 +153,7 @@ is `1`.
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
 | `IETF_LLM_STORE_URL` | object-store locator `s3://bucket/prefix` — holds content **and** control (needs `[s3]`) | cloud |
 | `IETF_LLM_STORE_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | non-AWS |
+| `IETF_LLM_S3_CONCURRENCY` | parallel object ops for publish / version hydration, and the boto3 pool size (default `16`, floor `1`) | — |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
 | `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
 | `IETF_LLM_RETAIN_VERSIONS` | published versions a publish keeps before reaping older blobs (default `2`, floor `1`) | — |
