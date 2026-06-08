@@ -16,12 +16,13 @@ import os
 from typing import Callable, Optional, Tuple, TypeVar
 
 import boto3  # type: ignore[import-untyped]
+from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import (  # type: ignore[import-untyped]
     ClientError,
     NoCredentialsError,
 )
 
-from .corpus_blobs import _safe_key
+from .corpus_blobs import _safe_key, blob_concurrency
 
 _T = TypeVar("_T")
 
@@ -71,7 +72,18 @@ class S3Bucket:
     def __init__(self, locator: str, endpoint_url: Optional[str] = None) -> None:
         self.bucket, self.prefix = parse_locator(locator)
         endpoint = endpoint_url or os.environ.get("IETF_LLM_STORE_ENDPOINT_URL") or None
-        self.client = boto3.client("s3", endpoint_url=endpoint)
+        # Pool sized to the publish / materialise worker count (floored at the
+        # boto3 default of 10) so a fan-out of object ops doesn't queue behind a
+        # too-small connection pool. `standard` retries cover throttling / 5xx;
+        # a 412 from a CAS conditional put is a 4xx and is never auto-retried.
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            config=Config(
+                max_pool_connections=max(blob_concurrency(), 10),
+                retries={"max_attempts": 5, "mode": "standard"},
+            ),
+        )
 
     def call(self, what: str, fn: Callable[[], _T]) -> _T:
         """Run an S3 operation, translating a rejected-credentials failure into a

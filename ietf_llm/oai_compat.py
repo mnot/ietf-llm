@@ -138,6 +138,7 @@ def post_json_with_retry(
     timeout: float,
     max_retries: int,
     auth_hint: str = "",
+    session: requests.Session | None = None,
 ) -> dict[str, Any]:
     """POST ``payload`` as JSON, retrying 429 / 5xx and connection errors.
 
@@ -145,17 +146,23 @@ def post_json_with_retry(
     otherwise backing off exponentially with jitter. Returns the parsed
     JSON body; raises the last error once retries are exhausted.
 
+    Pass ``session`` (a ``requests.Session``) to reuse one keep-alive
+    connection across calls — a bulk embed makes many back-to-back requests
+    to one host, so a fresh TCP + TLS handshake per call is pure overhead.
+    Omit it (the default) for a one-shot POST.
+
     A 401/403/407 is treated as a credential failure: it is **not** retried
     (a wait will not fix a bad token) and is raised as ``UpstreamAuthError``
     with a message that names ``auth_hint`` — the environment variable(s) the
     caller reads its token / gateway headers from — so the operator gets
     actionable guidance instead of a bare ``requests`` traceback.
     """
+    post = session.post if session is not None else requests.post
     max_retries = max(0, max_retries)
     attempt = 0
     while True:
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            resp = post(url, headers=headers, json=payload, timeout=timeout)
         except requests.RequestException:
             if attempt >= max_retries:
                 raise

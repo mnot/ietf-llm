@@ -14,7 +14,39 @@ from __future__ import annotations
 import os
 import shutil
 from abc import ABC, abstractmethod
-from typing import List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, List, TypeVar
+
+_T = TypeVar("_T")
+
+
+def blob_concurrency() -> int:
+    """Worker count for the parallel publish / materialise paths — and the
+    boto3 connection-pool size, kept in step so workers never block waiting
+    for a connection. A version is hundreds-to-thousands of small objects, so
+    a per-object round-trip serialised is minutes against a remote bucket;
+    fanning out hides that latency. Override with `IETF_LLM_S3_CONCURRENCY`."""
+    try:
+        return max(1, int(os.environ.get("IETF_LLM_S3_CONCURRENCY", "16")))
+    except ValueError:
+        return 16
+
+
+def parallel_each(fn: Callable[[_T], None], items: List[_T]) -> None:
+    """Apply `fn` to every item concurrently, re-raising the first worker
+    exception. Publish and materialise both rely on that: a failed upload must
+    not let the pointer flip over a partial version, and a lost blob must fail
+    loudly rather than drop a file from the materialised tree. Serial for a
+    single item or when concurrency is disabled."""
+    workers = blob_concurrency()
+    if len(items) <= 1 or workers <= 1:
+        for item in items:
+            fn(item)
+        return
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
+        # Consume the lazy map so the first worker exception surfaces here.
+        for _ in pool.map(fn, items):
+            pass
 
 
 def _safe_key(key: str) -> str:

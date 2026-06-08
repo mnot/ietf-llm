@@ -323,6 +323,15 @@ def build_parser() -> argparse.ArgumentParser:
         "Auto-enabled for MCP gathers and the cloud backend; local keeps them.",
     )
     parser.add_argument(
+        "--rfcs",
+        action="store_true",
+        help="Also download the WG's published RFC bodies into drafts/ and "
+        "index them. Off by default: RFC metadata and full text are always "
+        "available globally via rfc_search / get_rfc, so mirroring them into "
+        "every corpus is wasted gather and embed time. The WG's RFC list "
+        "still appears in the overview regardless.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-gather even if the corpus is within the freshness window "
@@ -842,6 +851,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             cache_dir,
             verbose=verbosity,
             include_related=bool(args.include_related_drafts),
+            include_rfc_bodies=bool(args.rfcs),
         )
     # Extra drafts added via --draft. These aren't attributed to the WG
     # in the document API (often individual / author submissions the WG

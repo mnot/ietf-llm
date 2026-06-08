@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .corpus_blobs import BlobStore
+from .corpus_blobs import BlobStore, parallel_each
 from .corpus_store import (
     CorpusStore,
     VersionVanished,
@@ -490,11 +490,18 @@ class CloudCorpusStore(CorpusStore):
                 abs_path = os.path.join(dirpath, name)
                 rel = os.path.relpath(abs_path, workspace).replace(os.sep, "/")
                 staged[rel] = abs_path
-        files: List[str] = []
-        for rel, abs_path in staged.items():
-            with open(abs_path, "rb") as handle:
+        files: List[str] = list(staged.keys())
+
+        def _upload(rel: str) -> None:
+            with open(staged[rel], "rb") as handle:
                 self._blobs.put(prefix + rel, handle.read())
-            files.append(rel)
+
+        # Upload the staged blobs concurrently — a version is hundreds of small
+        # objects, and serialising a round-trip each made publish minutes-long
+        # against a remote bucket. Still invisible until the pointer flip below;
+        # parallel_each raises on the first failure, so a partial upload never
+        # reaches set_current.
+        parallel_each(_upload, files)
         # The manifest is a blob in the version prefix — immutable content, like
         # the files it lists. Written before the pointer flip.
         self._blobs.put(

@@ -20,6 +20,8 @@ import threading
 import time
 from typing import Any, Iterable, Sequence
 
+import requests
+
 from .. import oai_compat, serve_metrics
 from ..utils import LogLevel, Verbosity, log
 
@@ -151,6 +153,10 @@ class _OpenAICompatEmbeddingModel:
         self._batch_size = max(1, batch_size)
         self._timeout = timeout
         self._max_retries = max(0, max_retries)
+        # One keep-alive session for the model's lifetime (it is process-cached
+        # in _MODEL_CACHE): a bulk index fires many batches back-to-back at one
+        # host, so reusing the connection drops a TCP + TLS handshake per batch.
+        self._session = requests.Session()
 
     def embed(self, text: str) -> list[float]:
         return self._embed_batch([text])[0]
@@ -180,6 +186,7 @@ class _OpenAICompatEmbeddingModel:
                 timeout=self._timeout,
                 max_retries=self._max_retries,
                 auth_hint="IETF_LLM_EMBED_TOKEN / IETF_LLM_EMBED_HEADERS",
+                session=self._session,
             )
             errored = False
         finally:

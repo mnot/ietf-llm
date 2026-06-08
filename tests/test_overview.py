@@ -283,6 +283,45 @@ def test_overview_splits_drafts_from_rfcs(tmp_path: Path) -> None:
     assert "`rfc9111` —" not in out
 
 
+def test_overview_lists_rfcs_from_manifest(
+    tmp_path: Path, monkeypatch: object,
+) -> None:
+    # RFC bodies aren't gathered into the corpus by default, so RFCs no
+    # longer appear in the people-digest author table. The overview still
+    # lists them, sourced from the documents manifest (recorded from the
+    # global series index), with citation counts where discussion cites them.
+    from ietf_llm.digest import overview as overview_mod
+
+    _seed_digests(tmp_path, with_authors=False)
+    (tmp_path / "digests/people.md").write_text(
+        "# wg: participants\n\n"
+        "## Document authors / editors (1)\n\n"
+        "| Name | Documents | Email |\n|---|---|---|\n"
+        "| Jane Doe | draft-ietf-wg-live | jane@x |\n"
+    )
+    (tmp_path / "digests/citations.md").write_text(
+        "# wg: citations\n\n## `rfc9110` (12 citations)\n\n- thread/a.md\n"
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        overview_mod,
+        "load_documents_manifest",
+        lambda _wg: {
+            "draft-ietf-wg-live": {"expires": "2099-01-01T00:00:00Z", "state": "active"},
+            "rfc9110": {"expires": "", "state": "rfc"},
+            "rfc9111": {"expires": "", "state": "rfc"},
+            "rfc7230": {"expires": "", "state": "rfc"},
+        },
+    )
+    out = build_overview("wg", str(tmp_path))
+
+    # The live draft still bullets; the RFCs come from the manifest, not the
+    # author table (which carries none).
+    assert "`draft-ietf-wg-live`" in out
+    assert "## Published RFCs (3)" in out
+    assert "`rfc9110` _(cited in 12)_" in out
+    assert "2 more in `drafts/`" in out
+
+
 def test_draft_concluded_by_expiry() -> None:
     import datetime
     from ietf_llm.digest.overview import _draft_concluded
