@@ -64,6 +64,7 @@ from . import (
     _debug_log,
     _stdio_transport,
     config,
+    coverage,
     serve_metrics,
     service_config,
 )
@@ -303,16 +304,26 @@ _MAX_SEARCH_K = 100
 
 def _with_freshness(wg: str, body: str) -> str:
     """Prepend the freshness line (gather date, escalating to a refresh
-    warning when stale) to a tool response.
+    warning when stale) plus the coverage window floor to a tool response.
+
+    The coverage line tells a client how far *back* the corpus reaches — the
+    floor on its view — so it knows to re-gather deeper rather than treat
+    absence of older activity as "it didn't happen". Best-effort: a failure
+    resolving the files dir (e.g. a version vanished mid-request) just omits
+    the coverage line, like a missing freshness sentinel.
 
     Top-level tools call this; pivot tools (get_chunk_text,
     read_file_section) skip it because the line has already been seen on
     the call that surfaced the file in the first place.
     """
-    line = freshness_line(wg)
-    if not line:
+    try:
+        window = coverage.window_line(wg, _files_dir(wg))
+    except OSError:
+        window = None
+    head = "\n".join(part for part in (freshness_line(wg), window) if part)
+    if not head:
         return body
-    return f"{line}\n\n{body}"
+    return f"{head}\n\n{body}"
 
 
 def _flatten_rationale(rationale: str, limit: int) -> str:
@@ -348,6 +359,16 @@ _NEXT_TOOLS_HINT = (
 )
 
 
+def _corpus_sources(wg: str) -> str:
+    """Compact source inventory for `wg` in `list_corpora`, read-only — resolves
+    an already-materialised files dir (never forces a cloud download) and
+    degrades to empty when the corpus isn't staged locally."""
+    cache = get_corpus_store().materialised_cache_dir(wg)
+    if cache is None:
+        return ""
+    return coverage.compact_sources_line(cache)
+
+
 def tool_list_corpora() -> str:
     wgs = _list_wgs()
     if not wgs:
@@ -356,24 +377,29 @@ def tool_list_corpora() -> str:
     for wg in wgs:
         kind, status = kind_status(wg)
         tag = f"{kind} · {status}" if status else kind
-        rows.append((wg, tag, describe(wg)))
-    name_w = max(len(w) for w, _, _ in rows)
-    tag_w = max(len(t) for _, t, _ in rows)
+        rows.append((wg, tag, describe(wg), _corpus_sources(wg)))
+    name_w = max(len(w) for w, _, _, _ in rows)
+    tag_w = max(len(t) for _, t, _, _ in rows)
     lines = []
-    for wg, tag, subject in rows:
+    for wg, tag, subject, sources in rows:
         line = f"{wg.ljust(name_w)}  {tag.ljust(tag_w)}"
         if subject:
             line += f"  {subject}"
+        if sources:
+            line += f"  ({sources})"
         lines.append(line.rstrip())
     return (
-        "Gathered corpora (name · kind [· status] · what it's about). "
-        "**kind** is `group` (a WG/RG/edwg/BoF — accepts every tool), "
-        "`list` (a mailing list gathered on its own), `custom` (explicit "
-        "drafts/repos or a followed author), or `synthetic` (an `x-` "
-        "corpus). **status** is the group state (`active` / `concluded` "
-        "/ `bof` / …) when known. The trailing text is the corpus's "
-        "subject — the group name, the list followed, the tracked "
-        "author — so you can tell what each one covers.\n\n"
+        "Gathered corpora (name · kind [· status] · what it's about · "
+        "(sources)). **kind** is `group` (a WG/RG/edwg/BoF — accepts every "
+        "tool), `list` (a mailing list gathered on its own), `custom` "
+        "(explicit drafts/repos or a followed author), or `synthetic` (an "
+        "`x-` corpus). **status** is the group state (`active` / `concluded` "
+        "/ `bof` / …) when known. The text after that is the corpus's "
+        "subject — the group name, the list followed, the tracked author. "
+        "The trailing `(…)` is the source inventory — which of mailing "
+        "`list`, GitHub `issues`, `drafts`, `RFCs`, `minutes` are present — "
+        "so you can tell what each corpus actually holds. Call `overview` for "
+        "the gather window and the exact repos.\n\n"
         + "\n".join(lines)
         + _NEXT_TOOLS_HINT
     )
@@ -381,7 +407,24 @@ def tool_list_corpora() -> str:
 
 @_requires_corpus
 def tool_overview(wg: str) -> str:
-    return _with_freshness(wg, build_overview(wg, _files_dir(wg)))
+    files_dir = _files_dir(wg)
+    body = build_overview(wg, files_dir)
+    sources = coverage.sources_line(files_dir)
+    if sources:
+        deeper = (
+            f'`start_gather(corpus="{wg}", months=N)`'
+            if gather_enabled()
+            else f"`ietf-llm {wg} --months N`"
+        )
+        body += (
+            "\n\n## Coverage\n\n"
+            f"**Sources:** {sources}.\n\n"
+            "_GitHub issues and drafts are the full set, not limited by the "
+            "gather window. For activity older than the window above, "
+            f"re-gather deeper with {deeper} — don't read absence as proof it "
+            "didn't happen._"
+        )
+    return _with_freshness(wg, body)
 
 
 def tool_read_ietf_norms() -> str:
@@ -2491,8 +2534,12 @@ def main() -> None:
         `status` flags group state (`active` / `concluded` / `bof`), so
         you can tell a wound-down WG or finished BoF at a glance. Each row
         also carries the corpus's **subject** — the group's name, the
-        mailing list it follows, or the author it tracks — so you can see
-        what a corpus covers without opening it.
+        mailing list it follows, or the author it tracks — and a trailing
+        `(…)` **source inventory** (which of mailing `list`, GitHub
+        `issues`, `drafts`, `RFCs`, `minutes` are present) — so you can see
+        what a corpus covers, and whether GitHub issues were gathered at
+        all, without opening it. Call `overview` for the gather window and
+        the exact repos.
         """
         return await _offload(tool_list_corpora)
 
@@ -2611,6 +2658,14 @@ def main() -> None:
             Returns full messages (not snippets) across threads and
             issues in date order; add `include_replies=True` for
             sub-thread descendants.
+
+        Ends with a **## Coverage** section: which sources the corpus
+        holds (mailing list, GitHub issues — by repo — drafts, RFCs,
+        minutes) and, in the leading `Coverage:` line, how far back the
+        windowed sources reach. The window bounds *mailing-list and
+        meeting* recency only (default 12 months); issues and drafts are
+        the full set. If the user asks about list/meeting activity older
+        than the window, re-gather deeper rather than reporting nothing.
 
         Other ietf-llm tools: `read_digest`, `search_corpus`,
         `read_topic`, `get_chunk_text`, `read_file_section`,

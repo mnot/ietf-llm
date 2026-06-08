@@ -62,6 +62,19 @@ Discipline that isn't in the tool docstrings:
   thing.** Poll until `done`; don't re-issue `start_gather` or add `force`
   to "unstick" it (`force` overrides only the freshness debounce, never
   the one-at-a-time or queue limits).
+- **Mind the coverage window before concluding "it didn't happen".** Every
+  top-level response carries a `Coverage:` line and `overview` a `## Coverage`
+  section: the gather windows the *mailing list and meeting activity* to the
+  last N months (default 12), so a question about older list/meeting traffic
+  can fall outside it even though the corpus is present. GitHub issues and
+  drafts/RFCs are the *full* set, not windowed — their absence is real. When
+  the user asks about list or meeting activity older than the stated window,
+  re-gather deeper (`start_gather(corpus=…, months=N)` if available, else
+  `ietf-llm <corpus> --months N`) rather than reporting nothing found. The
+  `(sources)` column in `list_corpora` and the `## Coverage` inventory also
+  tell you *which* sources exist (e.g. whether GitHub issues were gathered at
+  all, and from which repos) — don't claim a corpus lacks issue discussion if
+  no repos were tracked; add them with a re-gather instead.
 - **Don't over-gather** — on a shared server a wide fan-out costs everyone;
   see the `find_efforts` cost rule below.
 
