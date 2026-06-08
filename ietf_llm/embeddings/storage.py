@@ -135,7 +135,7 @@ def _open_db(wg: str) -> sqlite3.Connection:
             chunk_date TEXT,              -- ISO 8601 UTC, NULL for undated chunks
             labels     TEXT,              -- comma-separated, lowercased; for issue chunks
             state      TEXT,              -- 'open'/'closed' for issue chunks; NULL elsewhere
-            url        TEXT,              -- GitHub URL or IETF Archived-At; NULL elsewhere
+            url        TEXT,              -- citation URL: GitHub issue / Archived-At / draft / charter; NULL elsewhere
             duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
             UNIQUE (file, chunk_idx, sub_idx)

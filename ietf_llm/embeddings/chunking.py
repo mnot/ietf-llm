@@ -100,8 +100,11 @@ class Chunk:
     #   shares it)
     # - thread chunks: the `Archived-At:` permalink for that specific
     #   message (per-chunk; each message has its own URL)
-    # - everything else: NULL. Surfaced inline in search hits so the
-    #   caller can cite without reconstructing.
+    # - draft chunks: the version-agnostic Datatracker doc page; charter
+    #   chunks: the `Source:` URL (both file-level, every window shares it)
+    # - everything else (RFC bodies, minutes, transcripts): NULL.
+    # Surfaced inline in search hits so the caller can cite without
+    # reconstructing.
     url: Optional[str] = None
     # Issue-cluster signals (per-issue files only). Every chunk from
     # the same issue file carries the same values so a search hit
