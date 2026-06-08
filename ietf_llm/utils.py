@@ -656,6 +656,7 @@ def log(
     message: str,
     verbosity: Verbosity = Verbosity.STATUS,
     level: LogLevel = LogLevel.PROGRESS,
+    fields: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Print a status / progress / error message to stderr.
 
@@ -672,6 +673,12 @@ def log(
       collector ingests them. Container runtimes capture stderr (and
       stdout is reserved for the stdio protocol), so structured logs go to
       stderr too. Messages carry no secrets -- keep it that way.
+    - fields: extra structured key/values merged into the JSON record so a
+      record stays queryable by field (e.g. a per-request access line
+      carrying tool / status / duration_ms). Ignored in text mode, where
+      the human-readable `message` already carries the summary; the fixed
+      ts / level / msg keys always win over a same-named field. Keep these
+      secret-free too.
     """
     if level == LogLevel.ERROR:
         visible = True
@@ -686,6 +693,7 @@ def log(
 
     if os.environ.get("IETF_LLM_LOG_FORMAT", "").strip().lower() == "json":
         record = {
+            **(fields or {}),
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "level": level.name.lower(),
             "msg": message,

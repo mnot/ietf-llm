@@ -100,6 +100,7 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | Variable | Purpose | Default |
 |---|---|---|
 | `IETF_LLM_LOG_FORMAT` | `text` or `json` | `text` |
+| `IETF_LLM_LOG_LEVEL` | serve verbosity: `quiet` / `status` / `verbose` | `status` on HTTP, `quiet` on stdio |
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds (`0` disables) | `120` |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry | off |
 
@@ -168,9 +169,16 @@ body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes *
 a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured and ready
 to serve", not "the backend answered".
 
-The JSON body also carries two operator-facing fields that don't gate readiness:
+The JSON body also carries operator-facing fields that don't gate readiness:
 
 - `version` — the running package version, for correlating behaviour across a rolling deploy.
+- `gathers_inflight` — how many in-session gathers are running right now (an integer; `0` when gather
+  is disabled or idle). **A stable interface**: a fronting proxy can key a container-lifetime decision
+  off it — a background gather started via `start_gather` publishes nothing until it finishes, so a
+  hosting layer with an idle timeout reads this to keep the container alive past its window instead of
+  evicting it mid-gather. Keying off this JSON field avoids scraping and regex-parsing the
+  `ietf_llm_gathers_inflight` Prometheus series out of `/metrics` (a human/monitoring surface, not a
+  control-plane contract).
 - `corpora` — a bounded freshness summary read from the per-corpus `last-gathered` sentinels (no
   upstream call): `count` (all cached corpora), `tracked` (those carrying a sentinel — caches
   predating freshness tracking have none), and `oldest` / `newest`, each
@@ -219,13 +227,26 @@ readiness.
 
 ## Logging
 
-Set `IETF_LLM_LOG_FORMAT=json` for one-line structured records (`ts` / `level` / `msg`) a collector
-can ingest; the default is human-readable text. Logs go to stderr (stdout is reserved for the stdio
-protocol; container runtimes capture stderr) and carry no secrets. `IETF_LLM_DEBUG_LOG=1` additionally
-records per-request timing telemetry. When serving over HTTP, the server emits a one-line startup
-preamble at this same level — version, bind address, and the `corpora` freshness floor — mirroring
-`/health`, so a deploy log shows which build a replica came up on and how stale its caches were at
-boot.
+Set `IETF_LLM_LOG_FORMAT=json` for one-line structured records (`ts` / `level` / `msg`, plus any
+record-specific fields) a collector can ingest; the default is human-readable text. Logs go to stderr
+(stdout is reserved for the stdio protocol; container runtimes capture stderr) and carry no secrets.
+`IETF_LLM_DEBUG_LOG=1` additionally records per-request timing telemetry. When serving over HTTP, the
+server emits a one-line startup preamble — version, bind address, and the `corpora` freshness floor —
+mirroring `/health`, so a deploy log shows which build a replica came up on and how stale its caches
+were at boot.
+
+**Serve verbosity (`IETF_LLM_LOG_LEVEL`).** The serve path logs at a verbosity that, by default, is
+transport-aware: **`status`** on the HTTP transport (a hosted container has no other operational
+signal on stderr) and **`quiet`** on stdio (the local CLI / desktop client stays silent in an
+interactive session). Set `IETF_LLM_LOG_LEVEL` to `quiet`, `status`, or `verbose` to override in
+either direction; the resolved level is reported in the `serve posture:` startup banner (`log_level=…`).
+
+At `status` or above the HTTP server emits a **per-request access record** for every tool call — one
+structured line carrying `event=tool_call`, the `tool` name, the `status` (`ok` / `timeout` /
+`exception`), and `duration_ms` — so requests are queryable by field on the same stream as the rest,
+without scraping the `/metrics` aggregate. (`/metrics` remains the place for rates and histograms; the
+access record is the per-call line.) `verbose` additionally lets through the chattiest progress
+detail, e.g. mid-stage gather notes.
 
 ## In-session gather (opt-in)
 

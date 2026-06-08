@@ -11,7 +11,7 @@ from typing import Any
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from ietf_llm import __version__, mcp_server
+from ietf_llm import __version__, mcp_server, serve_metrics
 from ietf_llm.utils import get_cache_dir
 
 
@@ -93,6 +93,28 @@ def test_corpora_freshness_summary(isolated_home):
     # Earlier gather => larger age; both are real, positive second counts.
     assert summary["oldest"]["age_seconds"] > summary["newest"]["age_seconds"] > 0
     assert summary["oldest"]["last_gathered"] == "2025-01-01T00:00:00Z"
+
+
+def test_readiness_reports_gathers_inflight(isolated_home):
+    serve_metrics.reset()
+    _, detail = mcp_server._readiness()
+    assert detail["gathers_inflight"] == 0
+    serve_metrics.record_gather_started()
+    try:
+        _, detail = mcp_server._readiness()
+        assert detail["gathers_inflight"] == 1
+    finally:
+        serve_metrics.reset()
+
+
+def test_health_route_includes_gathers_inflight(isolated_home):
+    serve_metrics.reset()
+    serve_metrics.record_gather_started()
+    try:
+        body = TestClient(mcp_server._http_app(_FakeServer())).get("/health").json()
+        assert body["gathers_inflight"] == 1
+    finally:
+        serve_metrics.reset()
 
 
 def test_health_route_includes_freshness(isolated_home):

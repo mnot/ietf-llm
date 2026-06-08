@@ -220,6 +220,17 @@ def adjust_inflight(delta: int) -> None:
         _inflight[0] += delta
 
 
+def gathers_inflight() -> int:
+    """How many in-session gathers are running right now.
+
+    The same gauge the `ietf_llm_gathers_inflight` Prometheus series renders,
+    exposed as a plain int so the `/health` JSON can carry it without a
+    `/metrics` parse. A fronting proxy keys its container-lifetime decision
+    (keep alive while a background gather runs) off this — see `_readiness`."""
+    with _LOCK:
+        return _gather_inflight[0]
+
+
 def reset() -> None:
     """Clear all counters. For tests; the server never calls this."""
     with _LOCK:
