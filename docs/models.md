@@ -62,7 +62,9 @@ The token comes from the environment only and is never written to disk. Bulk ing
 `IETF_LLM_EMBED_BATCH` inputs per request and backs off on rate-limit / server errors. Because each
 request is a network round-trip, a gather embeds up to `IETF_LLM_EMBED_CONCURRENCY` files at once
 (the index write stays single-threaded); raise it for more throughput against a generous endpoint,
-lower it (or `1`) if the endpoint rate-limits. The on-device model ignores this — it embeds serially.
+lower it (or `1`) if the endpoint rate-limits. The embedding session's connection pool is sized to
+this value (never below the default 10), so raising it scales the keep-alive connections with the
+fan-out instead of exhausting the pool. The on-device model ignores this — it embeds serially.
 
 ### One index, one backend
 

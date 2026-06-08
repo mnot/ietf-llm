@@ -172,6 +172,26 @@ def test_load_builds_from_env(monkeypatch):
     assert m._headers["cf-aig-authorization"] == "g"
 
 
+def _pool_maxsize(model: _OpenAICompatEmbeddingModel) -> int:
+    return model._session.get_adapter("https://host/v1")._pool_maxsize
+
+
+def test_pool_tracks_concurrency(monkeypatch):
+    # Raising the embed concurrency raises the session pool with it, so the
+    # keep-alive connections don't run short of the fan-out.
+    monkeypatch.setenv("IETF_LLM_EMBED_BASE_URL", "https://host/v1")
+    monkeypatch.setenv("IETF_LLM_EMBED_CONCURRENCY", "32")
+    assert _pool_maxsize(_load_openai_compat("openai-embed/m", Verbosity.QUIET)) == 32
+
+
+def test_pool_never_below_default(monkeypatch):
+    # A low (or serial) concurrency keeps requests' stock pool, so the
+    # single-input query path is unaffected.
+    monkeypatch.setenv("IETF_LLM_EMBED_BASE_URL", "https://host/v1")
+    monkeypatch.setenv("IETF_LLM_EMBED_CONCURRENCY", "1")
+    assert _pool_maxsize(_load_openai_compat("openai-embed/m", Verbosity.QUIET)) == 10
+
+
 def test_load_bad_headers_json_ignored(monkeypatch):
     monkeypatch.setenv("IETF_LLM_EMBED_BASE_URL", "https://host/v1")
     monkeypatch.setenv("IETF_LLM_EMBED_HEADERS", "not-json")

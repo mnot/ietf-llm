@@ -28,7 +28,12 @@ import numpy as np
 
 from ..utils import LogLevel, Verbosity, file_lock, log
 from .chunking import CHUNKER_VERSION, _chunk_file, _eligible_files
-from .models import DEFAULT_EMBED_MODEL, _get_embed_model, is_remote_embed_model
+from .models import (
+    DEFAULT_EMBED_MODEL,
+    _get_embed_model,
+    embed_concurrency,
+    is_remote_embed_model,
+)
 from .snippet import make_snippet
 from .storage import (
     _SCHEMA_VERSION,
@@ -162,20 +167,6 @@ def _file_hash(path: str) -> Optional[str]:
         return digest.hexdigest()
     except OSError:
         return None
-
-
-def _embed_concurrency() -> int:
-    """How many files to embed in parallel on the remote backend.
-
-    A remote embed is a network round-trip, and a gather sends one per file
-    serially — for a mail-heavy corpus that is the bulk of the wall-clock.
-    Overlapping the round-trips collapses it. Only used for the remote
-    backend (the on-device model is GPU-bound and runs serially). Override
-    with `IETF_LLM_EMBED_CONCURRENCY`; floored at 1 (serial)."""
-    try:
-        return max(1, int(os.environ.get("IETF_LLM_EMBED_CONCURRENCY", "8")))
-    except ValueError:
-        return 8
 
 
 @dataclass
@@ -503,7 +494,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # SQLite stays single-writer. On the remote backend each embed is a network
     # round-trip, so we overlap them through a bounded pool; the on-device model
     # is GPU-bound and so stays serial.
-    workers = _embed_concurrency() if is_remote_embed_model(model_name) else 1
+    workers = embed_concurrency() if is_remote_embed_model(model_name) else 1
 
     def _record(plan: _FilePlan, vectors: List[Any]) -> None:
         """Write one file's result and advance the flush / progress cadence.
