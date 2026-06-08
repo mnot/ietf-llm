@@ -20,6 +20,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
@@ -294,11 +295,55 @@ def chunk_counts(wg: str) -> Dict[str, int]:
         conn.close()
 
 
+def _citation_url_variants(url: str) -> List[str]:
+    """Equivalent spellings of a citation URL, for tolerant matching.
+
+    A message body cites an archive permalink in whatever form a mail
+    client produced — with or without a trailing slash, `http` vs
+    `https`, a leading `www.`, angle-bracket wrapping, or a trailing
+    `#fragment`. The `url` column stores one canonical form per
+    message, so a bare `WHERE url = ?` misses a footnote that differs
+    only in those incidentals (a lone trailing slash caused a real
+    "not in the corpus" miss). Return the small set of forms to match.
+
+    This bridges *within-scheme* variance only. It deliberately does
+    not map a `mailarchive.ietf.org/arch/msg/<token>` permalink to a
+    `www.w3.org/mid/<message-id>` one (or vice versa): the token is an
+    opaque hash and the mid is the RFC 5322 Message-ID, so the two are
+    not string-convertible without an identity map we do not hold.
+    """
+    text = url.strip()
+    if text.startswith("<") and text.endswith(">"):
+        text = text[1:-1].strip()
+    parts = urlsplit(text)
+    if not parts.scheme or not parts.netloc:
+        # Not a decomposable URL — match it verbatim.
+        return [text]
+    hosts = {parts.netloc}
+    if parts.netloc.startswith("www."):
+        hosts.add(parts.netloc[4:])
+    else:
+        hosts.add("www." + parts.netloc)
+    paths = {parts.path}
+    if parts.path.endswith("/"):
+        paths.add(parts.path.rstrip("/") or "/")
+    elif parts.path:
+        paths.add(parts.path + "/")
+    variants = set()
+    for scheme in ("http", "https"):
+        for host in hosts:
+            for path in paths:
+                # Fragment dropped (last arg ""); query preserved.
+                variants.add(urlunsplit((scheme, host, path, parts.query, "")))
+    return sorted(variants)
+
+
 def find_chunks_by_url(
     wg: str, url: str
 ) -> List[Tuple[str, int, str, str, Optional[int], Optional[int]]]:
-    """All chunks whose `url` exactly equals the given citation URL,
-    sorted by (file, chunk_idx).
+    """All chunks whose `url` matches the given citation URL (modulo the
+    incidental spelling differences in `_citation_url_variants`), sorted
+    by (file, chunk_idx).
 
     Returns an empty list if no chunk matches. A thread Archived-At URL
     is per-message and matches exactly one chunk; a GitHub issue URL
@@ -313,11 +358,19 @@ def find_chunks_by_url(
         # sub_idx 0 only: it carries the full message text and span, so a
         # split message resolves to one row here (not one per fragment),
         # keeping the single-vs-file-level distinction the caller makes on
-        # the row count intact.
+        # the row count intact. A pre-v8 read-only cache lacks the column
+        # (read-only opens don't migrate) — skip the clause there rather
+        # than crash; the worst case is a split message matching as
+        # several rows until the next `--rebuild-embeddings`.
+        have = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
+        sub_idx_clause = " AND sub_idx = 0" if "sub_idx" in have else ""
+        variants = _citation_url_variants(url)
+        placeholders = ",".join("?" * len(variants))
         cur = conn.execute(
             "SELECT file, chunk_idx, title, text, start_line, end_line "
-            "FROM chunks WHERE url = ? AND sub_idx = 0 ORDER BY file, chunk_idx",
-            (url,),
+            f"FROM chunks WHERE url IN ({placeholders}){sub_idx_clause} "
+            "ORDER BY file, chunk_idx",
+            variants,
         )
         out: List[Tuple[str, int, str, str, Optional[int], Optional[int]]] = []
         for row in cur.fetchall():

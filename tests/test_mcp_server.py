@@ -787,6 +787,39 @@ def test_fetch_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
     assert "the message body to resolve" in out
 
 
+def test_fetch_by_url_normalises_body_footnote_spelling(
+    isolated_home: Path,
+) -> None:
+    # Regression: the Archived-At line is stored without a trailing slash,
+    # but a message body cites the mailman permalink *with* one (and a mail
+    # client may also vary scheme / www). Those incidental differences must
+    # not make a gathered message read as "not in the corpus".
+    stored = "https://mailarchive.ietf.org/arch/msg/wg/AbC123_tok"
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-01-01-t.md",
+        (
+            "# Thread\n\n## Messages\n\n"
+            "### [1] 2026-01-01 10:00 — Alice\n\n"
+            "_Subject:_ Hello\n"
+            f"_Archived-At:_ {stored}\n\n"
+            "the footnote target body.\n"
+        ),
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    # Each is the same message spelled differently from what's stored.
+    for variant in (
+        stored + "/",  # trailing slash (the reported failure)
+        stored.replace("https://", "http://"),  # scheme
+        stored.replace("mailarchive", "www.mailarchive"),  # leading www.
+        f"<{stored}>",  # angle-bracket wrapped
+        stored + "#anchor",  # trailing fragment
+    ):
+        out = mcp_server.tool_fetch_by_url("wg", variant)
+        assert "the footnote target body" in out, variant
+
+
 def test_fetch_by_url_returns_helpful_miss_message(
     isolated_home: Path,
 ) -> None:

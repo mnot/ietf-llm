@@ -1771,16 +1771,31 @@ def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
 def tool_fetch_by_url(wg: str, url: str) -> str:
     """Resolve a citation URL to its cached corpus content.
 
-    Exact-match on the `url` column the chunker stamped at index time.
-    Two cases by URL kind:
+    Use this whenever you encounter an archive permalink in a message
+    body, a footnote, or another tool's output and want the gathered
+    message behind it — don't conclude "not in the corpus" from a bare
+    URL without trying here first.
 
-    - **Thread `Archived-At:` permalink** (`https://www.w3.org/mid/...`)
-      → matches exactly one chunk (per-message). Returned as a single
-      chunk.
+    Matches against the `url` column the chunker stamped at index time,
+    tolerant of the incidental spelling differences a mail client adds
+    (trailing slash, `http`/`https`, leading `www.`, `<...>` wrapping,
+    `#fragment`). Two cases by URL kind:
+
+    - **Thread `Archived-At:` permalink** → matches exactly one chunk
+      (per-message). Returned as a single chunk. The stored form varies
+      by list: most IETF lists use
+      `https://mailarchive.ietf.org/arch/msg/<list>/<token>`, while some
+      (e.g. httpbis) use `https://www.w3.org/mid/<message-id>`. Both
+      resolve; paste whichever form you have.
     - **GitHub issue URL** → matches every chunk in the per-issue file
       (file-level URL). Returned as the file's concatenated content,
       since the consumer almost certainly wants the issue, not just
       its frontmatter header.
+
+    One unbridged gap: a `mailarchive.ietf.org/arch/msg/<token>` link
+    will not resolve against a message stored under its `www.w3.org/mid`
+    form (or vice versa) — the opaque token and the Message-ID are not
+    string-convertible. Same list, different identifier scheme.
     """
     matches = find_chunks_by_url(wg, url)
     if not matches:
@@ -1791,12 +1806,17 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
         )
         return (
             f"No cached chunk for {url}. fetch_by_url resolves the URL forms "
-            "stamped in the corpus: mailing-list permalinks "
-            "(`https://www.w3.org/mid/<message-id>`, the `Archived-At:` link "
-            "on each thread message) and GitHub issue URLs. A "
-            "`mailarchive.ietf.org` URL will not match — use the message's "
-            "`Archived-At:` link instead. If you expected a match, the index "
-            f"may predate the `url` column ({reindex})."
+            "stamped in the corpus: mailing-list `Archived-At:` permalinks "
+            "(either `https://mailarchive.ietf.org/arch/msg/<list>/<token>` "
+            "or `https://www.w3.org/mid/<message-id>`, depending on the list) "
+            "and GitHub issue URLs. Matching tolerates trailing-slash, "
+            "scheme, and `www.` differences. Two reasons a well-formed "
+            "permalink still misses: the message lives in a different corpus "
+            "(gather that list and retry), or the link uses the opposite "
+            "identifier scheme from the one stored here (a `mailarchive` "
+            "token cannot be mapped to a stored `w3.org/mid` Message-ID). If "
+            f"you expected a match, the index may predate the `url` column "
+            f"({reindex})."
         )
     if len(matches) == 1:
         file, chunk_idx, title, text, start_line, end_line = matches[0]
