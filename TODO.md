@@ -183,3 +183,70 @@ Not warranted by current usage — bandwidth from cold re-gathers is modest and
 the eviction bound already removes the unbounded-growth risk. Revisit only if a
 multi-host deployment shows the re-download cost is real.
 
+## Server-side CopyObject for unchanged blobs on re-publish (noted 2026-06-08)
+
+**Deferred.** `CloudCorpusStore.publish` (`corpus_store_cloud.py`) re-uploads
+*every* file from the workspace into a fresh `corpora/<name>/versions/<version>/`
+prefix on each gather — full bytes, no diff against the prior version, no
+server-side copy (`os.walk` + `self._blobs.put` per file). For a large corpus
+re-gathered often, that upload bandwidth could become a real cost.
+
+The proportionate fix is **`CopyObject` for byte-identical files**, not full
+content-addressed dedup. It targets exactly the upload-bandwidth concern while
+preserving the property that makes the storage model simple.
+
+### Why CopyObject fits here (better than CAS)
+
+A server-side copy produces an **independent object** at the destination key.
+So version N's blob is its own object — deleting version N-1's prefix doesn't
+touch it. The load-bearing invariant survives: each `versions/<version>/` prefix
+stays fully self-contained, and `_reap_versions` remains a dumb `delete_prefix`
+with **zero refcounting/GC**. CAS dedup would have forced a refcount story; this
+doesn't. Other things already line up:
+
+- **ETag == MD5.** Everything is single-part `put_object` (no multipart
+  anywhere), so content comparison is cheap and reliable.
+- **Single writer.** Publish holds the per-corpus lease — source version stable
+  for the duration, no concurrent pointer flip.
+- **Source exists at copy time.** Reap runs *after* the pointer flip and keeps
+  current + previous, so the immediately-prior version is present to copy from.
+
+### Caveats (in priority order)
+
+1. **Saves upload bytes, not storage.** Each version still stores its own full
+   copy (CopyObject duplicates server-side); with `retain_versions=2` still ~2x
+   at rest. Right tool for bandwidth, no help for storage — only CAS gives that.
+2. **Hit rate depends entirely on writer determinism.** CopyObject only fires
+   for byte-identical files. If gather output embeds a wall-clock timestamp or
+   non-deterministic ordering, an "unchanged" thread differs byte-wise and won't
+   dedup. **Verify this first** — gather a corpus twice and diff two version
+   prefixes. If they're mostly identical, proceed; else fix determinism first.
+3. **`embeddings.db` — the biggest blob — almost never benefits.** Re-gather
+   rebuilds the index, so the largest single file changes every time. The win
+   concentrates on the static long tail (old threads, RFCs, unchanged drafts).
+4. **Implement via manifest hashes, not per-file HEAD.** Add a per-file `hash`
+   to the manifest (`corpus_store_cloud.py` ~line 500) going forward; publish
+   then = 1 GET of prev manifest + compare local hashes -> CopyObject matches,
+   PUT the rest. Additive: old manifests lack hashes -> graceful full-upload
+   fallback. (HEAD-per-blob for ETag is HEAD+COPY = 2 requests vs 1 PUT per
+   unchanged file — a net loss for tiny files; avoid.) Note the break-even: for
+   many *tiny* files a COPY and a PUT are both one request and the tiny bytes are
+   negligible, so the win is real only for medium/large files / large volume.
+5. **Seam + provider.** Add `copy(src_key, dst_key)` to `BlobStore`
+   (`corpus_blobs.py`): `copy_object(CopySource=...)` for `S3BlobStore`,
+   `shutil.copyfile`/hardlink for `FileBlobStore` — keeps the abstraction clean
+   instead of reaching into boto3 from publish. CopyObject is core S3 API (R2,
+   MinIO support same-bucket copy). Gotcha: AWS caps a single `CopyObject` at
+   5 GB (multipart copy above that); confirm R2's cap. Cheap guard: fall back to
+   PUT above a size threshold (also covers `embeddings.db` if it grows huge).
+6. **Always fall back to PUT, best-effort.** Missing source, copy error, first
+   gather, reaped source -> just `put`. A copy failure must never fail an
+   otherwise-successful publish (mirror the `_reap_versions` best-effort stance).
+
+### Gate before building
+
+Confirm gather output is byte-deterministic for unchanged content (caveat 2) —
+that decides whether this pays off at all. If it is: manifest gains per-file
+hashes, `BlobStore.copy` added, publish copies hash-matches from the previous
+version and PUTs the rest, with size-threshold and error fallbacks to PUT.
+
