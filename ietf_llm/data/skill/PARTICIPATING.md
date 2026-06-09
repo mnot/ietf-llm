@@ -72,9 +72,13 @@ The audience is expert and time-poor, and reacts badly to text that reads
 as machine-generated: verbose, hedged, restating the thread back, or
 carrying a customer-service warmth ("Great point!", "Hope this helps!").
 Cut all of it. Lead with the point. Prefer one or two short, concrete
-examples over exposition. If a sentence isn't doing work, drop it. (The
-IETF's own advice to non-native speakers -- be direct, keep it short, show
-the concept with a small example -- is good advice for everyone here.)
+examples over exposition. If a sentence isn't doing work, drop it.
+Verbosity is not thoroughness -- to a time-poor expert reader it reads as
+time-wasting, and a long message is *less* likely to be read and weighed
+than a short one. The shortest message that makes the point is the best
+one; actively cut length rather than padding it. (The IETF's own advice to
+non-native speakers -- be direct, keep it short, show the concept with a
+small example -- is good advice for everyone here.)
 
 ## Stay within charter and on the question
 
@@ -116,6 +120,19 @@ infallible, and they serve the group's consensus rather than the other way
 round: if a call genuinely looks wrong, the move is to raise it with them
 plainly, and there's a formal appeal path when that doesn't resolve it.
 Neither is something to reach for on reflex.
+
+## Don't repeat yourself
+
+A point made once is on the record; making it again -- restating it in a
+new message, or pressing it after the group has already heard it -- adds no
+weight and actively hurts. Volume is not persuasive: it wastes everyone's
+time and *will* build bad will. So don't re-assert a position the thread
+has already absorbed, and don't feel obliged to answer every point in a
+message point-by-point -- if you have nothing substantial to add, add
+nothing. Facts and information are weighed far more heavily than opinion,
+so a reply that only re-states a view earns nothing and costs goodwill.
+Before drafting a response, check whether the point is already made; if it
+is, the right contribution is often silence.
 
 ## Don't manufacture consensus signal
 
