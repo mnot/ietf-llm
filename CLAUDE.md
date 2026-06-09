@@ -31,7 +31,7 @@ the hard way.
   "unexpected EOF". Reword to avoid apostrophes, or commit another way.
 - One feature per commit; PR only when asked.
 
-## PR checklist (walk this before opening a PR)
+## PR checklist (for reviews + before opening PRs)
 
 Most items point to a section below for the detail — this is the scan, not
 the spec. Skip an item only when you can say *why* it doesn't apply.
