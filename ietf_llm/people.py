@@ -19,6 +19,9 @@ What gets normalised:
   - Display-name suffixes: ` via Datatracker`, ` (IETF)`, etc.
   - Multi-email same person: when two emails share a display name, they
     merge into one Person.
+  - Datatracker person id: one human posting under unrelated addresses /
+    name spellings is consolidated via Datatracker's curated email→person
+    table — exact-match, collision-free. See `people_linking.py`.
   - GitHub login → person, in three passes of decreasing precision
     (see `people_linking.py` for the orchestration):
       1. login ↔ email local-part: a login that equals the local-part of
@@ -55,6 +58,7 @@ from .gather.draft_authors import latest_draft_paths, parse_authors
 from .gather.github import iter_issue_archives
 from .paths import digest_path
 from .people_linking import (
+    reconcile_mail_via_datatracker,
     resolve_github_user_names,
     resolve_github_via_datatracker,
 )
@@ -370,6 +374,11 @@ class Registry:
                 return cand
         return None
 
+    def merge_into(self, keep: Person, drop: Person) -> None:
+        """Public entry point to fold `drop`'s identity into `keep`. Used by the
+        mail-reconciliation pass in `people_linking.py`; see `_merge_persons`."""
+        self._merge_persons(keep, drop)
+
     def _merge_persons(self, keep: Person, drop: Person) -> None:
         """Fold `drop` into `keep` and remove it from the registry.
 
@@ -624,6 +633,10 @@ def build_registry(
     """
     registry = Registry()
     _ingest_mail(wg, registry, verbose)
+    # Consolidate mailing-list identities that Datatracker maps to one person
+    # id (the same human under unrelated addresses / name spellings). Runs
+    # before the GitHub ingest/passes so they inherit the merged identities.
+    reconcile_mail_via_datatracker(registry, verbose)
     _ingest_github(wg, registry, verbose)
     # Link still-unlinked GitHub authors to mailing-list identities, in
     # order of precision. Both run before roles/drafts so name/email

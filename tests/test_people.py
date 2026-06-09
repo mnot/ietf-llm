@@ -354,6 +354,47 @@ def test_build_registry_links_github_via_datatracker(
     assert person.issue_count == 1
 
 
+def test_build_registry_reconciles_mail_via_datatracker_person(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two messages from one human under unrelated addresses and different
+    # name spellings — the name-string merge can't link them, but
+    # Datatracker maps both addresses to the same person id.
+    write_eml(
+        isolated_home, "wg", "list", 1,
+        "Topic", "M. Nottingham <mnot@fastly.com>",
+        "Mon, 01 Jan 2024 10:00:00 +0000",
+    )
+    write_eml(
+        isolated_home, "wg", "list", 2,
+        "Re: Topic", "Mark Nottingham <mnot@mnot.net>",
+        "Tue, 02 Jan 2024 10:00:00 +0000",
+    )
+
+    from ietf_llm.gather import datatracker_people as dtp  # pylint: disable=import-outside-toplevel
+    from urllib.parse import unquote  # pylint: disable=import-outside-toplevel
+
+    def fake_get_json(
+        path_or_url: str, timeout: float = 10.0,  # noqa: ARG001
+    ) -> Optional[dict[str, Any]]:
+        joined = path_or_url.split("address__in=", 1)[1].split("&", 1)[0]
+        objects = [
+            {"address": unquote(raw).lower(), "person": "/api/v1/person/person/1/"}
+            for raw in joined.split(",")
+        ]
+        return {"objects": objects}
+
+    monkeypatch.setattr(dtp, "_get_json", fake_get_json)
+    registry = build_registry("wg", verbose=Verbosity.QUIET)
+    assert len(registry.persons) == 1
+    person = registry.persons[0]
+    assert person.emails == {"mnot@fastly.com", "mnot@mnot.net"}
+    assert person.message_count == 2
+    # Survivor keeps a real (non-email-ish) name; both messages count, so the
+    # tie breaks on canonical name -> "M. Nottingham" sorts before "Mark ...".
+    assert person.canonical_name == "M. Nottingham"
+
+
 # --- write_people_digest layout --------------------------------------------
 
 
