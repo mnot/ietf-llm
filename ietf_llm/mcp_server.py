@@ -1145,6 +1145,70 @@ def _thread_sizes(wg: str) -> Dict[str, Tuple[str, str]]:
     return out
 
 
+# Grounding-footer thresholds — the point past which a thread is too big to
+# safely read level-of-support / individual positions off narrative snippets.
+# Deliberately low at 20 msgs / 8 participants: a TLS-sized bar (say 40/15)
+# clears routinely in a busy group but a quiet WG would never reach it, so
+# these lower values are what make the nudge fire across the range of groups
+# while still staying quiet on a routine short thread.
+_GROUNDING_MIN_MSGS = 20
+_GROUNDING_MIN_PARTICIPANTS = 8
+
+
+def _first_int(cell: str) -> int:
+    """First integer in a digest table cell (`"325"`, `"62"`), 0 if none."""
+    match = re.search(r"\d+", cell or "")
+    return int(match.group()) if match else 0
+
+
+def _grounding_footer(wg: str, hits: List[Any]) -> str:
+    """Search-output footer, emitted only when results touch a thread large
+    enough to mislead. It steers the caller off characterising consensus /
+    individual positions from narrative snippets and toward the grounding
+    path: the interpretation norms, then the chair's *actual* declaration.
+    `tally_positions` is named only for its Chair-statements section, with an
+    explicit "the +1/-1 count is a heuristic, not a support measure" caveat
+    (the count is regex keyword-matching, not sentiment analysis). Empty when
+    no qualifying thread is in the result set."""
+    sizes = _thread_sizes(wg)
+    if not sizes:
+        return ""
+    # We scan the chunk-level hits the caller is about to see. In
+    # `group_by="file"` mode `_render_hits` collapses to file rows, so the
+    # named thread may not be one of the displayed rows — harmless, the
+    # grounding pointer is valid for the result set either way.
+    seen: set[str] = set()
+    best: Optional[Tuple[int, str]] = None  # (participants, file)
+    best_msgs = -1
+    for hit in hits:
+        file = getattr(hit, "file", "")
+        if file in seen or file not in sizes or not file_supports_tally(file):
+            continue
+        seen.add(file)
+        msgs = _first_int(sizes[file][0])
+        parts = _first_int(sizes[file][1])
+        if msgs < _GROUNDING_MIN_MSGS and parts < _GROUNDING_MIN_PARTICIPANTS:
+            continue
+        if msgs > best_msgs:
+            best_msgs = msgs
+            best = (parts, file)
+    if best is None:
+        return ""
+    parts, file = best
+    msgs = best_msgs
+    return (
+        f"\n_Grounding: `{file}` has {msgs} msgs, {parts} participants — too "
+        "large to characterise from snippets. What was *said* in narrative is "
+        "not what was *decided*: IETF consensus is chair-declared, not "
+        "counted. Call `read_ietf_interpretation_norms`, then find the chair's "
+        f'actual declaration — `search_corpus("{wg}", "...", role="Chair")`, '
+        'closed-issue resolutions (`state="closed"`), and the **Chair '
+        f'statements** section of `tally_positions("{wg}", "{file}")`. (That '
+        "tool's +1/-1 count is a keyword heuristic, not a measure of "
+        "support — don't quote it as one.)_"
+    )
+
+
 def _topic_thread_map(
     wg: str, matched_hits: List[Any], rows: List[Any], limit: int = 8
 ) -> List[str]:
@@ -1636,7 +1700,12 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     # thread five times — wasting context. group_by="file" collapses
     # to one row per file with hit count + best chunk; the per-chunk
     # view stays the default for depth questions.
-    return _with_freshness(wg, _render_hits(hits, k, group_by) + note)
+    # Grounding footer: only the open-ended search path gets it (not the
+    # shared `_render_hits`, which `tool_find_related` also uses). Fires only
+    # when a result touches a thread big enough that its consensus / positions
+    # shouldn't be read off snippets.
+    footer = _grounding_footer(wg, hits[:k])
+    return _with_freshness(wg, _render_hits(hits, k, group_by) + note + footer)
 
 
 def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -3488,28 +3557,28 @@ def main() -> None:
 
     @server.tool()
     async def tally_positions(corpus: str, file: str) -> str:
-        """Count stated positions (`+1`, `-1`, `I support`, `I object`,
-        `LGTM`, conditional support, `DISCUSS`) per message author in ONE
-        mailing-list thread or GitHub issue of an IETF/IRTF effort — the
-        grounded way to read a group's **consensus / level of support**
-        from the actual list traffic rather than relaying a summary or a
-        web search. Output also
-        includes a **Chair
-        statements** section at the top: any message from a chair
-        containing procedural language (`rough consensus`,
-        `consensus call`, `WGLC`, `adopting`, `closing this thread`,
-        …) rendered prominently with an excerpt. The per-author
-        tally + chair statements together let you ground-truth the
-        chair's declared outcome against the actual list traffic.
+        """Surface the procedural backbone of ONE mailing-list thread or
+        GitHub issue of an IETF/IRTF effort. Its high-value output is the
+        **Chair statements** section at the top: any message from a chair
+        containing procedural language (`rough consensus`, `consensus
+        call`, `WGLC`, `adopting`, `closing this thread`, …) rendered
+        prominently with an excerpt — that is where a group's *decision*
+        actually lives, because IETF consensus is **chair-declared**.
+
+        Below that is a per-author count of canonical position *phrasings*
+        (`+1`, `-1`, `I support`, `I object`, `LGTM`, conditional support,
+        `DISCUSS`). Read this as a **rough keyword heuristic, NOT a measure
+        of consensus or level of support** — it matches surface phrasings,
+        not sentiment, and the IETF does not decide by counting. Never quote
+        the count as "the WG supported X by N to M". Use it only to *locate*
+        who said something explicit, then read their actual message.
 
         Coverage percentage tells you what fraction of messages the
-        heuristic could classify — read it before quoting the count.
-
-        Use this BEFORE relaying a chair's characterisation of "levels
-        of support" — chair summaries are themselves sometimes the
-        subject of procedural dispute (see appeals at WGLC), and the
-        binding signal in IETF is the actual list traffic. A grounded
-        count beats a relayed claim.
+        heuristic could classify at all — low coverage means the count is
+        nearly meaningless. To characterise an outcome, go to the chair's
+        declared words (this tool's Chair statements, plus
+        `search_corpus(role="Chair", state="closed")`), and call
+        `read_ietf_interpretation_norms` first.
 
         Pass `file` as a relative path under the corpus cache, e.g.
         `threads/2026-04-12-wglc-mlkem.md` or

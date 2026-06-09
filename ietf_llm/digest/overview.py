@@ -815,12 +815,24 @@ def build_overview(wg: str, cache_dir: str) -> str:
         "issues; the narrative-arc primitive)."
     )
     out.append(
-        '- _"level of support for X?"_, _"who\'s in which camp?"_, '
-        '_"did the chair call consensus, and is it visible in the '
-        'traffic?"_ → '
-        f'`tally_positions("{wg}", "<one thread or issue file>")` '
-        "(grounded +1/-1/poll-option count plus chair-statements "
-        "section)."
+        '- _"the WG supported / opposed X"_, _"who\'s in which camp?"_ → '
+        "this corpus does **not** measure support (no vote, no sentiment "
+        "score). Call `read_ietf_interpretation_norms`, then read the "
+        f'chair\'s words — `search_corpus("{wg}", "X", role="Chair")` and '
+        "closed-issue resolutions."
+    )
+    out.append(
+        '- _"did the chair call consensus / was X decided?"_ → '
+        "`read_ietf_interpretation_norms` (consensus is chair-declared, not "
+        f'counted), then `search_corpus("{wg}", "X", role="Chair", '
+        'state="closed")` and the **Chair statements** section of '
+        f'`tally_positions("{wg}", "<thread or issue file>")`. Treat that '
+        "tool's +1/-1 count as a keyword heuristic, never as a support level."
+    )
+    out.append(
+        '- _"<person> opposed / objected to X"_ → cite that person\'s own '
+        f'message — `search_corpus("{wg}", "X", author="...")` — not a '
+        "narrative snippet; a technical concern is not a stated objection."
     )
     out.append(
         '- _"what\'s open / closed?"_, _"who\'s a chair?"_, '
