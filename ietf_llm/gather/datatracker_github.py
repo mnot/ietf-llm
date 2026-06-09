@@ -34,12 +34,10 @@ users client has.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ..utils import LogLevel, Verbosity, get_cache_dir, log
@@ -119,7 +117,7 @@ def resolve_via_datatracker(
         cache[key] = {
             "name": resolved.name,
             "emails": resolved.emails,
-            "fetched_at": _now_iso(),
+            "fetched_at": identity_cache.now_iso(),
         }
         dirty = True
         if resolved.name or resolved.emails:
@@ -172,7 +170,7 @@ def _ensure_index(
         path = (body.get("meta") or {}).get("next") or None
 
     cache[_INDEX_KEY] = index
-    cache[_INDEX_STAMP_KEY] = _now_iso()
+    cache[_INDEX_STAMP_KEY] = identity_cache.now_iso()
     _merge_save(cache)
     log(
         f"Built Datatracker github_username index: {len(index)} logins",
@@ -228,10 +226,9 @@ def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]
     emails, fetched_at}`, or `None` for "confirmed not on Datatracker").
 
     Keep the index with the newer stamp (it is rebuilt wholesale, so last-built
-    wins rather than merged). Union the per-login entries; on a login both hold,
-    keep the newer `fetched_at` — a real resolution (which carries a stamp) thus
-    beats a bare `None` miss. Concurrent fleet gathers each add disjoint logins,
-    so the union is what makes the round-trip lossless."""
+    wins rather than merged). The per-login entries fold in via the shared
+    stamp-wins union: on a login both hold, the newer `fetched_at` wins, so a
+    real resolution beats a bare `None` miss."""
     merged: Dict[str, Any] = {}
     if str(remote.get(_INDEX_STAMP_KEY, "")) >= str(local.get(_INDEX_STAMP_KEY, "")):
         index_src = remote
@@ -241,26 +238,13 @@ def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]
         merged[_INDEX_KEY] = index_src[_INDEX_KEY]
     if _INDEX_STAMP_KEY in index_src:
         merged[_INDEX_STAMP_KEY] = index_src[_INDEX_STAMP_KEY]
-
-    def _stamp(entry: Any) -> str:
-        return str(entry.get("fetched_at", "")) if isinstance(entry, dict) else ""
-
-    for key, entry in list(remote.items()) + list(local.items()):
-        if key in (_INDEX_KEY, _INDEX_STAMP_KEY):
-            continue
-        if key not in merged or _stamp(entry) >= _stamp(merged[key]):
-            merged[key] = entry
-    return merged
+    return identity_cache.union_newer_by_stamp(
+        remote, local, into=merged, skip=frozenset({_INDEX_KEY, _INDEX_STAMP_KEY})
+    )
 
 
 def _load_cache() -> Dict[str, Any]:
-    path = _cache_path()
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return identity_cache.load(_cache_path())
 
 
 def _save_cache(cache: Dict[str, Any]) -> None:
@@ -276,7 +260,3 @@ def _merge_save(cache: Dict[str, Any]) -> None:
     identity_cache.merge_save(
         _CACHE_LOCK, _cache_path(), _load_cache, merge_cache, cache
     )
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
