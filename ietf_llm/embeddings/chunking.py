@@ -100,8 +100,11 @@ class Chunk:
     #   shares it)
     # - thread chunks: the `Archived-At:` permalink for that specific
     #   message (per-chunk; each message has its own URL)
-    # - everything else: NULL. Surfaced inline in search hits so the
-    #   caller can cite without reconstructing.
+    # - draft chunks: the version-agnostic Datatracker doc page; charter
+    #   chunks: the `Source:` URL (both file-level, every window shares it)
+    # - everything else (RFC bodies, minutes, transcripts): NULL.
+    # Surfaced inline in search hits so the caller can cite without
+    # reconstructing.
     url: Optional[str] = None
     # Issue-cluster signals (per-issue files only). Every chunk from
     # the same issue file carries the same values so a search hit
@@ -232,6 +235,10 @@ _ISSUE_RATIONALE_RE = re.compile(
 #   "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/<list>/<tok>/"
 _THREAD_ARCHIVED_AT_RE = re.compile(r"^_Archived-At:_\s*(\S+)", re.MULTILINE)
 
+# Charter source line (gather.charter writes it as the second line):
+#   "Source: https://www.ietf.org/charter/charter-ietf-<wg>-<rev>.txt"
+_CHARTER_SOURCE_RE = re.compile(r"^Source:\s*(\S+)", re.MULTILINE)
+
 
 def _extract_issue_labels(text: str) -> Optional[str]:
     """Pull the `**Labels:**` line out of a per-issue file's header
@@ -293,6 +300,39 @@ def _extract_thread_archived_at(text: str) -> Optional[str]:
     """
     match = _THREAD_ARCHIVED_AT_RE.search(text)
     return match.group(1).strip() if match else None
+
+
+def _windowed_citation_url(relpath: str, text: str) -> Optional[str]:
+    """File-level citation URL for a windowed (non-thread/issue) file.
+
+    Stamped on every chunk of the file so an agent can cite the source
+    without reconstructing the URL itself (the exact step that invites a
+    wrong or hallucinated citation). Covers only the cases with an
+    unambiguous canonical URL:
+
+    - `drafts/draft-<name>-NN.txt` → the Datatracker doc page,
+      version-agnostic (`/doc/<name>/` resolves to the latest revision,
+      which is what a citation should point at).
+    - `charter.txt` → the `Source:` URL gather already wrote into the
+      file header.
+
+    Everything else returns None — RFC bodies (cite via `get_rfc`),
+    minutes, transcripts, pdf extracts. NULL is deliberate there: a URL
+    we cannot construct with confidence is worse stamped than absent.
+    """
+    lower = relpath.lower()
+    if lower.startswith("drafts/") and lower.endswith(".txt"):
+        name = normalize_draft_name(os.path.basename(relpath))
+        # RFC text files normalise to `rfcNNNN` (no `draft-` prefix);
+        # leave those to get_rfc rather than minting a /doc/ URL here.
+        if name.startswith("draft-"):
+            return f"https://datatracker.ietf.org/doc/{name}/"
+        return None
+    if lower == "charter.txt" or lower.endswith("/charter.txt"):
+        match = _CHARTER_SOURCE_RE.search(text)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def _extract_issue_state(text: str) -> Optional[str]:
@@ -398,6 +438,9 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
     text = text.strip()
     if not text:
         return chunks
+    # File-level citation URL (drafts, charter) stamped on every window;
+    # None for windowed files without a confident canonical URL.
+    file_url = _windowed_citation_url(filename, text)
     line_starts = _build_line_index(text)
     for idx, (body, start, end) in enumerate(
         _window_text(text, EMBED_CHAR_BUDGET, EMBED_CHAR_OVERLAP)
@@ -414,6 +457,7 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
                 text=body,
                 start_line=_line_at(line_starts, start),
                 end_line=_line_at(line_starts, max(end - 1, start)),
+                url=file_url,
             )
         )
     return chunks

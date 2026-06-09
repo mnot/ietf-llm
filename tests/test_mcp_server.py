@@ -765,6 +765,27 @@ def test_fetch_by_url_returns_chunk_when_url_matches(
     assert "issues/org-repo/1.md" in out
 
 
+def test_fetch_by_url_resolves_draft_datatracker_url(
+    isolated_home: Path,
+) -> None:
+    # A draft's windowed chunks are stamped with the version-agnostic
+    # Datatracker doc URL; fetch_by_url resolves that back to the draft.
+    write_cache_file(
+        isolated_home, "wg", "drafts/draft-ietf-wg-thing-02.txt",
+        "Internet-Draft  Thing  March 2026\n\n"
+        + "\n".join(f"draft body line {i}" for i in range(1, 120))
+        + "\n",
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    out = mcp_server.tool_fetch_by_url(
+        "wg", "https://datatracker.ietf.org/doc/draft-ietf-wg-thing/",
+    )
+    assert "draft body line" in out
+    assert "drafts/draft-ietf-wg-thing-02.txt" in out
+
+
 def test_fetch_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
     # The Archived-At permalink stamped on every thread message is a
     # `www.w3.org/mid/<message-id>` URL — the form fetch_by_url must
