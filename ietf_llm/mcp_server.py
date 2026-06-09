@@ -1161,27 +1161,21 @@ def _first_int(cell: str) -> int:
     return int(match.group()) if match else 0
 
 
-def _grounding_footer(wg: str, hits: List[Any]) -> str:
-    """Search-output footer, emitted only when results touch a thread large
-    enough to mislead. It steers the caller off characterising consensus /
-    individual positions from narrative snippets and toward the grounding
-    path: the interpretation norms, then the chair's *actual* declaration.
-    `tally_positions` is named only for its Chair-statements section, with an
-    explicit "the +1/-1 count is a heuristic, not a support measure" caveat
-    (the count is regex keyword-matching, not sentiment analysis). Empty when
-    no qualifying thread is in the result set."""
+def _biggest_grounding_thread(
+    wg: str, files: List[str]
+) -> Optional[Tuple[int, int, str]]:
+    """The largest thread among `files` that clears the grounding threshold,
+    as `(msgs, participants, file)` — or None. Sizes come from the threads
+    digest; only thread/issue files count, deduped, and an unparseable size
+    cell reads as 0 (so a malformed digest row fails the threshold rather
+    than crashing)."""
     sizes = _thread_sizes(wg)
     if not sizes:
-        return ""
-    # We scan the chunk-level hits the caller is about to see. In
-    # `group_by="file"` mode `_render_hits` collapses to file rows, so the
-    # named thread may not be one of the displayed rows — harmless, the
-    # grounding pointer is valid for the result set either way.
+        return None
     seen: set[str] = set()
-    best: Optional[Tuple[int, str]] = None  # (participants, file)
+    best: Optional[Tuple[int, int, str]] = None
     best_msgs = -1
-    for hit in hits:
-        file = getattr(hit, "file", "")
+    for file in files:
         if file in seen or file not in sizes or not file_supports_tally(file):
             continue
         seen.add(file)
@@ -1191,21 +1185,35 @@ def _grounding_footer(wg: str, hits: List[Any]) -> str:
             continue
         if msgs > best_msgs:
             best_msgs = msgs
-            best = (parts, file)
+            best = (msgs, parts, file)
+    return best
+
+
+def _grounding_frame(wg: str, files: List[str]) -> str:
+    """Interpretive frame prepended to narrative / search output when results
+    touch a thread big enough to mislead. It states the principle *inline* —
+    narrative is what was said, not what was decided; IETF consensus is
+    chair-declared, not counted — so the frame is already in context before
+    the caller reads the messages, with no separate tool call to skip (the
+    skippable pointer was the thing that didn't work). Empty when no
+    qualifying thread is present."""
+    best = _biggest_grounding_thread(wg, files)
     if best is None:
         return ""
-    parts, file = best
-    msgs = best_msgs
+    msgs, parts, file = best
     return (
-        f"\n_Grounding: `{file}` has {msgs} msgs, {parts} participants — too "
-        "large to characterise from snippets. What was *said* in narrative is "
-        "not what was *decided*: IETF consensus is chair-declared, not "
-        "counted. Call `read_ietf_interpretation_norms`, then find the chair's "
-        f'actual declaration — `search_corpus("{wg}", "...", role="Chair")`, '
-        'closed-issue resolutions (`state="closed"`), and the **Chair '
-        f'statements** section of `tally_positions("{wg}", "{file}")`. (That '
-        "tool's +1/-1 count is a keyword heuristic, not a measure of "
-        "support — don't quote it as one.)_"
+        "> **Before characterising any decision, position, or level of "
+        "support from what follows:** this is *narrative* — what participants "
+        "said, not what the group decided. IETF consensus is "
+        "**chair-declared, not vote-counted**, so do not infer it from these "
+        "messages or from a `+1`/`-1` count (a keyword heuristic, not a "
+        "measure of support). Anchor any such claim to the chair's own "
+        "words — a consensus call / WGLC / closure (`tally_positions` "
+        "surfaces these in its **Chair statements** section), a closed-issue "
+        'resolution (`state="closed"`), or '
+        f'`search_corpus("{wg}", "...", role="Chair")`. Full procedure: '
+        f"`read_ietf_interpretation_norms`. _(Flagged by `{file}` — "
+        f"{msgs} msgs, {parts} participants.)_\n"
     )
 
 
@@ -1401,6 +1409,15 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
     files = sorted({r[1] for r in rows})
     out: List[str] = []
     out.append(f"# Topic timeline: {query!r} in {wg}\n")
+    # Interpretive frame FIRST, before the narrative — read_topic is the
+    # narrative-reconstruction tool, and once a caller is deep in 60 messages
+    # a margin note won't pull them out. Fires only for a large/contentious
+    # thread; scans all matched thread/issue files so a big thread shown only
+    # in part still triggers it.
+    frame = _grounding_frame(wg, [h.file for h in thread_issue_hits])
+    if frame:
+        out.append(frame.rstrip("\n"))
+        out.append("")
     summary = (
         f"_{len(rows)} message(s) across {len(files)} file(s), "
         f"oldest first. {n_matched} matched the query"
@@ -1700,12 +1717,17 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     # thread five times — wasting context. group_by="file" collapses
     # to one row per file with hit count + best chunk; the per-chunk
     # view stays the default for depth questions.
-    # Grounding footer: only the open-ended search path gets it (not the
+    # Grounding frame at the TOP — read before the hits, with no separate
+    # tool call to skip. Only the open-ended search path gets it (not the
     # shared `_render_hits`, which `tool_find_related` also uses). Fires only
     # when a result touches a thread big enough that its consensus / positions
-    # shouldn't be read off snippets.
-    footer = _grounding_footer(wg, hits[:k])
-    return _with_freshness(wg, _render_hits(hits, k, group_by) + note + footer)
+    # shouldn't be read off snippets. We scan the chunk-level `hits[:k]`; in
+    # `group_by="file"` mode the rendered rows collapse to files, so the named
+    # thread may not be a displayed row — harmless, the frame is valid for the
+    # result set either way.
+    frame = _grounding_frame(wg, [h.file for h in hits[:k]])
+    body = _render_hits(hits, k, group_by) + note
+    return _with_freshness(wg, f"{frame}\n{body}" if frame else body)
 
 
 def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
