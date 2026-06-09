@@ -1,9 +1,9 @@
 """Tests for the cloud gather-cache sync (ietf_llm.gather.cache_sync) and the
 CorpusStore hydrate/persist seam (issue #82).
 
-The sync round-trips three gather accelerator caches to the KvStore so an
+The sync round-trips the gather accelerator caches to the KvStore so an
 ephemeral host doesn't re-hit rate-limited upstreams after scale-to-zero:
-`.http-cache.json` per corpus (lease-serialised, plain RMW) and the two shared
+`.http-cache.json` per corpus (lease-serialised, plain RMW) and the shared
 identity maps (CAS-merge). Tests drive the real cache-module path helpers
 through an InMemoryKvStore, simulating a cold start by switching the cache dir.
 """
@@ -22,7 +22,13 @@ from ietf_llm.catalog import catalog_index_dir
 from ietf_llm.corpus_store import LocalCorpusStore
 from ietf_llm.corpus_store_cloud import CloudCorpusStore
 from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.gather import cache_sync, datatracker, datatracker_github, github_users
+from ietf_llm.gather import (
+    cache_sync,
+    datatracker,
+    datatracker_github,
+    datatracker_people,
+    github_users,
+)
 from ietf_llm.kv_control import KvControlPlane
 from ietf_llm.kv_store import ANY, InMemoryKvStore, KvStore, Record
 
@@ -175,6 +181,28 @@ def test_github_users_merge_prefers_newer_fetched_at():
     local = {"x": {"name": "Real", "fetched_at": "2026-05-05"}}
     merged = github_users.merge_cache(remote, local)
     assert merged["x"]["name"] == "Real"
+
+
+def test_datatracker_people_merge_prefers_hit_over_none_miss():
+    # A real resolution (stamped) must beat a bare `None` miss on merge, and
+    # disjoint addresses from concurrent gathers must both survive.
+    remote = {"a@x": None}
+    local = {"a@x": {"person": "/p/1", "fetched_at": "2026-06-06"}, "b@y": None}
+    merged = datatracker_people.merge_cache(remote, local)
+    assert merged["a@x"] == {"person": "/p/1", "fetched_at": "2026-06-06"}
+    assert merged["b@y"] is None
+
+
+def test_datatracker_people_roundtrip_across_a_cold_start(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    _cache_dir(monkeypatch, tmp_path / "warm")
+    datatracker_people._save_cache({"mnot@mnot.net": {"person": "/p/1", "fetched_at": "x"}})
+    cache_sync.persist(kv, "tls")
+    # Cold host: fresh cache dir, then hydrate restores the shared map.
+    _cache_dir(monkeypatch, tmp_path / "cold")
+    assert datatracker_people._load_cache() == {}
+    cache_sync.hydrate(kv, "tls")
+    assert datatracker_people._load_cache()["mnot@mnot.net"]["person"] == "/p/1"
 
 
 def test_datatracker_github_merge_keeps_index_and_none_misses():

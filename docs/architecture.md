@@ -163,10 +163,14 @@ Key invariants:
   assignments, and draft Authors' Addresses sections, and merges the
   surface forms of one actor (DMARC-rewritten variants, relay
   addresses, multiple emails, GitHub logins matching an email
-  local-part) into one canonical `Person`. GitHub logins are further
-  linked to identities via each person's Datatracker `github_username`
-  profile resource (exact, by verified email), then by display name
-  (`people_linking`). A Person also carries
+  local-part) into one canonical `Person`. Mailing-list identities
+  themselves are reconciled across unrelated addresses / name spellings
+  by resolving each address to Datatracker's curated email→person table
+  and merging addresses that share a person id (exact-match, so
+  collision-free; `people_linking`, runs before the GitHub passes).
+  GitHub logins are further linked to identities via each person's
+  Datatracker `github_username` profile resource (exact, by verified
+  email), then by display name. A Person also carries
   **affiliations** (keyed by source: `draft:<doc>` and `github`) and
   the set of **email domains** seen — distinct fields, because email
   domain ≠ affiliation. The `digests/people.md` digest leads with
@@ -361,6 +365,7 @@ ietf_llm/
 │   ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
 │   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
 │   ├── datatracker_github.py   # github_username profile resources → person (by email)
+│   ├── datatracker_people.py   # mail address → person id (mail-side identity spine)
 │   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
 │   ├── ballots.py              # IESG ballot positions (scoped to --months)
 │   ├── citations.py            # draft → citing thread/issue cross-reference

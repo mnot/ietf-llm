@@ -13,10 +13,11 @@ single writer:
     thread* so the runner's up-to-N concurrent in-process gathers each write their
     own corpus file (not one shared root file). Together that makes hydrate ->
     gather -> flush -> persist a plain read-modify-write — no CAS, no lost delta.
-  - `_github-users.json` / `_datatracker-github.json` — corpus-independent
-    identity maps, **shared** at a fleet prefix. Two different-corpus gathers can
-    run at once, so persist does a bounded compare-and-swap merge: lossless, and
-    cheap because contention is rare and the maps are append-mostly.
+  - `_github-users.json` / `_datatracker-github.json` / `_datatracker-people.json`
+    — corpus-independent identity maps, **shared** at a fleet prefix. Two
+    different-corpus gathers can run at once, so persist does a bounded
+    compare-and-swap merge: lossless, and cheap because contention is rare and
+    the maps are append-mostly.
   - `_catalog/` — the `find_efforts` effort catalog (the Datatracker group
     collection — the same rate-limited upstream as the ETag store). A
     **shared fleet singleton** mirrored once per gather; every gather writes
@@ -41,13 +42,14 @@ from typing import Any, Callable, Dict, Optional
 
 from ..catalog import catalog_index_dir
 from ..kv_store import ABSENT, KvStore
-from . import datatracker, datatracker_github, github_users
+from . import datatracker, datatracker_github, datatracker_people, github_users
 
 #: Per-corpus key — lease-serialised single writer, so a plain RMW is safe.
 _HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
 #: Shared fleet keys — concurrent writers, so persist uses a CAS-merge.
 _GITHUB_USERS_KEY = "fleet/gather-cache/github-users.json"
 _DATATRACKER_GITHUB_KEY = "fleet/gather-cache/datatracker-github.json"
+_DATATRACKER_PEOPLE_KEY = "fleet/gather-cache/datatracker-people.json"
 #: Shared fleet prefix for the effort-catalog directory — one key per file,
 #: last-writer-wins (every gather mirrors identical upstream content).
 _CATALOG_PREFIX = "fleet/catalog/"
@@ -74,6 +76,7 @@ def hydrate(kv: KvStore, corpus: str) -> None:
         pass
     _restore(kv, _GITHUB_USERS_KEY, github_users.cache_path())
     _restore(kv, _DATATRACKER_GITHUB_KEY, datatracker_github.cache_path())
+    _restore(kv, _DATATRACKER_PEOPLE_KEY, datatracker_people.cache_path())
     _restore_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
 
 
@@ -102,6 +105,12 @@ def persist(kv: KvStore, corpus: str) -> None:
         _DATATRACKER_GITHUB_KEY,
         datatracker_github.cache_path(),
         datatracker_github.merge_cache,
+    )
+    _cas_merge(
+        kv,
+        _DATATRACKER_PEOPLE_KEY,
+        datatracker_people.cache_path(),
+        datatracker_people.merge_cache,
     )
     _persist_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
 

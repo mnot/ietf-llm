@@ -74,6 +74,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
         datatracker,
         datatracker_github,
         datatracker_history,
+        datatracker_people,
         github_users,
     )
 
@@ -97,6 +98,14 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     # link path monkeypatch this attribute with canned responses.
     monkeypatch.setattr(
         datatracker_github, "_get_json",
+        lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
+    # Block the mail-address → person-id resolver (the mail-reconciliation
+    # pass) at the network boundary. With `_get_json` returning None each
+    # chunk is treated as a transient failure and the pass is a no-op. Tests
+    # exercising it monkeypatch this attribute with canned responses.
+    monkeypatch.setattr(
+        datatracker_people, "_get_json",
         lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
     )
     # Block HTTP calls from datatracker_history at the network boundary;
