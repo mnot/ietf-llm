@@ -230,9 +230,10 @@ lookups or text fetches; one call per session is enough.
 When you're helping the user *contribute* — drafting list mail, a GitHub
 issue or comment, or any reply that goes into the record under their name —
 call `read_ietf_participation_norms` first. It covers who's accountable
-(the human sends; you draft), the register to match, staying on-charter,
-engaging existing work, and where AI help is uncontroversial. Authoring
-Internet-Drafts is out of scope.
+(the human sends; you draft), disclosing AI involvement and how closely
+supervised, the register to match, staying on-charter, engaging existing
+work, and where AI help is uncontroversial. Authoring Internet-Drafts is
+out of scope.
 
 ## Anti-patterns
 

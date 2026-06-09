@@ -2723,7 +2723,8 @@ def main() -> None:
     @server.tool()
     async def read_ietf_participation_norms() -> str:
         """Return the norms for *contributing* to an IETF effort:
-        the human is accountable and sends (you only draft), the
+        the human is accountable and sends (you only draft),
+        disclosing AI involvement and how closely supervised, the
         register to match (terse, technical, no AI tells), staying
         on-charter, engaging existing work rather than dropping new
         ideas cold, not re-litigating settled questions or

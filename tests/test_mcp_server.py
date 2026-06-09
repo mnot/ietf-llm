@@ -947,5 +947,6 @@ def test_read_ietf_participation_norms_returns_bundled_doc() -> None:
     # contribute-side guidance survives edits to the doc.
     out = mcp_server.tool_read_participation_norms()
     assert "You draft; the human sends" in out
+    assert "Say it's AI-generated" in out
     assert "Engage with the group's existing work" in out
     assert "Where AI help is uncontroversial" in out
