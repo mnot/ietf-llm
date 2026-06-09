@@ -11,7 +11,7 @@ import os
 from typing import Optional
 
 from ..gather.issue_files import _detect_duplicate_of, _participants
-from ..paths import digest_path, github_dir, issue_path
+from ..paths import digest_path, github_dir, issue_path, remove_stale_digest
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, atomic_open, log
 from .helpers import _state_is_open
@@ -34,9 +34,11 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
     """Build `digests/issues.md` from cached GitHub JSON archives."""
     archives_dir = github_dir(cache_dir)
     if not os.path.isdir(archives_dir):
+        remove_stale_digest(cache_dir, "issues")
         return None
     gh_files = sorted(f for f in os.listdir(archives_dir) if f.endswith(".json"))
     if not gh_files:
+        remove_stale_digest(cache_dir, "issues")
         return None
 
     out_path = digest_path(cache_dir, "issues")

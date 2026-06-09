@@ -44,7 +44,12 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from ..paths import digest_path, iter_thread_issue_md_files, threads_dir
+from ..paths import (
+    digest_path,
+    iter_thread_issue_md_files,
+    remove_stale_digest,
+    threads_dir,
+)
 from ..utils import LogLevel, Verbosity, atomic_open, log
 
 # Archive permalinks, as they appear both on `_Archived-At:_` lines (the
@@ -268,8 +273,14 @@ def write_message_citations_digest(
     """Render `digests/message_citations.md`, grouped by cited target
     (the reverse "who references this message" index) plus an External
     section for URLs not gathered in this corpus. Returns the path, or
-    None if there were no citations."""
+    None if there were no citations.
+
+    On empty, drop any digest left by an earlier gather (see
+    `remove_stale_digest`) so `find_message_citations` reports "no
+    digest" rather than stale citation edges.
+    """
     if not citations:
+        remove_stale_digest(cache_dir, "message_citations")
         return None
 
     by_target: Dict[Tuple[str, int], List[MessageCitation]] = {}

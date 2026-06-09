@@ -57,6 +57,7 @@ from ..paths import (
     digest_path,
     github_dir,
     minutes_path,
+    remove_stale_digest,
 )
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, atomic_open, log
@@ -473,6 +474,7 @@ def write_timeline_digest(
         group_backed=group_backed,
     )
     if not events:
+        remove_stale_digest(cache_dir, "timeline")
         return None
 
     by_year: Dict[int, List[Event]] = {}

@@ -53,7 +53,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from .gather.datatracker import fetch_wg_roles
 from .gather.draft_authors import latest_draft_paths, parse_authors
 from .gather.github import iter_issue_archives
-from .paths import digest_path
+from .paths import digest_path, remove_stale_digest
 from .people_linking import (
     resolve_github_user_names,
     resolve_github_via_datatracker,
@@ -772,6 +772,7 @@ def write_people_digest(
     """
     persons = registry.all_persons()
     if not persons:
+        remove_stale_digest(cache_dir, "people")
         return None
 
     linked, mail_only, gh_only = _bucket_persons(persons)
