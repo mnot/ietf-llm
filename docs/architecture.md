@@ -339,7 +339,8 @@ ietf_llm/
 ├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
-├── data/skill/IETF.md      # interpretive norms, served on demand via read_ietf_norms
+├── data/skill/IETF.md      # interpretive (reading) norms, via read_ietf_interpretation_norms
+├── data/skill/PARTICIPATING.md  # participation (write-side) norms, via read_ietf_participation_norms
 │
 ├── gather/                 # content acquisition + per-source post-processing
 │   ├── charter.py              # charter text artifact (rev from doc API)
@@ -400,9 +401,12 @@ ietf_llm/
 job:
 
 - **Orient:** `list_corpora`, `overview`, `list_labels`,
-  `list_files`, `read_ietf_norms` (the bundled `IETF.md` interpretive
-  norms — consensus, attribution, list-vs-meeting — served on demand so
-  the always-on `instructions` field stays focused on tool routing).
+  `list_files`, `read_ietf_interpretation_norms` (the bundled `IETF.md`
+  interpretive norms — consensus, attribution, list-vs-meeting) and
+  `read_ietf_participation_norms` (the bundled `PARTICIPATING.md`
+  write-side norms — how to help a human draft a contribution). Both
+  served on demand so the always-on `instructions` field stays focused
+  on tool routing.
 - **Discover (topic-first):** `find_efforts(query)` ranks the active
   IETF/IRTF efforts by a free-text topic and tags each with whether it
   is already gathered here — the entry point for "what is the IETF doing

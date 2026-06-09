@@ -436,7 +436,20 @@ def tool_overview(wg: str) -> str:
     return _with_freshness(wg, body, sources=src)
 
 
-def tool_read_ietf_norms() -> str:
+def _read_bundled_norms(filename: str) -> str:
+    """Return a bundled norms doc from `data/skill/`, or a reinstall hint
+    if it's missing from the installed package."""
+    try:
+        path = resources.files("ietf_llm").joinpath(f"data/skill/{filename}")
+        return path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return (
+            f"({filename} is missing from the installed package — "
+            "try reinstalling: pipx install --force ietf-llm)"
+        )
+
+
+def tool_read_interpretation_norms() -> str:
     """Return the bundled IETF.md — interpretive norms for reading
     a corpus (consensus, who-speaks-for-whom, list-vs-meeting).
 
@@ -444,14 +457,19 @@ def tool_read_ietf_norms() -> str:
     stays focused on tool routing; clients pull this on demand when
     the question is "what did the WG decide / who supports what."
     """
-    try:
-        path = resources.files("ietf_llm").joinpath("data/skill/IETF.md")
-        return path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return (
-            "(IETF.md is missing from the installed package — "
-            "try reinstalling: pipx install --force ietf-llm)"
-        )
+    return _read_bundled_norms("IETF.md")
+
+
+def tool_read_participation_norms() -> str:
+    """Return the bundled PARTICIPATING.md — norms for helping a human
+    contribute to a corpus (drafting list mail, GitHub issues/comments,
+    other discussion), the write-side companion to the reading norms.
+
+    Pulled on demand when the question shifts from interpreting the
+    record to composing something that goes into it under a person's
+    name. Authoring Internet-Drafts is out of scope of the doc.
+    """
+    return _read_bundled_norms("PARTICIPATING.md")
 
 
 @_requires_corpus
@@ -2946,12 +2964,13 @@ def main() -> None:
         `read_topic`, `get_chunk_text`, `read_file_section`,
         `list_files`, `list_labels`. Interpretive norms (how
         consensus works, who-speaks-for-whom, list vs meeting):
-        `read_ietf_norms`.
+        `read_ietf_interpretation_norms`; norms for *contributing*
+        (drafting list mail / issues): `read_ietf_participation_norms`.
         """
         return await _offload(tool_overview, corpus)
 
     @server.tool()
-    async def read_ietf_norms() -> str:
+    async def read_ietf_interpretation_norms() -> str:
         """Return the interpretive norms for reading an IETF corpus:
         how consensus works (chair-declared, not vote-counted), how
         to attribute positions (individuals, not employers), and
@@ -2963,9 +2982,30 @@ def main() -> None:
         catalogue lookups (`read_digest`), text fetches
         (`read_file_section`), or structural questions (`overview`).
         The content is stable across corpora — one call per session
-        is enough.
+        is enough. For the write side (drafting a contribution), see
+        `read_ietf_participation_norms`.
         """
-        return await _offload(tool_read_ietf_norms)
+        return await _offload(tool_read_interpretation_norms)
+
+    @server.tool()
+    async def read_ietf_participation_norms() -> str:
+        """Return the norms for *contributing* to an IETF effort:
+        the human is accountable and sends (you only draft),
+        disclosing AI involvement and how closely supervised, the
+        register to match (terse, technical, no AI tells), staying
+        on-charter, engaging existing work rather than dropping new
+        ideas cold, not re-litigating settled questions or
+        manufacturing consensus signal, and where AI help is
+        uncontroversial (summarise/translate, explain ABNF/YANG).
+
+        **Call this before** drafting list mail, a GitHub issue or
+        comment, or any other contribution that will go into the
+        record under a person's name. Authoring Internet-Drafts is
+        out of scope. Stable across corpora — one call per session is
+        enough. For reading/characterising a corpus, see
+        `read_ietf_interpretation_norms`.
+        """
+        return await _offload(tool_read_participation_norms)
 
     @server.tool()
     async def list_labels(corpus: str) -> str:

@@ -163,8 +163,8 @@ or your own read of the thread. Filter to chair messages
 (`state="closed"`), and use `tally_positions`' **Chair statements** section
 for procedural declarations (consensus call, WGLC, closure). Prefer the
 chair's own message over any summary — including `tally_positions`' count,
-which is a heuristic. Call `read_ietf_norms` before characterising what was
-decided.
+which is a heuristic. Call `read_ietf_interpretation_norms` before
+characterising what was decided.
 
 ## Citing
 
@@ -238,10 +238,18 @@ GitHub login isn't mapped in the `people` digest, say so.
 
 ## How the IETF works
 
-Call `read_ietf_norms` before characterising *what a WG decided* or *who
-supports what* — it returns a ~50-line guide on consensus, attribution,
-and list-vs-meeting decisions. Not needed for catalogue lookups or text
-fetches; one call per session is enough.
+Call `read_ietf_interpretation_norms` before characterising *what a WG
+decided* or *who supports what* — it returns a ~50-line guide on consensus,
+attribution, and list-vs-meeting decisions. Not needed for catalogue
+lookups or text fetches; one call per session is enough.
+
+When you're helping the user *contribute* — drafting list mail, a GitHub
+issue or comment, or any reply that goes into the record under their name —
+call `read_ietf_participation_norms` first. It covers who's accountable
+(the human sends; you draft), disclosing AI involvement and how closely
+supervised, the register to match, staying on-charter, engaging existing
+work, and where AI help is uncontroversial. Authoring Internet-Drafts is
+out of scope.
 
 ## Anti-patterns
 
