@@ -102,8 +102,8 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   ├── files/                            # the corpus consumers read
 │   │   ├── charter.txt
 │   │   ├── group.md                      # name, status, parent area, Additional Resources
-│   │   ├── digests/                      # index.md issues.md threads.md
-│   │   │                                 # people.md timeline.md citations.md
+│   │   ├── digests/                      # index.md issues.md threads.md people.md
+│   │   │                                 # timeline.md citations.md message_citations.md
 │   │   ├── drafts/                       # draft-*.txt, rfc*.txt
 │   │   ├── meetings/<code>/
 │   │   │   ├── minutes.md
@@ -173,9 +173,12 @@ Key invariants:
   leadership and document-author tables. Threads, issues, and the raw
   github text all render authorship with canonical names.
 - **`digests/*.md` are deterministic, regenerated every gather.**
-  `index`, `issues`, `threads`, `people`, `timeline`, `citations`.
-  Read them via the MCP `read_digest` / `overview` tools, not raw.
-  `citations.md` is the draft → citing-thread/issue cross-reference.
+  `index`, `issues`, `threads`, `people`, `timeline`, `citations`,
+  `message_citations`. Read them via the MCP `read_digest` / `overview`
+  tools, not raw. `citations.md` is the draft → citing-thread/issue
+  cross-reference; `message_citations.md` is the message → message graph
+  (archive-permalink links resolved between gathered messages), read via
+  `find_message_citations`.
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
   activity in the `--months` window.
@@ -443,7 +446,8 @@ job:
   files; numbered globally, mechanical headers de-duplicated),
   `find_replies` (reply tree of one message), `tally_positions`
   (grounded support/oppose/poll count + chair-statements section),
-  `find_citations` (threads citing a draft).
+  `find_citations` (threads citing a draft), `find_message_citations`
+  (the message → message archive-permalink reference graph).
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`,
   `fetch_by_url` (resolves the `w3.org/mid` Archived-At permalinks and
   GitHub issue URLs the corpus actually stores), `read_file_section`.
@@ -911,8 +915,8 @@ people/identity consolidation and affiliations; embeddings chunking and
 faceted search (with a stub model); nearest-neighbour-by-example
 (`find_related`) and MMR diversification (with a keyword stub that can
 actually rank); the MCP tools (`overview`, `read_topic`, `find_replies`,
-`tally_positions`, `find_citations`, search facets,
-`read_file_section` caps); positions/poll heuristics;
+`tally_positions`, `find_citations`, `find_message_citations`, search
+facets, `read_file_section` caps); positions/poll heuristics;
 ballots; citations; meeting clustering; synthetic-WG routing; the
 `--list` and `--completion` CLIs; export mirroring; freshness; PDF
 extraction; transcript context; skill install; the RFC-series

@@ -150,6 +150,48 @@ def test_windowed_chunking_empty_text() -> None:
     assert _chunk_windowed("   \n\n  ", "anything.txt") == []
 
 
+def test_windowed_draft_chunks_carry_datatracker_url() -> None:
+    # A draft's windows all carry the version-agnostic Datatracker doc
+    # URL (the `-03` revision is dropped — a citation points at the doc).
+    text = "\n".join(f"draft line {i}" for i in range(1, 400)) + "\n"
+    chunks = _chunk_windowed(text, "drafts/draft-ietf-httpbis-foo-03.txt")
+    assert chunks
+    assert all(
+        c.url == "https://datatracker.ietf.org/doc/draft-ietf-httpbis-foo/"
+        for c in chunks
+    )
+
+
+def test_windowed_charter_chunks_carry_source_url() -> None:
+    # The charter's `Source:` header line (what gather.charter writes) is
+    # lifted onto every chunk verbatim.
+    text = (
+        "Working Group Charter: httpbis\n"
+        "Source: https://www.ietf.org/charter/charter-ietf-httpbis-09.txt\n"
+        + "=" * 80
+        + "\n\n"
+        + "\n".join(f"charter line {i}" for i in range(1, 200))
+        + "\n"
+    )
+    chunks = _chunk_windowed(text, "charter.txt")
+    assert chunks
+    assert all(
+        c.url == "https://www.ietf.org/charter/charter-ietf-httpbis-09.txt"
+        for c in chunks
+    )
+
+
+def test_windowed_rfc_and_minutes_have_no_url() -> None:
+    # NULL is deliberate: RFC bodies are cited via get_rfc, and minutes /
+    # transcript URLs aren't yet reliably constructible.
+    text = "\n".join(f"line {i}" for i in range(1, 200)) + "\n"
+    assert all(c.url is None for c in _chunk_windowed(text, "drafts/rfc9110.txt"))
+    assert all(
+        c.url is None
+        for c in _chunk_windowed(text, "meetings/ietf125/minutes.md")
+    )
+
+
 def test_chunk_file_dispatches_by_relpath(isolated_home: Path) -> None:
     # Post-reorg: dispatch keys off the relative path (under cache_dir),
     # not the basename. Thread files live in `threads/`, issue files
