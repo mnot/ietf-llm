@@ -1145,7 +1145,7 @@ def _thread_sizes(wg: str) -> Dict[str, Tuple[str, str]]:
     return out
 
 
-# Grounding-footer thresholds — the point past which a thread is too big to
+# Grounding-frame thresholds — the point past which a thread is too big to
 # safely read level-of-support / individual positions off narrative snippets.
 # Deliberately low at 20 msgs / 8 participants: a TLS-sized bar (say 40/15)
 # clears routinely in a busy group but a quiet WG would never reach it, so
