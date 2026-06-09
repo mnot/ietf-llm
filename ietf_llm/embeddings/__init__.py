@@ -32,7 +32,7 @@ from .models import (
     _get_embed_model,
     is_remote_embed_model,
 )
-from .search import Hit, build_index, index_model, search
+from .search import Hit, build_index, index_model, related, search
 from .storage import (
     any_indexed_wg,
     chunk_counts,
@@ -55,6 +55,7 @@ __all__ = [
     "get_messages",
     "index_model",
     "probe_index",
+    "related",
     "search",
     # Used by mcp_server.py for pre-warming
     "_get_embed_model",

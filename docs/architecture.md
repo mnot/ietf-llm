@@ -412,8 +412,13 @@ job:
   "recent activity" sections reuse.
 - **Search:** `search_corpus(query, …)` with `label`/`state`/`author`/
   `role`/`file_pattern`/`since`/`until`/`sort="date"`/`group_by="file"`/
-  `snippet_chars`/`collapse_versions` facets (`collapse_versions`,
-  default on, hides older draft revisions of a matched draft).
+  `snippet_chars`/`collapse_versions`/`diversify` facets
+  (`collapse_versions`, default on, hides older draft revisions of a
+  matched draft; `diversify`, default on, selects the top-k by Maximal
+  Marginal Relevance so the results cover the matching threads/issues
+  instead of clumping on the single most-relevant one — bypassed under
+  `sort="date"`, which must keep adjacent messages, and `group_by="file"`,
+  already one row per file).
   `search_corpora(corpora=[…], query, …)` fans the same search across a
   **bounded, explicit** set of gathered corpora and returns one merged,
   rank-ordered list tagged by corpus — the breadth companion to the
@@ -425,6 +430,18 @@ job:
   (`since`/`until`/`label`/`state`/`author`/`role`/`snippet_chars`/
   `collapse_versions`) but omits the depth-only ones (`sort`, `group_by`,
   `file_pattern`).
+  `find_related(file, chunk_idx, …)` is nearest-neighbour-by-example over
+  the same index: the query vector is an existing chunk's *stored* vector
+  (a split message's fragments averaged into one), not a freshly embedded
+  string — so it needs no embedding backend and answers even when the
+  model can't load. It carries the same candidate-side facets
+  (`file_pattern`/`since`/`until`/`label`/`state`/`group_by`/
+  `snippet_chars`/`diversify`) and excludes the seed from its own results.
+  Its headline use is **cross-surface bridging**: a topic discussed on the
+  mailing list *and* in a GitHub issue sits close in the shared vector
+  space but is otherwise unlinked, so seeding on a thread with
+  `file_pattern="issues/%"` (and `group_by="file"`) surfaces the capturing
+  issue(s), and the reverse finds the list discussion behind an issue.
 - **Narrative:** `read_topic` (full messages, chronological, across
   files; numbered globally, mechanical headers de-duplicated),
   `find_replies` (reply tree of one message), `tally_positions`
@@ -895,10 +912,11 @@ cache files.
 
 Coverage spans: config; the digest builders and `query` filters;
 people/identity consolidation and affiliations; embeddings chunking and
-faceted search (with a stub model); the MCP tools (`overview`,
-`read_topic`, `find_replies`, `tally_positions`, `find_citations`,
-`find_message_citations`, search facets, `read_file_section` caps);
-positions/poll heuristics;
+faceted search (with a stub model); nearest-neighbour-by-example
+(`find_related`) and MMR diversification (with a keyword stub that can
+actually rank); the MCP tools (`overview`, `read_topic`, `find_replies`,
+`tally_positions`, `find_citations`, `find_message_citations`, search
+facets, `read_file_section` caps); positions/poll heuristics;
 ballots; citations; meeting clustering; synthetic-WG routing; the
 `--list` and `--completion` CLIs; export mirroring; freshness; PDF
 extraction; transcript context; skill install; the RFC-series
