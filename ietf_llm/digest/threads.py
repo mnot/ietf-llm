@@ -13,7 +13,7 @@ import os
 from typing import Optional
 
 from ..gather.mail_threads import build_threads, thread_slug
-from ..paths import digest_path, thread_path
+from ..paths import digest_path, remove_stale_digest, thread_path
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, atomic_open, log
 from .summarizer import _Summarizer
@@ -35,6 +35,7 @@ def _build_threads_digest(
     """Build {wg}-_threads.md from the reconstructed thread graph."""
     threads = build_threads(wg, registry=registry)
     if not threads:
+        remove_stale_digest(cache_dir, "threads")
         return None
 
     # Sort by most recent activity.

@@ -88,6 +88,23 @@ def digest_path(cache_dir: str, kind: str) -> str:
     return os.path.join(cache_dir, DIR_DIGESTS, f"{kind}.md")
 
 
+def remove_stale_digest(cache_dir: str, kind: str) -> None:
+    """Delete a pre-existing digest when a re-gather produced no entries.
+
+    Gather overwrites digests file-by-file — there is no `digests/` wipe
+    at gather start — so a writer that returns early without writing
+    would leave the previous run's file in place. A corpus re-gathered
+    with a narrower window (e.g. a shorter `--months`, or GitHub repos
+    removed) would then keep serving a stale digest. Every digest writer
+    that can legitimately produce nothing calls this on its empty path so
+    the reader reports "no digest" instead of stale data. Single-writer
+    under the gather lease, so the existence check has no race.
+    """
+    path = digest_path(cache_dir, kind)
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def drafts_dir(cache_dir: str) -> str:
     return os.path.join(cache_dir, DIR_DRAFTS)
 

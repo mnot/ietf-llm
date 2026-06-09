@@ -158,6 +158,26 @@ def test_write_citations_digest_renders_per_draft_sections(
     assert "threads/a.md" in text
 
 
+def test_write_citations_digest_removes_stale_on_empty(
+    isolated_home: Path,
+) -> None:
+    # Gather overwrites digests file-by-file (no digests/ wipe), so a
+    # re-gather that drops to zero citations must delete the old digest
+    # rather than leave it serving stale edges. Build one, then re-run
+    # the writer with empty input and assert the file is gone and the
+    # tool reports the no-digest message.
+    _seed_thread(isolated_home, "a", "See draft-ietf-foo-bar.")
+    cache = get_wg_file_cache_dir("wg")
+    citations = scan_citations(cache, verbose=Verbosity.QUIET)
+    path = write_citations_digest(cache, citations, verbose=Verbosity.QUIET)
+    assert path is not None and Path(path).is_file()
+    # Re-gather with nothing cited (narrower window / quotes only).
+    assert write_citations_digest(cache, {}, verbose=Verbosity.QUIET) is None
+    assert not Path(path).exists()
+    out = mcp_server.tool_find_citations("wg", "draft-ietf-foo-bar")
+    assert "No citations digest" in out
+
+
 # --- find_citations MCP tool ---------------------------------------------
 
 

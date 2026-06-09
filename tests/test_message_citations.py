@@ -118,6 +118,24 @@ def test_tool_missing_digest_message(isolated_home: Path) -> None:
     assert "No message-citations digest" in out
 
 
+def test_write_digest_removes_stale_on_empty(isolated_home: Path) -> None:
+    # Gather overwrites digests file-by-file (no digests/ wipe), so a
+    # re-gather that drops to zero citations must delete the old digest
+    # rather than leave it serving stale edges. Build one, then re-run
+    # the writer with empty input and assert the file is gone and the
+    # tool reports the no-digest message.
+    write_cache_file(isolated_home, "wg", "threads/2026-01-01-origin.md", _origin())
+    write_cache_file(isolated_home, "wg", "threads/2026-02-01-fork.md", _fork())
+    cache = mcp_server._files_dir("wg")
+    path = write_message_citations_digest(cache, scan_message_citations(cache))
+    assert path is not None and Path(path).is_file()
+    # Re-gather with nothing cited (narrower window / quotes only).
+    assert write_message_citations_digest(cache, []) is None
+    assert not Path(path).exists()
+    out = mcp_server.tool_find_message_citations("wg", "threads/2026-02-01-fork.md", 1)
+    assert "No message-citations digest" in out
+
+
 def test_tool_no_citations_for_file(isolated_home: Path) -> None:
     # Digest exists but the queried file is not in the graph.
     write_cache_file(isolated_home, "wg", "threads/2026-01-01-origin.md", _origin())

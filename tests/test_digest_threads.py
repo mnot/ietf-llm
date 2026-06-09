@@ -28,6 +28,27 @@ def test_no_imap_cache_no_digest(isolated_home: Path) -> None:
     assert all("digests/threads.md" not in p for p in paths)
 
 
+def test_stale_threads_digest_removed_when_cache_emptied(
+    isolated_home: Path,
+) -> None:
+    # A re-gather with a narrower window that drops to zero threads must
+    # delete the old threads.md rather than keep serving stale rows.
+    # Build a digest, empty the IMAP cache, regenerate, assert it's gone.
+    import shutil
+
+    write_eml(
+        isolated_home, "wg", "list", 1, "Cookie partitioning",
+        "Alice <a@x>", "Mon, 01 Jan 2025 10:00:00 +0000",
+    )
+    cache = get_wg_file_cache_dir("wg")
+    generate_digests("wg", cache, summarize_model=None)
+    assert (Path(cache) / "digests/threads.md").exists()
+    # Re-gather found nothing in-window: the IMAP cache is empty.
+    shutil.rmtree(isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg")
+    generate_digests("wg", cache, summarize_model=None)
+    assert not (Path(cache) / "digests/threads.md").exists()
+
+
 def test_imap_cache_at_correct_path_produces_digest(isolated_home: Path) -> None:
     # The regression bug had digest.py looking at the wrong path
     # (<wg>/imap-cache/ instead of imap-cache/<wg>/). This test pins

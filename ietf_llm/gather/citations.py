@@ -36,7 +36,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from ..paths import digest_path, iter_thread_issue_md_files
+from ..paths import digest_path, iter_thread_issue_md_files, remove_stale_digest
 from ..utils import LogLevel, Verbosity, atomic_open, log
 
 
@@ -180,8 +180,14 @@ def write_citations_digest(
     verbose: Verbosity = Verbosity.STATUS,
 ) -> Optional[str]:
     """Render `digests/citations.md`. Returns the path, or None if
-    no citations were found."""
+    no citations were found.
+
+    On empty, drop any digest left by an earlier gather (see
+    `remove_stale_digest`) so `find_citations` reports "no digest"
+    rather than stale citation edges.
+    """
     if not citations:
+        remove_stale_digest(cache_dir, "citations")
         return None
     out_path = digest_path(cache_dir, "citations")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

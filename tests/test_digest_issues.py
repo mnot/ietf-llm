@@ -31,6 +31,29 @@ def test_no_archives_no_digest_written(isolated_home: Path) -> None:
     assert all("digests/issues.md" not in p for p in paths)
 
 
+def test_stale_issues_digest_removed_when_archives_disappear(
+    isolated_home: Path,
+) -> None:
+    # A corpus gathered with GitHub then re-gathered without it (repos
+    # removed / --github off) empties the archives dir. The issues
+    # digest must delete the old issues.md rather than serve stale rows.
+    import shutil
+
+    from ietf_llm.paths import github_dir
+
+    write_github_archive(
+        isolated_home, "wg", "org/repo",
+        [make_issue(1, "Open one", state="open")],
+    )
+    cache = get_wg_file_cache_dir("wg")
+    generate_digests("wg", cache, summarize_model=None)
+    assert (Path(cache) / "digests/issues.md").exists()
+    # Re-gather drops GitHub: the archives dir is gone.
+    shutil.rmtree(github_dir(cache))
+    generate_digests("wg", cache, summarize_model=None)
+    assert not (Path(cache) / "digests/issues.md").exists()
+
+
 def test_lowercase_state_counted_correctly(isolated_home: Path) -> None:
     write_github_archive(
         isolated_home,
