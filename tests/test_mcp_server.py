@@ -787,6 +787,90 @@ def test_fetch_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
     assert "the message body to resolve" in out
 
 
+def test_fetch_by_url_normalises_body_footnote_spelling(
+    isolated_home: Path,
+) -> None:
+    # Regression: the Archived-At line is stored without a trailing slash,
+    # but a message body cites the mailman permalink *with* one (and a mail
+    # client may also vary scheme / www). Those incidental differences must
+    # not make a gathered message read as "not in the corpus".
+    stored = "https://mailarchive.ietf.org/arch/msg/wg/AbC123_tok"
+    write_cache_file(
+        isolated_home, "wg", "threads/2026-01-01-t.md",
+        (
+            "# Thread\n\n## Messages\n\n"
+            "### [1] 2026-01-01 10:00 — Alice\n\n"
+            "_Subject:_ Hello\n"
+            f"_Archived-At:_ {stored}\n\n"
+            "the footnote target body.\n"
+        ),
+    )
+    from test_search_filters import _build_with_stub  # noqa: F401
+
+    _build_with_stub("wg", isolated_home)
+    # Each is the same message spelled differently from what's stored.
+    for variant in (
+        stored + "/",  # trailing slash (the reported failure)
+        stored.replace("https://", "http://"),  # scheme
+        stored.replace("mailarchive", "www.mailarchive"),  # leading www.
+        f"<{stored}>",  # angle-bracket wrapped
+        stored + "#anchor",  # trailing fragment
+    ):
+        out = mcp_server.tool_fetch_by_url("wg", variant)
+        assert "the footnote target body" in out, variant
+
+
+def test_find_chunks_by_url_tolerates_legacy_schemas(isolated_home: Path) -> None:
+    # A read-only open can't migrate, so find_chunks_by_url must not crash
+    # on an index that predates the `sub_idx` (v8) or `url` (v6) columns.
+    # The UNIQUE(...sub_idx) constraint blocks DROP COLUMN, so hand-seed
+    # minimal legacy tables that exercise each guard directly.
+    import os
+    import sqlite3
+
+    from ietf_llm.embeddings import storage
+
+    url = "https://mailarchive.ietf.org/arch/msg/wg/tok"
+
+    def _seed(*, with_url: bool, with_sub_idx: bool) -> None:
+        path = storage._db_path("wg")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            os.remove(path)
+        cols = ["id INTEGER PRIMARY KEY", "file TEXT", "chunk_idx INTEGER"]
+        fields = ["file", "chunk_idx"]
+        values: list = ["threads/t.md", 1]
+        if with_sub_idx:
+            cols.append("sub_idx INTEGER DEFAULT 0")
+            fields.append("sub_idx")
+            values.append(0)
+        cols += ["title TEXT", "text TEXT", "start_line INTEGER", "end_line INTEGER"]
+        fields += ["title", "text", "start_line", "end_line"]
+        values += ["T", "body", 1, 9]
+        if with_url:
+            cols.append("url TEXT")
+            fields.append("url")
+            values.append(url)
+        conn = sqlite3.connect(path)
+        conn.execute(f"CREATE TABLE chunks ({', '.join(cols)})")
+        placeholders = ",".join("?" * len(values))
+        conn.execute(
+            f"INSERT INTO chunks ({', '.join(fields)}) VALUES ({placeholders})",
+            values,
+        )
+        conn.commit()
+        conn.close()
+
+    # pre-v8: url present, sub_idx absent → still resolves (clause skipped),
+    # and a trailing-slash variant normalises too.
+    _seed(with_url=True, with_sub_idx=False)
+    assert storage.find_chunks_by_url("wg", url + "/")
+
+    # pre-v6: no url column at all → graceful empty, not OperationalError.
+    _seed(with_url=False, with_sub_idx=False)
+    assert storage.find_chunks_by_url("wg", url) == []
+
+
 def test_fetch_by_url_returns_helpful_miss_message(
     isolated_home: Path,
 ) -> None:

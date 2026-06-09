@@ -146,6 +146,7 @@ caveats are in each tool's docstring):
 | read one thread end-to-end (no query) | `read_file_section(corpus, "threads/<file>.md")` |
 | literal draft text | `read_file_section(corpus, "drafts/<draft>-NN.txt")` — read the draft, don't reconstruct it from the list |
 | threads citing draft X | `find_citations(corpus, "draft-…")` |
+| an archive URL in a body / footnote → the message behind it | `fetch_by_url(corpus, "<url>")` — resolves a list permalink (`mailarchive.ietf.org/arch/msg/…` or `www.w3.org/mid/…`) to the cached message; try it before concluding something "isn't in the corpus" |
 | IESG ballot / why not published | `read_file_section(corpus, "ballots/<doc>.md")` or `read_digest("timeline", event_kind="ballot")` — a DISCUSS holds publication |
 | replies to a specific message | `find_replies(corpus, file, chunk_idx)` |
 | level of support / who +1'd / did the chair call consensus | `tally_positions(corpus, "<thread or issue file>")` |
@@ -160,6 +161,17 @@ for procedural declarations (consensus call, WGLC, closure). Prefer the
 chair's own message over any summary — including `tally_positions`' count,
 which is a heuristic. Call `read_ietf_norms` before characterising what was
 decided.
+
+## Citing
+
+When you quote or rely on a message or issue, cite it with the URL the
+read tools hand you: `search_corpus` and `read_topic` print `url:` /
+`_url:_` on each hit, and `fetch_by_url` echoes it. Surface that URL —
+the `mailarchive.ietf.org` / `www.w3.org/mid` permalink for a message,
+the `github.com/…/issues/N` link for an issue — rather than only a
+`file` / `chunk_idx`, which means nothing outside this corpus. Don't
+hand-build the URL from a Message-ID or issue number; use the one
+stamped on the chunk.
 
 ## Catalogue digests: `read_digest`
 
