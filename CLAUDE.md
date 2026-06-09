@@ -29,7 +29,7 @@ the hard way.
 - **Gotcha:** `git commit -m "$(cat <<'EOF' … EOF)"` breaks on an
   apostrophe in the body (`corpus's`, `typo'd`, `WG's`) — shell reports
   "unexpected EOF". Reword to avoid apostrophes, or commit another way.
-- One feature per commit; commit/branch only when asked.
+- One feature per commit; PR only when asked.
 
 ## PR checklist (walk this before opening a PR)
 
@@ -47,6 +47,10 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
 - **Concurrency.** Cloud is multi-host: any new shared state needs a
   CAS/lease story (no SQL, no transaction — `get` + conditional `put`). Local
   is single-process — don't assume that on cloud.
+- **Efficiency.** Too much time waiting for a result (or a gather) will
+  lose us users.
+- **Source burden.** We need to be friendly to our back-end services: datatracker,
+  GitHub, etc.
 - **Read-only boundary.** Read tools stay read-only and offline. New
   network/write code belongs only on the gather path (or the opt-in
   `start_gather` / `gather_status` tools). Don't materialise a cache from a
