@@ -50,6 +50,7 @@ def stage_plan(args: argparse.Namespace, group_backed: bool) -> List[str]:
         "issue files",
         "thread files",
         "citations",
+        "message citations",
         "people",
         "timeline",
         "digests",

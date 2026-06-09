@@ -25,8 +25,9 @@ minutes / GitHub issues — far cheaper than one HTTP request per message.
 **Loading the tools.** If your client loads MCP tools lazily, load the
 core set in one search rather than one at a time: `overview`,
 `read_digest`, `search_corpus`, `search_corpora`, `read_topic`,
-`tally_positions`, `find_replies`, `find_citations`, `list_corpora`,
-`list_labels`, `list_files`, `find_efforts`.
+`tally_positions`, `find_replies`, `find_citations`,
+`find_message_citations`, `list_corpora`, `list_labels`, `list_files`,
+`find_efforts`.
 
 ## Gathering a missing corpus
 
@@ -147,6 +148,7 @@ caveats are in each tool's docstring):
 | literal draft text | `read_file_section(corpus, "drafts/<draft>-NN.txt")` — read the draft, don't reconstruct it from the list |
 | threads citing draft X | `find_citations(corpus, "draft-…")` |
 | an archive URL in a body / footnote → the message behind it | `fetch_by_url(corpus, "<url>")` — resolves a list permalink (`mailarchive.ietf.org/arch/msg/…` or `www.w3.org/mid/…`) to the cached message; try it before concluding something "isn't in the corpus" |
+| who cites this message / what an archive-URL footnote points to / trace a split thread or appeal to its origin | `find_message_citations(corpus, file, chunk_idx?)` — inbound + outbound archive-permalink links between gathered messages |
 | IESG ballot / why not published | `read_file_section(corpus, "ballots/<doc>.md")` or `read_digest("timeline", event_kind="ballot")` — a DISCUSS holds publication |
 | replies to a specific message | `find_replies(corpus, file, chunk_idx)` |
 | level of support / who +1'd / did the chair call consensus | `tally_positions(corpus, "<thread or issue file>")` |

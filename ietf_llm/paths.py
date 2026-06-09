@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Iterator, Optional, Tuple
 
 # Top-level subdirectories under <wg>/files/.
 DIR_DIGESTS = "digests"
@@ -113,6 +113,22 @@ def issue_repo_dir(cache_dir: str, repo: str) -> str:
 
 def issue_path(cache_dir: str, repo: str, number: Any) -> str:
     return os.path.join(issue_repo_dir(cache_dir, repo), f"{number}.md")
+
+
+def iter_thread_issue_md_files(cache_dir: str) -> Iterator[Tuple[str, str]]:
+    """Yield `(abs_path, relpath)` for every `.md` under `threads/` and
+    `issues/`, in stable (sorted) order. The shared walk behind the
+    body-scanning passes (`gather.citations`, `gather.message_citations`)
+    so they don't each reimplement it."""
+    for root_dir in (threads_dir(cache_dir), issues_dir(cache_dir)):
+        if not os.path.isdir(root_dir):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root_dir):
+            for name in sorted(filenames):
+                if not name.endswith(".md"):
+                    continue
+                path = os.path.join(dirpath, name)
+                yield path, os.path.relpath(path, cache_dir)
 
 
 def meetings_dir(cache_dir: str) -> str:

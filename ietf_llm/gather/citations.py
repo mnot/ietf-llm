@@ -36,7 +36,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from ..paths import digest_path, issues_dir, threads_dir
+from ..paths import digest_path, iter_thread_issue_md_files
 from ..utils import LogLevel, Verbosity, atomic_open, log
 
 
@@ -157,18 +157,10 @@ def scan_citations(
     """
     out: Dict[str, List[Citation]] = {}
     n_files = 0
-    for root_dir in (threads_dir(cache_dir), issues_dir(cache_dir)):
-        if not os.path.isdir(root_dir):
-            continue
-        for dirpath, _dirnames, filenames in os.walk(root_dir):
-            for name in sorted(filenames):
-                if not name.endswith(".md"):
-                    continue
-                path = os.path.join(dirpath, name)
-                relpath = os.path.relpath(path, cache_dir)
-                n_files += 1
-                for draft, citation in _scan_file(path, relpath):
-                    out.setdefault(draft, []).append(citation)
+    for path, relpath in iter_thread_issue_md_files(cache_dir):
+        n_files += 1
+        for draft, citation in _scan_file(path, relpath):
+            out.setdefault(draft, []).append(citation)
     # Sort each draft's citations by file then chunk_idx for stable
     # output across gathers.
     for entries in out.values():

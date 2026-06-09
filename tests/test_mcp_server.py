@@ -180,6 +180,9 @@ def _nonexistent_corpus_calls(nx: str):
         "tally_positions": lambda: mcp_server.tool_tally_positions(nx, "threads/x.md"),
         "find_replies": lambda: mcp_server.tool_find_replies(nx, "threads/x.md", 1),
         "find_citations": lambda: mcp_server.tool_find_citations(nx, "draft-x"),
+        "find_message_citations": lambda: mcp_server.tool_find_message_citations(
+            nx, "threads/x.md"
+        ),
         "get_chunk": lambda: mcp_server.tool_get_chunk(nx, "threads/x.md", 1),
         "get_chunks_batch": lambda: mcp_server.tool_get_chunks_batch(
             nx, [{"file": "threads/x.md", "chunk_idx": 1}]

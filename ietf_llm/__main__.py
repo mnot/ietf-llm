@@ -51,6 +51,7 @@ from .gather.issue_files import write_issue_files
 from .gather.mail_threads import write_thread_files
 from .gather.mbox import sync_mailing_list, validate_list_names
 from .gather.meetings import process_meetings
+from .gather.message_citations import build_message_citations
 from .gather.pdf_extract import extract_all_pdfs
 from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
 from .gather.repo_discovery import autotrack_github, print_discovery
@@ -932,6 +933,10 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # consumes the in-memory map further in the gather pipeline. Kept
     # imported so a future caller can compute it without re-scanning.
     _ = citation_counts
+    # Message-level analogue: resolve archive-permalink URLs in bodies to
+    # the gathered message → message_citations.md (same prerequisites).
+    tracker.begin("message citations")
+    build_message_citations(cache_dir, verbose=verbosity)
 
     # People digest
     tracker.begin("people")
