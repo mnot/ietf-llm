@@ -1476,6 +1476,7 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
     group_by: Optional[str] = None,
     snippet_chars: Optional[int] = None,
     diversify: bool = True,
+    collapse_versions: bool = True,
 ) -> str:
     for field, value in (("since", since), ("until", until)):
         date_error = _invalid_date_message(value, field)
@@ -1489,9 +1490,11 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
         chunk_idx = int(chunk_idx)
     except (TypeError, ValueError):
         return f"(invalid chunk_idx {chunk_idx!r} — must be an integer)"
-    # `group_by="file"` rolls up per file, so over-fetch to keep enough
-    # material to reach `k` distinct files (mirrors tool_search).
-    fetch_k = max(k * 4, 20) if group_by == "file" else k
+    # Over-fetch when we will thin the results — `group_by="file"` rolls up
+    # per file, and `collapse_versions` drops older draft revs — so the
+    # final list still reaches `k` distinct items (mirrors tool_search).
+    over_fetch = group_by == "file" or collapse_versions
+    fetch_k = max(k * 4, 20) if over_fetch else k
     hits = related(
         wg,
         file,
@@ -1515,7 +1518,18 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
             "has not been run"
         )
         return _with_freshness(wg, f"(no related chunks — {no_index})")
-    return _with_freshness(wg, _render_hits(hits, k, group_by))
+    dropped = 0
+    if collapse_versions:
+        hits, dropped = _collapse_draft_versions(hits)
+    note = ""
+    if dropped:
+        note = (
+            f"\n_{dropped} older draft revision(s) hidden — the latest "
+            "matching revision is shown. Pass `collapse_versions=False`, or "
+            "a versioned `file_pattern` (e.g. `drafts/%-04.txt`), for older "
+            "revisions._"
+        )
+    return _with_freshness(wg, _render_hits(hits, k, group_by) + note)
 
 
 #: Upper bound on how many corpora one `search_corpora` call will fan
@@ -3067,6 +3081,7 @@ def main() -> None:
         group_by: Optional[str] = None,
         snippet_chars: Optional[int] = None,
         diversify: bool = True,
+        collapse_versions: bool = True,
     ) -> str:
         """Find the chunks most similar to one you already have — a
         nearest-neighbour-by-example search over the same index
@@ -3090,10 +3105,14 @@ def main() -> None:
         for the list discussion behind it.
 
         Facets (`file_pattern`, `since`/`until`, `label`, `state`,
-        `group_by`, `snippet_chars`, `diversify`) behave as in
-        `search_corpus`. Unlike `search_corpus` this needs no query
-        embedding — it reads the seed's stored vector — so it answers
-        even when the embedding backend is unavailable.
+        `group_by`, `snippet_chars`, `diversify`, `collapse_versions`)
+        behave as in `search_corpus`. `collapse_versions=True` (the
+        default) matters when the seed is near a draft: it hides older
+        revisions of a draft when a newer one also matched, so a query
+        doesn't return `-01`/`-02`/`-03` of the same draft as separate
+        hits. Unlike `search_corpus` this needs no query embedding — it
+        reads the seed's stored vector — so it answers even when the
+        embedding backend is unavailable.
 
         `chunk_idx` is the 0-based index shown in search hits
         (`chunk=N`). Use `list_files` to see how many chunks a file has.
@@ -3112,6 +3131,7 @@ def main() -> None:
             group_by=group_by,
             snippet_chars=snippet_chars,
             diversify=diversify,
+            collapse_versions=collapse_versions,
         )
 
     @server.tool()

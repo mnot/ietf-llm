@@ -160,3 +160,34 @@ def test_tool_find_related_missing_chunk_message(isolated_home: Path) -> None:
     _build_with_keyword_stub("wg")
     out = mcp_server.tool_find_related("wg", "threads/2025-01-01-topic.md", 999)
     assert "no related chunks" in out
+
+
+def test_tool_find_related_collapses_draft_versions(isolated_home: Path) -> None:
+    # Seeding near content shared by several revisions of one draft would
+    # otherwise return -01/-02/-03 as separate hits. collapse_versions
+    # (default on, as in search_corpus) keeps only the newest that matched.
+    from ietf_llm import mcp_server
+
+    write_cache_file(
+        isolated_home, "wg", "threads/2025-01-01-topic.md",
+        "# Topic\n\n## Messages\n\n### [1] 2025-01-01 10:00 — Alice\n\nalpha bravo body\n",
+    )
+    write_cache_file(
+        isolated_home, "wg", "drafts/draft-ietf-wg-foo-01.txt",
+        "alpha bravo draft text " * 20,
+    )
+    write_cache_file(
+        isolated_home, "wg", "drafts/draft-ietf-wg-foo-02.txt",
+        "alpha bravo draft text " * 20,
+    )
+    _build_with_keyword_stub("wg")
+    seed = ("wg", "threads/2025-01-01-topic.md", 1)
+    # Default: older -01 hidden, newest -02 kept, with the note.
+    out = mcp_server.tool_find_related(*seed, k=10)
+    assert "draft-ietf-wg-foo-02.txt" in out
+    assert "draft-ietf-wg-foo-01.txt" not in out
+    assert "older draft revision" in out
+    # Opt out: both revisions come back.
+    out2 = mcp_server.tool_find_related(*seed, k=10, collapse_versions=False)
+    assert "draft-ietf-wg-foo-01.txt" in out2
+    assert "draft-ietf-wg-foo-02.txt" in out2
