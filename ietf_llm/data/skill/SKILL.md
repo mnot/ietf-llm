@@ -153,7 +153,7 @@ caveats are in each tool's docstring):
 | who cites this message / what an archive-URL footnote points to / trace a split thread or appeal to its origin | `find_message_citations(corpus, file, chunk_idx?)` — inbound + outbound archive-permalink links between gathered messages |
 | IESG ballot / why not published | `read_file_section(corpus, "ballots/<doc>.md")` or `read_digest("timeline", event_kind="ballot")` — a DISCUSS holds publication |
 | replies to a specific message | `find_replies(corpus, file, chunk_idx)` |
-| level of support / who +1'd / did the chair call consensus | `tally_positions(corpus, "<thread or issue file>")` |
+| did the chair call consensus / what was decided | `read_ietf_interpretation_norms` **first**, then the chair's own words (`role="Chair"`, `state="closed"`) + the **Chair statements** section of `tally_positions(corpus, "<thread or issue file>")` — its +1/-1 count is a keyword heuristic, *not* a measure of support |
 
 **The judgment that overrides tool choice — "what did the WG decide / what's
 the position on X?"** The outcome is whatever the **chairs declared**: this
@@ -163,8 +163,15 @@ or your own read of the thread. Filter to chair messages
 (`state="closed"`), and use `tally_positions`' **Chair statements** section
 for procedural declarations (consensus call, WGLC, closure). Prefer the
 chair's own message over any summary — including `tally_positions`' count,
-which is a heuristic. Call `read_ietf_interpretation_norms` before
-characterising what was decided.
+which is a keyword heuristic, not sentiment analysis: it cannot measure level
+of support, so never quote it as one. A narrative read — `search_corpus` /
+`read_topic` snippets — shows what was *said*, not what was *decided*, and is
+**not** sufficient evidence for a position or consensus claim. The moment you
+are about to write "the WG supported / opposed X", "the chair called
+consensus", "X was decided", or "<person> objected", stop: call
+`read_ietf_interpretation_norms` first, then ground the claim in the chair's
+actual declaration (or, for an individual, that person's own message via
+`author=`).
 
 ## Citing
 
