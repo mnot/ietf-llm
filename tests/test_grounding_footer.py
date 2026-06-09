@@ -75,6 +75,17 @@ def test_footer_picks_largest_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "threads/b.md" in out and "400 msgs" in out
 
 
+def test_footer_tolerates_unparseable_size_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A malformed digest row (non-numeric Msgs/Participants) parses to 0 via
+    # _first_int and falls below threshold rather than crashing.
+    monkeypatch.setattr(
+        mcp_server,
+        "_thread_sizes",
+        lambda wg: {"threads/junk.md": ("(no subject)", "Selection, Config...")},
+    )
+    assert mcp_server._grounding_footer("wg", [_Hit("threads/junk.md")]) == ""
+
+
 # --- integration through tool_search ---------------------------------------
 
 
@@ -144,6 +155,16 @@ def test_tool_search_no_footer_for_small_thread(isolated_home: Path) -> None:
     )
     _build_with_stub("wg")
     assert "_Grounding:" not in mcp_server.tool_search("wg", "ML-DSA", k=10)
+
+
+def test_tool_search_footer_survives_group_by_file(isolated_home: Path) -> None:
+    # group_by="file" collapses _render_hits to file rows; the footer is
+    # appended independently and must still fire for the big thread.
+    _seed_big_thread(isolated_home)
+    _build_with_stub("wg")
+    out = mcp_server.tool_search("wg", "ML-DSA", k=10, group_by="file")
+    assert "_Grounding:" in out
+    assert "325 msgs, 62 participants" in out
 
 
 def test_find_related_has_no_grounding_footer(isolated_home: Path) -> None:

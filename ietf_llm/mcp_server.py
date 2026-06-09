@@ -1147,9 +1147,10 @@ def _thread_sizes(wg: str) -> Dict[str, Tuple[str, str]]:
 
 # Grounding-footer thresholds — the point past which a thread is too big to
 # safely read level-of-support / individual positions off narrative snippets.
-# Deliberately low (a busy group like TLS would clear 40/15 routinely, but a
-# quiet WG never would) so the nudge fires across the range of groups while
-# staying quiet on a routine short thread.
+# Deliberately low at 20 msgs / 8 participants: a TLS-sized bar (say 40/15)
+# clears routinely in a busy group but a quiet WG would never reach it, so
+# these lower values are what make the nudge fire across the range of groups
+# while still staying quiet on a routine short thread.
 _GROUNDING_MIN_MSGS = 20
 _GROUNDING_MIN_PARTICIPANTS = 8
 
@@ -1172,8 +1173,12 @@ def _grounding_footer(wg: str, hits: List[Any]) -> str:
     sizes = _thread_sizes(wg)
     if not sizes:
         return ""
+    # We scan the chunk-level hits the caller is about to see. In
+    # `group_by="file"` mode `_render_hits` collapses to file rows, so the
+    # named thread may not be one of the displayed rows — harmless, the
+    # grounding pointer is valid for the result set either way.
     seen: set[str] = set()
-    best: Optional[Tuple[int, int, str]] = None  # (msgs, participants, file)
+    best: Optional[Tuple[int, str]] = None  # (participants, file)
     best_msgs = -1
     for hit in hits:
         file = getattr(hit, "file", "")
@@ -1186,10 +1191,11 @@ def _grounding_footer(wg: str, hits: List[Any]) -> str:
             continue
         if msgs > best_msgs:
             best_msgs = msgs
-            best = (msgs, parts, file)
+            best = (parts, file)
     if best is None:
         return ""
-    msgs, parts, file = best
+    parts, file = best
+    msgs = best_msgs
     return (
         f"\n_Grounding: `{file}` has {msgs} msgs, {parts} participants — too "
         "large to characterise from snippets. What was *said* in narrative is "
