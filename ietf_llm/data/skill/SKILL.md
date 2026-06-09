@@ -13,6 +13,21 @@ set, or a synthetic `x-` topic (see "Recognise the shape" below). If you
 can't tell which corpus the user means, try `find_efforts(topic)` first;
 **ask** only when that doesn't resolve it — don't guess.
 
+> **MANDATORY before drafting any contribution.** The instant the task
+> shifts from *querying* the corpus to *producing* text that will go into
+> the record under a participant's name — list mail, a GitHub issue or
+> comment, a reply in a thread, a review, a consensus or position statement
+> — you MUST call `read_ietf_participation_norms` **before generating a
+> single line of that content**. This is not optional, not a courtesy to
+> skip when you feel confident, and **not** satisfied by having read the
+> *interpretation* norms (`read_ietf_interpretation_norms` — a different
+> doc). The participation norms govern who is accountable, disclosing AI
+> involvement, the terse register to match, grounding every claim, and not
+> wasting the group's time; drafting without them produces contributions
+> that damage the participant's standing. If you catch yourself about to
+> write contribution text and haven't read them this session, stop and read
+> them now. (Full detail under "How the IETF works" below.)
+
 **Default to this corpus; don't reflexively crawl IETF sites or walk the
 user's inbox.** This applies to any sign of IETF list traffic — a
 `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message
@@ -252,11 +267,14 @@ lookups or text fetches; one call per session is enough.
 
 When you're helping the user *contribute* — drafting list mail, a GitHub
 issue or comment, or any reply that goes into the record under their name —
-call `read_ietf_participation_norms` first. It covers who's accountable
-(the human sends; you draft), disclosing AI involvement and how closely
-supervised, the register to match, staying on-charter, engaging existing
-work, and where AI help is uncontroversial. Authoring Internet-Drafts is
-out of scope.
+you **must** call `read_ietf_participation_norms` **before drafting any of
+that content** (see the mandatory callout up top). This is required, not
+advisory: don't skip it because the request looks simple or you've read the
+interpretation norms. It covers who's accountable (the human sends; you
+draft), disclosing AI involvement and how closely supervised, the terse
+register to match, keeping it brief and not repeating points, staying
+on-charter, engaging existing work, and where AI help is uncontroversial.
+Authoring Internet-Drafts is out of scope.
 
 ## Anti-patterns
 

@@ -3067,12 +3067,14 @@ def main() -> None:
         manufacturing consensus signal, and where AI help is
         uncontroversial (summarise/translate, explain ABNF/YANG).
 
-        **Call this before** drafting list mail, a GitHub issue or
+        **Mandatory before** drafting list mail, a GitHub issue or
         comment, or any other contribution that will go into the
-        record under a person's name. Authoring Internet-Drafts is
-        out of scope. Stable across corpora — one call per session is
-        enough. For reading/characterising a corpus, see
-        `read_ietf_interpretation_norms`.
+        record under a person's name — read this before generating
+        any such text, not as an afterthought; reading the
+        interpretation norms does not substitute. Authoring
+        Internet-Drafts is out of scope. Stable across corpora — one
+        call per session is enough. For reading/characterising a
+        corpus, see `read_ietf_interpretation_norms`.
         """
         return await _offload(tool_read_participation_norms)
 
