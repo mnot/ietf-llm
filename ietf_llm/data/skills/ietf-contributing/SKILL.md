@@ -1,6 +1,6 @@
 ---
 name: ietf-contributing
-description: Norms for contributing to an IETF/IRTF effort. Use BEFORE drafting or writing any text that will go into the record under a participant's name — list mail, a reply in a thread, a GitHub issue or comment, a review, or a consensus/position statement. Covers the human is accountable and sends (you only draft), disclosing AI involvement and how closely supervised, matching the terse technical register, grounding every claim, staying on-charter, engaging existing work rather than dropping new ideas cold, and not re-litigating settled questions or manufacturing consensus signal. Authoring Internet-Drafts is out of scope. For reading or characterising a corpus, use ietf-interpreting instead.
+description: Norms for contributing to an IETF/IRTF effort. Use BEFORE drafting or writing any text that will go into the record under a participant's name — list mail, a reply in a thread, a GitHub issue or comment, a review, or a consensus/position statement. Covers the human is accountable and sends (you only draft), disclosing AI involvement and how closely supervised, matching the terse technical register, grounding every claim, staying on-charter, engaging existing work rather than dropping new ideas cold, and not re-litigating settled questions or manufacturing consensus signal. Authoring Internet-Drafts is out of scope. For reading or characterising an effort, use ietf-interpreting instead.
 ---
 
 # Participating in an IETF effort
