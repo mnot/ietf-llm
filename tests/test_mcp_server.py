@@ -1044,9 +1044,10 @@ def test_read_ietf_interpretation_norms_returns_bundled_doc() -> None:
     # (frontmatter stripped). The load-bearing phrases must survive so
     # callers that pull the doc get the same guidance.
     out = mcp_server.tool_read_interpretation_norms()
-    assert "Consensus is chair-declared" in out
-    assert "Decisions happen on the mailing list" in out
-    assert "Individuals, not employers" in out
+    assert "chair-declared" in out
+    assert "aggregate, don't attribute" in out
+    assert "Unadopted drafts have no IETF status" in out
+    assert "Independent Stream" in out
     # The skill's YAML frontmatter must not leak to MCP clients.
     assert not out.lstrip().startswith("---")
     assert "description:" not in out

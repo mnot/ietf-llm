@@ -5,12 +5,10 @@ description: Norms for contributing to an IETF/IRTF effort. Use BEFORE drafting 
 
 # Participating in an IETF effort
 
-Norms for *participating* in an IETF effort -- helping a human draft list
-mail, GitHub issues and comments, or other discussion contributions.
-Companion to the reading norms in the `ietf-interpreting` skill (also the
-`read_ietf_interpretation_norms` MCP tool, where the server is connected),
-which cover how to *interpret* a corpus. Authoring Internet-Drafts is out
-of scope.
+Helping a human draft list mail, GitHub issues/comments, or other discussion
+contributions. Companion to the `ietf-interpreting` skill — reading the record
+(also the `read_ietf_interpretation_norms` MCP tool, where the server is
+connected). Authoring Internet-Drafts is out of scope.
 
 ## You draft; the human sends
 
@@ -127,25 +125,19 @@ round: if a call genuinely looks wrong, the move is to raise it with them
 plainly, and there's a formal appeal path when that doesn't resolve it.
 Neither is something to reach for on reflex.
 
-## Don't repeat yourself
+## Volume is not persuasive
 
-A point made once is on the record; making it again -- restating it in a
-new message, or pressing it after the group has already heard it -- adds no
-weight and actively hurts. Volume is not persuasive: it wastes everyone's
-time and *will* build bad will. So don't re-assert a position the thread
-has already absorbed, and don't feel obliged to answer every point in a
-message point-by-point -- if you have nothing substantial to add, add
-nothing. Facts and information are weighed far more heavily than opinion,
-so a reply that only re-states a view earns nothing and costs goodwill.
-Before drafting a response, check whether the point is already made; if it
-is, the right contribution is often silence.
+A point made once is on the record; restating it, pressing it after the group
+has heard it, or answering a message point-by-point adds no weight and costs
+goodwill. Facts and information are weighed far above opinion, so a reply that
+only re-states a view earns nothing. Don't re-assert a position the thread has
+already absorbed, and if you have nothing substantial to add, add nothing.
 
-## Don't manufacture consensus signal
-
-Consensus is chair-declared on the substance of arguments, not counted
-(the `ietf-interpreting` skill spells this out). So generating a flurry of
-"+1 / I support this"
-messages is worse than useless: it's noise that distorts what the chairs
-are weighing, and experienced participants recognise it for what it is.
-One well-reasoned message carries more than ten echoes of it. Never
-produce volume to simulate support -- on either side of a question.
+And don't manufacture *consensus* signal: consensus is chair-declared on the
+substance of arguments, not counted (the `ietf-interpreting` skill spells this
+out), so a flurry of "+1 / I support this" messages is worse than useless --
+noise that distorts what the chairs weigh, and experienced participants
+recognise it for what it is. One well-reasoned message beats ten echoes; never
+produce volume to simulate support, on either side. Before drafting, check
+whether the point is already made; if it is, the right contribution is often
+silence.
