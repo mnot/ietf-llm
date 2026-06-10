@@ -6,9 +6,8 @@ description: Norms for contributing to an IETF/IRTF effort. Use BEFORE drafting 
 # Participating in an IETF effort
 
 Helping a human draft list mail, GitHub issues/comments, or other discussion
-contributions. Companion to the `ietf-interpreting` skill — reading the record
-(also the `read_ietf_interpretation_norms` MCP tool, where the server is
-connected). Authoring Internet-Drafts is out of scope.
+contributions. Companion to the `ietf-interpreting` skill — reading the record.
+Authoring Internet-Drafts is out of scope.
 
 ## You draft; the human sends
 
