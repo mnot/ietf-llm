@@ -12,7 +12,8 @@ decided, resolved, agreed, or rejected, that there is consensus, or what
 "the WG thinks/wants" — you should have read these norms. Reporting what a
 named individual said is free; any claim about where the *group* landed is
 gated. For the write side — helping a human draft list mail, issues, or
-comments — see `read_ietf_participation_norms` (PARTICIPATING.md).
+comments — see the `ietf-contributing` skill (the same norms are also the
+`read_ietf_participation_norms` MCP tool, where the server is connected).
 
 This is not enforced. Nothing stops you from skipping it; the point is to
 make the skip something you have to choose, not something that feels like

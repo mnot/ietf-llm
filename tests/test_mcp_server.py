@@ -1047,6 +1047,14 @@ def test_read_ietf_interpretation_norms_returns_bundled_doc() -> None:
     assert "Consensus is chair-declared" in out
     assert "Decisions happen on the mailing list" in out
     assert "Individuals, not employers" in out
+    # The skill's YAML frontmatter must not leak to MCP clients.
+    assert not out.lstrip().startswith("---")
+    assert "description:" not in out
+    # These skills install into harnesses where the old norms files don't
+    # exist — cross-refs must point at the sibling skill, not IETF.md /
+    # PARTICIPATING.md.
+    assert "IETF.md" not in out
+    assert "PARTICIPATING.md" not in out
 
 
 def test_read_ietf_participation_norms_returns_bundled_doc() -> None:
@@ -1057,4 +1065,9 @@ def test_read_ietf_participation_norms_returns_bundled_doc() -> None:
     assert "You draft; the human sends" in out
     assert "Say it's AI-generated" in out
     assert "Engage with the group's existing work" in out
+    # The skill's YAML frontmatter must not leak to MCP clients.
+    assert not out.lstrip().startswith("---")
+    assert "description:" not in out
+    assert "IETF.md" not in out
+    assert "PARTICIPATING.md" not in out
     assert "Where AI help is uncontroversial" in out

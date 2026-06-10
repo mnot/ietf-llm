@@ -7,9 +7,10 @@ description: Norms for contributing to an IETF/IRTF effort. Use BEFORE drafting 
 
 Norms for *participating* in an IETF effort -- helping a human draft list
 mail, GitHub issues and comments, or other discussion contributions.
-Companion to the reading norms in IETF.md
-(`read_ietf_interpretation_norms`), which cover how to *interpret* a
-corpus. Authoring Internet-Drafts is out of scope.
+Companion to the reading norms in the `ietf-interpreting` skill (also the
+`read_ietf_interpretation_norms` MCP tool, where the server is connected),
+which cover how to *interpret* a corpus. Authoring Internet-Drafts is out
+of scope.
 
 ## You draft; the human sends
 
@@ -67,8 +68,8 @@ When you draft a technical argument, anchor it in the record: the specific
 draft section, the RFC, the earlier list message. Don't invent references,
 don't soften "I'm not sure" into false confidence, and don't paraphrase
 someone's position into something they didn't say -- the attribution rules
-in IETF.md (individuals, not employers; don't fabricate identity links)
-apply when you're writing *to* the group too. A confident, wrong citation
+in the `ietf-interpreting` skill (individuals, not employers; don't fabricate
+identity links) apply when you're writing *to* the group too. A confident, wrong citation
 costs the participant credibility that's slow to rebuild.
 
 ## Match the register: terse and technical
@@ -142,7 +143,8 @@ is, the right contribution is often silence.
 ## Don't manufacture consensus signal
 
 Consensus is chair-declared on the substance of arguments, not counted
-(IETF.md spells this out). So generating a flurry of "+1 / I support this"
+(the `ietf-interpreting` skill spells this out). So generating a flurry of
+"+1 / I support this"
 messages is worse than useless: it's noise that distorts what the chairs
 are weighing, and experienced participants recognise it for what it is.
 One well-reasoned message carries more than ten echoes of it. Never
