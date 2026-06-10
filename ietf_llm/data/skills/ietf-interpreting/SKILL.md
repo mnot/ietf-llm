@@ -45,12 +45,9 @@ implementer signal is real ("rough consensus and running code"), so
 *aggregate* instead: "8 of 12 stated supporters ship TLS stacks" is fine;
 "Cloudflare supports X" is not, unless they said so. Two non-obvious bits:
 
-- **Provenance is encoded in the `people` digest.** `Cloudflare (draft,
-  github)` = corroborated across sources; `(github)` alone = self-reported
-  only; blank = no documented signal, **not** "Independent."
-- **Email domain ≠ affiliation.** Participants use personal email and may hold
-  several affiliations. Use the `affiliations` field / people digest, never the
-  From-header domain.
+**Email domain ≠ affiliation.** Participants use personal email and may hold
+  several affiliations. When the MCP server is available, use the `affiliations`
+field / people digest, never the From-header domain.
 
 ## Draft names carry structure, not gravity
 
