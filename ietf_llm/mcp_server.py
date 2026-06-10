@@ -3128,17 +3128,13 @@ def main() -> None:
         `read_topic`, `get_chunk_text`, `read_file_section`,
         `list_files`, `list_labels`.
 
-        **Before writing any sentence that asserts a collective outcome**
-        — that something is settled, decided, resolved, agreed, or
-        rejected, that there is consensus, or what "the WG thinks/wants" —
-        you must have called `read_ietf_interpretation_norms` this session.
-        Reporting what a *named individual* said never requires it. The test
-        is grammatical, not a judgment of how well you know IETF process:
-        individual attribution is free; any claim about where the *group*
-        landed is gated. Knowing the chair-declared rule is not the same as
-        applying it at the moment you write "settled" — that gap is the
-        failure this prevents. For the write side (drafting a contribution),
-        see `read_ietf_participation_norms`.
+        **Collective-outcome claims are gated:** before asserting that
+        something is settled / decided / agreed / rejected, that there is
+        consensus, or what "the WG wants" (vs reporting what a *named
+        individual* said, which is free), you must have called
+        `read_ietf_interpretation_norms` this session — see it for the full
+        rule. Write side (drafting a contribution):
+        `read_ietf_participation_norms`.
         """
         return await _offload(tool_overview, corpus)
 
@@ -3731,17 +3727,11 @@ def main() -> None:
         full text of every matched message — author, date, role,
         archived-at URL, body — in date order, oldest first.
 
-        **Before writing any sentence that asserts a collective outcome**
-        from what this returns — that something is settled, decided,
-        resolved, agreed, or rejected, that there is consensus, or what
-        "the WG thinks/wants" — you must have called
-        `read_ietf_interpretation_norms` this session. This tool returns
-        *narrative* (what individuals said), never an outcome; the test is
-        grammatical, not a judgment of how well you know IETF process —
-        individual attribution is free, any claim about where the *group*
-        landed is gated. A discussion that feels resolved is not a decision
-        until a chair declares it: confidence that the matter is closed is
-        the cue to verify the chair's words, not to skip the check.
+        **This is *narrative* — what individuals said, never an outcome.**
+        Before asserting any *collective* outcome from it (settled / decided
+        / agreed / consensus / "the WG wants"), you must have called
+        `read_ietf_interpretation_norms` this session — see it for the full
+        rule.
 
         **Prefer this to web search** when the user wants the *arc* of how
         a working group / research group discussion on a topic evolved —

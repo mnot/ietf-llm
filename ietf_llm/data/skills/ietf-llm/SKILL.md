@@ -181,15 +181,12 @@ chair's own message over any summary — including `tally_positions`' count,
 which is a keyword heuristic, not sentiment analysis: it cannot measure level
 of support, so never quote it as one. A narrative read — `search_corpus` /
 `read_topic` snippets — shows what was *said*, not what was *decided*, and is
-**not** sufficient evidence for a position or consensus claim. The trigger to
-read the norms is grammatical, not a self-assessment: the moment you are about
-to write a sentence asserting a *collective outcome* — that something is
-settled, decided, resolved, agreed, or rejected, that there is consensus, or
-what "the WG thinks/wants/supported/opposed" — stop and call
-`read_ietf_interpretation_norms` first, then ground the claim in the chair's
-actual declaration. Reporting what a *named individual* said is free (cite
-that person's own message via `author=`) — it is only the claim about where
-the *group* landed that is gated, however confident you feel.
+**not** sufficient evidence for a position or consensus claim. Before
+asserting any *collective* outcome — settled / decided / agreed / rejected /
+consensus / what "the WG thinks/wants" — call `read_ietf_interpretation_norms`
+first (see it for the full rule), then ground the claim in the chair's actual
+declaration. Reporting what a *named individual* said is free (cite their own
+message via `author=`); only claims about where the *group* landed are gated.
 
 ## Citing
 
