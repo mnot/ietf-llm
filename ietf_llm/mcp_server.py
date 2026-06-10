@@ -436,32 +436,52 @@ def tool_overview(wg: str) -> str:
     return _with_freshness(wg, body, sources=src)
 
 
-def _read_bundled_norms(filename: str) -> str:
-    """Return a bundled norms doc from `data/skill/`, or a reinstall hint
-    if it's missing from the installed package."""
+def _strip_frontmatter(text: str) -> str:
+    """Drop a leading YAML frontmatter block (`--- ... ---`). Skill files carry
+    `name:` / `description:` metadata for the skill router; MCP clients want
+    only the body. Tolerates absence — returns the text unchanged."""
+    stripped = text.lstrip()
+    if stripped.startswith("---"):
+        end_marker = stripped.find("\n---", 3)
+        if end_marker != -1:
+            body_start = stripped.find("\n", end_marker + 4)
+            if body_start != -1:
+                return stripped[body_start + 1 :].lstrip()
+    return text
+
+
+def _read_bundled_skill_body(skill: str) -> str:
+    """Return the body (frontmatter stripped) of a bundled skill's `SKILL.md`,
+    or a reinstall hint if it's missing.
+
+    One source of truth: the same `data/skills/<skill>/SKILL.md` files that
+    `--install-skills` installs are what the MCP norms tools (and the server
+    `instructions` field) serve — so the guidance can't drift between the
+    skill a Claude/Codex/Gemini/opencode user sees and the tool output."""
     try:
-        path = resources.files("ietf_llm").joinpath(f"data/skill/{filename}")
-        return path.read_text(encoding="utf-8")
+        path = resources.files("ietf_llm").joinpath(f"data/skills/{skill}/SKILL.md")
+        return _strip_frontmatter(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError):
         return (
-            f"({filename} is missing from the installed package — "
+            f"(the {skill} skill is missing from the installed package — "
             "try reinstalling: pipx install --force ietf-llm)"
         )
 
 
 def tool_read_interpretation_norms() -> str:
-    """Return the bundled IETF.md — interpretive norms for reading
-    a corpus (consensus, who-speaks-for-whom, list-vs-meeting).
+    """Return the `ietf-interpreting` skill body — interpretive norms for
+    reading a corpus (consensus, who-speaks-for-whom, list-vs-meeting).
 
-    Factored out of the server instructions so the always-on context
-    stays focused on tool routing; clients pull this on demand when
-    the question is "what did the WG decide / who supports what."
+    The norms also ship as a standalone skill that auto-triggers on
+    "what did the WG decide / who supports what"; this tool is the MCP
+    surface for the same content, pulled on demand by clients that reach
+    it as a tool rather than a skill.
     """
-    return _read_bundled_norms("IETF.md")
+    return _read_bundled_skill_body("ietf-interpreting")
 
 
 def tool_read_participation_norms() -> str:
-    """Return the bundled PARTICIPATING.md — norms for helping a human
+    """Return the `ietf-contributing` skill body — norms for helping a human
     contribute to a corpus (drafting list mail, GitHub issues/comments,
     other discussion), the write-side companion to the reading norms.
 
@@ -469,7 +489,7 @@ def tool_read_participation_norms() -> str:
     record to composing something that goes into it under a person's
     name. Authoring Internet-Drafts is out of scope of the doc.
     """
-    return _read_bundled_norms("PARTICIPATING.md")
+    return _read_bundled_skill_body("ietf-contributing")
 
 
 @_requires_corpus
@@ -1217,6 +1237,47 @@ def _grounding_frame(wg: str, files: List[str]) -> str:
     )
 
 
+def _participation_nudge(files: "str | List[str]") -> str:
+    """The write-side mirror of `_grounding_frame`.
+
+    The read tools surface quotable raw material — thread / issue messages.
+    The instant a caller has that in hand is the moment a drafting decision
+    gets made, and the last point inside the server before they leave to
+    compose somewhere the always-on instructions no longer reassert
+    themselves. So, symmetric to the read-side consensus banner, flag the
+    *write-side* gate right here, at the point of material acquisition — not
+    only in the server instructions a model has already scrolled past.
+
+    Fires only when the material is `threads/` or `issues/` content (what
+    gets quoted into a reply), never for drafts / RFCs / digests. A nudge,
+    not enforcement. Empty when no such file is in view."""
+    paths = [files] if isinstance(files, str) else files
+    if not any(p.lower().startswith(("threads/", "issues/")) for p in paths):
+        return ""
+    return (
+        "> ✍ **About to draft a contribution from this?** Before you write "
+        "list mail, a GitHub issue or comment, or any reply that goes into "
+        "the record under a participant's name, you MUST call "
+        "`read_ietf_participation_norms` first — the human is accountable and "
+        "sends; you only draft. Reading the corpus is not the same as "
+        "contributing to it. _(Ignore if you are only querying — this fires "
+        "on raw message material, which is what a reply quotes.)_"
+    )
+
+
+def _append_participation_nudge(
+    files: "str | List[str]", body: str, *, enabled: bool = True
+) -> str:
+    """Append the write-side nudge as a footer to `body`, when one fires and
+    `enabled`. `enabled=False` lets a tool that fans out to another read tool
+    (get_chunks_batch → get_chunk) suppress the inner per-chunk footer and emit
+    a single one at its own boundary instead."""
+    if not enabled:
+        return body
+    nudge = _participation_nudge(files)
+    return f"{body}\n\n---\n\n{nudge}" if nudge else body
+
+
 def _topic_thread_map(
     wg: str, matched_hits: List[Any], rows: List[Any], limit: int = 8
 ) -> List[str]:
@@ -1505,6 +1566,16 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
             out.append(body)
         out.append("")
 
+    # Write-side nudge, after the narrative: this is message material a reply
+    # would quote, so flag the participation-norms gate at the point the
+    # drafting decision is made (mirrors the read-side frame at the top).
+    nudge = _participation_nudge(files)
+    if nudge:
+        out.append("---")
+        out.append("")
+        out.append(nudge)
+        out.append("")
+
     return _with_freshness(wg, "\n".join(out))
 
 
@@ -1593,7 +1664,7 @@ def tool_find_replies(
         else:
             out.append(body)
         out.append("")
-    return _with_freshness(wg, "\n".join(out))
+    return _append_participation_nudge(file, _with_freshness(wg, "\n".join(out)))
 
 
 @_requires_corpus
@@ -2101,22 +2172,27 @@ def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
         )
 
     out_parts: List[str] = []
+    seen_files: List[str] = []
     for req in requests:
         file = str(req.get("file") or "")
         if not file:
             out_parts.append("_(skipped: missing file)_\n")
             continue
+        seen_files.append(file)
         start = int(req.get("chunk_idx", 0))
         end = req.get("end_chunk_idx")
         end_val = int(end) if end is not None else None
-        single = tool_get_chunk(wg, file, start, end_chunk_idx=end_val)
+        # Suppress the per-chunk footer; emit one for the whole batch below.
+        single = tool_get_chunk(wg, file, start, end_chunk_idx=end_val, add_nudge=False)
         out_parts.append(f"## {file} @ chunk {start}")
         if end_val is not None:
             out_parts[-1] += f"–{end_val}"
         out_parts.append("")
         out_parts.append(single)
         out_parts.append("")
-    return _with_freshness(wg, "\n".join(out_parts))
+    return _append_participation_nudge(
+        seen_files, _with_freshness(wg, "\n".join(out_parts))
+    )
 
 
 @_requires_corpus
@@ -2201,6 +2277,7 @@ def tool_get_chunk(  # pylint: disable=too-many-return-statements
     file: str,
     chunk_idx: int,
     end_chunk_idx: Optional[int] = None,
+    add_nudge: bool = True,
 ) -> str:
     # Digest files aren't chunked — point the caller at read_digest
     # instead of returning the unhelpful "Chunk not found".
@@ -2239,14 +2316,18 @@ def tool_get_chunk(  # pylint: disable=too-many-return-statements
             parts.append(f"## chunk {idx}: {title}{where}\n\n{text}")
         if not any_found:
             return _chunk_not_found_hint(wg, file, chunk_idx)
-        return "\n\n---\n\n".join(parts)
+        return _append_participation_nudge(
+            file, "\n\n---\n\n".join(parts), enabled=add_nudge
+        )
 
     result = get_chunk(wg, file, chunk_idx)
     if result is None:
         return _chunk_not_found_hint(wg, file, chunk_idx)
     title, text, start_line, end_line = result
     where = f" (lines {start_line}-{end_line})" if start_line is not None else ""
-    return f"# {title}{where}\n\n{text}"
+    return _append_participation_nudge(
+        file, f"# {title}{where}\n\n{text}", enabled=add_nudge
+    )
 
 
 def _chunk_not_found_hint(wg: str, file: str, chunk_idx: int) -> str:
@@ -2302,7 +2383,7 @@ def tool_read_file_section(
     path = _safe_path(wg, file)
     if not path:
         return f"File not found in {wg} cache: {file}"
-    return _read_section(path, start_line, max_lines)
+    return _append_participation_nudge(file, _read_section(path, start_line, max_lines))
 
 
 def _read_section(path: str, start_line: int, max_lines: int) -> str:
@@ -2399,15 +2480,15 @@ def _prewarm_embedding_model_async() -> None:
 
 
 def _load_server_instructions() -> Optional[str]:
-    """Read the bundled SKILL.md and return its body (frontmatter stripped).
+    """Read the bundled ietf-llm skill's SKILL.md, returning its body
+    (frontmatter stripped).
 
     Passed to FastMCP as the server-level `instructions` field, which
     MCP-compliant clients surface to the model as system-prompt
-    context. Source-of-truth-once: this is the same file
-    `--install-claude-skill` copies into Claude Code, so non-Claude
-    harnesses (Codex, Gemini, Cursor, Zed, opencode, …) see the same
-    routing rules and IETF norms without us maintaining a parallel
-    guidance string.
+    context. Source-of-truth-once: this is the same `ietf-llm` skill
+    `--install-skills` copies into Claude Code, so non-Claude harnesses
+    (Codex, Gemini, Cursor, Zed, opencode, …) see the same routing rules
+    and IETF norms without us maintaining a parallel guidance string.
 
     YAML frontmatter (the `---` block at the top with `name:` /
     `description:`) is stripped — it's skill metadata, not guidance.
@@ -2416,21 +2497,13 @@ def _load_server_instructions() -> Optional[str]:
     anyway).
     """
     try:
-        skill_path = resources.files("ietf_llm").joinpath("data/skill/SKILL.md")
+        skill_path = resources.files("ietf_llm").joinpath(
+            "data/skills/ietf-llm/SKILL.md"
+        )
         text = skill_path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
         return None
-    # Strip a leading YAML frontmatter block (--- ... ---). The skill
-    # always starts with one; tolerate its absence to keep the helper
-    # robust to future edits.
-    stripped = text.lstrip()
-    if stripped.startswith("---"):
-        end_marker = stripped.find("\n---", 3)
-        if end_marker != -1:
-            body_start = stripped.find("\n", end_marker + 4)
-            if body_start != -1:
-                return stripped[body_start + 1 :].lstrip()
-    return text
+    return _strip_frontmatter(text)
 
 
 def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
@@ -3053,10 +3126,19 @@ def main() -> None:
 
         Other ietf-llm tools: `read_digest`, `search_corpus`,
         `read_topic`, `get_chunk_text`, `read_file_section`,
-        `list_files`, `list_labels`. Interpretive norms (how
-        consensus works, who-speaks-for-whom, list vs meeting):
-        `read_ietf_interpretation_norms`; norms for *contributing*
-        (drafting list mail / issues): `read_ietf_participation_norms`.
+        `list_files`, `list_labels`.
+
+        **Before writing any sentence that asserts a collective outcome**
+        — that something is settled, decided, resolved, agreed, or
+        rejected, that there is consensus, or what "the WG thinks/wants" —
+        you must have called `read_ietf_interpretation_norms` this session.
+        Reporting what a *named individual* said never requires it. The test
+        is grammatical, not a judgment of how well you know IETF process:
+        individual attribution is free; any claim about where the *group*
+        landed is gated. Knowing the chair-declared rule is not the same as
+        applying it at the moment you write "settled" — that gap is the
+        failure this prevents. For the write side (drafting a contribution),
+        see `read_ietf_participation_norms`.
         """
         return await _offload(tool_overview, corpus)
 
@@ -3068,35 +3150,41 @@ def main() -> None:
         why mailing-list confirmation — not meeting agreement —
         is the binding decision.
 
-        **Call this before** characterising what a WG decided, who
-        supports what, or where the group stands. Not needed for
-        catalogue lookups (`read_digest`), text fetches
-        (`read_file_section`), or structural questions (`overview`).
-        The content is stable across corpora — one call per session
-        is enough. For the write side (drafting a contribution), see
-        `read_ietf_participation_norms`.
+        **Call this before writing any sentence that asserts a collective
+        outcome** — that something is settled, decided, resolved, agreed,
+        or rejected, that there is consensus, or what "the WG thinks/wants".
+        The trigger is grammatical, not a self-assessment: reporting what a
+        named individual said is free; any claim about where the *group*
+        landed is gated, however confident you are. Not needed for catalogue
+        lookups (`read_digest`), text fetches (`read_file_section`), or
+        structural questions (`overview`). The content is stable across
+        corpora — one call per session is enough. For the write side
+        (drafting a contribution), see `read_ietf_participation_norms`.
         """
         return await _offload(tool_read_interpretation_norms)
 
     @server.tool()
     async def read_ietf_participation_norms() -> str:
-        """Return the norms for *contributing* to an IETF effort:
-        the human is accountable and sends (you only draft),
-        disclosing AI involvement and how closely supervised, the
-        register to match (terse, technical, no AI tells), staying
-        on-charter, engaging existing work rather than dropping new
-        ideas cold, not re-litigating settled questions or
-        manufacturing consensus signal, and where AI help is
-        uncontroversial (summarise/translate, explain ABNF/YANG).
+        """**Mandatory before drafting any contribution** — before you
+        write a single line of list mail, a reply in a thread, a GitHub
+        issue or comment, a review, or a consensus/position statement:
+        any text that will go into the record under a person's name. Read
+        this FIRST, not as an afterthought; reading the *interpretation*
+        norms does not substitute. The moment a task turns from reading the
+        corpus to producing a contribution — "write/draft an email to the
+        working group", "reply to this thread", "respond on the list",
+        "file/comment on an issue", "compose list mail" — call this.
 
-        **Mandatory before** drafting list mail, a GitHub issue or
-        comment, or any other contribution that will go into the
-        record under a person's name — read this before generating
-        any such text, not as an afterthought; reading the
-        interpretation norms does not substitute. Authoring
-        Internet-Drafts is out of scope. Stable across corpora — one
-        call per session is enough. For reading/characterising a
-        corpus, see `read_ietf_interpretation_norms`.
+        Covers: the human is accountable and sends (you only draft),
+        disclosing AI involvement and how closely supervised, the register
+        to match (terse, technical, no AI tells), staying on-charter,
+        engaging existing work rather than dropping new ideas cold, not
+        re-litigating settled questions or manufacturing consensus signal,
+        and where AI help is uncontroversial (summarise/translate, explain
+        ABNF/YANG). Authoring Internet-Drafts is out of scope. Stable
+        across corpora — one call per session is enough. For
+        reading/characterising a corpus, see
+        `read_ietf_interpretation_norms`.
         """
         return await _offload(tool_read_participation_norms)
 
@@ -3642,6 +3730,18 @@ def main() -> None:
         across its mailing list threads and GitHub issues. Returns the
         full text of every matched message — author, date, role,
         archived-at URL, body — in date order, oldest first.
+
+        **Before writing any sentence that asserts a collective outcome**
+        from what this returns — that something is settled, decided,
+        resolved, agreed, or rejected, that there is consensus, or what
+        "the WG thinks/wants" — you must have called
+        `read_ietf_interpretation_norms` this session. This tool returns
+        *narrative* (what individuals said), never an outcome; the test is
+        grammatical, not a judgment of how well you know IETF process —
+        individual attribution is free, any claim about where the *group*
+        landed is gated. A discussion that feels resolved is not a decision
+        until a chair declares it: confidence that the matter is closed is
+        the cue to verify the chair's words, not to skip the check.
 
         **Prefer this to web search** when the user wants the *arc* of how
         a working group / research group discussion on a topic evolved —

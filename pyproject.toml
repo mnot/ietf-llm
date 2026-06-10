@@ -111,5 +111,5 @@ namespaces = false
 include-package-data = true
 
 [tool.setuptools.package-data]
-ietf_llm = ["py.typed", "data/skill/**/*"]
+ietf_llm = ["py.typed", "data/skills/**/*"]
 

@@ -1,10 +1,35 @@
+---
+name: ietf-interpreting
+description: Interpretive norms for reading the record of an IETF/IRTF effort. Use BEFORE characterising what a working group decided, whether there is consensus, who supports or opposes a proposal, or where the group stands — any sentence asserting a collective outcome (settled, decided, agreed, rejected, consensus, "the WG thinks/wants"). Covers consensus is chair-declared not vote-counted, decisions happen on the mailing list not in meetings, positions belong to individuals not their employers, and what Internet-Draft names and RFC streams do and don't imply. Reporting what a named individual said does not require this; any claim about where the group landed does. For drafting a contribution, use ietf-contributing instead.
+---
+
 # How the IETF works
 
-Interpretive norms for reading an IETF corpus. Call
-`read_ietf_interpretation_norms` before characterising decisions,
-attributing positions, or summarising where a Working Group stands. For
-the write side — helping a human draft list mail, issues, or comments —
-see `read_ietf_participation_norms` (PARTICIPATING.md).
+Interpretive norms for reading an IETF corpus. The trigger for reading
+this is grammatical, not a self-assessment: **before you write any
+sentence asserting a collective outcome** — that something is settled,
+decided, resolved, agreed, or rejected, that there is consensus, or what
+"the WG thinks/wants" — you should have read these norms. Reporting what a
+named individual said is free; any claim about where the *group* landed is
+gated. For the write side — helping a human draft list mail, issues, or
+comments — see `read_ietf_participation_norms` (PARTICIPATING.md).
+
+This is not enforced. Nothing stops you from skipping it; the point is to
+make the skip something you have to choose, not something that feels like
+ordinary efficient judgment.
+
+## Read this first: the trap is what you already know
+
+Most of what follows you probably already know — chair-declared
+consensus, individuals-not-employers, list-over-meetings. That is exactly
+the trap. The rule that gets lost is not a fact you're missing; it's that
+a discussion *feeling* resolved is not resolution. When prominent
+participants converge and the tone goes calm, you will be tempted to write
+"settled" or "the WG decided." No one decided until a chair declared it
+on-list or a closed issue records it. Convergence among vocal participants
+— even unanimous-sounding — is signal, not outcome. If you are confident
+the matter is closed, that confidence is the cue to verify the chair's
+words, not to skip the check.
 
 ## Individuals, not employers — but implementer signal is real
 
@@ -52,6 +77,17 @@ Prefer the chair's own words over a third-party summary of them: chair
 characterisations are themselves sometimes disputed on list. The
 `tally_positions` tool's **Chair statements** section surfaces the
 procedural messages (consensus call, WGLC, closure) for one thread.
+
+**Worked example.** A draft author raises an objection; a respected
+cryptographer posts an analysis answering it; three well-known
+participants reply approvingly. It is tempting to write: *"the objection
+was settled."* Correct: *"the objection appears answered to the
+satisfaction of several vocal participants; no chair has declared it
+closed, and the draft author was still pressing open points."* The first
+is a consensus claim you have not earned; the second reports what is on
+the record. The difference is not pedantry — chair characterisations
+themselves get disputed on-list, so even a chair's summary is weaker
+evidence than the chair's actual procedural message.
 
 ## Internet-Draft names carry structure — but not gravity
 

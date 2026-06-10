@@ -297,11 +297,11 @@ ietf_llm/
 │                           # mailing list →
 │                           # transcripts → drafts → github → registry → per-thread
 │                           # / per-issue files → citations → digests → embed.
-│                           # Also --list / --completion / --install-claude-skill.
+│                           # Also --list / --completion / --install-skills.
 ├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
 ├── search_cli.py           # `ietf-llm-search` entry point
 ├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + tools)
-├── skill_install.py        # --install-claude-skill + pristine-only auto-update on CLI gathers
+├── skill_install.py        # --install-skills (multi-harness) + pristine-only auto-update on CLI gathers
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
@@ -338,9 +338,9 @@ ietf_llm/
 ├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
 ├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
-├── data/skill/SKILL.md     # bundled Claude skill (also fed to MCP `instructions`)
-├── data/skill/IETF.md      # interpretive (reading) norms, via read_ietf_interpretation_norms
-├── data/skill/PARTICIPATING.md  # participation (write-side) norms, via read_ietf_participation_norms
+├── data/skills/ietf-llm/SKILL.md         # query/routing skill (body also fed to MCP `instructions`)
+├── data/skills/ietf-interpreting/SKILL.md  # read-side norms skill, also via read_ietf_interpretation_norms
+├── data/skills/ietf-contributing/SKILL.md  # write-side norms skill, also via read_ietf_participation_norms
 │
 ├── gather/                 # content acquisition + per-source post-processing
 │   ├── charter.py              # charter text artifact (rev from doc API)
@@ -948,7 +948,7 @@ on every push/PR across Python 3.10–3.14.
   `generate_digests()`, export from `__init__`.
 - **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
   then a thin `@server.tool()` wrapper in `main()`. Document the
-  routing in `data/skill/SKILL.md`. A tool that writes or reaches the
+  routing in `data/skills/ietf-llm/SKILL.md`. A tool that writes or reaches the
   network (like `start_gather`) must be registered behind an opt-in env
   gate, run its work off-thread, and be imported lazily so the read-only
   serve path stays clean.

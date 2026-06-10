@@ -1,14 +1,29 @@
-"""Install the bundled Claude skill into ~/.claude/skills/.
+"""Install the bundled Agent Skills into every supported agent harness.
 
-The skill ships as package data under `ietf_llm/data/skill/`. The
-installer copies it into Claude's user-level skills directory, with
+The skills ship as package data under `ietf_llm/data/skills/<name>/`, each a
+self-contained Agent Skill (`SKILL.md` with `name` + `description`
+frontmatter — the open standard at agentskills.io). Three are bundled:
+
+  - `ietf-llm`           — the query/routing brain (drives the MCP tools)
+  - `ietf-interpreting`  — read-side norms (consensus, attribution, …)
+  - `ietf-contributing`  — write-side norms (drafting list mail / issues)
+
+`--install-skills` detects every supported harness present on the machine
+(Claude Code, Codex, Gemini CLI, opencode — all adopters of the Agent Skills
+open standard) and installs into each one's skills directory, with
 idempotency and a safety check for user edits.
 
-On every CLI gather, `sync_if_pristine()` keeps an already-installed
-skill current: it auto-updates the installed copy to the bundled
-version *only* when that copy is unchanged since we last wrote it
-(tracked by a content manifest), and otherwise just prints a one-line
-notice so a user's local edits are never silently clobbered.
+The norms skills are self-contained guidance and go into every detected
+harness. The query skill drives the `mcp__ietf-llm__*` tools, so it goes only
+into `~/.claude/skills/` (read by Claude and opencode); Codex and Gemini get
+the same routing from the MCP server's `instructions` field, so a duplicate
+skill there would be inert.
+
+On every CLI gather, `sync_if_pristine()` keeps already-installed skills
+current: it auto-updates an installed copy to the bundled version *only* when
+that copy is unchanged since we last wrote it (tracked by a content
+manifest), and otherwise just prints a one-line notice so a user's local
+edits are never silently clobbered.
 """
 
 from __future__ import annotations
@@ -19,25 +34,96 @@ import json
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List
 
 from . import __version__
 from .utils import LogLevel, Verbosity, get_cache_dir, log
 
-SKILL_NAME = "ietf-llm"
-DEST_ROOT = Path("~/.claude/skills").expanduser()
+# The query skill drives the MCP tools, so it only belongs where the server is
+# configured: Claude (native) and opencode (which reads ~/.claude/skills). The
+# norms skills are self-contained guidance and go into every detected harness.
+QUERY_SKILL = "ietf-llm"
 
 
-def _bundled_root() -> Path:
-    """Return the on-disk path of the bundled skill directory."""
-    # importlib.resources gives an abstract Traversable; for a real
-    # directory we need it as a Path. `as_file` returns a context
-    # manager; since the skill ships unpacked in the wheel via
-    # package-data + include_package_data, the path is stable and we
-    # can use it directly.
-    return Path(str(resources.files("ietf_llm").joinpath("data/skill")))
+@dataclass(frozen=True)
+class Harness:
+    """A supported agent harness and where it discovers user-level skills."""
+
+    key: str  # short id: "claude" / "codex" / "gemini" / "opencode"
+    label: str  # human label for output
+    marker: Path  # config dir whose existence means the harness is installed
+    skills_root: Path  # where to install skills for this harness
+    reads_claude_dir: bool  # also auto-reads ~/.claude/skills (Claude, opencode)
+
+
+def _home() -> Path:
+    """User home — indirected so tests can redirect the whole harness table."""
+    return Path.home()
+
+
+def _harnesses() -> List[Harness]:
+    """Supported harnesses and their skill-discovery paths, per each tool's
+    current docs (Agent Skills open standard). Codex reads `~/.agents/skills`,
+    Gemini `~/.gemini/skills`, opencode `~/.config/opencode/skills` (and also
+    `~/.claude/skills`), Claude `~/.claude/skills`."""
+    home = _home()
+    return [
+        Harness(
+            "claude",
+            "Claude Code",
+            home / ".claude",
+            home / ".claude" / "skills",
+            True,
+        ),
+        Harness(
+            "codex",
+            "Codex CLI",
+            home / ".codex",
+            home / ".agents" / "skills",
+            False,
+        ),
+        Harness(
+            "gemini",
+            "Gemini CLI",
+            home / ".gemini",
+            home / ".gemini" / "skills",
+            False,
+        ),
+        Harness(
+            "opencode",
+            "opencode",
+            home / ".config" / "opencode",
+            home / ".config" / "opencode" / "skills",
+            True,
+        ),
+    ]
+
+
+def _claude_skills_root() -> Path:
+    """The `~/.claude/skills` dir — home of the query skill (Claude + opencode
+    read it)."""
+    return _home() / ".claude" / "skills"
+
+
+def _detect_harnesses() -> List[Harness]:
+    """Harnesses present on this machine (their config dir exists)."""
+    return [h for h in _harnesses() if h.marker.is_dir()]
+
+
+def _bundled_skills_root() -> Path:
+    """On-disk path of the bundled skills parent directory (`data/skills/`)."""
+    return Path(str(resources.files("ietf_llm").joinpath("data/skills")))
+
+
+def _bundled_skills() -> List[Path]:
+    """Each bundled skill's source directory (one per `SKILL.md`), sorted."""
+    root = _bundled_skills_root()
+    if not root.is_dir():
+        return []
+    return sorted(d for d in root.iterdir() if (d / "SKILL.md").is_file())
 
 
 def _dirs_identical(left: Path, right: Path) -> bool:
@@ -54,9 +140,9 @@ def _dirs_identical(left: Path, right: Path) -> bool:
 def _tree_hash(root: Path) -> str:
     """Stable SHA-256 over a directory tree's relative paths + contents.
 
-    Deterministic (paths sorted), so the same content always hashes the
-    same regardless of filesystem walk order. Used to tell a pristine
-    installed skill (unchanged since we wrote it) from a user-edited one.
+    Deterministic (paths sorted), so the same content always hashes the same
+    regardless of filesystem walk order. Used to tell a pristine installed
+    skill (unchanged since we wrote it) from a user-edited one.
     """
     digest = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
@@ -69,159 +155,229 @@ def _tree_hash(root: Path) -> str:
 
 
 def _manifest_path() -> Path:
-    """Sidecar recording the hash of the skill content we last installed.
+    """Sidecar recording the hash of each skill we last installed, keyed by its
+    absolute destination path (so the same skill installed into several
+    harnesses tracks independently).
 
-    Lives in ietf-llm's own cache root, NOT inside the skill directory —
-    a file under the skill would itself make the installed tree differ
-    from the bundled one and break the comparison.
+    Lives in ietf-llm's own cache root, NOT inside any skill directory — a file
+    under a skill would itself make the installed tree differ from the bundled
+    one and break the comparison.
     """
     return Path(get_cache_dir()) / "installed-skill.json"
 
 
-def _write_manifest(tree_hash: str) -> None:
-    """Record `tree_hash` (and the installing version) as the manifest.
+def _read_manifest() -> Dict[str, Any]:
+    """Return the manifest map `{dest_path: {sha256, version}}`, or `{}`.
 
-    Best-effort: a failed write just means the next run can't prove the
-    installed skill is pristine and falls back to notify-only.
+    Tolerates the legacy single-skill format (a bare `{sha256, version}`): it
+    has no `skills` map, so per-dest lookups miss and the affected skill is
+    treated conservatively (notify, don't clobber).
+    """
+    try:
+        data = json.loads(_manifest_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    skills = data.get("skills")
+    return skills if isinstance(skills, dict) else {}
+
+
+def _write_manifest(manifest: Dict[str, Any]) -> None:
+    """Persist the manifest map. Best-effort: a failed write just means the
+    next run can't prove an install is pristine and falls back to notify-only.
     """
     try:
         path = _manifest_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"sha256": tree_hash, "version": __version__}),
+            json.dumps({"skills": manifest, "version": __version__}),
             encoding="utf-8",
         )
     except OSError:
         pass
 
 
-def _read_manifest() -> Optional[Dict[str, Any]]:
-    """Return the recorded manifest dict, or None if absent / unreadable."""
-    try:
-        data = json.loads(_manifest_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+def _record(manifest: Dict[str, Any], dest: Path, tree_hash: str) -> None:
+    """Set the manifest entry for one destination."""
+    manifest[str(dest)] = {"sha256": tree_hash, "version": __version__}
 
 
-def install() -> int:
-    """Copy the bundled skill into ~/.claude/skills/<SKILL_NAME>/.
+def _copy_skill(src: Path, dest: Path) -> None:
+    """Overwrite `dest` with `src` (the explicit-install path)."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest)
+    os.chmod(dest, 0o755)
 
-    `--install-claude-skill` is an explicit "I want the bundled
-    version here" request from the user, so we always overwrite any
-    existing skill at the destination (other than the no-op case
-    where the bundled version is already there). If a user has been
-    editing the installed skill, they should be backing those edits
-    up before running this — same pattern as `npm install` over a
-    locally-modified package.
 
-    Either way we (re)write the content manifest so later CLI gathers
-    can recognise the installed copy as pristine and auto-update it.
+def _install_into(root: Path, skills: List[Path]) -> None:
+    """Install each of `skills` into `root/<name>/`, overwriting as needed (an
+    explicit install means "I want the bundled version here"). Updates the
+    manifest.
+
+    Idempotent per skill: an already-identical destination is left untouched
+    (but its manifest entry is refreshed so future divergence is classifiable).
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = _read_manifest()
+    for src in skills:
+        dest = root / src.name
+        if dest.exists() and _dirs_identical(src, dest):
+            _record(manifest, dest, _tree_hash(src))
+            continue
+        _copy_skill(src, dest)
+        _record(manifest, dest, _tree_hash(src))
+    _write_manifest(manifest)
+
+
+def install_skills() -> int:
+    """Install the bundled skills into every supported harness present on this
+    machine (`--install-skills`).
+
+    Norms skills go into each detected harness's own skills dir; the query
+    skill goes only into `~/.claude/skills/` (read by Claude and opencode).
+    Overwrites any existing copy at each destination (explicit install) — a
+    user's edits are restored too, so back them up first if that matters.
 
     Returns a shell-style exit code:
-      0 — installed, updated, or already up to date
-      1 — internal error (bundled skill missing from the wheel)
+      0 — installed into the detected harnesses (or none detected: nothing to do)
+      1 — internal error (bundled skills missing from the wheel)
     """
-    src = _bundled_root()
-    if not src.is_dir():
+    bundled = _bundled_skills()
+    if not bundled:
         print(
-            f"Internal error: bundled skill not found at {src}. "
+            f"Internal error: bundled skills not found at "
+            f"{_bundled_skills_root()}. "
             "Try reinstalling: pipx install --force ietf-llm",
             file=sys.stderr,
         )
         return 1
 
-    dest = DEST_ROOT / SKILL_NAME
+    present = _detect_harnesses()
+    if not present:
+        print(
+            "No supported agent harness detected (looked for ~/.claude, "
+            "~/.codex, ~/.gemini, ~/.config/opencode). Nothing installed."
+        )
+        return 0
 
-    if dest.exists():
-        if _dirs_identical(src, dest):
-            print(f"Skill already installed and up to date at {dest}.")
-            # Ensure a manifest exists even for a skill first installed by
-            # an older release, so future divergence can be classified.
-            _write_manifest(_tree_hash(src))
-            return 0
-        # Differs (either out-of-date or locally-edited). Overwrite —
-        # the user explicitly asked for the bundled version.
-        shutil.rmtree(dest)
+    norms = [s for s in bundled if s.name != QUERY_SKILL]
+    query = [s for s in bundled if s.name == QUERY_SKILL]
 
-    DEST_ROOT.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dest)
-    # Don't preserve world-readable bits any more strictly than needed.
-    os.chmod(dest, 0o755)
-    _write_manifest(_tree_hash(src))
-    print(f"Installed skill to {dest}")
+    # Group skills by destination root so each root is written once (norms +
+    # query at ~/.claude/skills, or a root shared by two harnesses, merge).
+    by_root: Dict[Path, Dict[str, Path]] = {}
+    for harness in present:
+        dest = by_root.setdefault(harness.skills_root, {})
+        for skill in norms:
+            dest[skill.name] = skill
+    # Query skill → ~/.claude/skills iff a present harness reads that dir.
+    if query and any(h.reads_claude_dir for h in present):
+        dest = by_root.setdefault(_claude_skills_root(), {})
+        for skill in query:
+            dest[skill.name] = skill
+
+    for root, skills in by_root.items():
+        _install_into(root, list(skills.values()))
+
+    print("Installed skills into: " + ", ".join(h.label for h in present) + ".")
+    for root in sorted(by_root, key=str):
+        names = ", ".join(sorted(by_root[root]))
+        print(f"  {names} → {root}")
     return 0
 
 
 def sync_if_pristine(verbosity: Verbosity = Verbosity.STATUS) -> None:
-    """Keep an already-installed Claude skill in sync (CLI gathers only).
+    """Keep already-installed skills in sync (CLI gathers only).
 
-    Best-effort and never fatal — a UX nudge, like the cache-staleness
-    banner. Does nothing when the skill isn't installed (we never install
-    a skill the user didn't ask for) or is already current. When the
-    installed copy differs from the bundled one:
+    Best-effort and never fatal — a UX nudge, like the cache-staleness banner.
+    Only touches skills already installed (we never install a skill the user
+    didn't ask for). When an installed copy differs from the bundled one:
 
       - pristine (unchanged since we last wrote it, per the manifest) →
         silently update it to the bundled version;
       - otherwise (local edits, or installed by a release predating the
         manifest) → print a one-line notice prompting an explicit
-        `--install-claude-skill`, so edits are never clobbered silently.
+        `--install-skills`, so edits are never clobbered silently.
     """
     try:
         _sync_if_pristine(verbosity)
     except Exception:  # pylint: disable=broad-except
-        # Purely a convenience nudge; any failure (permissions, a weird
-        # skills dir, a read error) must not derail the gather it follows.
+        # Purely a convenience nudge; any failure (permissions, a weird skills
+        # dir, a read error) must not derail the gather it follows.
         pass
 
 
 def _sync_if_pristine(verbosity: Verbosity) -> None:
-    src = _bundled_root()
-    dest = DEST_ROOT / SKILL_NAME
-    if not src.is_dir() or not dest.is_dir():
-        return  # nothing bundled, or skill not installed — leave it alone
+    bundled = {s.name: s for s in _bundled_skills()}
+    if not bundled:
+        return
+    manifest = _read_manifest()
+    changed = False
+    # Every harness skills root, plus ~/.claude/skills (the query skill's home).
+    roots = {h.skills_root for h in _harnesses()} | {_claude_skills_root()}
+    for root in roots:
+        for name, src in bundled.items():
+            dest = root / name
+            if not dest.is_dir():
+                continue  # not installed here — leave it alone
+            if _sync_one(src, dest, manifest, verbosity):
+                changed = True
+    if changed:
+        _write_manifest(manifest)
 
+
+def _sync_one(
+    src: Path, dest: Path, manifest: Dict[str, Any], verbosity: Verbosity
+) -> bool:
+    """Sync one installed skill against its bundled source. Mutates `manifest`
+    in place; returns True if the manifest changed (so the caller persists)."""
     bundled = _tree_hash(src)
     installed = _tree_hash(dest)
     if installed == bundled:
-        # Already current. Backfill the manifest if it's missing or stale
-        # so a future divergence is classifiable.
-        manifest = _read_manifest()
-        if not manifest or manifest.get("sha256") != bundled:
-            _write_manifest(bundled)
-        return
+        # Already current. Backfill the manifest if missing/stale so a future
+        # divergence is classifiable.
+        entry = manifest.get(str(dest))
+        if not entry or entry.get("sha256") != bundled:
+            _record(manifest, dest, bundled)
+            return True
+        return False
 
-    manifest = _read_manifest()
-    pristine = manifest is not None and manifest.get("sha256") == installed
-    if pristine:
-        # Copy into a temp sibling and swap atomically rather than rmtree-ing
-        # the live skill before copying: a failure mid-copy must never leave
-        # the installed skill destroyed.
-        staged = dest.with_name(f"{dest.name}.tmp-{os.getpid()}")
-        retired = dest.with_name(f"{dest.name}.old-{os.getpid()}")
-        shutil.rmtree(staged, ignore_errors=True)
-        shutil.copytree(src, staged)
-        os.chmod(staged, 0o755)
-        os.replace(dest, retired)
-        try:
-            os.replace(staged, dest)
-        except OSError:
-            os.replace(retired, dest)  # roll back to the original on failure
-            raise
-        shutil.rmtree(retired, ignore_errors=True)
-        _write_manifest(bundled)
+    entry = manifest.get(str(dest))
+    pristine = entry is not None and entry.get("sha256") == installed
+    if not pristine:
         log(
-            f"Updated the installed ietf-llm Claude skill at {dest} "
-            f"to match ietf-llm {__version__}.",
+            f"The installed {src.name} skill at {dest} differs from the "
+            "bundled version (local edits, or installed by an older release). "
+            "Run `ietf-llm --install-skills` to update it (overwrites the "
+            "installed copy).",
             verbosity,
             level=LogLevel.STATUS,
         )
-    else:
-        log(
-            f"The installed ietf-llm Claude skill at {dest} differs from "
-            "the bundled version (local edits, or installed by an older "
-            "release). Run `ietf-llm --install-claude-skill` to update it "
-            "(overwrites the installed copy).",
-            verbosity,
-            level=LogLevel.STATUS,
-        )
+        return False
+
+    # Pristine but out of date: copy into a temp sibling and swap atomically
+    # rather than rmtree-ing the live skill before copying — a failure mid-copy
+    # must never leave the installed skill destroyed.
+    staged = dest.with_name(f"{dest.name}.tmp-{os.getpid()}")
+    retired = dest.with_name(f"{dest.name}.old-{os.getpid()}")
+    shutil.rmtree(staged, ignore_errors=True)
+    shutil.copytree(src, staged)
+    os.chmod(staged, 0o755)
+    os.replace(dest, retired)
+    try:
+        os.replace(staged, dest)
+    except OSError:
+        os.replace(retired, dest)  # roll back to the original on failure
+        raise
+    shutil.rmtree(retired, ignore_errors=True)
+    _record(manifest, dest, bundled)
+    log(
+        f"Updated the installed {src.name} skill at {dest} "
+        f"to match ietf-llm {__version__}.",
+        verbosity,
+        level=LogLevel.STATUS,
+    )
+    return True

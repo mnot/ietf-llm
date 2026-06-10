@@ -1039,10 +1039,10 @@ def test_load_server_instructions_includes_load_bearing_content() -> None:
 
 
 def test_read_ietf_interpretation_norms_returns_bundled_doc() -> None:
-    # The interpretive norms (consensus, list-vs-meeting, attribution)
-    # are factored out of SKILL.md into IETF.md and exposed via this
-    # tool. The load-bearing phrases must survive the move so callers
-    # that pull the doc get the same guidance.
+    # The interpretive norms (consensus, list-vs-meeting, attribution) are
+    # the body of the `ietf-interpreting` skill, exposed via this tool
+    # (frontmatter stripped). The load-bearing phrases must survive so
+    # callers that pull the doc get the same guidance.
     out = mcp_server.tool_read_interpretation_norms()
     assert "Consensus is chair-declared" in out
     assert "Decisions happen on the mailing list" in out
@@ -1050,9 +1050,9 @@ def test_read_ietf_interpretation_norms_returns_bundled_doc() -> None:
 
 
 def test_read_ietf_participation_norms_returns_bundled_doc() -> None:
-    # The participation norms (write side) live in PARTICIPATING.md and
-    # are exposed via this tool. Guard the load-bearing phrases so the
-    # contribute-side guidance survives edits to the doc.
+    # The participation norms (write side) are the body of the
+    # `ietf-contributing` skill, exposed via this tool. Guard the
+    # load-bearing phrases so the contribute-side guidance survives edits.
     out = mcp_server.tool_read_participation_norms()
     assert "You draft; the human sends" in out
     assert "Say it's AI-generated" in out

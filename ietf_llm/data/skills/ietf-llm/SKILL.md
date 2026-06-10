@@ -181,12 +181,15 @@ chair's own message over any summary — including `tally_positions`' count,
 which is a keyword heuristic, not sentiment analysis: it cannot measure level
 of support, so never quote it as one. A narrative read — `search_corpus` /
 `read_topic` snippets — shows what was *said*, not what was *decided*, and is
-**not** sufficient evidence for a position or consensus claim. The moment you
-are about to write "the WG supported / opposed X", "the chair called
-consensus", "X was decided", or "<person> objected", stop: call
+**not** sufficient evidence for a position or consensus claim. The trigger to
+read the norms is grammatical, not a self-assessment: the moment you are about
+to write a sentence asserting a *collective outcome* — that something is
+settled, decided, resolved, agreed, or rejected, that there is consensus, or
+what "the WG thinks/wants/supported/opposed" — stop and call
 `read_ietf_interpretation_norms` first, then ground the claim in the chair's
-actual declaration (or, for an individual, that person's own message via
-`author=`).
+actual declaration. Reporting what a *named individual* said is free (cite
+that person's own message via `author=`) — it is only the claim about where
+the *group* landed that is gated, however confident you feel.
 
 ## Citing
 
@@ -274,7 +277,12 @@ interpretation norms. It covers who's accountable (the human sends; you
 draft), disclosing AI involvement and how closely supervised, the terse
 register to match, keeping it brief and not repeating points, staying
 on-charter, engaging existing work, and where AI help is uncontroversial.
-Authoring Internet-Drafts is out of scope.
+Authoring Internet-Drafts is out of scope. As a backstop, the tools that
+surface quotable message material (`read_topic`, `get_chunk_text`,
+`read_file_section`, `find_replies` over `threads/` / `issues/`) append a
+one-line write-side reminder to their output — the mirror of the read-side
+consensus banner — so the gate is in front of you at the moment you have the
+raw material a reply would quote, not only here.
 
 ## Anti-patterns
 
