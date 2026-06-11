@@ -71,6 +71,7 @@ from . import (
 from .catalog import render_efforts
 from .corpus import describe, kind_status
 from .corpus_store import VersionVanished, get_corpus_store, pin_corpus_version
+from .routing import DEFAULT_MIN_SCORE, route
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -2118,6 +2119,86 @@ def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
     return kept, dropped
 
 
+def tool_which_corpus(query: str, limit: int = 8) -> str:
+    clean = (query or "").strip()
+    if not clean:
+        return (
+            "which_corpus needs a question or topic to route, e.g. "
+            '`which_corpus("0-RTT replay protection")`.'
+        )
+    result = route(clean, limit=limit)
+    if result.error == "embed-failed":
+        return (
+            f"Could not embed the query with model `{result.model_id}` to route it. "
+            "The embedding backend may be unavailable; try `find_efforts` "
+            "(keyword-based) instead."
+        )
+    if (
+        not result.matches
+        and not result.skipped_other_model
+        and not result.no_centroids
+    ):
+        return (
+            "No gathered corpus has a topic map yet — routing centroids populate "
+            "at gather time. Re-gather a corpus (`ietf-llm <name>`), then retry. "
+            "Meanwhile `find_efforts(topic)` discovers efforts to gather and "
+            "`list_corpora` shows what is cached."
+        )
+
+    lines: List[str] = []
+    if result.confident:
+        lines.append(
+            f"**Which corpus** for {clean!r} — gathered corpora ranked by "
+            f"topic-centroid similarity (embedding model `{result.model_id}`):"
+        )
+        lines.append("")
+        for i, match in enumerate(result.matches, 1):
+            weak = "" if match.score >= DEFAULT_MIN_SCORE else "  _(below floor)_"
+            lines.append(f"{i}. **{match.corpus}** — {match.score:.3f}{weak}")
+        top = result.matches[0].corpus
+        lines.append("")
+        lines.append(
+            f'Search the best fit with `search_corpus("{top}", "...")`, or compare '
+            'a few with `search_corpora([...], "...")`. These are routing hints '
+            "(topic proximity), not proof the answer is there — confirm by searching."
+        )
+    else:
+        closest = result.matches[0] if result.matches else None
+        if closest is not None:
+            lines.append(
+                f"No confident match for {clean!r} among gathered corpora "
+                f"(closest: **{closest.corpus}** {closest.score:.3f}, below the "
+                f"{DEFAULT_MIN_SCORE:.2f} confidence floor)."
+            )
+        else:
+            lines.append(f"No confident match for {clean!r} among gathered corpora.")
+        lines.append("")
+        lines.append(
+            "The right effort may not be gathered yet — try "
+            f"`find_efforts({clean!r})` to discover candidates and gather one, or "
+            "the question may be off-topic for what is cached. Don't force a search "
+            "against a low-confidence guess."
+        )
+        if result.matches:
+            lines.append("")
+            lines.append("_Closest (weak) matches:_")
+            for match in result.matches:
+                lines.append(f"- {match.corpus} — {match.score:.3f}")
+
+    if result.skipped_other_model:
+        lines.append(
+            f"\n_Scored only corpora on the majority embedding model "
+            f"`{result.model_id}`; not comparable, so skipped: "
+            f"{', '.join(result.skipped_other_model)}._"
+        )
+    if result.no_centroids:
+        lines.append(
+            "\n_No topic map yet (re-gather to include in routing): "
+            f"{', '.join(result.no_centroids)}._"
+        )
+    return "\n".join(lines)
+
+
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
     """If `file` identifies a per-corpus digest (`digests/<kind>.md`),
     return the digest `kind`; otherwise None.
@@ -3041,6 +3122,36 @@ def main() -> None:
         `limit` caps results (default 15).
         """
         return await _offload(render_efforts, query, limit)
+
+    @server.tool()
+    async def which_corpus(query: str, limit: int = 8) -> str:
+        """Route a question to the **already-gathered** corpus it belongs to,
+        when the user gives a topic but names no working group. Embeds the
+        question and ranks gathered corpora by similarity to their topic-map
+        centroids; returns the ranked names with scores, or **abstains** when
+        nothing is close.
+
+        This is the "which corpus did they mean" step. It is distinct from
+        `find_efforts`, and the two answer different questions:
+          - `which_corpus` ranks what is **already cached here**, by your
+            actual gathered content — use it to pick the corpus for a question
+            like "where is 0-RTT replay discussed?" without naming one.
+          - `find_efforts` ranks the **Datatracker catalog** (mostly
+            *un-gathered* efforts) to decide what to gather next.
+        When unsure which to reach for: have a question about a topic that is
+        probably already gathered → `which_corpus`; exploring what the IETF is
+        doing about a subject you may not have gathered → `find_efforts`.
+
+        It is a **router, not a searcher**: it does not read content. Follow a
+        confident result with `search_corpus(corpus, query, ...)` (or
+        `search_corpora` to compare a few) — the score is topic proximity, not
+        proof the answer is there. When it abstains (top score below the
+        confidence floor), fall back to `find_efforts` rather than forcing a
+        search against a low-confidence guess. Corpora gathered before the
+        topic map shipped have no centroids and are reported as such until
+        re-gathered. `limit` caps results (default 8).
+        """
+        return await _offload(tool_which_corpus, query, limit)
 
     @server.tool()
     async def rfc_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments

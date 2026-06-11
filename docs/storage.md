@@ -215,6 +215,14 @@ instance either way. The divergence is naming, not structure — so there is not
 existing local cache keeps working untouched (the sync is a cloud-backend no-op on local), and a fresh
 cloud deployment simply populates the keys on its first gather.
 
+One more fleet key is **not** a gather cache: `fleet/routing/centroids.json` is the cross-corpus
+**centroid routing** table the `which_corpus` tool reads (issue #116). The cloud `publish` merges the
+just-published corpus's topic-map centroids into it under a per-corpus compare-and-swap (concurrent
+publishers of different corpora must not clobber — same merge discipline as the identity maps above),
+so a reader routes the whole fleet with one GET instead of materialising every version to reach its
+`topics.json`. On the local backend there is no such key — routing scans the local sidecars directly
+(`CorpusStore.routing_fleet_table` returns None there). See `routing.py` and `docs/architecture.md`.
+
 ### Publish visibility
 
 A new version is visible to a replica within `IETF_LLM_RESOLVE_TTL` seconds of a publish (the

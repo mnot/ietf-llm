@@ -140,6 +140,20 @@ Limits: covers **active** groups only — a concluded effort won't surface
 (use `rfc_search` for published work). A topic with no chartered group yet
 may return nothing; say so rather than inventing an effort.
 
+**Already gathered, but which one?** `which_corpus(query)` answers the
+sibling question: given a topic, **which of the corpora already cached
+here** is it about. It embeds the query and ranks gathered corpora by
+similarity to their topic-map centroids, or **abstains** when nothing is
+close. Use it when the user has a question but names no group and the
+right corpus is probably already gathered ("where's 0-RTT replay
+discussed?"); use `find_efforts` instead when exploring what the IETF is
+doing about a subject you may *not* have gathered. It is a **router, not a
+searcher** — follow a confident hit with `search_corpus` / `search_corpora`
+to confirm (the score is topic proximity, not proof). When it abstains,
+fall back to `find_efforts`; don't force a search against a weak guess.
+(Corpora gathered before the topic map shipped have no centroids and are
+reported as such until re-gathered.)
+
 ## First call: pick by question shape
 
 **Orient first** with `overview(corpus)` for structural questions ("tell

@@ -394,6 +394,40 @@ class CloudCorpusStore(CorpusStore):
 
         cache_sync.persist(self._kv, corpus)
 
+    def routing_fleet_table(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        # One GET of the fleet key routes the whole fleet — no per-corpus version
+        # materialisation. publish() merged each corpus's entry. An empty dict
+        # (not None) even when _kv is absent: the cloud reader must not fall back
+        # to a local topics.json scan, which would materialise versions.
+        if self._kv is None:
+            return {}
+        from . import routing  # pylint: disable=import-outside-toplevel
+
+        return routing.read_fleet_table(self._kv)
+
+    def _merge_routing_entry(self, corpus: str) -> None:
+        # Merge this corpus's routing centroids into the fleet key, so
+        # which_corpus can rank the version we just published. Read the sidecar
+        # straight off local scratch (it sits beside the index the gather just
+        # wrote) rather than through local_index_dir, which would materialise a
+        # version. Best-effort: never fail an already-succeeded publish.
+        if self._kv is None:
+            return
+        from . import routing  # pylint: disable=import-outside-toplevel
+        from .embeddings.topics import (  # pylint: disable=import-outside-toplevel
+            routing_projection,
+        )
+
+        path = os.path.join(get_index_dir(), corpus, "topics.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                topics = json.load(handle)
+        except (OSError, ValueError):
+            return
+        entry = routing_projection(topics)
+        if entry is not None:
+            routing.persist_corpus_entry(self._kv, corpus, entry)
+
     def _reap_scratch(self, corpus: str, current_version: str) -> None:
         """Delete this replica's materialised version dirs for `corpus` that are
         no longer in use, bounding scratch (otherwise every gather leaves one
@@ -523,6 +557,13 @@ class CloudCorpusStore(CorpusStore):
         # `_reap_scratch`'s stance for local scratch).
         try:
             self._reap_versions(corpus, version)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        # Make the just-published version routable: merge its centroids into the
+        # fleet routing key. Best-effort, like the reap — the publish has already
+        # succeeded, so a routing-merge failure must never surface as one.
+        try:
+            self._merge_routing_entry(corpus)
         except Exception:  # pylint: disable=broad-except
             pass
         return version

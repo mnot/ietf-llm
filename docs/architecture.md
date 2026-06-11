@@ -213,10 +213,29 @@ Key invariants:
   titles of its most-central documents, its size, and `last_active` (newest
   member date). Clustering is over the **full archive**; recency is an
   annotation, not a filter. `overview` renders the largest themes; centroid
-  routing (issue #116, item 2) reuses the centroids. It rides publish like
-  the index (a top-level file in the version tree), and is **write-side** —
-  a cache embedded before the topic map shipped has no sidecar until it is
+  routing reuses the centroids (below). It rides publish like the index (a
+  top-level file in the version tree), and is **write-side** — a cache
+  embedded before the topic map shipped has no sidecar until it is
   re-gathered, which `read_topics` / `overview` degrade past silently.
+- **Centroid routing (`routing.py`, the `which_corpus` tool)** answers "which
+  gathered corpus is this question about." It embeds the query once and scores
+  each corpus as the **max** cosine over its topic-map centroids (a single
+  corpus mean washes out a broad WG), ranks, and **abstains** below a floor.
+  Two corrections matter: scores compare only **within one embedding-model id**
+  (cosine isn't portable across backends — the same gate `search_corpora`
+  enforces; routing scores the largest single-model group and reports the
+  rest), and scoring is on **mean-centered** vectors (sentence embedders are
+  anisotropic — raw cosines between unrelated texts cluster near ~0.95 with no
+  gradient; subtracting the group common-mode restores one). The cross-corpus
+  centroid set comes through the `CorpusStore.routing_fleet_table` seam: None
+  on the local backend, so `routing` scans each `topics.json`; one
+  `fleet/routing/centroids.json` key on the cloud backend (a per-corpus
+  CAS-merge written at `publish`, so a reader routes the fleet with a single
+  GET instead of materialising every version). The abstention floor (0.30 for
+  bge-small) is calibrated with `scripts/calibrate_routing.py` — off-topic
+  queries top out ~0.24, on-topic sit at a median ~0.48; recalibrate on a model
+  swap, `IETF_LLM_ROUTING_MIN_SCORE` overrides. Reader-side and offline apart
+  from the query embed.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).
@@ -321,6 +340,7 @@ ietf_llm/
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
+├── routing.py              # which_corpus: centroid routing over the topic-map sidecars + fleet key
 ├── corpus_store.py         # CorpusStore seam: port + LocalCorpusStore + factory
 ├── kv_store.py             # KvStore compare-and-swap seam + in-memory double
 ├── kv_control.py           # cloud control plane: pointer / lease / slot / status over KvStore
