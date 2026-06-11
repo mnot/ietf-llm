@@ -37,6 +37,24 @@ procedural message — chair characterisations get disputed on-list too.
 `tally_positions`' **Chair statements** section surfaces those procedural
 messages (consensus call, WGLC, closure) for a thread.
 
+## Not every decision is called, and none is final until Last Call
+
+Two symmetric mistakes about finality. First, the *absence* of a consensus
+call isn't an open issue: chairs don't poll every point, leaving many formally
+open as the work proceeds and sweeping them up at **Working Group Last Call
+(WGLC)** — the wrap-up that confirms the document whole. Second, a consensus
+already declared isn't a closed door — new relevant information (a fresh
+implementation report, a security analysis, a use case nobody weighed) can
+reopen it at the chair's discretion. Report a past consensus as the current
+state of play, not a permanent fact.
+
+And WGLC itself isn't the last word. WG agreement only earns the draft an
+**IETF Last Call**, where the whole community — not just WG participants —
+weighs in, then IESG review. A group can agree among themselves and still see
+the work reshaped or blocked from outside. "The WG agreed" is not "the IETF
+agreed"; a document past WGLC but not yet an RFC is still open to wider
+scrutiny.
+
 ## Affiliation: aggregate, don't attribute
 
 Don't pin a position on a company ("Cloudflare opposes X") from an author's
