@@ -231,9 +231,11 @@ Key invariants:
   on the local backend, so `routing` scans each `topics.json`; one
   `fleet/routing/centroids.json` key on the cloud backend (a per-corpus
   CAS-merge written at `publish`, so a reader routes the fleet with a single
-  GET instead of materialising every version). The abstention floor is
-  provisional (`IETF_LLM_ROUTING_MIN_SCORE` overrides) pending live-query
-  calibration per model. Reader-side and offline apart from the query embed.
+  GET instead of materialising every version). The abstention floor (0.30 for
+  bge-small) is calibrated with `scripts/calibrate_routing.py` — off-topic
+  queries top out ~0.24, on-topic sit at a median ~0.48; recalibrate on a model
+  swap, `IETF_LLM_ROUTING_MIN_SCORE` overrides. Reader-side and offline apart
+  from the query embed.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).

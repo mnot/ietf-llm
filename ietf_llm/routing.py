@@ -34,13 +34,16 @@ from .kv_store import ABSENT, KvStore
 from .utils import Verbosity
 
 #: Cosine floor (on **mean-centered** scores) for a confident match: below it,
-#: routing abstains rather than name a least-bad corpus. Provisional — sentence
-#: embedding models (bge-small, the default) are anisotropic, so raw cosines
-#: between unrelated texts cluster near ~0.95 and carry no usable gradient;
-#: `_score_group` removes that common-mode by mean-centering, which restores a
-#: spread, but the exact floor wants calibration against live queries per model.
-#: Override with IETF_LLM_ROUTING_MIN_SCORE. See tests/test_routing.py.
-_BUILTIN_MIN_SCORE = 0.5
+#: routing abstains rather than name a least-bad corpus. Calibrated for the
+#: default bge-small model with `scripts/calibrate_routing.py` over the gathered
+#: corpora: off-topic queries top out around ~0.24 and on-topic queries sit at a
+#: median ~0.48, so 0.30 clears the off-topic ceiling with margin while keeping
+#: the clearly on-topic hits. (Sentence embedders are anisotropic — raw cosines
+#: between unrelated texts cluster near ~0.95 with no usable gradient;
+#: `_score_group` mean-centers to remove that common-mode, which is what makes
+#: any absolute floor meaningful.) Swap the embedder → recalibrate; override
+#: per deployment with IETF_LLM_ROUTING_MIN_SCORE.
+_BUILTIN_MIN_SCORE = 0.30
 
 
 def _env_min_score() -> float:
