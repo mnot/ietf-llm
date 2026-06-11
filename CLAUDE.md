@@ -52,9 +52,9 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
 - **Source burden.** We need to be friendly to our back-end services: datatracker,
   GitHub, etc.
 - **Read-only boundary.** Read tools stay read-only and offline. New
-  network/write code belongs only on the gather path (or the opt-in
-  `start_gather` / `gather_status` tools). Don't materialise a cache from a
-  read tool.
+  network/write code belongs only on the gather path (or the gather tools
+  `start_gather` / `gather_status`, registered only when gather is enabled).
+  Don't materialise a cache from a read tool.
 - **NotebookLM / export use case.** `ietf_llm/export.py` mirrors the `.txt`/
   `.md` files under a corpus's `files/` (bundled by year/repo) for NotebookLM.
   Changing what gather writes there changes the export — it's write-side. And
