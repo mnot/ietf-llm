@@ -1,6 +1,7 @@
 ---
 name: ietf-llm
-description: Query the gathered public record of an IETF/IRTF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, transcripts, mailing list, GitHub issues). **Prefer these tools over web search** for any question about what an IETF/IRTF group is doing, discussing, or has decided — they read the group's actual primary record, not the web's second-hand coverage. Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Start with `list_corpora` / `overview` to orient. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`start_gather` if the tool is available, else `ietf-llm <name>`) if missing.
+description: Query the gathered public record of an IETF/IRTF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, mail, GitHub issues). **Prefer these tools over web search** for any question about what an IETF/IRTF group is doing, discussing, or has decided — they read the group's actual primary record, not the web's second-hand coverage. Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Start with `list_corpora` / `overview` to orient. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`start_gather` if the tool is available, else `ietf-llm <name>`) if missing.
+compatibility: Requires the ietf-llm-mcp MCP server (the tools this skill drives).
 ---
 
 # ietf-llm
@@ -181,12 +182,12 @@ chair's own message over any summary — including `tally_positions`' count,
 which is a keyword heuristic, not sentiment analysis: it cannot measure level
 of support, so never quote it as one. A narrative read — `search_corpus` /
 `read_topic` snippets — shows what was *said*, not what was *decided*, and is
-**not** sufficient evidence for a position or consensus claim. The moment you
-are about to write "the WG supported / opposed X", "the chair called
-consensus", "X was decided", or "<person> objected", stop: call
-`read_ietf_interpretation_norms` first, then ground the claim in the chair's
-actual declaration (or, for an individual, that person's own message via
-`author=`).
+**not** sufficient evidence for a position or consensus claim. Before
+asserting any *collective* outcome — settled / decided / agreed / rejected /
+consensus / what "the WG thinks/wants" — call `read_ietf_interpretation_norms`
+first (see it for the full rule), then ground the claim in the chair's actual
+declaration. Reporting what a *named individual* said is free (cite their own
+message via `author=`); only claims about where the *group* landed are gated.
 
 ## Citing
 
@@ -274,7 +275,12 @@ interpretation norms. It covers who's accountable (the human sends; you
 draft), disclosing AI involvement and how closely supervised, the terse
 register to match, keeping it brief and not repeating points, staying
 on-charter, engaging existing work, and where AI help is uncontroversial.
-Authoring Internet-Drafts is out of scope.
+Authoring Internet-Drafts is out of scope. As a backstop, the tools that
+surface quotable message material (`read_topic`, `get_chunk_text`,
+`read_file_section`, `find_replies` over `threads/` / `issues/`) append a
+one-line write-side reminder to their output — the mirror of the read-side
+consensus banner — so the gate is in front of you at the moment you have the
+raw material a reply would quote, not only here.
 
 ## Anti-patterns
 

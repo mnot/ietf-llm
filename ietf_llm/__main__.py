@@ -61,7 +61,7 @@ from .gather_cli import build_parser
 from .gather_plan import _gather_plan_summary
 from .gather_stages import ProgressFn, StageTracker, stage_plan
 from .people import build_registry, write_people_digest
-from .skill_install import install, sync_if_pristine
+from .skill_install import install_skills, sync_if_pristine
 from .utils import (
     DEFAULT_MONTHS,
     LogLevel,
@@ -122,8 +122,8 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     if args.completion:
         sys.exit(print_completion_snippet(args.completion))
 
-    if args.install_claude_skill:
-        sys.exit(install())
+    if args.install_skills:
+        sys.exit(install_skills())
 
     if args.list_wgs:
         sys.exit(cli_list.print_cached_wgs())
@@ -142,7 +142,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         )
     if not args.all and not args.wg:
         parser.error(
-            "a corpus name is required (unless using --install-claude-skill or --all)"
+            "a corpus name is required (unless using --install-skills or --all)"
         )
 
     verbosity = Verbosity.STATUS

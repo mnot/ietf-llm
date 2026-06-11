@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Corpus to gather: a Working Group / Research Group / "
         "editorial WG / BoF shortname (e.g. 'httpbis'), a mailing list "
         "(e.g. 'last-call'), or a custom label given explicit sources. "
-        "Optional when using --install-claude-skill or --all.",
+        "Optional when using --install-skills or --all.",
     )
     # Tab-completes already-gathered WG shortnames from the cache.
     wg_arg.completer = wg_completer  # type: ignore[attr-defined]
@@ -250,11 +250,12 @@ def build_parser() -> argparse.ArgumentParser:
         "(both gather and export scopes).",
     )
     parser.add_argument(
-        "--install-claude-skill",
+        "--install-skills",
         action="store_true",
-        help="Install the bundled Claude skill into ~/.claude/skills/ietf-llm "
-        "and exit. Always overwrites any existing skill at that path. "
-        "Does not gather. (Claude Code only.)",
+        help="Install the bundled Agent Skills (ietf-llm + the interpretation "
+        "/ participation norms) into every supported agent harness detected "
+        "on this machine (Claude Code, Codex, Gemini CLI, opencode) and exit. "
+        "Overwrites any existing copy at each destination. Does not gather.",
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="Only output errors."

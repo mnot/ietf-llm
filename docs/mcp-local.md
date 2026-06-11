@@ -40,14 +40,17 @@ guidance as a local skill (see below); it's the same content either way.
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
 
-Optionally install the bundled skill, which is the same guidance the server already exposes via MCP,
-packaged for Claude Code:
+Optionally install the bundled Agent Skills — the same guidance the server already exposes via MCP,
+packaged as skills. This installs into every supported agent harness it detects (Claude Code, Codex,
+Gemini CLI, opencode):
 
 ```bash
-ietf-llm --install-claude-skill
+ietf-llm --install-skills
 ```
 
-Re-run after upgrading the package to pick up improvements.
+Three skills are installed: `ietf-llm` (query routing, Claude/opencode only — it drives the MCP
+tools), plus `ietf-interpreting` and `ietf-contributing` (the read- and write-side norms, installed
+everywhere). Re-run after upgrading the package to pick up improvements.
 
 ### Claude Desktop
 

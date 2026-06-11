@@ -1,10 +1,10 @@
-"""Tests for ietf_llm.skill_install — the --install-claude-skill path.
+"""Tests for ietf_llm.skill_install — the --install-skills path.
 
-Verifies the advertised behaviours:
-- fresh install: copies and returns 0
-- already up to date: no-op, returns 0
-- destination modified: overwritten (the user asked us to install)
-- bundled skill missing from the wheel: clean error, returns 1
+Multi-harness: the installer copies each bundled skill under
+`data/skills/<name>/` into every detected harness's skills dir. The norms
+skills go into every detected harness; the query skill (`ietf-llm`) goes only
+into `~/.claude/skills/` (Claude + opencode read it). Tests redirect `_home()`
+to a sandbox and create harness marker dirs to simulate which are present.
 """
 
 from __future__ import annotations
@@ -15,77 +15,145 @@ from unittest.mock import patch
 from ietf_llm import skill_install
 from ietf_llm.utils import Verbosity
 
-
-def _redirect_dest(monkeypatch, dest_root: Path) -> Path:
-    """Point skill_install at a sandbox dest instead of ~/.claude/skills/."""
-    monkeypatch.setattr(skill_install, "DEST_ROOT", dest_root)
-    return dest_root / skill_install.SKILL_NAME
-
-
-def _redirect_manifest(monkeypatch, cache_root: Path) -> Path:
-    """Point the install manifest at a sandbox cache root."""
-    cache_root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(skill_install, "get_cache_dir", lambda: str(cache_root))
-    return cache_root / "installed-skill.json"
-
-
-def test_fresh_install_copies_skill(tmp_path: Path, monkeypatch) -> None:
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    rc = skill_install.install()
-    assert rc == 0
-    assert dest.is_dir()
-    assert (dest / "SKILL.md").exists()
+_MARKERS = {
+    "claude": ".claude",
+    "codex": ".codex",
+    "gemini": ".gemini",
+    "opencode": ".config/opencode",
+}
+# Where each harness discovers skills (relative to home).
+_ROOTS = {
+    "claude": ".claude/skills",
+    "codex": ".agents/skills",
+    "gemini": ".gemini/skills",
+    "opencode": ".config/opencode/skills",
+}
 
 
-def test_install_idempotent_when_identical(tmp_path: Path, monkeypatch) -> None:
-    _redirect_dest(monkeypatch, tmp_path / "skills")
-    assert skill_install.install() == 0
-    # Second call should detect identical content and no-op cleanly.
-    assert skill_install.install() == 0
+def _sandbox(monkeypatch, tmp_path: Path) -> Path:
+    """Redirect home + cache to a sandbox; return the sandbox home."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / "cache").mkdir()
+    monkeypatch.setattr(skill_install, "_home", lambda: home)
+    monkeypatch.setattr(skill_install, "get_cache_dir", lambda: str(tmp_path / "cache"))
+    return home
 
 
-def test_install_overwrites_modified_destination(
+def _present(home: Path, *keys: str) -> None:
+    """Create marker dirs so those harnesses count as installed."""
+    for key in keys:
+        (home / _MARKERS[key]).mkdir(parents=True, exist_ok=True)
+
+
+def _installed(home: Path, harness: str, skill: str) -> bool:
+    return (home / _ROOTS[harness] / skill / "SKILL.md").exists()
+
+
+# --- install_skills -------------------------------------------------------
+
+
+def test_installs_all_skills_into_claude(tmp_path: Path, monkeypatch) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    assert skill_install.install_skills() == 0
+    for skill in ("ietf-llm", "ietf-interpreting", "ietf-contributing"):
+        assert _installed(home, "claude", skill)
+
+
+def test_norms_everywhere_query_claude_only(tmp_path: Path, monkeypatch) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude", "codex", "gemini")
+    assert skill_install.install_skills() == 0
+    # Norms land in every detected harness's own root.
+    for harness in ("claude", "codex", "gemini"):
+        assert _installed(home, harness, "ietf-interpreting")
+        assert _installed(home, harness, "ietf-contributing")
+    # Query skill only in ~/.claude/skills — NOT in Codex/Gemini dirs.
+    assert _installed(home, "claude", "ietf-llm")
+    assert not _installed(home, "codex", "ietf-llm")
+    assert not _installed(home, "gemini", "ietf-llm")
+
+
+def test_query_reaches_claude_dir_for_opencode_only(
     tmp_path: Path, monkeypatch
 ) -> None:
-    # `--install-claude-skill` is an explicit "I want the bundled
-    # version" request; overwrite without ceremony. (The user can back
-    # up their local edits beforehand if they care.)
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    skill_install.install()
-    (dest / "SKILL.md").write_text("user-edited content")
-    rc = skill_install.install()
+    # opencode reads ~/.claude/skills, so the query skill goes there even
+    # when Claude itself isn't installed.
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "opencode")
+    assert skill_install.install_skills() == 0
+    assert _installed(home, "opencode", "ietf-interpreting")
+    assert _installed(home, "opencode", "ietf-contributing")
+    # Query skill not in opencode's own dir, but in ~/.claude/skills.
+    assert not _installed(home, "opencode", "ietf-llm")
+    assert (home / ".claude/skills/ietf-llm/SKILL.md").exists()
+
+
+def test_no_query_skill_when_only_codex_gemini(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Neither Claude nor opencode present → the query skill has no skill home
+    # (those harnesses get routing from the MCP instructions field instead).
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "codex", "gemini")
+    assert skill_install.install_skills() == 0
+    assert _installed(home, "codex", "ietf-interpreting")
+    assert not (home / ".claude/skills/ietf-llm").exists()
+
+
+def test_no_harness_detected_installs_nothing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    rc = skill_install.install_skills()
     assert rc == 0
-    assert "user-edited content" not in (dest / "SKILL.md").read_text()
+    assert "No supported agent harness detected" in capsys.readouterr().out
+    assert not (home / ".claude").exists()
 
 
-def test_install_handles_missing_source(tmp_path: Path, monkeypatch, capsys) -> None:
-    _redirect_dest(monkeypatch, tmp_path / "skills")
+def test_install_idempotent(tmp_path: Path, monkeypatch) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    assert skill_install.install_skills() == 0
+    assert skill_install.install_skills() == 0
+
+
+def test_install_overwrites_modified(tmp_path: Path, monkeypatch) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    edited = home / ".claude/skills/ietf-llm/SKILL.md"
+    edited.write_text("user-edited content")
+    assert skill_install.install_skills() == 0
+    assert "user-edited content" not in edited.read_text()
+
+
+def test_missing_bundled_skills(tmp_path: Path, monkeypatch, capsys) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
     with patch.object(
-        skill_install, "_bundled_root", return_value=tmp_path / "nope"
+        skill_install, "_bundled_skills_root", return_value=tmp_path / "nope"
     ):
-        rc = skill_install.install()
+        rc = skill_install.install_skills()
     assert rc == 1
-    err = capsys.readouterr().err
-    assert "bundled skill not found" in err
+    assert "bundled skills not found" in capsys.readouterr().err
 
 
 # --- sync_if_pristine -----------------------------------------------------
 
 
 def test_sync_noop_when_not_installed(tmp_path: Path, monkeypatch, capsys) -> None:
-    # No skill at the destination — never install one the user didn't ask for.
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    _redirect_manifest(monkeypatch, tmp_path / "cache")
+    _sandbox(monkeypatch, tmp_path)
     skill_install.sync_if_pristine(Verbosity.STATUS)
-    assert not dest.exists()
     assert capsys.readouterr().err == ""
 
 
 def test_sync_noop_when_up_to_date(tmp_path: Path, monkeypatch, capsys) -> None:
-    _redirect_dest(monkeypatch, tmp_path / "skills")
-    _redirect_manifest(monkeypatch, tmp_path / "cache")
-    skill_install.install()
-    capsys.readouterr()  # drop the install line
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
     skill_install.sync_if_pristine(Verbosity.STATUS)
     assert capsys.readouterr().err == ""
 
@@ -93,67 +161,59 @@ def test_sync_noop_when_up_to_date(tmp_path: Path, monkeypatch, capsys) -> None:
 def test_sync_auto_updates_pristine_skill(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    # A skill we installed, left untouched, but now out of date relative
-    # to the bundled content: silently brought up to date.
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    _redirect_manifest(monkeypatch, tmp_path / "cache")
-    skill_install.install()
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
     capsys.readouterr()
-    # Simulate the bundled content moving on by mutating the installed
-    # copy *and* recording its current hash as the manifest — i.e. the
-    # installed tree is exactly what we last wrote, just older content.
-    (dest / "SKILL.md").write_text("older bundled content")
-    skill_install._write_manifest(skill_install._tree_hash(dest))
+    skill_dest = home / ".claude/skills/ietf-llm"
+    (skill_dest / "SKILL.md").write_text("older bundled content")
+    manifest = skill_install._read_manifest()
+    skill_install._record(manifest, skill_dest, skill_install._tree_hash(skill_dest))
+    skill_install._write_manifest(manifest)
     skill_install.sync_if_pristine(Verbosity.STATUS)
-    # Restored to the real bundled SKILL.md, and a notice was printed.
-    assert "older bundled content" not in (dest / "SKILL.md").read_text()
-    assert "Updated the installed ietf-llm Claude skill" in capsys.readouterr().err
+    assert "older bundled content" not in (skill_dest / "SKILL.md").read_text()
+    assert "Updated the installed ietf-llm skill" in capsys.readouterr().err
 
 
 def test_sync_notifies_when_user_edited(tmp_path: Path, monkeypatch, capsys) -> None:
-    # Installed copy diverges from BOTH the bundled content and the
-    # manifest → treated as user-edited; notify, don't clobber.
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    _redirect_manifest(monkeypatch, tmp_path / "cache")
-    skill_install.install()
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
     capsys.readouterr()
-    (dest / "SKILL.md").write_text("hand-edited by the user")
+    edited = home / ".claude/skills/ietf-contributing/SKILL.md"
+    edited.write_text("hand-edited by the user")
     skill_install.sync_if_pristine(Verbosity.STATUS)
-    # Left as-is; the notice points at the explicit install command.
-    assert (dest / "SKILL.md").read_text() == "hand-edited by the user"
-    err = capsys.readouterr().err
-    assert "--install-claude-skill" in err
+    assert edited.read_text() == "hand-edited by the user"
+    assert "--install-skills" in capsys.readouterr().err
 
 
 def test_sync_notifies_when_no_manifest(tmp_path: Path, monkeypatch, capsys) -> None:
-    # Out-of-date and no manifest (installed by an older release): we
-    # can't prove it's pristine, so notify rather than clobber.
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    manifest = _redirect_manifest(monkeypatch, tmp_path / "cache")
-    skill_install.install()
-    manifest.unlink()
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    skill_install._manifest_path().unlink()
     capsys.readouterr()
-    (dest / "SKILL.md").write_text("older content, no manifest")
+    edited = home / ".claude/skills/ietf-llm/SKILL.md"
+    edited.write_text("older content, no manifest")
     skill_install.sync_if_pristine(Verbosity.STATUS)
-    assert (dest / "SKILL.md").read_text() == "older content, no manifest"
-    assert "--install-claude-skill" in capsys.readouterr().err
+    assert edited.read_text() == "older content, no manifest"
+    assert "--install-skills" in capsys.readouterr().err
 
 
 def test_sync_is_silent_when_quiet(tmp_path: Path, monkeypatch, capsys) -> None:
-    dest = _redirect_dest(monkeypatch, tmp_path / "skills")
-    _redirect_manifest(monkeypatch, tmp_path / "cache")
-    skill_install.install()
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
     capsys.readouterr()
-    (dest / "SKILL.md").write_text("hand-edited by the user")
+    (home / ".claude/skills/ietf-llm/SKILL.md").write_text("hand-edited")
     skill_install.sync_if_pristine(Verbosity.QUIET)
     assert capsys.readouterr().err == ""
 
 
 def test_sync_never_raises(tmp_path: Path, monkeypatch) -> None:
-    # Best-effort: a failure deep in the check must not propagate.
-    _redirect_dest(monkeypatch, tmp_path / "skills")
-    _redirect_manifest(monkeypatch, tmp_path / "cache")
-    skill_install.install()
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
     with patch.object(skill_install, "_tree_hash", side_effect=OSError("boom")):
         skill_install.sync_if_pristine(Verbosity.STATUS)  # no exception
 
@@ -162,8 +222,7 @@ def test_sync_never_raises(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_dirs_identical_positive(tmp_path: Path) -> None:
-    a = tmp_path / "a"
-    b = tmp_path / "b"
+    a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     (a / "f.txt").write_text("same")
@@ -172,8 +231,7 @@ def test_dirs_identical_positive(tmp_path: Path) -> None:
 
 
 def test_dirs_identical_content_differs(tmp_path: Path) -> None:
-    a = tmp_path / "a"
-    b = tmp_path / "b"
+    a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     (a / "f.txt").write_text("one")
@@ -182,8 +240,7 @@ def test_dirs_identical_content_differs(tmp_path: Path) -> None:
 
 
 def test_dirs_identical_file_only_on_one_side(tmp_path: Path) -> None:
-    a = tmp_path / "a"
-    b = tmp_path / "b"
+    a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     (a / "f.txt").write_text("x")
@@ -193,8 +250,7 @@ def test_dirs_identical_file_only_on_one_side(tmp_path: Path) -> None:
 
 
 def test_dirs_identical_recurses_into_subdirs(tmp_path: Path) -> None:
-    a = tmp_path / "a"
-    b = tmp_path / "b"
+    a, b = tmp_path / "a", tmp_path / "b"
     (a / "sub").mkdir(parents=True)
     (b / "sub").mkdir(parents=True)
     (a / "sub" / "x.txt").write_text("same")
