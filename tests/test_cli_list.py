@@ -41,6 +41,10 @@ def test_print_cached_wgs_lists_with_kind(
     assert "synthetic" in synthetic_line
     assert "group" in httpbis_line
     assert "synthetic" not in httpbis_line
+    # The status column disclaims a chartered effort rather than showing a
+    # bare "—" that could read as an active group.
+    assert "not an IETF effort" in synthetic_line
+    assert "—" not in synthetic_line
 
 
 def test_print_cached_wgs_shows_last_gathered(

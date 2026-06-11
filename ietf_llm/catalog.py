@@ -178,6 +178,23 @@ def _facets(effort: Dict[str, Any]) -> str:
     return " · ".join(b for b in bits if b)
 
 
+def _state_label(effort: Dict[str, Any]) -> str:
+    """Render the catalog's group `state` for a row, self-documenting so a
+    reader never has to infer status from a bare row.
+
+    The catalog mirrors the `active` and `bof` Datatracker slices, so a row
+    is one or the other. A **BoF is a pre-WG effort** — no chartered group
+    exists yet to receive a proposal — and that distinction is load-bearing,
+    so it's spelled out inline rather than left as a three-letter tag. An
+    empty state (shouldn't occur for catalog efforts) renders nothing rather
+    than a misleading marker.
+    """
+    state = str(effort.get("state") or "").strip().lower()
+    if state == "bof":
+        return "**BoF — pre-WG, not chartered**"
+    return state
+
+
 def _truncate(text: str, limit: int = 200) -> str:
     text = " ".join(str(text).split())
     if len(text) <= limit:
@@ -210,10 +227,15 @@ def render_efforts(query: str, limit: int = 15) -> str:
     header += " — ✓ = already gathered here, prefer those."
     lines = [header, ""]
     any_uncached = False
+    any_bof = False
     for effort in shown:
         acronym = effort.get("acronym", "")
         facets = _facets(effort)
-        suffix = f" · {facets}" if facets else ""
+        state = _state_label(effort)
+        if str(effort.get("state") or "").strip().lower() == "bof":
+            any_bof = True
+        bits = " · ".join(b for b in (facets, state) if b)
+        suffix = f" · {bits}" if bits else ""
         tag = _cached_tag(acronym)
         if not _is_cached(acronym):
             any_uncached = True
@@ -223,6 +245,14 @@ def render_efforts(query: str, limit: int = 15) -> str:
         desc = _truncate(effort.get("description", ""))
         if desc:
             lines.append(f"  {desc}")
+    if any_bof:
+        lines += [
+            "",
+            "A **BoF** is a pre-WG effort: there is no chartered group yet to "
+            "receive a proposal. New proposals go to the area's dispatch venue "
+            "(DISPATCH for ART / WIT / SEC, GENDISPATCH for GEN), with the BoF "
+            "as a place to build interest — not as a chartered home.",
+        ]
     if any_uncached:
         lines += [
             "",

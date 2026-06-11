@@ -41,7 +41,9 @@ def print_cached_wgs() -> int:
         kind, status = corpus.kind_status(wg)
         when = last_gathered(wg)
         date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
-        rows.append((wg, kind, status or "—", date_str, corpus.describe(wg)))
+        rows.append(
+            (wg, kind, corpus.status_cell(kind, status), date_str, corpus.describe(wg))
+        )
     name_w = max(len(r[0]) for r in rows + [("corpus",)])
     kind_w = max(len(r[1]) for r in rows + [("", "kind")])
     status_w = max(len(r[2]) for r in rows + [("", "", "status")])

@@ -69,7 +69,7 @@ from . import (
     service_config,
 )
 from .catalog import render_efforts
-from .corpus import describe, kind_status
+from .corpus import describe, kind_status, status_cell
 from .corpus_store import VersionVanished, get_corpus_store, pin_corpus_version
 from .digest.overview import (
     _label_frequencies,
@@ -384,7 +384,7 @@ def tool_list_corpora() -> str:
     rows = []
     for wg in wgs:
         kind, status = kind_status(wg)
-        tag = f"{kind} · {status}" if status else kind
+        tag = f"{kind} · {status_cell(kind, status)}"
         rows.append((wg, tag, describe(wg), _corpus_sources(wg)))
     name_w = max(len(w) for w, _, _, _ in rows)
     tag_w = max(len(t) for _, t, _, _ in rows)
@@ -402,7 +402,11 @@ def tool_list_corpora() -> str:
         "tool), `list` (a mailing list gathered on its own), `custom` "
         "(explicit drafts/repos or a followed author), or `synthetic` (an "
         "`x-` corpus). **status** is the group state (`active` / `concluded` "
-        "/ `bof` / …) when known. The text after that is the corpus's "
+        "/ `bof` / …) for a `group`; a `list`, `custom`, or `synthetic` "
+        "corpus is **not a chartered IETF effort**, and its status says so "
+        "explicitly — a corpus existing here implies nothing about IETF "
+        "standing, and an `x-` bundle or a standalone list is not a Working "
+        "Group. The text after that is the corpus's "
         "subject — the group name, the list followed, the tracked author. "
         "The trailing `(…)` is the source inventory — which of mailing "
         "`list`, GitHub `issues`, `drafts`, `RFCs`, `minutes` are present — "
@@ -3101,15 +3105,22 @@ def main() -> None:
         each tagged with whether it is **already gathered here** (`✓
         cached`); prefer those.
 
+        Each row carries the effort's Datatracker **state**. A `bof` row is
+        rendered as **BoF — pre-WG, not chartered**: it is a pre-WG effort,
+        so there is no chartered group yet to receive a proposal. Do not read
+        a BoF (or the mere presence of an agenda / draft / side meeting) as an
+        active Working Group — that distinction is load-bearing, and the row
+        states it explicitly, so don't infer status the row doesn't assert.
+
         This is the topic→effort discovery step the corpus-first tools
         lack. Reach here when the user gives a *subject* with no obvious
         home — "AI", "post-quantum", "congestion control", "email
         security" — instead of guessing a corpus or crawling Datatracker /
         the web. It ranks over the official Datatracker group list
-        (acronym + name + charter description), mirrored locally; v1
-        covers **active** groups only, so a concluded effort or published
-        work won't surface here — use `rfc_search` for the RFC series, and
-        `list_corpora` to see what is already cached.
+        (acronym + name + charter description), mirrored locally; it covers
+        **active** and **BoF** groups only, so a concluded effort or
+        published work won't surface here — use `rfc_search` for the RFC
+        series, and `list_corpora` to see what is already cached.
 
         The playbook: `find_efforts(topic)` → present the candidates
         (prefer the cached ones) → gather the **few** efforts that
