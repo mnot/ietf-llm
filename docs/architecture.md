@@ -236,6 +236,22 @@ Key invariants:
   queries top out ~0.24, on-topic sit at a median ~0.48; recalibrate on a model
   swap, `IETF_LLM_ROUTING_MIN_SCORE` overrides. Reader-side and offline apart
   from the query embed.
+- **Generic-theme suppression (`routing.generic_theme_flags`, used by
+  `overview`)** is a second reuse of the cross-corpus centroid set. A theme that
+  recurs across a large fraction of the fleet (meeting logistics, ballots,
+  document preamble) is process boilerplate, not distinctive discussion — so
+  `overview` **demotes** it below the distinctive themes and tags it _common
+  across WGs_ (demote, not drop). A theme is generic when a near-match (mean-
+  centered cosine ≥ `_GENERIC_TAU`) appears in ≥ `_GENERIC_UBIQUITY` of the
+  *other* same-model corpora. The key calibration result: at those thresholds,
+  meeting/procedural themes sit at ubiquity 0.6–0.8 while a *substantive*
+  cross-cutting topic shared by only a corpus or two (post-quantum, preferences)
+  stays ~0.2 — so "shared across the fleet" is not mistaken for "generic", which
+  would be the failure mode. It is **reader-side** (recomputed per call, so it
+  tracks the current fleet without a re-gather) and **off below
+  `_GENERIC_MIN_CORPORA` corpora** — a small/single-corpus deployment is
+  unaffected and leans on the gather-time bot-filter (the topic map's
+  `_AUTOMATED_SUBJECT_RE`) as the scale-independent floor.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).

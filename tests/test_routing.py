@@ -173,3 +173,41 @@ def test_route_drops_stale_fleet_entry(monkeypatch) -> None:  # type: ignore[no-
     res = routing.route("quic")
     assert "removed" not in {m.corpus for m in res.matches}
     assert "removed" not in res.no_centroids  # not "missing a topic map" — just gone
+
+
+def _shared_plus_unique(n: int) -> dict:
+    """`n` corpora that each carry a shared centroid (axis 0, the 'generic'
+    theme) plus one unique centroid (axis i+1)."""
+    import numpy as np  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        encode_centroid,
+    )
+
+    eye = np.eye(8, dtype=np.float32)
+    return {
+        f"c{i}": {
+            "model_id": "m",
+            "dim": 8,
+            "centroids": [encode_centroid(eye[0]), encode_centroid(eye[i + 1])],
+        }
+        for i in range(n)
+    }
+
+
+def _patch_store(monkeypatch, raw: dict) -> None:  # type: ignore[no-untyped-def]
+    store = _FakeStore(raw, list(raw))
+    monkeypatch.setattr("ietf_llm.corpus_store.get_corpus_store", lambda: store)
+
+
+def test_generic_theme_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _patch_store(monkeypatch, _shared_plus_unique(5))
+    # The shared axis-0 theme recurs across all corpora → generic; the unique
+    # one does not.
+    assert routing.generic_theme_flags("c0") == [True, False]
+
+
+def test_generic_theme_flags_off_below_min_corpora(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # Four corpora is below the activation floor — suppression stays off.
+    _patch_store(monkeypatch, _shared_plus_unique(4))
+    assert routing.generic_theme_flags("c0") is None
