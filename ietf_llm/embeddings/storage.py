@@ -15,9 +15,12 @@ the cache root; see utils.get_index_dir), with two tables:
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -507,3 +510,153 @@ def probe_index(wg: str) -> bool:
             conn.close()
     except (sqlite3.Error, OSError):
         return False
+
+
+# --- document-level vectors + topic-map sidecar (issue #116) ---------------
+
+#: Cap on the text carried per document into the topic-map term-labelling
+#: pass, so one long thread can't dominate the tf-idf vocabulary. The first
+#: few KB of a thread/issue/draft is plenty to characterise its theme.
+_DOC_TEXT_CAP = 4000
+
+#: Title the chunker gives a thread/issue's leading metadata section (see
+#: `chunking._emit_section`). Its body is the subject `# H1` plus span /
+#: participants / outline — useful for the document title, but pure noise
+#: (and a systematic injector of participant names) for topical term
+#: labelling, so `load_documents` mines its subject and drops the rest.
+_HEADER_TITLE = "(thread header)"
+
+
+@dataclass
+class Document:
+    """One source file reduced to a single representative vector, for the
+    document-level clustering the topic map (and centroid routing) run over.
+
+    `vector` is the L2-normalised mean of the file's chunk vectors — clustering
+    over per-file centroids, not raw chunks, keeps a 200-chunk megathread from
+    dominating the themes (issue #116). `title` is the file's first chunk title
+    (the thread subject / issue title), `text` a capped sample for term
+    labelling, `last_active` the newest chunk date (None if the file is undated).
+    """
+
+    file: str
+    title: str
+    text: str
+    last_active: Optional[str]
+    vector: "np.ndarray[Any, np.dtype[np.float32]]"
+
+
+def load_documents(wg: str) -> List[Document]:
+    """Return one `Document` per indexed file: its chunk vectors mean-pooled
+    and renormalised, plus the metadata the topic map needs to label clusters.
+
+    Empty list when there is no index. Read-only; never migrates the DB.
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return []
+    conn = _connect_ro(wg)
+    try:
+        cur = conn.execute(
+            "SELECT file, chunk_idx, sub_idx, title, text, embedding, chunk_date "
+            "FROM chunks ORDER BY file, chunk_idx, sub_idx"
+        )
+        rows = cur.fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    if not rows:
+        return []
+
+    # Group rows by file, preserving the (chunk_idx, sub_idx) order the query
+    # imposed so the first row of each file is its representative title.
+    by_file: Dict[str, List[Any]] = {}
+    for row in rows:
+        by_file.setdefault(str(row[0]), []).append(row)
+
+    docs: List[Document] = []
+    for file, frows in by_file.items():
+        vecs = _unpack_matrix([r[5] for r in frows])
+        pooled = vecs.mean(axis=0)
+        norm = float(np.linalg.norm(pooled))
+        if norm:
+            pooled = (pooled / norm).astype(np.float32)
+        # Representative title and term text. A thread/issue leads with a
+        # metadata section: mine its `# subject` H1 for the title and drop the
+        # rest (the participants line would otherwise inject every name into
+        # the tf-idf vocabulary). A draft/RFC has no such header — its filename
+        # stem (the document name) is the better title than its boilerplate
+        # first line.
+        header_subject: Optional[str] = None
+        text_parts: List[str] = []
+        budget = _DOC_TEXT_CAP
+        for row in frows:
+            chunk_title = _clean_title(str(row[3]))
+            body = str(row[4])
+            if chunk_title == _HEADER_TITLE:
+                if header_subject is None:
+                    first = body.split("\n", 1)[0].strip()
+                    if first.startswith("#"):
+                        header_subject = first.lstrip("#").strip()
+                continue
+            if budget > 0:
+                piece = body[:budget]
+                text_parts.append(piece)
+                budget -= len(piece)
+        title = header_subject or os.path.splitext(os.path.basename(file))[0]
+        dates = [str(r[6]) for r in frows if r[6] is not None]
+        last_active = max(dates) if dates else None
+        docs.append(
+            Document(
+                file=file,
+                title=title,
+                text=" ".join(text_parts),
+                last_active=last_active,
+                vector=pooled.astype(np.float32),
+            )
+        )
+    return docs
+
+
+def encode_centroid(vec: "np.ndarray[Any, np.dtype[np.float32]]") -> str:
+    """Base64-encode a centroid as packed float32 — exact and ~3-4x smaller
+    than a JSON decimal array. Mirrors `_pack`'s on-disk representation; decode
+    with `decode_centroid`."""
+    return base64.b64encode(np.asarray(vec, dtype=np.float32).tobytes()).decode("ascii")
+
+
+def decode_centroid(blob: str) -> "np.ndarray[Any, np.dtype[np.float32]]":
+    """Inverse of `encode_centroid`: a 1-D float32 vector."""
+    return np.frombuffer(base64.b64decode(blob), dtype=np.float32)
+
+
+def _topics_path(wg: str, *, write: bool) -> str:
+    """Path to `wg`'s topic-map sidecar, beside `embeddings.db`. The write
+    path uses the local index dir (`build_index`'s home); the read path
+    resolves through the corpus store so a cloud replica reads the published
+    version's sidecar."""
+    db = _db_path(wg) if write else _db_path_ro(wg)
+    return os.path.join(os.path.dirname(db), "topics.json")
+
+
+def write_topics(wg: str, payload: Dict[str, Any]) -> None:
+    """Write the topic-map sidecar atomically (temp + rename) beside the
+    index, so a reader never sees a half-written file."""
+    path = _topics_path(wg, write=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def read_topics(wg: str) -> Optional[Dict[str, Any]]:
+    """Return the parsed topic-map sidecar, or None if absent / unreadable.
+    Read-only; a corpus indexed before the topic map shipped simply has none."""
+    path = _topics_path(wg, write=False)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return loaded if isinstance(loaded, dict) else None

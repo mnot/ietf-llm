@@ -40,7 +40,9 @@ from .storage import (
     get_chunk,
     get_messages,
     probe_index,
+    read_topics,
 )
+from .topics import build_topics, generate_topics
 
 __all__ = [
     # Public surface
@@ -49,12 +51,15 @@ __all__ = [
     "Hit",
     "any_indexed_wg",
     "build_index",
+    "build_topics",
     "chunk_counts",
     "find_chunks_by_url",
+    "generate_topics",
     "get_chunk",
     "get_messages",
     "index_model",
     "probe_index",
+    "read_topics",
     "related",
     "search",
     # Used by mcp_server.py for pre-warming

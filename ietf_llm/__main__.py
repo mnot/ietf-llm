@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from . import canonical, cli_list, config, http_metrics, paths, service_config
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
-from .embeddings import DEFAULT_EMBED_MODEL, build_index
+from .embeddings import DEFAULT_EMBED_MODEL, build_index, generate_topics
 from .freshness import record_gather
 from .gather.author import fetch_author_draft_names, resolve_person
 from .gather.catalog import ensure_catalog_index
@@ -725,6 +725,19 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             rebuild=args.rebuild_embeddings,
             verbose=verbosity,
         )
+        # Topic map: cluster the freshly-built index into themes for `overview`
+        # (and, later, centroid routing). Cheap next to the embed, write-side
+        # (a `topics.json` sidecar beside the index that rides publish), and
+        # best-effort — a failure here must not fail an otherwise good gather.
+        tracker.begin("topic map")
+        try:
+            generate_topics(args.wg, verbose=verbosity)
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"Topic map skipped ({type(err).__name__}: {err}).",
+                verbosity,
+                level=LogLevel.PROGRESS,
+            )
 
     # Record successful gather so freshness checks (export warning,
     # MCP staleness banner) know when to nag. Best-effort; never fatal.
