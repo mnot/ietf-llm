@@ -71,7 +71,6 @@ from . import (
 from .catalog import render_efforts
 from .corpus import describe, kind_status
 from .corpus_store import VersionVanished, get_corpus_store, pin_corpus_version
-from .routing import DEFAULT_MIN_SCORE, route
 from .digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -111,6 +110,7 @@ from .positions import (
     tally_thread,
 )
 from .rfcs import render_rfc, render_search
+from .routing import DEFAULT_MIN_SCORE, route
 from .utils import (
     LogLevel,
     Verbosity,

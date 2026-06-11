@@ -110,11 +110,11 @@ def build_cloud_store() -> "CloudCorpusStore":
             f"s3:// locator (got {store_url!r})"
         )
     try:
-        from .kv_store_s3 import (  # pylint: disable=import-outside-toplevel
-            S3KvStore,
-        )
         from .corpus_blobs_s3 import (  # pylint: disable=import-outside-toplevel
             S3BlobStore,
+        )
+        from .kv_store_s3 import (  # pylint: disable=import-outside-toplevel
+            S3KvStore,
         )
         from .s3_backend import S3Bucket  # pylint: disable=import-outside-toplevel
     except ImportError as err:
