@@ -222,9 +222,9 @@ def _scan_local(corpora: List[str]) -> Dict[str, Any]:
     """Assemble the routing table from local `topics.json` sidecars — the local
     backend's path (the cloud backend supplies a fleet key instead). Reads
     `embeddings` here so `corpus_store` stays off that import graph."""
-    from .embeddings.storage import (
+    from .embeddings.storage import (  # pylint: disable=import-outside-toplevel
         read_topics,
-    )  # pylint: disable=import-outside-toplevel
+    )
     from .embeddings.topics import (  # pylint: disable=import-outside-toplevel
         routing_projection,
     )
