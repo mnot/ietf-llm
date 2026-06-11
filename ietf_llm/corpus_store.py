@@ -309,6 +309,22 @@ class CorpusStore(ABC):
         enumerates by walking the cache."""
         return []
 
+    # --- cross-corpus routing table (default: scan local topics.json) ------
+
+    def routing_fleet_table(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """The cross-corpus centroid routing table when the backend keeps one as
+        shared state — `{corpus: raw entry}`, `routing.read_fleet_table`'s shape
+        — or None when it does not, signalling the caller to assemble the table
+        by scanning each corpus's local `topics.json` instead.
+
+        Default None: the local backend has every sidecar on local disk, so
+        `routing.route` scans them directly (cheap, single host). The cloud
+        backend overrides this to return its one fleet key, so a reader routes
+        the whole fleet with a single GET instead of materialising every version
+        to reach its sidecar. Keeping the topics-sidecar read in `routing` (not
+        here) avoids a corpus_store → embeddings import cycle."""
+        return None
+
 
 class LocalCorpusStore(CorpusStore):
     """Filesystem backend: the live cache under `get_cache_dir()` is the corpus,

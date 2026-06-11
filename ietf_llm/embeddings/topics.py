@@ -189,6 +189,21 @@ def build_topics(wg: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def routing_projection(topics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Project a parsed `topics.json` to the slim entry centroid routing needs
+    (issue #116, item 2): just the provenance and the cluster centroids, no
+    labels/exemplars. None when the sidecar carries no usable centroids or no
+    model id (an entry with either is useless for routing). The centroids stay
+    base64 packed float32 — the same form `topics.json` and the cloud fleet key
+    store, decoded only at scoring time."""
+    model = topics.get("model_id")
+    clusters = topics.get("clusters") or []
+    centroids = [c["centroid"] for c in clusters if c.get("centroid")]
+    if not model or not centroids:
+        return None
+    return {"model_id": model, "dim": topics.get("dim"), "centroids": centroids}
+
+
 def generate_topics(wg: str, verbose: Verbosity = Verbosity.STATUS) -> bool:
     """Build and persist `wg`'s topic map. Returns True if a sidecar was
     written. Best-effort: a corpus too small to theme (or with no index) is a
