@@ -165,9 +165,7 @@ AD-sponsored, or elsewhere): **DISPATCH** for the ART, WIT, and SEC areas;
 for it, and it can't receive the proposal as a chartered home until it
 charters. So lead with the dispatch venue, then point at the relevant
 draft/BoF/list to engage; don't demote the dispatch answer because a
-topic-specific effort looks busy. (Verify the dispatch WG and its area
-before naming it if unsure — `find_efforts("dispatch")` /
-`overview(dispatch)`.)
+topic-specific effort looks busy.
 
 **Already gathered, but which one?** `which_corpus(query)` answers the
 sibling question: given a topic, **which of the corpora already cached
