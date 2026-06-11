@@ -3105,12 +3105,9 @@ def main() -> None:
         each tagged with whether it is **already gathered here** (`✓
         cached`); prefer those.
 
-        Each row carries the effort's Datatracker **state**. A `bof` row is
-        rendered as **BoF — pre-WG, not chartered**: it is a pre-WG effort,
-        so there is no chartered group yet to receive a proposal. Do not read
-        a BoF (or the mere presence of an agenda / draft / side meeting) as an
-        active Working Group — that distinction is load-bearing, and the row
-        states it explicitly, so don't infer status the row doesn't assert.
+        Each row carries the effort's Datatracker **state**: a `bof` row,
+        shown as **BoF — pre-WG, not chartered**, is *not* a Working Group —
+        don't read it (or a stray agenda / draft) as one.
 
         This is the topic→effort discovery step the corpus-first tools
         lack. Reach here when the user gives a *subject* with no obvious
