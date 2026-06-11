@@ -825,14 +825,24 @@ And it **always** logs a one-line posture banner (transport, bind, gather
 on/off, embed backend, index dir, immutable) so the logs answer "what is
 this process actually doing" without guessing.
 
-### The one writer exception: opt-in in-session gather
+### The one writer exception: in-session gather
 
-`IETF_LLM_ENABLE_GATHER=1` registers two extra tools — `start_gather` and
-`gather_status` — so a client can gather a new corpus without leaving the
-session. This deliberately breaks the read-only / no-network contract, so
-it is **off by default**: the shared HTTP replica stays read-only, and the
-torch-free serve image is unaffected (a gather there would need a remote
-`openai-embed/...` model to avoid pulling torch). `start_gather` runs the
+The server registers two extra tools — `start_gather` and `gather_status`
+— so a client can gather a new corpus without leaving the session. This
+deliberately breaks the read-only / no-network contract, so the **default
+tracks the transport**, resolved once at startup (`set_gather_default`,
+before the registration gate): **on** for a local stdio server and **off**
+for the shared HTTP replica. The reasoning is that a stdio user can already
+run `ietf-llm` against the same cache, so withholding the tool there only
+adds friction, whereas the HTTP replica must stay read-only. The default is
+a *default*, not a lock: `IETF_LLM_ENABLE_GATHER` is an explicit override in
+both directions (falsy disables it on a stdio server over a read-only
+mount; truthy enables it on a trusted HTTP box). Because the registration
+gate and the user-facing "go gather" hints both read the one resolved value
+(`freshness.gather_enabled`), they can't drift — the tool is registered iff
+the hints recommend it. The torch-free serve image is unaffected by default
+(a gather there would need a remote `openai-embed/...` model to avoid
+pulling torch). `start_gather` runs the
 same `__main__` pipeline as the CLI in a **daemon thread** (`gather_runner`)
 and returns at once; it is not bounded by the per-call tool deadline.
 Progress is recorded to a per-corpus `gather-status.json` (atomic writes)
@@ -949,9 +959,9 @@ on every push/PR across Python 3.10–3.14.
 - **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
   then a thin `@server.tool()` wrapper in `main()`. Document the
   routing in `data/skills/ietf-llm/SKILL.md`. A tool that writes or reaches the
-  network (like `start_gather`) must be registered behind an opt-in env
-  gate, run its work off-thread, and be imported lazily so the read-only
-  serve path stays clean.
+  network (like `start_gather`) must be registered behind the gather gate
+  (`_gather_enabled`, off for the shared HTTP replica), run its work
+  off-thread, and be imported lazily so the read-only serve path stays clean.
 - **New chunker** → add to `embeddings/chunking.py`, dispatch in
   `_chunk_file()`.
 - **New persisted flag** → add it to the right scope's `scalars` or

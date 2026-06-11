@@ -52,9 +52,9 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
 - **Source burden.** We need to be friendly to our back-end services: datatracker,
   GitHub, etc.
 - **Read-only boundary.** Read tools stay read-only and offline. New
-  network/write code belongs only on the gather path (or the opt-in
-  `start_gather` / `gather_status` tools). Don't materialise a cache from a
-  read tool.
+  network/write code belongs only on the gather path (or the gather tools
+  `start_gather` / `gather_status`, registered only when gather is enabled).
+  Don't materialise a cache from a read tool.
 - **NotebookLM / export use case.** `ietf_llm/export.py` mirrors the `.txt`/
   `.md` files under a corpus's `files/` (bundled by year/repo) for NotebookLM.
   Changing what gather writes there changes the export — it's write-side. And
@@ -111,12 +111,16 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   the only writer. Keep that boundary. (`get_wg_file_cache_dir` *creates*
   the dir — use a read-only existence check at the tool boundary so a
   mistyped corpus name doesn't materialise a junk cache.)
-  - **The one exception:** the opt-in gather tools (`start_gather` /
-    `gather_status`, gated behind `IETF_LLM_ENABLE_GATHER=1`) let MCP
-    initiate a gather, so they *do* write and reach the network. They are
-    the only sanctioned write/network path on the server — everything
-    else stays read-only and offline. When the gate is unset the tools
-    aren't registered, so the default surface keeps the boundary intact.
+  - **The one exception:** the gather tools (`start_gather` /
+    `gather_status`) let MCP initiate a gather, so they *do* write and reach
+    the network. They are the only sanctioned write/network path on the
+    server — everything else stays read-only and offline. They default **on**
+    for a local stdio server (that user can already run `ietf-llm` against the
+    same cache) and **off** for the shared HTTP deployment (keeping it
+    read-only); `IETF_LLM_ENABLE_GATHER` overrides either way, and an
+    immutable index mount also forces the default off. When gather is
+    disabled the tools aren't registered, so the HTTP surface keeps the
+    boundary intact.
 - **The cache is reached through a `CorpusStore` seam** (`corpus_store.py`):
   read tools resolve a corpus's files dir via `get_corpus_store().local_cache_dir`
   (the `_files_dir` / `_corpus_exists` boundary in `mcp_server`, which also keeps

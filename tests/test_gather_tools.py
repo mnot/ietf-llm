@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from ietf_llm import gather_runner, mcp_server
+from ietf_llm import freshness, gather_runner, mcp_server
 
 
 # --- _gather_enabled ------------------------------------------------------
@@ -21,15 +21,74 @@ def test_gather_enabled_truthy(monkeypatch: pytest.MonkeyPatch, value: str) -> N
     assert mcp_server._gather_enabled() is True
 
 
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
-def test_gather_enabled_falsy(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+@pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+def test_gather_enabled_explicit_falsy(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    # An explicit falsy value forces gather off regardless of the default.
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", value)
     assert mcp_server._gather_enabled() is False
 
 
-def test_gather_enabled_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gather_enabled_unset_follows_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With the env unset, the result is whatever default was last resolved
+    # (the MCP server sets it from the transport at startup).
     monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
+    assert mcp_server._gather_enabled() is True
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", False)
     assert mcp_server._gather_enabled() is False
+
+
+def test_gather_enabled_unrecognised_follows_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A value that is neither truthy nor falsy is treated as unset.
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "maybe")
+    assert mcp_server._gather_enabled() is True
+
+
+def test_explicit_truthy_overrides_off_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The env is an override in both directions: on, even when default is off.
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", False)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    assert mcp_server._gather_enabled() is True
+
+
+def test_set_gather_default_flows_to_gather_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With the env unset, the resolved default set at startup is what
+    # gather_enabled() reports.
+    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    saved = freshness._GATHER_DEFAULT
+    try:
+        freshness.set_gather_default(True)
+        assert freshness.gather_enabled() is True
+        freshness.set_gather_default(False)
+        assert freshness.gather_enabled() is False
+    finally:
+        freshness.set_gather_default(saved)
+
+
+def test_import_default_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Baseline for the CLI / import contexts that never call set_gather_default:
+    # gather stays off until the MCP server resolves a transport.
+    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    assert freshness._GATHER_DEFAULT is False
+    assert mcp_server._gather_enabled() is False
+
+
+def test_gather_hint_phrasing_follows_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Drift guard: the "go gather" hint and the registration gate read the
+    # same resolved flag, so the hint names start_gather iff gather is enabled.
+    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
+    assert "start_gather" in freshness.gather_suggestion("tls")
+    monkeypatch.setattr(freshness, "_GATHER_DEFAULT", False)
+    assert "ietf-llm tls" in freshness.gather_suggestion("tls")
 
 
 # --- tool_start_gather ----------------------------------------------------

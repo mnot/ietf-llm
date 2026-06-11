@@ -42,9 +42,52 @@ _SENTINEL_NAME = "last-gathered"
 _MIN_INTERVAL_ENV = "IETF_LLM_GATHER_MIN_INTERVAL"
 
 
+#: Fallback for `gather_enabled()` when `IETF_LLM_ENABLE_GATHER` is unset.
+#: The MCP server sets this once at startup from the resolved transport
+#: (stdio -> True, http -> False, via `set_gather_default`); every other
+#: context (the CLI's freshness hints, import time) leaves it at the
+#: conservative off. Kept here, beside `gather_enabled`, so the tool
+#: registration gate and the user-facing "go gather" hints read one
+#: resolved value and can't drift apart.
+_GATHER_DEFAULT = False
+
+_GATHER_TRUTHY = ("1", "true", "yes", "on")
+_GATHER_FALSY = ("0", "false", "no", "off")
+
+
+def set_gather_default(enabled: bool) -> None:
+    """Set the fallback `gather_enabled()` uses when `IETF_LLM_ENABLE_GATHER`
+    is unset.
+
+    Called once at MCP-server startup with the resolved transport so a local
+    stdio server defaults in-session gather on and a shared HTTP server
+    defaults it off. An explicit env value still overrides either way, so
+    this only moves the *default* — it is not a second on-switch.
+    """
+    global _GATHER_DEFAULT  # pylint: disable=global-statement
+    _GATHER_DEFAULT = enabled
+
+
+def _gather_env_override() -> Optional[bool]:
+    """The explicit `IETF_LLM_ENABLE_GATHER` setting as a bool, or None when
+    unset (or unrecognised) so the caller falls back to `_GATHER_DEFAULT`."""
+    raw = os.environ.get("IETF_LLM_ENABLE_GATHER", "").strip().lower()
+    if raw in _GATHER_TRUTHY:
+        return True
+    if raw in _GATHER_FALSY:
+        return False
+    return None
+
+
 def gather_enabled() -> bool:
-    """True when in-session gather (the `start_gather` MCP tool) is enabled
-    via `IETF_LLM_ENABLE_GATHER`.
+    """True when in-session gather (the `start_gather` MCP tool) is enabled.
+
+    `IETF_LLM_ENABLE_GATHER` is an explicit override in *both* directions: a
+    truthy value (`1`/`true`/`yes`/`on`) forces gather on, a falsy value
+    (`0`/`false`/`no`/`off`) forces it off. When unset (or unrecognised) the
+    result is `_GATHER_DEFAULT` — which the MCP server sets from the transport
+    (stdio on, http off) via `set_gather_default`, and which every other
+    context leaves at the conservative off.
 
     Lives here, not only in `mcp_server`, so any module that emits a
     "go gather this" hint can name the gather path the caller actually has:
@@ -52,12 +95,8 @@ def gather_enabled() -> bool:
     pointing it at `ietf-llm` is a dead end. `mcp_server._gather_enabled`
     delegates here to keep one source of truth.
     """
-    return os.environ.get("IETF_LLM_ENABLE_GATHER", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    override = _gather_env_override()
+    return _GATHER_DEFAULT if override is None else override
 
 
 def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) -> str:

@@ -96,6 +96,7 @@ from .freshness import (
     gather_enabled,
     gather_suggestion,
     last_gathered,
+    set_gather_default,
     staleness_warning,
 )
 from .gather.citations import normalize_draft_name
@@ -2673,13 +2674,16 @@ def _tool_timeout_seconds() -> float:
 
 
 def _gather_enabled() -> bool:
-    """True when the operator has opted into the gather tools by setting
-    `IETF_LLM_ENABLE_GATHER` truthy.
+    """True when the gather tools are active.
 
-    Off by default: gather writes to the cache and reaches the network,
-    which the rest of the server never does. Leaving it off preserves the
-    read-only / no-network guarantee for the shared HTTP deployment; local
-    users who want in-session gathering turn it on.
+    The default tracks the transport (set in `main` via
+    `freshness.set_gather_default`): a local stdio server defaults gather
+    *on*, while the shared HTTP deployment defaults it *off* to preserve the
+    read-only / no-network guarantee. Gather writes to the cache and reaches
+    the network, which the rest of the server never does — but a local stdio
+    user can already run `ietf-llm` against the same cache, so withholding the
+    tool there only adds friction. `IETF_LLM_ENABLE_GATHER` overrides either
+    way (e.g. set it falsy on a stdio server pointed at a read-only cache).
 
     Delegates to `freshness.gather_enabled` (one source of truth) so the
     user-facing gather hints in other modules name the same path.
@@ -2955,6 +2959,14 @@ def main() -> None:
     # timing to a per-pid file under ~/.cache/ietf-llm/_debug/, and the
     # `get_session_log` tool returns its tail to the client.
     _debug_log.init()
+
+    # Resolve the in-session gather default up front (see
+    # `_startup_gather_default`: stdio on, http off, immutable mount off). It
+    # must be established *before* the gather tools' registration gate below
+    # so the gate and the user-facing "go gather" hints read the same resolved
+    # value; IETF_LLM_ENABLE_GATHER still overrides either way.
+    transport = _resolve_transport()
+    set_gather_default(_startup_gather_default())
 
     # `instructions` is the MCP-spec mechanism for server-level
     # guidance: clients SHOULD surface it as system-prompt context.
@@ -3928,9 +3940,11 @@ def main() -> None:
 
     # `start_gather` / `gather_status` write to the cache and reach the
     # network — the one break from this server's read-only / no-network
-    # contract — so they are registered only when the operator opts in with
-    # IETF_LLM_ENABLE_GATHER=1. Default off keeps the shared HTTP replica
-    # read-only; local stdio users turn it on for in-session gathering.
+    # contract — so they are registered only when gather is enabled. That
+    # defaults on for local stdio (the user can already run `ietf-llm`
+    # against the same cache) and off for the shared HTTP replica (keeping it
+    # read-only); IETF_LLM_ENABLE_GATHER overrides either way. The default is
+    # resolved from the transport at the top of `main`, before this gate.
     if _gather_enabled():
 
         @server.tool()
@@ -4129,7 +4143,7 @@ def main() -> None:
             return await _offload(tool_suggest_github_repos, corpus)
 
     _prewarm_embedding_model_async()
-    if _resolve_transport() == "http":
+    if transport == "http":
         # Shared-server deployment: standard MCP Streamable HTTP. The
         # threaded-writer transport below is stdio-specific.
         _run_http(server)
@@ -4170,6 +4184,22 @@ def _resolve_transport() -> str:
     """
     transport = os.environ.get("IETF_LLM_MCP_TRANSPORT", "stdio").strip().lower()
     return "http" if transport in ("http", "streamable-http") else "stdio"
+
+
+def _startup_gather_default() -> bool:
+    """The in-session gather default resolved at startup, before the
+    registration gate.
+
+    On for a local stdio server (that user can already run `ietf-llm`
+    against the same cache), off for the shared HTTP deployment (which stays
+    read-only), and off regardless when `IETF_LLM_INDEX_IMMUTABLE` marks the
+    mount read-only — a read-only mount must not *default* a writer on (the
+    HTTP path already hard-refuses the explicit `ENABLE_GATHER` + immutable
+    combination; this keeps the stdio default from silently picking a writer
+    that would fail at index-write time). `IETF_LLM_ENABLE_GATHER` is still
+    an explicit override on top of this default, in either direction.
+    """
+    return _resolve_transport() == "stdio" and not _index_immutable_enabled()
 
 
 #: Accepted IETF_LLM_LOG_LEVEL spellings -> the serve verbosity they select.
