@@ -178,6 +178,12 @@ def _facets(effort: Dict[str, Any]) -> str:
     return " · ".join(b for b in bits if b)
 
 
+def _is_bof(effort: Dict[str, Any]) -> bool:
+    """True for a pre-WG BoF — the load-bearing distinction the row must
+    not blur into 'active Working Group'."""
+    return str(effort.get("state") or "").strip().lower() == "bof"
+
+
 def _state_label(effort: Dict[str, Any]) -> str:
     """Render the catalog's group `state` for a row, self-documenting so a
     reader never has to infer status from a bare row.
@@ -189,10 +195,9 @@ def _state_label(effort: Dict[str, Any]) -> str:
     empty state (shouldn't occur for catalog efforts) renders nothing rather
     than a misleading marker.
     """
-    state = str(effort.get("state") or "").strip().lower()
-    if state == "bof":
+    if _is_bof(effort):
         return "**BoF — pre-WG, not chartered**"
-    return state
+    return str(effort.get("state") or "").strip().lower()
 
 
 def _truncate(text: str, limit: int = 200) -> str:
@@ -232,7 +237,7 @@ def render_efforts(query: str, limit: int = 15) -> str:
         acronym = effort.get("acronym", "")
         facets = _facets(effort)
         state = _state_label(effort)
-        if str(effort.get("state") or "").strip().lower() == "bof":
+        if _is_bof(effort):
             any_bof = True
         bits = " · ".join(b for b in (facets, state) if b)
         suffix = f" · {bits}" if bits else ""
