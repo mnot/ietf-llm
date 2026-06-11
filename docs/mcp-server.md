@@ -48,8 +48,8 @@ and a concurrent re-gather, are safe against one corpus.
   store backend. See [Storage](storage.md) — particularly the index-on-tmpfs and read-only-mount
   notes, which interact with the health probe below.
 - **Gather is separate.** Corpora are gathered on the write side (`ietf-llm <name>`, where
-  `IETF_LLM_CACHE_DIR` is writable); the server only reads — unless you opt into the
-  [in-session gather](#in-session-gather-opt-in) tools.
+  `IETF_LLM_CACHE_DIR` is writable); the server only reads — unless the
+  [in-session gather](#in-session-gather) tools are enabled.
 
 ## Deployment contract
 
@@ -76,8 +76,9 @@ confidentiality.** The read path serves only the public IETF record (already pub
 there is nothing secret to leak. The secrets that *do* exist (the embedding token, any object-store
 credential) are read from the environment only and never written to disk or returned to a client.
 
-The one break from "read-only" is the opt-in [in-session gather](#in-session-gather-opt-in), which
-writes and reaches the network; leave it off for an exposed replica.
+The one break from "read-only" is [in-session gather](#in-session-gather), which writes and reaches
+the network. Its default tracks the transport — on for a local stdio server, off for a shared HTTP
+replica — and `IETF_LLM_ENABLE_GATHER` overrides either way; leave it off for an exposed replica.
 
 ## Configuration reference
 
@@ -104,11 +105,11 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds (`0` disables) | `120` |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry | off |
 
-**In-session gather** (opt-in; see [that section](#in-session-gather-opt-in))
+**In-session gather** (see [that section](#in-session-gather))
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `IETF_LLM_ENABLE_GATHER` | register the gather tools (writes + network) | off |
+| `IETF_LLM_ENABLE_GATHER` | register the gather tools (writes + network); overrides the transport default | on for stdio, off for http |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers concurrently — per host and fleet-wide | `3` |
 | `IETF_LLM_GATHER_QUEUE_MAX` | max queued gathers before `start_gather` is refused | `16` |
 | `IETF_LLM_HTTP_MAX_DATATRACKER` | max gather HTTP requests in flight to datatracker | `2` |
@@ -209,7 +210,7 @@ steps:
 The **cloud store backend** (`IETF_LLM_STORE_BACKEND=cloud`, see
 [Storage](storage.md#the-cloud-backend)) does steps 2–3 for you: a publish is visible fleet-wide with
 no separate sync and no torn read. It is also what makes the
-[in-session gather](#in-session-gather-opt-in) durable and fleet-coherent rather than a single-box
+[in-session gather](#in-session-gather) durable and fleet-coherent rather than a single-box
 convenience.
 
 **Degraded mode when the embedding upstream is down.** Only two tools embed their query, and they are
@@ -248,10 +249,14 @@ without scraping the `/metrics` aggregate. (`/metrics` remains the place for rat
 access record is the per-call line.) `verbose` additionally lets through the chattiest progress
 detail, e.g. mid-stage gather notes.
 
-## In-session gather (opt-in)
+## In-session gather
 
-The server is read-only by default. Setting `IETF_LLM_ENABLE_GATHER=1` registers two extra tools so a
-client can gather a new corpus without dropping to a shell:
+The server registers two extra tools so a client can gather a new corpus without dropping to a shell.
+They are on by default for a **local stdio** server (that user can already run `ietf-llm` against the
+same cache, so withholding the tools only adds friction) and off by default for the **shared HTTP**
+deployment (keeping it read-only). `IETF_LLM_ENABLE_GATHER` overrides either way — set it falsy to
+turn the tools off on a stdio server (e.g. one pointed at a read-only-mounted cache), or truthy to
+turn them on for an HTTP server you trust:
 
 - `start_gather(corpus, [mailing_list], [draft], [github], [author], [new_drafts], …)` — enqueues a
   gather and returns immediately. The corpus shape (group / list / custom / synthetic) is inferred
@@ -261,9 +266,11 @@ client can gather a new corpus without dropping to a shell:
   (the gatherer ended before completion). Status is persisted to `<corpus>/gather-status.json` and,
   on the cloud backend, to the control plane so any replica can report it.
 
-**This is the one break from the read-only / no-network contract.** Leave it **off** for a shared
-HTTP replica or a read-only-mounted cache *on the local backend*, where a gathered corpus is only
-durable on the box that wrote it. On the **cloud backend** it is a first-class shape: the gather
+**This is the one break from the read-only / no-network contract.** The HTTP default is already
+**off**; keep it that way for an exposed replica. The case that now needs an explicit
+`IETF_LLM_ENABLE_GATHER=0` is a stdio server over a read-only-mounted cache *on the local backend*,
+where a gathered corpus is only durable on the box that wrote it. On the **cloud backend** it is a
+first-class shape: the gather
 publishes a new immutable version through the store (atomic pointer flip, visible to every replica)
 under a cross-host lease, so enabling it on a replicated fleet is safe — see
 [Cache freshness](#cache-freshness-and-degraded-mode). If you enable it on the torch-free serve image,

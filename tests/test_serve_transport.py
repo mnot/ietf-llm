@@ -10,7 +10,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
-from ietf_llm import mcp_server
+from ietf_llm import freshness, mcp_server
 
 
 def test_csv_env_splits_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -148,6 +148,41 @@ def test_posture_reports_stateless(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "yes"
     monkeypatch.setenv("IETF_LLM_MCP_STATELESS", "0")
     assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "no"
+
+
+@pytest.mark.parametrize(
+    "transport_env,expected",
+    [(None, True), ("stdio", True), ("http", False), ("streamable-http", False)],
+)
+def test_gather_default_tracks_transport(
+    monkeypatch: pytest.MonkeyPatch, transport_env: "str | None", expected: bool
+) -> None:
+    # main() resolves the transport, then derives the in-session gather default
+    # from it (stdio on, http off) before the registration gate. Reproduce that
+    # one-line rule and confirm it lands on the resolved flag.
+    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    if transport_env is None:
+        monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
+    else:
+        monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", transport_env)
+    saved = freshness._GATHER_DEFAULT
+    try:
+        freshness.set_gather_default(mcp_server._resolve_transport() == "stdio")
+        assert mcp_server._gather_enabled() is expected
+    finally:
+        freshness.set_gather_default(saved)
+
+
+def test_posture_reports_gather(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    saved = freshness._GATHER_DEFAULT
+    try:
+        freshness.set_gather_default(True)
+        assert mcp_server._serve_posture("0.0.0.0", 8000)["gather"] == "on"
+        freshness.set_gather_default(False)
+        assert mcp_server._serve_posture("0.0.0.0", 8000)["gather"] == "off"
+    finally:
+        freshness.set_gather_default(saved)
 
 
 def test_disallowed_host_is_rejected_end_to_end(
