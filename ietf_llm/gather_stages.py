@@ -56,7 +56,7 @@ def stage_plan(args: argparse.Namespace, group_backed: bool) -> List[str]:
         "digests",
     ]
     if not args.no_embed:
-        plan.append("embedding index")
+        plan += ["embedding index", "topic map"]
     return plan
 
 

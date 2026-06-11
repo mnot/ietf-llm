@@ -34,7 +34,8 @@ def test_stage_plan_group_includes_datatracker_stages() -> None:
         assert stage in plan
     # Always-on stages are present too, in order.
     assert plan[0] == "charter"
-    assert plan[-1] == "embedding index"
+    # The topic map is the final stage — it clusters the just-built index.
+    assert plan[-2:] == ["embedding index", "topic map"]
     assert plan.index("mailing list") < plan.index("identity registry")
 
 

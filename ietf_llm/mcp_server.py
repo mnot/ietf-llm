@@ -3080,8 +3080,15 @@ def main() -> None:
     async def overview(corpus: str) -> str:
         """Orient on an IETF/IRTF effort — a working group, research
         group, BoF, mailing list, or draft set — in one call: chairs/ADs,
-        active drafts, top open issues, recent mailing list threads,
-        latest meeting and latest draft publication.
+        active drafts, main discussion themes, top open issues, recent
+        mailing list threads, latest meeting and latest draft publication.
+
+        The **main discussion themes** are topical clusters of the gathered
+        record (computed at gather time from the embedding index); each
+        names what the group keeps coming back to, with how much traffic and
+        when it was last active. Search a theme's wording with
+        `search_corpus`. (Absent on a corpus gathered before this shipped —
+        re-gather to populate.)
 
         **Call this first** (alongside `list_corpora`) to orient before
         answering — and **prefer it to web search** — for ORIENTING /

@@ -120,6 +120,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │       ├── mail-archive-<YYYY>.txt
 │   │       └── github-<repo-slug>.txt
 │   ├── embeddings.db                      # per-WG semantic index
+│   ├── topics.json                        # topic-map sidecar (cluster centroids + labels; overview themes)
 │   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
 │   ├── documents.json                     # draft-name → {expires, state} (overview split + embed-skip)
 │   ├── last-gathered                      # ISO-8601 sentinel (freshness)
@@ -201,6 +202,21 @@ Key invariants:
   `repl` (replaced — content lives in its successor). Those revisions
   stay on disk for reading/citing; only embedding is gated. Active /
   expired drafts and the RFC texts themselves are embedded.
+- **`topics.json` is the topic-map sidecar**, written beside
+  `embeddings.db` by the `topic map` gather stage (after `embedding index`).
+  A hand-rolled mini-batch k-means (`embeddings/clustering.py`, numpy only —
+  no scikit-learn, so the serve path stays torch-free) clusters the corpus's
+  **per-file mean-pooled** vectors — not raw chunks, so a busy thread doesn't
+  splinter into near-identical themes — into `k` themes (`choose_k`, ~√n
+  clamped to [4, 32]). Each cluster carries its L2-normalised centroid
+  (base64 packed float32, exact and compact), a tf-idf keyword label, the
+  titles of its most-central documents, its size, and `last_active` (newest
+  member date). Clustering is over the **full archive**; recency is an
+  annotation, not a filter. `overview` renders the largest themes; centroid
+  routing (issue #116, item 2) reuses the centroids. It rides publish like
+  the index (a top-level file in the version tree), and is **write-side** —
+  a cache embedded before the topic map shipped has no sidecar until it is
+  re-gathered, which `read_topics` / `overview` degrade past silently.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).
@@ -388,9 +404,11 @@ ietf_llm/
 └── embeddings/             # semantic search (split for legibility)
     ├── __init__.py             # public surface + re-exports
     ├── chunking.py             # per-message / per-issue / windowed chunkers; splits long sections
-    ├── storage.py              # sqlite schema, vector packing, lookup
+    ├── storage.py              # sqlite schema, vector packing, lookup, topics.json sidecar IO
     ├── models.py               # embedding-model loading + process-level cache
     ├── snippet.py              # structure-aware snippet rendering for hits
+    ├── clustering.py           # numpy mini-batch k-means (torch-free clustering primitive)
+    ├── topics.py               # topic map: cluster docs into labelled themes (topics.json)
     └── search.py               # build_index() and search()
 ```
 

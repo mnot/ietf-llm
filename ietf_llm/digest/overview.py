@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import List, NamedTuple, Optional, Tuple
 
+from ..embeddings.storage import read_topics
 from ..freshness import gather_suggestion
 from ..gather.documents_manifest import load_documents_manifest
 from ..paths import ballots_dir, charter_path, group_path, threads_dir
@@ -627,6 +628,46 @@ def _recent_activity(cache_dir: str, wg: str, limit: int) -> _RecentActivity:
 # --- Public entry point ---------------------------------------------------
 
 
+#: Themes shown in the overview, most-discussed first. The rest stay in
+#: `topics.json`; the overview is a budgeted summary, not the full map.
+_MAX_THEMES = 6
+
+
+def _themes_section(wg: str) -> List[str]:
+    """Render the WG's main discussion themes from the topic-map sidecar, or
+    `[]` when there is none (no index, a corpus too small to theme, or a cache
+    gathered before the topic map shipped — re-gather to populate)."""
+    topics = read_topics(wg)
+    if not topics:
+        return []
+    clusters = topics.get("clusters") or []
+    if not clusters:
+        return []
+    out: List[str] = [
+        f"## Main discussion themes ({len(clusters)})",
+        "_Topical clusters of the gathered record (mail, issues, drafts), "
+        "most-discussed first. Search a theme with `search_corpus`._",
+    ]
+    for cluster in clusters[:_MAX_THEMES]:
+        label = cluster.get("label") or ", ".join(cluster.get("terms", [])[:3])
+        if not label:
+            continue
+        size = cluster.get("size", 0)
+        bits = [f"{size} doc{'s' if size != 1 else ''}"]
+        last = cluster.get("last_active")
+        if isinstance(last, str) and last:
+            bits.append(f"last active {last[:10]}")
+        line = f"- **{label}** ({'; '.join(bits)})"
+        exemplars = [e for e in (cluster.get("exemplars") or []) if e]
+        if exemplars:
+            line += " — e.g. " + "; ".join(f'"{e}"' for e in exemplars[:2])
+        out.append(line)
+    if len(clusters) > _MAX_THEMES:
+        out.append(f"_+ {len(clusters) - _MAX_THEMES} more themes._")
+    out.append("")
+    return out
+
+
 def build_overview(wg: str, cache_dir: str) -> str:
     """Return a ~30-line markdown overview of the WG.
 
@@ -678,6 +719,11 @@ def build_overview(wg: str, cache_dir: str) -> str:
         out.append("## Resources")
         out.extend(resources)
         out.append("")
+
+    # What the group actually talks about — clustered themes from the
+    # embedding index (topic map). High up because it answers "what does this
+    # WG work on" before the document inventory does.
+    out.extend(_themes_section(wg))
 
     docs = _documents_summary(cache_dir, wg)
     if docs.active_drafts or docs.concluded_draft_count:

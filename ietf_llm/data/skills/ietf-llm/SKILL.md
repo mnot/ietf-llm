@@ -144,11 +144,14 @@ may return nothing; say so rather than inventing an effort.
 
 **Orient first** with `overview(corpus)` for structural questions ("tell
 me about X", "what's this WG up to?", "who's on it?"): ~30–40 lines of
-chairs/ADs, status, charter excerpt, active drafts, any **IESG DISCUSS**
-blocking a draft, top open issues, and the most active threads (ranked by
+chairs/ADs, status, charter excerpt, active drafts, **main discussion
+themes** (topical clusters of the record — what the group keeps returning
+to, with traffic and last-active date), any **IESG DISCUSS** blocking a
+draft, top open issues, and the most active threads (ranked by
 back-and-forth, not recency). It's structure, not substance — when it
-flags a DISCUSS or a hot thread, *read it* before characterising the
-outcome. If you're unsure which tool fits, `overview` is the safe default.
+flags a DISCUSS, a theme, or a hot thread, *read it* (e.g. `search_corpus`
+a theme's wording) before characterising the outcome. If you're unsure
+which tool fits, `overview` is the safe default.
 
 For a topical / decision question, go straight to the tool (params and
 caveats are in each tool's docstring):
