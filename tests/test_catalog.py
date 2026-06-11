@@ -127,12 +127,13 @@ def _effort(
     description: str = "",
     type_: str = "wg",
     area: str = "wit",
+    state: str = "active",
 ) -> Dict[str, Any]:
     return {
         "acronym": acronym,
         "name": name or acronym.upper(),
         "type": type_,
-        "state": "active",
+        "state": state,
         "area": area,
         "area_name": "Web and Internet Transport",
         "description": description,
@@ -267,6 +268,40 @@ def test_uncached_effort_shows_gather_hint(isolated_home: Path) -> None:
     out = catalog.render_efforts("transport")
     assert "not gathered" in out
     assert "ietf-llm <acronym>" in out  # the gather hint footer
+
+
+# --- Reader: state rendering ----------------------------------------------
+
+
+def test_active_state_rendered_on_row(isolated_home: Path) -> None:
+    _seed_catalog(isolated_home, [_effort("httpbis", "HTTP", "transport")])
+    row = [
+        ln for ln in catalog.render_efforts("transport").splitlines()
+        if ln.startswith("- ")
+    ][0]
+    # State is on the row, so absence can never read as "active by default".
+    assert "active" in row
+
+
+def test_bof_state_is_self_documenting(isolated_home: Path) -> None:
+    # A BoF that is NOT gathered: the row alone must make pre-WG status
+    # unmistakable — this is the CATALIST class of misread.
+    _seed_catalog(
+        isolated_home,
+        [_effort("catalist", "Charter And Tooling", "agent stuff", state="bof")],
+    )
+    out = catalog.render_efforts("agent")
+    row = [ln for ln in out.splitlines() if ln.startswith("- ")][0]
+    assert "BoF" in row and "not chartered" in row
+    assert "not gathered" in row  # uncached, yet status is still clear
+    # And a footer steers a "where do I take this?" reader to dispatch.
+    assert "GENDISPATCH" in out and "DISPATCH" in out
+
+
+def test_no_bof_footer_when_all_active(isolated_home: Path) -> None:
+    _seed_catalog(isolated_home, [_effort("httpbis", "HTTP", "transport")])
+    out = catalog.render_efforts("transport")
+    assert "pre-WG effort" not in out
 
 
 # --- Writer: ensure_catalog_index -----------------------------------------
@@ -473,3 +508,8 @@ def test_round_trip_writer_to_reader(
     assert "**newbof**" in out
     # And the area resolved end-to-end into the rendered facets.
     assert "wit" in out
+    # The BoF state survives the URI->slug->label path: newbof's
+    # `.../groupstatename/bof/` must render as the pre-WG marker, while quic
+    # (active) does not.
+    newbof_row = [ln for ln in out.splitlines() if "**newbof**" in ln][0]
+    assert "BoF — pre-WG, not chartered" in newbof_row

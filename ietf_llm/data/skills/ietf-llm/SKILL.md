@@ -107,6 +107,17 @@ they just aren't groups. **Every tool takes any kind.** Before minting a
 `list_corpora` for an existing one over the same sources and prefer
 reusing it; the gather entry point returns a reuse hint on overlap.
 
+**A corpus is not an effort's status.** That a `list`, `custom`, or
+`synthetic` corpus exists here says *you gathered it*, nothing about IETF
+standing — its status cell says so in words (`not a chartered group` /
+`not an IETF effort`). A synthetic `x-` bundle (drafts + a list pulled
+together under a topic) is **not** a Working Group, and activity inside it
+— an agenda, a side-meeting, a "proposed charter" draft — is not evidence
+of one. Don't promote a bundle, a list, or a BoF to "active WG" because it
+has traffic; read the kind and status, and if you're about to name an
+effort's institutional state, verify it (`overview` shows a group's chairs
+and charter-approval date; absent that, a Datatracker check).
+
 **Going outside the corpus.** Reaching a live resource (datatracker,
 mailarchive, a draft URL, GitHub) is occasionally needed — e.g. to confirm
 a draft's *current* state. When you do, tell the user you're leaving the
@@ -136,9 +147,25 @@ a shared server, and over-gathering is the failure mode of a capable model
 here. Gather the few efforts that dominate; **tell the user which you
 skipped**.
 
-Limits: covers **active** groups only — a concluded effort won't surface
-(use `rfc_search` for published work). A topic with no chartered group yet
-may return nothing; say so rather than inventing an effort.
+Limits: covers **active and BoF** groups only — a concluded effort won't
+surface (use `rfc_search` for published work). A topic with no chartered
+group yet may return nothing; say so rather than inventing an effort.
+
+**Read the state on each row.** Every result carries its Datatracker
+state. A row marked **BoF — pre-WG, not chartered** is *not* a Working
+Group: it's a pre-WG effort, so there is no chartered group yet to receive
+a proposal. Don't infer a status the row doesn't assert — an `active` row
+is active, a `bof` row is pre-WG, and a row says which it is.
+
+**"Where do I take this proposal?"** A new proposal goes to the relevant
+area's **dispatch** venue, which decides where (existing WG, new BoF/WG,
+AD-sponsored, or elsewhere): **DISPATCH** for the ART, WIT, and SEC areas;
+**GENDISPATCH** for the GEN area. A topic-specific BoF or effort is an
+*addition* to that path — a place to build interest — not a replacement
+for it, and it can't receive the proposal as a chartered home until it
+charters. So lead with the dispatch venue, then point at the relevant
+draft/BoF/list to engage; don't demote the dispatch answer because a
+topic-specific effort looks busy.
 
 **Already gathered, but which one?** `which_corpus(query)` answers the
 sibling question: given a topic, **which of the corpora already cached

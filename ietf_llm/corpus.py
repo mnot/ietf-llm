@@ -61,6 +61,35 @@ def kind_status(wg: str) -> Tuple[str, str]:
     return ("custom", "")
 
 
+#: Status-cell wording for the kinds that have no Datatracker group state.
+#: A blank or `—` reads as "active by omission" or "unknown"; these say
+#: plainly that the corpus is not a chartered IETF effort, so a reader can't
+#: mistake a standalone list or a local `x-` bundle for a Working Group.
+_NO_STATUS_LABEL = {
+    "synthetic": "local bundle, not an IETF effort",
+    "list": "mailing list, not a chartered group",
+    "custom": "ad-hoc corpus, not a chartered group",
+}
+
+
+def status_cell(kind: str, status: str) -> str:
+    """The status column for a corpus, never blank.
+
+    A group corpus shows its cached Datatracker state (`active` /
+    `concluded` / `bof` / …), or `unknown` on an older cache whose
+    `group.md` predates the status field. A non-group corpus has no group
+    state at all — the cell says so explicitly rather than rendering an
+    empty `—` that a reader could mistake for an active effort. Shared by
+    `ietf-llm --list` (`cli_list`) and the MCP `list_corpora` so both
+    describe a corpus identically.
+    """
+    if status:
+        return status
+    if kind == "group":
+        return "unknown"
+    return _NO_STATUS_LABEL.get(kind, "not a chartered group")
+
+
 def _group_status(group_md_path: str) -> str:
     """Read the `**Status:** …` value from a group.md, or empty."""
     return _group_field(group_md_path, "**Status:**")

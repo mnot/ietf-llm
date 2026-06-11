@@ -90,6 +90,16 @@ def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     assert "stray" not in out
 
 
+def test_list_corpora_synthetic_status_disclaims_effort(isolated_home: Path) -> None:
+    # A synthetic `x-` bundle must not read as a chartered effort: its
+    # status cell, and the legend, say so explicitly.
+    write_cache_file(isolated_home, "x-agent", "x.txt")
+    out = mcp_server.tool_list_corpora()
+    row = next(ln for ln in out.splitlines() if ln.startswith("x-agent"))
+    assert "synthetic · local bundle, not an IETF effort" in row
+    assert "not a chartered IETF effort" in out  # legend
+
+
 def test_list_corpora_empty_message(isolated_home: Path) -> None:
     out = mcp_server.tool_list_corpora()
     # Corpus-oriented empty message points the user at the gather CLI.

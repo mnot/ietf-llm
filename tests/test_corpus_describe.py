@@ -101,6 +101,28 @@ def test_github_repos_counted(isolated_home: Path) -> None:
     assert corpus.describe("gh") == "2 GitHub repos"
 
 
+# --- status_cell: never blank, non-groups say "not an effort" -------------
+
+
+def test_status_cell_group_shows_its_state() -> None:
+    assert corpus.status_cell("group", "active") == "active"
+    assert corpus.status_cell("group", "concluded") == "concluded"
+    assert corpus.status_cell("group", "bof") == "bof"
+
+
+def test_status_cell_group_without_state_is_unknown() -> None:
+    # Older cache: group.md predates the status field — say "unknown"
+    # rather than a blank that reads as "active by omission".
+    assert corpus.status_cell("group", "") == "unknown"
+
+
+def test_status_cell_non_group_kinds_disclaim_chartered_status() -> None:
+    # The cells a reader must never mistake for an active Working Group.
+    assert "not an IETF effort" in corpus.status_cell("synthetic", "")
+    assert "not a chartered group" in corpus.status_cell("list", "")
+    assert "not a chartered group" in corpus.status_cell("custom", "")
+
+
 def test_persist_author_name_records_resolved_identity(isolated_home: Path) -> None:
     from ietf_llm import __main__ as main_mod
 

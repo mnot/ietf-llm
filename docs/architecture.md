@@ -79,7 +79,12 @@ The gather pipeline gates Datatracker-sourced steps on a single
 derives `(kind, status)` from on-disk artifacts for `ietf-llm --list`
 and the MCP `list_corpora` tool — identically, so they can't
 drift; `status` is the cached group state (`active` / `concluded` /
-`bof`). `corpus.describe()` adds a brief **subject** line for the same
+`bof`). `corpus.status_cell()` renders that state for the listing,
+never blank: a `group` with no cached state shows `unknown`, and a
+`list` / `custom` / `synthetic` corpus — which has no group state at
+all — shows an explicit `not a chartered group` / `not an IETF effort`
+so a reader can't mistake a standalone list or a local `x-` bundle for
+a Working Group. `corpus.describe()` adds a brief **subject** line for the same
 two surfaces — the group's name (from `group.md`), the list it follows,
 or the tracked author (the resolved name persisted as `author_name`) —
 so a consumer can tell what an opaquely-named corpus is about without
@@ -465,7 +470,11 @@ job:
   IETF/IRTF efforts by a free-text topic and tags each with whether it
   is already gathered here — the entry point for "what is the IETF doing
   around X?" when no corpus is named. It reads the `_catalog/` singleton,
-  *not* a gathered corpus; v1 covers active groups only.
+  *not* a gathered corpus; it covers active and BoF groups. Each row
+  renders the effort's Datatracker state, with a `bof` shown as
+  **BoF — pre-WG, not chartered** so a pre-WG effort can't be read as an
+  active Working Group from the row alone (the failure mode that
+  motivated rendering state at all).
 - **Catalogue:** `read_digest(kind=…, …filters)` over
   issues/threads/people/timeline/index. Beyond the per-kind filters,
   `sort="activity"` ranks threads/issues by message/comment count (heat,
