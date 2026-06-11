@@ -105,6 +105,12 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds (`0` disables) | `120` |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry | off |
 
+**Retrieval**
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `IETF_LLM_ROUTING_MIN_SCORE` | `which_corpus` abstention floor (mean-centered cosine); below it routing reports no confident match. Calibrated for the default embedder — recalibrate on a model swap with `scripts/calibrate_routing.py`. | `0.30` |
+
 **In-session gather** (see [that section](#in-session-gather))
 
 | Variable | Purpose | Default |

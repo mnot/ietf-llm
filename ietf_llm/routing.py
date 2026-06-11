@@ -76,7 +76,10 @@ class RoutingEntry:
 
     model_id: str
     dim: int
-    centroids: "np.ndarray[Any, np.dtype[np.float32]]"  # (k, dim), L2-normalised
+    # (k, dim) cluster centroids. Means of unit vectors, so not themselves
+    # unit-norm — `_score_group` re-normalises (after mean-centering) before the
+    # dot product, so the stored magnitude doesn't matter.
+    centroids: "np.ndarray[Any, np.dtype[np.float32]]"
 
 
 @dataclass
@@ -142,6 +145,11 @@ def route(
     known = set(known_list)
     table: Dict[str, RoutingEntry] = {}
     for corpus, raw in raw_table.items():
+        # Drop a stale fleet entry for a corpus no longer present: the cloud key
+        # is additive per publish, so a removed corpus can linger there and must
+        # not be scored. (Local `_scan_local` is already `known`-bounded.)
+        if corpus not in known:
+            continue
         entry = _entry_from_raw(raw) if isinstance(raw, dict) else None
         if entry is not None:
             table[corpus] = entry

@@ -135,3 +135,41 @@ def test_which_corpus_tool_renders(isolated_home: Path) -> None:
 
 def test_which_corpus_empty_query() -> None:
     assert "needs a question" in tool_which_corpus("   ")
+
+
+class _FakeStore:
+    """Minimal store exposing only what `route` calls — to simulate a cloud
+    fleet table holding a stale entry for a corpus no longer cached."""
+
+    def __init__(self, table: dict, corpora: List[str]) -> None:
+        self._table = table
+        self._corpora = corpora
+
+    def routing_fleet_table(self) -> dict:
+        return self._table
+
+    def list_corpora(self) -> List[str]:
+        return self._corpora
+
+
+def test_route_drops_stale_fleet_entry(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import numpy as np  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        encode_centroid,
+    )
+
+    embeddings._MODEL_CACHE["stub"] = _Stub()  # pylint: disable=protected-access
+    eye = np.eye(8, dtype=np.float32)
+
+    def entry(axis: int) -> dict:
+        return {"model_id": "stub", "dim": 8, "centroids": [encode_centroid(eye[axis])]}
+
+    # The fleet key still has "removed", but list_corpora no longer reports it.
+    table = {"live": entry(0), "removed": entry(1)}
+    store = _FakeStore(table, ["live"])
+    monkeypatch.setattr("ietf_llm.corpus_store.get_corpus_store", lambda: store)
+
+    res = routing.route("quic")
+    assert "removed" not in {m.corpus for m in res.matches}
+    assert "removed" not in res.no_centroids  # not "missing a topic map" — just gone
