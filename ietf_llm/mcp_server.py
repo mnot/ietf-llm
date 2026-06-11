@@ -2960,14 +2960,13 @@ def main() -> None:
     # `get_session_log` tool returns its tail to the client.
     _debug_log.init()
 
-    # Resolve the transport up front: it sets the default for in-session
-    # gather (local stdio defaults on, shared HTTP off — see
-    # `freshness.set_gather_default`), which must be established *before* the
-    # gather tools' registration gate below so the gate and the user-facing
-    # "go gather" hints read the same resolved value. An explicit
-    # IETF_LLM_ENABLE_GATHER still overrides either way.
+    # Resolve the in-session gather default up front (see
+    # `_startup_gather_default`: stdio on, http off, immutable mount off). It
+    # must be established *before* the gather tools' registration gate below
+    # so the gate and the user-facing "go gather" hints read the same resolved
+    # value; IETF_LLM_ENABLE_GATHER still overrides either way.
     transport = _resolve_transport()
-    set_gather_default(transport == "stdio")
+    set_gather_default(_startup_gather_default())
 
     # `instructions` is the MCP-spec mechanism for server-level
     # guidance: clients SHOULD surface it as system-prompt context.
@@ -4185,6 +4184,22 @@ def _resolve_transport() -> str:
     """
     transport = os.environ.get("IETF_LLM_MCP_TRANSPORT", "stdio").strip().lower()
     return "http" if transport in ("http", "streamable-http") else "stdio"
+
+
+def _startup_gather_default() -> bool:
+    """The in-session gather default resolved at startup, before the
+    registration gate.
+
+    On for a local stdio server (that user can already run `ietf-llm`
+    against the same cache), off for the shared HTTP deployment (which stays
+    read-only), and off regardless when `IETF_LLM_INDEX_IMMUTABLE` marks the
+    mount read-only — a read-only mount must not *default* a writer on (the
+    HTTP path already hard-refuses the explicit `ENABLE_GATHER` + immutable
+    combination; this keeps the stdio default from silently picking a writer
+    that would fail at index-write time). `IETF_LLM_ENABLE_GATHER` is still
+    an explicit override on top of this default, in either direction.
+    """
+    return _resolve_transport() == "stdio" and not _index_immutable_enabled()
 
 
 #: Accepted IETF_LLM_LOG_LEVEL spellings -> the serve verbosity they select.

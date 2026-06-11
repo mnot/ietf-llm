@@ -154,23 +154,26 @@ def test_posture_reports_stateless(monkeypatch: pytest.MonkeyPatch) -> None:
     "transport_env,expected",
     [(None, True), ("stdio", True), ("http", False), ("streamable-http", False)],
 )
-def test_gather_default_tracks_transport(
+def test_startup_gather_default_tracks_transport(
     monkeypatch: pytest.MonkeyPatch, transport_env: "str | None", expected: bool
 ) -> None:
-    # main() resolves the transport, then derives the in-session gather default
-    # from it (stdio on, http off) before the registration gate. Reproduce that
-    # one-line rule and confirm it lands on the resolved flag.
-    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
+    # main() seeds the in-session gather default from this before the
+    # registration gate: stdio on, http off.
+    monkeypatch.delenv("IETF_LLM_INDEX_IMMUTABLE", raising=False)
     if transport_env is None:
         monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
     else:
         monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", transport_env)
-    saved = freshness._GATHER_DEFAULT
-    try:
-        freshness.set_gather_default(mcp_server._resolve_transport() == "stdio")
-        assert mcp_server._gather_enabled() is expected
-    finally:
-        freshness.set_gather_default(saved)
+    assert mcp_server._startup_gather_default() is expected
+
+
+def test_startup_gather_default_off_when_index_immutable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A read-only mount must not default a writer on, even on stdio.
+    monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)  # stdio
+    monkeypatch.setenv("IETF_LLM_INDEX_IMMUTABLE", "1")
+    assert mcp_server._startup_gather_default() is False
 
 
 def test_posture_reports_gather(monkeypatch: pytest.MonkeyPatch) -> None:

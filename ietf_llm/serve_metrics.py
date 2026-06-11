@@ -127,7 +127,7 @@ _tools: Dict[str, _Histogram] = {}
 _store: Dict[str, _Histogram] = {}
 #: the remote /embeddings backend (a single unlabelled series)
 _embed = _Histogram()
-#: in-session gather lifecycle (opt-in `IETF_LLM_ENABLE_GATHER`). The gather
+#: in-session gather lifecycle (see `mcp_server._gather_enabled`). The gather
 #: is the server's one write+network path and runs for minutes in the
 #: background, so its liveness is invisible to the per-tool RED above. We track
 #: how many run concurrently, how many have started, the terminal outcomes by

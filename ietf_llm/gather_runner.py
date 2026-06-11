@@ -1,8 +1,9 @@
 """In-process background gather runner for the MCP server.
 
 The MCP server is otherwise read-only and never touches the network; this
-module is the one deliberate exception, gated behind
-`IETF_LLM_ENABLE_GATHER=1` (see `mcp_server._gather_enabled`). A `start_gather`
+module is the one deliberate exception, gated by `mcp_server._gather_enabled`
+(on by default for a local stdio server, off for the shared HTTP deployment;
+`IETF_LLM_ENABLE_GATHER` overrides either way). A `start_gather`
 tool call returns immediately, enqueuing the request; a background worker runs
 the same pipeline as the `ietf-llm` CLI and records stage-level progress to a
 per-corpus status record (`~/.cache/ietf-llm/<corpus>/gather-status.json` and,

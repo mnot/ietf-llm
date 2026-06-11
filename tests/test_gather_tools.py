@@ -57,8 +57,11 @@ def test_explicit_truthy_overrides_off_default(monkeypatch: pytest.MonkeyPatch) 
     assert mcp_server._gather_enabled() is True
 
 
-def test_set_gather_default_maps_transport(monkeypatch: pytest.MonkeyPatch) -> None:
-    # This is the rule `main` applies: stdio -> on, http -> off.
+def test_set_gather_default_flows_to_gather_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With the env unset, the resolved default set at startup is what
+    # gather_enabled() reports.
     monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
     saved = freshness._GATHER_DEFAULT
     try:

@@ -267,9 +267,10 @@ turn them on for an HTTP server you trust:
   on the cloud backend, to the control plane so any replica can report it.
 
 **This is the one break from the read-only / no-network contract.** The HTTP default is already
-**off**; keep it that way for an exposed replica. The case that now needs an explicit
-`IETF_LLM_ENABLE_GATHER=0` is a stdio server over a read-only-mounted cache *on the local backend*,
-where a gathered corpus is only durable on the box that wrote it. On the **cloud backend** it is a
+**off**; keep it that way for an exposed replica. On a stdio server over a read-only-mounted cache
+*on the local backend* — where a gathered corpus is only durable on the box that wrote it — turn the
+default off with `IETF_LLM_ENABLE_GATHER=0` (or `IETF_LLM_INDEX_IMMUTABLE=1`, which marks the mount
+read-only and so suppresses the gather default on its own). On the **cloud backend** it is a
 first-class shape: the gather
 publishes a new immutable version through the store (atomic pointer flip, visible to every replica)
 under a cross-host lease, so enabling it on a replicated fleet is safe — see
