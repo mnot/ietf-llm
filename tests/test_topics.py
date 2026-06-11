@@ -139,6 +139,34 @@ def test_overview_demotes_generic_themes(isolated_home: Path, monkeypatch) -> No
     assert body.index("pqc key exchange") < body.index("agenda, minutes")
 
 
+def test_overview_themes_fallback_on_flag_length_mismatch(
+    isolated_home: Path, monkeypatch  # type: ignore[no-untyped-def]
+) -> None:
+    from ietf_llm.digest import overview as ov  # pylint: disable=import-outside-toplevel
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        write_topics,
+    )
+
+    write_topics(
+        "wg",
+        {
+            "version": 1, "model_id": "stub", "dim": 8, "doc_unit": "file", "n_docs": 60,
+            "clusters": [
+                {"centroid": "AA==", "size": 50, "label": "agenda, minutes",
+                 "terms": [], "exemplars": [], "last_active": None},
+                {"centroid": "BB==", "size": 10, "label": "pqc key exchange",
+                 "terms": [], "exemplars": [], "last_active": None},
+            ],
+        },
+    )
+    # Flags shorter than clusters (the projection-divergence case) → no
+    # demotion or tagging; the sidecar order is rendered untouched.
+    monkeypatch.setattr(ov, "generic_theme_flags", lambda wg: [True])
+    body = "\n".join(ov._themes_section("wg"))  # pylint: disable=protected-access
+    assert "common across WGs" not in body
+    assert body.index("agenda, minutes") < body.index("pqc key exchange")
+
+
 def test_too_few_documents_skips(isolated_home: Path) -> None:
     embeddings._MODEL_CACHE["stub"] = _TopicStub()  # pylint: disable=protected-access
     write_cache_file(
