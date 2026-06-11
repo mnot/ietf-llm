@@ -21,6 +21,7 @@ from typing import List, NamedTuple, Optional, Tuple
 
 from ..embeddings.storage import read_topics
 from ..freshness import gather_suggestion
+from ..routing import generic_theme_flags
 from ..gather.documents_manifest import load_documents_manifest
 from ..paths import ballots_dir, charter_path, group_path, threads_dir
 from .query import (
@@ -636,19 +637,33 @@ _MAX_THEMES = 6
 def _themes_section(wg: str) -> List[str]:
     """Render the WG's main discussion themes from the topic-map sidecar, or
     `[]` when there is none (no index, a corpus too small to theme, or a cache
-    gathered before the topic map shipped — re-gather to populate)."""
+    gathered before the topic map shipped — re-gather to populate).
+
+    Themes that recur across the gathered fleet (meeting logistics, ballots,
+    document boilerplate) are **demoted** below the distinctive ones and tagged,
+    so they don't crowd the budgeted list — a cross-corpus signal that is a
+    no-op on a small / single-corpus deployment (`routing.generic_theme_flags`
+    returns None then, and the gather-time bot-filter remains the floor)."""
     topics = read_topics(wg)
     if not topics:
         return []
     clusters = topics.get("clusters") or []
     if not clusters:
         return []
+    # Reader-side generic-theme demotion. None / a length mismatch → render the
+    # sidecar order untouched. Stable sort keeps the by-size order within each
+    # group, so only the distinctive-vs-generic split moves anything.
+    flags = generic_theme_flags(wg)
+    if not flags or len(flags) != len(clusters):
+        flags = [False] * len(clusters)
+    paired = sorted(zip(clusters, flags), key=lambda cf: cf[1])
+
     out: List[str] = [
         f"## Main discussion themes ({len(clusters)})",
         "_Topical clusters of the gathered record (mail, issues, drafts), "
         "most-discussed first. Search a theme with `search_corpus`._",
     ]
-    for cluster in clusters[:_MAX_THEMES]:
+    for cluster, generic in paired[:_MAX_THEMES]:
         label = cluster.get("label") or ", ".join(cluster.get("terms", [])[:3])
         if not label:
             continue
@@ -661,6 +676,8 @@ def _themes_section(wg: str) -> List[str]:
         exemplars = [e for e in (cluster.get("exemplars") or []) if e]
         if exemplars:
             line += " — e.g. " + "; ".join(f'"{e}"' for e in exemplars[:2])
+        if generic:
+            line += " · _common across WGs_"
         out.append(line)
     if len(clusters) > _MAX_THEMES:
         out.append(f"_+ {len(clusters) - _MAX_THEMES} more themes._")

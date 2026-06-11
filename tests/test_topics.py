@@ -113,6 +113,32 @@ def test_overview_renders_themes(isolated_home: Path) -> None:
     assert "## Main discussion themes" in body
 
 
+def test_overview_demotes_generic_themes(isolated_home: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from ietf_llm.digest import overview as ov  # pylint: disable=import-outside-toplevel
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        write_topics,
+    )
+
+    write_topics(
+        "wg",
+        {
+            "version": 1, "model_id": "stub", "dim": 8, "doc_unit": "file", "n_docs": 60,
+            "clusters": [
+                {"centroid": "AA==", "size": 50, "label": "agenda, minutes",
+                 "terms": [], "exemplars": [], "last_active": None},
+                {"centroid": "BB==", "size": 10, "label": "pqc key exchange",
+                 "terms": [], "exemplars": [], "last_active": None},
+            ],
+        },
+    )
+    # First cluster (biggest) is generic; the smaller one is distinctive.
+    monkeypatch.setattr(ov, "generic_theme_flags", lambda wg: [True, False])
+    body = "\n".join(ov._themes_section("wg"))  # pylint: disable=protected-access
+    assert "common across WGs" in body
+    # The distinctive theme is promoted above the bigger-but-generic one.
+    assert body.index("pqc key exchange") < body.index("agenda, minutes")
+
+
 def test_too_few_documents_skips(isolated_home: Path) -> None:
     embeddings._MODEL_CACHE["stub"] = _TopicStub()  # pylint: disable=protected-access
     write_cache_file(

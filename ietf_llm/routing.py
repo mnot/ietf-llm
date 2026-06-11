@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 
@@ -68,6 +68,23 @@ FLEET_ROUTING_KEY = "fleet/routing/centroids.json"
 
 #: Bounded retries for the fleet-key compare-and-swap (mirrors `kv_control`).
 _CAS_RETRIES = 8
+
+#: Cross-corpus generic-theme suppression (issue #116 follow-on). A theme that
+#: recurs across a large fraction of the fleet is process boilerplate (meeting
+#: logistics, ballots, document preamble), not distinctive discussion — `overview`
+#: demotes it. The numbers are calibrated on bge-small over the gathered corpora
+#: (centroid-to-centroid, no live model needed): two themes count as "the same"
+#: above `_GENERIC_TAU` mean-centered cosine, and a theme is generic when ≥
+#: `_GENERIC_UBIQUITY` of the *other* same-model corpora carry a match. At that
+#: τ, meeting/procedural themes sit at ubiquity 0.6–0.8 while a cross-cutting
+#: *substantive* topic shared by only a corpus or two (e.g. preferences) stays
+#: ~0.2 — so "shared" doesn't get mistaken for "generic". Recalibrate on a model
+#: swap. Below `_GENERIC_MIN_CORPORA` same-model corpora the fraction is too
+#: coarse to trust, so suppression stays off (a small / single-corpus deployment
+#: is unaffected; the gather-time bot-filter remains the floor).
+_GENERIC_TAU = 0.5
+_GENERIC_UBIQUITY = 0.6
+_GENERIC_MIN_CORPORA = 5
 
 
 @dataclass
@@ -116,6 +133,35 @@ def _entry_from_raw(raw: Dict[str, Any]) -> Optional[RoutingEntry]:
     return RoutingEntry(str(model), int(raw.get("dim") or mat.shape[1]), mat)
 
 
+def _load_table() -> "Tuple[Dict[str, RoutingEntry], set[str]]":
+    """Load the decoded routing table and the set of currently-cached corpora.
+
+    The cloud backend hands back its one fleet key; the local backend returns
+    None, so we scan each corpus's `topics.json` (the embeddings read lives
+    here, not in `corpus_store`, to keep that module off the embeddings import
+    graph). The table is intersected with the cached set: the cloud key is
+    additive per publish, so a removed corpus can linger there and must not be
+    scored (the local scan is already cache-bounded)."""
+    from .corpus_store import (  # pylint: disable=import-outside-toplevel
+        get_corpus_store,
+    )
+
+    store = get_corpus_store()
+    known_list = store.list_corpora()
+    raw_table = store.routing_fleet_table()
+    if raw_table is None:
+        raw_table = _scan_local(known_list)
+    known = set(known_list)
+    table: Dict[str, RoutingEntry] = {}
+    for corpus, raw in raw_table.items():
+        if corpus not in known:
+            continue
+        entry = _entry_from_raw(raw) if isinstance(raw, dict) else None
+        if entry is not None:
+            table[corpus] = entry
+    return table, known
+
+
 def route(
     query: str,
     *,
@@ -129,30 +175,7 @@ def route(
     share, scores those corpora (max cosine over their centroids), and ranks
     them. Corpora on a different model id are reported as skipped, not mixed in.
     """
-    from .corpus_store import (  # pylint: disable=import-outside-toplevel
-        get_corpus_store,
-    )
-
-    store = get_corpus_store()
-    # The cloud backend hands back its one fleet key; the local backend returns
-    # None, so we scan each corpus's topics.json ourselves (the embeddings read
-    # lives here, not in corpus_store, to keep that module off the embeddings
-    # import graph).
-    known_list = store.list_corpora()
-    raw_table = store.routing_fleet_table()
-    if raw_table is None:
-        raw_table = _scan_local(known_list)
-    known = set(known_list)
-    table: Dict[str, RoutingEntry] = {}
-    for corpus, raw in raw_table.items():
-        # Drop a stale fleet entry for a corpus no longer present: the cloud key
-        # is additive per publish, so a removed corpus can linger there and must
-        # not be scored. (Local `_scan_local` is already `known`-bounded.)
-        if corpus not in known:
-            continue
-        entry = _entry_from_raw(raw) if isinstance(raw, dict) else None
-        if entry is not None:
-            table[corpus] = entry
+    table, known = _load_table()
     no_centroids = sorted(known - set(table))
     if not table:
         return RouteResult([], False, "", [], no_centroids)
@@ -216,6 +239,48 @@ def _recenter(
     return cast(
         "np.ndarray[Any, np.dtype[np.float32]]", (shifted / norms).astype(np.float32)
     )
+
+
+def generic_theme_flags(corpus: str) -> Optional[List[bool]]:
+    """Per-theme "is this generic across the fleet?" flags for `corpus`, aligned
+    to its `topics.json` cluster order, or None when suppression does not apply.
+
+    A theme is generic when a near-match for it appears in at least
+    `_GENERIC_UBIQUITY` of the *other* same-model corpora — process boilerplate
+    (meeting logistics, ballots) recurs everywhere; a distinctive theme does
+    not. `overview` uses this to demote (not drop) generic themes. Returns None
+    — leaving the topic map untouched — when the corpus has no centroids, or
+    there are fewer than `_GENERIC_MIN_CORPORA` same-model corpora to compare
+    against (the cross-corpus signal needs breadth; a small deployment relies on
+    the gather-time bot-filter instead). Reader-side, recomputed per call so it
+    tracks the current fleet without a re-gather.
+    """
+    table, _known = _load_table()
+    me = table.get(corpus)
+    if me is None:
+        return None
+    group = {
+        name: entry
+        for name, entry in table.items()
+        if entry.model_id == me.model_id
+        and entry.centroids.shape[1] == me.centroids.shape[1]
+    }
+    if len(group) < _GENERIC_MIN_CORPORA:
+        return None
+    mean = np.vstack([entry.centroids for entry in group.values()]).mean(axis=0)
+    mine = _recenter(me.centroids, mean)
+    others = [
+        _recenter(entry.centroids, mean)
+        for name, entry in group.items()
+        if name != corpus
+    ]
+    if not others:
+        return None
+    flags: List[bool] = []
+    for theme in mine:
+        shared = sum(1 for oc in others if float((oc @ theme).max()) >= _GENERIC_TAU)
+        flags.append(shared / len(others) >= _GENERIC_UBIQUITY)
+    return flags
 
 
 def _scan_local(corpora: List[str]) -> Dict[str, Any]:

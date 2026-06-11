@@ -160,7 +160,8 @@ reported as such until re-gathered.)
 me about X", "what's this WG up to?", "who's on it?"): ~30–40 lines of
 chairs/ADs, status, charter excerpt, active drafts, **main discussion
 themes** (topical clusters of the record — what the group keeps returning
-to, with traffic and last-active date), any **IESG DISCUSS** blocking a
+to, with traffic and last-active date; cross-WG-generic themes like meeting
+logistics are demoted and tagged _common across WGs_), any **IESG DISCUSS** blocking a
 draft, top open issues, and the most active threads (ranked by
 back-and-forth, not recency). It's structure, not substance — when it
 flags a DISCUSS, a theme, or a hot thread, *read it* (e.g. `search_corpus`

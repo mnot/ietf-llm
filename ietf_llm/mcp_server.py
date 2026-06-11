@@ -3209,7 +3209,9 @@ def main() -> None:
         The **main discussion themes** are topical clusters of the gathered
         record (computed at gather time from the embedding index); each
         names what the group keeps coming back to, with how much traffic and
-        when it was last active. Search a theme's wording with
+        when it was last active. Themes that recur across many gathered
+        corpora (meeting logistics, ballots) are demoted below the distinctive
+        ones and tagged _common across WGs_. Search a theme's wording with
         `search_corpus`. (Absent on a corpus gathered before this shipped —
         re-gather to populate.)
 
