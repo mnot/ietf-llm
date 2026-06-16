@@ -178,6 +178,46 @@ def test_elide_quotes_collapses_non_english_attributions() -> None:
         assert "quoted body line one" not in result, label
 
 
+def test_elide_quotes_keeps_inline_reply_prose() -> None:
+    # Inline / bottom-posted reply (the dominant IETF style): an attribution
+    # followed by `>`-prefixed quoting interleaved with the author's own new
+    # prose. The attribution must NOT trigger a trail-cut — the author's lines
+    # have to survive; only the long `>` runs collapse.
+    text = (
+        "On Mon, 9 Jun 2026, Eric Rescorla <ekr@rtfm.com> wrote:\n\n"
+        "> Your first point about the handshake.\n"
+        "> It spans several quoted lines here.\n"
+        "> And a third quoted line.\n"
+        "I disagree: the handshake already covers this.\n\n"
+        "> Your second point about downgrade.\n"
+        "> More quoted context for it.\n"
+        "> Yet another quoted line.\n"
+        "That case is out of scope for this draft.\n"
+    )
+    result = elide_quotes(text)
+    assert "quoted reply trail elided" not in result
+    assert "I disagree: the handshake already covers this." in result
+    assert "That case is out of scope for this draft." in result
+    assert "Your first point about the handshake." not in result
+    assert "> [3 quoted lines elided]" in result
+
+
+def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
+    # A `>`-prefixed top-post: the reply is above, the attribution introduces
+    # the quoted original. Run-collapse handles the quote; nothing is trail-cut,
+    # so the attribution line stays as useful context.
+    text = (
+        "Thanks, that resolves my concern.\n\n"
+        "On Tue, 10 Jun 2026, Someone <x@example.org> wrote:\n"
+        "> original line 1\n> original line 2\n> original line 3\n"
+    )
+    result = elide_quotes(text)
+    assert "Thanks, that resolves my concern." in result
+    assert "On Tue, 10 Jun 2026" in result
+    assert "quoted reply trail elided" not in result
+    assert "> [3 quoted lines elided]" in result
+
+
 # --- build_threads ---------------------------------------------------------
 
 
