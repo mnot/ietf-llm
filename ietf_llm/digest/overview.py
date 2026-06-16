@@ -542,7 +542,12 @@ def _most_active_threads(
     general `read_digest` heat query (`sort="activity"`, `min_messages=2`
     to drop single-message posts, `since=` the recent window) so the
     overview and a direct client call rank identically. Returns
-    `[[subject, msgs, participants, last], …]`, hottest first.
+    `[[subject, msgs, participants, last, file], …]`, hottest first. The
+    `file` cell is the writer-computed `threads/…` path carried straight from
+    the digest's `File` column — the thread file is named by its *first*
+    message date, which doesn't match the `last` column, so surfacing the real
+    path saves the reader guessing the filename. It is "" when the digest
+    carries summaries instead of paths (summariser active).
     """
     threads_path = _digest_path(cache_dir, wg, "threads")
     if not os.path.isfile(threads_path):
@@ -565,6 +570,7 @@ def _most_active_threads(
         i_msgs = cols.index("msgs") if "msgs" in cols else None
         i_part = cols.index("participants") if "participants" in cols else None
         i_last = cols.index("last") if "last" in cols else None
+        i_file = cols.index("file") if "file" in cols else None
         for row in section.rows:
             if i_subj >= len(row):
                 continue
@@ -578,9 +584,53 @@ def _most_active_threads(
                         if i_last is not None and i_last < len(row)
                         else ""
                     ),
+                    row[i_file] if i_file is not None and i_file < len(row) else "",
                 ]
             )
     return rows[:limit]
+
+
+def _threads_section(cache_dir: str, wg: str) -> List[str]:
+    """The thread list for the overview. Prefers the heat signal (where the
+    back-and-forth is) over a pure recency list — a consumer asking "what is
+    going on" wants conflict, not the newest single-message post — and falls
+    back to recency only when nothing has multi-message activity in the window.
+    The active list surfaces the thread `File` so the reader pivots straight in
+    rather than guessing the filename (which is dated by the thread's first
+    message, not its last activity)."""
+    out: List[str] = []
+    active_threads = _most_active_threads(cache_dir, wg, limit=5)
+    if active_threads:
+        out.append("## Most active threads recently (by message count)")
+        out.append(
+            "_Where the back-and-forth is — ranked by messages in a recent "
+            "window, not by recency. `File` is the thread file to read for the "
+            "substance; its date is the thread's first message, not `Last`._"
+        )
+        # The File cell is present unless the digest carries summaries; only
+        # render the column when at least one row actually has a path.
+        has_file = any(len(row) > 4 and row[4] for row in active_threads)
+        if has_file:
+            out.append("| Subject | Msgs | Participants | Last | File |")
+            out.append("|---|---|---|---|---|")
+        else:
+            out.append("| Subject | Msgs | Participants | Last |")
+            out.append("|---|---|---|---|")
+        for row in active_threads:
+            cells = row if has_file else row[:4]
+            out.append("| " + " | ".join(cells) + " |")
+        out.append("")
+        return out
+
+    recent_threads, last_label = _recent_threads(cache_dir, wg, limit=5)
+    if recent_threads:
+        out.append("## 5 most recent mailing list threads")
+        out.append(f"| Subject | Msgs | Participants | First | Last | {last_label} |")
+        out.append("|---|---|---|---|---|---|")
+        for row in recent_threads:
+            out.append("| " + " | ".join(row) + " |")
+        out.append("")
+    return out
 
 
 class _RecentActivity(NamedTuple):
@@ -801,33 +851,7 @@ def build_overview(wg: str, cache_dir: str) -> str:
             out.append("| " + " | ".join(row) + " |")
         out.append("")
 
-    # Prefer the heat signal (where the back-and-forth is) over a pure
-    # recency list — a consumer asking "what is going on" wants conflict,
-    # not the newest single-message post. Fall back to recency only when
-    # nothing has multi-message activity in the window.
-    active_threads = _most_active_threads(cache_dir, wg, limit=5)
-    if active_threads:
-        out.append("## Most active threads recently (by message count)")
-        out.append(
-            "_Where the back-and-forth is — ranked by messages in a recent "
-            "window, not by recency. Read the thread for the substance._"
-        )
-        out.append("| Subject | Msgs | Participants | Last |")
-        out.append("|---|---|---|---|")
-        for row in active_threads:
-            out.append("| " + " | ".join(row) + " |")
-        out.append("")
-    else:
-        recent_threads, last_label = _recent_threads(cache_dir, wg, limit=5)
-        if recent_threads:
-            out.append("## 5 most recent mailing list threads")
-            out.append(
-                f"| Subject | Msgs | Participants | First | Last | {last_label} |"
-            )
-            out.append("|---|---|---|---|---|---|")
-            for row in recent_threads:
-                out.append("| " + " | ".join(row) + " |")
-            out.append("")
+    out.extend(_threads_section(cache_dir, wg))
 
     activity = _recent_activity(cache_dir, wg, limit=10)
     if activity.events or activity.idaction or activity.ballots:

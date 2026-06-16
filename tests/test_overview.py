@@ -411,6 +411,10 @@ def test_overview_surfaces_most_active_threads(tmp_path: Path) -> None:
     assert "Solo announce" not in sec  # single message: no back-and-forth
     assert "Old big thread" not in sec  # outside the recency window
     assert sec.index("Hot debate") < sec.index("Mild chat")  # ranked by msgs
+    # The thread file path is surfaced so the reader doesn't guess the
+    # filename from the (first-message) date — it doesn't match Last.
+    assert "File" in sec
+    assert "t1.md" in sec
 
 
 def test_overview_no_blocked_section_without_discuss(tmp_path: Path) -> None:
