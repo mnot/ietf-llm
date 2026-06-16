@@ -214,7 +214,7 @@ caveats are in each tool's docstring):
 | who cites this message / what an archive-URL footnote points to / trace a split thread or appeal to its origin | `find_message_citations(corpus, file, chunk_idx?)` — inbound + outbound archive-permalink links between gathered messages |
 | IESG ballot / why not published | `read_file_section(corpus, "ballots/<doc>.md")` or `read_digest("timeline", event_kind="ballot")` — a DISCUSS holds publication |
 | replies to a specific message | `find_replies(corpus, file, chunk_idx)` |
-| did the chair call consensus / what was decided | `read_ietf_interpretation_norms` **first**, then the chair's own words (`role="Chair"`, `state="closed"`) + the **Chair statements** section of `tally_positions(corpus, "<thread or issue file>")` — its +1/-1 count is a keyword heuristic, *not* a measure of support |
+| did the chair call consensus / what was decided | `read_ietf_interpretation_norms` **first**, then the chair's own words (`role="Chair"`, `state="closed"`) + the **Chair statements** section of `tally_positions(corpus, "<thread or issue file>")` (its best use, alongside counting explicit option polls) — its +1/-1 tally is a keyword heuristic that misses prose-form positions, *not* a measure of support; it withholds the counts when coverage is low |
 
 **The judgment that overrides tool choice — "what did the WG decide / what's
 the position on X?"** The outcome is whatever the **chairs declared**: this

@@ -1675,15 +1675,24 @@ def tool_find_replies(
 
 @_requires_corpus
 def tool_tally_positions(wg: str, file: str) -> str:
-    """Heuristic position tally for one thread / issue file.
+    """Surface a thread / issue file's procedural call, polls, and (cautiously)
+    a position tally.
 
-    Counts canonical position phrasings (`+1`, `-1`, `I support`,
-    `I object`, `LGTM`, conditional support, `DISCUSS`) per message
-    author, with the matching excerpt and a coverage percentage so
-    the consumer can see what fraction of the discussion the
-    heuristic actually classified. Enriches each row with role and
-    affiliation from the people digest when known — exposing the
-    implementer-clustering signal alongside the raw count.
+    Best for two things: **chair statements** — messages from a chair carrying
+    procedural language (`rough consensus`, `consensus call`, `WGLC`,
+    `adopting`, closure) surfaced at the top, the load-bearing posts in a long
+    thread — and **option polls** (`option N` / `#N` / `I prefer N`), counted
+    per choice.
+
+    The support/oppose tally is a **keyword heuristic** (`+1`, `-1`,
+    `I support`, `I object`, `LGTM`, `DISCUSS`, near the message start). It is
+    low-recall and **misses prose-form positions**, which is how IETF
+    participants usually argue — so a contentious thread can tally as
+    no-position. A coverage percentage is reported; when it is low the counts
+    are withheld and a warning points you to the chair statements and the
+    messages themselves. Never quote a low-coverage count as the level of
+    support. Each row is enriched with role / affiliation from the people
+    digest when known.
     """
     cache_dir = _files_dir(wg)
     if not file_supports_tally(file):

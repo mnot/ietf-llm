@@ -576,6 +576,50 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
     return positions, summary
 
 
+# Coverage below which the support/oppose counts are withheld: the
+# heuristic missed most of the thread, so quoting "N oppose" would
+# misrepresent a discussion whose positions live in prose. Applied only to
+# non-trivial threads — a 3-message thread at 33% isn't a signal worth a
+# warning. Poll choices and chair statements are explicit and never withheld.
+_LOW_COVERAGE_PCT = 25
+_LOW_COVERAGE_MIN_MESSAGES = 5
+
+
+def _is_low_coverage(total: int, coverage_pct: int) -> bool:
+    """Whether the keyword tally classified too little of a non-trivial
+    thread for its support/oppose counts to be quotable."""
+    return total >= _LOW_COVERAGE_MIN_MESSAGES and coverage_pct < _LOW_COVERAGE_PCT
+
+
+def _coverage_banner(total: int, classified: int, coverage_pct: int) -> List[str]:
+    """A prominent top-of-output warning when coverage is too low to trust
+    the counts. Empty when coverage is adequate. Points the reader at the
+    grounded signals (chair statements, the messages themselves) instead of
+    the numbers, which are withheld below."""
+    if not _is_low_coverage(total, coverage_pct):
+        return []
+    if coverage_pct == 0:
+        lead = (
+            f"**The keyword heuristic classified none of the {total} messages.** "
+            "The support / oppose counts are withheld below and tell you nothing "
+            "about where the thread stands"
+        )
+    else:
+        lead = (
+            f"**Low coverage ({coverage_pct}%):** the keyword heuristic classified "
+            f"only {classified}/{total} messages, so the support / oppose counts "
+            "are withheld below"
+        )
+    return [
+        f"> ⚠️ {lead} — this is **not** evidence the thread is unopinionated. "
+        "IETF participants here likely express support or opposition in prose, "
+        "which this matcher cannot see. For the real state, read the **Chair "
+        "statements** section and the messages at the chunk indices listed below "
+        "(or use `read_topic` / `read_file_section`). Do not quote the counts.",
+        "",
+    ]
+
+
 def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     file: str,
     positions: List[Position],
@@ -598,22 +642,33 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     out: List[str] = []
     out.append(f"# Position tally: `{file}`\n")
+    # Banner first when coverage is low — it must be read before the (withheld)
+    # numbers so a 0 is never lifted out of context.
+    out.extend(_coverage_banner(total, total - n_count, coverage_pct))
     out.append(
-        "_Heuristic extraction. Matches canonical IETF position "
-        "phrasings (`+1`, `-1`, `I support`, `I object`, `LGTM`, "
-        "`DISCUSS`, …) near the start of each message; quoted "
-        "text and `_Subject:_` metadata are stripped first. **Imperfect**: "
-        "subtle technical objections, ironic phrasings, and "
-        "questions-that-imply-disagreement all show as no-position. "
-        "Always sanity-check against the file before publishing a "
-        "count._\n"
+        "_Best for **explicit option polls** (`option N` / `#N` / `I prefer N`) "
+        "and for **surfacing the chair's procedural call** (see Chair "
+        "statements). The support/oppose tally is a keyword heuristic: it "
+        "matches canonical phrasings (`+1`, `-1`, `I support`, `I object`, "
+        "`LGTM`, `DISCUSS`, …) near the start of each message and **misses "
+        "prose-form positions** — a thread can be full of clearly-argued "
+        "opposition and still tally as no-position. A count is meaningful only "
+        "when coverage is high; otherwise read the messages. Never quote a "
+        "low-coverage count as the level of support._\n"
     )
     p_count = summary.get("poll", 0)
     out.append("**Summary:**")
-    out.append(f"- Support: **{s_count}**")
-    out.append(f"- Conditional: **{c_count}**  (yes-but-only-if)")
-    out.append(f"- Oppose: **{o_count}**")
+    if _is_low_coverage(total, coverage_pct):
+        out.append(
+            "- Support / Conditional / Oppose: _withheld — coverage too low for "
+            "the counts to mean anything (see warning above; read the messages)._"
+        )
+    else:
+        out.append(f"- Support: **{s_count}**")
+        out.append(f"- Conditional: **{c_count}**  (yes-but-only-if)")
+        out.append(f"- Oppose: **{o_count}**")
     if p_count:
+        # Poll choices are explicit votes — never withheld.
         out.append(
             f"- Poll choices: **{p_count}**  (`option N` / `#N` / "
             "`I prefer N` — see Poll choices section below)"
