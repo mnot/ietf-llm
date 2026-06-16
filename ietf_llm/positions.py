@@ -591,11 +591,15 @@ def _is_low_coverage(total: int, coverage_pct: int) -> bool:
     return total >= _LOW_COVERAGE_MIN_MESSAGES and coverage_pct < _LOW_COVERAGE_PCT
 
 
-def _coverage_banner(total: int, classified: int, coverage_pct: int) -> List[str]:
+def _coverage_banner(
+    total: int, classified: int, coverage_pct: int, has_chair_statements: bool
+) -> List[str]:
     """A prominent top-of-output warning when coverage is too low to trust
     the counts. Empty when coverage is adequate. Points the reader at the
     grounded signals (chair statements, the messages themselves) instead of
-    the numbers, which are withheld below."""
+    the numbers, which are withheld below. The Chair statements clause is only
+    included when that section is actually rendered — chair prose can stay
+    elided in older caches, leaving no chair statements to point at."""
     if not _is_low_coverage(total, coverage_pct):
         return []
     if coverage_pct == 0:
@@ -610,12 +614,18 @@ def _coverage_banner(total: int, classified: int, coverage_pct: int) -> List[str
             f"only {classified}/{total} messages, so the support / oppose counts "
             "are withheld below"
         )
+    if has_chair_statements:
+        pointer = (
+            "read the **Chair statements** section and the messages at the chunk "
+            "indices listed below"
+        )
+    else:
+        pointer = "read the messages at the chunk indices listed below"
     return [
         f"> ⚠️ {lead} — this is **not** evidence the thread is unopinionated. "
         "IETF participants here likely express support or opposition in prose, "
-        "which this matcher cannot see. For the real state, read the **Chair "
-        "statements** section and the messages at the chunk indices listed below "
-        "(or use `read_topic` / `read_file_section`). Do not quote the counts.",
+        f"which this matcher cannot see. For the real state, {pointer} (or use "
+        "`read_topic` / `read_file_section`). Do not quote the counts.",
         "",
     ]
 
@@ -644,7 +654,9 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
     out.append(f"# Position tally: `{file}`\n")
     # Banner first when coverage is low — it must be read before the (withheld)
     # numbers so a 0 is never lifted out of context.
-    out.extend(_coverage_banner(total, total - n_count, coverage_pct))
+    out.extend(
+        _coverage_banner(total, total - n_count, coverage_pct, bool(chair_statements))
+    )
     out.append(
         "_Best for **explicit option polls** (`option N` / `#N` / `I prefer N`) "
         "and for **surfacing the chair's procedural call** (see Chair "
@@ -713,7 +725,11 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
         rows = [p for p in positions if p.label == label]
         if not rows:
             return
-        out.append(f"## {title} ({len(rows)})\n")
+        # At low coverage the aggregate count is withheld in the summary; drop
+        # it from the section header too so a quotable number does not leak here
+        # while the grounded per-author rows below still show.
+        count = "" if _is_low_coverage(total, coverage_pct) else f" ({len(rows)})"
+        out.append(f"## {title}{count}\n")
         for pos in rows:
             tag_bits: List[str] = []
             if role_lookup and pos.sender in role_lookup:
@@ -767,7 +783,13 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             continue
         by_author.setdefault(pos.sender, []).append(pos)
     if by_author:
-        out.append(f"## By author ({len(by_author)})\n")
+        # Same as the per-side sections: withhold the aggregate count at low
+        # coverage; the grounded per-author rows still render.
+        out.append(
+            "## By author"
+            + ("" if _is_low_coverage(total, coverage_pct) else f" ({len(by_author)})")
+            + "\n"
+        )
         for sender in sorted(by_author):
             entries = by_author[sender]
             # Collapse to distinct labels (with poll choices spelled

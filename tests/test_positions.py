@@ -16,6 +16,7 @@ from ietf_llm import mcp_server
 from ietf_llm.positions import (
     _SENDER_ROLE_SUFFIX,
     _THREAD_MSG_RE,
+    ChairStatement,
     extract_position,
     file_supports_tally,
     render_tally,
@@ -389,6 +390,56 @@ def _prose_thread(n: int) -> str:
         lines.append(f"### [{i + 1}] 2026-06-1{i} 09:00 — Person{i}\n")
         lines.append(f"{prose[i % len(prose)]}\n")
     return "\n".join(lines)
+
+
+def _mixed_low_coverage_thread() -> str:
+    # 10 messages: nine prose (no-position) + one canonical support — 10%
+    # coverage, low but non-zero, so the per-side sections do render.
+    lines = ["# Mixed\n", "**Messages:** 10\n", "## Messages\n"]
+    for i in range(9):
+        lines.append(f"### [{i + 1}] 2026-06-{i + 1:02d} 09:00 — Person{i}\n")
+        lines.append("The scope here seems too broad for our charter.\n")
+    lines.append("### [10] 2026-06-10 09:00 — Late Supporter\n")
+    lines.append("I support adoption of this draft.\n")
+    return "\n".join(lines)
+
+
+def test_render_tally_partial_low_coverage_no_count_leak() -> None:
+    # At low-but-non-zero coverage the summary withholds the aggregate, so the
+    # section / by-author headers must not leak a quotable count either — but
+    # the grounded per-author row still renders.
+    positions, summary = tally_thread(_mixed_low_coverage_thread())
+    assert summary["support"] == 1
+    assert summary["no-position"] == 9
+    out = render_tally("threads/mixed.md", positions, summary)
+    assert "Low coverage (10%)" in out
+    assert "withheld" in out
+    assert "I support adoption of this draft." in out  # grounded row survives
+    assert "Late Supporter" in out
+    assert "Support: **1**" not in out  # summary withheld
+    assert "## Support (1)" not in out  # header count withheld
+    assert "## By author (1)" not in out
+    assert "## Support" in out  # the section itself still renders
+
+
+def test_coverage_banner_chair_clause_gated_on_presence() -> None:
+    positions, summary = tally_thread(_prose_thread(6))
+    # No chair statements: the banner must not name a section that won't render.
+    out_none = render_tally("threads/a.md", positions, summary)
+    assert "Chair statements** section" not in out_none
+    assert "read the messages at the chunk indices" in out_none
+    # With chair statements: the banner names the section.
+    cs = [
+        ChairStatement(
+            sender="Chair P",
+            chunk_idx=2,
+            excerpt="we will route this to the meeting",
+            matched_phrase="adoption call",
+            role="Chair",
+        )
+    ]
+    out_cs = render_tally("threads/a.md", positions, summary, chair_statements=cs)
+    assert "Chair statements** section" in out_cs
 
 
 def test_render_tally_withholds_counts_at_low_coverage() -> None:
