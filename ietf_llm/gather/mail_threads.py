@@ -51,7 +51,7 @@ from ..paths import thread_path, threads_dir
 from ..people import Registry
 from ..text import _normalize_subject, _parse_date, _short_addr
 from ..utils import LogLevel, Verbosity, get_cache_dir, log, write_if_changed
-from .mbox import clean_email_text, extract_text_content
+from .mbox import extract_text_content
 
 
 @dataclass
@@ -165,7 +165,12 @@ def parse_eml(path: str, registry: Optional[Registry] = None) -> Optional[Messag
     archived_at = _normalize_archived_at(msg.get("Archived-At"))
 
     try:
-        body = clean_email_text(extract_text_content(msg))
+        # Store the raw plain-text body, `>` markers intact. elide_quotes
+        # is the sole quote handler for the rendered thread file — feeding
+        # it pre-stripped text (the old clean_email_text here) blanked the
+        # `>` runs it keys on, so an inline / bottom-posted reply was left
+        # as a bare attribution + prose and the trail-cut ate the prose.
+        body = extract_text_content(msg)
     except Exception:  # pylint: disable=broad-except
         body = ""
 
@@ -316,6 +321,18 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     inline reply, not a top-post trail, so it is left to the run-collapse.
     """
     lines = text.splitlines()
+
+    # Drop a trailing signature block at the RFC 3676 `-- ` delimiter (also
+    # the bare `--` some clients send). Only an unquoted delimiter counts — a
+    # quoted `> --` stays with its quote run. This is the one piece of
+    # signature trimming kept from the old clean_email_text pre-pass; the
+    # aggressive heuristics there (Regards/Sent-from/dashes) are dropped
+    # because they truncate real prose.
+    for idx, line in enumerate(lines):
+        if line.rstrip() == "--":
+            lines = lines[:idx]
+            break
+
     trail_marker: Optional[str] = None
     cut = _quoted_trail_start(lines)
     if cut is not None:

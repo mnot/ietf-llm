@@ -13,6 +13,7 @@ import os
 from typing import Optional
 
 from ..gather.mail_threads import build_threads, thread_slug
+from ..gather.mbox import clean_email_text
 from ..paths import digest_path, remove_stale_digest, thread_path
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, atomic_open, log
@@ -88,7 +89,10 @@ def _build_threads_digest(
             link = f"`{relpath}`"
 
             if summarizer.active():
-                body_source = thread.root.body or ""
+                # Message.body is now raw (quotes intact) for the thread-file
+                # renderer; the summariser wants the author's prose alone, so
+                # strip quotes/signature here as before.
+                body_source = clean_email_text(thread.root.body or "")
                 summary = (
                     summarizer.summarize(
                         _THREAD_PROMPT.format(
