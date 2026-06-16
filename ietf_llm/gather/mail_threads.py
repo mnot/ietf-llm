@@ -51,7 +51,7 @@ from ..paths import thread_path, threads_dir
 from ..people import Registry
 from ..text import _normalize_subject, _parse_date, _short_addr
 from ..utils import LogLevel, Verbosity, get_cache_dir, log, write_if_changed
-from .mbox import clean_email_text, extract_text_content
+from .mbox import extract_text_content
 
 
 @dataclass
@@ -165,7 +165,12 @@ def parse_eml(path: str, registry: Optional[Registry] = None) -> Optional[Messag
     archived_at = _normalize_archived_at(msg.get("Archived-At"))
 
     try:
-        body = clean_email_text(extract_text_content(msg))
+        # Store the raw plain-text body, `>` markers intact. elide_quotes
+        # is the sole quote handler for the rendered thread file — feeding
+        # it pre-stripped text (the old clean_email_text here) blanked the
+        # `>` runs it keys on, so an inline / bottom-posted reply was left
+        # as a bare attribution + prose and the trail-cut ate the prose.
+        body = extract_text_content(msg)
     except Exception:  # pylint: disable=broad-except
         body = ""
 
@@ -263,11 +268,28 @@ def _has_outlook_header_block(lines: List[str], i: int) -> bool:
     return has_sent and has_subject
 
 
+def _is_marked_quote_after(lines: List[str], i: int) -> bool:
+    """Whether the first non-blank line after index `i` is a `>`-quoted
+    line. An attribution followed by `>`-prefixed quoting is an inline /
+    bottom-posted reply (the dominant IETF style): the per-line run-collapse
+    already keeps the author's own interleaved prose and collapses only the
+    quoted runs, so the whole trail must NOT be cut. The trail-cut is for the
+    *unprefixed* verbatim pastes, where the attribution is followed by the
+    prior message with no per-line signal to collapse on."""
+    for line in lines[i + 1 :]:
+        if not line.strip():
+            continue
+        return line.lstrip().startswith(">")
+    return False
+
+
 def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     """Index of the first line that begins a no-`>` quoted reply trail
     (Outlook / Exchange / Apple top-post markers), or None. Everything
     from there to the end of a top-posted message is the prior thread
-    re-quoted verbatim."""
+    re-quoted verbatim. An `On … wrote:` attribution that introduces a
+    `>`-prefixed quote is skipped — that is an inline reply, handled by the
+    run-collapse so the author's own prose survives."""
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
@@ -276,7 +298,7 @@ def _quoted_trail_start(lines: List[str]) -> Optional[int]:
             return i
         if stripped.lower().startswith("from:") and _has_outlook_header_block(lines, i):
             return i
-        if _is_attribution(stripped):
+        if _is_attribution(stripped) and not _is_marked_quote_after(lines, i):
             return i
     return None
 
@@ -285,16 +307,32 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     """Collapse quoted reply trails so a thread file is readable.
 
     Two shapes are handled. `>`-prefixed quote runs longer than
-    `keep_threshold` collapse to a single `> [N lines elided]` marker.
-    And the no-`>` quoting that Outlook / Exchange / Apple Mail produce —
-    a `-----Original Message-----` separator, a `From:`/`Sent:`/`Subject:`
-    header block, or an `On … wrote:` attribution, after which the prior
-    thread is pasted verbatim with no prefix — is elided from the first
-    such boundary to the end of the (top-posted) message. That trail is
-    the earlier messages, which the thread file already carries as their
-    own sections, so nothing is lost.
+    `keep_threshold` collapse to a single `> [N lines elided]` marker,
+    while the author's own (unprefixed) lines are kept — so an inline /
+    bottom-posted reply, where new prose is interleaved with `>` quotes,
+    survives intact. And the no-`>` quoting that Outlook / Exchange / Apple
+    Mail produce — a `-----Original Message-----` separator, a
+    `From:`/`Sent:`/`Subject:` header block, or an `On … wrote:` attribution
+    that is followed by unprefixed text, after which the prior thread is
+    pasted verbatim with no prefix — is elided from the first such boundary
+    to the end of the (top-posted) message. That trail is the earlier
+    messages, which the thread file already carries as their own sections, so
+    nothing is lost. An attribution followed by `>`-prefixed quoting is an
+    inline reply, not a top-post trail, so it is left to the run-collapse.
     """
     lines = text.splitlines()
+
+    # Drop a trailing signature block at the RFC 3676 `-- ` delimiter (also
+    # the bare `--` some clients send). Only an unquoted delimiter counts — a
+    # quoted `> --` stays with its quote run. This is the one piece of
+    # signature trimming kept from the old clean_email_text pre-pass; the
+    # aggressive heuristics there (Regards/Sent-from/dashes) are dropped
+    # because they truncate real prose.
+    for idx, line in enumerate(lines):
+        if line.rstrip() == "--":
+            lines = lines[:idx]
+            break
+
     trail_marker: Optional[str] = None
     cut = _quoted_trail_start(lines)
     if cut is not None:

@@ -178,6 +178,63 @@ def test_elide_quotes_collapses_non_english_attributions() -> None:
         assert "quoted body line one" not in result, label
 
 
+def test_elide_quotes_keeps_inline_reply_prose() -> None:
+    # Inline / bottom-posted reply (the dominant IETF style): an attribution
+    # followed by `>`-prefixed quoting interleaved with the author's own new
+    # prose. The attribution must NOT trigger a trail-cut — the author's lines
+    # have to survive; only the long `>` runs collapse.
+    text = (
+        "On Mon, 9 Jun 2026, Eric Rescorla <ekr@rtfm.com> wrote:\n\n"
+        "> Your first point about the handshake.\n"
+        "> It spans several quoted lines here.\n"
+        "> And a third quoted line.\n"
+        "I disagree: the handshake already covers this.\n\n"
+        "> Your second point about downgrade.\n"
+        "> More quoted context for it.\n"
+        "> Yet another quoted line.\n"
+        "That case is out of scope for this draft.\n"
+    )
+    result = elide_quotes(text)
+    assert "quoted reply trail elided" not in result
+    assert "I disagree: the handshake already covers this." in result
+    assert "That case is out of scope for this draft." in result
+    assert "Your first point about the handshake." not in result
+    assert "> [3 quoted lines elided]" in result
+
+
+def test_elide_quotes_trims_signature_at_delimiter() -> None:
+    # The RFC 3676 `-- ` delimiter (and a bare `--`) trims a trailing
+    # signature, but prose above it and a quoted `> --` survive.
+    text = (
+        "> quoted point one\n> quoted point two\n> quoted point three\n"
+        "My actual reply.\n"
+        "-- \n"
+        "Jane Doe https://example.org\n"
+        "some .sig quote\n"
+    )
+    result = elide_quotes(text)
+    assert "My actual reply." in result
+    assert "Jane Doe" not in result
+    assert "some .sig quote" not in result
+    assert "> [3 quoted lines elided]" in result
+
+
+def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
+    # A `>`-prefixed top-post: the reply is above, the attribution introduces
+    # the quoted original. Run-collapse handles the quote; nothing is trail-cut,
+    # so the attribution line stays as useful context.
+    text = (
+        "Thanks, that resolves my concern.\n\n"
+        "On Tue, 10 Jun 2026, Someone <x@example.org> wrote:\n"
+        "> original line 1\n> original line 2\n> original line 3\n"
+    )
+    result = elide_quotes(text)
+    assert "Thanks, that resolves my concern." in result
+    assert "On Tue, 10 Jun 2026" in result
+    assert "quoted reply trail elided" not in result
+    assert "> [3 quoted lines elided]" in result
+
+
 # --- build_threads ---------------------------------------------------------
 
 
@@ -429,6 +486,55 @@ def test_per_thread_file_layout(isolated_home: Path) -> None:
     assert "### [2] 2025-01-02 10:00 — Bob (reply to [1])" in text
     assert "Initial message body." in text
     assert "My reply." in text
+
+
+def test_thread_file_keeps_bottom_posted_reply_prose(isolated_home: Path) -> None:
+    # Writer->reader round-trip for the dominant IETF reply style: a bottom-
+    # posted / inline reply whose text/plain body quotes with `>` then answers
+    # below. The author's own prose MUST survive in the rendered file; only the
+    # quoted run collapses. (Regression: the body used to be quote-stripped
+    # before elide_quotes ran, so the leftover attribution triggered a trail-cut
+    # that blanked the whole reply.)
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Adoption call?", sender="Brian <brian@x>",
+        date="Mon, 09 Jun 2025 10:00:00 +0000",
+        message_id="<root@x>",
+        body="Should the chairs run an adoption call on this draft?",
+    )
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="Re: Adoption call?", sender="Pete <pete@x>",
+        date="Tue, 10 Jun 2025 13:33:00 +0000",
+        message_id="<reply@x>",
+        in_reply_to="<root@x>",
+        body=(
+            "On 9 Jun 2025, at 10:00, Brian wrote:\n"
+            "\n"
+            "> Should the chairs run an adoption\n"
+            "> call on this draft? There are open\n"
+            "> questions about scope and charter.\n"
+            "\n"
+            "As co-chair, I do not think the group has concluded that those\n"
+            "concerns are unsolvable. This will be on the agenda in Vienna.\n"
+            "-- \n"
+            "Pete https://example.net/\n"
+        ),
+    )
+    cache = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache, verbose=Verbosity.QUIET)
+    assert len(paths) == 1
+    text = Path(paths[0]).read_text()
+    # The reply's own words survive...
+    assert "As co-chair, I do not think the group has concluded" in text
+    assert "This will be on the agenda in Vienna." in text
+    # ...the quoted run is collapsed, not echoed...
+    assert "> [3 quoted lines elided]" in text
+    assert "open\n> questions" not in text
+    # ...the signature is trimmed...
+    assert "example.net" not in text
+    # ...and the reply is NOT blanked to a trail marker.
+    assert "quoted reply trail elided" not in text
 
 
 def test_per_thread_file_filename_uses_slug(isolated_home: Path) -> None:

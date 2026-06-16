@@ -397,12 +397,15 @@ def test_overview_surfaces_most_active_threads(tmp_path: Path) -> None:
     _seed_digests(tmp_path)
     (tmp_path / "digests/threads.md").write_text(
         "# wg: threads\n\n"
+        # File cells in the real writer's backticked `threads/<first-date>-…`
+        # form (threads.py emits `link = f"`{relpath}`"`), so this exercises
+        # the form the overview actually receives, not a bare filename.
         "| Subject | Msgs | Participants | First | Last | File |\n"
         "|---|---|---|---|---|---|\n"
-        "| Hot debate | 12 | 5 | 2026-05-01 | 2026-05-20 | t1.md |\n"
-        "| Mild chat | 3 | 2 | 2026-05-02 | 2026-05-18 | t2.md |\n"
-        "| Solo announce | 1 | 1 | 2026-05-19 | 2026-05-19 | t3.md |\n"
-        "| Old big thread | 40 | 9 | 2024-01-01 | 2024-02-01 | t4.md |\n"
+        "| Hot debate | 12 | 5 | 2026-05-01 | 2026-05-20 | `threads/2026-05-01-hot-debate.md` |\n"
+        "| Mild chat | 3 | 2 | 2026-05-02 | 2026-05-18 | `threads/2026-05-02-mild-chat.md` |\n"
+        "| Solo announce | 1 | 1 | 2026-05-19 | 2026-05-19 | `threads/2026-05-19-solo.md` |\n"
+        "| Old big thread | 40 | 9 | 2024-01-01 | 2024-02-01 | `threads/2024-01-01-old.md` |\n"
     )
     out = build_overview("wg", str(tmp_path))
     sec = out.split("## Most active threads", 1)[1].split("\n## ", 1)[0]
@@ -411,6 +414,10 @@ def test_overview_surfaces_most_active_threads(tmp_path: Path) -> None:
     assert "Solo announce" not in sec  # single message: no back-and-forth
     assert "Old big thread" not in sec  # outside the recency window
     assert sec.index("Hot debate") < sec.index("Mild chat")  # ranked by msgs
+    # The thread file path is surfaced so the reader doesn't guess the
+    # filename from the (first-message) date — note it doesn't match Last.
+    assert "File" in sec
+    assert "`threads/2026-05-01-hot-debate.md`" in sec
 
 
 def test_overview_no_blocked_section_without_discuss(tmp_path: Path) -> None:

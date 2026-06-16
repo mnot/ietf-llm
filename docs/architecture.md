@@ -156,10 +156,14 @@ Key invariants:
   from the embedding index). `threads/<date>-<slug>.md` is one file
   per reconstructed thread, built from RFC 5322 In-Reply-To /
   References headers with a normalised-subject safety net, quoted runs
-  collapsed, an outline at the top, and per-message section headers
-  rendered in **UTC** (so the chunker's date re-parse sorts correctly).
-  The thread files are what an LLM should read; the year files are for
-  humans / external tools.
+  collapsed (an inline / bottom-posted reply keeps the author's own
+  prose — only the `>` quote runs and unprefixed top-post trails go),
+  an outline at the top, and per-message section headers rendered in
+  **UTC** (so the chunker's date re-parse sorts correctly). `<date>` is
+  the thread's *first* message, so it can lag the last-activity date the
+  overview reports — the overview surfaces the actual `File` path to
+  bridge that. The thread files are what an LLM should read; the year
+  files are for humans / external tools.
 - **Per-issue files mirror per-thread files.** `issues/<repo>/<N>.md`
   is one GitHub issue with full comment history, same shape as a
   thread file (frontmatter carries duplicate-of and closing-rationale).
