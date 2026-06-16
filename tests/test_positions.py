@@ -16,8 +16,10 @@ from ietf_llm import mcp_server
 from ietf_llm.positions import (
     _SENDER_ROLE_SUFFIX,
     _THREAD_MSG_RE,
+    ChairStatement,
     extract_position,
     file_supports_tally,
+    render_tally,
     tally_thread,
 )
 from ietf_llm.utils import get_wg_file_cache_dir
@@ -370,6 +372,108 @@ def test_tally_thread_counts_each_bucket() -> None:
     names = {p.sender for p in positions}
     assert "Alice" in names
     assert "Alice (Chair)" not in names
+
+
+def _prose_thread(n: int) -> str:
+    # A thread where every message argues in prose with no canonical position
+    # token — the ethics-04 shape: full of opinion, zero keyword coverage.
+    lines = ["# Adoption debate\n", f"**Messages:** {n}\n", "## Messages\n"]
+    prose = [
+        "The scope here is far too broad for our charter.",
+        "The threat model in section 3 does not match deployment reality.",
+        "Sixty days have elapsed and nothing has converged on this.",
+        "Routing this to the meeting seems premature given the open issues.",
+        "As written, the document raises more questions than it answers.",
+        "This needs much more analysis before it can go anywhere.",
+    ]
+    for i in range(n):
+        lines.append(f"### [{i + 1}] 2026-06-1{i} 09:00 — Person{i}\n")
+        lines.append(f"{prose[i % len(prose)]}\n")
+    return "\n".join(lines)
+
+
+def _mixed_low_coverage_thread() -> str:
+    # 10 messages: nine prose (no-position) + one canonical support — 10%
+    # coverage, low but non-zero, so the per-side sections do render.
+    lines = ["# Mixed\n", "**Messages:** 10\n", "## Messages\n"]
+    for i in range(9):
+        lines.append(f"### [{i + 1}] 2026-06-{i + 1:02d} 09:00 — Person{i}\n")
+        lines.append("The scope here seems too broad for our charter.\n")
+    lines.append("### [10] 2026-06-10 09:00 — Late Supporter\n")
+    lines.append("I support adoption of this draft.\n")
+    return "\n".join(lines)
+
+
+def test_render_tally_partial_low_coverage_no_count_leak() -> None:
+    # At low-but-non-zero coverage the summary withholds the aggregate, so the
+    # section / by-author headers must not leak a quotable count either — but
+    # the grounded per-author row still renders.
+    positions, summary = tally_thread(_mixed_low_coverage_thread())
+    assert summary["support"] == 1
+    assert summary["no-position"] == 9
+    out = render_tally("threads/mixed.md", positions, summary)
+    assert "Low coverage (10%)" in out
+    assert "withheld" in out
+    assert "I support adoption of this draft." in out  # grounded row survives
+    assert "Late Supporter" in out
+    assert "Support: **1**" not in out  # summary withheld
+    assert "## Support (1)" not in out  # header count withheld
+    assert "## By author (1)" not in out
+    assert "## Support" in out  # the section itself still renders
+
+
+def test_coverage_banner_chair_clause_gated_on_presence() -> None:
+    positions, summary = tally_thread(_prose_thread(6))
+    # No chair statements: the banner must not name a section that won't render.
+    out_none = render_tally("threads/a.md", positions, summary)
+    assert "Chair statements** section" not in out_none
+    assert "read the messages at the chunk indices" in out_none
+    # With chair statements: the banner names the section.
+    cs = [
+        ChairStatement(
+            sender="Chair P",
+            chunk_idx=2,
+            excerpt="we will route this to the meeting",
+            matched_phrase="adoption call",
+            role="Chair",
+        )
+    ]
+    out_cs = render_tally("threads/a.md", positions, summary, chair_statements=cs)
+    assert "Chair statements** section" in out_cs
+
+
+def test_render_tally_withholds_counts_at_low_coverage() -> None:
+    positions, summary = tally_thread(_prose_thread(6))
+    assert summary["no-position"] == 6  # all prose, nothing classified
+    out = render_tally("threads/adoption.md", positions, summary)
+    # Prominent banner up front, counts withheld, the 0 never rendered.
+    assert "classified none of the 6 messages" in out
+    assert "withheld" in out
+    assert "Support: **0**" not in out
+    assert "Oppose: **0**" not in out
+    # Coverage still reported, and the navigable chunk index survives.
+    assert "Coverage: 0%" in out
+    assert "No detectable position" in out
+    assert "[chunks" in out
+
+
+def test_render_tally_keeps_counts_at_high_coverage() -> None:
+    positions, summary = tally_thread(_wglc_thread())  # 80% coverage
+    out = render_tally("threads/wglc.md", positions, summary)
+    assert "Support: **2**" in out
+    assert "Oppose: **1**" in out
+    assert "withheld" not in out
+    assert "Low coverage" not in out and "classified none" not in out
+
+
+def test_render_tally_small_thread_does_not_trigger_banner() -> None:
+    # Below the min-message floor, a 0% tally is noise, not a signal — show
+    # the (zero) counts plainly rather than a scary withheld banner.
+    positions, summary = tally_thread(_prose_thread(3))
+    out = render_tally("threads/small.md", positions, summary)
+    assert "withheld" not in out
+    assert "classified none" not in out
+    assert "Support: **0**" in out
 
 
 def test_tally_thread_preserves_chunk_indices() -> None:

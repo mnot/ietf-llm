@@ -576,6 +576,60 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
     return positions, summary
 
 
+# Coverage below which the support/oppose counts are withheld: the
+# heuristic missed most of the thread, so quoting "N oppose" would
+# misrepresent a discussion whose positions live in prose. Applied only to
+# non-trivial threads — a 3-message thread at 33% isn't a signal worth a
+# warning. Poll choices and chair statements are explicit and never withheld.
+_LOW_COVERAGE_PCT = 25
+_LOW_COVERAGE_MIN_MESSAGES = 5
+
+
+def _is_low_coverage(total: int, coverage_pct: int) -> bool:
+    """Whether the keyword tally classified too little of a non-trivial
+    thread for its support/oppose counts to be quotable."""
+    return total >= _LOW_COVERAGE_MIN_MESSAGES and coverage_pct < _LOW_COVERAGE_PCT
+
+
+def _coverage_banner(
+    total: int, classified: int, coverage_pct: int, has_chair_statements: bool
+) -> List[str]:
+    """A prominent top-of-output warning when coverage is too low to trust
+    the counts. Empty when coverage is adequate. Points the reader at the
+    grounded signals (chair statements, the messages themselves) instead of
+    the numbers, which are withheld below. The Chair statements clause is only
+    included when that section is actually rendered — chair prose can stay
+    elided in older caches, leaving no chair statements to point at."""
+    if not _is_low_coverage(total, coverage_pct):
+        return []
+    if coverage_pct == 0:
+        lead = (
+            f"**The keyword heuristic classified none of the {total} messages.** "
+            "The support / oppose counts are withheld below and tell you nothing "
+            "about where the thread stands"
+        )
+    else:
+        lead = (
+            f"**Low coverage ({coverage_pct}%):** the keyword heuristic classified "
+            f"only {classified}/{total} messages, so the support / oppose counts "
+            "are withheld below"
+        )
+    if has_chair_statements:
+        pointer = (
+            "read the **Chair statements** section and the messages at the chunk "
+            "indices listed below"
+        )
+    else:
+        pointer = "read the messages at the chunk indices listed below"
+    return [
+        f"> ⚠️ {lead} — this is **not** evidence the thread is unopinionated. "
+        "IETF participants here likely express support or opposition in prose, "
+        f"which this matcher cannot see. For the real state, {pointer} (or use "
+        "`read_topic` / `read_file_section`). Do not quote the counts.",
+        "",
+    ]
+
+
 def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     file: str,
     positions: List[Position],
@@ -598,22 +652,35 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     out: List[str] = []
     out.append(f"# Position tally: `{file}`\n")
+    # Banner first when coverage is low — it must be read before the (withheld)
+    # numbers so a 0 is never lifted out of context.
+    out.extend(
+        _coverage_banner(total, total - n_count, coverage_pct, bool(chair_statements))
+    )
     out.append(
-        "_Heuristic extraction. Matches canonical IETF position "
-        "phrasings (`+1`, `-1`, `I support`, `I object`, `LGTM`, "
-        "`DISCUSS`, …) near the start of each message; quoted "
-        "text and `_Subject:_` metadata are stripped first. **Imperfect**: "
-        "subtle technical objections, ironic phrasings, and "
-        "questions-that-imply-disagreement all show as no-position. "
-        "Always sanity-check against the file before publishing a "
-        "count._\n"
+        "_Best for **explicit option polls** (`option N` / `#N` / `I prefer N`) "
+        "and for **surfacing the chair's procedural call** (see Chair "
+        "statements). The support/oppose tally is a keyword heuristic: it "
+        "matches canonical phrasings (`+1`, `-1`, `I support`, `I object`, "
+        "`LGTM`, `DISCUSS`, …) near the start of each message and **misses "
+        "prose-form positions** — a thread can be full of clearly-argued "
+        "opposition and still tally as no-position. A count is meaningful only "
+        "when coverage is high; otherwise read the messages. Never quote a "
+        "low-coverage count as the level of support._\n"
     )
     p_count = summary.get("poll", 0)
     out.append("**Summary:**")
-    out.append(f"- Support: **{s_count}**")
-    out.append(f"- Conditional: **{c_count}**  (yes-but-only-if)")
-    out.append(f"- Oppose: **{o_count}**")
+    if _is_low_coverage(total, coverage_pct):
+        out.append(
+            "- Support / Conditional / Oppose: _withheld — coverage too low for "
+            "the counts to mean anything (see warning above; read the messages)._"
+        )
+    else:
+        out.append(f"- Support: **{s_count}**")
+        out.append(f"- Conditional: **{c_count}**  (yes-but-only-if)")
+        out.append(f"- Oppose: **{o_count}**")
     if p_count:
+        # Poll choices are explicit votes — never withheld.
         out.append(
             f"- Poll choices: **{p_count}**  (`option N` / `#N` / "
             "`I prefer N` — see Poll choices section below)"
@@ -658,7 +725,11 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
         rows = [p for p in positions if p.label == label]
         if not rows:
             return
-        out.append(f"## {title} ({len(rows)})\n")
+        # At low coverage the aggregate count is withheld in the summary; drop
+        # it from the section header too so a quotable number does not leak here
+        # while the grounded per-author rows below still show.
+        count = "" if _is_low_coverage(total, coverage_pct) else f" ({len(rows)})"
+        out.append(f"## {title}{count}\n")
         for pos in rows:
             tag_bits: List[str] = []
             if role_lookup and pos.sender in role_lookup:
@@ -712,7 +783,13 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             continue
         by_author.setdefault(pos.sender, []).append(pos)
     if by_author:
-        out.append(f"## By author ({len(by_author)})\n")
+        # Same as the per-side sections: withhold the aggregate count at low
+        # coverage; the grounded per-author rows still render.
+        out.append(
+            "## By author"
+            + ("" if _is_low_coverage(total, coverage_pct) else f" ({len(by_author)})")
+            + "\n"
+        )
         for sender in sorted(by_author):
             entries = by_author[sender]
             # Collapse to distinct labels (with poll choices spelled
