@@ -146,11 +146,33 @@ version behind, and the version it still believes is current must outlive the pu
 it. Raise `IETF_LLM_RETAIN_VERSIONS` for more headroom (e.g. forced back-to-back re-gathers); the floor
 is `1`.
 
+### Read-path access recording
+
+The `--all --used-within DAYS` refresh filter (see
+[keeping a set fresh](gathering.md#keeping-a-set-of-corpora-fresh)) needs to know when each corpus
+was last *read*. A reader records that coarsely when it resolves a corpus — at most one write per
+corpus every few hours per process, regardless of query volume. Where the timestamp lives depends on
+the backend:
+
+- **local** — a `last-accessed` sentinel file beside `last-gathered` under `<cache>/<corpus>/`.
+- **cloud** — a `corpora/<corpus>/access` key in the control plane (a `last-accessed` file on
+  ephemeral scratch would not survive). It is last-writer-wins, like the gather-status key: the
+  value is "the most recent access any replica saw", so a lost race only drops an older timestamp
+  for a newer one — no compare-and-swap.
+
+This is the **one** write the read path makes. It touches no version, blob, or pointer, so a serving
+replica stays read-only with respect to corpus *content*. If you scope the serve fleet's IAM to a
+read-only role, either widen it to allow `s3:PutObject` on `…/corpora/*/access` only, or leave it
+read-only and set **`IETF_LLM_RECORD_ACCESS=off`** on the serve side — recording then no-ops
+silently and the refresh filter falls back to gather times. (The write is best-effort regardless: a
+rejected PUT never fails a read.) The cron that runs `--all` needs the normal read/write role.
+
 ### Configuration
 
 | Variable | What | Required |
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
+| `IETF_LLM_RECORD_ACCESS` | record read-path access for the `--used-within` filter; `off` disables (default on) | — |
 | `IETF_LLM_STORE_URL` | object-store locator `s3://bucket/prefix` — holds content **and** control (needs `[s3]`) | cloud |
 | `IETF_LLM_STORE_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | non-AWS |
 | `IETF_LLM_S3_CONCURRENCY` | parallel object ops for publish / version hydration, and the boto3 pool size (default `16`, floor `1`) | — |

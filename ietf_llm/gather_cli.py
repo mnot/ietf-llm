@@ -71,10 +71,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Refresh every corpus that already has a cache directory under "
-        "~/.cache/ietf-llm/, using each one's persisted gather config. "
-        "Mutually exclusive with a positional NAME argument; --clear-config "
-        "is refused in this mode.",
+        help="Refresh every gathered corpus the configured store knows about, "
+        "using each one's persisted gather config. Mutually exclusive with a "
+        "positional NAME argument; --clear-config is refused in this mode.",
+    )
+    parser.add_argument(
+        "--used-within",
+        type=int,
+        metavar="DAYS",
+        dest="used_within",
+        help="With --all, refresh only corpora read within the last DAYS days "
+        "(by the MCP read tools). Corpora with no recorded access fall back to "
+        "their last-gathered time, so a freshly gathered corpus is not skipped. "
+        "Lets a cron keep active corpora fresh without refreshing zombies.",
     )
     parser.add_argument(
         "--github",

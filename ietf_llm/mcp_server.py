@@ -68,6 +68,7 @@ from . import (
     serve_metrics,
     service_config,
 )
+from .access import note_access
 from .catalog import render_efforts
 from .corpus import describe, kind_status, status_cell
 from .corpus_store import VersionVanished, get_corpus_store, pin_corpus_version
@@ -264,6 +265,11 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
                 f"{gather_suggestion(wg, purpose='to gather it')}, or call "
                 "`list_corpora` to see what is available."
             )
+        # Record the access now the corpus is known to exist: this guard fronts
+        # every per-corpus read tool but not the cross-corpus discovery tools
+        # (list_corpora / search_corpora / which_corpus), so listing never
+        # counts as use. Coarsened and best-effort — see access.note_access.
+        note_access(wg)
         try:
             with pin_corpus_version(wg, version):
                 return fn(wg, *args, **kwargs)

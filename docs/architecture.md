@@ -579,8 +579,9 @@ version. `get_corpus_store()` picks the backend from service config
   existing files dir, `publish` is a no-op finalise, the gather lease is a no-op
   grant. The laptop CLI is unchanged.
 - **`CloudCorpusStore`** — composes a **control plane** (`KvControlPlane`: the
-  per-corpus version pointer, gather lease, fleet gather-slot, and gather status)
-  and an immutable **blob plane** (`BlobStore`: whole-object, versioned-prefix),
+  per-corpus version pointer, gather lease, fleet gather-slot, gather status, and
+  the read-path access marker) and an immutable **blob plane** (`BlobStore`:
+  whole-object, versioned-prefix),
   materialising a version onto local scratch for reads (a replica reaps
   superseded versions to keep scratch bounded). `publish` stages content blobs —
   and the manifest, itself a blob — to a fresh version prefix, then flips the
@@ -614,8 +615,15 @@ version. `get_corpus_store()` picks the backend from service config
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
   the version blobs): every *control* key is either a *published fact* (pointer,
-  manifest, status — last-writer-wins) or an *ephemeral TTL lock* (lease, slot —
-  compare-and-swap), with no joins, range scans, or secondary indexes. (The same
+  manifest, status, the read-path access marker — last-writer-wins) or an
+  *ephemeral TTL lock* (lease, slot — compare-and-swap), with no joins, range
+  scans, or secondary indexes. The `corpora/<name>/access` marker is the one
+  control key written off the **read** path (a coarse, best-effort timestamp the
+  `--used-within` refresh filter consumes); last-writer-wins is safe because its
+  value is just "the most recent access any replica saw", and it touches no
+  version, blob, or pointer — so a serving replica stays read-only with respect to
+  corpus *content* (`IETF_LLM_RECORD_ACCESS=off` disables it; see
+  [storage.md](storage.md#read-path-access-recording)). (The same
   `KvStore` also carries the gather accelerator caches above —
   `corpora/<name>/gather-cache/`, `fleet/gather-cache/`, `fleet/catalog/` — but
   those are a separate, gather-only, mutable-data use of it, not control state, and

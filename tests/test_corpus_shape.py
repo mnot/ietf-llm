@@ -131,7 +131,7 @@ def test_all_isolates_args_per_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
     # -> config.merge mutates args in place (folding a corpus's persisted
     # sources onto it), so a shared Namespace would leak corpus A's repos into
     # corpus B's merge. Simulate that mutation and assert B starts clean.
-    monkeypatch.setattr(main_mod.cli_list, "discover_gathered_wgs", lambda: ["aa", "bb"])
+    monkeypatch.setattr(main_mod.cli_list, "all_corpora", lambda: ["aa", "bb"])
     monkeypatch.setattr(main_mod, "ensure_rfc_index", lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "ensure_catalog_index", lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "sync_if_pristine", lambda *a, **k: None)
