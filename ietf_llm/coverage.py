@@ -76,12 +76,10 @@ def window_months(wg: str) -> int:
     return DEFAULT_MONTHS
 
 
-def coverage_start_label(wg: str) -> Optional[str]:
-    """`YYYY-MM` for the start of the windowed coverage (gather date minus the
-    window), or None when there's no gather record to anchor it — or when the
-    window is unbounded (`months == 0`, all history), which has no floor to
-    report."""
-    months = window_months(wg)
+def _start_label(wg: str, months: int) -> Optional[str]:
+    """`coverage_start_label` body given an already-resolved `months`, so a
+    caller that also needs `months` reads the (cloud control-plane) config once
+    rather than twice."""
     if months == 0:
         return None
     when = last_gathered(wg)
@@ -89,6 +87,14 @@ def coverage_start_label(wg: str) -> Optional[str]:
         return None
     start = when - timedelta(days=_DAYS_PER_MONTH * months)
     return start.strftime("%Y-%m")
+
+
+def coverage_start_label(wg: str) -> Optional[str]:
+    """`YYYY-MM` for the start of the windowed coverage (gather date minus the
+    window), or None when there's no gather record to anchor it — or when the
+    window is unbounded (`months == 0`, all history), which has no floor to
+    report."""
+    return _start_label(wg, window_months(wg))
 
 
 # --- Source detection -------------------------------------------------------
@@ -225,7 +231,8 @@ def window_line(
     """A one-line italic coverage floor for top-level tool responses, or None
     when there's no gather record or nothing windowed to report. Detects sources
     cheaply (no archive parse) unless a precomputed `sources` is passed in."""
-    start = coverage_start_label(wg)
+    months = window_months(wg)  # one config read; reused for the window clause
+    start = _start_label(wg, months)
     if start is None:
         return None
     src = sources or detect_sources_compact(files_dir)
@@ -234,7 +241,7 @@ def window_line(
         return None
     return (
         f"_Coverage: {subject} reaches back to ~{start} "
-        f"({window_months(wg)}-mo window){_fullset_clause(src)}._"
+        f"({months}-mo window){_fullset_clause(src)}._"
     )
 
 
