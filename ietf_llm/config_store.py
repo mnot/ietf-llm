@@ -23,11 +23,43 @@ stays read-only.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from . import config_fs, service_config
 from .kv_control import KvControlPlane
+
+# Process-global, bounded-staleness cache of per-WG config reads on the cloud
+# backend: (cache_key, wg, scope) -> (raw payload or None, monotonic expiry).
+# Mirrors corpus_store_cloud._RESOLVE_CACHE and accepts the same trade-off the
+# version pointer already does — a re-gather's new config is visible within the
+# TTL, and the writing process refreshes its own entry immediately (write-through
+# in save / clear). Off unless a positive resolve TTL is configured. Negative
+# results (absent config) are cached too, so a burst of reads for an unconfigured
+# corpus collapses to one GET. The raw payload is cached (not the parsed dict),
+# so a cache hit still returns a fresh dict — `merge` mutates what `load` returns.
+# The local backend never touches this.
+_CONFIG_CACHE: Dict[Tuple[str, str, str], Tuple[Optional[str], float]] = {}
+_CONFIG_LOCK = threading.Lock()
+
+
+def _clear_config_cache() -> None:
+    """Drop every cached config read (test seam / hard reset)."""
+    with _CONFIG_LOCK:
+        _CONFIG_CACHE.clear()
+
+
+def _parse_config(raw: Optional[str]) -> Dict[str, Any]:
+    """A control-plane config payload as a fresh dict, or {} if absent/malformed."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return dict(data) if isinstance(data, dict) else {}
 
 
 class ConfigStore(ABC):
@@ -65,24 +97,65 @@ class CloudConfigStore(ConfigStore):
     keys, JSON-encoded, last-writer-wins (the gather holds the corpus lease, so
     the writer is already serialised)."""
 
-    def __init__(self, control: KvControlPlane) -> None:
+    def __init__(
+        self,
+        control: KvControlPlane,
+        *,
+        resolve_ttl: float = 0.0,
+        cache_key: str = "",
+    ) -> None:
         self._control = control
+        # Caching is opt-in: off (ttl 0) for direct construction (tests read the
+        # control plane live), a short TTL via build_cloud_config_store.
+        # `cache_key` scopes the process-global cache to this control plane.
+        self._resolve_ttl = resolve_ttl
+        self._cache_key = cache_key
+
+    def _cached_get(self, wg: str, scope: str) -> Optional[str]:
+        if self._resolve_ttl <= 0:
+            return self._control.get_config(wg, scope)
+        key = (self._cache_key, wg, scope)
+        with _CONFIG_LOCK:
+            entry = _CONFIG_CACHE.get(key)
+            if entry is not None and entry[1] > time.monotonic():
+                return entry[0]
+        # Read outside the lock so a slow GET doesn't serialise every reader.
+        raw = self._control.get_config(wg, scope)
+        with _CONFIG_LOCK:
+            _CONFIG_CACHE[key] = (raw, time.monotonic() + self._resolve_ttl)
+        return raw
+
+    def _cache_put(self, wg: str, scope: str, raw: Optional[str]) -> None:
+        """Write-through, so the writing process serves what it just wrote."""
+        if self._resolve_ttl <= 0:
+            return
+        with _CONFIG_LOCK:
+            _CONFIG_CACHE[(self._cache_key, wg, scope)] = (
+                raw,
+                time.monotonic() + self._resolve_ttl,
+            )
+
+    def _invalidate(self, wg: str) -> None:
+        if self._resolve_ttl <= 0:
+            return
+        with _CONFIG_LOCK:
+            for key in [
+                k for k in _CONFIG_CACHE if k[0] == self._cache_key and k[1] == wg
+            ]:
+                del _CONFIG_CACHE[key]
 
     def load(self, wg: str, scope: str) -> Dict[str, Any]:
-        raw = self._control.get_config(wg, scope)
-        if not raw:
-            return {}
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            return {}
-        return dict(data) if isinstance(data, dict) else {}
+        return _parse_config(self._cached_get(wg, scope))
 
     def save(self, wg: str, scope: str, data: Mapping[str, Any]) -> None:
-        self._control.set_config(wg, scope, json.dumps(dict(data), sort_keys=True))
+        payload = json.dumps(dict(data), sort_keys=True)
+        self._control.set_config(wg, scope, payload)
+        self._cache_put(wg, scope, payload)
 
     def clear(self, wg: str) -> bool:
-        return bool(self._control.clear_config(wg))
+        removed = bool(self._control.clear_config(wg))
+        self._invalidate(wg)
+        return removed
 
 
 def build_cloud_config_store() -> CloudConfigStore:
@@ -108,7 +181,11 @@ def build_cloud_config_store() -> CloudConfigStore:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
         ) from err
-    return CloudConfigStore(KvControlPlane(S3KvStore(S3Bucket(store_url))))
+    return CloudConfigStore(
+        KvControlPlane(S3KvStore(S3Bucket(store_url))),
+        resolve_ttl=service_config.resolve_ttl(),
+        cache_key=store_url,
+    )
 
 
 def get_config_store() -> ConfigStore:

@@ -587,8 +587,11 @@ and `--all` re-gathers a corpus first gathered elsewhere with its real sources.
 The split also reflects a layering constraint: **global** service config selects
 the backend (`service_config` reads it), so it is structurally filesystem/env-bound
 and stays out of any store — only *per-WG* config moves. Writes ride the gather
-lease the caller already holds, so a plain put suffices; reads on the serve path
-are a plain GET, keeping it read-only.
+lease the caller already holds, so a plain put suffices; reads stay read-only
+(GET only) and, on the cloud backend, sit behind the same bounded-staleness TTL
+cache as the version pointer (`IETF_LLM_RESOLVE_TTL`), so the coverage-window line
+on every read-tool response doesn't re-fetch the key — the writing process
+write-throughs its own entry, so it never serves config it just wrote.
 
 - **`LocalCorpusStore`** (default) — the live `~/.cache/ietf-llm/<corpus>` *is*
   the single version: `resolve_current` is a sentinel, `local_cache_dir` is the

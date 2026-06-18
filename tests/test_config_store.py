@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from ietf_llm import config_store
 from ietf_llm.config_store import (
     CloudConfigStore,
     ConfigStore,
@@ -21,6 +22,11 @@ from ietf_llm.config_store import (
 )
 from ietf_llm.kv_control import KvControlPlane
 from ietf_llm.kv_store import InMemoryKvStore
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache() -> None:
+    config_store._clear_config_cache()
 
 
 def _cloud() -> CloudConfigStore:
@@ -94,3 +100,61 @@ def test_get_config_store_rejects_unknown_backend(
     monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "Cloud")  # typo -> not 'cloud'
     with pytest.raises(ValueError, match="unknown IETF_LLM_STORE_BACKEND"):
         get_config_store()
+
+
+# --- cloud read cache (TTL, cloud path only) -------------------------------
+
+
+def _cached_cloud(control: KvControlPlane, ttl: float = 100.0) -> CloudConfigStore:
+    return CloudConfigStore(control, resolve_ttl=ttl, cache_key="bucket")
+
+
+def test_uncached_by_default_sees_backend_writes_immediately() -> None:
+    # Direct construction (ttl 0) does not cache: a write straight to the
+    # control plane is visible at once. This is what the cross-host and
+    # round-trip tests above rely on.
+    control = KvControlPlane(InMemoryKvStore())
+    store = CloudConfigStore(control)  # ttl 0
+    control.set_config("tls", "gather", '{"a": 1}')
+    assert store.load("tls", "gather") == {"a": 1}
+
+
+def test_read_is_cached_within_ttl() -> None:
+    control = KvControlPlane(InMemoryKvStore())
+    store = _cached_cloud(control)
+    assert store.load("tls", "gather") == {}  # caches the absent result
+    # A write that bypasses the store is NOT seen while the cache is warm.
+    control.set_config("tls", "gather", '{"a": 1}')
+    assert store.load("tls", "gather") == {}
+    # ... until the cache is dropped (stands in for TTL expiry).
+    config_store._clear_config_cache()
+    assert store.load("tls", "gather") == {"a": 1}
+
+
+def test_save_write_through_is_visible_despite_cache() -> None:
+    control = KvControlPlane(InMemoryKvStore())
+    store = _cached_cloud(control)
+    store.load("tls", "gather")  # warm the cache with {}
+    store.save("tls", "gather", {"a": 1})
+    # The writing process must serve what it just wrote, not the cached {}.
+    assert store.load("tls", "gather") == {"a": 1}
+
+
+def test_clear_invalidates_cache() -> None:
+    control = KvControlPlane(InMemoryKvStore())
+    store = _cached_cloud(control)
+    store.save("tls", "gather", {"a": 1})
+    store.load("tls", "gather")  # cache it
+    store.clear("tls")
+    assert store.load("tls", "gather") == {}
+
+
+def test_cache_expires_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(config_store.time, "monotonic", lambda: clock[0])
+    control = KvControlPlane(InMemoryKvStore())
+    store = _cached_cloud(control, ttl=10.0)
+    store.load("tls", "gather")  # caches {}
+    control.set_config("tls", "gather", '{"a": 1}')
+    clock[0] += 11  # past the TTL
+    assert store.load("tls", "gather") == {"a": 1}

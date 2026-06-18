@@ -185,7 +185,7 @@ rejected PUT never fails a read.) The cron that runs `--all` needs the normal re
 | `IETF_LLM_STORE_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | non-AWS |
 | `IETF_LLM_S3_CONCURRENCY` | parallel object ops for publish / version hydration, and the boto3 pool size (default `16`, floor `1`) | — |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
-| `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
+| `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup **and** the per-WG config read; `0` disables (default `10`) | — |
 | `IETF_LLM_RETAIN_VERSIONS` | published versions a publish keeps before reaping older blobs (default `2`, floor `1`) | — |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently — per host and fleet-wide (default `3`) | — |
 | `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per host — non-datatracker (default `6`) | — |
