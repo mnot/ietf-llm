@@ -21,81 +21,51 @@ it does not itself contribute to the merged result.
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import shutil
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from .utils import LogLevel, atomic_open, get_config_dir, log
+from . import config_fs
+from .config_store import get_config_store
+from .utils import LogLevel, log
 
-
-def _config_path(wg: str, scope: str) -> str:
-    return os.path.join(get_config_dir(), wg, f"{scope}.json")
+# Per-WG config (load / save / clear) is dispatched through the ConfigStore seam,
+# so a cloud deployment shares it fleet-wide via the control plane with no
+# IETF_LLM_CONFIG_DIR mount; the local backend keeps today's filesystem
+# behaviour. Global config is *not* store-routed — it selects the backend — so
+# load_global / save_global go straight to the filesystem leaf. See
+# config_store.py / config_fs.py.
 
 
 def load(wg: str, scope: str) -> Dict[str, Any]:
     """Return the persisted config dict for (wg, scope), or {}."""
-    path = _config_path(wg, scope)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return dict(json.load(fh))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return get_config_store().load(wg, scope)
 
 
 def save(wg: str, scope: str, data: Mapping[str, Any]) -> None:
     """Persist `data` for (wg, scope)."""
-    wg_dir = os.path.join(get_config_dir(), wg)
-    os.makedirs(wg_dir, exist_ok=True)
-    path = _config_path(wg, scope)
-    try:
-        with atomic_open(path) as fh:
-            json.dump(dict(data), fh, indent=2, sort_keys=True)
-    except OSError as err:
-        log(f"Error saving config ({path}): {err}", level=LogLevel.ERROR)
+    get_config_store().save(wg, scope, data)
 
 
 def clear(wg: str) -> bool:
-    """Remove the entire per-WG config directory. Returns True if removed."""
-    wg_dir = os.path.join(get_config_dir(), wg)
-    if os.path.exists(wg_dir):
-        shutil.rmtree(wg_dir)
-        return True
-    return False
-
-
-def _global_config_path() -> str:
-    return os.path.join(get_config_dir(), "config.json")
+    """Remove all of `wg`'s persisted config (every scope). Returns True if
+    anything was removed."""
+    return get_config_store().clear(wg)
 
 
 def load_global() -> Dict[str, Any]:
-    """Return the persisted global (non-WG) service config, or {}.
+    """The persisted global (non-WG) service config, or {}.
 
-    Holds settings that are properties of the tool / deployment rather than
-    of a corpus (the embedding model, summariser model, embed on/off),
-    so they are configured once and apply to every corpus.
+    Settings that are properties of the tool / deployment rather than a corpus
+    (embedding model, summariser model, embed on/off), configured once and
+    applied everywhere. Always filesystem (env-overridable via `service_config`),
+    never store-routed — it is what selects the store backend.
     """
-    path = _global_config_path()
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return dict(json.load(fh))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return config_fs.load_global()
 
 
 def save_global(data: Mapping[str, Any]) -> None:
-    """Persist the global service config."""
-    os.makedirs(get_config_dir(), exist_ok=True)
-    path = _global_config_path()
-    try:
-        with atomic_open(path) as fh:
-            json.dump(dict(data), fh, indent=2, sort_keys=True)
-    except OSError as err:
-        log(f"Error saving global config ({path}): {err}", level=LogLevel.ERROR)
+    """Persist the global service config (filesystem only)."""
+    config_fs.save_global(data)
 
 
 def _coerce_env(raw: str, default: Any) -> Any:

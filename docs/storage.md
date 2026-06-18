@@ -77,11 +77,19 @@ The index is a SQLite database in WAL mode. That constrains `IETF_LLM_INDEX_DIR`
 Set `IETF_LLM_STORE_BACKEND=cloud` for a replicated, ephemeral deployment — many serving containers,
 gather driven by cron *and* by the in-session MCP tools. One S3-compatible bucket holds everything:
 the immutable, versioned corpus content (`files/` + `embeddings.db`) and a small **control plane**
-(the version pointer, gather lease, and status keys). A replica resolves the current version through
-the control plane, materialises it onto local scratch, and serves reads from there. A publish is one
-atomic pointer flip, visible fleet-wide within the resolve TTL, with no torn read. The mechanics are
-in [architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable); what
+(the version pointer, gather lease, status, the read-path access marker, and **per-WG config** keys).
+A replica resolves the current version through the control plane, materialises it onto local scratch,
+and serves reads from there. A publish is one atomic pointer flip, visible fleet-wide within the
+resolve TTL, with no torn read. The mechanics are in
+[architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable); what
 you provision is below.
+
+**Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives in
+the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's lease
+and read with a plain GET. So **you do not need to share `IETF_LLM_CONFIG_DIR`** across hosts: a host
+running `ietf-llm --all` re-gathers a corpus first gathered on another host with that corpus's real
+sources, not an empty config. Global service config (`config.json` — models, embed on/off) stays
+filesystem/env-bound, since it is what *selects* the backend; set it via environment on each host.
 
 ### What you provision
 

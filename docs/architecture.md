@@ -574,6 +574,22 @@ side** — `publish(corpus, workspace)` makes a gathered tree the new current
 version. `get_corpus_store()` picks the backend from service config
 (`IETF_LLM_STORE_BACKEND`, default `local`).
 
+Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config_store.py`,
+`get_config_store()`), chosen by the same `IETF_LLM_STORE_BACKEND` selector but
+kept separate from `CorpusStore` on purpose. Content is immutable, versioned, and
+materialised; config is small, mutable, and last-writer-wins — different planes,
+so a three-method contract (`load` / `save` / `clear`) rather than more methods on
+an already-wide content seam. The local backend is today's filesystem
+(`config_fs.py`, a leaf module); the cloud backend stores per-WG config as
+control-plane keys (`corpora/<name>/config/<scope>`), composing the *same*
+`KvControlPlane` — so a fleet shares config with no `IETF_LLM_CONFIG_DIR` mount,
+and `--all` re-gathers a corpus first gathered elsewhere with its real sources.
+The split also reflects a layering constraint: **global** service config selects
+the backend (`service_config` reads it), so it is structurally filesystem/env-bound
+and stays out of any store — only *per-WG* config moves. Writes ride the gather
+lease the caller already holds, so a plain put suffices; reads on the serve path
+are a plain GET, keeping it read-only.
+
 - **`LocalCorpusStore`** (default) — the live `~/.cache/ietf-llm/<corpus>` *is*
   the single version: `resolve_current` is a sentinel, `local_cache_dir` is the
   existing files dir, `publish` is a no-op finalise, the gather lease is a no-op
@@ -615,8 +631,8 @@ version. `get_corpus_store()` picks the backend from service config
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
   the version blobs): every *control* key is either a *published fact* (pointer,
-  manifest, status, the read-path access marker — last-writer-wins) or an
-  *ephemeral TTL lock* (lease, slot — compare-and-swap), with no joins, range
+  manifest, status, the read-path access marker, per-WG config — last-writer-wins)
+  or an *ephemeral TTL lock* (lease, slot — compare-and-swap), with no joins, range
   scans, or secondary indexes. The `corpora/<name>/access` marker is the one
   control key written off the **read** path (a coarse, best-effort timestamp the
   `--used-within` refresh filter consumes); last-writer-wins is safe because its

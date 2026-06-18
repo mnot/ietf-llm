@@ -46,9 +46,12 @@ see the [global model settings](models.md#global-settings).)
 ### Keeping a set of corpora fresh
 
 `ietf-llm --all` re-gathers every corpus the store knows about, each with its own persisted config —
-the simplest way to keep a collection current from cron. To avoid refreshing corpora nobody touches
-any more, add `--used-within DAYS`: it limits the refresh to corpora **read within that many days**
-through the MCP read tools, so a daily job keeps your active corpora fresh and lets the rest go stale:
+the simplest way to keep a collection current from cron. On a [cloud deployment](storage.md#the-cloud-backend)
+this covers the whole fleet, and each corpus's config is read from the control plane, so a host
+refreshes corpora first gathered elsewhere correctly (no shared config mount). To avoid refreshing
+corpora nobody touches any more, add `--used-within DAYS`: it limits the refresh to corpora **read
+within that many days** through the MCP read tools, so a daily job keeps your active corpora fresh
+and lets the rest go stale:
 
 ```bash
 # Refresh anything read in the last 30 days; skip the zombies.

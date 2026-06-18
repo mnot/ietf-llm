@@ -248,7 +248,15 @@ def test_cloud_backend_trips_both_without_flags(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A CLI gather against a cloud backend suppresses even with no flags.
+    from ietf_llm.config_store import CloudConfigStore
+    from ietf_llm.kv_control import KvControlPlane
+    from ietf_llm.kv_store import InMemoryKvStore
+
     monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "cloud")
+    # config.load now routes through the ConfigStore; on cloud that's the control
+    # plane, so give it an in-memory one rather than requiring a real S3 URL.
+    cloud_config = CloudConfigStore(KvControlPlane(InMemoryKvStore()))
+    monkeypatch.setattr(main_mod.config, "get_config_store", lambda: cloud_config)
     seen = _capture_suppress(monkeypatch, (False, True))
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)

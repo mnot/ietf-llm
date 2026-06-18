@@ -75,7 +75,9 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
   group name, list, or tracked author), then exit.
 - `--all` — refresh every gathered corpus the configured store knows about, each with its own
   persisted config (no positional NAME; `--clear-config` is refused). On the cloud backend this is
-  the whole fleet, not just this host's local cache.
+  the whole fleet, not just this host's local cache — and because per-WG config also lives in the
+  control plane there, a host re-gathers a corpus first gathered elsewhere with its real sources, no
+  shared `IETF_LLM_CONFIG_DIR` mount required (see [Storage & locations](storage.md#the-cloud-backend)).
 - `--all --used-within DAYS` — restrict `--all` to corpora **read within the last DAYS days** (via
   the MCP read tools). A corpus with no recorded access falls back to its last-gathered time, so a
   freshly gathered corpus that hasn't been read yet still gets a grace period rather than being

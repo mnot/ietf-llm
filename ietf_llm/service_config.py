@@ -25,8 +25,14 @@ The S3 endpoint for a non-AWS service (R2, MinIO) is `IETF_LLM_STORE_ENDPOINT_UR
 The per-host gather egress caps (`IETF_LLM_HTTP_MAX_PER_HOST`,
 `IETF_LLM_HTTP_MAX_DATATRACKER`) are deliberately *not* read here: `http_governor`
 owns them and reads them straight from the environment, because it sits below
-`config` in the import graph (this module imports `config`, which imports
+`config_fs` in the import graph (this module imports `config_fs`, which imports
 `utils`, which the governor wraps) and must not depend on it.
+
+This module reads **global** config only, and through the `config_fs` leaf rather
+than `config` — because `config`'s per-WG path is now store-routed and the store
+backend is selected *here* (`store_backend()`), so importing `config` would be a
+cycle (`config` → `config_store` → `service_config`). Global config stays
+filesystem-bound for exactly that reason.
 """
 
 from __future__ import annotations
@@ -34,7 +40,7 @@ from __future__ import annotations
 import os
 from typing import Optional, Tuple
 
-from . import config
+from . import config_fs
 
 #: (environment variable, global-config key) for each non-secret service knob.
 STORE_BACKEND: Tuple[str, str] = ("IETF_LLM_STORE_BACKEND", "store_backend")
@@ -69,7 +75,7 @@ def _resolve(key: Tuple[str, str], default: Optional[str]) -> Optional[str]:
     raw = os.environ.get(env_var)
     if raw is not None and raw.strip():
         return raw.strip()
-    value = config.load_global().get(cfg_key)
+    value = config_fs.load_global().get(cfg_key)
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default

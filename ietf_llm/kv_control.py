@@ -4,11 +4,12 @@ pointers, gather leases, fleet-wide gather slots, and gather status — each a
 
 Layout (keys in the shared object store; see `docs/storage.md`):
 
-    corpora/<name>/pointer   current version token          (compare-and-swap)
-    corpora/<name>/lease     gather lease, TTL in-value     (compare-and-swap)
-    corpora/<name>/status    latest gather status JSON      (last-writer-wins)
-    corpora/<name>/access    last read-path access time     (last-writer-wins)
-    fleet/slots              cross-corpora gather semaphore (compare-and-swap)
+    corpora/<name>/pointer          current version token   (compare-and-swap)
+    corpora/<name>/lease            gather lease, TTL in-value (compare-and-swap)
+    corpora/<name>/status           latest gather status JSON (last-writer-wins)
+    corpora/<name>/access           last read-path access time (last-writer-wins)
+    corpora/<name>/config/<scope>   per-WG config JSON      (last-writer-wins)
+    fleet/slots                     cross-corpora gather semaphore (compare-and-swap)
 
 The `access` key is the one control-plane key the *read* fleet writes (an
 ISO timestamp, stamped coarsely off the read path so a refresh cron can skip
@@ -50,6 +51,14 @@ def _status_key(corpus: str) -> str:
 
 def _access_key(corpus: str) -> str:
     return f"corpora/{corpus}/access"
+
+
+def _config_prefix(corpus: str) -> str:
+    return f"corpora/{corpus}/config/"
+
+
+def _config_key(corpus: str, scope: str) -> str:
+    return f"corpora/{corpus}/config/{scope}"
 
 
 def _loads(record: Record) -> Tuple[Any, str]:
@@ -210,3 +219,24 @@ class KvControlPlane:
     def get_access(self, corpus: str) -> Optional[str]:
         record = self._kv.get(_access_key(corpus))
         return record[0].decode("utf-8") if record else None
+
+    # --- per-WG config (fleet-visible, last-writer-wins) -------------------
+    #
+    # One key per scope under corpora/<name>/config/. A plain put: config is
+    # written during a gather, which holds that corpus's gather lease, so the
+    # writer is already serialised — no compare-and-swap needed here.
+
+    def set_config(self, corpus: str, scope: str, payload: str) -> None:
+        self._kv.put(_config_key(corpus, scope), payload.encode("utf-8"))
+
+    def get_config(self, corpus: str, scope: str) -> Optional[str]:
+        record = self._kv.get(_config_key(corpus, scope))
+        return record[0].decode("utf-8") if record else None
+
+    def clear_config(self, corpus: str) -> bool:
+        """Delete every config scope key for `corpus`. Returns True if any
+        existed (mirrors the local whole-directory clear)."""
+        scopes = self._kv.list_children(_config_prefix(corpus))
+        for scope in scopes:
+            self._kv.delete(_config_key(corpus, scope))
+        return bool(scopes)
