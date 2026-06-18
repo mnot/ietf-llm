@@ -124,3 +124,22 @@ def test_gather_status_roundtrip_and_listing() -> None:
         ("quic", '{"state": "done"}'),
         ("tls", '{"state": "running"}'),
     ]
+
+
+# --- read-path access marker ----------------------------------------------
+
+
+def test_access_round_trips_and_is_last_writer_wins() -> None:
+    cp = _cp()
+    assert cp.get_access("tls") is None
+    cp.set_access("tls", "2026-06-01T00:00:00Z")
+    assert cp.get_access("tls") == "2026-06-01T00:00:00Z"
+    # Last-writer-wins: a later stamp simply overwrites, no CAS.
+    cp.set_access("tls", "2026-06-18T12:00:00Z")
+    assert cp.get_access("tls") == "2026-06-18T12:00:00Z"
+
+
+def test_access_is_per_corpus() -> None:
+    cp = _cp()
+    cp.set_access("tls", "2026-06-01T00:00:00Z")
+    assert cp.get_access("httpbis") is None

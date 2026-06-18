@@ -28,9 +28,10 @@ import os
 import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
-from . import service_config
+from . import freshness, service_config
 from .utils import cached_wg_names, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local
@@ -118,11 +119,16 @@ def pinned_versions_in_use(corpus: str) -> Set[str]:
         return {ver for (cor, ver), n in _pin_counts.items() if cor == corpus and n > 0}
 
 
-class CorpusStore(ABC):
+class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
     """Brokers materialisation (read) and publication (write) of a corpus.
 
     Backends: `LocalCorpusStore` (filesystem, single-version) today; a SQL +
     object-store backend for cloud deployments (`docs/storage.md`).
+
+    A deliberately wide seam: read (resolve/materialise), write (publish/lease/
+    slot), fleet-visible status, the read-path access marker, and routing all
+    cross the local/cloud line here, so the public-method count runs past the
+    default lint cap.
     """
 
     @abstractmethod
@@ -309,6 +315,33 @@ class CorpusStore(ABC):
         enumerates by walking the cache."""
         return []
 
+    # --- read-path access marker (drives the --used-within refresh filter) --
+
+    def record_access(self, corpus: str) -> None:
+        """Record that a reader resolved `corpus` just now, so a refresh cron
+        (`--all --used-within N`) can tell active corpora from zombies.
+
+        Best-effort — the caller (`access.note_access`) swallows failures, so a
+        read never fails on a stamp write. Default no-op; each backend overrides:
+        the local backend writes a `last-accessed` sentinel, the cloud backend
+        the `access` control-plane key. This is the one write the read path
+        makes; it touches no version, blob, or pointer."""
+
+    def last_accessed(self, corpus: str) -> Optional[datetime]:
+        """The most recent `record_access` time for `corpus`, or None if never
+        recorded. Default None; backends override."""
+        return None
+
+    def gathered_at(self, corpus: str) -> Optional[datetime]:
+        """When `corpus`'s current version was gathered, or None if unknown.
+
+        The `--used-within` fallback when a corpus has no recorded access yet
+        (freshly gathered, never read), so it gets a grace period rather than
+        being treated as a zombie on day one. Default None; the local backend
+        reads the `last-gathered` sentinel, the cloud backend parses the publish
+        timestamp embedded in the version token."""
+        return None
+
     # --- cross-corpus routing table (default: scan local topics.json) ------
 
     def routing_fleet_table(self) -> Optional[Dict[str, Dict[str, Any]]]:
@@ -358,6 +391,15 @@ class LocalCorpusStore(CorpusStore):
         # writes straight into it, and the index is read from its own dir — so
         # there is nothing to upload or flip (`extra_files` is irrelevant here).
         return LOCAL_VERSION
+
+    def record_access(self, corpus: str) -> None:
+        freshness.record_access(corpus)
+
+    def last_accessed(self, corpus: str) -> Optional[datetime]:
+        return freshness.last_accessed(corpus)
+
+    def gathered_at(self, corpus: str) -> Optional[datetime]:
+        return freshness.last_gathered(corpus)
 
 
 def get_corpus_store() -> CorpusStore:

@@ -7,7 +7,14 @@ Layout (keys in the shared object store; see `docs/storage.md`):
     corpora/<name>/pointer   current version token          (compare-and-swap)
     corpora/<name>/lease     gather lease, TTL in-value     (compare-and-swap)
     corpora/<name>/status    latest gather status JSON      (last-writer-wins)
+    corpora/<name>/access    last read-path access time     (last-writer-wins)
     fleet/slots              cross-corpora gather semaphore (compare-and-swap)
+
+The `access` key is the one control-plane key the *read* fleet writes (an
+ISO timestamp, stamped coarsely off the read path so a refresh cron can skip
+unused corpora). Last-writer-wins like `status`: the value is "the most recent
+access any reader saw", so a lost race only drops an older stamp for a newer
+one — no CAS needed. See `docs/storage.md`.
 
 Per-corpus control lives under that corpus's own prefix; the only cross-corpora
 state — the gather-slot semaphore — lives outside any corpus, at `fleet/slots`.
@@ -39,6 +46,10 @@ def _lease_key(corpus: str) -> str:
 
 def _status_key(corpus: str) -> str:
     return f"corpora/{corpus}/status"
+
+
+def _access_key(corpus: str) -> str:
+    return f"corpora/{corpus}/access"
 
 
 def _loads(record: Record) -> Tuple[Any, str]:
@@ -190,3 +201,12 @@ class KvControlPlane:
             if record is not None:
                 result.append((name, record[0].decode("utf-8")))
         return result
+
+    # --- read-path access marker (fleet-visible, last-writer-wins) ---------
+
+    def set_access(self, corpus: str, payload: str) -> None:
+        self._kv.put(_access_key(corpus), payload.encode("utf-8"))
+
+    def get_access(self, corpus: str) -> Optional[str]:
+        record = self._kv.get(_access_key(corpus))
+        return record[0].decode("utf-8") if record else None

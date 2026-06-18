@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .corpus_blobs import BlobStore, parallel_each
+from . import freshness
 from .corpus_store import (
     CorpusStore,
     VersionVanished,
@@ -63,11 +64,25 @@ def _clear_resolve_cache() -> None:
         _RESOLVE_CACHE.clear()
 
 
+_VERSION_STAMP = "%Y%m%dT%H%M%SZ"
+
+
 def _new_version() -> str:
     """A unique, lexically-sortable version token: a UTC timestamp plus a short
     random suffix so two publishes in the same second do not collide."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime(_VERSION_STAMP)
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
+
+
+def _version_time(version: str) -> Optional[datetime]:
+    """The UTC publish time embedded in a version token (`_new_version`'s
+    `<stamp>-<suffix>`), or None if it doesn't parse. Used by `gathered_at` so
+    a cron has a gather-time fallback without a manifest fetch."""
+    try:
+        when = datetime.strptime(version.split("-", 1)[0], _VERSION_STAMP)
+    except ValueError:
+        return None
+    return when.replace(tzinfo=timezone.utc)
 
 
 def _content_prefix(corpus: str, version: str) -> str:
@@ -137,9 +152,11 @@ def build_cloud_store() -> "CloudCorpusStore":
     )
 
 
-class CloudCorpusStore(CorpusStore):
+class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
     """CorpusStore over a transactional control plane + an immutable blob store,
-    materialising versions onto `scratch_dir`."""
+    materialising versions onto `scratch_dir`. Implements the full (wide)
+    CorpusStore seam, so the public-method count runs past the default lint
+    cap — see `CorpusStore`."""
 
     def __init__(
         self,
@@ -587,6 +604,21 @@ class CloudCorpusStore(CorpusStore):
 
     def release_gather_slot(self, owner: str) -> None:
         self._control.release_gather_slot(owner)
+
+    def record_access(self, corpus: str) -> None:
+        # The one control-plane write the read fleet makes: an LWW timestamp
+        # under corpora/<corpus>/access. Not best-effort-wrapped here — the
+        # caller (access.note_access) swallows failures, so a read-only IAM
+        # deployment that rejects the PUT degrades to "never recorded".
+        self._control.set_access(corpus, freshness.iso_now())
+
+    def last_accessed(self, corpus: str) -> Optional[datetime]:
+        raw = self._control.get_access(corpus)
+        return freshness.parse_iso(raw) if raw else None
+
+    def gathered_at(self, corpus: str) -> Optional[datetime]:
+        version = self.resolve_current(corpus)
+        return _version_time(version) if version else None
 
     def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:
         self._control.set_gather_status(corpus, json.dumps(status, sort_keys=True))
