@@ -73,6 +73,18 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
 
 - `--list` — list cached corpora (name, kind, status, last-gathered, and a one-line subject — the
   group name, list, or tracked author), then exit.
+- `--all` — refresh every gathered corpus the configured store knows about, each with its own
+  persisted config (no positional NAME; `--clear-config` is refused). On the cloud backend this is
+  the whole fleet, not just this host's local cache — and because per-WG config also lives in the
+  control plane there, a host re-gathers a corpus first gathered elsewhere with its real sources, no
+  shared `IETF_LLM_CONFIG_DIR` mount required (see [Storage & locations](storage.md#the-cloud-backend)).
+- `--all --used-within DAYS` — restrict `--all` to corpora **read within the last DAYS days** (via
+  the MCP read tools). A corpus with no recorded access falls back to its last-gathered time, so a
+  freshly gathered corpus that hasn't been read yet still gets a grace period rather than being
+  skipped. This lets a cron keep the corpora people actually use fresh without perpetuating
+  zombies — see [keeping a set fresh](gathering.md#keeping-a-set-of-corpora-fresh). Set
+  `IETF_LLM_RECORD_ACCESS=off` on the read deployment to disable access recording entirely (the
+  filter then sees only gather times).
 - `--clear-cache` — wipe this corpus's cache and re-download.
 - `--clear-config` — clear this corpus's persisted config.
 - `--discover-github NAME` — print the GitHub repos discovery recommends tracking for a WG (those

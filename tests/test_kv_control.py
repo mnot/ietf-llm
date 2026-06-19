@@ -124,3 +124,55 @@ def test_gather_status_roundtrip_and_listing() -> None:
         ("quic", '{"state": "done"}'),
         ("tls", '{"state": "running"}'),
     ]
+
+
+# --- read-path access marker ----------------------------------------------
+
+
+def test_access_round_trips_and_is_last_writer_wins() -> None:
+    cp = _cp()
+    assert cp.get_access("tls") is None
+    cp.set_access("tls", "2026-06-01T00:00:00Z")
+    assert cp.get_access("tls") == "2026-06-01T00:00:00Z"
+    # Last-writer-wins: a later stamp simply overwrites, no CAS.
+    cp.set_access("tls", "2026-06-18T12:00:00Z")
+    assert cp.get_access("tls") == "2026-06-18T12:00:00Z"
+
+
+def test_access_is_per_corpus() -> None:
+    cp = _cp()
+    cp.set_access("tls", "2026-06-01T00:00:00Z")
+    assert cp.get_access("httpbis") is None
+
+
+# --- per-WG config keys ----------------------------------------------------
+
+
+def test_config_round_trips_per_scope() -> None:
+    cp = _cp()
+    assert cp.get_config("tls", "gather") is None
+    cp.set_config("tls", "gather", '{"mailing_list": ["tls"]}')
+    cp.set_config("tls", "export", '{"dest": "nblm"}')
+    assert cp.get_config("tls", "gather") == '{"mailing_list": ["tls"]}'
+    assert cp.get_config("tls", "export") == '{"dest": "nblm"}'
+    # Scopes are independent keys.
+    cp.set_config("tls", "gather", "{}")
+    assert cp.get_config("tls", "gather") == "{}"
+    assert cp.get_config("tls", "export") == '{"dest": "nblm"}'
+
+
+def test_clear_config_removes_all_scopes() -> None:
+    cp = _cp()
+    assert cp.clear_config("tls") is False  # nothing to clear
+    cp.set_config("tls", "gather", "{}")
+    cp.set_config("tls", "export", "{}")
+    assert cp.clear_config("tls") is True
+    assert cp.get_config("tls", "gather") is None
+    assert cp.get_config("tls", "export") is None
+
+
+def test_config_is_per_corpus() -> None:
+    cp = _cp()
+    cp.set_config("tls", "gather", "{}")
+    assert cp.get_config("httpbis", "gather") is None
+    assert cp.clear_config("httpbis") is False

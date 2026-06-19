@@ -43,6 +43,29 @@ to add to the set, or `--clear-config` to start over. (The embedding and summari
 exception — they're properties of the tool, not a corpus, so they're set once and apply everywhere;
 see the [global model settings](models.md#global-settings).)
 
+### Keeping a set of corpora fresh
+
+`ietf-llm --all` re-gathers every corpus the store knows about, each with its own persisted config —
+the simplest way to keep a collection current from cron. On a [cloud deployment](storage.md#the-cloud-backend)
+this covers the whole fleet, and each corpus's config is read from the control plane, so a host
+refreshes corpora first gathered elsewhere correctly (no shared config mount). To avoid refreshing
+corpora nobody touches any more, add `--used-within DAYS`: it limits the refresh to corpora **read
+within that many days** through the MCP read tools, so a daily job keeps your active corpora fresh
+and lets the rest go stale:
+
+```bash
+# Refresh anything read in the last 30 days; skip the zombies.
+ietf-llm --all --used-within 30
+```
+
+A corpus that has been gathered but not yet read falls back to its gather time, so it isn't dropped
+on day one. Access is recorded on the read path (a coarse, per-corpus timestamp — at most one write
+per corpus every few hours, regardless of query volume); on a shared cloud deployment it reflects the
+whole fleet's usage. To turn access recording off entirely, set `IETF_LLM_RECORD_ACCESS=off` on the
+serving side — the filter then falls back to gather times for everything. See
+[Storage & locations](storage.md#read-path-access-recording) for where the timestamp lives on each
+backend.
+
 A corpus doesn't have to be a Working Group — the name is classified automatically:
 
 | Command | Corpus |

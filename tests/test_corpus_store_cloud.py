@@ -303,3 +303,34 @@ def test_seed_workspace_replaces_stale_content(
     assert store.seed_workspace("tls", str(dest)) == "v1"
     assert (dest / "files" / "drafts" / "d.txt").read_text() == "v1draft"
     assert not (dest / "files" / "drafts" / "old.txt").exists()
+
+
+# --- read-path access marker + gather time (cloud backend) ----------------
+
+
+def test_cloud_record_access_round_trips_via_control_plane(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    store, control = _store(tmp_path)
+    assert store.last_accessed("tls") is None
+    store.record_access("tls")
+    # It landed under the corpus's control-plane access key.
+    assert control.get_access("tls") is not None
+    when = store.last_accessed("tls")
+    assert when is not None
+    assert abs((datetime.now(timezone.utc) - when).total_seconds()) < 60
+
+
+def test_cloud_gathered_at_parses_version_timestamp(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    ws = _workspace(tmp_path, "ws", "hello")
+    # A real (_new_version) token, so gathered_at exercises the actual format.
+    version = store.publish("tls", ws)
+    when = store.gathered_at("tls")
+    assert when is not None
+    assert when.strftime("%Y%m%dT%H%M%SZ") == version.split("-", 1)[0]
+
+
+def test_cloud_gathered_at_none_for_absent_corpus(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    assert store.gathered_at("ghost") is None

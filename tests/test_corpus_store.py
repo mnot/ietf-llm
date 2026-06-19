@@ -71,3 +71,26 @@ def test_get_corpus_store_returns_local_backend() -> None:
     store = get_corpus_store()
     assert isinstance(store, CorpusStore)
     assert isinstance(store, LocalCorpusStore)
+
+
+# --- read-path access marker (local backend) ------------------------------
+
+
+def test_local_record_access_round_trips(isolated_home: Path) -> None:
+    from datetime import datetime, timezone
+
+    store = LocalCorpusStore()
+    assert store.last_accessed("httpbis") is None
+    store.record_access("httpbis")
+    when = store.last_accessed("httpbis")
+    assert when is not None
+    assert abs((datetime.now(timezone.utc) - when).total_seconds()) < 60
+
+
+def test_local_gathered_at_reads_last_gathered_sentinel(isolated_home: Path) -> None:
+    from ietf_llm.freshness import record_gather
+
+    store = LocalCorpusStore()
+    assert store.gathered_at("httpbis") is None
+    record_gather("httpbis")
+    assert store.gathered_at("httpbis") is not None

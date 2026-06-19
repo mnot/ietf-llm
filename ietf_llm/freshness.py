@@ -1,19 +1,26 @@
 """Per-WG cache freshness tracking.
 
-A single sentinel file `~/.cache/ietf-llm/<wg>/last-gathered` holds an
-ISO 8601 UTC timestamp recording the most recent successful gather.
-Three subsystems read or write it:
+Two per-corpus sentinel files under `~/.cache/ietf-llm/<wg>/`, each an
+ISO 8601 UTC timestamp:
 
-  - `__main__._gather_one` writes it at the end of every gather.
-  - `export_cli` warns on stderr if the cache is stale.
-  - `mcp_server` prepends a one-line warning to the top-level tool
-    responses (overview, read_digest, search_corpus, list_files) so
-    a consuming LLM can flag the staleness to the user.
+  - `last-gathered` — the most recent successful gather. Written by
+    `__main__._gather_one`; read by `export_cli` (stale-cache warning) and
+    `mcp_server` (one-line freshness note on top-level tool responses).
+  - `last-accessed` — the most recent read-path use of the corpus. Written
+    (coarsely) by `access.note_access` off the MCP read chokepoint; read by
+    the `--all --used-within` refresh filter so a cron re-gathers only
+    corpora that are actually being used.
 
-We deliberately don't warn when the sentinel is *missing* (the cache
+We deliberately don't warn when `last-gathered` is *missing* (the cache
 predates this feature, or the user populated it some other way) —
 forcing a re-gather to populate the sentinel would be noisier than
 useful. One real gather and we're tracking it from there on.
+
+The `local`-backend `CorpusStore` reaches these through `record_access` /
+`last_accessed` / `last_gathered`; the `cloud` backend keeps the same
+information in its control plane instead (a `last-accessed` sentinel on
+ephemeral scratch would not survive). `iso_now` / `parse_iso` are the shared
+timestamp format both backends use.
 """
 
 from __future__ import annotations
@@ -38,7 +45,8 @@ STALE_AFTER_DAYS = 7
 #: (float hours; 0 disables the debounce).
 GATHER_MIN_INTERVAL_DEFAULT_HOURS = 6.0
 
-_SENTINEL_NAME = "last-gathered"
+_GATHERED_SENTINEL = "last-gathered"
+_ACCESSED_SENTINEL = "last-accessed"
 _MIN_INTERVAL_ENV = "IETF_LLM_GATHER_MIN_INTERVAL"
 
 
@@ -117,38 +125,19 @@ def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) ->
     return f"{cmd} {purpose}".rstrip() if purpose else cmd
 
 
-def _sentinel_path(wg: str) -> str:
-    return os.path.join(get_cache_dir(), wg, _SENTINEL_NAME)
+def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
+    return os.path.join(get_cache_dir(), wg, name)
 
 
-def record_gather(wg: str) -> None:
-    """Write the current UTC time to the WG's `last-gathered` sentinel.
-
-    Best-effort: if the WG cache directory doesn't exist yet, or the
-    write fails, we don't raise. Freshness tracking is a UX hint, not
-    a correctness invariant; a failed write just means the next
-    consumer falls back to the "unknown / treat as fresh" path.
-    """
-    path = _sentinel_path(wg)
-    parent = os.path.dirname(path)
-    try:
-        os.makedirs(parent, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(_now_iso())
-    except OSError:
-        pass
+def iso_now() -> str:
+    """ISO 8601 UTC string with a trailing Z, matching chunk_date format."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def last_gathered(wg: str) -> Optional[datetime]:
-    """Read the sentinel and return a tz-aware UTC datetime, or None
-    if missing / unreadable / malformed.
-    """
-    path = _sentinel_path(wg)
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = fh.read().strip()
-    except OSError:
-        return None
+def parse_iso(raw: str) -> Optional[datetime]:
+    """Parse an `iso_now`-style timestamp to a tz-aware UTC datetime, or None
+    if blank / malformed. Used by the local sentinels and by the cloud control
+    plane, which stores the same string under its `access` key."""
     if not raw:
         return None
     try:
@@ -162,6 +151,59 @@ def last_gathered(wg: str) -> Optional[datetime]:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return when.astimezone(timezone.utc)
+
+
+def _write_sentinel(wg: str, name: str) -> None:
+    """Stamp `wg`'s `name` sentinel with the current UTC time.
+
+    Best-effort: if the WG cache directory doesn't exist yet, or the
+    write fails (e.g. a read-only index mount), we don't raise. Freshness
+    tracking is a UX/operability hint, not a correctness invariant; a failed
+    write just means the next consumer falls back to the "unknown" path.
+    """
+    path = _sentinel_path(wg, name)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(iso_now())
+    except OSError:
+        pass
+
+
+def _read_sentinel(wg: str, name: str) -> Optional[datetime]:
+    """Read `wg`'s `name` sentinel as a tz-aware UTC datetime, or None if
+    missing / unreadable / malformed."""
+    path = _sentinel_path(wg, name)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read().strip()
+    except OSError:
+        return None
+    return parse_iso(raw)
+
+
+def record_gather(wg: str) -> None:
+    """Stamp the WG's `last-gathered` sentinel (best-effort; see
+    `_write_sentinel`)."""
+    _write_sentinel(wg, _GATHERED_SENTINEL)
+
+
+def last_gathered(wg: str) -> Optional[datetime]:
+    """The WG's last-gathered time, or None if unrecorded / unreadable."""
+    return _read_sentinel(wg, _GATHERED_SENTINEL)
+
+
+def record_access(wg: str) -> None:
+    """Stamp the WG's `last-accessed` sentinel (best-effort; see
+    `_write_sentinel`). The `local` backend's read-path access marker; the
+    cloud backend records the same thing in its control plane instead."""
+    _write_sentinel(wg, _ACCESSED_SENTINEL)
+
+
+def last_accessed(wg: str) -> Optional[datetime]:
+    """The WG's last read-path access time, or None if unrecorded /
+    unreadable."""
+    return _read_sentinel(wg, _ACCESSED_SENTINEL)
 
 
 def _humanize_age(age_days: int) -> str:
@@ -324,8 +366,3 @@ def cli_debounce_skip(args: Any) -> Optional[str]:
     if any(getattr(args, name, None) for name in _SOURCE_CHANGE_FLAGS):
         return None
     return debounce_reason(args.wg)
-
-
-def _now_iso() -> str:
-    """ISO 8601 UTC string with a trailing Z, matching chunk_date format."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

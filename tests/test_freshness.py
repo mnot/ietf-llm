@@ -246,3 +246,47 @@ def test_debounce_explicit_interval_overrides_env(isolated_home: Path) -> None:
     _backdate_hours("wg", hours=3)
     assert debounce_reason("wg", min_interval_hours=2) is None
     assert debounce_reason("wg", min_interval_hours=4) is not None
+
+
+# --- record_access / last_accessed round-trip -----------------------------
+
+
+def test_record_access_round_trips(isolated_home: Path) -> None:
+    from ietf_llm.freshness import last_accessed, record_access
+
+    assert last_accessed("wg") is None
+    record_access("wg")
+    when = last_accessed("wg")
+    assert when is not None
+    delta = abs((datetime.now(timezone.utc) - when).total_seconds())
+    assert delta < 60
+
+
+def test_access_and_gather_sentinels_are_independent(isolated_home: Path) -> None:
+    from ietf_llm.freshness import (
+        _ACCESSED_SENTINEL,
+        _GATHERED_SENTINEL,
+        last_accessed,
+        record_access,
+    )
+
+    record_gather("wg")
+    # Recording access must not disturb the gather sentinel, and vice versa.
+    record_access("wg")
+    assert last_gathered("wg") is not None
+    assert last_accessed("wg") is not None
+    # Two distinct files under the corpus dir.
+    assert _ACCESSED_SENTINEL != _GATHERED_SENTINEL
+    assert Path(_sentinel_path("wg", _ACCESSED_SENTINEL)).is_file()
+    assert Path(_sentinel_path("wg", _GATHERED_SENTINEL)).is_file()
+
+
+def test_parse_iso_handles_z_and_malformed() -> None:
+    from ietf_llm.freshness import parse_iso
+
+    assert parse_iso("") is None
+    assert parse_iso("not-a-date") is None
+    when = parse_iso("2026-06-04T00:00:00Z")
+    assert when is not None
+    assert when.tzinfo is not None
+    assert when.year == 2026 and when.month == 6 and when.day == 4

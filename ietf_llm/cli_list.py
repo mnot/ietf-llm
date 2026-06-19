@@ -8,9 +8,11 @@ dependency on the gather pipeline.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from . import corpus
+from .corpus_store import get_corpus_store
 from .freshness import last_gathered
 from .utils import cached_wg_names
 
@@ -19,9 +21,39 @@ def discover_gathered_wgs() -> List[str]:
     """Acronyms of every WG with a files/ subdir in the cache.
 
     Thin alias for `utils.cached_wg_names()` — kept as a named helper
-    because `--all` and `--list` read naturally with it.
+    because `--list` reads naturally with it. Local-only: `--list`'s renderer
+    reads each corpus's local cache, so it has nothing to show for a corpus
+    that lives only in a remote store.
     """
     return cached_wg_names()
+
+
+def all_corpora() -> List[str]:
+    """Every gathered corpus the configured store knows about, sorted.
+
+    Unlike `discover_gathered_wgs`, this goes through the corpus store, so on
+    the cloud backend `--all` enumerates the whole fleet from the control plane
+    rather than only what this host has cached locally.
+    """
+    return get_corpus_store().list_corpora()
+
+
+def filter_recently_used(names: List[str], days: int) -> List[str]:
+    """Of `names`, those read within the last `days` days.
+
+    Recency is the store's `last_accessed` time, falling back to `gathered_at`
+    when a corpus has never been read (freshly gathered, so it gets a grace
+    period rather than being dropped as a zombie). A corpus with neither
+    timestamp is kept — absence of information is not evidence it's unused.
+    """
+    store = get_corpus_store()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out: List[str] = []
+    for name in names:
+        when = store.last_accessed(name) or store.gathered_at(name)
+        if when is None or when >= cutoff:
+            out.append(name)
+    return out
 
 
 def print_cached_wgs() -> int:

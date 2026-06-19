@@ -155,15 +155,34 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     if months_error:
         parser.error(months_error)
 
+    if args.used_within is not None:
+        if not args.all:
+            parser.error("--used-within is only valid with --all")
+        if args.used_within < 1:
+            parser.error("--used-within DAYS must be a positive integer")
+
     if args.all:
-        targets = cli_list.discover_gathered_wgs()
+        targets = cli_list.all_corpora()
         if not targets:
             print(
-                "No gathered corpora found under ~/.cache/ietf-llm/. "
+                "No gathered corpora found. "
                 "Run `ietf-llm <name>` once per corpus first.",
                 file=sys.stderr,
             )
             sys.exit(1)
+        if args.used_within is not None:
+            targets = cli_list.filter_recently_used(targets, args.used_within)
+            if not targets:
+                # A successful no-op for a cron: corpora exist, none were used
+                # recently, so there is nothing to refresh. Distinct from the
+                # empty-store error above.
+                if verbosity != Verbosity.QUIET:
+                    print(
+                        f"No corpora read within the last {args.used_within} "
+                        "days; nothing to refresh.",
+                        file=sys.stderr,
+                    )
+                sys.exit(0)
         if verbosity != Verbosity.QUIET:
             print(
                 f"Refreshing {len(targets)} corpora: {', '.join(targets)}",

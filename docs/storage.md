@@ -77,11 +77,19 @@ The index is a SQLite database in WAL mode. That constrains `IETF_LLM_INDEX_DIR`
 Set `IETF_LLM_STORE_BACKEND=cloud` for a replicated, ephemeral deployment — many serving containers,
 gather driven by cron *and* by the in-session MCP tools. One S3-compatible bucket holds everything:
 the immutable, versioned corpus content (`files/` + `embeddings.db`) and a small **control plane**
-(the version pointer, gather lease, and status keys). A replica resolves the current version through
-the control plane, materialises it onto local scratch, and serves reads from there. A publish is one
-atomic pointer flip, visible fleet-wide within the resolve TTL, with no torn read. The mechanics are
-in [architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable); what
+(the version pointer, gather lease, status, the read-path access marker, and **per-WG config** keys).
+A replica resolves the current version through the control plane, materialises it onto local scratch,
+and serves reads from there. A publish is one atomic pointer flip, visible fleet-wide within the
+resolve TTL, with no torn read. The mechanics are in
+[architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable); what
 you provision is below.
+
+**Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives in
+the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's lease
+and read with a plain GET. So **you do not need to share `IETF_LLM_CONFIG_DIR`** across hosts: a host
+running `ietf-llm --all` re-gathers a corpus first gathered on another host with that corpus's real
+sources, not an empty config. Global service config (`config.json` — models, embed on/off) stays
+filesystem/env-bound, since it is what *selects* the backend; set it via environment on each host.
 
 ### What you provision
 
@@ -146,16 +154,38 @@ version behind, and the version it still believes is current must outlive the pu
 it. Raise `IETF_LLM_RETAIN_VERSIONS` for more headroom (e.g. forced back-to-back re-gathers); the floor
 is `1`.
 
+### Read-path access recording
+
+The `--all --used-within DAYS` refresh filter (see
+[keeping a set fresh](gathering.md#keeping-a-set-of-corpora-fresh)) needs to know when each corpus
+was last *read*. A reader records that coarsely when it resolves a corpus — at most one write per
+corpus every few hours per process, regardless of query volume. Where the timestamp lives depends on
+the backend:
+
+- **local** — a `last-accessed` sentinel file beside `last-gathered` under `<cache>/<corpus>/`.
+- **cloud** — a `corpora/<corpus>/access` key in the control plane (a `last-accessed` file on
+  ephemeral scratch would not survive). It is last-writer-wins, like the gather-status key: the
+  value is "the most recent access any replica saw", so a lost race only drops an older timestamp
+  for a newer one — no compare-and-swap.
+
+This is the **one** write the read path makes. It touches no version, blob, or pointer, so a serving
+replica stays read-only with respect to corpus *content*. If you scope the serve fleet's IAM to a
+read-only role, either widen it to allow `s3:PutObject` on `…/corpora/*/access` only, or leave it
+read-only and set **`IETF_LLM_RECORD_ACCESS=off`** on the serve side — recording then no-ops
+silently and the refresh filter falls back to gather times. (The write is best-effort regardless: a
+rejected PUT never fails a read.) The cron that runs `--all` needs the normal read/write role.
+
 ### Configuration
 
 | Variable | What | Required |
 |---|---|---|
 | `IETF_LLM_STORE_BACKEND` | `local` (default) or `cloud` | — |
+| `IETF_LLM_RECORD_ACCESS` | record read-path access for the `--used-within` filter; `off` disables (default on) | — |
 | `IETF_LLM_STORE_URL` | object-store locator `s3://bucket/prefix` — holds content **and** control (needs `[s3]`) | cloud |
 | `IETF_LLM_STORE_ENDPOINT_URL` | S3 endpoint for a non-AWS service (R2, MinIO); unset = AWS | non-AWS |
 | `IETF_LLM_S3_CONCURRENCY` | parallel object ops for publish / version hydration, and the boto3 pool size (default `16`, floor `1`) | — |
 | `IETF_LLM_SCRATCH_DIR` | local dir to materialise versions into | cloud |
-| `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup; `0` disables (default `10`) | — |
+| `IETF_LLM_RESOLVE_TTL` | seconds to cache the current-version lookup **and** the per-WG config read; `0` disables (default `10`) | — |
 | `IETF_LLM_RETAIN_VERSIONS` | published versions a publish keeps before reaping older blobs (default `2`, floor `1`) | — |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers running concurrently — per host and fleet-wide (default `3`) | — |
 | `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per host — non-datatracker (default `6`) | — |
