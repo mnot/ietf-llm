@@ -2791,6 +2791,78 @@ def _gather_enabled() -> bool:
     return gather_enabled()
 
 
+# How long `start_gather(wait=...)` blocks for a gather to finish before
+# falling back to the progress-and-poll reply. Blocking is the default (the
+# dominant flow is gather-then-read, one call), and `wait=0` restores
+# fire-and-forget. The budget is always clamped under the `_offload` deadline
+# so the wait loop returns its own "still running, poll" message rather than
+# the generic tool-timeout firing first.
+_GATHER_WAIT_DEFAULT = 90.0
+_GATHER_WAIT_MARGIN = 15.0
+_GATHER_POLL_INTERVAL = 2.0
+_TERMINAL_GATHER_STATES = frozenset({"done", "failed", "cancelled", "interrupted"})
+
+
+def _gather_wait_budget(requested: Optional[float], elapsed: float = 0.0) -> float:
+    """Effective seconds to block in the gather tools, clamped under the
+    offload deadline.
+
+    `None` → the default budget (blocking by default); `<= 0` → don't wait
+    (fire-and-forget). A positive request is honoured but clamped to leave
+    headroom under `IETF_LLM_TOOL_TIMEOUT`, so the wait loop always gets to
+    return its own progress reply instead of the offload deadline cancelling
+    the call first.
+
+    `elapsed` is the wall-clock already spent in this tool call before the wait
+    begins — e.g. `gather_runner.start()`, which on the cloud backend does S3
+    round-trips for the lease / status / enqueue. The clamp is against
+    *remaining* time (`timeout - elapsed - margin`), not the static budget, so
+    a slow pre-wait phase can't push the wait past the deadline it is meant to
+    stay under (the clamp shrinks, to 0 if no headroom is left).
+    """
+    base = _GATHER_WAIT_DEFAULT if requested is None else float(requested)
+    if base <= 0:
+        return 0.0
+    timeout = _tool_timeout_seconds()
+    if timeout > 0:
+        base = min(base, max(0.0, timeout - elapsed - _GATHER_WAIT_MARGIN))
+    return base
+
+
+def _await_gather(corpus: str, budget: float) -> Optional[Dict[str, Any]]:
+    """Poll the gather status until it is terminal or `budget` seconds elapse;
+    return the last status seen (or None if none is recorded).
+
+    Runs inside the `_offload` worker thread, so the blocking `time.sleep` is
+    off the event loop and the server stays responsive to other requests.
+    """
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    deadline = time.monotonic() + budget
+    status = gather_runner.read_status(corpus)
+    while True:
+        state = status.get("state") if status else None
+        if state in _TERMINAL_GATHER_STATES:
+            return status
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return status
+        time.sleep(min(_GATHER_POLL_INTERVAL, remaining))
+        status = gather_runner.read_status(corpus)
+
+
+def _format_waited_result(status: Dict[str, Any], corpus: str) -> str:
+    """Render the reply after `start_gather` blocked through to a terminal
+    gather state."""
+    line = _format_gather_status(status)
+    if status.get("state") == "done":
+        line += (
+            f"\nReady — query '{corpus}' now with `overview`, `read_digest`, "
+            "or `search_corpus`."
+        )
+    return line
+
+
 def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     corpus: str,
     mailing_list: Optional[List[str]] = None,
@@ -2804,9 +2876,11 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     github_label: Optional[List[str]] = None,
     exclude_github_label: Optional[List[str]] = None,
     force: bool = False,
+    wait: Optional[float] = None,
 ) -> str:
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
+    wait_started = time.monotonic()
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a corpus name to gather (e.g. a WG shortname like `tls`)."
@@ -2838,6 +2912,13 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     caution = months_request_caution(months)
     if result.get("started") and caution:
         out = f"{out} {caution}"
+    budget = _gather_wait_budget(wait, elapsed=time.monotonic() - wait_started)
+    in_progress = result.get("started") or result.get("reason") == "already running"
+    if budget > 0 and in_progress:
+        final = _await_gather(corpus, budget)
+        if final and final.get("state") in _TERMINAL_GATHER_STATES:
+            return _format_waited_result(final, corpus)
+        return f"Waited ~{int(budget)}s; the gather is still in progress. {out}"
     return out
 
 
@@ -2897,9 +2978,12 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
     )
 
 
-def tool_gather_status(corpus: Optional[str] = None) -> str:
+def tool_gather_status(
+    corpus: Optional[str] = None, wait: Optional[float] = None
+) -> str:
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
+    wait_started = time.monotonic()
     if corpus:
         corpus = corpus.strip()
         if not gather_runner.valid_corpus_name(corpus):
@@ -2910,6 +2994,12 @@ def tool_gather_status(corpus: Optional[str] = None) -> str:
                 f"No gather has been recorded for '{corpus}'. Start one with "
                 f'`start_gather(corpus="{corpus}")`.'
             )
+        # Immediate by default (unlike start_gather); a positive `wait` blocks
+        # for a still-running gather to finish, clamped under the tool deadline
+        # (against time already spent in the status read above).
+        budget = _gather_wait_budget(wait or 0, elapsed=time.monotonic() - wait_started)
+        if budget > 0 and status.get("state") not in _TERMINAL_GATHER_STATES:
+            status = _await_gather(corpus, budget) or status
         return _format_gather_status(status)
     statuses = gather_runner.all_statuses()
     if not statuses:
@@ -4104,16 +4194,22 @@ def main() -> None:
             github_label: Optional[List[str]] = None,
             exclude_github_label: Optional[List[str]] = None,
             force: bool = False,
+            wait: Optional[float] = None,
         ) -> str:
-            """Gather a new corpus into the local cache, in the background.
+            """Gather a new corpus into the local cache.
 
             Use this when a corpus the user asks about isn't cached yet
-            (`list_corpora` doesn't show it). Returns immediately. The
-            *first* gather of a corpus can run for minutes; later re-gathers
-            are quicker, fetching only what changed since last time. Poll
-            `gather_status(corpus=...)` until it reports `done`, then the
-            normal read tools work on it. The reply includes a stop token —
-            pass it to `stop_gather` to cancel a gather that is taking too long.
+            (`list_corpora` doesn't show it). **By default this blocks** until
+            the gather finishes (up to ~90s) and reports `done`, so the common
+            gather-then-read flow is a single call — no poll loop, no guessed
+            sleep. A quick re-gather usually completes within that window; a
+            *first* gather of a corpus can run for minutes, so if it is still
+            going when the wait elapses the reply falls back to a progress line
+            plus a stop token — then poll `gather_status(corpus=...)` until it
+            reports `done`. Pass `wait=0` to return immediately instead
+            (fire-and-forget: kick off the gather and do other work), or a
+            custom `wait` (seconds) to block longer or shorter. Later
+            re-gathers fetch only what changed since last time.
 
             The corpus **shape is inferred** from what you pass — you don't
             declare it:
@@ -4190,6 +4286,12 @@ def main() -> None:
                     overlap hint). Overrides the freshness debounce only — it
                     never starts a second gather while one is running. Use only
                     on an explicit request for fresh data.
+                wait: Seconds to block waiting for the gather to finish before
+                    returning a progress line to poll on. Omit to block for the
+                    default (~90s); `0` returns immediately (fire-and-forget).
+                    Clamped to stay under the server's per-call tool deadline.
+                    Also waits when the corpus is already being gathered (by
+                    another client or a CLI run).
             """
             return await _offload(
                 tool_start_gather,
@@ -4205,10 +4307,13 @@ def main() -> None:
                 github_label,
                 exclude_github_label,
                 force,
+                wait,
             )
 
         @server.tool()
-        async def gather_status(corpus: Optional[str] = None) -> str:
+        async def gather_status(
+            corpus: Optional[str] = None, wait: Optional[float] = None
+        ) -> str:
             """Report the progress of background gathers started with
             `start_gather`.
 
@@ -4217,9 +4322,15 @@ def main() -> None:
             time), `done`, `failed` (with the error), or `interrupted` (the
             server process ended mid-gather — re-run `start_gather`). With no
             argument, lists every recorded gather, most-recently-active
-            first. Poll this after `start_gather`; once a corpus reports
-            `done`, the read tools (`overview`, `search_corpus`, …) work on
-            it.
+            first. Once a corpus reports `done`, the read tools (`overview`,
+            `search_corpus`, …) work on it.
+
+            Returns the current state immediately by default. Pass `wait`
+            (seconds) to **block** until a still-running gather reaches a
+            terminal state (or the wait elapses) — the no-sleep way to wait out
+            the tail of a long first gather after `start_gather`'s own wait
+            returned it still in progress. Clamped under the server's tool
+            deadline; ignored for the no-`corpus` list-all form.
 
             Don't query before `done`. The catalogue and search layers
             (digests, embedding index) are built in the *final* gather
@@ -4231,8 +4342,11 @@ def main() -> None:
 
             Args:
                 corpus: The corpus to report on. Omit to list all.
+                wait: Seconds to block for a still-running gather to finish
+                    before reporting. Omit/`0` reports immediately. Clamped
+                    under the server's per-call tool deadline.
             """
-            return await _offload(tool_gather_status, corpus)
+            return await _offload(tool_gather_status, corpus, wait)
 
         @server.tool()
         async def stop_gather(corpus: str, token: str) -> str:

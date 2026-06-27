@@ -937,12 +937,19 @@ gate and the user-facing "go gather" hints both read the one resolved value
 the hints recommend it. The torch-free serve image is unaffected by default
 (a gather there would need a remote `openai-embed/...` model to avoid
 pulling torch). `start_gather` runs the
-same `__main__` pipeline as the CLI in a **daemon thread** (`gather_runner`)
-and returns at once; it is not bounded by the per-call tool deadline.
+same `__main__` pipeline as the CLI in a **daemon thread** (`gather_runner`).
+The tool **blocks by default** (`wait`, ~90s) polling the status to the
+gather's terminal state, so the common gather-then-read flow is one call; the
+wait budget is clamped under the per-call tool deadline, so a longer gather
+falls back to a progress line to poll on, and `wait=0` restores
+fire-and-forget. The daemon thread itself is never bounded by the tool
+deadline — only the caller's optional wait is.
 Progress is recorded to a per-corpus `gather-status.json` (atomic writes)
 that `gather_status` reads back — stage-level, driven by `gather_stages`
 (`stage_plan` is the single source of stage order, shared with the
-pipeline). One gather per corpus at a time is enforced by a non-blocking
+pipeline). `gather_status` reports immediately by default but takes an
+opt-in `wait` (same clamped budget) to block out the tail of a long gather
+without a poll loop. One gather per corpus at a time is enforced by a non-blocking
 per-corpus `file_lock`, which also serialises against a concurrent CLI
 gather; different corpora gather in parallel. `gather_runner` and the
 gather pipeline are imported lazily so the default serve path never pulls
