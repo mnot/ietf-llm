@@ -51,12 +51,16 @@ If a corpus isn't cached (`overview` returns nothing, or it's absent from
 `list_corpora`), get it gathered:
 
 - **If `start_gather` is listed**, gather in-session:
-  `start_gather(corpus="<name>")`, then poll
-  `gather_status(corpus="<name>")` until `done`. Add `mailing_list` /
-  `draft` / `github` / `author` / `new_drafts` for non-WG shapes — the
-  shape is inferred. The `start_gather` docstring covers shapes, the
-  `months` window, GitHub auto-discovery, and `stop_gather`. (LLM
-  summarisation of threads / issues is CLI/env-only — not an MCP option.)
+  `start_gather(corpus="<name>")`. It **blocks by default** (~90s) and
+  returns `done` for a quick re-gather, so usually one call is enough — no
+  poll loop. If it returns still-in-progress (a first gather can take
+  minutes), *then* poll `gather_status(corpus="<name>")` until `done` — or
+  pass it a `wait` (seconds) to block instead of hand-rolling a poll loop. Add
+  `mailing_list` / `draft` / `github` / `author` / `new_drafts` for non-WG
+  shapes — the shape is inferred. The `start_gather` docstring covers shapes,
+  `wait` (pass `wait=0` to fire-and-forget), the `months` window, GitHub
+  auto-discovery, and `stop_gather`. (LLM summarisation of threads / issues
+  is CLI/env-only — not an MCP option.)
 - **Otherwise**, tell the user to run `ietf-llm <corpus>` from their shell
   (`ietf-llm --list` shows what's cached).
 

@@ -105,7 +105,7 @@ def test_start_gather_forwards_spec_and_reports_started(
 
     monkeypatch.setattr(gather_runner, "start", fake_start)
     out = mcp_server.tool_start_gather(
-        "tls", mailing_list=["tls@ietf.org"], github=["o/r"], months=6
+        "tls", mailing_list=["tls@ietf.org"], github=["o/r"], months=6, wait=0
     )
     assert "Started gathering 'tls'" in out
     assert "gather_status" in out
@@ -121,7 +121,7 @@ def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
         gather_runner, "start",
         lambda spec: {"started": False, "reason": "already running"},
     )
-    out = mcp_server.tool_start_gather("tls")
+    out = mcp_server.tool_start_gather("tls", wait=0)
     assert "already running" in out
 
 
@@ -148,7 +148,7 @@ def test_start_gather_allows_zero_months_with_force(
         gather_runner, "start",
         lambda spec: {"started": True, "corpus": spec.corpus},
     )
-    out = mcp_server.tool_start_gather("tls", months=0, force=True)
+    out = mcp_server.tool_start_gather("tls", months=0, force=True, wait=0)
     assert "Started gathering 'tls'" in out
 
 
@@ -159,7 +159,7 @@ def test_start_gather_cautions_on_large_window(
         gather_runner, "start",
         lambda spec: {"started": True, "corpus": spec.corpus},
     )
-    out = mcp_server.tool_start_gather("tls", months=36)
+    out = mcp_server.tool_start_gather("tls", months=36, wait=0)
     assert "Started gathering 'tls'" in out
     assert "36-month window" in out
 
@@ -169,7 +169,7 @@ def test_start_gather_surfaces_stop_token(monkeypatch: pytest.MonkeyPatch) -> No
         gather_runner, "start",
         lambda spec: {"started": True, "corpus": spec.corpus, "cancel_token": "tok123"},
     )
-    out = mcp_server.tool_start_gather("tls")
+    out = mcp_server.tool_start_gather("tls", wait=0)
     assert "stop_gather" in out and "tok123" in out
 
 
@@ -231,7 +231,7 @@ def test_start_gather_forwards_force(monkeypatch: pytest.MonkeyPatch) -> None:
         return {"started": True, "corpus": spec.corpus}
 
     monkeypatch.setattr(gather_runner, "start", fake_start)
-    mcp_server.tool_start_gather("tls", force=True)
+    mcp_server.tool_start_gather("tls", force=True, wait=0)
     assert captured["spec"].force is True
 
 
@@ -459,3 +459,150 @@ def test_suggest_github_repos_renders_discovery(
     out = mcp_server.tool_suggest_github_repos("httpbis")
     assert "httpwg/http-extensions" in out
     assert 'github=["httpwg/http-extensions"]' in out
+
+
+# --- start_gather wait/blocking ------------------------------------------
+
+
+def test_gather_wait_budget_defaults_and_clamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
+    # None -> the default budget; 0/negative -> no wait.
+    assert mcp_server._gather_wait_budget(None) == mcp_server._GATHER_WAIT_DEFAULT
+    assert mcp_server._gather_wait_budget(0) == 0.0
+    assert mcp_server._gather_wait_budget(-5) == 0.0
+    # A request over the deadline headroom is clamped under it.
+    assert mcp_server._gather_wait_budget(10_000) == 120 - mcp_server._GATHER_WAIT_MARGIN
+    # A disabled deadline honours the request as-is.
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0")
+    assert mcp_server._gather_wait_budget(10_000) == 10_000
+
+
+def test_start_gather_wait_returns_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus},
+    )
+    monkeypatch.setattr(
+        gather_runner, "read_status",
+        lambda corpus: {"corpus": corpus, "state": "done"},
+    )
+    out = mcp_server.tool_start_gather("tls")  # blocks by default
+    assert "done" in out
+    assert "Ready" in out and "query 'tls'" in out
+
+
+def test_start_gather_wait_times_out_reports_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus, "cancel_token": "tok"},
+    )
+    monkeypatch.setattr(
+        gather_runner, "read_status",
+        lambda corpus: {"corpus": corpus, "state": "running"},
+    )
+    out = mcp_server.tool_start_gather("tls", wait=0.05)
+    assert "still in progress" in out
+    # Falls back to the start reply, so the poll hint + stop token survive.
+    assert "gather_status" in out and "tok" in out
+
+
+def test_start_gather_wait_zero_does_not_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus},
+    )
+
+    def boom(corpus: str) -> Any:
+        raise AssertionError("read_status must not be polled when wait=0")
+
+    monkeypatch.setattr(gather_runner, "read_status", boom)
+    out = mcp_server.tool_start_gather("tls", wait=0)
+    assert "Started gathering 'tls'" in out
+
+
+def test_start_gather_wait_polls_already_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A gather already in flight (here or another host) is still waited on.
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": False, "reason": "already running"},
+    )
+    monkeypatch.setattr(
+        gather_runner, "read_status",
+        lambda corpus: {"corpus": corpus, "state": "done"},
+    )
+    out = mcp_server.tool_start_gather("tls", wait=5)
+    assert "done" in out and "Ready" in out
+
+
+def test_start_gather_wait_does_not_poll_when_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "fresh, skipped" is already current — nothing to wait on.
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": False, "reason": "fresh", "detail": "skipped.", "corpus": "tls"},
+    )
+
+    def boom(corpus: str) -> Any:
+        raise AssertionError("a fresh corpus must not be polled")
+
+    monkeypatch.setattr(gather_runner, "read_status", boom)
+    out = mcp_server.tool_start_gather("tls")
+    assert "skipped" in out
+
+
+# --- gather_status wait ---------------------------------------------------
+
+
+def test_gather_status_immediate_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Default is "report now": a running gather is reported as running, not
+    # waited on (read_status is consulted exactly once).
+    calls = {"n": 0}
+
+    def one_read(corpus: str) -> Dict[str, Any]:
+        calls["n"] += 1
+        return {"corpus": corpus, "state": "running"}
+
+    monkeypatch.setattr(gather_runner, "read_status", one_read)
+    out = mcp_server.tool_gather_status("tls")
+    assert "running" in out
+    assert calls["n"] == 1
+
+
+def test_gather_status_wait_blocks_to_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    states = iter(["running", "done"])
+
+    def progressing(corpus: str) -> Dict[str, Any]:
+        return {"corpus": corpus, "state": next(states, "done")}
+
+    monkeypatch.setattr(gather_runner, "read_status", progressing)
+    out = mcp_server.tool_gather_status("tls", wait=5)
+    assert "done" in out
+
+
+def test_gather_status_wait_skips_when_already_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A terminal state returns at once even with a wait set (no extra polling).
+    calls = {"n": 0}
+
+    def one_read(corpus: str) -> Dict[str, Any]:
+        calls["n"] += 1
+        return {"corpus": corpus, "state": "done"}
+
+    monkeypatch.setattr(gather_runner, "read_status", one_read)
+    out = mcp_server.tool_gather_status("tls", wait=5)
+    assert "done" in out
+    assert calls["n"] == 1
+
+
+def test_gather_status_unknown_corpus_does_not_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gather_runner, "read_status", lambda corpus: None)
+    out = mcp_server.tool_gather_status("tls", wait=5)
+    assert "No gather has been recorded" in out
