@@ -477,6 +477,18 @@ def test_gather_wait_budget_defaults_and_clamps(monkeypatch: pytest.MonkeyPatch)
     assert mcp_server._gather_wait_budget(10_000) == 10_000
 
 
+def test_gather_wait_budget_clamps_against_elapsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Time already spent in the call (e.g. a slow cloud `start()`) shrinks the
+    # budget so the wait can't outlive the offload deadline it stays under.
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
+    # 120 - 30 elapsed - 15 margin = 75 headroom; default 90 is clamped to it.
+    assert mcp_server._gather_wait_budget(None, elapsed=30) == 75
+    # No headroom left -> don't wait at all (rather than overshoot the deadline).
+    assert mcp_server._gather_wait_budget(None, elapsed=200) == 0.0
+
+
 def test_start_gather_wait_returns_done(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         gather_runner, "start",

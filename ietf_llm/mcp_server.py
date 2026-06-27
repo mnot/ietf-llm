@@ -2803,22 +2803,29 @@ _GATHER_POLL_INTERVAL = 2.0
 _TERMINAL_GATHER_STATES = frozenset({"done", "failed", "cancelled", "interrupted"})
 
 
-def _gather_wait_budget(requested: Optional[float]) -> float:
-    """Effective seconds to block in `start_gather`, clamped under the offload
-    deadline.
+def _gather_wait_budget(requested: Optional[float], elapsed: float = 0.0) -> float:
+    """Effective seconds to block in the gather tools, clamped under the
+    offload deadline.
 
     `None` → the default budget (blocking by default); `<= 0` → don't wait
     (fire-and-forget). A positive request is honoured but clamped to leave
     headroom under `IETF_LLM_TOOL_TIMEOUT`, so the wait loop always gets to
     return its own progress reply instead of the offload deadline cancelling
     the call first.
+
+    `elapsed` is the wall-clock already spent in this tool call before the wait
+    begins — e.g. `gather_runner.start()`, which on the cloud backend does S3
+    round-trips for the lease / status / enqueue. The clamp is against
+    *remaining* time (`timeout - elapsed - margin`), not the static budget, so
+    a slow pre-wait phase can't push the wait past the deadline it is meant to
+    stay under (the clamp shrinks, to 0 if no headroom is left).
     """
     base = _GATHER_WAIT_DEFAULT if requested is None else float(requested)
     if base <= 0:
         return 0.0
     timeout = _tool_timeout_seconds()
     if timeout > 0:
-        base = min(base, max(0.0, timeout - _GATHER_WAIT_MARGIN))
+        base = min(base, max(0.0, timeout - elapsed - _GATHER_WAIT_MARGIN))
     return base
 
 
@@ -2873,6 +2880,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
 ) -> str:
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
+    wait_started = time.monotonic()
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a corpus name to gather (e.g. a WG shortname like `tls`)."
@@ -2904,7 +2912,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     caution = months_request_caution(months)
     if result.get("started") and caution:
         out = f"{out} {caution}"
-    budget = _gather_wait_budget(wait)
+    budget = _gather_wait_budget(wait, elapsed=time.monotonic() - wait_started)
     in_progress = result.get("started") or result.get("reason") == "already running"
     if budget > 0 and in_progress:
         final = _await_gather(corpus, budget)
@@ -2975,6 +2983,7 @@ def tool_gather_status(
 ) -> str:
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
+    wait_started = time.monotonic()
     if corpus:
         corpus = corpus.strip()
         if not gather_runner.valid_corpus_name(corpus):
@@ -2986,8 +2995,9 @@ def tool_gather_status(
                 f'`start_gather(corpus="{corpus}")`.'
             )
         # Immediate by default (unlike start_gather); a positive `wait` blocks
-        # for a still-running gather to finish, clamped under the tool deadline.
-        budget = _gather_wait_budget(wait or 0)
+        # for a still-running gather to finish, clamped under the tool deadline
+        # (against time already spent in the status read above).
+        budget = _gather_wait_budget(wait or 0, elapsed=time.monotonic() - wait_started)
         if budget > 0 and status.get("state") not in _TERMINAL_GATHER_STATES:
             status = _await_gather(corpus, budget) or status
         return _format_gather_status(status)
