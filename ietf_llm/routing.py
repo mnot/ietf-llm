@@ -218,7 +218,9 @@ def _score_group(
     usable = [c for c in corpora if table[c].centroids.shape[1] == query.shape[0]]
     if not usable:
         return []
-    mean = np.vstack([table[c].centroids for c in usable]).mean(axis=0)
+    mean = (
+        np.vstack([table[c].centroids for c in usable]).mean(axis=0).astype(np.float32)
+    )
     q_centered = _recenter(query[None, :], mean)[0]
     matches: List[CorpusMatch] = []
     for corpus in usable:
@@ -267,7 +269,11 @@ def generic_theme_flags(corpus: str) -> Optional[List[bool]]:
     }
     if len(group) < _GENERIC_MIN_CORPORA:
         return None
-    mean = np.vstack([entry.centroids for entry in group.values()]).mean(axis=0)
+    mean = (
+        np.vstack([entry.centroids for entry in group.values()])
+        .mean(axis=0)
+        .astype(np.float32)
+    )
     mine = _recenter(me.centroids, mean)
     others = [
         _recenter(entry.centroids, mean)
