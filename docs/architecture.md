@@ -375,6 +375,9 @@ ietf_llm/
 ├── s3_backend.py           # shared S3Bucket: one boto3 client for blob + control planes
 ├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read + seed
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
+├── live_lookup.py          # live Datatracker reads (meeting_sessions / draft_status /
+│                           # overview reconciliation): in-process TTL cache, no disk
+│                           # writes; gather-gated, the one networked read path
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
@@ -532,6 +535,17 @@ job:
   metadata + reference graph. These read the `_rfc/` singleton, *not* a
   gathered corpus — distinct from `search_corpus`, which is semantic
   search within one WG. A bare RFC number short-circuits to that RFC.
+- **Live chair-workflow facts (gated, networked):** `meeting_sessions`
+  (a group's sessions at a numbered meeting — venue-local times, room,
+  session id, Meetecho URLs) and `draft_status` (a draft's live IESG state +
+  derived agenda-eligibility), plus `overview(corpus, live=True)`, which
+  reconciles the cache's active-draft list against Datatracker. These read
+  *live* from Datatracker rather than the cache — meeting schedules and IESG
+  states change daily and an agenda can't rely on a days-old snapshot — so
+  they share the **gather gate** (`freshness.gather_enabled`): registered on a
+  local stdio server, omitted on the shared read-only HTTP replica. See "The
+  one writer exception" below; `draft_authors` (cached Authors' Addresses) is
+  the offline cousin and is always registered.
 - **Diagnostics (gated):** `get_session_log` is registered **only** when
   `IETF_LLM_DEBUG_LOG=1` — it returns this process's per-request
   telemetry for investigating client-side stalls; with logging off it
@@ -954,6 +968,27 @@ per-corpus `file_lock`, which also serialises against a concurrent CLI
 gather; different corpora gather in parallel. `gather_runner` and the
 gather pipeline are imported lazily so the default serve path never pulls
 them in.
+
+### The networked read exception: live Datatracker lookups
+
+A second, narrower break from the read-only / no-network contract:
+`meeting_sessions`, `draft_status`, and `overview(corpus, live=True)` read
+**live** from Datatracker (`live_lookup.py`). The justification is freshness —
+meeting schedules and IESG document states change daily, so an agenda built
+on the gather cache (a multi-month window, often days stale) is wrong at the
+edges. Unlike the gather exception these tools **write nothing**: they keep an
+in-process TTL cache only (`IETF_LLM_LIVE_TTL`, default 300s), never the
+on-disk ETag store, so the read path stays write-free; every result carries
+the UTC fetch time (`live_lookup.age_stamp`). They reuse the **same gate** as
+gather (`freshness.gather_enabled`) rather than minting a second knob — both
+defaults track the transport (stdio on, HTTP replica off), and a networked
+read tool belongs on the same side of the line as the networked writer. The
+module is imported lazily by `mcp_server`, so the default offline read path
+never pulls it (or `requests`) in, and it is torch-free, so a torch-free serve
+image is unaffected. `live_lookup` always goes through the Datatracker REST
+API / agenda JSON, never a scraped page (see "Use the Datatracker API"). The
+offline cousin `draft_authors` (authors from the cached Authors' Addresses)
+needs no network and is always registered.
 
 ### IMAP cache lives outside the per-WG directory
 

@@ -213,6 +213,9 @@ caveats are in each tool's docstring):
 | other threads on a topic / a `[xxx]` cluster | `list_labels` **first**, then `read_digest(kind="threads", subject=…)` |
 | read one thread end-to-end (no query) | `read_file_section(corpus, "threads/<file>.md")` |
 | literal draft text | `read_file_section(corpus, "drafts/<draft>-NN.txt")` — read the draft, don't reconstruct it from the list |
+| a WG's session(s) at IETF N — time/room/Meetecho/session id | `meeting_sessions(corpus, N)` — **live** Datatracker, venue-local times; for building an agenda |
+| is a draft active / agenda-eligible / past the WG / published | `draft_status("draft-…")` — **live** IESG state + eligibility signal; reconcile the whole active list with `overview(corpus, live=True)` |
+| authors/editors of a draft + contact emails | `draft_authors("draft-…")` — from the cached Authors' Addresses (offline) |
 | threads citing draft X | `find_citations(corpus, "draft-…")` |
 | an archive URL in a body / footnote → the message behind it | `fetch_by_url(corpus, "<url>")` — resolves a list permalink (`mailarchive.ietf.org/arch/msg/…` or `www.w3.org/mid/…`) to the cached message; try it before concluding something "isn't in the corpus" |
 | who cites this message / what an archive-URL footnote points to / trace a split thread or appeal to its origin | `find_message_citations(corpus, file, chunk_idx?)` — inbound + outbound archive-permalink links between gathered messages |
@@ -237,6 +240,26 @@ consensus / what "the WG thinks/wants" — call `read_ietf_interpretation_norms`
 first (see it for the full rule), then ground the claim in the chair's actual
 declaration. Reporting what a *named individual* said is free (cite their own
 message via `author=`); only claims about where the *group* landed are gated.
+
+## Live facts for agendas: `meeting_sessions` / `draft_status`
+
+Most tools read the **gather cache** — fine for the discursive record (mail,
+issues, minutes), which moves slowly. But meeting schedules and a draft's
+IESG state change *daily*, and the cache (a multi-month window, often days
+stale) is too coarse to build an agenda on. `meeting_sessions` and
+`draft_status` therefore hit **Datatracker live** (short TTL, with an "as of"
+stamp on every result), and `overview(corpus, live=True)` reconciles the
+cache's active-draft list against Datatracker — flagging a draft that has
+quietly advanced past the WG (drop it) or an adopted draft the cached list
+omits (a revived draft to re-gather). Use these whenever a *current* fact
+matters; don't quote a cached draft state as agenda-eligibility.
+
+These three live behaviours share the **gather gate**: they reach the
+network, so like `start_gather` they are available on a local server but
+**off on the shared read-only HTTP replica**. If `meeting_sessions` /
+`draft_status` aren't listed, you're on a read-only deployment — fall back to
+the cache and say the state may be stale. (`draft_authors` is cache-only and
+always available.)
 
 ## Citing
 

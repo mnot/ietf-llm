@@ -183,6 +183,24 @@ def _documents_summary(cache_dir: str, wg: str) -> _DocSummary:
     )
 
 
+def active_draft_names(wg: str) -> List[str]:
+    """The WG's active (non-concluded, non-RFC) draft names from the manifest.
+
+    The network-free reader-side view of "what overview treats as live",
+    used by the optional live reconciliation in `tool_overview` to cross-
+    check the curated list against Datatracker. Manifest-based (not the
+    author-table union the bullets render from) — close enough for a cross-
+    check, and it needs no people context.
+    """
+    manifest = load_documents_manifest(wg)
+    now = datetime.now(timezone.utc)
+    return sorted(
+        name
+        for name in manifest
+        if not _RFC_RE.match(name) and not _draft_concluded(name, manifest, now)
+    )
+
+
 #: A `**Tally:** … N DISCUSS …` count on a ballot file.
 _TALLY_DISCUSS_RE = re.compile(r"(\d+)\s+DISCUSS", re.IGNORECASE)
 
