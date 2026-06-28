@@ -10,7 +10,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
-from ietf_llm import freshness, mcp_server
+from ietf_llm import __version__, freshness, mcp_server
 
 
 def test_csv_env_splits_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,6 +186,22 @@ def test_posture_reports_gather(monkeypatch: pytest.MonkeyPatch) -> None:
         assert mcp_server._serve_posture("0.0.0.0", 8000)["gather"] == "off"
     finally:
         freshness.set_gather_default(saved)
+
+
+def test_handshake_reports_ietf_llm_version() -> None:
+    # serverInfo.version must be ietf-llm's own version, not the mcp SDK
+    # version FastMCP falls back to when its lowlevel server is left unset.
+    server = FastMCP("ietf-llm")
+    server._mcp_server.version = __version__
+    opts = server._mcp_server.create_initialization_options()
+    assert opts.server_version == __version__
+
+
+def test_capability_footer_names_version_and_every_feature() -> None:
+    footer = mcp_server._capability_footer()
+    assert __version__ in footer
+    for flag in mcp_server.SERVER_FEATURES:
+        assert flag in footer
 
 
 def test_disallowed_host_is_rejected_end_to_end(

@@ -2661,6 +2661,35 @@ def _load_server_instructions() -> Optional[str]:
     return _strip_frontmatter(text)
 
 
+# Named capability flags a skill or downstream tool can gate on, so it
+# checks "does feature X exist" instead of comparing version numbers
+# (brittle the moment a feature is backported or renamed). The version
+# itself is the canonical protocol identity in `serverInfo.version`; this
+# list is the agent-readable feature set, surfaced in `instructions` (the
+# model never sees `serverInfo`). Add a flag here when you land a feature a
+# skill might depend on; never remove one without a real capability change.
+SERVER_FEATURES: tuple[str, ...] = (
+    "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_sessions
+    "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
+)
+
+
+def _capability_footer() -> str:
+    """A single agent-readable line stating the running server's version and
+    capability flags, appended to the MCP `instructions` field so a skill can
+    confirm a feature is present (and tell the user to upgrade if not).
+
+    The model never sees `serverInfo.version` — that reaches the host, not the
+    prompt — so feature-gating lives here, in text the client surfaces as
+    system context. Gate on the named flags, not on the version number."""
+    features = ", ".join(SERVER_FEATURES)
+    return (
+        f"\n\n---\n\n_ietf-llm server version {__version__}; "
+        f"features: {features}. A skill that needs a feature should check "
+        "for its flag here and ask the user to upgrade ietf-llm if absent._"
+    )
+
+
 def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
     """Render the tail of the per-process debug log as JSON.
 
@@ -3416,6 +3445,10 @@ def main() -> None:
     # from the installed skill available to Codex / Gemini / Cursor /
     # Zed / opencode — one source of truth, no parallel maintenance.
     server_instructions = _load_server_instructions()
+    # Append the version/feature footer so a skill can feature-gate from the
+    # prompt; harmless to start without SKILL.md (footer becomes the whole
+    # instructions string).
+    server_instructions = (server_instructions or "") + _capability_footer()
     # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
     # so any replica answers any request) and an optional Host/Origin allow-list
     # for DNS-rebinding protection when the server is fronted directly (#41).
@@ -3425,6 +3458,12 @@ def main() -> None:
         stateless_http=_stateless_http_enabled(),
         transport_security=_transport_security_settings(),
     )
+    # Report ietf-llm's own version in the `initialize` handshake's
+    # `serverInfo.version` (what `claude mcp`, Cursor, etc. display). FastMCP's
+    # constructor takes no `version`, so the lowlevel server otherwise falls
+    # back to reporting the `mcp` SDK version. Same private-but-stable
+    # `_mcp_server` attribute the stdio transport already drives below.
+    server._mcp_server.version = __version__  # pylint: disable=protected-access
 
     @server.tool()
     async def list_corpora() -> str:
