@@ -213,6 +213,10 @@ caveats are in each tool's docstring):
 | other threads on a topic / a `[xxx]` cluster | `list_labels` **first**, then `read_digest(kind="threads", subject=…)` |
 | read one thread end-to-end (no query) | `read_file_section(corpus, "threads/<file>.md")` |
 | literal draft text | `read_file_section(corpus, "drafts/<draft>-NN.txt")` — read the draft, don't reconstruct it from the list |
+| when/where does a WG meet at IETF N — time/room/Meetecho/session id | `meeting_sessions(corpus, N)` — **live** Datatracker, venue-local times |
+| is a draft active / past the WG / published right now | `draft_status("draft-…")` — **live** IESG state + derived eligibility |
+| is my whole active-draft list still right (e.g. for an agenda) | `overview(corpus, live=True)` — reconciles the active-draft list against live Datatracker |
+| authors/editors of a draft + contact emails | `draft_authors("draft-…")` — from the cached Authors' Addresses (offline) |
 | threads citing draft X | `find_citations(corpus, "draft-…")` |
 | an archive URL in a body / footnote → the message behind it | `fetch_by_url(corpus, "<url>")` — resolves a list permalink (`mailarchive.ietf.org/arch/msg/…` or `www.w3.org/mid/…`) to the cached message; try it before concluding something "isn't in the corpus" |
 | who cites this message / what an archive-URL footnote points to / trace a split thread or appeal to its origin | `find_message_citations(corpus, file, chunk_idx?)` — inbound + outbound archive-permalink links between gathered messages |
@@ -238,6 +242,28 @@ first (see it for the full rule), then ground the claim in the chair's actual
 declaration. Reporting what a *named individual* said is free (cite their own
 message via `author=`); only claims about where the *group* landed are gated.
 
+## Live Datatracker facts: `meeting_sessions` / `draft_status`
+
+**Use these whenever a *current* fact matters** — don't quote a cached draft
+state or meeting time as if it were live. Most tools read the **gather cache**,
+which is fine for the discursive record (mail, issues, minutes) that moves
+slowly; but meeting schedules and a draft's IESG state change *daily*, and the
+cache (a multi-month window, often days stale) is too coarse for them. So
+`meeting_sessions` (a group's sessions at a numbered meeting) and
+`draft_status` (a draft's IESG state + a derived eligibility signal) hit
+**Datatracker live** (short TTL, with an "as of" stamp on every result), and
+`overview(corpus, live=True)` reconciles the cache's active-draft list against
+Datatracker — flagging a draft that has quietly advanced past the WG, or an
+adopted draft genuinely still in-WG that the cached list omits. (Building a
+meeting agenda is the obvious case, but the facts are generic.)
+
+These three live behaviours share the **gather gate**: they reach the
+network, so like `start_gather` they are available on a local server but
+**off on the shared read-only HTTP replica**. If `meeting_sessions` /
+`draft_status` aren't listed, you're on a read-only deployment — fall back to
+the cache and say the state may be stale. (`draft_authors` is cache-only and
+always available.)
+
 ## Citing
 
 When you quote or rely on a message or issue, cite it with the URL the
@@ -258,6 +284,13 @@ in the `read_digest` docstring. Two things that matter and aren't obvious:
 `ballot`) span the WG's full history regardless of the `--months` window;
 and a standing `ballot` DISCUSS holds publication — report it as blocked,
 not approved because most ADs cleared.
+
+For **per-draft issue activity** (e.g. sizing how much agenda time a draft
+needs), where a WG tracks each draft under a GitHub label of its short name
+(httpbis in `httpwg/http-extensions` does), filter issues by that label:
+`read_digest(kind="issues", label="<draft-short-name>", state="open",
+since=…)` — `list_labels` first to confirm the label exists, so a genuine
+zero is distinct from an unmatched label.
 
 ## RFC-series lookups: `rfc_search` / `get_rfc`
 

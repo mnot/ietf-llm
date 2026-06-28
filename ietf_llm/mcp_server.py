@@ -101,7 +101,7 @@ from .freshness import (
     staleness_warning,
 )
 from .gather.citations import normalize_draft_name
-from .paths import digest_kind_from_relpath, digest_path
+from .paths import digest_kind_from_relpath, digest_path, drafts_dir
 from .positions import (
     extract_chair_statements,
     file_supports_tally,
@@ -423,8 +423,61 @@ def tool_list_corpora() -> str:
     )
 
 
+def _overview_live_reconciliation(wg: str, live: bool) -> str:
+    """The optional 'live draft reconciliation' section appended to overview.
+
+    Empty on a read-only (gather-disabled) deployment — the live tools aren't
+    available there, so neither is this. When gather is enabled but `live` is
+    off, a one-line pointer to the live check (the default stays offline and
+    fast). When `live` is on, it cross-checks the cache's active-draft list
+    against Datatracker (`live_lookup.reconcile_active_drafts`) and reports any
+    divergence, so a stale curated list can't silently mislead an agenda.
+    """
+    if not gather_enabled():
+        return ""
+    if not live:
+        return (
+            "\n\n_The active-draft list above is from the gather cache and can "
+            "lag Datatracker. Call `overview(corpus, live=True)` to reconcile "
+            "it live, or `draft_status(name)` to check one draft._"
+        )
+
+    from . import live_lookup  # pylint: disable=import-outside-toplevel
+    from .digest.overview import (  # pylint: disable=import-outside-toplevel
+        active_draft_names,
+    )
+
+    recon, fetched = live_lookup.reconcile_active_drafts(wg, active_draft_names(wg))
+    lines = ["\n\n## Live draft reconciliation\n"]
+    if not recon.advanced and not recon.revived:
+        lines.append(
+            f"The {recon.checked} active draft(s) above match Datatracker; no "
+            "adopted draft is missing or has advanced past the WG."
+        )
+    else:
+        if recon.advanced:
+            lines.append(
+                "**Listed active here but past the WG on Datatracker** "
+                "(drop from a WG agenda):"
+            )
+            lines.extend(f"- `{name}` — {state}" for name, state in recon.advanced)
+            lines.append("")
+        if recon.revived:
+            lines.append(
+                "**Active adopted drafts on Datatracker missing from the list "
+                "above** (a cached snapshot likely expired then revived — "
+                "re-gather, and consider for the agenda):"
+            )
+            lines.extend(
+                f"- `{name}` — expires {expires}" for name, expires in recon.revived
+            )
+            lines.append("")
+    lines.append(live_lookup.age_stamp(fetched))
+    return "\n".join(lines)
+
+
 @_requires_corpus
-def tool_overview(wg: str) -> str:
+def tool_overview(wg: str, live: bool = False) -> str:
     files_dir = _files_dir(wg)
     body = build_overview(wg, files_dir)
     # One full scan (incl. verbatim repo names) reused by both the inventory
@@ -445,6 +498,7 @@ def tool_overview(wg: str) -> str:
             f"re-gather deeper with {deeper} — don't read absence as proof it "
             "didn't happen._"
         )
+    body += _overview_live_reconciliation(wg, live)
     return _with_freshness(wg, body, sources=src)
 
 
@@ -3129,6 +3183,204 @@ def tool_suggest_github_repos(corpus: str) -> str:
     return format_discovery(discover_group_repos(corpus))
 
 
+def _find_latest_draft_file(name: str) -> Optional[str]:
+    """Locate the highest-revision cached `.txt` for a draft across all corpora.
+
+    A draft name (e.g. `draft-ietf-httpbis-foo`) implies its WG but can be
+    cached under more than one corpus; this scans every gathered corpus's
+    `drafts/` dir and returns the newest revision found anywhere, or None.
+    Read-only — uses the same per-corpus files dir the read tools resolve.
+    """
+    base = normalize_draft_name(name)
+    pattern = re.compile(rf"^{re.escape(base)}-(\d+)\.txt$")
+    best_version = -1
+    best_path: Optional[str] = None
+    for wg in _list_wgs():
+        try:
+            cache = _files_dir(wg)
+        except FileNotFoundError:
+            continue
+        ddir = drafts_dir(cache)
+        if not os.path.isdir(ddir):
+            continue
+        for fname in os.listdir(ddir):
+            match = pattern.match(fname.lower())
+            if not match:
+                continue
+            version = int(match.group(1))
+            if version > best_version:
+                best_version = version
+                best_path = os.path.join(ddir, fname)
+    return best_path
+
+
+def tool_draft_authors(name: str) -> str:
+    """Render a draft's authors/editors with contact emails, from the cache.
+
+    Reads the Authors' Addresses section of the newest cached revision (the
+    same text gather already parses) — no network. Returns what the draft
+    itself records; a chair may know a better working address from mail and
+    can override.
+    """
+    from .gather.draft_authors import (  # pylint: disable=import-outside-toplevel
+        parse_authors,
+    )
+
+    name = (name or "").strip()
+    if not name:
+        return (
+            "Provide a draft name, e.g. `draft-ietf-httpbis-resumable-upload` "
+            "(the version suffix is optional)."
+        )
+    base = normalize_draft_name(name)
+    path = _find_latest_draft_file(name)
+    if path is None:
+        return (
+            f"No cached copy of `{base}` in any gathered corpus. Gather the "
+            "owning corpus (its WG) first, then retry — author contacts are "
+            "read from the cached draft text."
+        )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return f"Could not read the cached draft `{os.path.basename(path)}`."
+
+    authors = parse_authors(text)
+    fname = os.path.basename(path)
+    if not authors:
+        return (
+            f"No parseable Authors' Addresses section in the cached `{fname}` — "
+            "read the draft's tail directly with `read_file_section`."
+        )
+    lines = [
+        f"# Authors of {base}\n",
+        f"_From the Authors' Addresses section of the cached `{fname}`. "
+        "These are the draft-stated addresses; a chair may have a better "
+        "working address from mail._\n",
+    ]
+    for author in authors:
+        role = "editor" if author.is_editor else "author"
+        org = f", {author.organization}" if author.organization else ""
+        email = author.email or "_no email listed_"
+        lines.append(f"- **{author.name}** ({role}){org} — {email}")
+    return "\n".join(lines)
+
+
+def tool_meeting_sessions(corpus: str, meeting: str) -> str:
+    """Render a group's live session logistics at a numbered IETF meeting.
+
+    Lazily imports `live_lookup` (the one read-path network module) so the
+    default offline read path never pulls it in; registered only behind the
+    gather gate. Times are venue-local, converted from the agenda's UTC.
+    """
+    from . import (  # pylint: disable=import-outside-toplevel
+        gather_runner,
+        live_lookup,
+    )
+
+    corpus = (corpus or "").strip()
+    meeting = str(meeting or "").strip()
+    if not corpus:
+        return "Provide a Working Group shortname (e.g. `httpbis`)."
+    if not gather_runner.valid_corpus_name(corpus):
+        return f"'{corpus}' is not a valid corpus name."
+    if not meeting.isdigit():
+        return (
+            "Provide a numbered IETF meeting (e.g. `126`). Interim meetings "
+            "are not covered by this tool."
+        )
+
+    sessions, fetched, error = live_lookup.fetch_meeting_sessions(corpus, meeting)
+    if error:
+        return error
+    if not sessions:
+        return (
+            f"No session for `{corpus}` is scheduled at IETF {meeting} — the "
+            "group may not be meeting, or the agenda may not list it yet.\n\n"
+            + live_lookup.age_stamp(fetched)
+        )
+
+    lines = [f"# {corpus} at IETF {meeting} — {len(sessions)} session(s)\n"]
+    for idx, sess in enumerate(sessions, start=1):
+        lines.append(f"## Session {idx}" if len(sessions) > 1 else "## Session")
+        local = f"{sess.start_local}–{sess.end_local} {sess.tz_abbrev}".strip()
+        lines.append(f"- **When:** {sess.date}, {local}  ({sess.tz})")
+        if sess.start_utc:
+            lines.append(f"- **Starts (UTC):** {sess.start_utc}")
+        if sess.room:
+            lines.append(f"- **Room:** {sess.room}")
+        if sess.session_id:
+            lines.append(f"- **Session id:** {sess.session_id}")
+        if sess.meetecho_full:
+            lines.append(f"- **Meetecho (remote):** {sess.meetecho_full}")
+        if sess.meetecho_onsite:
+            lines.append(f"- **Meetecho (onsite):** {sess.meetecho_onsite}")
+        if sess.agenda_url:
+            lines.append(f"- **Agenda:** {sess.agenda_url}")
+        if sess.minutes_url:
+            lines.append(f"- **Minutes:** {sess.minutes_url}")
+        lines.append("")
+    lines.append(live_lookup.age_stamp(fetched))
+    return "\n".join(lines)
+
+
+#: Human label per agenda-eligibility signal (`live_lookup.DraftStatus`).
+_ELIGIBILITY_LABELS = {
+    "in-wg": "in the WG — agenda-eligible",
+    "in-iesg": "past the WG (IESG processing)",
+    "published": "published as an RFC",
+    "dead": "expired or replaced",
+    "unknown": "unknown",
+}
+
+
+def tool_draft_status(name: str) -> str:
+    """Render one draft's live Datatracker status + agenda-eligibility signal.
+
+    Live read-path tool (lazy `live_lookup` import, gather-gated). Reports the
+    draft state, the resolved IESG state, expiry, RFC number, and the derived
+    in-wg / in-iesg / published / dead signal an agenda decision turns on.
+    """
+    from . import live_lookup  # pylint: disable=import-outside-toplevel
+
+    name = (name or "").strip()
+    if not name:
+        return (
+            "Provide a draft name, e.g. `draft-ietf-httpbis-resumable-upload` "
+            "(the version suffix is optional)."
+        )
+
+    status, fetched = live_lookup.fetch_draft_status(name)
+    if status is None:
+        canonical = normalize_draft_name(name)
+        return (
+            f"Datatracker has no document named `{canonical}`. Check the "
+            "`draft-...` stem (version optional).\n\n" + live_lookup.age_stamp(fetched)
+        )
+
+    label = _ELIGIBILITY_LABELS.get(status.eligibility, status.eligibility)
+    lines = [f"# {status.name}\n"]
+    if status.rev:
+        lines.append(f"- **Revision:** -{status.rev}")
+    if status.draft_state:
+        lines.append(f"- **Draft state:** {status.draft_state}")
+    if status.iesg_state:
+        lines.append(f"- **IESG state:** {status.iesg_state}")
+    if status.rfc_number:
+        lines.append(f"- **RFC:** {status.rfc_number}")
+    if status.intended_status:
+        lines.append(f"- **Intended status:** {status.intended_status}")
+    if status.expires:
+        lines.append(f"- **Expires:** {status.expires[:10]}")
+    lines.append(f"- **Agenda eligibility:** {label}")
+    if status.note:
+        lines.append(f"\n> {status.note}")
+    lines.append("")
+    lines.append(live_lookup.age_stamp(fetched))
+    return "\n".join(lines)
+
+
 @graceful_keyboard_interrupt
 def main() -> None:
     try:
@@ -3313,7 +3565,7 @@ def main() -> None:
         return await _offload(render_rfc, number)
 
     @server.tool()
-    async def overview(corpus: str) -> str:
+    async def overview(corpus: str, live: bool = False) -> str:
         """Orient on an IETF/IRTF effort — a working group, research
         group, BoF, mailing list, or draft set — in one call: chairs/ADs,
         active drafts, main discussion themes, top open issues, recent
@@ -3380,8 +3632,22 @@ def main() -> None:
         `read_ietf_interpretation_norms` this session — see it for the full
         rule. Write side (drafting a contribution):
         `read_ietf_participation_norms`.
+
+        `live=True` appends a **## Live draft reconciliation** section that
+        cross-checks the (cache-derived) active-draft list against Datatracker
+        and flags divergence — a draft listed active here that has actually
+        advanced past the WG (drop from an agenda), or an adopted draft active
+        on Datatracker that the cached list omits (a revived draft to re-gather
+        and consider). Use it when building an agenda or whenever the
+        active-draft list must be exactly right; it hits Datatracker live (so
+        it is only available where gather is enabled — local stdio, off on the
+        shared HTTP replica) and is slower than the default offline overview.
+
+        Args:
+            corpus: The corpus shortname (`httpbis`, `tls`, …).
+            live: Reconcile the active-draft list against live Datatracker.
         """
-        return await _offload(tool_overview, corpus)
+        return await _offload(tool_overview, corpus, live)
 
     @server.tool()
     async def read_ietf_interpretation_norms() -> str:
@@ -3521,6 +3787,24 @@ def main() -> None:
         `read_digest`, not `get_chunk_text`.
         """
         return await _offload(tool_list_files, corpus, pattern=pattern)
+
+    @server.tool()
+    async def draft_authors(name: str) -> str:
+        """The authors/editors of a draft, with contact emails — for a
+        call-for-presenters or to reach a draft's owners.
+
+        Reads the Authors' Addresses section of the newest **cached** revision
+        of the draft (across all gathered corpora); offline, no network. Each
+        entry gives the name, role (author/editor), organisation, and the
+        email the draft itself lists. The owning corpus (the draft's WG) must
+        be gathered. These are draft-stated addresses — a chair may have a
+        better working address from mail and can override.
+
+        Args:
+            name: The draft name (`draft-ietf-httpbis-resumable-upload`); the
+                version suffix is optional (the newest cached revision is used).
+        """
+        return await _offload(tool_draft_authors, name)
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -4398,6 +4682,54 @@ def main() -> None:
                 corpus: The Working Group shortname (e.g. `tls`, `httpbis`).
             """
             return await _offload(tool_suggest_github_repos, corpus)
+
+        @server.tool()
+        async def meeting_sessions(corpus: str, meeting: str) -> str:
+            """A group's session logistics at a numbered IETF meeting, **live**
+            from Datatracker — useful to any attendee or observer (building an
+            agenda is the obvious case).
+
+            Returns every session the group has at that meeting (a WG can have
+            two), each with the venue-**local** weekday/date and start–end time
+            (converted from the agenda's UTC, DST-correct), the room, the
+            Datatracker session id, both Meetecho URLs (remote + onsite), and
+            the agenda/minutes links.
+
+            Live (short TTL + freshness stamp), gather-gated — off on the shared
+            HTTP replica; see the SKILL "Live Datatracker facts" section for why.
+            Numbered meetings only (e.g. `126`); interim meetings are not
+            covered. Times are venue-local — never quote the UTC start as the
+            local time.
+
+            Args:
+                corpus: The Working Group shortname (e.g. `httpbis`).
+                meeting: The numbered IETF meeting (e.g. `126`).
+            """
+            return await _offload(tool_meeting_sessions, corpus, meeting)
+
+        @server.tool()
+        async def draft_status(name: str) -> str:
+            """One draft's current status, **live** from Datatracker, with a
+            derived eligibility signal.
+
+            Returns the revision, the draft state (Active / Expired / Replaced /
+            RFC), the IESG state (`I-D Exists`, `AD Evaluation`, `IESG
+            Evaluation`, `RFC Ed Queue`, …), the expiry date, the intended
+            status, and the RFC number if published — plus a derived signal:
+            **in-wg** (still in WG hands), **in-iesg** (past the WG, in IESG
+            processing), **published**, or **dead** (expired or replaced). The
+            gather cache's curated active-draft list can lag the real IESG state
+            by days, so reach here when the *current* standing matters (deciding
+            an agenda is the obvious case).
+
+            Live (short TTL + freshness stamp), gather-gated — off on the shared
+            HTTP replica; see the SKILL "Live Datatracker facts" section.
+
+            Args:
+                name: The draft name (`draft-ietf-httpbis-resumable-upload`);
+                    the version suffix is optional.
+            """
+            return await _offload(tool_draft_status, name)
 
     _prewarm_embedding_model_async()
     if transport == "http":
