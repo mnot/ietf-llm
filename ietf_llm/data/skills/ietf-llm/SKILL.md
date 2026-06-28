@@ -282,6 +282,13 @@ in the `read_digest` docstring. Two things that matter and aren't obvious:
 and a standing `ballot` DISCUSS holds publication — report it as blocked,
 not approved because most ADs cleared.
 
+For **per-draft issue activity** (e.g. sizing how much agenda time a draft
+needs), where a WG tracks each draft under a GitHub label of its short name
+(httpbis in `httpwg/http-extensions` does), filter issues by that label:
+`read_digest(kind="issues", label="<draft-short-name>", state="open",
+since=…)` — `list_labels` first to confirm the label exists, so a genuine
+zero is distinct from an unmatched label.
+
 ## RFC-series lookups: `rfc_search` / `get_rfc`
 
 For the **published RFC series** (every RFC, all streams — a cross-corpus
