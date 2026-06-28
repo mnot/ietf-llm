@@ -4686,7 +4686,8 @@ def main() -> None:
         @server.tool()
         async def meeting_sessions(corpus: str, meeting: str) -> str:
             """A group's session logistics at a numbered IETF meeting, **live**
-            from Datatracker — the single most-used fact in an agenda.
+            from Datatracker — useful to any attendee or observer (building an
+            agenda is the obvious case).
 
             Returns every session the group has at that meeting (a WG can have
             two), each with the venue-**local** weekday/date and start–end time
@@ -4694,12 +4695,8 @@ def main() -> None:
             Datatracker session id, both Meetecho URLs (remote + onsite), and
             the agenda/minutes links.
 
-            This hits Datatracker live (short TTL, with a freshness stamp on the
-            result) rather than the gather cache, because meeting schedules
-            change daily and an agenda cannot rely on a days-old snapshot. Like
-            the gather tools it is therefore only available where gather is
-            enabled (a local stdio server; off on the shared HTTP replica).
-
+            Live (short TTL + freshness stamp), gather-gated — off on the shared
+            HTTP replica; see the SKILL "Live Datatracker facts" section for why.
             Numbered meetings only (e.g. `126`); interim meetings are not
             covered. Times are venue-local — never quote the UTC start as the
             local time.
@@ -4713,22 +4710,20 @@ def main() -> None:
         @server.tool()
         async def draft_status(name: str) -> str:
             """One draft's current status, **live** from Datatracker, with a
-            derived agenda-eligibility signal.
+            derived eligibility signal.
 
             Returns the revision, the draft state (Active / Expired / Replaced /
             RFC), the IESG state (`I-D Exists`, `AD Evaluation`, `IESG
             Evaluation`, `RFC Ed Queue`, …), the expiry date, the intended
             status, and the RFC number if published — plus a derived signal:
-            **in-wg** (still in WG hands, agenda-eligible), **in-iesg** (past the
-            WG, in IESG processing), **published**, or **dead** (expired or
-            replaced).
+            **in-wg** (still in WG hands), **in-iesg** (past the WG, in IESG
+            processing), **published**, or **dead** (expired or replaced). The
+            gather cache's curated active-draft list can lag the real IESG state
+            by days, so reach here when the *current* standing matters (deciding
+            an agenda is the obvious case).
 
-            Use this to decide whether a draft belongs on a WG agenda. It hits
-            Datatracker live (short TTL + freshness stamp) rather than the
-            gather cache, whose curated active-draft list can lag the real IESG
-            state by days — the difference between agenda-ing a finished draft
-            and dropping a live one. Available only where gather is enabled
-            (local stdio; off on the shared HTTP replica).
+            Live (short TTL + freshness stamp), gather-gated — off on the shared
+            HTTP replica; see the SKILL "Live Datatracker facts" section.
 
             Args:
                 name: The draft name (`draft-ietf-httpbis-resumable-upload`);

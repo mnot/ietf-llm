@@ -375,18 +375,39 @@ def _derive_eligibility(
     `I-D Exists`. in-wg → `I-D Exists` or an active draft with no IESG state.
     """
     ds = (draft_state or "").strip().lower()
+    iesg = (iesg_state or "").strip().lower()
     if rfc_number or ds == "rfc":
         return "published"
-    if ds in ("expired", "replaced", "repl"):
+    if ds in ("expired", "replaced", "repl") or iesg == "dead":
         return "dead"
     if _is_past(expires):
         return "dead"
-    iesg = (iesg_state or "").strip().lower()
     if iesg and iesg != "i-d exists":
         return "in-iesg"
     if iesg == "i-d exists" or ds == "active":
         return "in-wg"
     return "unknown"
+
+
+def _classify_states(
+    doc: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], List[str]]:
+    """Resolve a doc's `states` URIs to `(draft_state, iesg_state, raw_uris)`.
+
+    Shared by `fetch_draft_status` and `reconcile_active_drafts`. The state
+    *objects* (e.g. the one "Active" draft-state) are shared across every
+    draft, so the TTL cache makes this nearly free after the first resolve.
+    """
+    states = [uri for uri in (doc.get("states") or []) if isinstance(uri, str)]
+    draft_state: Optional[str] = None
+    iesg_state: Optional[str] = None
+    for uri in states:
+        slug, state_name = _state_slug_and_name(uri)
+        if slug == "draft":
+            draft_state = state_name
+        elif slug == "draft-iesg":
+            iesg_state = state_name
+    return draft_state, iesg_state, states
 
 
 def fetch_draft_status(name: str) -> Tuple[Optional[DraftStatus], datetime.datetime]:
@@ -406,16 +427,7 @@ def fetch_draft_status(name: str) -> Tuple[Optional[DraftStatus], datetime.datet
     expires = doc.get("expires")
     rfc_number = doc.get("rfc_number")
     intended = _resolve_name_uri(doc.get("intended_std_level"))
-    states = [uri for uri in (doc.get("states") or []) if isinstance(uri, str)]
-
-    draft_state: Optional[str] = None
-    iesg_state: Optional[str] = None
-    for uri in states:
-        slug, state_name = _state_slug_and_name(uri)
-        if slug == "draft":
-            draft_state = state_name
-        elif slug == "draft-iesg":
-            iesg_state = state_name
+    draft_state, iesg_state, states = _classify_states(doc)
 
     note: Optional[str] = None
     if not states:
@@ -495,35 +507,45 @@ def reconcile_active_drafts(
     Two divergences, in both directions:
     - **advanced** — a draft the cache still lists active that Datatracker has
       moved past the WG (IESG processing), published, or expired/replaced.
-    - **revived** — an adopted WG draft Datatracker has active that the cache's
-      active list omits (typically a draft whose cached snapshot expired and
-      was then revived with a new revision).
+    - **revived** — an adopted WG draft genuinely still **in the WG** on
+      Datatracker (`in-wg`) that the cache's active list omits (typically a
+      draft whose cached snapshot expired and was then revived).
 
-    `active_names` is the cache's current active set (`overview.active_draft_
-    names`). Each is verified with a live `fetch_draft_status`; the revived
-    direction needs one extra paged listing of the group's adopted drafts.
+    Both directions are derived from a single paged listing of the group's
+    adopted drafts — whose objects already carry `states`/`expires`/`rfc_number`
+    — so eligibility comes from the listing, not a doc fetch per draft (the
+    state objects are shared across drafts and TTL-cached). The revived check
+    requires genuine `in-wg` eligibility, not just a future `expires`: an
+    adopted draft that aged out of the cache but has *advanced past the WG*
+    must read as "drop it", never as a revived draft to agenda.
     """
     active_set = {normalize_draft_name(name) for name in active_names}
+    drafts, fetched = _iter_group_adopted_drafts(wg)
 
     advanced: List[Tuple[str, str]] = []
-    for name in sorted(active_set):
-        status, _ = fetch_draft_status(name)
-        if status and status.eligibility in ("in-iesg", "published", "dead"):
-            label = status.iesg_state or status.draft_state or status.eligibility
-            advanced.append((name, f"{label} ({status.eligibility})"))
-
-    drafts, fetched = _iter_group_adopted_drafts(wg)
     revived: List[Tuple[str, str]] = []
     for obj in drafts:
         name = normalize_draft_name(str(obj.get("name") or ""))
-        expires = obj.get("expires")
-        if name in active_set or not isinstance(expires, str) or _is_past(expires):
-            continue
-        revived.append((name, expires[:10]))
+        draft_state, iesg_state, _ = _classify_states(obj)
+        rfc_number = obj.get("rfc_number")
+        rfc_str = str(rfc_number) if rfc_number else None
+        eligibility = _derive_eligibility(
+            draft_state, iesg_state, obj.get("expires"), rfc_str
+        )
+        if name in active_set:
+            if eligibility in ("in-iesg", "published", "dead"):
+                label = iesg_state or draft_state or eligibility
+                advanced.append((name, f"{label} ({eligibility})"))
+        elif eligibility == "in-wg":
+            expires = obj.get("expires")
+            when = expires[:10] if isinstance(expires, str) else "?"
+            revived.append((name, when))
 
     return (
         DraftReconciliation(
-            advanced=advanced, revived=sorted(set(revived)), checked=len(active_set)
+            advanced=sorted(set(advanced)),
+            revived=sorted(set(revived)),
+            checked=len(active_set),
         ),
         fetched,
     )

@@ -220,6 +220,14 @@ def test_draft_status_empty_states_corroborated_dead(monkeypatch):
     assert status.note and "no states" in status.note.lower()
 
 
+def test_eligibility_iesg_dead_maps_to_dead():
+    # A draft parked in IESG state "Dead" is dead, not in-iesg processing.
+    assert (
+        live_lookup._derive_eligibility("Active", "Dead", "2027-01-01T00:00:00Z", None)
+        == "dead"
+    )
+
+
 def test_draft_status_renders():
     out = tool_draft_status("draft-ietf-httpbis-foo")
     assert "draft-ietf-httpbis-foo" in out
@@ -260,24 +268,28 @@ def test_stale_fallback_on_fetch_failure(monkeypatch):
 
 # --- Overview reconciliation -----------------------------------------------
 
-# foo = in-WG (matches), bar = advanced to RFC Ed Queue, baz = a revived
-# adopted draft (active on Datatracker, not in the cache's active list).
-_DOC_BAR = {
-    "name": "draft-ietf-httpbis-bar",
-    "rev": "04",
-    "expires": "2027-01-01T00:00:00Z",
-    "rfc_number": None,
-    "states": ["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"],
-}
+# Reconciliation derives eligibility straight from the group listing's
+# per-draft `states`, so each object carries them (state 1=Active draft,
+# 2=I-D Exists iesg, 3=RFC Ed Queue iesg — from _STATES above).
+#   foo = in-WG (matches); bar = advanced (RFC Ed Queue); baz = a revived
+#   adopted draft (in-WG on Datatracker, absent from the cache's active list);
+#   old = expired adopted draft (past the WG, must NOT read as revived).
+def _adopted(name, states, expires):
+    return {"name": name, "rfc_number": None, "states": states, "expires": expires}
+
+
+_IN_WG = ["/api/v1/doc/state/1/", "/api/v1/doc/state/2/"]
+_PAST_WG = ["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"]
 _GROUP_DRAFTS = {
     "meta": {"next": None},
     "objects": [
-        {"name": "draft-ietf-httpbis-foo", "expires": "2027-01-01T00:00:00Z"},
-        {"name": "draft-ietf-httpbis-baz", "expires": "2027-06-01T00:00:00Z"},
-        # An individual draft associated with the group — must be ignored.
-        {"name": "draft-someone-httpbis-idea", "expires": "2027-06-01T00:00:00Z"},
-        # An expired adopted draft — not revived, must be ignored.
-        {"name": "draft-ietf-httpbis-old", "expires": "2000-01-01T00:00:00Z"},
+        _adopted("draft-ietf-httpbis-foo", _IN_WG, "2027-01-01T00:00:00Z"),
+        _adopted("draft-ietf-httpbis-bar", _PAST_WG, "2027-01-01T00:00:00Z"),
+        _adopted("draft-ietf-httpbis-baz", _IN_WG, "2027-06-01T00:00:00Z"),
+        # An individual draft associated with the group — ignored (prefix).
+        _adopted("draft-someone-httpbis-idea", _IN_WG, "2027-06-01T00:00:00Z"),
+        # An adopted draft whose expiry is past — dead, not revived.
+        _adopted("draft-ietf-httpbis-old", _IN_WG, "2000-01-01T00:00:00Z"),
     ],
 }
 
@@ -285,8 +297,6 @@ _GROUP_DRAFTS = {
 def _canned_recon(url: str):
     if "group__acronym=httpbis&type=draft" in url:
         return _GROUP_DRAFTS
-    if "/doc/document/draft-ietf-httpbis-bar/" in url:
-        return _DOC_BAR
     return _canned(url)
 
 
@@ -300,8 +310,30 @@ def test_reconcile_flags_advanced_and_revived(monkeypatch):
     advanced_names = [n for n, _ in recon.advanced]
     assert advanced_names == ["draft-ietf-httpbis-bar"]  # foo stays in-WG
     revived_names = [n for n, _ in recon.revived]
-    # baz revived; the individual draft and the expired one are excluded.
+    # baz revived; the individual draft (prefix) and the expired one are out.
     assert revived_names == ["draft-ietf-httpbis-baz"]
+
+
+def test_reconcile_revived_requires_in_wg_not_just_future_expiry(monkeypatch):
+    # A draft absent from the cache's active set but PAST the WG on Datatracker
+    # (future expiry, RFC Ed Queue) must NOT be reported as revived — the bug
+    # the listing-based, eligibility-confirmed reconciliation fixes.
+    drafts = {
+        "meta": {"next": None},
+        "objects": [
+            _adopted("draft-ietf-httpbis-advanced", _PAST_WG, "2027-01-01T00:00:00Z"),
+        ],
+    }
+
+    def _stub(url, timeout=10.0):
+        if "group__acronym=httpbis&type=draft" in url:
+            return drafts
+        return _canned(url)
+
+    monkeypatch.setattr(live_lookup, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    recon, _ = live_lookup.reconcile_active_drafts("httpbis", [])
+    assert recon.revived == []  # future expiry alone is not enough
 
 
 def test_reconcile_clean_when_aligned(monkeypatch):
