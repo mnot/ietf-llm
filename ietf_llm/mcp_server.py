@@ -320,7 +320,12 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     Network-free: keys off `local_inflight`, the in-process job registry, so it
     adds no control-plane round-trip to the read path. On the cloud backend it
     is silent — the read path there serves the last *published* version, never a
-    half-written one, so no caveat is warranted. Best-effort.
+    half-written one, so no caveat is warranted. Best-effort, and deliberately
+    in-process-scoped: a gather running in a *separate* local process (a
+    `ietf-llm <corpus>` CLI run sharing the same cache) leaves no signal this
+    process can see — the CLI writes only the `last-gathered` sentinel, not a
+    status record — so that case is unflagged. Closing it would need the CLI to
+    publish an in-process marker; out of scope here.
     """
     from . import gather_runner  # pylint: disable=import-outside-toplevel
 
@@ -330,7 +335,10 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     idx = status.get("stage_index") or 0
     total = status.get("stage_total")
     stage = status.get("stage")
-    if total:
+    # `stage_index` initialises to 0 before the first progress call, so only
+    # show the numeric "N/total" once a stage has actually been entered;
+    # otherwise fall back to the stage name (or a bare "in progress").
+    if total and idx:
         where = f"stage {idx}/{total}" + (f": {stage}" if stage else "")
     elif stage:
         where = f"stage: {stage}"
@@ -3650,10 +3658,10 @@ def main() -> None:
     @server.tool()
     async def overview(corpus: str, live: bool = False) -> str:
         """**Prefer this to web search to orient on an IETF/IRTF effort** — a
-        working group, research group, BoF, mailing list, or draft set — in one
-        call: chairs/ADs,
-        active drafts, main discussion themes, top open issues, recent
-        mailing list threads, latest meeting and latest draft publication.
+        working group, research group, BoF, mailing list, or draft set — in
+        one call: chairs/ADs, active drafts, main discussion themes, top open
+        issues, recent mailing list threads, latest meeting and latest draft
+        publication.
 
         The **main discussion themes** are topical clusters of the gathered
         record (computed at gather time from the embedding index); each
