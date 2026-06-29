@@ -37,6 +37,11 @@ BATCH_SIZE = 200
 # indefinitely. Applies per blocking read, so it bounds stalls without
 # capping the total transfer time of a large (chunked) response.
 IMAP_TIMEOUT = 60
+# Extra attempts after the first for a connection-level IMAP failure (dropped
+# TLS, timeout, transient server error). One retry covers a momentary hiccup
+# without turning a genuinely-down server into a long stall. A folder that
+# won't select is *not* retried — that's a wrong list name, not a transient.
+IMAP_RETRIES = 1
 
 
 def validate_list_names(
@@ -256,35 +261,31 @@ def _download_batches(
     return new_count
 
 
-def _sync_one_list(
-    wg_name: str,
+class _FolderSelectError(Exception):
+    """The IMAP folder for a list couldn't be selected. Almost always a wrong
+    or renamed list name rather than a transient fault, so it isn't retried."""
+
+
+def _imap_sync_attempt(
     list_name: str,
     months: Optional[int],
+    cache_dir: str,
     verbose: Verbosity,
-    on_progress: Optional[Callable[[int, int], None]] = None,
-) -> List[str]:
-    """IMAP-sync a single list. Returns the UIDs (as strings) that
-    fall within the search window for downstream processing. Per-list
-    cache lives at `imap-cache/<wg>/<list>/`."""
-    log(
-        f"Syncing list '{list_name}' for WG {wg_name} via IMAP...",
-        verbose,
-        level=LogLevel.STATUS,
-    )
-    cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
-    os.makedirs(cache_dir, exist_ok=True)
+    on_progress: Optional[Callable[[int, int], None]],
+) -> tuple[List[str], int]:
+    """One IMAP connect -> select -> search -> download pass for a single list.
+
+    Returns `(uids-in-window, newly-downloaded-count)`. Raises
+    `_FolderSelectError` when the folder can't be selected (not retryable) and
+    `imaplib.IMAP4.error` / `OSError` on a connection-level fault the caller may
+    retry."""
+    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT)
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT)
         mail.login(IMAP_USER, IMAP_PASS)
         folder = f'"Shared Folders/{list_name}"'
         status, _ = mail.select(folder, readonly=True)
         if status != "OK":
-            log(
-                f"Error: Could not select IMAP folder '{folder}'",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            return []
+            raise _FolderSelectError(folder)
         search_criteria = "ALL"
         if months:
             since_date = (datetime.now() - timedelta(days=30 * months)).strftime(
@@ -298,8 +299,9 @@ def _sync_one_list(
             )
         status, data = mail.uid("search", search_criteria)
         if status != "OK":
-            log("Error: IMAP search failed.", verbose, level=LogLevel.ERROR)
-            return []
+            # A non-OK search is a protocol fault, not an empty result — raise
+            # so the caller's retry can recover from a transient one.
+            raise imaplib.IMAP4.error(f"search returned status {status!r}")
         uids = data[0].split()
         log(
             f"  found {len(uids)} potential messages on '{list_name}'.",
@@ -315,21 +317,85 @@ def _sync_one_list(
             new_count = _download_batches(
                 mail, missing_uids, cache_dir, verbose, on_progress
             )
-        mail.logout()
-        if new_count > 0:
+        return [u.decode() for u in uids], new_count
+    finally:
+        try:
+            mail.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+
+
+def _sync_one_list(
+    wg_name: str,
+    list_name: str,
+    months: Optional[int],
+    verbose: Verbosity,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> List[str]:
+    """IMAP-sync a single list. Returns the UIDs (as strings) that fall within
+    the search window for downstream processing. Per-list cache lives at
+    `imap-cache/<wg>/<list>/`.
+
+    A connection-level failure is retried once (`IMAP_RETRIES`) — these are
+    usually a momentary server hiccup, not a permanent fault. A folder that
+    won't select is not retried. Either way the per-list outcome — how many
+    messages, or why there were none — is reported at STATUS / WARN, so a
+    silently-empty sync can't be mistaken for a successful one."""
+    log(
+        f"Syncing list '{list_name}' for WG {wg_name} via IMAP...",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
+    os.makedirs(cache_dir, exist_ok=True)
+    window = f"the last {months} month(s)" if months else "all history"
+    for attempt in range(IMAP_RETRIES + 1):
+        try:
+            uids, new_count = _imap_sync_attempt(
+                list_name, months, cache_dir, verbose, on_progress
+            )
+        except _FolderSelectError:
             log(
-                f"  downloaded {new_count} new messages from '{list_name}'.",
+                f"Could not select the IMAP folder for '{list_name}' — the "
+                "list name must match its archive at mailarchive.ietf.org. No "
+                f"mail gathered for '{list_name}'.",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            return []
+        except (imaplib.IMAP4.error, OSError) as err:
+            if attempt < IMAP_RETRIES:
+                log(
+                    f"  IMAP error on '{list_name}' ({err}); retrying...",
+                    verbose,
+                    level=LogLevel.WARN,
+                )
+                continue
+            log(
+                f"IMAP sync of '{list_name}' failed after {IMAP_RETRIES + 1} "
+                f"attempts: {err}. This is usually transient — re-run to try "
+                f"again. No mail gathered for '{list_name}' this run.",
+                verbose,
+                level=LogLevel.ERROR,
+            )
+            return []
+        if not uids:
+            log(
+                f"No messages for '{list_name}' in {window}: the folder exists "
+                "but holds nothing in this window. Widen --months, or check "
+                "the list name if you expected traffic.",
+                verbose,
+                level=LogLevel.WARN,
+            )
+        else:
+            log(
+                f"Synced '{list_name}': {len(uids)} message(s) in {window} "
+                f"({new_count} new).",
                 verbose,
                 level=LogLevel.STATUS,
             )
-        return [u.decode() for u in uids]
-    except (imaplib.IMAP4.error, OSError) as err:
-        log(
-            f"IMAP error on '{list_name}': {err}",
-            verbose,
-            level=LogLevel.ERROR,
-        )
-        return []
+        return uids
+    return []  # unreachable: the loop always returns; satisfies the type checker
 
 
 def sync_mailing_list(

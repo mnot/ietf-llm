@@ -76,5 +76,10 @@ A corpus doesn't have to be a Working Group — the name is classified automatic
 | `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
 | `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored |
 
+For a working group or research group you don't need `--mailing-list` — its own list is
+discovered from Datatracker and synced automatically (so `ietf-llm netconf` already follows
+the netconf list). Reach for `--mailing-list` only to add *extra* lists the effort follows that
+Datatracker doesn't attribute to it.
+
 See the [command & gather reference](reference.md) for the full flag set, and
 [shell completion](shell-completion.md) to tab-complete commands and cached corpus names.
