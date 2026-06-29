@@ -107,11 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="LIST",
         dest="mailing_list",
         help="Mailing list to sync, in addition to any the corpus "
-        "auto-discovers (repeat for multiple). Any list archived at "
-        "mailarchive.ietf.org works — IETF, IRTF, or RFC-Editor — synced "
-        "from the IETF IMAP mirror. A bare name or a full address; the "
-        "domain is optional and ignored (`rswg`, `rswg@rfc-editor.org`). "
-        "Persisted; future runs without --mailing-list still sync it.",
+        "auto-discovers (repeat for multiple). For a WG/RG you usually "
+        "don't need this — its own list is discovered from Datatracker and "
+        "synced automatically; use this only for *extra* lists the effort "
+        "follows. Any list archived at mailarchive.ietf.org works — IETF, "
+        "IRTF, or RFC-Editor — synced from the IETF IMAP mirror. A bare name "
+        "or a full address; the domain is optional and ignored (`rswg`, "
+        "`rswg@rfc-editor.org`). Persisted; future runs without "
+        "--mailing-list still sync it.",
     )
     parser.add_argument(
         "--new-drafts",
