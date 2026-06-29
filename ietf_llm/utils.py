@@ -648,8 +648,30 @@ class LogLevel(Enum):
     """Logging message levels."""
 
     ERROR = 0
-    STATUS = 1
-    PROGRESS = 2
+    WARN = 1
+    STATUS = 2
+    PROGRESS = 3
+
+
+# ANSI markers for the level prefix only — we never colour whole lines, just
+# the bracketed tag. Applied solely when stderr is an interactive terminal and
+# we're in text (not JSON) mode; honours the NO_COLOR convention.
+_LEVEL_PREFIX = {LogLevel.ERROR: "[ERROR] ", LogLevel.WARN: "[WARN] "}
+_LEVEL_COLOR = {LogLevel.ERROR: "\033[31m", LogLevel.WARN: "\033[33m"}
+_ANSI_RESET = "\033[0m"
+
+
+def _use_color() -> bool:
+    """True when it's safe to emit ANSI colour on stderr: an interactive
+    terminal, not the JSON log format, and NO_COLOR unset (https://no-color.org)."""
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("IETF_LLM_LOG_FORMAT", "").strip().lower() == "json":
+        return False
+    try:
+        return sys.stderr.isatty()
+    except (ValueError, AttributeError):
+        return False
 
 
 def log(
@@ -666,8 +688,10 @@ def log(
     stdio MCP transport, stdout *is* the protocol, so logs must never go
     there. Convention matches curl, git, wget, etc.
 
-    - level: LogLevel.ERROR / STATUS / PROGRESS — ERROR always shows;
-      STATUS shows unless --quiet; PROGRESS shows only under --verbose.
+    - level: LogLevel.ERROR / WARN / STATUS / PROGRESS — ERROR always shows;
+      WARN and STATUS show unless --quiet; PROGRESS shows only under --verbose.
+      On an interactive terminal the ERROR / WARN tag is coloured (red / yellow);
+      see `_use_color`.
     - Set IETF_LLM_LOG_FORMAT=json for one-line structured JSON records
       (ts / level / msg) for the container deployment, where a log
       collector ingests them. Container runtimes capture stderr (and
@@ -687,7 +711,7 @@ def log(
     elif verbosity == Verbosity.VERBOSE:
         visible = True
     else:  # Verbosity.STATUS
-        visible = level == LogLevel.STATUS
+        visible = level in (LogLevel.WARN, LogLevel.STATUS)
     if not visible:
         return
 
@@ -701,7 +725,9 @@ def log(
         print(json.dumps(record), file=sys.stderr)
         return
 
-    prefix = "[ERROR] " if level == LogLevel.ERROR else ""
+    prefix = _LEVEL_PREFIX.get(level, "")
+    if prefix and _use_color():
+        prefix = f"{_LEVEL_COLOR[level]}{prefix.rstrip()}{_ANSI_RESET} "
     print(f"{prefix}{message}", file=sys.stderr)
 
 
