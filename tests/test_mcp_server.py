@@ -403,6 +403,34 @@ def test_top_level_response_carries_freshness_line_when_fresh(
     assert "# people" in out
 
 
+def test_top_level_response_flags_an_in_flight_refresh(
+    isolated_home: Path,
+) -> None:
+    # A re-gather running in this process must not let the read path pass off
+    # the prior snapshot as current: the freshness header keeps its (today)
+    # stamp but gains a caveat that a refresh is running and the body predates
+    # it. Regression guard for the "gathered today (mid-gather)" false-confidence
+    # trap.
+    from ietf_llm import gather_runner
+    from ietf_llm.freshness import record_gather
+
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
+    record_gather("wg")
+    with gather_runner._registry_lock:
+        gather_runner._jobs["wg"] = "running"
+    try:
+        out = mcp_server.tool_read_digest("wg", "people")
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._jobs.pop("wg", None)
+    assert "gathered" in out.lower()  # the stamp is still there...
+    assert "refresh is running" in out.lower()  # ...but now flagged as superseded
+    assert "gather_status" in out
+    # And once no gather is live, the caveat is gone.
+    clean = mcp_server.tool_read_digest("wg", "people")
+    assert "refresh is running" not in clean.lower()
+
+
 def test_top_level_response_silent_when_no_sentinel(isolated_home: Path) -> None:
     # Legacy cache with no sentinel: no freshness line, just the body.
     write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")

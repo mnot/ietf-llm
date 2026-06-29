@@ -75,7 +75,10 @@ Discipline that isn't in the tool docstrings:
   built in the *final* gather stages (and the cloud backend publishes
   atomically), so a mid-gather corpus has at most raw `threads/` /
   `issues/` / `drafts/` files — `overview`, `read_digest`, and
-  `search_corpus` are empty or partial until the end.
+  `search_corpus` are empty or partial until the end. If you do read during a
+  refresh, the freshness header says so (`⚠ A refresh is running now …`) and
+  the body is the *previous* snapshot — don't pass it off as current; poll
+  `gather_status` until `done`, then re-read.
 - **A "fresh, skipped" result is success.** A corpus gathered within the
   freshness window isn't re-gathered; query the existing snapshot instead
   of retrying. Pass `force=True` only on an explicit request for fresh data.
