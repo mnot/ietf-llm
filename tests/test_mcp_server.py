@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ietf_llm import mcp_server
 
 from conftest import write_cache_file
@@ -401,6 +403,61 @@ def test_top_level_response_carries_freshness_line_when_fresh(
     out = mcp_server.tool_read_digest("wg", "people")
     assert "gathered" in out.lower()
     assert "# people" in out
+
+
+def test_top_level_response_flags_an_in_flight_refresh(
+    isolated_home: Path,
+) -> None:
+    # A re-gather running in this process must not let the read path pass off
+    # the prior snapshot as current: the freshness header keeps its (today)
+    # stamp but gains a caveat that a refresh is running and the body predates
+    # it. Regression guard for the "gathered today (mid-gather)" false-confidence
+    # trap.
+    from ietf_llm import gather_runner
+    from ietf_llm.freshness import record_gather
+
+    write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
+    record_gather("wg")
+    with gather_runner._registry_lock:
+        gather_runner._jobs["wg"] = "running"
+    try:
+        out = mcp_server.tool_read_digest("wg", "people")
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._jobs.pop("wg", None)
+    assert "gathered" in out.lower()  # the stamp is still there...
+    assert "refresh is running" in out.lower()  # ...but now flagged as superseded
+    assert "gather_status" in out
+    # And once no gather is live, the caveat is gone.
+    clean = mcp_server.tool_read_digest("wg", "people")
+    assert "refresh is running" not in clean.lower()
+
+
+def test_inflight_note_omits_zero_index_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `stage_index` is 0 until the first progress call; the note must not render
+    # a meaningless "stage 0/7". It falls back to the stage name when present,
+    # else a bare "in progress".
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner,
+        "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 0,
+                    "stage_total": 7, "stage": "mailing list"},
+    )
+    note = srv._inflight_refresh_note("wg")
+    assert note is not None
+    assert "0/7" not in note
+    assert "mailing list" in note
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running"},
+    )
+    bare = srv._inflight_refresh_note("wg")
+    assert bare is not None and "in progress" in bare
 
 
 def test_top_level_response_silent_when_no_sentinel(isolated_home: Path) -> None:

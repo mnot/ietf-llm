@@ -852,6 +852,38 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     return result
 
 
+def local_inflight(corpus: str) -> Optional[Dict[str, Any]]:
+    """Cheap, network-free check: is a gather for `corpus` live in *this*
+    process right now? Returns its local status dict (state `queued`/`running`)
+    or None.
+
+    Unlike `read_status`, this never consults the cloud control plane, so the
+    read path can flag an in-flight refresh on every top-level response without
+    adding a control-plane round-trip to each call. The in-process job registry
+    is the authoritative "live here" signal; a gather running on another host
+    (cloud backend) is invisible here — and harmlessly so, since the cloud read
+    path serves the last *published* version, not the half-written one. The
+    registry membership also means we never mislabel a dead record `interrupted`
+    the way `read_status` has to.
+    """
+    if not valid_corpus_name(corpus):
+        return None
+    with _registry_lock:
+        state = _jobs.get(corpus)
+    if state not in ("queued", "running"):
+        return None
+    try:
+        with open(_status_path(corpus), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        result = dict(data)
+    except (OSError, json.JSONDecodeError, ValueError):
+        # The registry says it is live; surface that even without stage detail.
+        return {"corpus": corpus, "state": state}
+    if result.get("state") not in ("queued", "running"):
+        result["state"] = state
+    return result
+
+
 def all_statuses() -> List[Dict[str, Any]]:
     """Every recorded gather status, newest activity first.
 

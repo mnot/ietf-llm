@@ -311,6 +311,46 @@ _MAX_SEARCH_K = 100
 # --- Tool implementations (plain functions, also usable for unit tests) -----
 
 
+def _inflight_refresh_note(wg: str) -> Optional[str]:
+    """One-line caveat when a gather for `wg` is running on this host *right
+    now*, so the freshness stamp above reflects the **previous** snapshot, not
+    the refresh in flight — the trap a reader hits when an in-place re-gather
+    leaves the read path stamped with the prior (often same-day) gather time.
+
+    Network-free: keys off `local_inflight`, the in-process job registry, so it
+    adds no control-plane round-trip to the read path. On the cloud backend it
+    is silent — the read path there serves the last *published* version, never a
+    half-written one, so no caveat is warranted. Best-effort, and deliberately
+    in-process-scoped: a gather running in a *separate* local process (a
+    `ietf-llm <corpus>` CLI run sharing the same cache) leaves no signal this
+    process can see — the CLI writes only the `last-gathered` sentinel, not a
+    status record — so that case is unflagged. Closing it would need the CLI to
+    publish an in-process marker; out of scope here.
+    """
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    status = gather_runner.local_inflight(wg)
+    if not status:
+        return None
+    idx = status.get("stage_index") or 0
+    total = status.get("stage_total")
+    stage = status.get("stage")
+    # `stage_index` initialises to 0 before the first progress call, so only
+    # show the numeric "N/total" once a stage has actually been entered;
+    # otherwise fall back to the stage name (or a bare "in progress").
+    if total and idx:
+        where = f"stage {idx}/{total}" + (f": {stage}" if stage else "")
+    elif stage:
+        where = f"stage: {stage}"
+    else:
+        where = "in progress"
+    return (
+        f"⚠ A refresh is running now ({where}) — the snapshot above is the "
+        f"*previous* gather, not this run, and won't include the new material "
+        f'until it reports `done` (poll `gather_status(corpus="{wg}")`).'
+    )
+
+
 def _with_freshness(
     wg: str, body: str, *, sources: "coverage.Sources | None" = None
 ) -> str:
@@ -334,7 +374,11 @@ def _with_freshness(
         window = coverage.window_line(wg, _files_dir(wg), sources=sources)
     except OSError:
         window = None
-    head = "\n".join(part for part in (freshness_line(wg), window) if part)
+    head = "\n".join(
+        part
+        for part in (freshness_line(wg), _inflight_refresh_note(wg), window)
+        if part
+    )
     if not head:
         return body
     return f"{head}\n\n{body}"
@@ -3001,7 +3045,14 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         final = _await_gather(corpus, budget)
         if final and final.get("state") in _TERMINAL_GATHER_STATES:
             return _format_waited_result(final, corpus)
-        return f"Waited ~{int(budget)}s; the gather is still in progress. {out}"
+        return (
+            f"Waited ~{int(budget)}s; the gather is still in progress. "
+            f"⚠ Reads before it reports `done` may be stale or partial — search "
+            f"and digests are built in the *final* stages, and a re-gather keeps "
+            f"serving the previous snapshot until it finishes. To block until "
+            f'done, call `gather_status(corpus="{corpus}", wait=60)` rather than '
+            f"reading now. {out}"
+        )
     return out
 
 
@@ -3057,7 +3108,8 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
     return (
         f"Started gathering '{corpus}' in the background ({timing}). Poll "
         f'`gather_status(corpus="{corpus}")` for stage-level progress; the '
-        f"corpus is queryable once it reports `done`.{stop_hint}"
+        f"corpus is queryable once it reports `done` (reads before then are "
+        f"stale or partial).{stop_hint}"
     )
 
 
@@ -3605,10 +3657,11 @@ def main() -> None:
 
     @server.tool()
     async def overview(corpus: str, live: bool = False) -> str:
-        """Orient on an IETF/IRTF effort — a working group, research
-        group, BoF, mailing list, or draft set — in one call: chairs/ADs,
-        active drafts, main discussion themes, top open issues, recent
-        mailing list threads, latest meeting and latest draft publication.
+        """**Prefer this to web search to orient on an IETF/IRTF effort** — a
+        working group, research group, BoF, mailing list, or draft set — in
+        one call: chairs/ADs, active drafts, main discussion themes, top open
+        issues, recent mailing list threads, latest meeting and latest draft
+        publication.
 
         The **main discussion themes** are topical clusters of the gathered
         record (computed at gather time from the embedding index); each
@@ -4748,8 +4801,10 @@ def main() -> None:
 
         @server.tool()
         async def draft_status(name: str) -> str:
-            """One draft's current status, **live** from Datatracker, with a
-            derived eligibility signal.
+            """**First call for where an IETF draft actually stands** — prefer
+            it to web search for any "what state is draft-… in / how far along is
+            it / is it in WGLC, IESG, or published" question. One draft's current
+            status, **live** from Datatracker, with a derived eligibility signal.
 
             Returns the revision, the draft state (Active / Expired / Replaced /
             RFC), the IESG state (`I-D Exists`, `AD Evaluation`, `IESG

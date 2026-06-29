@@ -649,6 +649,46 @@ def test_all_statuses_and_read_status(
     assert "cfrg" in names
 
 
+def test_local_inflight_reports_only_a_live_in_process_gather(
+    isolated_home: Path,
+) -> None:
+    # Nothing recorded anywhere -> nothing in flight, no network consulted.
+    assert gather_runner.local_inflight("tls") is None
+    # A status file alone (e.g. a stale record a dead process left behind) is
+    # NOT enough: local_inflight keys off the in-process registry, so it stays
+    # silent rather than crying wolf on the read path for a gather that isn't
+    # actually running here.
+    path = gather_runner._status_path("tls")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "corpus": "tls",
+                "state": "running",
+                "stage_index": 2,
+                "stage_total": 7,
+                "stage": "mailing list",
+            },
+            handle,
+        )
+    assert gather_runner.local_inflight("tls") is None
+    # Mark a live job in this process -> the running snapshot surfaces, with its
+    # stage detail intact so the read-path caveat can name where it is.
+    with gather_runner._registry_lock:
+        gather_runner._jobs["tls"] = "running"
+    try:
+        live = gather_runner.local_inflight("tls")
+        assert live is not None
+        assert live["state"] == "running"
+        assert live["stage_index"] == 2 and live["stage_total"] == 7
+        assert live["stage"] == "mailing list"
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._jobs.pop("tls", None)
+    # Registry cleared -> silent again.
+    assert gather_runner.local_inflight("tls") is None
+
+
 # --- freshness debounce at the start() entry point ------------------------
 
 
