@@ -56,6 +56,56 @@ _AGENDA_126 = {
 
 _MEETING_126 = {"objects": [{"number": "126", "time_zone": "Europe/Vienna"}]}
 
+# An aipref interim: one session on Meetecho (URL in remote_instructions),
+# plus a non-group row that must be filtered out. Same agenda.json shape as a
+# numbered meeting, keyed by the interim id.
+_INTERIM = "interim-2026-aipref-05"
+_AGENDA_INTERIM = {
+    _INTERIM: [
+        {
+            "group": {"acronym": "aipref"},
+            "start": "2026-04-15T15:00:00Z",
+            "duration": "1:00:00",
+            "location": None,
+            "session_id": 35177,
+            "agenda": (
+                "https://datatracker.ietf.org/meeting/"
+                f"{_INTERIM}/materials/agenda-{_INTERIM}-aipref-01-00"
+            ),
+            "minutes": None,
+            "remote_instructions": (
+                "https://meetings.conf.meetecho.com/interim/?session=35177"
+            ),
+        },
+        {"group": {"acronym": "tls"}, "start": "2026-04-15T15:00:00Z"},
+    ]
+}
+_MEETING_INTERIM = {"objects": [{"number": _INTERIM, "time_zone": "UTC"}]}
+
+# The group's sessions (recent first) + their meetings, for the upcoming list.
+# 2099 is future (kept); 126 is past (dropped) relative to a 2026 "today".
+_SESSIONS_AIPREF = {
+    "meta": {"next": None},
+    "objects": [
+        {"meeting": "/api/v1/meeting/meeting/4860/"},
+        {"meeting": "/api/v1/meeting/meeting/4400/"},
+    ],
+}
+_MEETINGS_BY_ID = {
+    "objects": [
+        {
+            "number": _INTERIM,
+            "type": "/api/v1/name/meetingtypename/interim/",
+            "date": "2099-04-15",
+        },
+        {
+            "number": "126",
+            "type": "/api/v1/name/meetingtypename/ietf/",
+            "date": "2020-07-18",
+        },
+    ]
+}
+
 # A document whose states resolve to draft=Active, draft-iesg="I-D Exists".
 _DOC_ACTIVE = {
     "name": "draft-ietf-httpbis-foo",
@@ -92,6 +142,14 @@ def _canned(url: str) -> Optional[Dict[str, Any]]:
         return _AGENDA_126
     if "/meeting/meeting/?number=126" in url:
         return _MEETING_126
+    if f"/meeting/{_INTERIM}/agenda.json" in url:
+        return _AGENDA_INTERIM
+    if f"/meeting/meeting/?number={_INTERIM}" in url:
+        return _MEETING_INTERIM
+    if "/meeting/session/?group__acronym=aipref" in url:
+        return _SESSIONS_AIPREF
+    if "/meeting/meeting/?id__in=" in url:
+        return _MEETINGS_BY_ID
     if "/doc/document/draft-ietf-httpbis-foo/" in url:
         return _DOC_ACTIVE
     if "/doc/document/" in url:
@@ -157,9 +215,44 @@ def test_meeting_sessions_renders_both():
     assert "Live from Datatracker" in out
 
 
-def test_meeting_sessions_rejects_interim():
-    out = tool_meeting_sessions("httpbis", "interim-2026")
-    assert "numbered IETF meeting" in out
+def test_meeting_sessions_interim_uses_remote_instructions():
+    sessions, _, error = live_lookup.fetch_meeting_sessions("aipref", _INTERIM)
+    assert error is None
+    assert len(sessions) == 1  # the tls row is filtered out
+    sess = sessions[0]
+    # Interims carry connection details in remote_instructions; no onsite room
+    # and no constructed Meetecho pair.
+    assert sess.remote_instructions.endswith("/interim/?session=35177")
+    assert sess.meetecho_full == ""
+    assert sess.meetecho_onsite == ""
+
+
+def test_meeting_sessions_renders_interim():
+    out = tool_meeting_sessions("aipref", _INTERIM)
+    assert f"# aipref at {_INTERIM}" in out
+    assert "/interim/?session=35177" in out
+    assert "Meetecho (onsite)" not in out
+    assert "Live from Datatracker" in out
+
+
+def test_meeting_sessions_rejects_garbage_meeting():
+    out = tool_meeting_sessions("httpbis", "next week")
+    assert "interim id" in out
+
+
+def test_upcoming_meetings_lists_future_only():
+    meetings, _, error = live_lookup.fetch_upcoming_meetings("aipref")
+    assert error is None
+    # Only the future-dated interim survives; the 2020 numbered meeting is past.
+    assert [m.number for m in meetings] == [_INTERIM]
+    assert meetings[0].kind == "interim"
+
+
+def test_upcoming_meetings_rendered_when_meeting_omitted():
+    out = tool_meeting_sessions("aipref")
+    assert "upcoming meeting(s)" in out
+    assert _INTERIM in out
+    assert "Live from Datatracker" in out
 
 
 # --- Draft status ----------------------------------------------------------

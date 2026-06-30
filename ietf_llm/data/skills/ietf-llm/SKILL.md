@@ -218,7 +218,7 @@ caveats are in each tool's docstring):
 | other threads on a topic / a `[xxx]` cluster | `list_labels` **first**, then `read_digest(kind="threads", subject=…)` |
 | read one thread end-to-end (no query) | `read_file_section(corpus, "threads/<file>.md")` |
 | literal draft text | `read_file_section(corpus, "drafts/<draft>-NN.txt")` — read the draft, don't reconstruct it from the list |
-| when/where does a WG meet at IETF N — time/room/Meetecho/session id | `meeting_sessions(corpus, N)` — **live** Datatracker, venue-local times |
+| when/where does a WG meet at IETF N or an interim — time/room/Meetecho/session id | `meeting_sessions(corpus, N)` (numbered) or `meeting_sessions(corpus, "interim-…")`; omit the id to list upcoming meetings — **live** Datatracker, venue-local times |
 | is a draft active / past the WG / published right now | `draft_status("draft-…")` — **live** IESG state + derived eligibility |
 | is my whole active-draft list still right (e.g. for an agenda) | `overview(corpus, live=True)` — reconciles the active-draft list against live Datatracker |
 | authors/editors of a draft + contact emails | `draft_authors("draft-…")` — from the cached Authors' Addresses (offline) |
@@ -254,7 +254,8 @@ state or meeting time as if it were live. Most tools read the **gather cache**,
 which is fine for the discursive record (mail, issues, minutes) that moves
 slowly; but meeting schedules and a draft's IESG state change *daily*, and the
 cache (a multi-month window, often days stale) is too coarse for them. So
-`meeting_sessions` (a group's sessions at a numbered meeting) and
+`meeting_sessions` (a group's sessions at a numbered *or* interim meeting —
+omit the id to list the group's upcoming meetings) and
 `draft_status` (a draft's IESG state + a derived eligibility signal) hit
 **Datatracker live** (short TTL, with an "as of" stamp on every result), and
 `overview(corpus, live=True)` reconciles the cache's active-draft list against

@@ -536,8 +536,10 @@ job:
   gathered corpus — distinct from `search_corpus`, which is semantic
   search within one WG. A bare RFC number short-circuits to that RFC.
 - **Live chair-workflow facts (gated, networked):** `meeting_sessions`
-  (a group's sessions at a numbered meeting — venue-local times, room,
-  session id, Meetecho URLs) and `draft_status` (a draft's live IESG state +
+  (a group's sessions at a numbered *or* interim meeting — venue-local times,
+  room, session id, Meetecho URLs / interim remote instructions; omit the id
+  to list the group's upcoming meetings) and `draft_status` (a draft's live
+  IESG state +
   derived agenda-eligibility), plus `overview(corpus, live=True)`, which
   reconciles the cache's active-draft list against Datatracker. These read
   *live* from Datatracker rather than the cache — meeting schedules and IESG
