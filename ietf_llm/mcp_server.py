@@ -3364,8 +3364,9 @@ def _render_upcoming_meetings(corpus: str) -> str:
         )
     lines = [f"# {corpus} — {len(meetings)} upcoming meeting(s)\n"]
     for mtg in meetings:
-        label = "Interim" if mtg.kind == "interim" else f"IETF {mtg.number}"
-        lines.append(f"- **{mtg.date}** — {label} (`{mtg.number}`)")
+        # One label source (`meeting_label`) for both surfaces; the raw id
+        # stays visible on the Logistics line below.
+        lines.append(f"- **{mtg.date}** — {live_lookup.meeting_label(mtg.number)}")
         lines.append(f"  - Agenda: {mtg.agenda_url}")
         lines.append(f"  - Logistics: `meeting_sessions({corpus!r}, {mtg.number!r})`")
     lines.append("")

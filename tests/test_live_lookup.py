@@ -240,6 +240,16 @@ def test_meeting_sessions_rejects_garbage_meeting():
     assert "interim id" in out
 
 
+def test_meeting_sessions_interim_id_is_case_insensitive():
+    # A mixed-case interim id passes validation and must still resolve against
+    # Datatracker's lowercase key, not 404 as "no agenda".
+    sessions, _, error = live_lookup.fetch_meeting_sessions(
+        "aipref", _INTERIM.upper()
+    )
+    assert error is None
+    assert len(sessions) == 1
+
+
 def test_upcoming_meetings_lists_future_only():
     meetings, _, error = live_lookup.fetch_upcoming_meetings("aipref")
     assert error is None

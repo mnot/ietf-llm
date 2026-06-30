@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from .gather.citations import normalize_draft_name
+from .gather.meetings import _uri_id
 from .utils import DEFAULT_HEADERS, governed_get
 
 _DT_BASE = "https://datatracker.ietf.org"
@@ -156,9 +157,9 @@ def is_interim_number(meeting: str) -> bool:
 
 def meeting_label(meeting: str) -> str:
     """Human label for a meeting id: `IETF 126` for a numbered meeting, the
-    raw interim id (`interim-2026-aipref-05`) otherwise."""
+    canonical (lowercase) interim id (`interim-2026-aipref-05`) otherwise."""
     meeting = (meeting or "").strip()
-    return meeting if is_interim_number(meeting) else f"IETF {meeting}"
+    return meeting.lower() if is_interim_number(meeting) else f"IETF {meeting}"
 
 
 @dataclass
@@ -320,8 +321,13 @@ def fetch_meeting_sessions(
     session at that meeting.
     """
     meeting = str(meeting).strip()
-    label = meeting_label(meeting)
     is_interim = is_interim_number(meeting)
+    # Datatracker keys interim agendas by the lowercase id; normalise so a
+    # mixed-case id (which passes the case-insensitive validation) still
+    # resolves rather than 404-ing as "no agenda".
+    if is_interim:
+        meeting = meeting.lower()
+    label = meeting_label(meeting)
     agenda, fetched = _cached_json(f"{_DT_BASE}/meeting/{meeting}/agenda.json")
     if agenda is None:
         return (
@@ -356,8 +362,11 @@ class UpcomingMeeting:
 def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str]]:
     """Batch-resolve meeting ids → `{number: (kind, date)}` via `id__in`.
 
-    Mirrors the gather layer's batched lookup so a group's couple-dozen
-    meetings come back in one or two requests rather than one GET each.
+    The read-path twin of `gather.meetings._batch_fetch_meetings`: same
+    `id__in` batching, but on the write-free `_cached_json` (not gather's
+    on-disk ETag store) and keyed by meeting *number* (the caller builds
+    agenda URLs / drill-in calls from it) rather than by uri-id. Keep the
+    two in step if Datatracker's meeting shape changes.
     """
     out: Dict[str, Tuple[str, str]] = {}
     ordered = sorted(set(ids))
@@ -403,7 +412,7 @@ def fetch_upcoming_meetings(
     for sess in body.get("objects") or []:
         uri = sess.get("meeting")
         if uri:
-            ids.append(str(uri).rstrip("/").rsplit("/", maxsplit=1)[-1])
+            ids.append(_uri_id(str(uri)))
     meetings = _resolve_meetings(ids)
     upcoming = [
         UpcomingMeeting(
