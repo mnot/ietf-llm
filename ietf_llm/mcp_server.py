@@ -3348,12 +3348,40 @@ def tool_draft_authors(name: str) -> str:
     return "\n".join(lines)
 
 
-def tool_meeting_sessions(corpus: str, meeting: str) -> str:
-    """Render a group's live session logistics at a numbered IETF meeting.
+def _render_upcoming_meetings(corpus: str) -> str:
+    """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
+    each drillable by passing its id back as `meeting`."""
+    from . import live_lookup  # pylint: disable=import-outside-toplevel
 
-    Lazily imports `live_lookup` (the one read-path network module) so the
-    default offline read path never pulls it in; registered only behind the
-    gather gate. Times are venue-local, converted from the agenda's UTC.
+    meetings, fetched, error = live_lookup.fetch_upcoming_meetings(corpus)
+    if error:
+        return error
+    if not meetings:
+        return (
+            f"No upcoming meetings are scheduled for `{corpus}` — it may have "
+            "nothing on the calendar, or none published yet.\n\n"
+            + live_lookup.age_stamp(fetched)
+        )
+    lines = [f"# {corpus} — {len(meetings)} upcoming meeting(s)\n"]
+    for mtg in meetings:
+        # One label source (`meeting_label`) for both surfaces; the raw id
+        # stays visible on the Logistics line below.
+        lines.append(f"- **{mtg.date}** — {live_lookup.meeting_label(mtg.number)}")
+        lines.append(f"  - Agenda: {mtg.agenda_url}")
+        lines.append(f"  - Logistics: `meeting_sessions({corpus!r}, {mtg.number!r})`")
+    lines.append("")
+    lines.append(live_lookup.age_stamp(fetched))
+    return "\n".join(lines)
+
+
+def tool_meeting_sessions(corpus: str, meeting: str = "") -> str:
+    """Render a group's live session logistics at a numbered or interim meeting.
+
+    With no `meeting`, lists the group's upcoming meetings (discovery, since
+    an interim id isn't guessable). Lazily imports `live_lookup` (the one
+    read-path network module) so the default offline read path never pulls it
+    in; registered only behind the gather gate. Times are venue-local,
+    converted from the agenda's UTC.
     """
     from . import (  # pylint: disable=import-outside-toplevel
         gather_runner,
@@ -3366,23 +3394,33 @@ def tool_meeting_sessions(corpus: str, meeting: str) -> str:
         return "Provide a Working Group shortname (e.g. `httpbis`)."
     if not gather_runner.valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
-    if not meeting.isdigit():
+    if not meeting:
+        return _render_upcoming_meetings(corpus)
+    if not (meeting.isdigit() or live_lookup.is_interim_number(meeting)):
         return (
-            "Provide a numbered IETF meeting (e.g. `126`). Interim meetings "
-            "are not covered by this tool."
+            "Provide a numbered IETF meeting (e.g. `126`) or an interim id "
+            "(e.g. `interim-2026-aipref-05`), or omit it to list this group's "
+            "upcoming meetings."
         )
+    return _render_meeting_sessions(corpus, meeting)
 
+
+def _render_meeting_sessions(corpus: str, meeting: str) -> str:
+    """Render one meeting's sessions (numbered or interim), venue-local."""
+    from . import live_lookup  # pylint: disable=import-outside-toplevel
+
+    label = live_lookup.meeting_label(meeting)
     sessions, fetched, error = live_lookup.fetch_meeting_sessions(corpus, meeting)
     if error:
         return error
     if not sessions:
         return (
-            f"No session for `{corpus}` is scheduled at IETF {meeting} — the "
+            f"No session for `{corpus}` is scheduled at {label} — the "
             "group may not be meeting, or the agenda may not list it yet.\n\n"
             + live_lookup.age_stamp(fetched)
         )
 
-    lines = [f"# {corpus} at IETF {meeting} — {len(sessions)} session(s)\n"]
+    lines = [f"# {corpus} at {label} — {len(sessions)} session(s)\n"]
     for idx, sess in enumerate(sessions, start=1):
         lines.append(f"## Session {idx}" if len(sessions) > 1 else "## Session")
         local = f"{sess.start_local}–{sess.end_local} {sess.tz_abbrev}".strip()
@@ -3397,6 +3435,8 @@ def tool_meeting_sessions(corpus: str, meeting: str) -> str:
             lines.append(f"- **Meetecho (remote):** {sess.meetecho_full}")
         if sess.meetecho_onsite:
             lines.append(f"- **Meetecho (onsite):** {sess.meetecho_onsite}")
+        if sess.remote_instructions:
+            lines.append(f"- **Remote:** {sess.remote_instructions}")
         if sess.agenda_url:
             lines.append(f"- **Agenda:** {sess.agenda_url}")
         if sess.minutes_url:
@@ -4776,26 +4816,32 @@ def main() -> None:
             return await _offload(tool_suggest_github_repos, corpus)
 
         @server.tool()
-        async def meeting_sessions(corpus: str, meeting: str) -> str:
-            """A group's session logistics at a numbered IETF meeting, **live**
-            from Datatracker — useful to any attendee or observer (building an
+        async def meeting_sessions(corpus: str, meeting: str = "") -> str:
+            """A group's session logistics at an IETF meeting, **live** from
+            Datatracker — useful to any attendee or observer (building an
             agenda is the obvious case).
 
-            Returns every session the group has at that meeting (a WG can have
-            two), each with the venue-**local** weekday/date and start–end time
-            (converted from the agenda's UTC, DST-correct), the room, the
-            Datatracker session id, both Meetecho URLs (remote + onsite), and
-            the agenda/minutes links.
+            Handles both **numbered** meetings (e.g. `126`) and **interim**
+            meetings (e.g. `interim-2026-aipref-05`). Returns every session the
+            group has at that meeting (a WG can have two), each with the
+            venue-**local** weekday/date and start–end time (converted from the
+            agenda's UTC, DST-correct), the room, the Datatracker session id,
+            and the agenda/minutes links. Numbered meetings add both Meetecho
+            URLs (remote + onsite); interims have no onsite room, so they carry
+            the agenda's free-text remote instructions (a Meetecho URL, a Teams
+            note, …) instead.
+
+            **Omit `meeting`** to list the group's upcoming meetings (numbered +
+            interim) — the way to discover an interim id, which isn't guessable.
 
             Live (short TTL + freshness stamp), gather-gated — off on the shared
             HTTP replica; see the SKILL "Live Datatracker facts" section for why.
-            Numbered meetings only (e.g. `126`); interim meetings are not
-            covered. Times are venue-local — never quote the UTC start as the
-            local time.
+            Times are venue-local — never quote the UTC start as the local time.
 
             Args:
                 corpus: The Working Group shortname (e.g. `httpbis`).
-                meeting: The numbered IETF meeting (e.g. `126`).
+                meeting: A numbered meeting (`126`) or interim id
+                    (`interim-2026-aipref-05`); omit to list upcoming meetings.
             """
             return await _offload(tool_meeting_sessions, corpus, meeting)
 
