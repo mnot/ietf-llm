@@ -8,7 +8,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, NamedTuple, Optional
 
 import requests
 
@@ -266,16 +266,55 @@ class _FolderSelectError(Exception):
     or renamed list name rather than a transient fault, so it isn't retried."""
 
 
+class _FolderFreshness(NamedTuple):
+    """Why a windowed search came back empty: how many messages the folder holds
+    overall, and the date of its newest one. Lets the caller tell a genuinely
+    empty folder from a stalled archive mirror that stopped years before the
+    window."""
+
+    total: int
+    newest: Optional[datetime]
+
+
+def _folder_freshness(mail: imaplib.IMAP4_SSL) -> _FolderFreshness:
+    """Total message count and newest message date for the selected folder.
+
+    Probed only when a windowed search returned nothing, to explain why. Uses
+    the highest UID (append order tracks arrival) for the newest date. Best
+    effort: any protocol hiccup yields `(0, None)` rather than derailing the
+    sync — this is diagnostic, not load-bearing."""
+    try:
+        status, data = mail.uid("search", "ALL")
+        if status != "OK" or not data or not data[0]:
+            return _FolderFreshness(0, None)
+        uids = data[0].split()
+        status, fetched = mail.uid("fetch", uids[-1], "(INTERNALDATE)")
+        if status != "OK":
+            return _FolderFreshness(len(uids), None)
+        for part in fetched:
+            raw = part[0] if isinstance(part, tuple) else part
+            if not isinstance(raw, bytes):
+                continue
+            parsed = imaplib.Internaldate2tuple(raw)
+            if parsed:
+                return _FolderFreshness(len(uids), datetime(*parsed[:6]))
+        return _FolderFreshness(len(uids), None)
+    except (imaplib.IMAP4.error, OSError):
+        return _FolderFreshness(0, None)
+
+
 def _imap_sync_attempt(
     list_name: str,
     months: Optional[int],
     cache_dir: str,
     verbose: Verbosity,
     on_progress: Optional[Callable[[int, int], None]],
-) -> tuple[List[str], int]:
+) -> tuple[List[str], int, Optional[_FolderFreshness]]:
     """One IMAP connect -> select -> search -> download pass for a single list.
 
-    Returns `(uids-in-window, newly-downloaded-count)`. Raises
+    Returns `(uids-in-window, newly-downloaded-count, freshness)` where
+    `freshness` is populated only when the window came back empty (else None).
+    Raises
     `_FolderSelectError` when the folder can't be selected (not retryable) and
     `imaplib.IMAP4.error` / `OSError` on a connection-level fault the caller may
     retry."""
@@ -317,12 +356,62 @@ def _imap_sync_attempt(
             new_count = _download_batches(
                 mail, missing_uids, cache_dir, verbose, on_progress
             )
-        return [u.decode() for u in uids], new_count
+        freshness = _folder_freshness(mail) if not uids and months else None
+        return [u.decode() for u in uids], new_count, freshness
     finally:
         try:
             mail.logout()
         except (imaplib.IMAP4.error, OSError):
             pass
+
+
+# A folder whose newest message predates the window by more than this reads as
+# a stalled archive mirror, not a list that just went quiet at the window edge
+# — worth naming the likely cause rather than pointing the user at their config.
+_STALE_MIRROR_GRACE = timedelta(days=90)
+
+
+def _warn_empty_window(
+    list_name: str,
+    window: str,
+    months: Optional[int],
+    freshness: Optional[_FolderFreshness],
+    verbose: Verbosity,
+) -> None:
+    """Explain an empty windowed sync. An empty folder points at the list name;
+    a folder that holds mail but whose newest message predates the window by a
+    wide margin points at a stale IMAP mirror (the archive kept receiving mail
+    the IMAP feed never got) — a distinction the user can't otherwise see."""
+    total = freshness.total if freshness else 0
+    newest = freshness.newest if freshness else None
+    if total == 0:
+        log(
+            f"No messages for '{list_name}' in {window}: the folder exists but "
+            "is empty. Check the list name if you expected traffic.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        return
+    newest_str = newest.strftime("%Y-%m-%d") if newest else "unknown"
+    window_start = datetime.now() - timedelta(days=30 * (months or 0))
+    if newest is not None and newest < window_start - _STALE_MIRROR_GRACE:
+        log(
+            f"No messages for '{list_name}' in {window}, but the folder holds "
+            f"{total} message(s), newest dated {newest_str} — well before this "
+            "window. If you expected recent traffic, the IETF IMAP mirror for "
+            "this list is likely stale: mail visible at mailarchive.ietf.org "
+            "can be missing from the IMAP feed. Otherwise widen --months.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        return
+    log(
+        f"No messages for '{list_name}' in {window}: the folder holds {total} "
+        f"message(s) but the newest ({newest_str}) falls outside the window. "
+        "Widen --months, or check the list name if you expected traffic.",
+        verbose,
+        level=LogLevel.WARN,
+    )
 
 
 def _sync_one_list(
@@ -351,7 +440,7 @@ def _sync_one_list(
     window = f"the last {months} month(s)" if months else "all history"
     for attempt in range(IMAP_RETRIES + 1):
         try:
-            uids, new_count = _imap_sync_attempt(
+            uids, new_count, freshness = _imap_sync_attempt(
                 list_name, months, cache_dir, verbose, on_progress
             )
         except _FolderSelectError:
@@ -380,13 +469,7 @@ def _sync_one_list(
             )
             return []
         if not uids:
-            log(
-                f"No messages for '{list_name}' in {window}: the folder exists "
-                "but holds nothing in this window. Widen --months, or check "
-                "the list name if you expected traffic.",
-                verbose,
-                level=LogLevel.WARN,
-            )
+            _warn_empty_window(list_name, window, months, freshness, verbose)
         else:
             log(
                 f"Synced '{list_name}': {len(uids)} message(s) in {window} "
