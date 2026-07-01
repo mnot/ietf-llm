@@ -7,6 +7,7 @@ success."""
 from __future__ import annotations
 
 import imaplib
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -25,18 +26,49 @@ def _run(monkeypatch, attempt):
 
 
 def test_success_reports_count(monkeypatch, capsys):
-    uids = _run(monkeypatch, lambda *a: (["1", "2", "3"], 1))
+    uids = _run(monkeypatch, lambda *a: (["1", "2", "3"], 1, None))
     assert uids == ["1", "2", "3"]
     err = capsys.readouterr().err
     assert "Synced 'netconf': 3 message(s) in the last 12 month(s) (1 new)." in err
 
 
-def test_empty_window_warns(monkeypatch, capsys):
-    uids = _run(monkeypatch, lambda *a: ([], 0))
+def test_empty_folder_warns_about_list_name(monkeypatch, capsys):
+    # No freshness (folder truly empty) → point at the list name.
+    uids = _run(monkeypatch, lambda *a: ([], 0, None))
     assert uids == []
     err = capsys.readouterr().err
     assert "[WARN]" in err
     assert "No messages for 'netconf' in the last 12 month(s)" in err
+    assert "the folder exists but is empty" in err
+    assert "Check the list name" in err
+
+
+def test_stale_mirror_is_named(monkeypatch, capsys):
+    # Folder holds mail but the newest message predates the window by years —
+    # the netconf case: point at a stale IMAP mirror, not the user's config.
+    stale = datetime.now() - timedelta(days=365 * 2)
+    fresh = mbox._FolderFreshness(20350, stale)
+    uids = _run(monkeypatch, lambda *a: ([], 0, fresh))
+    assert uids == []
+    err = capsys.readouterr().err
+    assert "[WARN]" in err
+    assert "20350 message(s)" in err
+    assert "IMAP mirror" in err and "stale" in err
+    assert "mailarchive.ietf.org" in err
+
+
+def test_just_outside_window_does_not_blame_mirror(monkeypatch, capsys):
+    # Newest message is only just past the window edge — a quiet list, not a
+    # stalled mirror. Don't cry "stale mirror".
+    edge = datetime.now() - timedelta(days=30 * 12 + 10)
+    fresh = mbox._FolderFreshness(42, edge)
+    uids = _run(monkeypatch, lambda *a: ([], 0, fresh))
+    assert uids == []
+    err = capsys.readouterr().err
+    assert "[WARN]" in err
+    assert "42 message(s)" in err
+    assert "falls outside the window" in err
+    assert "mirror" not in err
 
 
 def test_folder_select_error_not_retried(monkeypatch, capsys):
@@ -61,7 +93,7 @@ def test_transient_error_retried_then_succeeds(monkeypatch, capsys):
         calls["n"] += 1
         if calls["n"] == 1:
             raise imaplib.IMAP4.error("connection reset")
-        return (["7"], 1)
+        return (["7"], 1, None)
 
     uids = _run(monkeypatch, attempt)
     assert uids == ["7"]
