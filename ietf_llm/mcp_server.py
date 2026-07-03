@@ -803,7 +803,7 @@ def tool_find_message_citations(
     file and returns:
 
       - **Inbound** — other messages that cite this file (optionally the
-        specific message `chunk_idx`). The reverse index `fetch_by_url`
+        specific message `chunk_idx`). The reverse index `get_by_url`
         can't give you: "who else references this message / decision?".
       - **Outbound** — the archive links this file cites, each resolved
         to its local `file` / `chunk_idx` (pivot with `read_file_section`
@@ -816,7 +816,7 @@ def tool_find_message_citations(
     Within-scheme resolution only: a `mailarchive.ietf.org` token is not
     bridged to a stored `www.w3.org/mid` Message-ID, so on a list that
     stamps one scheme while bodies cite the other, real targets can show
-    as external. To fetch a single URL directly, use `fetch_by_url`.
+    as external. To fetch a single URL directly, use `get_by_url`.
     """
     cache = _files_dir(wg)
     md = digest_path(cache, "message_citations")
@@ -1622,7 +1622,7 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         more = f"{extra_matches}+ more" if extra_matches > 0 else "more"
         out.append(
             f"_⚠ Not the whole debate: {more} message(s) matched beyond the "
-            f"{len(matched)} shown — raise `k` (now {k}). For completeness: "
+            f"{len(matched)} shown — raise `limit` (now {k}). For completeness: "
             "read a thread end-to-end with `read_file_section`, enumerate a "
             'topic\'s threads with `read_digest(kind="threads", '
             'subject="[…]")` or `find_citations`, and pass `file_pattern=` '
@@ -2407,7 +2407,7 @@ def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
 
 
 @_requires_corpus
-def tool_fetch_by_url(wg: str, url: str) -> str:
+def tool_get_by_url(wg: str, url: str) -> str:
     """Resolve a citation URL to its cached corpus content.
 
     Use this whenever you encounter an archive permalink in a message
@@ -2447,7 +2447,7 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
             else f"run `ietf-llm {wg} --rebuild-embeddings`"
         )
         return (
-            f"No cached chunk for {url}. fetch_by_url resolves the URL forms "
+            f"No cached chunk for {url}. get_by_url resolves the URL forms "
             "stamped in the corpus: mailing-list `Archived-At:` permalinks "
             "(either `https://mailarchive.ietf.org/arch/msg/<list>/<token>` "
             "or `https://www.w3.org/mid/<message-id>`, depending on the list), "
@@ -3891,7 +3891,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         the web. It ranks over the official Datatracker group list
         (acronym + name + charter description), mirrored locally; it covers
         **active** and **BoF** groups only, so a concluded effort or
-        published work won't surface here — use `rfc_search` for the RFC
+        published work won't surface here — use `search_rfcs` for the RFC
         series, and `list_corpora` to see what is already cached.
 
         The playbook: `find_efforts(topic)` → present the candidates
@@ -3937,12 +3937,12 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_which_corpus, query, limit)
 
     @server.tool()
-    async def rfc_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfcs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         query: str,
         status: Optional[str] = None,
         stream: Optional[str] = None,
         level: Optional[str] = None,
-        wg: Optional[str] = None,
+        group: Optional[str] = None,
         limit: int = 50,
     ) -> str:
         """Search the **published RFC series** by words in titles and
@@ -3961,13 +3961,13 @@ def main() -> None:  # pylint: disable=too-many-locals
             `editorial` | `legacy`
           - `level`: `std` | `bcp` | `informational` | `experimental` |
             `historic` | `unknown`
-          - `wg`: an IETF working group acronym.
+          - `group`: an IETF working group acronym.
           - `limit`: max results (default 50).
 
         Follow a hit with `get_rfc(number)` for full metadata and its
         reference graph.
         """
-        return await _offload(render_search, query, status, stream, level, wg, limit)
+        return await _offload(render_search, query, status, stream, level, group, limit)
 
     @server.tool()
     async def get_rfc(number: str) -> str:
@@ -4172,14 +4172,14 @@ def main() -> None:  # pylint: disable=too-many-locals
         this reads the graph for one file.
 
         Returns **Inbound** (other messages that cite this file — the
-        reverse index `fetch_by_url` can't give you) and **Outbound** (the
+        reverse index `get_by_url` can't give you) and **Outbound** (the
         archive links this file cites, each resolved to a local
         `file` / `chunk_idx` to pivot on, or flagged external — a message
         not gathered here, often another list to gather and retry).
 
         Use when:
           - Reading a message whose body footnotes an archive URL and you
-            want the message behind it (or `fetch_by_url` for one URL).
+            want the message behind it (or `get_by_url` for one URL).
           - Tracing a dispute / appeal / split thread back to its origin.
           - Asking "who else referenced this message or decision?".
 
@@ -4395,7 +4395,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpus: str,
         query: str,
-        k: int = 10,
+        limit: int = 10,
         file_pattern: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -4414,7 +4414,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         semantically across its mailing-list debate, GitHub issues,
         drafts, slides, transcripts, and minutes. (Published RFC bodies
         aren't indexed here by default — search the series with
-        `rfc_search` and read one with `get_rfc`.) Returns top-k
+        `search_rfcs` and read one with `get_rfc`.) Returns the top
         chunks with file, chunk_idx, title, score, snippet, line range,
         GitHub URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.
@@ -4438,7 +4438,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         the user wants the WG's settled position rather than ongoing
         debate. `state="open"` is the inverse: only unresolved threads.
 
-        `sort="date"` re-orders the top-k hits chronologically (oldest
+        `sort="date"` re-orders the top hits chronologically (oldest
         first) instead of by relevance, so a consumer reading
         top-to-bottom sees an early objection → settled-position
         arc. Combine with `file_pattern="%-issue-…-N.md"` to scope to
@@ -4468,7 +4468,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         renders compact snippets that often `[truncated]` for long
         chunks; raise for long-form synthesis where the snippet
         itself should carry more context. Tradeoff: bigger budget
-        means more bytes per hit, so dial `k` down accordingly.
+        means more bytes per hit, so dial `limit` down accordingly.
 
         `collapse_versions=True` (the default) hides older draft
         revisions when a newer one of the same draft also matched, so a
@@ -4500,7 +4500,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             tool_search,
             corpus,
             query,
-            k=k,
+            k=limit,
             file_pattern=file_pattern,
             since=since,
             until=until,
@@ -4520,7 +4520,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         corpus: str,
         file: str,
         chunk_idx: int,
-        k: int = 10,
+        limit: int = 10,
         file_pattern: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -4570,7 +4570,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             corpus,
             file,
             chunk_idx,
-            k=k,
+            k=limit,
             file_pattern=file_pattern,
             since=since,
             until=until,
@@ -4586,7 +4586,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     async def search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpora: List[str],
         query: str,
-        k: int = 10,
+        limit: int = 10,
         since: Optional[str] = None,
         until: Optional[str] = None,
         label: Optional[str] = None,
@@ -4621,7 +4621,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         within each, groups interleaved by rank (the header says which were
         grouped).
 
-        `k` bounds the **total** merged hits (default 10). Facets mirror
+        `limit` bounds the **total** merged hits (default 10). Facets mirror
         `search_corpus` per corpus: `since`/`until`, `label`, `state`,
         `author`, `role`, `snippet_chars`, `collapse_versions`. The
         depth-only knobs (`sort`, `group_by`, `file_pattern`) are omitted —
@@ -4632,7 +4632,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             tool_search_corpora,
             corpora,
             query,
-            k=k,
+            k=limit,
             since=since,
             until=until,
             label=label,
@@ -4734,7 +4734,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         since: Optional[str] = None,
         until: Optional[str] = None,
         file_pattern: Optional[str] = None,
-        k: int = 20,
+        limit: int = 20,
         include_replies: bool = False,
         body_chars: Optional[int] = None,
     ) -> str:
@@ -4775,7 +4775,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         cap fires, the response says so.
 
         IMPORTANT — this is a **relevance-ranked slice, not a complete
-        thread**: messages are the top-`k` semantic matches for the query,
+        thread**: messages are the top-ranked semantic matches for the query,
         then date-ordered. Messages that don't match the query are not
         included, and a low-scoring match may be off-topic. Each matched
         message carries a `rel=` score (higher = closer) so you can
@@ -4786,7 +4786,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         can spot a major cluster the slice barely sampled (read that one in
         full) instead of assuming the slice covered the debate. For a
         question about *completeness* (e.g. "the whole controversy"), do
-        not treat the slice as exhaustive: raise `k`, scope with
+        not treat the slice as exhaustive: raise `limit`, scope with
         `file_pattern=` to cut cross-topic noise, read a thread end-to-end
         with `read_file_section`, or enumerate a topic's threads with
         `read_digest(kind="threads", subject="[…]")`.
@@ -4804,7 +4804,7 @@ def main() -> None:  # pylint: disable=too-many-locals
           - `file_pattern` (SQL LIKE on the relative path): scope to
             one issue (`issues/org-repo/155.md`) or one thread cluster
             (`threads/2026-04-%mlkem%`)
-          - `k`: how many top-relevance messages to anchor on (default
+          - `limit`: how many top-relevance messages to anchor on (default
             20; replies expand this further). The fetch is widened
             internally so the candidate pool is roomy.
 
@@ -4818,7 +4818,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             since=since,
             until=until,
             file_pattern=file_pattern,
-            k=k,
+            k=limit,
             include_replies=include_replies,
             body_chars=body_chars,
         )
@@ -4865,7 +4865,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_get_chunks_batch, corpus, requests)
 
     @server.tool()
-    async def fetch_by_url(corpus: str, url: str) -> str:
+    async def get_by_url(corpus: str, url: str) -> str:
         """Resolve a citation URL to its cached chunk in a corpus.
         Accepts the URL forms that actually appear in the corpus:
 
@@ -4883,7 +4883,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         not). Returns the chunk text — same shape as `get_chunk_text`.
         Use it when the user pastes, or a chunk cites, such a URL.
         """
-        return await _offload(tool_fetch_by_url, corpus, url)
+        return await _offload(tool_get_by_url, corpus, url)
 
     @server.tool()
     async def read_file_section(
@@ -4988,7 +4988,7 @@ def main() -> None:  # pylint: disable=too-many-locals
               shortname (`tls`, `cfrg`). The charter, drafts, meetings,
               mailing list, and GitHub issues are auto-discovered (the WG's
               published RFCs are listed in the overview but their bodies stay
-              in the global series — `rfc_search` / `get_rfc`)
+              in the global series — `search_rfcs` / `get_rfc`)
               — including *which* repos to track: the first gather finds the
               group's active draft repos and follows them automatically
               (`gather_status` reports which were added). To preview or

@@ -64,14 +64,14 @@ counterpart — `list_drafts` (corpus-wide draft lifecycle) and `list_sessions` 
   `draft_authors`, `get_draft` (verbatim text).
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
-- **RFCs:** `rfc_search`, `get_rfc`.  **By URL:** `fetch_by_url`.
+- **RFCs:** `search_rfcs`, `get_rfc`.  **By URL:** `get_by_url`.
 - **Norms (mandatory before acting — see the gate above):**
   `read_ietf_participation_norms`, `read_ietf_interpretation_norms`.
 
 ## Grounding a claim or citation
 
 Quote the **actual text**, not a search snippet: `get_draft(name)` for a draft,
-`get_issue(corpus, number)` for an issue, `fetch_by_url(corpus, url)` when the
+`get_issue(corpus, number)` for an issue, `get_by_url(corpus, url)` when the
 user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a session recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare.

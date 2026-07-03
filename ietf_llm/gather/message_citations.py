@@ -7,7 +7,7 @@ it answers. When that target is itself gathered (same corpus, often the
 same thread cluster under an earlier subject), the content is already in
 the corpus — but from a bare URL the consumer has no cheap way to see
 that, and ends up either skipping it or wrongly concluding it "isn't in
-the corpus". `fetch_by_url` resolves a single URL on demand; this module
+the corpus". `get_by_url` resolves a single URL on demand; this module
 builds the *graph* so the reverse direction ("who cites this message?")
 and the cross-corpus references are visible at a glance.
 
@@ -29,7 +29,7 @@ Detection rules:
   two are different identifiers for the same message and not
   string-convertible. A body citing the opposite scheme from the one a
   list stamps therefore lands in "External" even when the target is
-  technically gathered. Documented limitation, same as `fetch_by_url`.
+  technically gathered. Documented limitation, same as `get_by_url`.
 - Skip quoted blocks (`> ` prefix) and each message's own
   `_Archived-At:_` line, so a message neither cites itself nor
   double-counts a URL it merely quoted.

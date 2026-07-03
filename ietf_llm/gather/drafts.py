@@ -376,7 +376,7 @@ def process_documents(
     specifically named draft.)
 
     RFC bodies are NOT gathered by default. The published series is a
-    global singleton reachable via `rfc_search` / `get_rfc`, so mirroring
+    global singleton reachable via `search_rfcs` / `get_rfc`, so mirroring
     every WG's RFCs into its corpus (and its embedding index) is wasted
     download, storage, and embed time. Set `include_rfc_bodies` (the
     `--rfcs` flag) to restore the old behaviour. Either way the WG's RFC
