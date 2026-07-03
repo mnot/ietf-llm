@@ -1,10 +1,10 @@
 """Tests for ietf_llm.skill_install — the --install-skills path.
 
 Multi-harness: the installer copies each bundled skill under
-`data/skills/<name>/` into every detected harness's skills dir. The norms
-skills go into every detected harness; the query skill (`ietf-llm`) goes only
-into `~/.claude/skills/` (Claude + opencode read it). Tests redirect `_home()`
-to a sandbox and create harness marker dirs to simulate which are present.
+`data/skills/<name>/` into every detected harness's skills dir. The bundled
+skills are the two norms skills; the query/routing skill is not bundled (it
+lives in mnot/ietf-skill). Tests redirect `_home()` to a sandbox and create
+harness marker dirs to simulate which are present.
 """
 
 from __future__ import annotations
@@ -57,44 +57,27 @@ def test_installs_all_skills_into_claude(tmp_path: Path, monkeypatch) -> None:
     home = _sandbox(monkeypatch, tmp_path)
     _present(home, "claude")
     assert skill_install.install_skills() == 0
-    for skill in ("ietf-llm", "ietf-interpreting", "ietf-contributing"):
+    for skill in ("ietf-interpreting", "ietf-contributing"):
         assert _installed(home, "claude", skill)
+    # The routing skill is no longer bundled, so it is never installed.
+    assert not _installed(home, "claude", "ietf-llm")
 
 
-def test_norms_everywhere_query_claude_only(tmp_path: Path, monkeypatch) -> None:
+def test_norms_install_into_every_detected_harness(
+    tmp_path: Path, monkeypatch
+) -> None:
     home = _sandbox(monkeypatch, tmp_path)
-    _present(home, "claude", "codex", "gemini")
+    _present(home, "claude", "codex", "gemini", "opencode")
     assert skill_install.install_skills() == 0
-    # Norms land in every detected harness's own root.
-    for harness in ("claude", "codex", "gemini"):
+    for harness in ("claude", "codex", "gemini", "opencode"):
         assert _installed(home, harness, "ietf-interpreting")
         assert _installed(home, harness, "ietf-contributing")
-    # Query skill only in ~/.claude/skills — NOT in Codex/Gemini dirs.
-    assert _installed(home, "claude", "ietf-llm")
-    assert not _installed(home, "codex", "ietf-llm")
-    assert not _installed(home, "gemini", "ietf-llm")
+        # No routing skill is bundled or installed anywhere.
+        assert not _installed(home, harness, "ietf-llm")
 
 
-def test_query_reaches_claude_dir_for_opencode_only(
-    tmp_path: Path, monkeypatch
-) -> None:
-    # opencode reads ~/.claude/skills, so the query skill goes there even
-    # when Claude itself isn't installed.
-    home = _sandbox(monkeypatch, tmp_path)
-    _present(home, "opencode")
-    assert skill_install.install_skills() == 0
-    assert _installed(home, "opencode", "ietf-interpreting")
-    assert _installed(home, "opencode", "ietf-contributing")
-    # Query skill not in opencode's own dir, but in ~/.claude/skills.
-    assert not _installed(home, "opencode", "ietf-llm")
-    assert (home / ".claude/skills/ietf-llm/SKILL.md").exists()
-
-
-def test_no_query_skill_when_only_codex_gemini(
-    tmp_path: Path, monkeypatch
-) -> None:
-    # Neither Claude nor opencode present → the query skill has no skill home
-    # (those harnesses get routing from the MCP instructions field instead).
+def test_no_routing_skill_is_installed(tmp_path: Path, monkeypatch) -> None:
+    # Neither the query skill dir nor a stray ~/.claude/skills/ietf-llm appears.
     home = _sandbox(monkeypatch, tmp_path)
     _present(home, "codex", "gemini")
     assert skill_install.install_skills() == 0
@@ -123,7 +106,7 @@ def test_install_overwrites_modified(tmp_path: Path, monkeypatch) -> None:
     home = _sandbox(monkeypatch, tmp_path)
     _present(home, "claude")
     skill_install.install_skills()
-    edited = home / ".claude/skills/ietf-llm/SKILL.md"
+    edited = home / ".claude/skills/ietf-contributing/SKILL.md"
     edited.write_text("user-edited content")
     assert skill_install.install_skills() == 0
     assert "user-edited content" not in edited.read_text()
@@ -165,14 +148,14 @@ def test_sync_auto_updates_pristine_skill(
     _present(home, "claude")
     skill_install.install_skills()
     capsys.readouterr()
-    skill_dest = home / ".claude/skills/ietf-llm"
+    skill_dest = home / ".claude/skills/ietf-contributing"
     (skill_dest / "SKILL.md").write_text("older bundled content")
     manifest = skill_install._read_manifest()
     skill_install._record(manifest, skill_dest, skill_install._tree_hash(skill_dest))
     skill_install._write_manifest(manifest)
     skill_install.sync_if_pristine(Verbosity.STATUS)
     assert "older bundled content" not in (skill_dest / "SKILL.md").read_text()
-    assert "Updated the installed ietf-llm skill" in capsys.readouterr().err
+    assert "Updated the installed ietf-contributing skill" in capsys.readouterr().err
 
 
 def test_sync_notifies_when_user_edited(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -193,7 +176,7 @@ def test_sync_notifies_when_no_manifest(tmp_path: Path, monkeypatch, capsys) -> 
     skill_install.install_skills()
     skill_install._manifest_path().unlink()
     capsys.readouterr()
-    edited = home / ".claude/skills/ietf-llm/SKILL.md"
+    edited = home / ".claude/skills/ietf-contributing/SKILL.md"
     edited.write_text("older content, no manifest")
     skill_install.sync_if_pristine(Verbosity.STATUS)
     assert edited.read_text() == "older content, no manifest"
@@ -205,9 +188,46 @@ def test_sync_is_silent_when_quiet(tmp_path: Path, monkeypatch, capsys) -> None:
     _present(home, "claude")
     skill_install.install_skills()
     capsys.readouterr()
-    (home / ".claude/skills/ietf-llm/SKILL.md").write_text("hand-edited")
+    (home / ".claude/skills/ietf-contributing/SKILL.md").write_text("hand-edited")
     skill_install.sync_if_pristine(Verbosity.QUIET)
     assert capsys.readouterr().err == ""
+
+
+def test_sync_prunes_pristine_orphan(tmp_path: Path, monkeypatch, capsys) -> None:
+    # A skill we installed that is no longer bundled (the retired ietf-llm
+    # routing skill) is removed on sync when still pristine — no orphan lingers.
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
+    orphan = home / ".claude/skills/ietf-llm"
+    orphan.mkdir(parents=True)
+    (orphan / "SKILL.md").write_text("old routing skill")
+    manifest = skill_install._read_manifest()
+    skill_install._record(manifest, orphan, skill_install._tree_hash(orphan))
+    skill_install._write_manifest(manifest)
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+    assert not orphan.exists()
+    assert "no longer bundled" in capsys.readouterr().err
+
+
+def test_sync_keeps_edited_orphan(tmp_path: Path, monkeypatch, capsys) -> None:
+    # An orphaned skill with local edits (hash no longer matches what we
+    # recorded) is flagged, not deleted.
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
+    orphan = home / ".claude/skills/ietf-llm"
+    orphan.mkdir(parents=True)
+    (orphan / "SKILL.md").write_text("original")
+    manifest = skill_install._read_manifest()
+    skill_install._record(manifest, orphan, skill_install._tree_hash(orphan))
+    skill_install._write_manifest(manifest)
+    (orphan / "SKILL.md").write_text("user-edited after we recorded it")
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+    assert orphan.exists()
+    assert "remove it manually" in capsys.readouterr().err
 
 
 def test_sync_never_raises(tmp_path: Path, monkeypatch) -> None:

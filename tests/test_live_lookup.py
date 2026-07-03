@@ -161,8 +161,13 @@ def _canned(url: str) -> Optional[Dict[str, Any]]:
 
 
 @pytest.fixture(autouse=True)
-def _stub_fetch(monkeypatch):
-    """Replace the one network seam and clear the TTL cache around each test."""
+def _stub_fetch(monkeypatch, isolated_home):
+    """Replace the one network seam and clear the TTL cache around each test.
+
+    `isolated_home` sandboxes the disk-backed live cache these tools now write
+    (`_cached_json` persists a `.live-cache.json` under the cache root), so a
+    test never touches the real user cache.
+    """
     live_lookup._reset_cache()
     monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: _canned(url))
     yield
@@ -356,6 +361,25 @@ def test_ttl_cache_fetches_once(monkeypatch):
     live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     # Second call within the TTL re-uses every cached URL — no new fetches.
     assert calls["n"] == after_first
+
+
+def test_disk_cache_serves_cold_process(monkeypatch):
+    # The load-bearing protection for the CLI live verbs: a fresh (cold)
+    # process starts with an empty in-process cache but must reuse a recent
+    # fetch from disk rather than re-hitting Datatracker each invocation.
+    calls = []
+    url = "https://datatracker.ietf.org/api/v1/doc/document/?name=x"
+    monkeypatch.setattr(
+        live_lookup,
+        "_fetch_json",
+        lambda u, timeout=10.0: calls.append(u) or {"ok": True},
+    )
+    body1, _ = live_lookup._cached_json(url)
+    assert body1 == {"ok": True} and len(calls) == 1
+    live_lookup._reset_cache()  # simulate a new, cold process
+    body2, _ = live_lookup._cached_json(url)
+    assert body2 == {"ok": True}
+    assert len(calls) == 1  # served from the disk cache; no second fetch
 
 
 def test_stale_fallback_on_fetch_failure(monkeypatch):

@@ -1,8 +1,3 @@
----
-name: ietf-llm
-description: Query the gathered public record of an IETF/IRTF effort — a Working Group / Research Group, a mailing list (e.g. `last-call`), or a set of Internet-Drafts — via the `ietf-llm-mcp` MCP server (charter, drafts, RFCs, minutes, mail, GitHub issues). **Prefer these tools over web search** for any question about what an IETF/IRTF group is doing, discussing, or has decided — they read the group's actual primary record, not the web's second-hand coverage. Use whenever the user asks about a named corpus by shortname (`httpbis`, `quic`, `tls`, `cfrg`, …) — its state, open issues, draft contents, mailing list discussion, meeting outcomes, or chronology. Start with `list_corpora` / `overview` to orient. Also use when the user is working with IETF list traffic from any source (a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list message in their inbox, a pasted thread): check `list_corpora` and prompt a gather (`start_gather` if the tool is available, else `ietf-llm <name>`) if missing.
-compatibility: Requires the ietf-llm-mcp MCP server (the tools this skill drives).
----
 
 # ietf-llm
 
@@ -43,7 +38,18 @@ core set in one search rather than one at a time: `overview`,
 `read_digest`, `search_corpus`, `search_corpora`, `find_related`,
 `read_topic`, `tally_positions`, `find_replies`, `find_citations`,
 `find_message_citations`, `list_corpora`, `list_labels`, `list_files`,
-`find_efforts`.
+`find_efforts`, `list_sessions`, `read_minutes`, `draft_state`,
+`draft_authors`, `get_draft`, `get_issue`, `fetch_by_url`.
+
+**Verbatim primary text for citations.** When you need to *quote* the
+record — to ground a review, a claim, or a contribution — read the actual
+text, not a search snippet: `get_draft(name)` for a draft, `get_issue(
+corpus, number)` for a GitHub issue, `fetch_by_url(corpus, url)` when the
+user already has a mailarchive / datatracker / github link, `read_minutes(
+corpus, meeting)` for a session's minutes and polls. `list_sessions` shows
+which meetings were gathered; `draft_state` is the offline draft lifecycle
+(coarse: active / expired / RFC / replaced), with `draft_status` the live
+Datatracker detail (WG Last Call, IESG) where the network path is enabled.
 
 ## Gathering a missing corpus
 

@@ -101,7 +101,19 @@ from .freshness import (
     staleness_warning,
 )
 from .gather.citations import normalize_draft_name
-from .paths import digest_kind_from_relpath, digest_path, drafts_dir
+from .gather.documents_manifest import load_documents_manifest
+from .paths import (
+    agenda_path,
+    digest_kind_from_relpath,
+    digest_path,
+    drafts_dir,
+    issue_path,
+    issues_dir,
+    meetings_dir,
+    minutes_path,
+    polls_dir,
+    transcripts_dir,
+)
 from .positions import (
     extract_chair_statements,
     file_supports_tally,
@@ -2678,31 +2690,24 @@ def _prewarm_embedding_model_async() -> None:
     ).start()
 
 
-def _load_server_instructions() -> Optional[str]:
-    """Read the bundled ietf-llm skill's SKILL.md, returning its body
-    (frontmatter stripped).
+def _load_server_instructions() -> str:
+    """Return the server's built-in routing + norms guidance, served as the
+    FastMCP `instructions` field (which compliant clients surface to the model
+    as system-prompt context).
 
-    Passed to FastMCP as the server-level `instructions` field, which
-    MCP-compliant clients surface to the model as system-prompt
-    context. Source-of-truth-once: this is the same `ietf-llm` skill
-    `--install-skills` copies into Claude Code, so non-Claude harnesses
-    (Codex, Gemini, Cursor, Zed, opencode, …) see the same routing rules
-    and IETF norms without us maintaining a parallel guidance string.
-
-    YAML frontmatter (the `---` block at the top with `name:` /
-    `description:`) is stripped — it's skill metadata, not guidance.
-    Returns None if the file is missing (shouldn't happen for an
-    installed package, but a defensive None lets the server come up
-    anyway).
+    Loaded from the bundled `data/mcp-instructions.md` — the routing brain
+    (recognise the corpus, prefer it to web search, the mandatory read-the-norms
+    gate before drafting or characterising consensus, the tool playbook). It is
+    the server's own guidance, not a skill: nothing installs it, and every
+    client — Claude, Codex, Gemini, Cursor, Zed, opencode — gets the same
+    routing from this field. Frontmatter (if any) is stripped; a missing file
+    degrades to an empty string so the server still comes up.
     """
     try:
-        skill_path = resources.files("ietf_llm").joinpath(
-            "data/skills/ietf-llm/SKILL.md"
-        )
-        text = skill_path.read_text(encoding="utf-8")
+        path = resources.files("ietf_llm").joinpath("data/mcp-instructions.md")
+        return _strip_frontmatter(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError):
-        return None
-    return _strip_frontmatter(text)
+        return ""
 
 
 # Named capability flags a skill or downstream tool can gate on, so it
@@ -3348,6 +3353,267 @@ def tool_draft_authors(name: str) -> str:
     return "\n".join(lines)
 
 
+#: Line cap for a single gathered minutes read, so a pathological transcript-
+#: sized minutes file cannot blow the context window in one call.
+_MINUTES_MAX_LINES = 2000
+
+
+def _read_text_capped(path: str, max_lines: int) -> str:
+    """Read a file, truncating past `max_lines` with a pointer to page the
+    rest via `read_file_section`. Empty string if unreadable."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return ""
+    if len(lines) > max_lines:
+        return "".join(lines[:max_lines]) + (
+            f"\n\n_(truncated at {max_lines} lines — read further with "
+            "`read_file_section`)_\n"
+        )
+    return "".join(lines)
+
+
+def _session_date(cache: str, code: str) -> str:
+    """Best-effort session date from a meeting's minutes header, or ''."""
+    try:
+        with open(minutes_path(cache, code), encoding="utf-8") as handle:
+            head = handle.read(2000)
+    except OSError:
+        return ""
+    match = re.search(r"(?im)^\s*Date:\s*(\d{4}-\d{2}-\d{2})", head)
+    return match.group(1) if match else ""
+
+
+def _dir_md_count(directory: str) -> int:
+    """Number of `.md` files directly in `directory` (0 if it is absent)."""
+    if not os.path.isdir(directory):
+        return 0
+    return len([f for f in os.listdir(directory) if f.endswith(".md")])
+
+
+def _session_artifacts(cache: str, code: str) -> str:
+    """Compact 'minutes · agenda · N transcripts · N polls' inventory."""
+    parts: List[str] = []
+    if os.path.isfile(minutes_path(cache, code)):
+        parts.append("minutes")
+    if os.path.isfile(agenda_path(cache, code)):
+        parts.append("agenda")
+    n_tx = _dir_md_count(transcripts_dir(cache, code))
+    if n_tx:
+        parts.append(f"{n_tx} transcript{'s' if n_tx != 1 else ''}")
+    n_polls = _dir_md_count(polls_dir(cache, code))
+    if n_polls:
+        parts.append(f"{n_polls} poll{'s' if n_polls != 1 else ''}")
+    return " · ".join(parts) or "(no artifacts)"
+
+
+def _sessions_listing(wg: str, cache: str) -> str:
+    """Body of `tool_list_sessions` (undecorated) so `read_minutes` can reuse
+    it without re-entering the corpus-version pin."""
+    mdir = meetings_dir(cache)
+    codes = (
+        sorted(
+            name
+            for name in os.listdir(mdir)
+            if os.path.isdir(os.path.join(mdir, name)) and not name.startswith("_")
+        )
+        if os.path.isdir(mdir)
+        else []
+    )
+    if not codes:
+        return f"No meeting sessions gathered for {wg}."
+    rows = [
+        (code, _session_date(cache, code), _session_artifacts(cache, code))
+        for code in codes
+    ]
+    code_w = max(len(c) for c, _, _ in rows)
+    date_w = max((len(d) for _, d, _ in rows), default=0)
+    lines = [f"{c.ljust(code_w)}  {d.ljust(date_w)}  {a}".rstrip() for c, d, a in rows]
+    return (
+        f"Gathered meeting sessions for {wg} (code · date · artifacts). "
+        f'Read one with `read_minutes(corpus="{wg}", meeting="<code>")`.\n\n'
+        + "\n".join(lines)
+    )
+
+
+@_requires_corpus
+def tool_list_sessions(wg: str) -> str:
+    return _with_freshness(wg, _sessions_listing(wg, _files_dir(wg)))
+
+
+def _read_polls(cache: str, code: str) -> str:
+    """Concatenate a meeting's gathered poll files (small), or '' if none."""
+    pdir = polls_dir(cache, code)
+    if not os.path.isdir(pdir):
+        return ""
+    chunks = [
+        text
+        for name in sorted(os.listdir(pdir))
+        if name.endswith(".md")
+        and (text := _read_text_capped(os.path.join(pdir, name), 500)).strip()
+    ]
+    return "\n\n".join(chunks)
+
+
+@_requires_corpus
+def tool_read_minutes(wg: str, meeting: str = "") -> str:
+    cache = _files_dir(wg)
+    if not meeting:
+        listing = _sessions_listing(wg, cache)
+        return _with_freshness(
+            wg, f"Pass a `meeting` code. Sessions available:\n\n{listing}"
+        )
+    path = minutes_path(cache, meeting)
+    if not os.path.isfile(path):
+        return _with_freshness(
+            wg,
+            f"No minutes gathered for meeting '{meeting}' in {wg}.\n\n"
+            + _sessions_listing(wg, cache),
+        )
+    body = (
+        f"# Minutes — {wg} {meeting}\n\n{_read_text_capped(path, _MINUTES_MAX_LINES)}"
+    )
+    polls = _read_polls(cache, meeting)
+    if polls:
+        body += (
+            "\n\n## Polls\n\n_Raw poll tallies — a poll is a sense of the room, "
+            "not a decision; the chair declares consensus._\n\n" + polls
+        )
+    return _with_freshness(wg, body)
+
+
+#: Coarse draft lifecycle slugs (Datatracker draft-type states) → friendly
+#: labels. This is the whole offline vocabulary — WG-process granularity (WGLC,
+#: IESG evaluation) is not persisted and lives only in the live `draft_status`.
+_DRAFT_STATE_LABELS = {
+    "active": "active I-D",
+    "expired": "expired",
+    "rfc": "published RFC",
+    "repl": "replaced",
+    "auth-rm": "withdrawn (author)",
+    "ietf-rm": "withdrawn (IETF)",
+}
+
+
+@_requires_corpus
+def tool_draft_state(wg: str, state: str = "") -> str:
+    manifest = load_documents_manifest(wg)
+    if not manifest:
+        return _with_freshness(
+            wg,
+            f"No draft lifecycle state recorded for {wg} — "
+            f"{gather_suggestion(wg, purpose='to record it')}.",
+        )
+    rows = []
+    for name in sorted(manifest):
+        slug = manifest[name].get("state") or "unknown"
+        if state and slug != state:
+            continue
+        expires = manifest[name].get("expires") or ""
+        rows.append((name, _DRAFT_STATE_LABELS.get(slug, slug), expires))
+    if not rows:
+        present = ", ".join(
+            sorted({(rec.get("state") or "unknown") for rec in manifest.values()})
+        )
+        return _with_freshness(
+            wg, f"No drafts in state '{state}' for {wg}. States present: {present}."
+        )
+    name_w = max(len(n) for n, _, _ in rows)
+    label_w = max(len(lab) for _, lab, _ in rows)
+    lines = [
+        f"{n.ljust(name_w)}  {lab.ljust(label_w)}  {e}".rstrip() for n, lab, e in rows
+    ]
+    body = (
+        f"Draft lifecycle state for {wg} (name · state · expires), offline from "
+        "the cache. This is the COARSE lifecycle only — active / expired / "
+        "became-RFC / replaced / withdrawn. It does NOT include WG-process state "
+        "(WG Last Call, IESG evaluation); for that use the live `draft_status`. "
+        "Adoption is derivable from the name (`draft-ietf-<wg>-` is adopted).\n\n"
+        + "\n".join(lines)
+    )
+    return _with_freshness(wg, body)
+
+
+#: Line caps for the verbatim artifact reads, so one call can't blow the
+#: context window; both page via their start_line / read_file_section hint.
+_DRAFT_MAX_LINES = 2000
+_ISSUE_MAX_LINES = 3000
+
+
+def _read_file_window(path: str, start_line: int, max_lines: int) -> str:
+    """Return a bounded, header-stamped line window of `path`, with a footer
+    pointing at how to page further when it is truncated."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return f"Could not read `{os.path.basename(path)}`."
+    total = len(lines)
+    start = max(1, start_line)
+    end = min(total, start - 1 + max(1, max_lines))
+    header = f"# {os.path.basename(path)} (lines {start}–{end} of {total})\n\n"
+    footer = ""
+    if end < total:
+        footer = (
+            f"\n\n_(showing lines {start}–{end} of {total}; continue with "
+            f"`start_line={end + 1}`)_\n"
+        )
+    return header + "".join(lines[start - 1 : end]) + footer
+
+
+def tool_get_draft(
+    name: str, start_line: int = 1, max_lines: int = _DRAFT_MAX_LINES
+) -> str:
+    """Verbatim text of the newest cached revision of draft `name`, bounded."""
+    path = _find_latest_draft_file(name)
+    if path is None:
+        return (
+            f"No cached draft matching '{name}'. The owning WG must be gathered "
+            f"— {gather_suggestion(normalize_draft_name(name), purpose='to fetch it')}, "
+            "or call `list_corpora` to see what is available."
+        )
+    return _read_file_window(path, start_line, min(max_lines, _DRAFT_MAX_LINES))
+
+
+def _resolve_issue_file(
+    cache: str, number: str, repo: str
+) -> Tuple[Optional[str], str]:
+    """Resolve a per-issue file by number, within `repo` if given else searched
+    across every gathered repo. Returns (path, note); path is None with an
+    actionable note on a miss or an ambiguous number."""
+    if repo:
+        path = issue_path(cache, repo, number)
+        if os.path.isfile(path):
+            return path, ""
+        return None, f"No gathered issue #{number} for repo '{repo}' in this corpus."
+    directory = issues_dir(cache)
+    if not os.path.isdir(directory):
+        return None, "This corpus has no gathered GitHub issues."
+    matches = [
+        (slug, os.path.join(directory, slug, f"{number}.md"))
+        for slug in sorted(os.listdir(directory))
+        if os.path.isfile(os.path.join(directory, slug, f"{number}.md"))
+    ]
+    if not matches:
+        return None, f"No gathered issue #{number} in any repo of this corpus."
+    if len(matches) > 1:
+        repos = ", ".join(slug for slug, _ in matches)
+        return None, (
+            f"Issue #{number} exists in several gathered repos ({repos}); "
+            "pass `repo` (owner/repo) to choose one."
+        )
+    return matches[0][1], ""
+
+
+@_requires_corpus
+def tool_get_issue(wg: str, number: str, repo: str = "") -> str:
+    path, note = _resolve_issue_file(_files_dir(wg), str(number), repo)
+    if path is None:
+        return _with_freshness(wg, note)
+    return _with_freshness(wg, _read_file_window(path, 1, _ISSUE_MAX_LINES))
+
+
 def _render_upcoming_meetings(corpus: str) -> str:
     """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
     each drillable by passing its id back as `meeting`."""
@@ -3503,7 +3769,7 @@ def tool_draft_status(name: str) -> str:
 
 
 @graceful_keyboard_interrupt
-def main() -> None:
+def main() -> None:  # pylint: disable=too-many-locals
     try:
         from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
             FastMCP,
@@ -3531,16 +3797,13 @@ def main() -> None:
     transport = _resolve_transport()
     set_gather_default(_startup_gather_default())
 
-    # `instructions` is the MCP-spec mechanism for server-level
-    # guidance: clients SHOULD surface it as system-prompt context.
-    # Loading SKILL.md here makes the same guidance Claude Code reads
-    # from the installed skill available to Codex / Gemini / Cursor /
-    # Zed / opencode — one source of truth, no parallel maintenance.
-    server_instructions = _load_server_instructions()
-    # Append the version/feature footer so a skill can feature-gate from the
-    # prompt; harmless to start without SKILL.md (footer becomes the whole
-    # instructions string).
-    server_instructions = (server_instructions or "") + _capability_footer()
+    # `instructions` is the MCP-spec mechanism for server-level guidance:
+    # clients SHOULD surface it as system-prompt context. This carries the
+    # full routing brain + the norms gate (from data/mcp-instructions.md) to
+    # every client — Claude / Codex / Gemini / Cursor / Zed / opencode — so
+    # routing needs no separately-installed skill. The version/feature footer
+    # is appended so a client can feature-gate from the prompt.
+    server_instructions = _load_server_instructions() + _capability_footer()
     # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
     # so any replica answers any request) and an optional Host/Origin allow-list
     # for DNS-rebinding protection when the server is fronted directly (#41).
@@ -3937,6 +4200,65 @@ def main() -> None:
                 version suffix is optional (the newest cached revision is used).
         """
         return await _offload(tool_draft_authors, name)
+
+    @server.tool()
+    async def list_sessions(corpus: str) -> str:
+        """List a corpus's gathered meeting sessions — each meeting code with
+        its date and which artifacts are present (minutes, agenda, transcripts,
+        polls). Offline, from the cache. Use it to find the `meeting` code to
+        pass to `read_minutes`, or to see which sessions were captured.
+        """
+        return await _offload(tool_list_sessions, corpus)
+
+    @server.tool()
+    async def read_minutes(corpus: str, meeting: str = "") -> str:
+        """Read the gathered minutes for one meeting session, plus any recorded
+        poll tallies. Offline, from the cache; the authoritative record of what
+        a session discussed and decided.
+
+        Pass the `meeting` code from `list_sessions` (e.g. `ietf125`,
+        `interim20260401`); omit it to get the session list. The appended polls
+        are raw sense-of-the-room tallies, NOT decisions — the chair declares
+        consensus (see `read_ietf_interpretation_norms`).
+        """
+        return await _offload(tool_read_minutes, corpus, meeting)
+
+    @server.tool()
+    async def draft_state(corpus: str, state: str = "") -> str:
+        """Draft lifecycle state for a corpus, offline from the cache: which
+        drafts are active, expired, became RFCs, were replaced, or withdrawn,
+        with expiry dates. Optionally filter to one `state` slug.
+
+        COARSE lifecycle only — it does NOT include WG-process state (WG Last
+        Call, IESG evaluation); for that use `draft_status` (live). Adoption is
+        derivable from the draft name (`draft-ietf-<wg>-` is adopted). The
+        offline counterpart to `draft_status` for when the network / live path
+        is unavailable.
+        """
+        return await _offload(tool_draft_state, corpus, state)
+
+    @server.tool()
+    async def get_draft(name: str, start_line: int = 1, max_lines: int = 2000) -> str:
+        """Verbatim text of a cached Internet-Draft by name (newest cached
+        revision, across all gathered corpora), as a bounded line window.
+
+        Use this to quote a draft's ACTUAL wording — to ground a review, a
+        citation, or a contribution in primary text rather than a search
+        snippet. Page a long draft with `start_line`. The owning WG must be
+        gathered.
+        """
+        return await _offload(tool_get_draft, name, start_line, max_lines)
+
+    @server.tool()
+    async def get_issue(corpus: str, number: str, repo: str = "") -> str:
+        """Verbatim text of one GitHub issue — opening description and comment
+        thread — from a corpus, by issue number.
+
+        Use this to quote an issue's ACTUAL text for a citation rather than a
+        search snippet. Pass `repo` (owner/repo) to disambiguate when the
+        corpus tracks several repos and the number is ambiguous.
+        """
+        return await _offload(tool_get_issue, corpus, number, repo)
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments

@@ -2,22 +2,21 @@
 
 The skills ship as package data under `ietf_llm/data/skills/<name>/`, each a
 self-contained Agent Skill (`SKILL.md` with `name` + `description`
-frontmatter — the open standard at agentskills.io). Three are bundled:
+frontmatter — the open standard at agentskills.io). Two are bundled, both
+norms skills vendored from mnot/ietf-skill (see data/skills/VENDORED.md):
 
-  - `ietf-llm`           — the query/routing brain (drives the MCP tools)
   - `ietf-interpreting`  — read-side norms (consensus, attribution, …)
   - `ietf-contributing`  — write-side norms (drafting list mail / issues)
 
+There is no bundled query/routing skill — routing comes from the MCP server's
+`instructions` field (see `data/mcp-instructions.md`), served to every client.
+
 `--install-skills` detects every supported harness present on the machine
 (Claude Code, Codex, Gemini CLI, opencode — all adopters of the Agent Skills
-open standard) and installs into each one's skills directory, with
-idempotency and a safety check for user edits.
-
-The norms skills are self-contained guidance and go into every detected
-harness. The query skill drives the `mcp__ietf-llm__*` tools, so it goes only
-into `~/.claude/skills/` (read by Claude and opencode); Codex and Gemini get
-the same routing from the MCP server's `instructions` field, so a duplicate
-skill there would be inert.
+open standard) and installs each bundled (norms) skill into every one's skills
+directory, with idempotency and a safety check for user edits. It is a
+convenience: the two norms skills are vendored copies of what mnot/ietf-skill
+publishes, so installing them from that repo instead is equivalent.
 
 On every CLI gather, `sync_if_pristine()` keeps already-installed skills
 current: it auto-updates an installed copy to the bundled version *only* when
@@ -42,11 +41,6 @@ from typing import Any, Dict, List
 from . import __version__
 from .utils import LogLevel, Verbosity, get_cache_dir, log
 
-# The query skill drives the MCP tools, so it only belongs where the server is
-# configured: Claude (native) and opencode (which reads ~/.claude/skills). The
-# norms skills are self-contained guidance and go into every detected harness.
-QUERY_SKILL = "ietf-llm"
-
 
 @dataclass(frozen=True)
 class Harness:
@@ -56,7 +50,6 @@ class Harness:
     label: str  # human label for output
     marker: Path  # config dir whose existence means the harness is installed
     skills_root: Path  # where to install skills for this harness
-    reads_claude_dir: bool  # also auto-reads ~/.claude/skills (Claude, opencode)
 
 
 def _home() -> Path:
@@ -71,41 +64,16 @@ def _harnesses() -> List[Harness]:
     `~/.claude/skills`), Claude `~/.claude/skills`."""
     home = _home()
     return [
-        Harness(
-            "claude",
-            "Claude Code",
-            home / ".claude",
-            home / ".claude" / "skills",
-            True,
-        ),
-        Harness(
-            "codex",
-            "Codex CLI",
-            home / ".codex",
-            home / ".agents" / "skills",
-            False,
-        ),
-        Harness(
-            "gemini",
-            "Gemini CLI",
-            home / ".gemini",
-            home / ".gemini" / "skills",
-            False,
-        ),
+        Harness("claude", "Claude Code", home / ".claude", home / ".claude" / "skills"),
+        Harness("codex", "Codex CLI", home / ".codex", home / ".agents" / "skills"),
+        Harness("gemini", "Gemini CLI", home / ".gemini", home / ".gemini" / "skills"),
         Harness(
             "opencode",
             "opencode",
             home / ".config" / "opencode",
             home / ".config" / "opencode" / "skills",
-            True,
         ),
     ]
-
-
-def _claude_skills_root() -> Path:
-    """The `~/.claude/skills` dir — home of the query skill (Claude + opencode
-    read it)."""
-    return _home() / ".claude" / "skills"
 
 
 def _detect_harnesses() -> List[Harness]:
@@ -236,10 +204,9 @@ def install_skills() -> int:
     """Install the bundled skills into every supported harness present on this
     machine (`--install-skills`).
 
-    Norms skills go into each detected harness's own skills dir; the query
-    skill goes only into `~/.claude/skills/` (read by Claude and opencode).
-    Overwrites any existing copy at each destination (explicit install) — a
-    user's edits are restored too, so back them up first if that matters.
+    Every bundled (norms) skill goes into each detected harness's own skills
+    dir. Overwrites any existing copy at each destination (explicit install) —
+    a user's edits are restored too, so back them up first if that matters.
 
     Returns a shell-style exit code:
       0 — installed into the detected harnesses (or none detected: nothing to do)
@@ -263,20 +230,12 @@ def install_skills() -> int:
         )
         return 0
 
-    norms = [s for s in bundled if s.name != QUERY_SKILL]
-    query = [s for s in bundled if s.name == QUERY_SKILL]
-
-    # Group skills by destination root so each root is written once (norms +
-    # query at ~/.claude/skills, or a root shared by two harnesses, merge).
+    # Group skills by destination root so a root shared by two harnesses is
+    # written once. Every bundled skill (all norms) goes into each harness.
     by_root: Dict[Path, Dict[str, Path]] = {}
     for harness in present:
         dest = by_root.setdefault(harness.skills_root, {})
-        for skill in norms:
-            dest[skill.name] = skill
-    # Query skill → ~/.claude/skills iff a present harness reads that dir.
-    if query and any(h.reads_claude_dir for h in present):
-        dest = by_root.setdefault(_claude_skills_root(), {})
-        for skill in query:
+        for skill in bundled:
             dest[skill.name] = skill
 
     for root, skills in by_root.items():
@@ -286,6 +245,10 @@ def install_skills() -> int:
     for root in sorted(by_root, key=str):
         names = ", ".join(sorted(by_root[root]))
         print(f"  {names} → {root}")
+    print(
+        "  (a convenience copy of the norms skills from mnot/ietf-skill; "
+        "routing itself comes from the MCP server's instructions.)"
+    )
     return 0
 
 
@@ -316,8 +279,8 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
         return
     manifest = _read_manifest()
     changed = False
-    # Every harness skills root, plus ~/.claude/skills (the query skill's home).
-    roots = {h.skills_root for h in _harnesses()} | {_claude_skills_root()}
+    # Every harness's own skills root.
+    roots = {h.skills_root for h in _harnesses()}
     for root in roots:
         for name, src in bundled.items():
             dest = root / name
@@ -325,8 +288,50 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
                 continue  # not installed here — leave it alone
             if _sync_one(src, dest, manifest, verbosity):
                 changed = True
+    if _prune_orphans(manifest, set(bundled), verbosity):
+        changed = True
     if changed:
         _write_manifest(manifest)
+
+
+def _prune_orphans(
+    manifest: Dict[str, Any], bundled_names: "set[str]", verbosity: Verbosity
+) -> bool:
+    """Remove skills we previously installed that are no longer bundled — e.g.
+    the retired `ietf-llm` routing skill — when the installed copy is still
+    pristine, so an upgrade does not leave stale guidance behind now that
+    routing is served from the MCP `instructions` field. A user-edited copy
+    is flagged, not deleted. Only touches destinations we recorded in the
+    manifest (i.e. that we wrote). Mutates `manifest`; returns True if changed.
+    """
+    changed = False
+    for dest_str in list(manifest):
+        if Path(dest_str).name in bundled_names:
+            continue  # still bundled — the normal sync handles it
+        dest = Path(dest_str)
+        if not dest.is_dir():
+            manifest.pop(dest_str, None)  # already gone — drop the stale entry
+            changed = True
+            continue
+        recorded = manifest.get(dest_str, {}).get("sha256")
+        if recorded is not None and _tree_hash(dest) == recorded:
+            shutil.rmtree(dest, ignore_errors=True)
+            manifest.pop(dest_str, None)
+            changed = True
+            log(
+                f"Removed the obsolete {dest.name} skill at {dest} — it is no "
+                "longer bundled (its guidance is now served by the MCP server).",
+                verbosity,
+                level=LogLevel.STATUS,
+            )
+        else:
+            log(
+                f"The installed {dest.name} skill at {dest} is no longer bundled "
+                "but has local edits; remove it manually if you no longer want it.",
+                verbosity,
+                level=LogLevel.STATUS,
+            )
+    return changed
 
 
 def _sync_one(
