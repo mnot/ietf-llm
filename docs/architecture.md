@@ -284,7 +284,7 @@ Key invariants:
   once per gather run after the per-corpus work, TTL-guarded and
   best-effort (`gather/rfcs.py`). The leading underscore keeps it out of
   `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
-  `rfc_search` / `get_rfc` tools read it; it is not embedded.
+  `search_rfcs` / `get_rfc` tools read it; it is not embedded.
 - **`_catalog/` is the matching singleton for active efforts.** It
   mirrors the active (and BoF) slice of the Datatracker group list,
   refreshed beside `_rfc/` in tail housekeeping with the same TTL / ETag
@@ -344,7 +344,7 @@ is a matter of writing code that reads the cache; no change to gather.
 
 One side-channel sits beside this: every gather run also refreshes the
 cross-corpus RFC-series index from rfc.fyi into `_rfc/` (TTL-guarded,
-best-effort), which the MCP `rfc_search` / `get_rfc` tools read. It is a
+best-effort), which the MCP `search_rfcs` / `get_rfc` tools read. It is a
 singleton mirror, not part of any corpus, so it stays outside the
 per-`<wg>` writer/reader flow above.
 
@@ -375,7 +375,7 @@ ietf_llm/
 ├── s3_backend.py           # shared S3Bucket: one boto3 client for blob + control planes
 ├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read + seed
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
-├── live_lookup.py          # live Datatracker reads (meeting_sessions / draft_status /
+├── live_lookup.py          # live Datatracker reads (meeting_schedule / draft_status /
 │                           # overview reconciliation): in-process TTL cache, no disk
 │                           # writes; gather-gated, the one networked read path
 ├── freshness.py            # last-gathered sentinel + staleness warnings
@@ -392,7 +392,7 @@ ietf_llm/
 │                           # write_if_changed, argcomplete helpers
 ├── oai_compat.py           # shared OpenAI-compatible HTTP plumbing (auth headers,
 │                           # retry + Retry-After) for the remote embed / summarise backends
-├── rfcs.py                 # cross-corpus RFC-series reader (rfc_search / get_rfc);
+├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
 │                           # ranks the _catalog/ singleton by topic, tags cached efforts
@@ -529,14 +529,14 @@ job:
   `find_citations` (threads citing a draft), `find_message_citations`
   (the message → message archive-permalink reference graph).
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`,
-  `fetch_by_url` (resolves the `w3.org/mid` Archived-At permalinks and
+  `get_by_url` (resolves the `w3.org/mid` Archived-At permalinks and
   GitHub issue URLs the corpus actually stores), `read_file_section`.
-- **RFC series (cross-corpus):** `rfc_search(query, …filters)` over the
+- **RFC series (cross-corpus):** `search_rfcs(query, …filters)` over the
   whole published RFC series and `get_rfc(number)` for one RFC's
   metadata + reference graph. These read the `_rfc/` singleton, *not* a
   gathered corpus — distinct from `search_corpus`, which is semantic
   search within one WG. A bare RFC number short-circuits to that RFC.
-- **Live chair-workflow facts (gated, networked):** `meeting_sessions`
+- **Live chair-workflow facts (gated, networked):** `meeting_schedule`
   (a group's sessions at a numbered *or* interim meeting — venue-local times,
   room, session id, Meetecho URLs / interim remote instructions; omit the id
   to list the group's upcoming meetings) and `draft_status` (a draft's live
@@ -724,7 +724,7 @@ Concretely, the gather layer reads from the API for:
   `datatracker_history.py`).
 
 `BeautifulSoup` survives only where there is no structured source:
-`utils.clean_html` cleans the MCP `fetch_by_url` tool's arbitrary
+`utils.clean_html` cleans the MCP `get_by_url` tool's arbitrary
 user-supplied pages and the handful of older minutes authored directly
 in HTML (served as a fragment when markdown is requested). New gather
 code that reaches for an HTML page should first confirm the API can't
@@ -977,7 +977,7 @@ them in.
 ### The networked read exception: live Datatracker lookups
 
 A second, narrower break from the read-only / no-network contract:
-`meeting_sessions`, `draft_status`, and `overview(corpus, live=True)` read
+`meeting_schedule`, `draft_status`, and `overview(corpus, live=True)` read
 **live** from Datatracker (`live_lookup.py`). The justification is freshness —
 meeting schedules and IESG document states change daily, so an agenda built
 on the gather cache (a multi-month window, often days stale) is wrong at the
@@ -1006,7 +1006,7 @@ exported `files/` are cleared. Thread reconstruction walks it directly.
 
 ### The RFC series is a cross-corpus singleton, mirrored not gathered
 
-`rfc_search` / `get_rfc` answer "find/identify/status of an RFC" across
+`search_rfcs` / `get_rfc` answer "find/identify/status of an RFC" across
 the *whole* published series — a question no single gathered corpus can
 serve. Rather than fold RFC metadata into every corpus, the series lives
 once at `_rfc/` (`rfcs.json` / `refs.json` / `tags.json`), mirrored from
@@ -1039,7 +1039,7 @@ over charter description) and tags each with whether it is already
 gathered here, so the model prefers a cached corpus over a fresh gather.
 Read-only, no network, markdown out — same boundary as every other tool.
 v1 covers active groups only; concluded efforts surface through
-`rfc_search`, already-cached ones through `list_corpora`.
+`search_rfcs`, already-cached ones through `list_corpora`.
 
 ### Persisted config: two files per WG, plus one global
 

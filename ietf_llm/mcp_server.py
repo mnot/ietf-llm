@@ -604,7 +604,7 @@ def tool_read_interpretation_norms() -> str:
 
 def tool_read_participation_norms() -> str:
     """Return the `ietf-contributing` skill body — norms for helping a human
-    contribute to a corpus (drafting list mail, GitHub issues/comments,
+    contribute to a corpus (drafting mailing-list messages, GitHub issues/comments,
     other discussion), the write-side companion to the reading norms.
 
     Pulled on demand when the question shifts from interpreting the
@@ -795,7 +795,7 @@ def tool_find_message_citations(
     """Walk the message reference graph for a thread / issue file.
 
     Mailing-list messages routinely cite *other messages* by archive
-    permalink — an appeal links the post being appealed, a split thread
+    permalink — an appeal links the message being appealed, a split thread
     links the message it forked from, a reply footnotes the one it
     answers. The gather step resolves those links (against the
     `Archived-At:` permalinks on the gathered messages) into
@@ -1378,7 +1378,7 @@ def _participation_nudge(files: "str | List[str]") -> str:
         return ""
     return (
         "> ✍ **About to draft a contribution from this?** Before you write "
-        "list mail, a GitHub issue or comment, or any reply that goes into "
+        "a mailing-list message, a GitHub issue or comment, or any reply that goes into "
         "the record under a participant's name, you MUST call "
         "`read_ietf_participation_norms` first — the human is accountable and "
         "sends; you only draft. Reading the corpus is not the same as "
@@ -1796,7 +1796,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
 
     Best for two things: **chair statements** — messages from a chair carrying
     procedural language (`rough consensus`, `consensus call`, `WGLC`,
-    `adopting`, closure) surfaced at the top, the load-bearing posts in a long
+    `adopting`, closure) surfaced at the top, the load-bearing messages in a long
     thread — and **option polls** (`option N` / `#N` / `I prefer N`), counted
     per choice.
 
@@ -3414,7 +3414,7 @@ def _session_artifacts(cache: str, code: str) -> str:
 
 
 def _sessions_listing(wg: str, cache: str) -> str:
-    """Body of `tool_list_sessions` (undecorated) so `read_minutes` can reuse
+    """Body of `tool_list_meetings` (undecorated) so `read_minutes` can reuse
     it without re-entering the corpus-version pin."""
     mdir = meetings_dir(cache)
     codes = (
@@ -3427,7 +3427,7 @@ def _sessions_listing(wg: str, cache: str) -> str:
         else []
     )
     if not codes:
-        return f"No meeting sessions gathered for {wg}."
+        return f"No meetings gathered for {wg}."
     rows = [
         (code, _session_date(cache, code), _session_artifacts(cache, code))
         for code in codes
@@ -3436,14 +3436,14 @@ def _sessions_listing(wg: str, cache: str) -> str:
     date_w = max((len(d) for _, d, _ in rows), default=0)
     lines = [f"{c.ljust(code_w)}  {d.ljust(date_w)}  {a}".rstrip() for c, d, a in rows]
     return (
-        f"Gathered meeting sessions for {wg} (code · date · artifacts). "
+        f"Gathered meetings for {wg} (code · date · artifacts). "
         f'Read one with `read_minutes(corpus="{wg}", meeting="<code>")`.\n\n'
         + "\n".join(lines)
     )
 
 
 @_requires_corpus
-def tool_list_sessions(wg: str) -> str:
+def tool_list_meetings(wg: str) -> str:
     return _with_freshness(wg, _sessions_listing(wg, _files_dir(wg)))
 
 
@@ -3470,7 +3470,7 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
         return _with_freshness(
             wg,
             "Pass a `meeting` code (e.g. `ietf125`). Call "
-            f'`list_sessions("{wg}")` to see the gathered sessions and their '
+            f'`list_meetings("{wg}")` to see the gathered meetings and their '
             "codes.",
         )
     path = minutes_path(cache, meeting)
@@ -3478,7 +3478,7 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
         return _with_freshness(
             wg,
             f"No minutes gathered for meeting '{meeting}' in {wg}. Call "
-            f'`list_sessions("{wg}")` to see which sessions were gathered.',
+            f'`list_meetings("{wg}")` to see which meetings were gathered.',
         )
     minutes_text = _read_text_capped(
         path, _MINUTES_MAX_LINES, relpath=os.path.relpath(path, cache)
@@ -4092,14 +4092,14 @@ def main() -> None:  # pylint: disable=too-many-locals
     @server.tool()
     async def read_ietf_participation_norms() -> str:
         """**Mandatory before drafting any contribution** — before you
-        write a single line of list mail, a reply in a thread, a GitHub
+        write a single line of a mailing-list message, a reply in a thread, a GitHub
         issue or comment, a review, or a consensus/position statement:
         any text that will go into the record under a person's name. Read
         this FIRST, not as an afterthought; reading the *interpretation*
         norms does not substitute. The moment a task turns from reading the
         corpus to producing a contribution — "write/draft an email to the
         working group", "reply to this thread", "respond on the list",
-        "file/comment on an issue", "compose list mail" — call this.
+        "file/comment on an issue", "compose a mailing-list message" — call this.
 
         Covers: the human is accountable and sends (you only draft),
         disclosing AI involvement and how closely supervised, the register
@@ -4166,7 +4166,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         which messages cite it, and which archive links it cites.
 
         Messages cite *other messages* by archive permalink constantly:
-        an appeal links the post being appealed, a split thread links the
+        an appeal links the message being appealed, a split thread links the
         message it forked from, a reply footnotes the one it answers. The
         gather step resolves those links into `digests/message_citations.md`;
         this reads the graph for one file.
@@ -4226,22 +4226,22 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_draft_authors, name)
 
     @server.tool()
-    async def list_sessions(corpus: str) -> str:
-        """List a corpus's gathered meeting sessions — each meeting code with
-        its date and which artifacts are present (minutes, agenda, transcripts,
-        polls). Offline, from the cache. Use it to find the `meeting` code to
-        pass to `read_minutes`, or to see which sessions were captured.
+    async def list_meetings(corpus: str) -> str:
+        """List a corpus's gathered meetings — each meeting code with its date
+        and which artifacts are present (minutes, agenda, transcripts, polls).
+        Offline, from the cache. Use it to find the `meeting` code to pass to
+        `read_minutes`, or to see which meetings were captured.
         """
-        return await _offload(tool_list_sessions, corpus)
+        return await _offload(tool_list_meetings, corpus)
 
     @server.tool()
     async def read_minutes(corpus: str, meeting: str = "") -> str:
-        """Read the gathered minutes for one meeting session, plus any recorded
-        poll tallies. Offline, from the cache; the authoritative record of what
-        a session discussed and decided.
+        """Read the gathered minutes for one meeting, plus any recorded poll
+        tallies. Offline, from the cache; the authoritative record of what a
+        meeting discussed and decided.
 
         Requires the `meeting` code (e.g. `ietf125`, `interim20260401`) — call
-        `list_sessions` first to find it. The appended polls are raw
+        `list_meetings` first to find it. The appended polls are raw
         sense-of-the-room tallies, NOT decisions — the chair declares consensus
         (see `read_ietf_interpretation_norms`).
         """
@@ -4454,7 +4454,7 @@ def main() -> None:  # pylint: disable=too-many-locals
 
         `author="<substring>"` filters to chunks whose section header
         contains that name — "what did Rescorla say about X?" /
-        "show me Mattsson's posts on Y" without needing the file path.
+        "show me Mattsson's messages on Y" without needing the file path.
         Matches substrings, so partial / surname-only queries work.
         Windowed draft / transcript chunks have no author and drop out.
 
@@ -4665,7 +4665,7 @@ def main() -> None:  # pylint: disable=too-many-locals
           - `read_topic` starts from a *query*, anchors on matched
             messages, optionally pulls their replies.
           - `find_replies` starts from a specific *message*. Use this
-            when you know which post you want responses to.
+            when you know which message you want responses to.
 
         Thread files only — issue comments are linear, so for an
         issue file `get_chunk_text(end_chunk_idx=...)` is the right
@@ -5175,7 +5175,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             """A group's **live** meeting schedule from Datatracker — its session
             logistics at an IETF meeting (building an agenda is the obvious
             case). The live counterpart to the offline gathered record
-            (`list_sessions` / `read_minutes`).
+            (`list_meetings` / `read_minutes`).
 
             Handles both **numbered** meetings (e.g. `126`) and **interim**
             meetings (e.g. `interim-2026-aipref-05`). Returns every session the
