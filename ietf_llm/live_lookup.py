@@ -110,10 +110,15 @@ def _live_cache_path() -> str:
 
 
 def _disk_get(
-    url: str, ttl: float
-) -> Optional[Tuple[Optional[Dict[str, Any]], datetime.datetime]]:
-    """A fresh (within-TTL) disk-cached `(body, fetched_at)` for `url`, or None.
-    Best-effort: any read/parse error yields None (treat as a miss)."""
+    url: str, ttl: Optional[float]
+) -> Optional[Tuple[Dict[str, Any], datetime.datetime, float]]:
+    """Disk-cached `(body, fetched_at, epoch)` for `url`, or None.
+
+    `ttl` is the freshness window; pass None to accept a stale entry (the
+    fetch-failure fallback, where a stale answer beats none). A non-dict body
+    is a miss, not a `None` hit — a corrupt or hand-edited entry must not
+    masquerade as an empty result. Best-effort: any read/parse error is a miss.
+    """
     try:
         with open(_live_cache_path(), encoding="utf-8") as handle:
             data = json.load(handle)
@@ -123,14 +128,18 @@ def _disk_get(
     if not isinstance(entry, dict):
         return None
     epoch = entry.get("epoch")
-    if not isinstance(epoch, (int, float)) or (time.time() - epoch) >= ttl:
+    if not isinstance(epoch, (int, float)):
+        return None
+    if ttl is not None and (time.time() - epoch) >= ttl:
+        return None
+    body = entry.get("body")
+    if not isinstance(body, dict):
         return None
     try:
         fetched_at = datetime.datetime.fromisoformat(str(entry.get("fetched_at")))
     except ValueError:
         fetched_at = _now_utc()
-    body = entry.get("body")
-    return (body if isinstance(body, dict) else None), fetched_at
+    return body, fetched_at, float(epoch)
 
 
 def _disk_put(
@@ -169,31 +178,14 @@ def _disk_put(
         pass
 
 
-def probe_datatracker(timeout: float = 5.0) -> Optional[str]:
-    """None if Datatracker answers, else a short reason.
-
-    A lightweight liveness check for a caller — a short-lived CLI — that wants a
-    distinct 'unreachable' signal rather than a live verb silently degrading to
-    a stale/empty result. Uses the shared rate governor like every other call.
-    """
-    try:
-        response = governed_get(
-            f"{_API_BASE}/", headers=dict(DEFAULT_HEADERS), timeout=timeout
-        )
-        response.raise_for_status()
-    except requests.RequestException as err:
-        return f"{type(err).__name__}: {err}"
-    return None
-
-
 def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]:
     """Return `(body, fetched_at)` for `url`, fetching at most once per TTL.
 
     Checks the in-process cache first, then the cross-process disk cache (so a
-    cold CLI process reuses a recent fetch rather than re-hitting Datatracker),
-    then fetches. On a fetch failure a previously-cached body is returned with
-    its *original* timestamp (stale, but the age stamp will say so, and a stale
-    answer beats no answer); with no prior entry, `(None, now)`.
+    cold process reuses a recent fetch rather than re-hitting Datatracker), then
+    fetches. On a fetch failure a previously-cached body is returned with its
+    *original* timestamp — in-process, else a stale disk entry — since a stale
+    answer beats none; with no prior entry anywhere, `(None, now)`.
     """
     ttl = _ttl_seconds()
     now_mono = time.monotonic()
@@ -203,18 +195,30 @@ def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]
             return entry.body, entry.fetched_at
     disk = _disk_get(url, ttl)
     if disk is not None:
-        disk_body, disk_fetched = disk
+        disk_body, disk_fetched, disk_epoch = disk
+        # Preserve the disk entry's real age so the in-process TTL check does
+        # not restart the clock — otherwise a near-expired disk datum would be
+        # served for a further full TTL (up to ~2×TTL total).
+        age = max(0.0, time.time() - disk_epoch)
         with _cache_lock:
             _cache[url] = _CacheEntry(
-                body=disk_body, fetched_at=disk_fetched, monotonic=time.monotonic()
+                body=disk_body,
+                fetched_at=disk_fetched,
+                monotonic=time.monotonic() - age,
             )
         return disk_body, disk_fetched
     body = _fetch_json(url)
     if body is None:
+        # Fetch failed: prefer any stale answer over none. In-process first,
+        # then a stale disk entry — the cold-process case the disk cache exists
+        # for (a fresh process, network down, only older-than-TTL data on disk).
         with _cache_lock:
             entry = _cache.get(url)
         if entry is not None:
             return entry.body, entry.fetched_at
+        stale = _disk_get(url, None)
+        if stale is not None:
+            return stale[0], stale[1]
         return None, _now_utc()
     fetched_at = _now_utc()
     with _cache_lock:

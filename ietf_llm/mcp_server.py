@@ -3358,18 +3358,23 @@ def tool_draft_authors(name: str) -> str:
 _MINUTES_MAX_LINES = 2000
 
 
-def _read_text_capped(path: str, max_lines: int) -> str:
-    """Read a file, truncating past `max_lines` with a pointer to page the
-    rest via `read_file_section`. Empty string if unreadable."""
+def _read_text_capped(path: str, max_lines: int, relpath: str = "") -> str:
+    """Read a file, truncating past `max_lines` with an actionable pointer to
+    page the rest. `relpath` (the corpus-relative path) makes the pointer name
+    the exact `read_file_section` call. Empty string if unreadable."""
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.readlines()
     except OSError:
         return ""
     if len(lines) > max_lines:
+        more = (
+            f'`read_file_section(file="{relpath}", start_line={max_lines + 1})`'
+            if relpath
+            else "`read_file_section`"
+        )
         return "".join(lines[:max_lines]) + (
-            f"\n\n_(truncated at {max_lines} lines — read further with "
-            "`read_file_section`)_\n"
+            f"\n\n_(truncated at {max_lines} lines — read the rest with " f"{more})_\n"
         )
     return "".join(lines)
 
@@ -3447,12 +3452,14 @@ def _read_polls(cache: str, code: str) -> str:
     pdir = polls_dir(cache, code)
     if not os.path.isdir(pdir):
         return ""
-    chunks = [
-        text
-        for name in sorted(os.listdir(pdir))
-        if name.endswith(".md")
-        and (text := _read_text_capped(os.path.join(pdir, name), 500)).strip()
-    ]
+    chunks = []
+    for name in sorted(os.listdir(pdir)):
+        if not name.endswith(".md"):
+            continue
+        fpath = os.path.join(pdir, name)
+        text = _read_text_capped(fpath, 500, relpath=os.path.relpath(fpath, cache))
+        if text.strip():
+            chunks.append(text)
     return "\n\n".join(chunks)
 
 
@@ -3471,9 +3478,10 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
             f"No minutes gathered for meeting '{meeting}' in {wg}.\n\n"
             + _sessions_listing(wg, cache),
         )
-    body = (
-        f"# Minutes — {wg} {meeting}\n\n{_read_text_capped(path, _MINUTES_MAX_LINES)}"
+    minutes_text = _read_text_capped(
+        path, _MINUTES_MAX_LINES, relpath=os.path.relpath(path, cache)
     )
+    body = f"# Minutes — {wg} {meeting}\n\n{minutes_text}"
     polls = _read_polls(cache, meeting)
     if polls:
         body += (
@@ -3551,6 +3559,12 @@ def _read_file_window(path: str, start_line: int, max_lines: int) -> str:
         return f"Could not read `{os.path.basename(path)}`."
     total = len(lines)
     start = max(1, start_line)
+    if start > total:
+        return (
+            f"# {os.path.basename(path)} ({total} lines)\n\n"
+            f"_(start_line={start_line} is past the end — the file has "
+            f"{total} lines.)_\n"
+        )
     end = min(total, start - 1 + max(1, max_lines))
     header = f"# {os.path.basename(path)} (lines {start}–{end} of {total})\n\n"
     footer = ""
@@ -3607,11 +3621,19 @@ def _resolve_issue_file(
 
 
 @_requires_corpus
-def tool_get_issue(wg: str, number: str, repo: str = "") -> str:
+def tool_get_issue(
+    wg: str,
+    number: str,
+    repo: str = "",
+    start_line: int = 1,
+    max_lines: int = _ISSUE_MAX_LINES,
+) -> str:
     path, note = _resolve_issue_file(_files_dir(wg), str(number), repo)
     if path is None:
         return _with_freshness(wg, note)
-    return _with_freshness(wg, _read_file_window(path, 1, _ISSUE_MAX_LINES))
+    return _with_freshness(
+        wg, _read_file_window(path, start_line, min(max_lines, _ISSUE_MAX_LINES))
+    )
 
 
 def _render_upcoming_meetings(corpus: str) -> str:
@@ -4250,15 +4272,24 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_get_draft, name, start_line, max_lines)
 
     @server.tool()
-    async def get_issue(corpus: str, number: str, repo: str = "") -> str:
+    async def get_issue(
+        corpus: str,
+        number: str,
+        repo: str = "",
+        start_line: int = 1,
+        max_lines: int = 3000,
+    ) -> str:
         """Verbatim text of one GitHub issue — opening description and comment
-        thread — from a corpus, by issue number.
+        thread — from a corpus, by issue number, as a bounded line window.
 
         Use this to quote an issue's ACTUAL text for a citation rather than a
         search snippet. Pass `repo` (owner/repo) to disambiguate when the
-        corpus tracks several repos and the number is ambiguous.
+        corpus tracks several repos and the number is ambiguous. Page a long
+        issue with `start_line` (the truncation footer says where to resume).
         """
-        return await _offload(tool_get_issue, corpus, number, repo)
+        return await _offload(
+            tool_get_issue, corpus, number, repo, start_line, max_lines
+        )
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments

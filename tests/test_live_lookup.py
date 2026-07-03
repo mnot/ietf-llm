@@ -364,9 +364,9 @@ def test_ttl_cache_fetches_once(monkeypatch):
 
 
 def test_disk_cache_serves_cold_process(monkeypatch):
-    # The load-bearing protection for the CLI live verbs: a fresh (cold)
-    # process starts with an empty in-process cache but must reuse a recent
-    # fetch from disk rather than re-hitting Datatracker each invocation.
+    # The load-bearing protection for short-lived processes (e.g. a restarted
+    # stdio subprocess): a fresh (cold) process starts with an empty in-process
+    # cache but must reuse a recent fetch from disk, not re-hit Datatracker.
     calls = []
     url = "https://datatracker.ietf.org/api/v1/doc/document/?name=x"
     monkeypatch.setattr(
@@ -380,6 +380,36 @@ def test_disk_cache_serves_cold_process(monkeypatch):
     body2, _ = live_lookup._cached_json(url)
     assert body2 == {"ok": True}
     assert len(calls) == 1  # served from the disk cache; no second fetch
+
+
+def test_disk_cache_stale_fallback_on_cold_process(monkeypatch):
+    # A cold process whose only prior data is an EXPIRED disk entry, with
+    # Datatracker down, still returns the stale answer rather than nothing.
+    url = "https://datatracker.ietf.org/api/v1/doc/document/?name=z"
+    monkeypatch.setattr(live_lookup, "_fetch_json", lambda u, timeout=10.0: {"ok": 1})
+    live_lookup._cached_json(url)  # populate the disk cache
+    live_lookup._reset_cache()  # cold process: empty in-process cache
+    monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")  # the disk entry is now stale
+    monkeypatch.setattr(live_lookup, "_fetch_json", lambda u, timeout=10.0: None)  # down
+    body, _ = live_lookup._cached_json(url)
+    assert body == {"ok": 1}  # served the stale disk datum, not None
+
+
+def test_disk_get_rejects_non_dict_body():
+    # A corrupt / hand-edited entry with a non-dict body is a miss, not a
+    # None "hit" that would mask a healthy fetch or cache None in-process.
+    import json
+    import os
+    import time
+
+    path = live_lookup._live_cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {"u": {"body": None, "epoch": time.time(), "fetched_at": "2026-01-01T00:00:00+00:00"}},
+            fh,
+        )
+    assert live_lookup._disk_get("u", 300) is None
 
 
 def test_stale_fallback_on_fetch_failure(monkeypatch):

@@ -1074,6 +1074,16 @@ def test_get_chunks_batch_tolerates_single_dict_input(
     assert "body" in out
 
 
+def test_read_file_window_past_eof(tmp_path) -> None:
+    # Paging past the end returns a clear message, not a backwards "20-10 of 10"
+    # header with an empty body.
+    path = tmp_path / "f.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    out = mcp_server._read_file_window(str(path), start_line=20, max_lines=100)
+    assert "past the end" in out and "3 lines" in out
+    assert "20–10" not in out
+
+
 # --- _load_server_instructions --------------------------------------------
 
 
