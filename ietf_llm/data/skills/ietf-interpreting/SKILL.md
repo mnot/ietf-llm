@@ -1,6 +1,7 @@
 ---
 name: ietf-interpreting
 description: Interpretive norms for reading the record of an IETF/IRTF effort. Use BEFORE characterising what a working group decided, whether there is consensus, who supports or opposes a proposal, or where the group stands — any sentence asserting a collective outcome (settled, decided, agreed, rejected, consensus, "the WG thinks/wants"). Covers consensus is chair-declared not vote-counted, decisions happen on the mailing list not in meetings, positions belong to individuals not their employers, and what Internet-Draft names and RFC streams do and don't imply. Reporting what a named individual said does not require this; any claim about where the group landed does. For drafting a contribution, use ietf-contributing instead.
+license: CC-BY-4.0
 ---
 
 # Reading the IETF record
@@ -11,8 +12,7 @@ rejected, "there is consensus," or "the WG thinks/wants" — you should have rea
 these norms. Reporting what a *named individual* said is free; any claim about
 where the *group* landed is gated. Not enforced — the point is to make skipping
 the check something you notice choosing, not ordinary efficient judgment. For
-the write side, see the `ietf-contributing` skill (or, where the MCP server is
-connected, `read_ietf_participation_norms`).
+the write side — drafting contributions — see the `ietf-contributing` skill.
 
 ## The trap is what you already know
 
@@ -33,9 +33,9 @@ reply approvingly. Tempting: *"the objection was settled."* Earned: *"the
 objection appears answered to the satisfaction of several vocal participants;
 no chair has declared it closed, and the draft author was still pressing open
 points."* Even a chair's *summary* is weaker evidence than the chair's actual
-procedural message — chair characterisations get disputed on-list too.
-`tally_positions`' **Chair statements** section surfaces those procedural
-messages (consensus call, WGLC, closure) for a thread.
+procedural message — chair characterisations get disputed on-list too. Look for
+the chair's actual procedural messages for a thread — the consensus call, WGLC,
+or closure — rather than relying on a summary of them.
 
 ## Not every decision is called, and none is final until Last Call
 
@@ -61,11 +61,11 @@ Don't pin a position on a company ("Cloudflare opposes X") from an author's
 affiliation — only when they frame it that way ("speaking for X…"). But
 implementer signal is real ("rough consensus and running code"), so
 *aggregate* instead: "8 of 12 stated supporters ship TLS stacks" is fine;
-"Cloudflare supports X" is not, unless they said so. Two non-obvious bits:
+"Cloudflare supports X" is not, unless they said so. One non-obvious bit:
 
 **Email domain ≠ affiliation.** Participants use personal email and may hold
-  several affiliations. When the MCP server is available, use the `affiliations`
-field / people digest, never the From-header domain.
+several affiliations. Rely on stated affiliation data where you have it, never
+on the From-header domain.
 
 ## Draft names carry structure, not gravity
 
