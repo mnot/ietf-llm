@@ -275,7 +275,7 @@ def test_read_topic_completeness_signal_and_scores(isolated_home: Path) -> None:
     out = mcp_server.tool_read_topic("wg", "MLKEM", k=2)
     assert "relevance-ranked slice" in out
     assert "Not the whole debate" in out  # 4 matched, only 2 shown
-    assert "raise `k`" in out
+    assert "raise `limit`" in out
     assert "rel=" in out  # per-message relevance score
 
 

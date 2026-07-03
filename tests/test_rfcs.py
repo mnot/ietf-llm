@@ -155,7 +155,7 @@ def test_search_stream_and_level_filters(isolated_home: Path) -> None:
 
 def test_search_wg_filter(isolated_home: Path) -> None:
     _seed(isolated_home)
-    out = rfcs.render_search("telephony", wg="phone")
+    out = rfcs.render_search("telephony", group="phone")
     assert "RFC100" in out and "RFC200" in out
 
 

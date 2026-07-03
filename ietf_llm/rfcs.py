@@ -255,7 +255,7 @@ def render_search(  # pylint: disable=too-many-arguments,too-many-positional-arg
     status: Optional[str] = None,
     stream: Optional[str] = None,
     level: Optional[str] = None,
-    wg: Optional[str] = None,
+    group: Optional[str] = None,
     limit: int = 50,
 ) -> str:
     """Search the RFC series; return a compact markdown list. A bare RFC
@@ -263,7 +263,7 @@ def render_search(  # pylint: disable=too-many-arguments,too-many-positional-arg
     data = _load()
     if data is None:
         return _NOT_GATHERED
-    names = _apply_filters(data, data.search(query), status, stream, level, wg)
+    names = _apply_filters(data, data.search(query), status, stream, level, group)
     total = len(names)
     shown = names[: max(0, limit)]
     if not shown:

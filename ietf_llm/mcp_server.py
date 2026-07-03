@@ -604,7 +604,7 @@ def tool_read_interpretation_norms() -> str:
 
 def tool_read_participation_norms() -> str:
     """Return the `ietf-contributing` skill body — norms for helping a human
-    contribute to a corpus (drafting list mail, GitHub issues/comments,
+    contribute to a corpus (drafting mailing-list messages, GitHub issues/comments,
     other discussion), the write-side companion to the reading norms.
 
     Pulled on demand when the question shifts from interpreting the
@@ -795,7 +795,7 @@ def tool_find_message_citations(
     """Walk the message reference graph for a thread / issue file.
 
     Mailing-list messages routinely cite *other messages* by archive
-    permalink — an appeal links the post being appealed, a split thread
+    permalink — an appeal links the message being appealed, a split thread
     links the message it forked from, a reply footnotes the one it
     answers. The gather step resolves those links (against the
     `Archived-At:` permalinks on the gathered messages) into
@@ -803,7 +803,7 @@ def tool_find_message_citations(
     file and returns:
 
       - **Inbound** — other messages that cite this file (optionally the
-        specific message `chunk_idx`). The reverse index `fetch_by_url`
+        specific message `chunk_idx`). The reverse index `get_by_url`
         can't give you: "who else references this message / decision?".
       - **Outbound** — the archive links this file cites, each resolved
         to its local `file` / `chunk_idx` (pivot with `read_file_section`
@@ -816,7 +816,7 @@ def tool_find_message_citations(
     Within-scheme resolution only: a `mailarchive.ietf.org` token is not
     bridged to a stored `www.w3.org/mid` Message-ID, so on a list that
     stamps one scheme while bodies cite the other, real targets can show
-    as external. To fetch a single URL directly, use `fetch_by_url`.
+    as external. To fetch a single URL directly, use `get_by_url`.
     """
     cache = _files_dir(wg)
     md = digest_path(cache, "message_citations")
@@ -1378,7 +1378,7 @@ def _participation_nudge(files: "str | List[str]") -> str:
         return ""
     return (
         "> ✍ **About to draft a contribution from this?** Before you write "
-        "list mail, a GitHub issue or comment, or any reply that goes into "
+        "a mailing-list message, a GitHub issue or comment, or any reply that goes into "
         "the record under a participant's name, you MUST call "
         "`read_ietf_participation_norms` first — the human is accountable and "
         "sends; you only draft. Reading the corpus is not the same as "
@@ -1622,7 +1622,7 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         more = f"{extra_matches}+ more" if extra_matches > 0 else "more"
         out.append(
             f"_⚠ Not the whole debate: {more} message(s) matched beyond the "
-            f"{len(matched)} shown — raise `k` (now {k}). For completeness: "
+            f"{len(matched)} shown — raise `limit` (now {k}). For completeness: "
             "read a thread end-to-end with `read_file_section`, enumerate a "
             'topic\'s threads with `read_digest(kind="threads", '
             'subject="[…]")` or `find_citations`, and pass `file_pattern=` '
@@ -1796,7 +1796,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
 
     Best for two things: **chair statements** — messages from a chair carrying
     procedural language (`rough consensus`, `consensus call`, `WGLC`,
-    `adopting`, closure) surfaced at the top, the load-bearing posts in a long
+    `adopting`, closure) surfaced at the top, the load-bearing messages in a long
     thread — and **option polls** (`option N` / `#N` / `I prefer N`), counted
     per choice.
 
@@ -2407,7 +2407,7 @@ def tool_get_chunks_batch(wg: str, requests: List[Dict[str, Any]]) -> str:
 
 
 @_requires_corpus
-def tool_fetch_by_url(wg: str, url: str) -> str:
+def tool_get_by_url(wg: str, url: str) -> str:
     """Resolve a citation URL to its cached corpus content.
 
     Use this whenever you encounter an archive permalink in a message
@@ -2447,7 +2447,7 @@ def tool_fetch_by_url(wg: str, url: str) -> str:
             else f"run `ietf-llm {wg} --rebuild-embeddings`"
         )
         return (
-            f"No cached chunk for {url}. fetch_by_url resolves the URL forms "
+            f"No cached chunk for {url}. get_by_url resolves the URL forms "
             "stamped in the corpus: mailing-list `Archived-At:` permalinks "
             "(either `https://mailarchive.ietf.org/arch/msg/<list>/<token>` "
             "or `https://www.w3.org/mid/<message-id>`, depending on the list), "
@@ -2718,7 +2718,7 @@ def _load_server_instructions() -> str:
 # model never sees `serverInfo`). Add a flag here when you land a feature a
 # skill might depend on; never remove one without a real capability change.
 SERVER_FEATURES: tuple[str, ...] = (
-    "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_sessions
+    "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_schedule
     "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
 )
 
@@ -3414,7 +3414,7 @@ def _session_artifacts(cache: str, code: str) -> str:
 
 
 def _sessions_listing(wg: str, cache: str) -> str:
-    """Body of `tool_list_sessions` (undecorated) so `read_minutes` can reuse
+    """Body of `tool_list_meetings` (undecorated) so `read_minutes` can reuse
     it without re-entering the corpus-version pin."""
     mdir = meetings_dir(cache)
     codes = (
@@ -3427,7 +3427,7 @@ def _sessions_listing(wg: str, cache: str) -> str:
         else []
     )
     if not codes:
-        return f"No meeting sessions gathered for {wg}."
+        return f"No meetings gathered for {wg}."
     rows = [
         (code, _session_date(cache, code), _session_artifacts(cache, code))
         for code in codes
@@ -3436,14 +3436,14 @@ def _sessions_listing(wg: str, cache: str) -> str:
     date_w = max((len(d) for _, d, _ in rows), default=0)
     lines = [f"{c.ljust(code_w)}  {d.ljust(date_w)}  {a}".rstrip() for c, d, a in rows]
     return (
-        f"Gathered meeting sessions for {wg} (code · date · artifacts). "
+        f"Gathered meetings for {wg} (code · date · artifacts). "
         f'Read one with `read_minutes(corpus="{wg}", meeting="<code>")`.\n\n'
         + "\n".join(lines)
     )
 
 
 @_requires_corpus
-def tool_list_sessions(wg: str) -> str:
+def tool_list_meetings(wg: str) -> str:
     return _with_freshness(wg, _sessions_listing(wg, _files_dir(wg)))
 
 
@@ -3467,16 +3467,18 @@ def _read_polls(cache: str, code: str) -> str:
 def tool_read_minutes(wg: str, meeting: str = "") -> str:
     cache = _files_dir(wg)
     if not meeting:
-        listing = _sessions_listing(wg, cache)
         return _with_freshness(
-            wg, f"Pass a `meeting` code. Sessions available:\n\n{listing}"
+            wg,
+            "Pass a `meeting` code (e.g. `ietf125`). Call "
+            f'`list_meetings("{wg}")` to see the gathered meetings and their '
+            "codes.",
         )
     path = minutes_path(cache, meeting)
     if not os.path.isfile(path):
         return _with_freshness(
             wg,
-            f"No minutes gathered for meeting '{meeting}' in {wg}.\n\n"
-            + _sessions_listing(wg, cache),
+            f"No minutes gathered for meeting '{meeting}' in {wg}. Call "
+            f'`list_meetings("{wg}")` to see which meetings were gathered.',
         )
     minutes_text = _read_text_capped(
         path, _MINUTES_MAX_LINES, relpath=os.path.relpath(path, cache)
@@ -3656,13 +3658,13 @@ def _render_upcoming_meetings(corpus: str) -> str:
         # stays visible on the Logistics line below.
         lines.append(f"- **{mtg.date}** — {live_lookup.meeting_label(mtg.number)}")
         lines.append(f"  - Agenda: {mtg.agenda_url}")
-        lines.append(f"  - Logistics: `meeting_sessions({corpus!r}, {mtg.number!r})`")
+        lines.append(f"  - Logistics: `meeting_schedule({corpus!r}, {mtg.number!r})`")
     lines.append("")
     lines.append(live_lookup.age_stamp(fetched))
     return "\n".join(lines)
 
 
-def tool_meeting_sessions(corpus: str, meeting: str = "") -> str:
+def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
     """Render a group's live session logistics at a numbered or interim meeting.
 
     With no `meeting`, lists the group's upcoming meetings (discovery, since
@@ -3889,7 +3891,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         the web. It ranks over the official Datatracker group list
         (acronym + name + charter description), mirrored locally; it covers
         **active** and **BoF** groups only, so a concluded effort or
-        published work won't surface here — use `rfc_search` for the RFC
+        published work won't surface here — use `search_rfcs` for the RFC
         series, and `list_corpora` to see what is already cached.
 
         The playbook: `find_efforts(topic)` → present the candidates
@@ -3935,12 +3937,12 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_which_corpus, query, limit)
 
     @server.tool()
-    async def rfc_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfcs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         query: str,
         status: Optional[str] = None,
         stream: Optional[str] = None,
         level: Optional[str] = None,
-        wg: Optional[str] = None,
+        group: Optional[str] = None,
         limit: int = 50,
     ) -> str:
         """Search the **published RFC series** by words in titles and
@@ -3959,13 +3961,13 @@ def main() -> None:  # pylint: disable=too-many-locals
             `editorial` | `legacy`
           - `level`: `std` | `bcp` | `informational` | `experimental` |
             `historic` | `unknown`
-          - `wg`: an IETF working group acronym.
+          - `group`: an IETF working group acronym.
           - `limit`: max results (default 50).
 
         Follow a hit with `get_rfc(number)` for full metadata and its
         reference graph.
         """
-        return await _offload(render_search, query, status, stream, level, wg, limit)
+        return await _offload(render_search, query, status, stream, level, group, limit)
 
     @server.tool()
     async def get_rfc(number: str) -> str:
@@ -4090,14 +4092,14 @@ def main() -> None:  # pylint: disable=too-many-locals
     @server.tool()
     async def read_ietf_participation_norms() -> str:
         """**Mandatory before drafting any contribution** — before you
-        write a single line of list mail, a reply in a thread, a GitHub
+        write a single line of a mailing-list message, a reply in a thread, a GitHub
         issue or comment, a review, or a consensus/position statement:
         any text that will go into the record under a person's name. Read
         this FIRST, not as an afterthought; reading the *interpretation*
         norms does not substitute. The moment a task turns from reading the
         corpus to producing a contribution — "write/draft an email to the
         working group", "reply to this thread", "respond on the list",
-        "file/comment on an issue", "compose list mail" — call this.
+        "file/comment on an issue", "compose a mailing-list message" — call this.
 
         Covers: the human is accountable and sends (you only draft),
         disclosing AI involvement and how closely supervised, the register
@@ -4164,20 +4166,20 @@ def main() -> None:  # pylint: disable=too-many-locals
         which messages cite it, and which archive links it cites.
 
         Messages cite *other messages* by archive permalink constantly:
-        an appeal links the post being appealed, a split thread links the
+        an appeal links the message being appealed, a split thread links the
         message it forked from, a reply footnotes the one it answers. The
         gather step resolves those links into `digests/message_citations.md`;
         this reads the graph for one file.
 
         Returns **Inbound** (other messages that cite this file — the
-        reverse index `fetch_by_url` can't give you) and **Outbound** (the
+        reverse index `get_by_url` can't give you) and **Outbound** (the
         archive links this file cites, each resolved to a local
         `file` / `chunk_idx` to pivot on, or flagged external — a message
         not gathered here, often another list to gather and retry).
 
         Use when:
           - Reading a message whose body footnotes an archive URL and you
-            want the message behind it (or `fetch_by_url` for one URL).
+            want the message behind it (or `get_by_url` for one URL).
           - Tracing a dispute / appeal / split thread back to its origin.
           - Asking "who else referenced this message or decision?".
 
@@ -4224,24 +4226,24 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_draft_authors, name)
 
     @server.tool()
-    async def list_sessions(corpus: str) -> str:
-        """List a corpus's gathered meeting sessions — each meeting code with
-        its date and which artifacts are present (minutes, agenda, transcripts,
-        polls). Offline, from the cache. Use it to find the `meeting` code to
-        pass to `read_minutes`, or to see which sessions were captured.
+    async def list_meetings(corpus: str) -> str:
+        """List a corpus's gathered meetings — each meeting code with its date
+        and which artifacts are present (minutes, agenda, transcripts, polls).
+        Offline, from the cache. Use it to find the `meeting` code to pass to
+        `read_minutes`, or to see which meetings were captured.
         """
-        return await _offload(tool_list_sessions, corpus)
+        return await _offload(tool_list_meetings, corpus)
 
     @server.tool()
     async def read_minutes(corpus: str, meeting: str = "") -> str:
-        """Read the gathered minutes for one meeting session, plus any recorded
-        poll tallies. Offline, from the cache; the authoritative record of what
-        a session discussed and decided.
+        """Read the gathered minutes for one meeting, plus any recorded poll
+        tallies. Offline, from the cache; the authoritative record of what a
+        meeting discussed and decided.
 
-        Pass the `meeting` code from `list_sessions` (e.g. `ietf125`,
-        `interim20260401`); omit it to get the session list. The appended polls
-        are raw sense-of-the-room tallies, NOT decisions — the chair declares
-        consensus (see `read_ietf_interpretation_norms`).
+        Requires the `meeting` code (e.g. `ietf125`, `interim20260401`) — call
+        `list_meetings` first to find it. The appended polls are raw
+        sense-of-the-room tallies, NOT decisions — the chair declares consensus
+        (see `read_ietf_interpretation_norms`).
         """
         return await _offload(tool_read_minutes, corpus, meeting)
 
@@ -4393,7 +4395,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpus: str,
         query: str,
-        k: int = 10,
+        limit: int = 10,
         file_pattern: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -4412,7 +4414,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         semantically across its mailing-list debate, GitHub issues,
         drafts, slides, transcripts, and minutes. (Published RFC bodies
         aren't indexed here by default — search the series with
-        `rfc_search` and read one with `get_rfc`.) Returns top-k
+        `search_rfcs` and read one with `get_rfc`.) Returns the top
         chunks with file, chunk_idx, title, score, snippet, line range,
         GitHub URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.
@@ -4436,7 +4438,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         the user wants the WG's settled position rather than ongoing
         debate. `state="open"` is the inverse: only unresolved threads.
 
-        `sort="date"` re-orders the top-k hits chronologically (oldest
+        `sort="date"` re-orders the top hits chronologically (oldest
         first) instead of by relevance, so a consumer reading
         top-to-bottom sees an early objection → settled-position
         arc. Combine with `file_pattern="%-issue-…-N.md"` to scope to
@@ -4452,7 +4454,7 @@ def main() -> None:  # pylint: disable=too-many-locals
 
         `author="<substring>"` filters to chunks whose section header
         contains that name — "what did Rescorla say about X?" /
-        "show me Mattsson's posts on Y" without needing the file path.
+        "show me Mattsson's messages on Y" without needing the file path.
         Matches substrings, so partial / surname-only queries work.
         Windowed draft / transcript chunks have no author and drop out.
 
@@ -4466,7 +4468,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         renders compact snippets that often `[truncated]` for long
         chunks; raise for long-form synthesis where the snippet
         itself should carry more context. Tradeoff: bigger budget
-        means more bytes per hit, so dial `k` down accordingly.
+        means more bytes per hit, so dial `limit` down accordingly.
 
         `collapse_versions=True` (the default) hides older draft
         revisions when a newer one of the same draft also matched, so a
@@ -4498,7 +4500,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             tool_search,
             corpus,
             query,
-            k=k,
+            k=limit,
             file_pattern=file_pattern,
             since=since,
             until=until,
@@ -4518,7 +4520,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         corpus: str,
         file: str,
         chunk_idx: int,
-        k: int = 10,
+        limit: int = 10,
         file_pattern: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -4568,7 +4570,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             corpus,
             file,
             chunk_idx,
-            k=k,
+            k=limit,
             file_pattern=file_pattern,
             since=since,
             until=until,
@@ -4584,7 +4586,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     async def search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpora: List[str],
         query: str,
-        k: int = 10,
+        limit: int = 10,
         since: Optional[str] = None,
         until: Optional[str] = None,
         label: Optional[str] = None,
@@ -4619,7 +4621,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         within each, groups interleaved by rank (the header says which were
         grouped).
 
-        `k` bounds the **total** merged hits (default 10). Facets mirror
+        `limit` bounds the **total** merged hits (default 10). Facets mirror
         `search_corpus` per corpus: `since`/`until`, `label`, `state`,
         `author`, `role`, `snippet_chars`, `collapse_versions`. The
         depth-only knobs (`sort`, `group_by`, `file_pattern`) are omitted —
@@ -4630,7 +4632,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             tool_search_corpora,
             corpora,
             query,
-            k=k,
+            k=limit,
             since=since,
             until=until,
             label=label,
@@ -4663,7 +4665,7 @@ def main() -> None:  # pylint: disable=too-many-locals
           - `read_topic` starts from a *query*, anchors on matched
             messages, optionally pulls their replies.
           - `find_replies` starts from a specific *message*. Use this
-            when you know which post you want responses to.
+            when you know which message you want responses to.
 
         Thread files only — issue comments are linear, so for an
         issue file `get_chunk_text(end_chunk_idx=...)` is the right
@@ -4732,7 +4734,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         since: Optional[str] = None,
         until: Optional[str] = None,
         file_pattern: Optional[str] = None,
-        k: int = 20,
+        limit: int = 20,
         include_replies: bool = False,
         body_chars: Optional[int] = None,
     ) -> str:
@@ -4773,7 +4775,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         cap fires, the response says so.
 
         IMPORTANT — this is a **relevance-ranked slice, not a complete
-        thread**: messages are the top-`k` semantic matches for the query,
+        thread**: messages are the top-ranked semantic matches for the query,
         then date-ordered. Messages that don't match the query are not
         included, and a low-scoring match may be off-topic. Each matched
         message carries a `rel=` score (higher = closer) so you can
@@ -4784,7 +4786,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         can spot a major cluster the slice barely sampled (read that one in
         full) instead of assuming the slice covered the debate. For a
         question about *completeness* (e.g. "the whole controversy"), do
-        not treat the slice as exhaustive: raise `k`, scope with
+        not treat the slice as exhaustive: raise `limit`, scope with
         `file_pattern=` to cut cross-topic noise, read a thread end-to-end
         with `read_file_section`, or enumerate a topic's threads with
         `read_digest(kind="threads", subject="[…]")`.
@@ -4802,7 +4804,7 @@ def main() -> None:  # pylint: disable=too-many-locals
           - `file_pattern` (SQL LIKE on the relative path): scope to
             one issue (`issues/org-repo/155.md`) or one thread cluster
             (`threads/2026-04-%mlkem%`)
-          - `k`: how many top-relevance messages to anchor on (default
+          - `limit`: how many top-relevance messages to anchor on (default
             20; replies expand this further). The fetch is widened
             internally so the candidate pool is roomy.
 
@@ -4816,7 +4818,7 @@ def main() -> None:  # pylint: disable=too-many-locals
             since=since,
             until=until,
             file_pattern=file_pattern,
-            k=k,
+            k=limit,
             include_replies=include_replies,
             body_chars=body_chars,
         )
@@ -4863,7 +4865,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_get_chunks_batch, corpus, requests)
 
     @server.tool()
-    async def fetch_by_url(corpus: str, url: str) -> str:
+    async def get_by_url(corpus: str, url: str) -> str:
         """Resolve a citation URL to its cached chunk in a corpus.
         Accepts the URL forms that actually appear in the corpus:
 
@@ -4881,7 +4883,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         not). Returns the chunk text — same shape as `get_chunk_text`.
         Use it when the user pastes, or a chunk cites, such a URL.
         """
-        return await _offload(tool_fetch_by_url, corpus, url)
+        return await _offload(tool_get_by_url, corpus, url)
 
     @server.tool()
     async def read_file_section(
@@ -4986,7 +4988,7 @@ def main() -> None:  # pylint: disable=too-many-locals
               shortname (`tls`, `cfrg`). The charter, drafts, meetings,
               mailing list, and GitHub issues are auto-discovered (the WG's
               published RFCs are listed in the overview but their bodies stay
-              in the global series — `rfc_search` / `get_rfc`)
+              in the global series — `search_rfcs` / `get_rfc`)
               — including *which* repos to track: the first gather finds the
               group's active draft repos and follows them automatically
               (`gather_status` reports which were added). To preview or
@@ -5169,10 +5171,11 @@ def main() -> None:  # pylint: disable=too-many-locals
             return await _offload(tool_suggest_github_repos, corpus)
 
         @server.tool()
-        async def meeting_sessions(corpus: str, meeting: str = "") -> str:
-            """A group's session logistics at an IETF meeting, **live** from
-            Datatracker — useful to any attendee or observer (building an
-            agenda is the obvious case).
+        async def meeting_schedule(corpus: str, meeting: str = "") -> str:
+            """A group's **live** meeting schedule from Datatracker — its session
+            logistics at an IETF meeting (building an agenda is the obvious
+            case). The live counterpart to the offline gathered record
+            (`list_meetings` / `read_minutes`).
 
             Handles both **numbered** meetings (e.g. `126`) and **interim**
             meetings (e.g. `interim-2026-aipref-05`). Returns every session the
@@ -5188,15 +5191,15 @@ def main() -> None:  # pylint: disable=too-many-locals
             interim) — the way to discover an interim id, which isn't guessable.
 
             Live (short TTL + freshness stamp), gather-gated — off on the shared
-            HTTP replica; see the SKILL "Live Datatracker facts" section for why.
-            Times are venue-local — never quote the UTC start as the local time.
+            HTTP replica (it reaches the network). Times are venue-local — never
+            quote the UTC start as the local time.
 
             Args:
                 corpus: The Working Group shortname (e.g. `httpbis`).
                 meeting: A numbered meeting (`126`) or interim id
                     (`interim-2026-aipref-05`); omit to list upcoming meetings.
             """
-            return await _offload(tool_meeting_sessions, corpus, meeting)
+            return await _offload(tool_meeting_schedule, corpus, meeting)
 
         @server.tool()
         async def draft_status(name: str) -> str:

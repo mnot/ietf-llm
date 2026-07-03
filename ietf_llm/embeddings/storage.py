@@ -351,7 +351,7 @@ def find_chunks_by_url(
     Returns an empty list if no chunk matches. A thread Archived-At URL
     is per-message and matches exactly one chunk; a GitHub issue URL
     is file-level and matches every chunk in that issue's per-issue
-    file. Callers (notably the MCP `fetch_by_url` tool) use the row
+    file. Callers (notably the MCP `get_by_url` tool) use the row
     count to decide whether to return a single chunk or the whole file.
     """
     if not os.path.exists(_db_path_ro(wg)):

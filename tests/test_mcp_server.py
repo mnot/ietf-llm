@@ -199,7 +199,7 @@ def _nonexistent_corpus_calls(nx: str):
         "get_chunks_batch": lambda: mcp_server.tool_get_chunks_batch(
             nx, [{"file": "threads/x.md", "chunk_idx": 1}]
         ),
-        "fetch_by_url": lambda: mcp_server.tool_fetch_by_url(
+        "get_by_url": lambda: mcp_server.tool_get_by_url(
             nx, "https://www.w3.org/mid/x"
         ),
         "read_file_section": lambda: mcp_server.tool_read_file_section(nx, "charter.txt"),
@@ -801,15 +801,15 @@ def test_no_banner_when_sentinel_absent(isolated_home: Path) -> None:
     assert not out.startswith("⚠")
 
 
-# --- fetch_by_url (consumer feedback #9) ---------------------------------
+# --- get_by_url (consumer feedback #9) ---------------------------------
 
 
-def test_fetch_by_url_returns_chunk_when_url_matches(
+def test_get_by_url_returns_chunk_when_url_matches(
     isolated_home: Path,
 ) -> None:
     # Seed the chunks DB the long way: write a per-issue file with a
     # **URL:** line, then build the embedding index against it. The
-    # chunker stamps the file-level URL onto every chunk; fetch_by_url
+    # chunker stamps the file-level URL onto every chunk; get_by_url
     # rounds-trips through that column.
     write_cache_file(
         isolated_home, "wg", "issues/org-repo/1.md",
@@ -827,7 +827,7 @@ def test_fetch_by_url_returns_chunk_when_url_matches(
     from test_search_filters import _build_with_stub  # noqa: F401
 
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_fetch_by_url(
+    out = mcp_server.tool_get_by_url(
         "wg", "https://github.com/org/repo/issues/1",
     )
     assert "the actual chunk body here" in out
@@ -835,11 +835,11 @@ def test_fetch_by_url_returns_chunk_when_url_matches(
     assert "issues/org-repo/1.md" in out
 
 
-def test_fetch_by_url_resolves_draft_datatracker_url(
+def test_get_by_url_resolves_draft_datatracker_url(
     isolated_home: Path,
 ) -> None:
     # A draft's windowed chunks are stamped with the version-agnostic
-    # Datatracker doc URL; fetch_by_url resolves that back to the draft.
+    # Datatracker doc URL; get_by_url resolves that back to the draft.
     write_cache_file(
         isolated_home, "wg", "drafts/draft-ietf-wg-thing-02.txt",
         "Internet-Draft  Thing  March 2026\n\n"
@@ -849,16 +849,16 @@ def test_fetch_by_url_resolves_draft_datatracker_url(
     from test_search_filters import _build_with_stub  # noqa: F401
 
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_fetch_by_url(
+    out = mcp_server.tool_get_by_url(
         "wg", "https://datatracker.ietf.org/doc/draft-ietf-wg-thing/",
     )
     assert "draft body line" in out
     assert "drafts/draft-ietf-wg-thing-02.txt" in out
 
 
-def test_fetch_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
+def test_get_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
     # The Archived-At permalink stamped on every thread message is a
-    # `www.w3.org/mid/<message-id>` URL — the form fetch_by_url must
+    # `www.w3.org/mid/<message-id>` URL — the form get_by_url must
     # resolve (not `mailarchive.ietf.org/...`).
     mid = "https://www.w3.org/mid/test-msgid-123@example.com"
     write_cache_file(
@@ -874,11 +874,11 @@ def test_fetch_by_url_resolves_w3_mid_archived_at(isolated_home: Path) -> None:
     from test_search_filters import _build_with_stub  # noqa: F401
 
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_fetch_by_url("wg", mid)
+    out = mcp_server.tool_get_by_url("wg", mid)
     assert "the message body to resolve" in out
 
 
-def test_fetch_by_url_normalises_body_footnote_spelling(
+def test_get_by_url_normalises_body_footnote_spelling(
     isolated_home: Path,
 ) -> None:
     # Regression: the Archived-At line is stored without a trailing slash,
@@ -907,7 +907,7 @@ def test_fetch_by_url_normalises_body_footnote_spelling(
         f"<{stored}>",  # angle-bracket wrapped
         stored + "#anchor",  # trailing fragment
     ):
-        out = mcp_server.tool_fetch_by_url("wg", variant)
+        out = mcp_server.tool_get_by_url("wg", variant)
         assert "the footnote target body" in out, variant
 
 
@@ -962,13 +962,13 @@ def test_find_chunks_by_url_tolerates_legacy_schemas(isolated_home: Path) -> Non
     assert storage.find_chunks_by_url("wg", url) == []
 
 
-def test_fetch_by_url_returns_helpful_miss_message(
+def test_get_by_url_returns_helpful_miss_message(
     isolated_home: Path,
 ) -> None:
     # Unknown URL → message that explains the supported forms, not silent
     # None — and names w3.org/mid so a consumer is not sent to mailarchive.
     write_cache_file(isolated_home, "wg", "x.txt", "hi")
-    out = mcp_server.tool_fetch_by_url("wg", "https://mailarchive.ietf.org/arch/msg/x/y/")
+    out = mcp_server.tool_get_by_url("wg", "https://mailarchive.ietf.org/arch/msg/x/y/")
     assert "No cached chunk" in out
     assert "w3.org/mid" in out
     assert "ietf-llm wg" in out  # the recovery hint

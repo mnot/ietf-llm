@@ -1,7 +1,7 @@
 """Live Datatracker fact lookups for the chair-workflow read tools.
 
 This module is the one read-path exception to the server's offline rule.
-`meeting_sessions` and `draft_status` hit Datatracker *live* because the
+`meeting_schedule` and `draft_status` hit Datatracker *live* because the
 facts they serve — meeting schedules, IESG document states — change daily
 and a gather cache (a 36-month window, often days stale) is too coarse for
 an agenda. They are therefore gated exactly like the gather tools
@@ -465,7 +465,7 @@ class UpcomingMeeting:
     number: str  # "127" or "interim-2026-aipref-05"
     kind: str  # "ietf" | "interim" | ""
     date: str  # "YYYY-MM-DD" (Datatracker meeting date)
-    agenda_url: str  # the human agenda page, drillable via `meeting_sessions`
+    agenda_url: str  # the human agenda page, drillable via `meeting_schedule`
 
 
 def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str]]:
@@ -499,7 +499,7 @@ def fetch_upcoming_meetings(
 ) -> Tuple[List[UpcomingMeeting], datetime.datetime, Optional[str]]:
     """`corpus`'s upcoming meetings (numbered + interim), soonest first.
 
-    Discovery for `meeting_sessions`: an interim id (`interim-2026-aipref-05`)
+    Discovery for `meeting_schedule`: an interim id (`interim-2026-aipref-05`)
     isn't guessable, so this lists the group's future-dated meetings — each
     drillable by passing its `number` back to `fetch_meeting_sessions`. Walks
     the most-recent page of the group's sessions (future meetings carry the
