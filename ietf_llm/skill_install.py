@@ -14,9 +14,11 @@ mnot/ietf-skill and the user installs it from there.
 `--install-skills` detects every supported harness present on the machine
 (Claude Code, Codex, Gemini CLI, opencode — all adopters of the Agent Skills
 open standard) and installs each bundled (norms) skill into every one's skills
-directory, with idempotency and a safety check for user edits. Routing comes
-from the MCP server's `instructions` field (its built-in floor) and, for CLI
-users, the `ietf-corpus` skill installed from mnot/ietf-skill.
+directory, with idempotency and a safety check for user edits. It is a
+convenience: the two norms skills are vendored copies of what mnot/ietf-skill
+publishes, so installing them from that repo instead is equivalent. Routing
+comes from the MCP server's `instructions` field (its built-in floor) and, for
+CLI users, the `ietf-corpus` skill installed from mnot/ietf-skill.
 
 On every CLI gather, `sync_if_pristine()` keeps already-installed skills
 current: it auto-updates an installed copy to the bundled version *only* when
@@ -245,6 +247,10 @@ def install_skills() -> int:
     for root in sorted(by_root, key=str):
         names = ", ".join(sorted(by_root[root]))
         print(f"  {names} → {root}")
+    print(
+        "  (a convenience copy of the norms skills from mnot/ietf-skill; the "
+        "query/routing skill, ietf-corpus, lives there — install it from there.)"
+    )
     return 0
 
 

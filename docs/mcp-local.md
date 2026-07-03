@@ -41,20 +41,21 @@ guidance as a local skill (see below); it's the same content either way.
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
 
-Optionally install the bundled norms skills — the interpretation/contribution guidance the server
-also serves via `read_ietf_interpretation_norms` / `read_ietf_participation_norms`, packaged as
-skills. This installs into every supported agent harness it detects (Claude Code, Codex, Gemini CLI,
-opencode):
+Optionally install the two norms skills — `ietf-interpreting` and `ietf-contributing` (the read- and
+write-side norms the server also serves via `read_ietf_interpretation_norms` /
+`read_ietf_participation_norms`) — into every supported agent harness it detects (Claude Code, Codex,
+Gemini CLI, opencode):
 
 ```bash
 ietf-llm --install-skills
 ```
 
-Two skills are installed: `ietf-interpreting` and `ietf-contributing` (the read- and write-side
-norms), into every detected harness. Re-run after upgrading the package to pick up improvements. The
-query/routing skill is not bundled here — it is `ietf-corpus` in
-[mnot/ietf-skill](https://github.com/mnot/ietf-skill); install it from there if you want CLI-side
-routing. Use one front door — skills plus the CLI, or the hosted MCP — not both.
+This is a **convenience**: it installs the same two norm skills you would otherwise install yourself
+from their canonical home, [mnot/ietf-skill](https://github.com/mnot/ietf-skill) — the package just
+ships a pinned copy (re-run after upgrading to pick up a newer pin). If you install them from that
+repo directly, you do not also need this. The query/routing skill (`ietf-corpus`) is **not** bundled
+here — install it from `mnot/ietf-skill`. Use one front door — skills plus the CLI, or the hosted
+MCP — not both.
 
 ### Claude Desktop
 
