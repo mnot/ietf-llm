@@ -38,8 +38,10 @@ from .mcp_server import (
     tool_list_corpora,
     tool_list_files,
     tool_list_labels,
+    tool_list_sessions,
     tool_overview,
     tool_read_digest,
+    tool_read_minutes,
     tool_read_topic,
     tool_search,
     tool_search_corpora,
@@ -160,6 +162,20 @@ def _cmd_fetch_by_url(args: argparse.Namespace) -> int:
     if absent is not None:
         return absent
     return _emit(tool_fetch_by_url(args.corpus, args.url))
+
+
+def _cmd_list_sessions(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    return _emit(tool_list_sessions(args.corpus))
+
+
+def _cmd_read_minutes(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    return _emit(tool_read_minutes(args.corpus, args.meeting))
 
 
 def _cmd_find_efforts(args: argparse.Namespace) -> int:
@@ -355,6 +371,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_corpus_arg(p_fetch)
     p_fetch.add_argument("url", metavar="URL", help="Citation URL to resolve.")
     p_fetch.set_defaults(func=_cmd_fetch_by_url)
+
+    p_sessions = subparsers.add_parser(
+        "list-sessions", help="List a corpus's gathered meeting sessions."
+    )
+    _add_corpus_arg(p_sessions)
+    p_sessions.set_defaults(func=_cmd_list_sessions)
+
+    p_minutes = subparsers.add_parser(
+        "read-minutes", help="Read gathered minutes (and polls) for a meeting."
+    )
+    _add_corpus_arg(p_minutes)
+    p_minutes.add_argument(
+        "meeting",
+        metavar="MEETING",
+        nargs="?",
+        default="",
+        help="Meeting code (e.g. ietf125); omit to list sessions.",
+    )
+    p_minutes.set_defaults(func=_cmd_read_minutes)
 
     p_efforts = subparsers.add_parser(
         "find-efforts", help="Rank active IETF/IRTF efforts by a topic."

@@ -109,6 +109,41 @@ def test_which_corpus_reports_unreachable_backend(isolated_home, monkeypatch):
     )
 
 
+def test_list_sessions(isolated_home, capsys, monkeypatch):
+    write_cache_file(
+        isolated_home, "httpbis", "meetings/ietf125/minutes.md", "Date: 2026-03-16\n\nx\n"
+    )
+    write_cache_file(
+        isolated_home, "httpbis", "meetings/ietf125/polls/2026.md", "adopt? 20-4\n"
+    )
+    assert _run(["list-sessions", "httpbis"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "ietf125" in out and "2026-03-16" in out and "poll" in out
+
+
+def test_read_minutes_includes_polls(isolated_home, capsys, monkeypatch):
+    write_cache_file(
+        isolated_home,
+        "httpbis",
+        "meetings/ietf125/minutes.md",
+        "Date: 2026-03-16\n\nwe discussed X\n",
+    )
+    write_cache_file(
+        isolated_home, "httpbis", "meetings/ietf125/polls/2026.md", "adopt draft-foo? 20-4\n"
+    )
+    assert _run(["read-minutes", "httpbis", "ietf125"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "we discussed X" in out and "Polls" in out and "20-4" in out
+
+
+def test_read_minutes_no_code_lists_sessions(isolated_home, capsys, monkeypatch):
+    write_cache_file(
+        isolated_home, "httpbis", "meetings/ietf125/minutes.md", "Date: 2026-03-16\n\nx\n"
+    )
+    assert _run(["read-minutes", "httpbis"], monkeypatch) == 0
+    assert "Sessions available" in capsys.readouterr().out
+
+
 def test_probe_embed_backend_none_when_no_index(isolated_home):
     from ietf_llm.embeddings import probe_embed_backend
 

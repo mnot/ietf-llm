@@ -101,7 +101,16 @@ from .freshness import (
     staleness_warning,
 )
 from .gather.citations import normalize_draft_name
-from .paths import digest_kind_from_relpath, digest_path, drafts_dir
+from .paths import (
+    agenda_path,
+    digest_kind_from_relpath,
+    digest_path,
+    drafts_dir,
+    meetings_dir,
+    minutes_path,
+    polls_dir,
+    transcripts_dir,
+)
 from .positions import (
     extract_chair_statements,
     file_supports_tally,
@@ -3348,6 +3357,136 @@ def tool_draft_authors(name: str) -> str:
     return "\n".join(lines)
 
 
+#: Line cap for a single gathered minutes read, so a pathological transcript-
+#: sized minutes file cannot blow the context window in one call.
+_MINUTES_MAX_LINES = 2000
+
+
+def _read_text_capped(path: str, max_lines: int) -> str:
+    """Read a file, truncating past `max_lines` with a pointer to page the
+    rest via `read_file_section`. Empty string if unreadable."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return ""
+    if len(lines) > max_lines:
+        return "".join(lines[:max_lines]) + (
+            f"\n\n_(truncated at {max_lines} lines — read further with "
+            "`read_file_section`)_\n"
+        )
+    return "".join(lines)
+
+
+def _session_date(cache: str, code: str) -> str:
+    """Best-effort session date from a meeting's minutes header, or ''."""
+    try:
+        with open(minutes_path(cache, code), encoding="utf-8") as handle:
+            head = handle.read(2000)
+    except OSError:
+        return ""
+    match = re.search(r"(?im)^\s*Date:\s*(\d{4}-\d{2}-\d{2})", head)
+    return match.group(1) if match else ""
+
+
+def _dir_md_count(directory: str) -> int:
+    """Number of `.md` files directly in `directory` (0 if it is absent)."""
+    if not os.path.isdir(directory):
+        return 0
+    return len([f for f in os.listdir(directory) if f.endswith(".md")])
+
+
+def _session_artifacts(cache: str, code: str) -> str:
+    """Compact 'minutes · agenda · N transcripts · N polls' inventory."""
+    parts: List[str] = []
+    if os.path.isfile(minutes_path(cache, code)):
+        parts.append("minutes")
+    if os.path.isfile(agenda_path(cache, code)):
+        parts.append("agenda")
+    n_tx = _dir_md_count(transcripts_dir(cache, code))
+    if n_tx:
+        parts.append(f"{n_tx} transcript{'s' if n_tx != 1 else ''}")
+    n_polls = _dir_md_count(polls_dir(cache, code))
+    if n_polls:
+        parts.append(f"{n_polls} poll{'s' if n_polls != 1 else ''}")
+    return " · ".join(parts) or "(no artifacts)"
+
+
+def _sessions_listing(wg: str, cache: str) -> str:
+    """Body of `tool_list_sessions` (undecorated) so `read_minutes` can reuse
+    it without re-entering the corpus-version pin."""
+    mdir = meetings_dir(cache)
+    codes = (
+        sorted(
+            name
+            for name in os.listdir(mdir)
+            if os.path.isdir(os.path.join(mdir, name)) and not name.startswith("_")
+        )
+        if os.path.isdir(mdir)
+        else []
+    )
+    if not codes:
+        return f"No meeting sessions gathered for {wg}."
+    rows = [
+        (code, _session_date(cache, code), _session_artifacts(cache, code))
+        for code in codes
+    ]
+    code_w = max(len(c) for c, _, _ in rows)
+    date_w = max((len(d) for _, d, _ in rows), default=0)
+    lines = [f"{c.ljust(code_w)}  {d.ljust(date_w)}  {a}".rstrip() for c, d, a in rows]
+    return (
+        f"Gathered meeting sessions for {wg} (code · date · artifacts). "
+        f'Read one with `read_minutes(corpus="{wg}", meeting="<code>")`.\n\n'
+        + "\n".join(lines)
+    )
+
+
+@_requires_corpus
+def tool_list_sessions(wg: str) -> str:
+    return _with_freshness(wg, _sessions_listing(wg, _files_dir(wg)))
+
+
+def _read_polls(cache: str, code: str) -> str:
+    """Concatenate a meeting's gathered poll files (small), or '' if none."""
+    pdir = polls_dir(cache, code)
+    if not os.path.isdir(pdir):
+        return ""
+    chunks = [
+        text
+        for name in sorted(os.listdir(pdir))
+        if name.endswith(".md")
+        and (text := _read_text_capped(os.path.join(pdir, name), 500)).strip()
+    ]
+    return "\n\n".join(chunks)
+
+
+@_requires_corpus
+def tool_read_minutes(wg: str, meeting: str = "") -> str:
+    cache = _files_dir(wg)
+    if not meeting:
+        listing = _sessions_listing(wg, cache)
+        return _with_freshness(
+            wg, f"Pass a `meeting` code. Sessions available:\n\n{listing}"
+        )
+    path = minutes_path(cache, meeting)
+    if not os.path.isfile(path):
+        return _with_freshness(
+            wg,
+            f"No minutes gathered for meeting '{meeting}' in {wg}.\n\n"
+            + _sessions_listing(wg, cache),
+        )
+    body = (
+        f"# Minutes — {wg} {meeting}\n\n{_read_text_capped(path, _MINUTES_MAX_LINES)}"
+    )
+    polls = _read_polls(cache, meeting)
+    if polls:
+        body += (
+            "\n\n## Polls\n\n_Raw poll tallies — a poll is a sense of the room, "
+            "not a decision; the chair declares consensus._\n\n" + polls
+        )
+    return _with_freshness(wg, body)
+
+
 def _render_upcoming_meetings(corpus: str) -> str:
     """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
     each drillable by passing its id back as `meeting`."""
@@ -3503,7 +3642,7 @@ def tool_draft_status(name: str) -> str:
 
 
 @graceful_keyboard_interrupt
-def main() -> None:
+def main() -> None:  # pylint: disable=too-many-locals
     try:
         from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
             FastMCP,
@@ -3937,6 +4076,28 @@ def main() -> None:
                 version suffix is optional (the newest cached revision is used).
         """
         return await _offload(tool_draft_authors, name)
+
+    @server.tool()
+    async def list_sessions(corpus: str) -> str:
+        """List a corpus's gathered meeting sessions — each meeting code with
+        its date and which artifacts are present (minutes, agenda, transcripts,
+        polls). Offline, from the cache. Use it to find the `meeting` code to
+        pass to `read_minutes`, or to see which sessions were captured.
+        """
+        return await _offload(tool_list_sessions, corpus)
+
+    @server.tool()
+    async def read_minutes(corpus: str, meeting: str = "") -> str:
+        """Read the gathered minutes for one meeting session, plus any recorded
+        poll tallies. Offline, from the cache; the authoritative record of what
+        a session discussed and decided.
+
+        Pass the `meeting` code from `list_sessions` (e.g. `ietf125`,
+        `interim20260401`); omit it to get the session list. The appended polls
+        are raw sense-of-the-room tallies, NOT decisions — the chair declares
+        consensus (see `read_ietf_interpretation_norms`).
+        """
+        return await _offload(tool_read_minutes, corpus, meeting)
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
