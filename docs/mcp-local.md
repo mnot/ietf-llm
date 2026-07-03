@@ -41,17 +41,20 @@ guidance as a local skill (see below); it's the same content either way.
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
 
-Optionally install the bundled Agent Skills — the same guidance the server already exposes via MCP,
-packaged as skills. This installs into every supported agent harness it detects (Claude Code, Codex,
-Gemini CLI, opencode):
+Optionally install the bundled norms skills — the interpretation/contribution guidance the server
+also serves via `read_ietf_interpretation_norms` / `read_ietf_participation_norms`, packaged as
+skills. This installs into every supported agent harness it detects (Claude Code, Codex, Gemini CLI,
+opencode):
 
 ```bash
 ietf-llm --install-skills
 ```
 
-Three skills are installed: `ietf-llm` (query routing, Claude/opencode only — it drives the MCP
-tools), plus `ietf-interpreting` and `ietf-contributing` (the read- and write-side norms, installed
-everywhere). Re-run after upgrading the package to pick up improvements.
+Two skills are installed: `ietf-interpreting` and `ietf-contributing` (the read- and write-side
+norms), into every detected harness. Re-run after upgrading the package to pick up improvements. The
+query/routing skill is not bundled here — it is `ietf-corpus` in
+[mnot/ietf-skill](https://github.com/mnot/ietf-skill); install it from there if you want CLI-side
+routing. Use one front door — skills plus the CLI, or the hosted MCP — not both.
 
 ### Claude Desktop
 

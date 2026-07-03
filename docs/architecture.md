@@ -411,9 +411,11 @@ ietf_llm/
 ├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
 ├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
-├── data/skills/ietf-llm/SKILL.md         # query/routing skill (body also fed to MCP `instructions`)
-├── data/skills/ietf-interpreting/SKILL.md  # read-side norms skill, also via read_ietf_interpretation_norms
-├── data/skills/ietf-contributing/SKILL.md  # write-side norms skill, also via read_ietf_participation_norms
+├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms
+├── data/skills/ietf-contributing/SKILL.md  # write-side norms (vendored), via read_ietf_participation_norms
+├── data/skills/VENDORED.md               # provenance: the two norm skills come from mnot/ietf-skill
+│                                         # (the query/routing skill lives there as ietf-corpus, not here;
+│                                         #  the MCP `instructions` field is a built-in floor in mcp_server.py)
 │
 ├── gather/                 # content acquisition + per-source post-processing
 │   ├── charter.py              # charter text artifact (rev from doc API)
@@ -569,9 +571,11 @@ stuck call fails fast instead of hanging to the client ceiling, and
 guards against an unknown corpus name (a read-only existence check, so a
 typo neither creates a cache dir nor returns a hollow result).
 
-The full SKILL.md guidance is also handed to compliant clients via the
-MCP server's `instructions` field, so non-Claude harnesses get the same
-routing rules without the Claude-specific skill install.
+A built-in instructions floor is handed to compliant clients via the MCP
+server's `instructions` field — a routing preamble plus the mandatory-norms
+gate — so every harness gets the essentials (and the norms gate) without any
+skill installed. The full routing/workflow brain lives in the external
+`ietf-corpus` skill (mnot/ietf-skill), which a CLI user installs.
 
 ## Key design decisions
 
@@ -1109,8 +1113,9 @@ on every push/PR across Python 3.10–3.14.
 - **New digest** → add a builder under `digest/`, call it from
   `generate_digests()`, export from `__init__`.
 - **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
-  then a thin `@server.tool()` wrapper in `main()`. Document the
-  routing in `data/skills/ietf-llm/SKILL.md`. A tool that writes or reaches the
+  then a thin `@server.tool()` wrapper in `main()`. Its docstring is the
+  routing the model sees; the full routing brain lives in the `ietf-corpus`
+  skill (mnot/ietf-skill), so update it there. A tool that writes or reaches the
   network (like `start_gather`) must be registered behind the gather gate
   (`_gather_enabled`, off for the shared HTTP replica), run its work
   off-thread, and be imported lazily so the read-only serve path stays clean.
