@@ -161,8 +161,13 @@ def _canned(url: str) -> Optional[Dict[str, Any]]:
 
 
 @pytest.fixture(autouse=True)
-def _stub_fetch(monkeypatch):
-    """Replace the one network seam and clear the TTL cache around each test."""
+def _stub_fetch(monkeypatch, isolated_home):
+    """Replace the one network seam and clear the TTL cache around each test.
+
+    `isolated_home` sandboxes the disk-backed live cache these tools now write
+    (`_cached_json` persists a `.live-cache.json` under the cache root), so a
+    test never touches the real user cache.
+    """
     live_lookup._reset_cache()
     monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: _canned(url))
     yield
@@ -356,6 +361,55 @@ def test_ttl_cache_fetches_once(monkeypatch):
     live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     # Second call within the TTL re-uses every cached URL — no new fetches.
     assert calls["n"] == after_first
+
+
+def test_disk_cache_serves_cold_process(monkeypatch):
+    # The load-bearing protection for short-lived processes (e.g. a restarted
+    # stdio subprocess): a fresh (cold) process starts with an empty in-process
+    # cache but must reuse a recent fetch from disk, not re-hit Datatracker.
+    calls = []
+    url = "https://datatracker.ietf.org/api/v1/doc/document/?name=x"
+    monkeypatch.setattr(
+        live_lookup,
+        "_fetch_json",
+        lambda u, timeout=10.0: calls.append(u) or {"ok": True},
+    )
+    body1, _ = live_lookup._cached_json(url)
+    assert body1 == {"ok": True} and len(calls) == 1
+    live_lookup._reset_cache()  # simulate a new, cold process
+    body2, _ = live_lookup._cached_json(url)
+    assert body2 == {"ok": True}
+    assert len(calls) == 1  # served from the disk cache; no second fetch
+
+
+def test_disk_cache_stale_fallback_on_cold_process(monkeypatch):
+    # A cold process whose only prior data is an EXPIRED disk entry, with
+    # Datatracker down, still returns the stale answer rather than nothing.
+    url = "https://datatracker.ietf.org/api/v1/doc/document/?name=z"
+    monkeypatch.setattr(live_lookup, "_fetch_json", lambda u, timeout=10.0: {"ok": 1})
+    live_lookup._cached_json(url)  # populate the disk cache
+    live_lookup._reset_cache()  # cold process: empty in-process cache
+    monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")  # the disk entry is now stale
+    monkeypatch.setattr(live_lookup, "_fetch_json", lambda u, timeout=10.0: None)  # down
+    body, _ = live_lookup._cached_json(url)
+    assert body == {"ok": 1}  # served the stale disk datum, not None
+
+
+def test_disk_get_rejects_non_dict_body():
+    # A corrupt / hand-edited entry with a non-dict body is a miss, not a
+    # None "hit" that would mask a healthy fetch or cache None in-process.
+    import json
+    import os
+    import time
+
+    path = live_lookup._live_cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {"u": {"body": None, "epoch": time.time(), "fetched_at": "2026-01-01T00:00:00+00:00"}},
+            fh,
+        )
+    assert live_lookup._disk_get("u", 300) is None
 
 
 def test_stale_fallback_on_fetch_failure(monkeypatch):

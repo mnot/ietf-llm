@@ -9,11 +9,17 @@ an agenda. They are therefore gated exactly like the gather tools
 stdio server, off for the shared read-only HTTP replica) and imported
 lazily by `mcp_server`, so the default read path never pulls this in.
 
-Unlike the gather layer it keeps a small **in-process TTL cache only** — it
-never writes the ETag store or any other disk state, so the read path stays
-write-free. Every result carries the UTC time the underlying data was
-fetched, so a caller can see how fresh (or how stale-on-failure) it is; the
-tool wrappers render that via `age_stamp`.
+Unlike the gather layer it keeps only a small TTL cache — in-process, plus a
+best-effort cross-process copy on disk (`.live-cache.json` under the cache
+root). The disk copy exists so a cold, short-lived process — one that starts
+with an empty in-process cache, e.g. an MCP stdio subprocess restarted between
+sessions — does not re-hit Datatracker on every call; without it a burst of
+cold processes would hammer the API. It writes nothing else: no ETag store, and
+never any corpus content, so a re-gather is still the only thing that mutates
+a corpus. On a read-only cache mount the disk write silently no-ops. Every
+result carries the UTC time the underlying data was fetched, so a caller can
+see how fresh (or how stale-on-failure) it is; the tool wrappers render that
+via `age_stamp`.
 
 The data source is always the Datatracker REST API / agenda JSON, never a
 scraped HTML page (see `docs/architecture.md`, "Use the Datatracker API").
@@ -22,6 +28,7 @@ scraped HTML page (see `docs/architecture.md`, "Use the Datatracker API").
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import threading
 import time
@@ -32,7 +39,13 @@ import requests
 
 from .gather.citations import normalize_draft_name
 from .gather.meetings import _uri_id
-from .utils import DEFAULT_HEADERS, governed_get
+from .utils import (
+    DEFAULT_HEADERS,
+    atomic_open,
+    file_lock,
+    get_cache_dir,
+    governed_get,
+)
 
 _DT_BASE = "https://datatracker.ietf.org"
 _API_BASE = f"{_DT_BASE}/api/v1"
@@ -92,12 +105,87 @@ def _fetch_json(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
     return body if isinstance(body, dict) else None
 
 
+def _live_cache_path() -> str:
+    return os.path.join(get_cache_dir(), ".live-cache.json")
+
+
+def _disk_get(
+    url: str, ttl: Optional[float]
+) -> Optional[Tuple[Dict[str, Any], datetime.datetime, float]]:
+    """Disk-cached `(body, fetched_at, epoch)` for `url`, or None.
+
+    `ttl` is the freshness window; pass None to accept a stale entry (the
+    fetch-failure fallback, where a stale answer beats none). A non-dict body
+    is a miss, not a `None` hit — a corrupt or hand-edited entry must not
+    masquerade as an empty result. Best-effort: any read/parse error is a miss.
+    """
+    try:
+        with open(_live_cache_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    entry = data.get(url) if isinstance(data, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    epoch = entry.get("epoch")
+    if not isinstance(epoch, (int, float)):
+        return None
+    if ttl is not None and (time.time() - epoch) >= ttl:
+        return None
+    body = entry.get("body")
+    if not isinstance(body, dict):
+        return None
+    try:
+        fetched_at = datetime.datetime.fromisoformat(str(entry.get("fetched_at")))
+    except ValueError:
+        fetched_at = _now_utc()
+    return body, fetched_at, float(epoch)
+
+
+def _disk_put(
+    url: str, body: Dict[str, Any], fetched_at: datetime.datetime, ttl: float
+) -> None:
+    """Store a fresh entry on disk, pruning expired ones. Best-effort and
+    serialised across processes by a file lock so concurrent CLI invocations
+    do not clobber each other; any OS error (e.g. a read-only mount) no-ops."""
+    path = _live_cache_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with file_lock(path + ".lock"):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            now = time.time()
+            fresh = {
+                key: val
+                for key, val in data.items()
+                if isinstance(val, dict)
+                and isinstance(val.get("epoch"), (int, float))
+                and (now - val["epoch"]) < ttl
+            }
+            fresh[url] = {
+                "body": body,
+                "fetched_at": fetched_at.isoformat(),
+                "epoch": now,
+            }
+            with atomic_open(path) as handle:
+                json.dump(fresh, handle)
+    except OSError:
+        pass
+
+
 def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]:
     """Return `(body, fetched_at)` for `url`, fetching at most once per TTL.
 
-    On a fetch failure a previously-cached body is returned with its
-    *original* timestamp (stale, but the age stamp will say so, and a stale
-    answer beats no answer); with no prior entry, `(None, now)`.
+    Checks the in-process cache first, then the cross-process disk cache (so a
+    cold process reuses a recent fetch rather than re-hitting Datatracker), then
+    fetches. On a fetch failure a previously-cached body is returned with its
+    *original* timestamp — in-process, else a stale disk entry — since a stale
+    answer beats none; with no prior entry anywhere, `(None, now)`.
     """
     ttl = _ttl_seconds()
     now_mono = time.monotonic()
@@ -105,18 +193,39 @@ def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]
         entry = _cache.get(url)
         if entry is not None and (now_mono - entry.monotonic) < ttl:
             return entry.body, entry.fetched_at
+    disk = _disk_get(url, ttl)
+    if disk is not None:
+        disk_body, disk_fetched, disk_epoch = disk
+        # Preserve the disk entry's real age so the in-process TTL check does
+        # not restart the clock — otherwise a near-expired disk datum would be
+        # served for a further full TTL (up to ~2×TTL total).
+        age = max(0.0, time.time() - disk_epoch)
+        with _cache_lock:
+            _cache[url] = _CacheEntry(
+                body=disk_body,
+                fetched_at=disk_fetched,
+                monotonic=time.monotonic() - age,
+            )
+        return disk_body, disk_fetched
     body = _fetch_json(url)
     if body is None:
+        # Fetch failed: prefer any stale answer over none. In-process first,
+        # then a stale disk entry — the cold-process case the disk cache exists
+        # for (a fresh process, network down, only older-than-TTL data on disk).
         with _cache_lock:
             entry = _cache.get(url)
         if entry is not None:
             return entry.body, entry.fetched_at
+        stale = _disk_get(url, None)
+        if stale is not None:
+            return stale[0], stale[1]
         return None, _now_utc()
     fetched_at = _now_utc()
     with _cache_lock:
         _cache[url] = _CacheEntry(
             body=body, fetched_at=fetched_at, monotonic=time.monotonic()
         )
+    _disk_put(url, body, fetched_at, ttl)
     return body, fetched_at
 
 

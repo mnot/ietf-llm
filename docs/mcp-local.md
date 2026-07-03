@@ -31,9 +31,10 @@ own MCP docs are authoritative.
 `PATH` but may not be on the `PATH` inherited by a GUI app launched from Finder / Spotlight /
 Explorer. Use the absolute path (`which ietf-llm-mcp`) if the client can't find the command.
 
-The server hands its usage guidance to every client through the MCP `instructions` field, so any
-compliant client picks up the routing rules automatically. Claude Code can additionally install that
-guidance as a local skill (see below); it's the same content either way.
+The server hands its routing and norms guidance to every client through the MCP `instructions` field,
+so any compliant client picks up the routing rules automatically — no skill required. You can
+optionally install the two IETF *norms* skills locally as a convenience (see below), but routing
+itself always comes from the server.
 
 ### Claude Code
 
@@ -41,17 +42,18 @@ guidance as a local skill (see below); it's the same content either way.
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
 
-Optionally install the bundled Agent Skills — the same guidance the server already exposes via MCP,
-packaged as skills. This installs into every supported agent harness it detects (Claude Code, Codex,
+Optionally install the two IETF **norms** skills — `ietf-interpreting` and `ietf-contributing` (the
+read- and write-side norms the server also serves via `read_ietf_interpretation_norms` /
+`read_ietf_participation_norms`) — into every supported agent harness it detects (Claude Code, Codex,
 Gemini CLI, opencode):
 
 ```bash
 ietf-llm --install-skills
 ```
 
-Three skills are installed: `ietf-llm` (query routing, Claude/opencode only — it drives the MCP
-tools), plus `ietf-interpreting` and `ietf-contributing` (the read- and write-side norms, installed
-everywhere). Re-run after upgrading the package to pick up improvements.
+This is a convenience: it installs the same two norm skills you can install yourself from
+[mnot/ietf-skill](https://github.com/mnot/ietf-skill) (their canonical home). Routing needs no skill
+— it comes from the server's `instructions`. Re-run after upgrading to pick up a newer pin.
 
 ### Claude Desktop
 

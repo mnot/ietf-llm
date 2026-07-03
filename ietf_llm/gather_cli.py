@@ -264,10 +264,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--install-skills",
         action="store_true",
-        help="Install the bundled Agent Skills (ietf-llm + the interpretation "
-        "/ participation norms) into every supported agent harness detected "
-        "on this machine (Claude Code, Codex, Gemini CLI, opencode) and exit. "
-        "Overwrites any existing copy at each destination. Does not gather.",
+        help="Install the norms skills (ietf-interpreting + ietf-contributing) "
+        "into every supported agent harness detected on this machine (Claude "
+        "Code, Codex, Gemini CLI, opencode) and exit. A convenience for the "
+        "same skills you can install yourself from mnot/ietf-skill (their "
+        "canonical home). Overwrites any existing copy. Does not gather.",
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="Only output errors."

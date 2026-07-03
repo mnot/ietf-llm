@@ -1074,16 +1074,24 @@ def test_get_chunks_batch_tolerates_single_dict_input(
     assert "body" in out
 
 
+def test_read_file_window_past_eof(tmp_path) -> None:
+    # Paging past the end returns a clear message, not a backwards "20-10 of 10"
+    # header with an empty body.
+    path = tmp_path / "f.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    out = mcp_server._read_file_window(str(path), start_line=20, max_lines=100)
+    assert "past the end" in out and "3 lines" in out
+    assert "20–10" not in out
+
+
 # --- _load_server_instructions --------------------------------------------
 
 
-def test_load_server_instructions_strips_frontmatter() -> None:
-    # The bundled SKILL.md has a YAML frontmatter block (name + description).
-    # That's skill metadata, not model guidance; the loader must strip it.
+def test_load_server_instructions_is_markdown_heading() -> None:
+    # The instructions floor is a package-owned markdown string (no YAML
+    # frontmatter): it opens with a heading and carries no `---` sentinel.
     out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
     assert out is not None
-    # The opening line of the body is "# ietf-llm" (the markdown heading).
-    # The frontmatter's "---" sentinels must NOT survive.
     assert out.lstrip().startswith("#")
     assert "---" not in out.splitlines()[0]
 

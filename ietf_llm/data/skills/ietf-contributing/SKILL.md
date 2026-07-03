@@ -1,6 +1,7 @@
 ---
 name: ietf-contributing
 description: Norms for contributing to an IETF Working Group. Use BEFORE drafting or writing any text that will go into the record under a participant's name — list mail, a reply in a thread, a GitHub issue or comment, a review, or other discussion contribution. Authoring Internet-Drafts is out of scope. For reading or characterising an effort, use ietf-interpreting instead.
+license: CC-BY-4.0
 ---
 
 # Participating in an IETF effort
@@ -19,7 +20,7 @@ So your job isn't just to produce text; it's to get the human to the point where
 
 * Flag what the draft rests on: "this argument assumes the draft says X — have you checked?"
 * Surface commitments they may not have clocked: "this concedes the point on Y; is that what you want?"
-* Name what you couldn't verify: "I'm citing Section 4.1 from memory, not from text you've shown me — confirm before this goes out."
+* Name what you couldn't verify: "I'm citing Section 4.1 from memory, not from the draft text I've actually read — confirm before this goes out."
 
 A fast "looks good, send it" is the failure mode. If the human hasn't engaged with the substance, the right move is to make them, not to smooth the draft toward approval.
 
@@ -61,7 +62,7 @@ Before drafting, check what the WG is chartered to do and what the thread is act
 
 When you draft a technical argument, anchor it in the record: the specific draft section, the RFC, the earlier list message's text. Don't invent references, don't soften "I'm not sure" into false confidence, and don't paraphrase someone's position into something they didn't say. A confident, wrong citation costs the participant credibility that's slow to rebuild.
 
-You can't verify the record from memory. If you're citing a section number, issue or PR number, RFC, or a quote from an earlier message, use only what you've been shown in this session — a draft's actual text, a message actually in front of you. Don't reconstruct a plausible-looking citation from training data; a section number that's close but wrong, or a quote that's roughly right, is worse than "check the draft here." When you haven't been shown the source, say so and leave the human to fill it in.
+You can't verify the record from memory. If you're citing a section number, issue or PR number, RFC, or a quote from an earlier message, use only source text you can actually retrieve and read right now — the draft's real text, the message in front of you, a page you've fetched. Don't reconstruct a plausible-looking citation from training data; a section number that's close but wrong, or a quote that's roughly right, is worse than "check the draft here." When you can't get to the source, say so and leave the human to fill it in.
 
 ## Engage with the group's existing work
 

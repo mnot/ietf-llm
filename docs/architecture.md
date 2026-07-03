@@ -402,9 +402,10 @@ ietf_llm/
 ├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
 ├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
-├── data/skills/ietf-llm/SKILL.md         # query/routing skill (body also fed to MCP `instructions`)
-├── data/skills/ietf-interpreting/SKILL.md  # read-side norms skill, also via read_ietf_interpretation_norms
-├── data/skills/ietf-contributing/SKILL.md  # write-side norms skill, also via read_ietf_participation_norms
+├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
+├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms
+├── data/skills/ietf-contributing/SKILL.md  # write-side norms (vendored), via read_ietf_participation_norms
+├── data/skills/VENDORED.md               # provenance: norm skills vendored from mnot/ietf-skill
 │
 ├── gather/                 # content acquisition + per-source post-processing
 │   ├── charter.py              # charter text artifact (rev from doc API)
@@ -560,9 +561,11 @@ stuck call fails fast instead of hanging to the client ceiling, and
 guards against an unknown corpus name (a read-only existence check, so a
 typo neither creates a cache dir nor returns a hollow result).
 
-The full SKILL.md guidance is also handed to compliant clients via the
-MCP server's `instructions` field, so non-Claude harnesses get the same
-routing rules without the Claude-specific skill install.
+The full routing brain (`data/mcp-instructions.md`) is handed to compliant
+clients via the MCP server's `instructions` field, so every harness — Claude,
+Codex, Gemini, Cursor, Zed, opencode — gets the same routing and the norms
+gate with no separately-installed skill. (The two IETF *norms* skills can be
+installed locally as a convenience, but routing always comes from the server.)
 
 ## Key design decisions
 
@@ -978,10 +981,13 @@ A second, narrower break from the read-only / no-network contract:
 **live** from Datatracker (`live_lookup.py`). The justification is freshness —
 meeting schedules and IESG document states change daily, so an agenda built
 on the gather cache (a multi-month window, often days stale) is wrong at the
-edges. Unlike the gather exception these tools **write nothing**: they keep an
-in-process TTL cache only (`IETF_LLM_LIVE_TTL`, default 300s), never the
-on-disk ETag store, so the read path stays write-free; every result carries
-the UTC fetch time (`live_lookup.age_stamp`). They reuse the **same gate** as
+edges. They keep a small TTL cache (`IETF_LLM_LIVE_TTL`, default 300s):
+in-process, plus a best-effort cross-process copy on disk (`.live-cache.json`
+under the cache root) so a cold, short-lived process (e.g. a restarted stdio
+subprocess) reuses a recent fetch instead of re-hitting Datatracker. That is
+the *only* thing this path writes — no ETag store, no corpus content — and it
+silently no-ops on a read-only mount; every result carries the UTC fetch time
+(`live_lookup.age_stamp`). They reuse the **same gate** as
 gather (`freshness.gather_enabled`) rather than minting a second knob — both
 defaults track the transport (stdio on, HTTP replica off), and a networked
 read tool belongs on the same side of the line as the networked writer. The
@@ -1096,7 +1102,8 @@ on every push/PR across Python 3.10–3.14.
   `generate_digests()`, export from `__init__`.
 - **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
   then a thin `@server.tool()` wrapper in `main()`. Document the
-  routing in `data/skills/ietf-llm/SKILL.md`. A tool that writes or reaches the
+  routing in `data/mcp-instructions.md` (served as the `instructions` field).
+  A tool that writes or reaches the
   network (like `start_gather`) must be registered behind the gather gate
   (`_gather_enabled`, off for the shared HTTP replica), run its work
   off-thread, and be imported lazily so the read-only serve path stays clean.
