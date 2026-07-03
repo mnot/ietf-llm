@@ -75,15 +75,16 @@ A stable contract — a caller may branch on these:
 
 | Code | Meaning |
 |---|---|
-| `0` | success |
-| `1` | no results / empty |
+| `0` | success — **including an empty result** (no matches, an abstaining `which-corpus`, a missing draft); the body says so in prose |
 | `2` | usage error (bad arguments) |
 | `3` | corpus not present locally — gather it first with `ietf-llm <corpus>` |
 | `4` | embedding backend unreachable (the embedding-tier verbs) |
 | `5` | Datatracker unreachable (the live verbs) |
 
 Codes `3`–`5` are distinct so a caller can react without parsing the message — e.g. route a missing
-corpus to a gather, or fall back from a live verb to its offline cousin.
+corpus to a gather, or fall back from a live verb to its offline cousin. There is deliberately **no
+distinct "empty" code**: a verb that finds nothing still succeeded (exit `0`), and detecting
+emptiness reliably would mean parsing the rendered body — the thing these codes exist to avoid.
 
 `ietf-llm-query --version` prints the plain version string.
 

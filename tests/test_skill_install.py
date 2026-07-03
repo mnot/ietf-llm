@@ -193,6 +193,43 @@ def test_sync_is_silent_when_quiet(tmp_path: Path, monkeypatch, capsys) -> None:
     assert capsys.readouterr().err == ""
 
 
+def test_sync_prunes_pristine_orphan(tmp_path: Path, monkeypatch, capsys) -> None:
+    # A skill we installed that is no longer bundled (the retired ietf-llm
+    # routing skill) is removed on sync when still pristine — no orphan lingers.
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
+    orphan = home / ".claude/skills/ietf-llm"
+    orphan.mkdir(parents=True)
+    (orphan / "SKILL.md").write_text("old routing skill")
+    manifest = skill_install._read_manifest()
+    skill_install._record(manifest, orphan, skill_install._tree_hash(orphan))
+    skill_install._write_manifest(manifest)
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+    assert not orphan.exists()
+    assert "no longer bundled" in capsys.readouterr().err
+
+
+def test_sync_keeps_edited_orphan(tmp_path: Path, monkeypatch, capsys) -> None:
+    # An orphaned skill with local edits (hash no longer matches what we
+    # recorded) is flagged, not deleted.
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
+    orphan = home / ".claude/skills/ietf-llm"
+    orphan.mkdir(parents=True)
+    (orphan / "SKILL.md").write_text("original")
+    manifest = skill_install._read_manifest()
+    skill_install._record(manifest, orphan, skill_install._tree_hash(orphan))
+    skill_install._write_manifest(manifest)
+    (orphan / "SKILL.md").write_text("user-edited after we recorded it")
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+    assert orphan.exists()
+    assert "remove it manually" in capsys.readouterr().err
+
+
 def test_sync_never_raises(tmp_path: Path, monkeypatch) -> None:
     home = _sandbox(monkeypatch, tmp_path)
     _present(home, "claude")

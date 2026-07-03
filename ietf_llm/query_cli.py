@@ -10,12 +10,16 @@ without configuring the MCP server.
 
 Exit codes are a stable contract; callers may branch on them:
 
-  0  success
-  1  no results / empty
+  0  success — including an empty result (no matches / an abstaining
+     which-corpus / a missing draft); the body says so in prose
   2  usage error (bad arguments)
   3  corpus not present locally — gather it first with `ietf-llm <corpus>`
   4  embedding backend unreachable (the semantic-search verbs)
   5  Datatracker unreachable (the live verbs)
+
+There is deliberately no distinct "empty" code: a read verb that finds
+nothing still succeeded, and detecting emptiness reliably would mean
+parsing the rendered body — the very thing these codes exist to avoid.
 
 Verbs fall in three network tiers: most are offline (pure cache reads);
 `search` / `search-corpora` / `read-topic` / `which-corpus` embed the query
@@ -60,7 +64,6 @@ from .rfcs import render_rfc, render_search
 from .utils import graceful_keyboard_interrupt, maybe_autocomplete, wg_completer
 
 EXIT_OK = 0
-EXIT_EMPTY = 1
 EXIT_USAGE = 2
 EXIT_NO_CORPUS = 3
 EXIT_EMBED_UNREACHABLE = 4

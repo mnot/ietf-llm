@@ -290,8 +290,50 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
                 continue  # not installed here — leave it alone
             if _sync_one(src, dest, manifest, verbosity):
                 changed = True
+    if _prune_orphans(manifest, set(bundled), verbosity):
+        changed = True
     if changed:
         _write_manifest(manifest)
+
+
+def _prune_orphans(
+    manifest: Dict[str, Any], bundled_names: "set[str]", verbosity: Verbosity
+) -> bool:
+    """Remove skills we previously installed that are no longer bundled — e.g.
+    the retired `ietf-llm` routing skill — when the installed copy is still
+    pristine, so an upgrade does not leave stale guidance alongside the new
+    instructions floor and the external `ietf-corpus` skill. A user-edited copy
+    is flagged, not deleted. Only touches destinations we recorded in the
+    manifest (i.e. that we wrote). Mutates `manifest`; returns True if changed.
+    """
+    changed = False
+    for dest_str in list(manifest):
+        if Path(dest_str).name in bundled_names:
+            continue  # still bundled — the normal sync handles it
+        dest = Path(dest_str)
+        if not dest.is_dir():
+            manifest.pop(dest_str, None)  # already gone — drop the stale entry
+            changed = True
+            continue
+        recorded = manifest.get(dest_str, {}).get("sha256")
+        if recorded is not None and _tree_hash(dest) == recorded:
+            shutil.rmtree(dest, ignore_errors=True)
+            manifest.pop(dest_str, None)
+            changed = True
+            log(
+                f"Removed the obsolete {dest.name} skill at {dest} — it is no "
+                "longer bundled (its guidance moved to the ietf-corpus skill).",
+                verbosity,
+                level=LogLevel.STATUS,
+            )
+        else:
+            log(
+                f"The installed {dest.name} skill at {dest} is no longer bundled "
+                "but has local edits; remove it manually if you no longer want it.",
+                verbosity,
+                level=LogLevel.STATUS,
+            )
+    return changed
 
 
 def _sync_one(
