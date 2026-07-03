@@ -15,19 +15,28 @@ NotebookLM exporter.
 The cache is the single source of truth. Everything writes to it once
 and reads from it forever.
 
-## The four CLIs
+## The five CLIs
 
 | Command | Job | Reads | Writes |
 |---|---|---|---|
 | `ietf-llm` | gather / refresh a corpus, build digests, build embedding index | network | cache |
 | `ietf-llm-search` | semantic search over the cache | cache | stdout |
+| `ietf-llm-query` | the MCP read tools as shell subcommands (read-only) | cache (+ live for the live verbs) | stdout |
 | `ietf-llm-mcp` | expose the cache to MCP clients (Claude, Codex, etc.) | cache | stdio / HTTP (MCP) |
 | `ietf-llm-export` | mirror to local dir, or push to NotebookLM Enterprise | cache | local dir / NotebookLM |
 
 This is the load-bearing shape of the project: **one writer to the
-cache, three independent readers.** Any consumer can come and go
+cache, several independent readers.** Any consumer can come and go
 without touching the gather pipeline. Conversely, the gather pipeline
 doesn't know or care which consumers are downstream.
+
+`ietf-llm-query` and `ietf-llm-mcp` are two thin adapters over the *same*
+layer of corpus-read functions (the `tool_*` functions in `mcp_server.py`):
+the MCP server wraps each as a tool, the CLI wraps each as a subcommand.
+Adding a read capability in one place surfaces it on both. `ietf-llm-query`
+exists so a portable [Agent Skill](https://agentskills.io) or a script can
+drive a corpus without configuring MCP; see [query-cli.md](query-cli.md) for
+its verbs, network tiers, and exit-code contract.
 
 `ietf-llm --list` prints the cached WGs; `ietf-llm --completion <shell>`
 prints a shell tab-completion script.
@@ -978,10 +987,15 @@ A second, narrower break from the read-only / no-network contract:
 **live** from Datatracker (`live_lookup.py`). The justification is freshness —
 meeting schedules and IESG document states change daily, so an agenda built
 on the gather cache (a multi-month window, often days stale) is wrong at the
-edges. Unlike the gather exception these tools **write nothing**: they keep an
-in-process TTL cache only (`IETF_LLM_LIVE_TTL`, default 300s), never the
-on-disk ETag store, so the read path stays write-free; every result carries
-the UTC fetch time (`live_lookup.age_stamp`). They reuse the **same gate** as
+edges. They keep a small TTL cache (`IETF_LLM_LIVE_TTL`, default 300s):
+in-process, plus a best-effort cross-process copy on disk (`.live-cache.json`
+under the cache root) so a cold, short-lived `ietf-llm-query` process reuses a
+recent fetch instead of re-hitting Datatracker on every call — without it a
+skill shelling out repeatedly would hammer the API. That is the *only* thing
+this path writes: no ETag store, no corpus content (so a re-gather stays the
+sole writer of a corpus), and on a read-only mount the write silently no-ops.
+Every result carries the UTC fetch time (`live_lookup.age_stamp`). They reuse
+the **same gate** as
 gather (`freshness.gather_enabled`) rather than minting a second knob — both
 defaults track the transport (stdio on, HTTP replica off), and a networked
 read tool belongs on the same side of the line as the networked writer. The

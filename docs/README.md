@@ -8,6 +8,8 @@ Guides beyond the [main README](../README.md), which covers installation and the
   local cache.
 - **[Command & gather reference](reference.md)** — every `ietf-llm` command and gather flag.
 - **[Search from the CLI](search-cli.md)** — semantic search over the cache with `ietf-llm-search`.
+- **[Query from the CLI](query-cli.md)** — read-only corpus queries with `ietf-llm-query` (the MCP
+  read tools as shell subcommands; for scripts and portable skills).
 - **[Running the MCP server locally](mcp-local.md)** — stdio, one subprocess per client; per-client
   setup for Claude, Codex, Cursor, Gemini, opencode, Zed.
 - **[NotebookLM export](notebooklm.md)** — export to a directory, or push to NotebookLM Enterprise.

@@ -35,9 +35,14 @@ There are three supported workflows:
      clients (hosted).
 2. **[Use it with NotebookLM](https://github.com/mnot/ietf-llm/blob/main/docs/notebooklm.md)** — export the gathered corpus as a directory of
    clean text files and ingest it as a notebook (or push directly to NotebookLM Enterprise).
-3. **[Use it from the CLI](https://github.com/mnot/ietf-llm/blob/main/docs/search-cli.md)** — run semantic search over the cache directly with
-   `ietf-llm-search`, no LLM client required.
+3. **[Use it from the CLI](https://github.com/mnot/ietf-llm/blob/main/docs/query-cli.md)** — query a
+   gathered corpus directly, no LLM client required: `ietf-llm-query` exposes the MCP read tools
+   (orientation, search, digests, verbatim reads, minutes, draft state) as shell subcommands — for
+   scripts and portable skills — and `ietf-llm-search` runs focused
+   [semantic search](https://github.com/mnot/ietf-llm/blob/main/docs/search-cli.md).
 
-See the workflow documentation linked above for installation and use instructions, or the
+For a given workflow pick **one** front door — skills + `ietf-llm-query`, **or** the hosted HTTP MCP
+— not both; they are two ways onto the same corpus. See the workflow documentation linked above for
+installation and use instructions, or the
 [full documentation listing](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
 
