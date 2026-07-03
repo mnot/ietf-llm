@@ -144,6 +144,39 @@ def test_read_minutes_no_code_lists_sessions(isolated_home, capsys, monkeypatch)
     assert "Sessions available" in capsys.readouterr().out
 
 
+def test_draft_state(isolated_home, capsys, monkeypatch):
+    from ietf_llm.gather.documents_manifest import save_documents_manifest
+
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    save_documents_manifest(
+        "httpbis",
+        {
+            "draft-ietf-httpbis-foo": {"state": "active", "expires": "2027-01-01"},
+            "draft-ietf-httpbis-bar": {"state": "rfc", "expires": "2020-01-01"},
+        },
+    )
+    assert _run(["draft-state", "httpbis"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "draft-ietf-httpbis-foo" in out and "active I-D" in out
+    assert "published RFC" in out
+
+
+def test_draft_state_filter(isolated_home, capsys, monkeypatch):
+    from ietf_llm.gather.documents_manifest import save_documents_manifest
+
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    save_documents_manifest(
+        "httpbis",
+        {
+            "draft-ietf-httpbis-foo": {"state": "active", "expires": ""},
+            "draft-ietf-httpbis-bar": {"state": "rfc", "expires": ""},
+        },
+    )
+    assert _run(["draft-state", "httpbis", "--state", "active"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "foo" in out and "bar" not in out
+
+
 def test_probe_embed_backend_none_when_no_index(isolated_home):
     from ietf_llm.embeddings import probe_embed_backend
 

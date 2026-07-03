@@ -34,6 +34,7 @@ from .embeddings import any_indexed_wg, probe_embed_backend
 from .mcp_server import (
     _DIGEST_KINDS,
     tool_draft_authors,
+    tool_draft_state,
     tool_fetch_by_url,
     tool_list_corpora,
     tool_list_files,
@@ -176,6 +177,13 @@ def _cmd_read_minutes(args: argparse.Namespace) -> int:
     if absent is not None:
         return absent
     return _emit(tool_read_minutes(args.corpus, args.meeting))
+
+
+def _cmd_draft_state(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    return _emit(tool_draft_state(args.corpus, args.state))
 
 
 def _cmd_find_efforts(args: argparse.Namespace) -> int:
@@ -390,6 +398,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Meeting code (e.g. ietf125); omit to list sessions.",
     )
     p_minutes.set_defaults(func=_cmd_read_minutes)
+
+    p_dstate = subparsers.add_parser(
+        "draft-state",
+        help="Offline draft lifecycle (active/expired/rfc/replaced/withdrawn).",
+    )
+    _add_corpus_arg(p_dstate)
+    p_dstate.add_argument(
+        "--state", default="", help="Filter to one state slug (e.g. active)."
+    )
+    p_dstate.set_defaults(func=_cmd_draft_state)
 
     p_efforts = subparsers.add_parser(
         "find-efforts", help="Rank active IETF/IRTF efforts by a topic."

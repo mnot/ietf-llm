@@ -101,6 +101,7 @@ from .freshness import (
     staleness_warning,
 )
 from .gather.citations import normalize_draft_name
+from .gather.documents_manifest import load_documents_manifest
 from .paths import (
     agenda_path,
     digest_kind_from_relpath,
@@ -3487,6 +3488,58 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
     return _with_freshness(wg, body)
 
 
+#: Coarse draft lifecycle slugs (Datatracker draft-type states) → friendly
+#: labels. This is the whole offline vocabulary — WG-process granularity (WGLC,
+#: IESG evaluation) is not persisted and lives only in the live `draft_status`.
+_DRAFT_STATE_LABELS = {
+    "active": "active I-D",
+    "expired": "expired",
+    "rfc": "published RFC",
+    "repl": "replaced",
+    "auth-rm": "withdrawn (author)",
+    "ietf-rm": "withdrawn (IETF)",
+}
+
+
+@_requires_corpus
+def tool_draft_state(wg: str, state: str = "") -> str:
+    manifest = load_documents_manifest(wg)
+    if not manifest:
+        return _with_freshness(
+            wg,
+            f"No draft lifecycle state recorded for {wg} — "
+            f"{gather_suggestion(wg, purpose='to record it')}.",
+        )
+    rows = []
+    for name in sorted(manifest):
+        slug = manifest[name].get("state") or "unknown"
+        if state and slug != state:
+            continue
+        expires = manifest[name].get("expires") or ""
+        rows.append((name, _DRAFT_STATE_LABELS.get(slug, slug), expires))
+    if not rows:
+        present = ", ".join(
+            sorted({(rec.get("state") or "unknown") for rec in manifest.values()})
+        )
+        return _with_freshness(
+            wg, f"No drafts in state '{state}' for {wg}. States present: {present}."
+        )
+    name_w = max(len(n) for n, _, _ in rows)
+    label_w = max(len(lab) for _, lab, _ in rows)
+    lines = [
+        f"{n.ljust(name_w)}  {lab.ljust(label_w)}  {e}".rstrip() for n, lab, e in rows
+    ]
+    body = (
+        f"Draft lifecycle state for {wg} (name · state · expires), offline from "
+        "the cache. This is the COARSE lifecycle only — active / expired / "
+        "became-RFC / replaced / withdrawn. It does NOT include WG-process state "
+        "(WG Last Call, IESG evaluation); for that use the live `draft_status`. "
+        "Adoption is derivable from the name (`draft-ietf-<wg>-` is adopted).\n\n"
+        + "\n".join(lines)
+    )
+    return _with_freshness(wg, body)
+
+
 def _render_upcoming_meetings(corpus: str) -> str:
     """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
     each drillable by passing its id back as `meeting`."""
@@ -4098,6 +4151,20 @@ def main() -> None:  # pylint: disable=too-many-locals
         consensus (see `read_ietf_interpretation_norms`).
         """
         return await _offload(tool_read_minutes, corpus, meeting)
+
+    @server.tool()
+    async def draft_state(corpus: str, state: str = "") -> str:
+        """Draft lifecycle state for a corpus, offline from the cache: which
+        drafts are active, expired, became RFCs, were replaced, or withdrawn,
+        with expiry dates. Optionally filter to one `state` slug.
+
+        COARSE lifecycle only — it does NOT include WG-process state (WG Last
+        Call, IESG evaluation); for that use `draft_status` (live). Adoption is
+        derivable from the draft name (`draft-ietf-<wg>-` is adopted). The
+        offline counterpart to `draft_status` for when the network / live path
+        is unavailable.
+        """
+        return await _offload(tool_draft_state, corpus, state)
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
