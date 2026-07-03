@@ -2,22 +2,21 @@
 
 The skills ship as package data under `ietf_llm/data/skills/<name>/`, each a
 self-contained Agent Skill (`SKILL.md` with `name` + `description`
-frontmatter — the open standard at agentskills.io). Three are bundled:
+frontmatter — the open standard at agentskills.io). Two are bundled, both
+norms skills vendored from mnot/ietf-skill (see data/skills/VENDORED.md):
 
-  - `ietf-llm`           — the query/routing brain (drives the MCP tools)
   - `ietf-interpreting`  — read-side norms (consensus, attribution, …)
   - `ietf-contributing`  — write-side norms (drafting list mail / issues)
 
+The query/routing skill (`ietf-corpus`) is NOT bundled — it lives only in
+mnot/ietf-skill and the user installs it from there.
+
 `--install-skills` detects every supported harness present on the machine
 (Claude Code, Codex, Gemini CLI, opencode — all adopters of the Agent Skills
-open standard) and installs into each one's skills directory, with
-idempotency and a safety check for user edits.
-
-The norms skills are self-contained guidance and go into every detected
-harness. The query skill drives the `mcp__ietf-llm__*` tools, so it goes only
-into `~/.claude/skills/` (read by Claude and opencode); Codex and Gemini get
-the same routing from the MCP server's `instructions` field, so a duplicate
-skill there would be inert.
+open standard) and installs each bundled (norms) skill into every one's skills
+directory, with idempotency and a safety check for user edits. Routing comes
+from the MCP server's `instructions` field (its built-in floor) and, for CLI
+users, the `ietf-corpus` skill installed from mnot/ietf-skill.
 
 On every CLI gather, `sync_if_pristine()` keeps already-installed skills
 current: it auto-updates an installed copy to the bundled version *only* when
@@ -42,11 +41,6 @@ from typing import Any, Dict, List
 from . import __version__
 from .utils import LogLevel, Verbosity, get_cache_dir, log
 
-# The query skill drives the MCP tools, so it only belongs where the server is
-# configured: Claude (native) and opencode (which reads ~/.claude/skills). The
-# norms skills are self-contained guidance and go into every detected harness.
-QUERY_SKILL = "ietf-llm"
-
 
 @dataclass(frozen=True)
 class Harness:
@@ -56,7 +50,6 @@ class Harness:
     label: str  # human label for output
     marker: Path  # config dir whose existence means the harness is installed
     skills_root: Path  # where to install skills for this harness
-    reads_claude_dir: bool  # also auto-reads ~/.claude/skills (Claude, opencode)
 
 
 def _home() -> Path:
@@ -71,41 +64,16 @@ def _harnesses() -> List[Harness]:
     `~/.claude/skills`), Claude `~/.claude/skills`."""
     home = _home()
     return [
-        Harness(
-            "claude",
-            "Claude Code",
-            home / ".claude",
-            home / ".claude" / "skills",
-            True,
-        ),
-        Harness(
-            "codex",
-            "Codex CLI",
-            home / ".codex",
-            home / ".agents" / "skills",
-            False,
-        ),
-        Harness(
-            "gemini",
-            "Gemini CLI",
-            home / ".gemini",
-            home / ".gemini" / "skills",
-            False,
-        ),
+        Harness("claude", "Claude Code", home / ".claude", home / ".claude" / "skills"),
+        Harness("codex", "Codex CLI", home / ".codex", home / ".agents" / "skills"),
+        Harness("gemini", "Gemini CLI", home / ".gemini", home / ".gemini" / "skills"),
         Harness(
             "opencode",
             "opencode",
             home / ".config" / "opencode",
             home / ".config" / "opencode" / "skills",
-            True,
         ),
     ]
-
-
-def _claude_skills_root() -> Path:
-    """The `~/.claude/skills` dir — home of the query skill (Claude + opencode
-    read it)."""
-    return _home() / ".claude" / "skills"
 
 
 def _detect_harnesses() -> List[Harness]:
@@ -236,10 +204,9 @@ def install_skills() -> int:
     """Install the bundled skills into every supported harness present on this
     machine (`--install-skills`).
 
-    Norms skills go into each detected harness's own skills dir; the query
-    skill goes only into `~/.claude/skills/` (read by Claude and opencode).
-    Overwrites any existing copy at each destination (explicit install) — a
-    user's edits are restored too, so back them up first if that matters.
+    Every bundled (norms) skill goes into each detected harness's own skills
+    dir. Overwrites any existing copy at each destination (explicit install) —
+    a user's edits are restored too, so back them up first if that matters.
 
     Returns a shell-style exit code:
       0 — installed into the detected harnesses (or none detected: nothing to do)
@@ -263,20 +230,12 @@ def install_skills() -> int:
         )
         return 0
 
-    norms = [s for s in bundled if s.name != QUERY_SKILL]
-    query = [s for s in bundled if s.name == QUERY_SKILL]
-
-    # Group skills by destination root so each root is written once (norms +
-    # query at ~/.claude/skills, or a root shared by two harnesses, merge).
+    # Group skills by destination root so a root shared by two harnesses is
+    # written once. Every bundled skill (all norms) goes into each harness.
     by_root: Dict[Path, Dict[str, Path]] = {}
     for harness in present:
         dest = by_root.setdefault(harness.skills_root, {})
-        for skill in norms:
-            dest[skill.name] = skill
-    # Query skill → ~/.claude/skills iff a present harness reads that dir.
-    if query and any(h.reads_claude_dir for h in present):
-        dest = by_root.setdefault(_claude_skills_root(), {})
-        for skill in query:
+        for skill in bundled:
             dest[skill.name] = skill
 
     for root, skills in by_root.items():
@@ -316,8 +275,8 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
         return
     manifest = _read_manifest()
     changed = False
-    # Every harness skills root, plus ~/.claude/skills (the query skill's home).
-    roots = {h.skills_root for h in _harnesses()} | {_claude_skills_root()}
+    # Every harness's own skills root.
+    roots = {h.skills_root for h in _harnesses()}
     for root in roots:
         for name, src in bundled.items():
             dest = root / name

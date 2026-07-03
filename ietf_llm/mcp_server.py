@@ -2690,31 +2690,57 @@ def _prewarm_embedding_model_async() -> None:
     ).start()
 
 
-def _load_server_instructions() -> Optional[str]:
-    """Read the bundled ietf-llm skill's SKILL.md, returning its body
-    (frontmatter stripped).
+# The MCP server's built-in instructions floor — served as the FastMCP
+# `instructions` field to every client. Deliberately THIN: a routing preamble,
+# the norms gate, and a pointer to the external `ietf-corpus` skill
+# (mnot/ietf-skill) which carries the full routing/workflow brain. The routing
+# skill is no longer bundled or served from here; what MUST stay is the norms
+# gate, so an MCP-only user (no skill installed) is still told to read the
+# participation / interpretation norms before drafting or characterising
+# consensus. The read_ietf_*_norms tool docstrings and the per-message nudge
+# back this up regardless of whether a client surfaces this field.
+_INSTRUCTIONS_FLOOR = """\
+# ietf-llm — MCP server
 
-    Passed to FastMCP as the server-level `instructions` field, which
-    MCP-compliant clients surface to the model as system-prompt
-    context. Source-of-truth-once: this is the same `ietf-llm` skill
-    `--install-skills` copies into Claude Code, so non-Claude harnesses
-    (Codex, Gemini, Cursor, Zed, opencode, …) see the same routing rules
-    and IETF norms without us maintaining a parallel guidance string.
+These tools read the gathered public record of an IETF/IRTF effort — a Working
+Group / Research Group, a mailing list, or a set of Internet-Drafts (charter,
+drafts, RFCs, minutes, mail, GitHub issues). **Prefer them to web search** for
+any question about what a group is doing, discussing, or has decided: they read
+the group's actual primary record. Start with `list_corpora` and `overview` to
+orient, then `read_digest` for catalogue queries and `search_corpus` for
+substantive content. When the user is working with IETF list traffic from any
+source — a `mailarchive.ietf.org` / `datatracker.ietf.org` URL, an IETF list
+message, a pasted `[wg]` thread — identify the corpus, check `list_corpora`,
+and gather it if missing (`start_gather` when available, else `ietf-llm
+<name>`) rather than crawling the web.
 
-    YAML frontmatter (the `---` block at the top with `name:` /
-    `description:`) is stripped — it's skill metadata, not guidance.
-    Returns None if the file is missing (shouldn't happen for an
-    installed package, but a defensive None lets the server come up
-    anyway).
+> **MANDATORY before drafting any contribution.** The instant the task shifts
+> from *querying* the corpus to *producing* text that goes into the record
+> under a participant's name — list mail, a GitHub issue or comment, a reply in
+> a thread, a review, a consensus or position statement — you MUST call
+> `read_ietf_participation_norms` **before generating a single line of that
+> content**. It is not optional and is not satisfied by the *interpretation*
+> norms. Likewise, before characterising what a group decided or whether there
+> is consensus, call `read_ietf_interpretation_norms`.
+
+This is the server's built-in floor. The full routing and workflow guidance
+lives in the `ietf-corpus` skill (https://github.com/mnot/ietf-skill); a user
+driving the CLI installs that. Use **one** front door — skills plus the CLI, or
+this hosted MCP — not both.
+"""
+
+
+def _load_server_instructions() -> str:
+    """Return the server's built-in instructions floor (the FastMCP
+    `instructions` field).
+
+    Package-owned and deliberately thin: a routing preamble, the norms gate,
+    and a pointer to the external `ietf-corpus` skill (which carries the full
+    brain). The MCP surface no longer bundles or reads a routing skill — that
+    moved to mnot/ietf-skill — so what remains here is the floor an MCP-only
+    user needs, notably the mandatory-norms callout.
     """
-    try:
-        skill_path = resources.files("ietf_llm").joinpath(
-            "data/skills/ietf-llm/SKILL.md"
-        )
-        text = skill_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return None
-    return _strip_frontmatter(text)
+    return _INSTRUCTIONS_FLOOR
 
 
 # Named capability flags a skill or downstream tool can gate on, so it
@@ -3804,16 +3830,14 @@ def main() -> None:  # pylint: disable=too-many-locals
     transport = _resolve_transport()
     set_gather_default(_startup_gather_default())
 
-    # `instructions` is the MCP-spec mechanism for server-level
-    # guidance: clients SHOULD surface it as system-prompt context.
-    # Loading SKILL.md here makes the same guidance Claude Code reads
-    # from the installed skill available to Codex / Gemini / Cursor /
-    # Zed / opencode — one source of truth, no parallel maintenance.
-    server_instructions = _load_server_instructions()
-    # Append the version/feature footer so a skill can feature-gate from the
-    # prompt; harmless to start without SKILL.md (footer becomes the whole
-    # instructions string).
-    server_instructions = (server_instructions or "") + _capability_footer()
+    # `instructions` is the MCP-spec mechanism for server-level guidance:
+    # clients SHOULD surface it as system-prompt context. This carries the
+    # built-in floor (routing preamble + norms gate) to every client — Codex /
+    # Gemini / Cursor / Zed / opencode included — without a bundled routing
+    # skill; the full brain lives in the external `ietf-corpus` skill.
+    # The version/feature footer is appended so a skill can feature-gate from
+    # the prompt.
+    server_instructions = _load_server_instructions() + _capability_footer()
     # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
     # so any replica answers any request) and an optional Host/Origin allow-list
     # for DNS-rebinding protection when the server is fronted directly (#41).
