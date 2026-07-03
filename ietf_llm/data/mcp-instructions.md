@@ -46,7 +46,7 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 Most tools are **offline** (cache reads) and always work. A few reach
 **Datatracker live** for facts that change daily, and are gather-gated off on a
 shared read-only server: `draft_status` (one draft's WG-Last-Call / IESG state)
-and `meeting_sessions` (upcoming schedule). Prefer the live tool when a
+and `meeting_schedule` (the live schedule). Prefer the live tool when a
 *current* fact matters; where it is unavailable, fall back to its offline
 counterpart — `list_drafts` (corpus-wide draft lifecycle) and `list_sessions` /
 `read_minutes` (the gathered meeting record).
@@ -58,8 +58,8 @@ counterpart — `list_drafts` (corpus-wide draft lifecycle) and `list_sessions` 
   `read_topic` (chronological narrative), `find_related` (by example).
 - **Catalogue:** `read_digest` (filtered issue / thread / people / timeline
   tables), `list_labels`, `list_files`.
-- **Meetings:** `list_sessions`, `read_minutes` (minutes + poll tallies),
-  `meeting_sessions` (live upcoming).
+- **Meetings:** `list_sessions` (gathered), `read_minutes` (minutes + poll
+  tallies for one), `meeting_schedule` (live schedule).
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state),
   `draft_authors`, `get_draft` (verbatim text).
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,

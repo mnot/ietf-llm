@@ -2718,7 +2718,7 @@ def _load_server_instructions() -> str:
 # model never sees `serverInfo`). Add a flag here when you land a feature a
 # skill might depend on; never remove one without a real capability change.
 SERVER_FEATURES: tuple[str, ...] = (
-    "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_sessions
+    "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_schedule
     "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
 )
 
@@ -3467,16 +3467,18 @@ def _read_polls(cache: str, code: str) -> str:
 def tool_read_minutes(wg: str, meeting: str = "") -> str:
     cache = _files_dir(wg)
     if not meeting:
-        listing = _sessions_listing(wg, cache)
         return _with_freshness(
-            wg, f"Pass a `meeting` code. Sessions available:\n\n{listing}"
+            wg,
+            "Pass a `meeting` code (e.g. `ietf125`). Call "
+            f'`list_sessions("{wg}")` to see the gathered sessions and their '
+            "codes.",
         )
     path = minutes_path(cache, meeting)
     if not os.path.isfile(path):
         return _with_freshness(
             wg,
-            f"No minutes gathered for meeting '{meeting}' in {wg}.\n\n"
-            + _sessions_listing(wg, cache),
+            f"No minutes gathered for meeting '{meeting}' in {wg}. Call "
+            f'`list_sessions("{wg}")` to see which sessions were gathered.',
         )
     minutes_text = _read_text_capped(
         path, _MINUTES_MAX_LINES, relpath=os.path.relpath(path, cache)
@@ -3656,13 +3658,13 @@ def _render_upcoming_meetings(corpus: str) -> str:
         # stays visible on the Logistics line below.
         lines.append(f"- **{mtg.date}** — {live_lookup.meeting_label(mtg.number)}")
         lines.append(f"  - Agenda: {mtg.agenda_url}")
-        lines.append(f"  - Logistics: `meeting_sessions({corpus!r}, {mtg.number!r})`")
+        lines.append(f"  - Logistics: `meeting_schedule({corpus!r}, {mtg.number!r})`")
     lines.append("")
     lines.append(live_lookup.age_stamp(fetched))
     return "\n".join(lines)
 
 
-def tool_meeting_sessions(corpus: str, meeting: str = "") -> str:
+def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
     """Render a group's live session logistics at a numbered or interim meeting.
 
     With no `meeting`, lists the group's upcoming meetings (discovery, since
@@ -4238,10 +4240,10 @@ def main() -> None:  # pylint: disable=too-many-locals
         poll tallies. Offline, from the cache; the authoritative record of what
         a session discussed and decided.
 
-        Pass the `meeting` code from `list_sessions` (e.g. `ietf125`,
-        `interim20260401`); omit it to get the session list. The appended polls
-        are raw sense-of-the-room tallies, NOT decisions — the chair declares
-        consensus (see `read_ietf_interpretation_norms`).
+        Requires the `meeting` code (e.g. `ietf125`, `interim20260401`) — call
+        `list_sessions` first to find it. The appended polls are raw
+        sense-of-the-room tallies, NOT decisions — the chair declares consensus
+        (see `read_ietf_interpretation_norms`).
         """
         return await _offload(tool_read_minutes, corpus, meeting)
 
@@ -5169,10 +5171,11 @@ def main() -> None:  # pylint: disable=too-many-locals
             return await _offload(tool_suggest_github_repos, corpus)
 
         @server.tool()
-        async def meeting_sessions(corpus: str, meeting: str = "") -> str:
-            """A group's session logistics at an IETF meeting, **live** from
-            Datatracker — useful to any attendee or observer (building an
-            agenda is the obvious case).
+        async def meeting_schedule(corpus: str, meeting: str = "") -> str:
+            """A group's **live** meeting schedule from Datatracker — its session
+            logistics at an IETF meeting (building an agenda is the obvious
+            case). The live counterpart to the offline gathered record
+            (`list_sessions` / `read_minutes`).
 
             Handles both **numbered** meetings (e.g. `126`) and **interim**
             meetings (e.g. `interim-2026-aipref-05`). Returns every session the
@@ -5188,15 +5191,15 @@ def main() -> None:  # pylint: disable=too-many-locals
             interim) — the way to discover an interim id, which isn't guessable.
 
             Live (short TTL + freshness stamp), gather-gated — off on the shared
-            HTTP replica; see the SKILL "Live Datatracker facts" section for why.
-            Times are venue-local — never quote the UTC start as the local time.
+            HTTP replica (it reaches the network). Times are venue-local — never
+            quote the UTC start as the local time.
 
             Args:
                 corpus: The Working Group shortname (e.g. `httpbis`).
                 meeting: A numbered meeting (`126`) or interim id
                     (`interim-2026-aipref-05`); omit to list upcoming meetings.
             """
-            return await _offload(tool_meeting_sessions, corpus, meeting)
+            return await _offload(tool_meeting_schedule, corpus, meeting)
 
         @server.tool()
         async def draft_status(name: str) -> str:

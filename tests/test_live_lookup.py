@@ -1,5 +1,5 @@
 """Tests for the live Datatracker lookups (`ietf_llm.live_lookup`) and the
-two MCP tool renderers that consume them (`meeting_sessions`,
+two MCP tool renderers that consume them (`meeting_schedule`,
 `draft_status`).
 
 The single network seam is `live_lookup._fetch_json`; every test stubs it
@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 from ietf_llm import live_lookup
-from ietf_llm.mcp_server import tool_draft_status, tool_meeting_sessions
+from ietf_llm.mcp_server import tool_draft_status, tool_meeting_schedule
 
 # --- Canned Datatracker responses -----------------------------------------
 
@@ -213,7 +213,7 @@ def test_meeting_sessions_no_agenda(monkeypatch):
 
 
 def test_meeting_sessions_renders_both():
-    out = tool_meeting_sessions("httpbis", "126")
+    out = tool_meeting_schedule("httpbis", "126")
     assert "2 session(s)" in out
     assert "09:00–10:30 CEST" in out
     assert "/ietf126/?session=40001" in out
@@ -233,7 +233,7 @@ def test_meeting_sessions_interim_uses_remote_instructions():
 
 
 def test_meeting_sessions_renders_interim():
-    out = tool_meeting_sessions("aipref", _INTERIM)
+    out = tool_meeting_schedule("aipref", _INTERIM)
     assert f"# aipref at {_INTERIM}" in out
     assert "/interim/?session=35177" in out
     assert "Meetecho (onsite)" not in out
@@ -241,7 +241,7 @@ def test_meeting_sessions_renders_interim():
 
 
 def test_meeting_sessions_rejects_garbage_meeting():
-    out = tool_meeting_sessions("httpbis", "next week")
+    out = tool_meeting_schedule("httpbis", "next week")
     assert "interim id" in out
 
 
@@ -264,7 +264,7 @@ def test_upcoming_meetings_lists_future_only():
 
 
 def test_upcoming_meetings_rendered_when_meeting_omitted():
-    out = tool_meeting_sessions("aipref")
+    out = tool_meeting_schedule("aipref")
     assert "upcoming meeting(s)" in out
     assert _INTERIM in out
     assert "Live from Datatracker" in out
