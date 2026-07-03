@@ -218,6 +218,53 @@ def test_probe_embed_backend_none_when_no_index(isolated_home):
     assert probe_embed_backend("x-no-index-zzz") is None
 
 
+def test_draft_status_unreachable(isolated_home, capsys, monkeypatch):
+    from ietf_llm import live_lookup
+
+    monkeypatch.setattr(live_lookup, "probe_datatracker", lambda *a, **k: "boom")
+    assert _run(["draft-status", "draft-ietf-x"], monkeypatch) == (
+        query_cli.EXIT_DATATRACKER_UNREACHABLE
+    )
+    assert "Datatracker unreachable" in capsys.readouterr().err
+
+
+def test_draft_status_dispatches(isolated_home, capsys, monkeypatch):
+    from ietf_llm import live_lookup
+
+    monkeypatch.setattr(live_lookup, "probe_datatracker", lambda *a, **k: None)
+    monkeypatch.setattr(query_cli, "tool_draft_status", lambda name: "status: RFC")
+    assert _run(["draft-status", "draft-ietf-x"], monkeypatch) == 0
+    assert "status: RFC" in capsys.readouterr().out
+
+
+def test_meeting_sessions_unreachable(isolated_home, monkeypatch):
+    from ietf_llm import live_lookup
+
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    monkeypatch.setattr(live_lookup, "probe_datatracker", lambda *a, **k: "boom")
+    assert _run(["meeting-sessions", "httpbis"], monkeypatch) == (
+        query_cli.EXIT_DATATRACKER_UNREACHABLE
+    )
+
+
+def test_overview_live_probes_but_plain_overview_does_not(isolated_home, monkeypatch):
+    from ietf_llm import live_lookup
+
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    calls = []
+    monkeypatch.setattr(
+        live_lookup, "probe_datatracker", lambda *a, **k: calls.append(1) or "boom"
+    )
+    # Plain overview is offline — no probe.
+    _run(["overview", "httpbis"], monkeypatch)
+    assert not calls
+    # --live triggers the probe, which fails here -> exit 5.
+    assert _run(["overview", "httpbis", "--live"], monkeypatch) == (
+        query_cli.EXIT_DATATRACKER_UNREACHABLE
+    )
+    assert calls
+
+
 def test_import_graph_stays_lean():
     # A separate read-only binary earns its keep by a lean import graph:
     # importing it must not drag in torch, the embedding stack, the gather

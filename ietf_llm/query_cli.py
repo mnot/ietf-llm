@@ -14,11 +14,14 @@ Exit codes are a stable contract; callers may branch on them:
   1  no results / empty
   2  usage error (bad arguments)
   3  corpus not present locally — gather it first with `ietf-llm <corpus>`
+  4  embedding backend unreachable (the semantic-search verbs)
+  5  Datatracker unreachable (the live verbs)
 
-Later verb groups add:
-
-  4  embedding backend unreachable (semantic-search verbs)
-  5  Datatracker unreachable (live verbs)
+Verbs fall in three network tiers: most are offline (pure cache reads);
+`search` / `search-corpora` / `read-topic` / `which-corpus` embed the query
+(network only when the embedding backend is remote); `draft-status` /
+`meeting-sessions` / `overview --live` reach Datatracker every call
+(cross-process TTL-cached).
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from .mcp_server import (
     _DIGEST_KINDS,
     tool_draft_authors,
     tool_draft_state,
+    tool_draft_status,
     tool_fetch_by_url,
     tool_get_draft,
     tool_get_issue,
@@ -42,6 +46,7 @@ from .mcp_server import (
     tool_list_files,
     tool_list_labels,
     tool_list_sessions,
+    tool_meeting_sessions,
     tool_overview,
     tool_read_digest,
     tool_read_minutes,
@@ -59,6 +64,7 @@ EXIT_EMPTY = 1
 EXIT_USAGE = 2
 EXIT_NO_CORPUS = 3
 EXIT_EMBED_UNREACHABLE = 4
+EXIT_DATATRACKER_UNREACHABLE = 5
 
 
 def _emit(text: str) -> int:
@@ -103,6 +109,25 @@ def _check_embed(wg: Optional[str]) -> Optional[int]:
     return EXIT_EMBED_UNREACHABLE
 
 
+def _check_datatracker() -> Optional[int]:
+    """Return EXIT_DATATRACKER_UNREACHABLE (after a message on stderr) when the
+    live Datatracker API is unreachable, else None. A preflight for the live
+    verbs so a down endpoint gets its own exit code instead of a live verb
+    silently degrading to a stale/empty answer. `live_lookup` is imported
+    lazily so the offline verbs never pull the network path."""
+    from . import live_lookup  # pylint: disable=import-outside-toplevel
+
+    reason = live_lookup.probe_datatracker()
+    if reason is None:
+        return None
+    print(
+        f"Datatracker unreachable: {reason}. Live state is unavailable until it "
+        "is reachable; the offline draft-state / read-minutes verbs still work.",
+        file=sys.stderr,
+    )
+    return EXIT_DATATRACKER_UNREACHABLE
+
+
 def _cmd_list_corpora(args: argparse.Namespace) -> int:
     return _emit(tool_list_corpora())
 
@@ -111,7 +136,11 @@ def _cmd_overview(args: argparse.Namespace) -> int:
     absent = _require_corpus(args.corpus)
     if absent is not None:
         return absent
-    return _emit(tool_overview(args.corpus))
+    if args.live:
+        down = _check_datatracker()
+        if down is not None:
+            return down
+    return _emit(tool_overview(args.corpus, live=args.live))
 
 
 def _cmd_read_digest(args: argparse.Namespace) -> int:
@@ -197,6 +226,23 @@ def _cmd_get_issue(args: argparse.Namespace) -> int:
     if absent is not None:
         return absent
     return _emit(tool_get_issue(args.corpus, args.number, args.repo))
+
+
+def _cmd_draft_status(args: argparse.Namespace) -> int:
+    down = _check_datatracker()
+    if down is not None:
+        return down
+    return _emit(tool_draft_status(args.name))
+
+
+def _cmd_meeting_sessions(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    down = _check_datatracker()
+    if down is not None:
+        return down
+    return _emit(tool_meeting_sessions(args.corpus, args.meeting))
 
 
 def _cmd_find_efforts(args: argparse.Namespace) -> int:
@@ -323,6 +369,11 @@ def build_parser() -> argparse.ArgumentParser:
         "overview", help="Orientation for one corpus (chairs, drafts, threads)."
     )
     _add_corpus_arg(p_overview)
+    p_overview.add_argument(
+        "--live",
+        action="store_true",
+        help="Reconcile active drafts against Datatracker (network).",
+    )
     p_overview.set_defaults(func=_cmd_overview)
 
     p_digest = subparsers.add_parser(
@@ -483,8 +534,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_authors.set_defaults(func=_cmd_draft_authors)
 
     _add_search_verbs(subparsers)
+    _add_live_verbs(subparsers)
 
     return parser
+
+
+def _add_live_verbs(subparsers: Any) -> None:
+    """Register the live-Datatracker verbs. These reach the network every call
+    (cross-process TTL-cached) and get a distinct exit code when Datatracker is
+    unreachable. Split out of `build_parser` to keep it small."""
+    p_dstatus = subparsers.add_parser(
+        "draft-status",
+        help="Live draft process state from Datatracker (WGLC, IESG, ...).",
+    )
+    p_dstatus.add_argument("name", metavar="DRAFT", help="Draft name.")
+    p_dstatus.set_defaults(func=_cmd_draft_status)
+
+    p_msessions = subparsers.add_parser(
+        "meeting-sessions",
+        help="Live upcoming/scheduled sessions for a corpus from Datatracker.",
+    )
+    _add_corpus_arg(p_msessions)
+    p_msessions.add_argument(
+        "meeting",
+        metavar="MEETING",
+        nargs="?",
+        default="",
+        help="Meeting number/id (e.g. 126); omit for the upcoming list.",
+    )
+    p_msessions.set_defaults(func=_cmd_meeting_sessions)
 
 
 def _add_search_verbs(subparsers: Any) -> None:

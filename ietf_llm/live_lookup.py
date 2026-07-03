@@ -169,6 +169,23 @@ def _disk_put(
         pass
 
 
+def probe_datatracker(timeout: float = 5.0) -> Optional[str]:
+    """None if Datatracker answers, else a short reason.
+
+    A lightweight liveness check for a caller — a short-lived CLI — that wants a
+    distinct 'unreachable' signal rather than a live verb silently degrading to
+    a stale/empty result. Uses the shared rate governor like every other call.
+    """
+    try:
+        response = governed_get(
+            f"{_API_BASE}/", headers=dict(DEFAULT_HEADERS), timeout=timeout
+        )
+        response.raise_for_status()
+    except requests.RequestException as err:
+        return f"{type(err).__name__}: {err}"
+    return None
+
+
 def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]:
     """Return `(body, fetched_at)` for `url`, fetching at most once per TTL.
 
