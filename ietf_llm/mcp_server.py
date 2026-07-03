@@ -3486,7 +3486,7 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
 #: Coarse draft lifecycle slugs (Datatracker draft-type states) → friendly
 #: labels. This is the whole offline vocabulary — WG-process granularity (WGLC,
 #: IESG evaluation) is not persisted and lives only in the live `draft_status`.
-_DRAFT_STATE_LABELS = {
+_DRAFT_LIFECYCLE_LABELS = {
     "active": "active I-D",
     "expired": "expired",
     "rfc": "published RFC",
@@ -3497,7 +3497,7 @@ _DRAFT_STATE_LABELS = {
 
 
 @_requires_corpus
-def tool_draft_state(wg: str, state: str = "") -> str:
+def tool_list_drafts(wg: str, state: str = "") -> str:
     manifest = load_documents_manifest(wg)
     if not manifest:
         return _with_freshness(
@@ -3511,7 +3511,7 @@ def tool_draft_state(wg: str, state: str = "") -> str:
         if state and slug != state:
             continue
         expires = manifest[name].get("expires") or ""
-        rows.append((name, _DRAFT_STATE_LABELS.get(slug, slug), expires))
+        rows.append((name, _DRAFT_LIFECYCLE_LABELS.get(slug, slug), expires))
     if not rows:
         present = ", ".join(
             sorted({(rec.get("state") or "unknown") for rec in manifest.values()})
@@ -4224,18 +4224,18 @@ def main() -> None:  # pylint: disable=too-many-locals
         return await _offload(tool_read_minutes, corpus, meeting)
 
     @server.tool()
-    async def draft_state(corpus: str, state: str = "") -> str:
-        """Draft lifecycle state for a corpus, offline from the cache: which
-        drafts are active, expired, became RFCs, were replaced, or withdrawn,
-        with expiry dates. Optionally filter to one `state` slug.
+    async def list_drafts(corpus: str, state: str = "") -> str:
+        """List a corpus's drafts with their lifecycle state, offline from the
+        cache: which are active, expired, became RFCs, were replaced, or
+        withdrawn, with expiry dates. Optionally filter to one `state` slug.
 
-        COARSE lifecycle only — it does NOT include WG-process state (WG Last
-        Call, IESG evaluation); for that use `draft_status` (live). Adoption is
-        derivable from the draft name (`draft-ietf-<wg>-` is adopted). The
-        offline counterpart to `draft_status` for when the network / live path
-        is unavailable.
+        This is the corpus-wide, offline, COARSE view. It does NOT include
+        WG-process state (WG Last Call, IESG evaluation) for a single draft —
+        for that use `draft_status` (live, one draft by name). Adoption is
+        derivable from the draft name (`draft-ietf-<wg>-` is adopted). Always
+        available; `draft_status` is authoritative where the live path is on.
         """
-        return await _offload(tool_draft_state, corpus, state)
+        return await _offload(tool_list_drafts, corpus, state)
 
     @server.tool()
     async def get_draft(name: str, start_line: int = 1, max_lines: int = 2000) -> str:
