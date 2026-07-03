@@ -177,6 +177,39 @@ def test_draft_state_filter(isolated_home, capsys, monkeypatch):
     assert "foo" in out and "bar" not in out
 
 
+def test_get_draft(isolated_home, capsys, monkeypatch):
+    write_cache_file(
+        isolated_home,
+        "httpbis",
+        "drafts/draft-ietf-httpbis-foo-00.txt",
+        "Line one\nLine two\n",
+    )
+    assert _run(["get-draft", "draft-ietf-httpbis-foo"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "Line one" in out and "Line two" in out
+
+
+def test_get_draft_missing_is_clear(isolated_home, capsys, monkeypatch):
+    assert _run(["get-draft", "draft-nope-zzz"], monkeypatch) == 0
+    assert "No cached draft" in capsys.readouterr().out
+
+
+def test_get_issue(isolated_home, capsys, monkeypatch):
+    write_cache_file(
+        isolated_home, "tls", "issues/tlswg-foo/5.md", "# Issue #5: Hi\n\nbody text\n"
+    )
+    assert _run(["get-issue", "tls", "5"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "Issue #5" in out and "body text" in out
+
+
+def test_get_issue_ambiguous_asks_for_repo(isolated_home, capsys, monkeypatch):
+    write_cache_file(isolated_home, "tls", "issues/repo-a/5.md", "a\n")
+    write_cache_file(isolated_home, "tls", "issues/repo-b/5.md", "b\n")
+    assert _run(["get-issue", "tls", "5"], monkeypatch) == 0
+    assert "several gathered repos" in capsys.readouterr().out
+
+
 def test_probe_embed_backend_none_when_no_index(isolated_home):
     from ietf_llm.embeddings import probe_embed_backend
 

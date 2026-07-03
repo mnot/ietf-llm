@@ -107,6 +107,8 @@ from .paths import (
     digest_kind_from_relpath,
     digest_path,
     drafts_dir,
+    issue_path,
+    issues_dir,
     meetings_dir,
     minutes_path,
     polls_dir,
@@ -3540,6 +3542,85 @@ def tool_draft_state(wg: str, state: str = "") -> str:
     return _with_freshness(wg, body)
 
 
+#: Line caps for the verbatim artifact reads, so one call can't blow the
+#: context window; both page via their start_line / read_file_section hint.
+_DRAFT_MAX_LINES = 2000
+_ISSUE_MAX_LINES = 3000
+
+
+def _read_file_window(path: str, start_line: int, max_lines: int) -> str:
+    """Return a bounded, header-stamped line window of `path`, with a footer
+    pointing at how to page further when it is truncated."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return f"Could not read `{os.path.basename(path)}`."
+    total = len(lines)
+    start = max(1, start_line)
+    end = min(total, start - 1 + max(1, max_lines))
+    header = f"# {os.path.basename(path)} (lines {start}–{end} of {total})\n\n"
+    footer = ""
+    if end < total:
+        footer = (
+            f"\n\n_(showing lines {start}–{end} of {total}; continue with "
+            f"`start_line={end + 1}`)_\n"
+        )
+    return header + "".join(lines[start - 1 : end]) + footer
+
+
+def tool_get_draft(
+    name: str, start_line: int = 1, max_lines: int = _DRAFT_MAX_LINES
+) -> str:
+    """Verbatim text of the newest cached revision of draft `name`, bounded."""
+    path = _find_latest_draft_file(name)
+    if path is None:
+        return (
+            f"No cached draft matching '{name}'. The owning WG must be gathered "
+            f"— {gather_suggestion(normalize_draft_name(name), purpose='to fetch it')}, "
+            "or call `list_corpora` to see what is available."
+        )
+    return _read_file_window(path, start_line, min(max_lines, _DRAFT_MAX_LINES))
+
+
+def _resolve_issue_file(
+    cache: str, number: str, repo: str
+) -> Tuple[Optional[str], str]:
+    """Resolve a per-issue file by number, within `repo` if given else searched
+    across every gathered repo. Returns (path, note); path is None with an
+    actionable note on a miss or an ambiguous number."""
+    if repo:
+        path = issue_path(cache, repo, number)
+        if os.path.isfile(path):
+            return path, ""
+        return None, f"No gathered issue #{number} for repo '{repo}' in this corpus."
+    directory = issues_dir(cache)
+    if not os.path.isdir(directory):
+        return None, "This corpus has no gathered GitHub issues."
+    matches = [
+        (slug, os.path.join(directory, slug, f"{number}.md"))
+        for slug in sorted(os.listdir(directory))
+        if os.path.isfile(os.path.join(directory, slug, f"{number}.md"))
+    ]
+    if not matches:
+        return None, f"No gathered issue #{number} in any repo of this corpus."
+    if len(matches) > 1:
+        repos = ", ".join(slug for slug, _ in matches)
+        return None, (
+            f"Issue #{number} exists in several gathered repos ({repos}); "
+            "pass `repo` (owner/repo) to choose one."
+        )
+    return matches[0][1], ""
+
+
+@_requires_corpus
+def tool_get_issue(wg: str, number: str, repo: str = "") -> str:
+    path, note = _resolve_issue_file(_files_dir(wg), str(number), repo)
+    if path is None:
+        return _with_freshness(wg, note)
+    return _with_freshness(wg, _read_file_window(path, 1, _ISSUE_MAX_LINES))
+
+
 def _render_upcoming_meetings(corpus: str) -> str:
     """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
     each drillable by passing its id back as `meeting`."""
@@ -4165,6 +4246,29 @@ def main() -> None:  # pylint: disable=too-many-locals
         is unavailable.
         """
         return await _offload(tool_draft_state, corpus, state)
+
+    @server.tool()
+    async def get_draft(name: str, start_line: int = 1, max_lines: int = 2000) -> str:
+        """Verbatim text of a cached Internet-Draft by name (newest cached
+        revision, across all gathered corpora), as a bounded line window.
+
+        Use this to quote a draft's ACTUAL wording — to ground a review, a
+        citation, or a contribution in primary text rather than a search
+        snippet. Page a long draft with `start_line`. The owning WG must be
+        gathered.
+        """
+        return await _offload(tool_get_draft, name, start_line, max_lines)
+
+    @server.tool()
+    async def get_issue(corpus: str, number: str, repo: str = "") -> str:
+        """Verbatim text of one GitHub issue — opening description and comment
+        thread — from a corpus, by issue number.
+
+        Use this to quote an issue's ACTUAL text for a citation rather than a
+        search snippet. Pass `repo` (owner/repo) to disambiguate when the
+        corpus tracks several repos and the number is ambiguous.
+        """
+        return await _offload(tool_get_issue, corpus, number, repo)
 
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments

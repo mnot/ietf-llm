@@ -36,6 +36,8 @@ from .mcp_server import (
     tool_draft_authors,
     tool_draft_state,
     tool_fetch_by_url,
+    tool_get_draft,
+    tool_get_issue,
     tool_list_corpora,
     tool_list_files,
     tool_list_labels,
@@ -184,6 +186,17 @@ def _cmd_draft_state(args: argparse.Namespace) -> int:
     if absent is not None:
         return absent
     return _emit(tool_draft_state(args.corpus, args.state))
+
+
+def _cmd_get_draft(args: argparse.Namespace) -> int:
+    return _emit(tool_get_draft(args.name, args.start_line, args.max_lines))
+
+
+def _cmd_get_issue(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    return _emit(tool_get_issue(args.corpus, args.number, args.repo))
 
 
 def _cmd_find_efforts(args: argparse.Namespace) -> int:
@@ -408,6 +421,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--state", default="", help="Filter to one state slug (e.g. active)."
     )
     p_dstate.set_defaults(func=_cmd_draft_state)
+
+    p_getdraft = subparsers.add_parser(
+        "get-draft", help="Verbatim text of a cached draft (bounded window)."
+    )
+    p_getdraft.add_argument(
+        "name", metavar="DRAFT", help="Draft name (newest cached revision)."
+    )
+    p_getdraft.add_argument(
+        "--start-line", type=int, default=1, help="First line (default: 1)."
+    )
+    p_getdraft.add_argument(
+        "--max-lines", type=int, default=2000, help="Max lines (default: 2000)."
+    )
+    p_getdraft.set_defaults(func=_cmd_get_draft)
+
+    p_getissue = subparsers.add_parser(
+        "get-issue", help="Verbatim text of one GitHub issue by number."
+    )
+    _add_corpus_arg(p_getissue)
+    p_getissue.add_argument("number", metavar="NUMBER", help="Issue number.")
+    p_getissue.add_argument(
+        "--repo", default="", help="owner/repo, to disambiguate several repos."
+    )
+    p_getissue.set_defaults(func=_cmd_get_issue)
 
     p_efforts = subparsers.add_parser(
         "find-efforts", help="Rank active IETF/IRTF efforts by a topic."
