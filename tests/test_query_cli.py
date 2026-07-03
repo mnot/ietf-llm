@@ -69,6 +69,54 @@ def test_read_digest_rejects_bad_kind(isolated_home, monkeypatch):
     )
 
 
+def test_search_reports_unreachable_backend(isolated_home, capsys, monkeypatch):
+    # A down embed backend must get its own exit code, not read as no-results:
+    # search() swallows the failure, so the CLI probes the backend first.
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    monkeypatch.setattr(query_cli, "probe_embed_backend", lambda *a, **k: "boom")
+    code = _run(["search", "httpbis", "caching"], monkeypatch)
+    assert code == query_cli.EXIT_EMBED_UNREACHABLE
+    assert "backend unreachable" in capsys.readouterr().err.lower()
+
+
+def test_search_healthy_backend_dispatches(isolated_home, capsys, monkeypatch):
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    monkeypatch.setattr(query_cli, "probe_embed_backend", lambda *a, **k: None)
+    monkeypatch.setattr(query_cli, "tool_search", lambda *a, **k: "the hits")
+    assert _run(["search", "httpbis", "caching"], monkeypatch) == 0
+    assert "the hits" in capsys.readouterr().out
+
+
+def test_search_unknown_corpus_precedes_embed_probe(isolated_home, monkeypatch):
+    # The corpus-absent check (exit 3) must fire before the embed probe, so a
+    # typo is not masked by a backend error.
+    called = []
+    monkeypatch.setattr(
+        query_cli, "probe_embed_backend", lambda *a, **k: called.append(1) or "boom"
+    )
+    assert _run(["search", "x-nope-zzz", "caching"], monkeypatch) == (
+        query_cli.EXIT_NO_CORPUS
+    )
+    assert not called
+
+
+def test_which_corpus_reports_unreachable_backend(isolated_home, monkeypatch):
+    # Cross-corpus verbs probe any indexed corpus's backend.
+    monkeypatch.setattr(query_cli, "any_indexed_wg", lambda: "httpbis")
+    monkeypatch.setattr(query_cli, "probe_embed_backend", lambda *a, **k: "boom")
+    assert _run(["which-corpus", "quic"], monkeypatch) == (
+        query_cli.EXIT_EMBED_UNREACHABLE
+    )
+
+
+def test_probe_embed_backend_none_when_no_index(isolated_home):
+    from ietf_llm.embeddings import probe_embed_backend
+
+    # No index for this corpus -> not a reachability question -> None, so the
+    # CLI does not false-positive an exit-4 on a merely un-embedded corpus.
+    assert probe_embed_backend("x-no-index-zzz") is None
+
+
 def test_import_graph_stays_lean():
     # A separate read-only binary earns its keep by a lean import graph:
     # importing it must not drag in torch, the embedding stack, the gather

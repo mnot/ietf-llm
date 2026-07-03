@@ -641,6 +641,41 @@ def index_model(wg: str) -> Optional[str]:
     return row[0] if row else None
 
 
+def probe_embed_backend(wg: str, verbose: Verbosity = Verbosity.QUIET) -> Optional[str]:
+    """Return a short reason if `wg`'s embedding backend cannot embed a query,
+    else None.
+
+    Distinguishes an unreachable / misconfigured embed endpoint from a genuinely
+    empty result: `search` swallows an embed failure and returns no hits
+    (logging the cause), so a caller seeing only the empty result cannot tell
+    "the backend is down" from "nothing matched". A CLI uses this to surface the
+    former with its own exit code.
+
+    Reachability is scoped to what the corpus's index expects — the model id is
+    read from the index. Returns None when there is no index (a "not embedded
+    yet" condition, not a reachability one) or when a probe embed succeeds; a
+    reason string when the model cannot be constructed (missing endpoint /
+    offline local model) or the probe embed raises.
+    """
+    model_name = index_model(wg)
+    if not model_name:
+        return None
+    model = _get_embed_model(model_name, verbose)
+    if model is None:
+        return (
+            f"the embedding backend for model '{model_name}' is unavailable "
+            "(check IETF_LLM_EMBED_BASE_URL / IETF_LLM_EMBED_MODEL, or install "
+            "the local-embeddings extra)"
+        )
+    try:
+        list(model.embed("connectivity probe"))
+    except Exception as err:  # pylint: disable=broad-except
+        # Mirror search()'s broad catch: providers raise a variety of network /
+        # HTTP / value errors, all meaning "could not embed the query".
+        return f"{type(err).__name__}: {err}"
+    return None
+
+
 #: Relevance/diversity tradeoff for MMR result selection. 1.0 is pure
 #: relevance (the old top-k behaviour); 0.0 is pure novelty. 0.7 keeps
 #: relevance dominant while breaking up near-duplicate clusters — the

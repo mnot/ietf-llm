@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 from . import __version__
 from .catalog import render_efforts
 from .corpus_store import get_corpus_store
+from .embeddings import any_indexed_wg, probe_embed_backend
 from .mcp_server import (
     _DIGEST_KINDS,
     tool_draft_authors,
@@ -39,7 +40,11 @@ from .mcp_server import (
     tool_list_labels,
     tool_overview,
     tool_read_digest,
+    tool_read_topic,
+    tool_search,
+    tool_search_corpora,
     tool_tally_positions,
+    tool_which_corpus,
 )
 from .rfcs import render_rfc, render_search
 from .utils import graceful_keyboard_interrupt, maybe_autocomplete, wg_completer
@@ -48,6 +53,7 @@ EXIT_OK = 0
 EXIT_EMPTY = 1
 EXIT_USAGE = 2
 EXIT_NO_CORPUS = 3
+EXIT_EMBED_UNREACHABLE = 4
 
 
 def _emit(text: str) -> int:
@@ -69,6 +75,27 @@ def _require_corpus(wg: str) -> Optional[int]:
         file=sys.stderr,
     )
     return EXIT_NO_CORPUS
+
+
+def _check_embed(wg: Optional[str]) -> Optional[int]:
+    """Return EXIT_EMBED_UNREACHABLE (after a message on stderr) when the
+    embedding backend is not reachable, else None. `wg` is the corpus whose
+    index model to probe; None means 'any indexed corpus', for the cross-corpus
+    verbs. A down backend otherwise renders as an empty result — search()
+    swallows the failure — which is the confusion this preflight prevents."""
+    target = wg if wg is not None else any_indexed_wg()
+    if target is None:
+        return None  # nothing indexed to probe; the verb reports 'no index'
+    reason = probe_embed_backend(target)
+    if reason is None:
+        return None
+    print(
+        f"Embedding backend unreachable: {reason}. Semantic search is "
+        "unavailable until it is reachable; the offline verbs (overview, "
+        "read-digest, list-*, get-rfc, fetch-by-url) still work.",
+        file=sys.stderr,
+    )
+    return EXIT_EMBED_UNREACHABLE
 
 
 def _cmd_list_corpora(args: argparse.Namespace) -> int:
@@ -158,6 +185,80 @@ def _cmd_rfc_search(args: argparse.Namespace) -> int:
 
 def _cmd_draft_authors(args: argparse.Namespace) -> int:
     return _emit(tool_draft_authors(args.name))
+
+
+def _cmd_search(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    down = _check_embed(args.corpus)
+    if down is not None:
+        return down
+    return _emit(
+        tool_search(
+            args.corpus,
+            args.query,
+            k=args.top,
+            file_pattern=args.file,
+            since=args.since,
+            until=args.until,
+            label=args.label,
+            state=args.state,
+            sort=args.sort,
+            group_by=args.group_by,
+            author=args.author,
+            role=args.role,
+            snippet_chars=args.snippet_chars,
+        )
+    )
+
+
+def _cmd_search_corpora(args: argparse.Namespace) -> int:
+    down = _check_embed(None)
+    if down is not None:
+        return down
+    return _emit(
+        tool_search_corpora(
+            args.corpus,
+            args.query,
+            k=args.top,
+            since=args.since,
+            until=args.until,
+            label=args.label,
+            state=args.state,
+            author=args.author,
+            role=args.role,
+            snippet_chars=args.snippet_chars,
+        )
+    )
+
+
+def _cmd_read_topic(args: argparse.Namespace) -> int:
+    absent = _require_corpus(args.corpus)
+    if absent is not None:
+        return absent
+    down = _check_embed(args.corpus)
+    if down is not None:
+        return down
+    return _emit(
+        tool_read_topic(
+            args.corpus,
+            args.query,
+            since=args.since,
+            until=args.until,
+            file_pattern=args.file,
+            k=args.top,
+            include_replies=args.include_replies,
+            body_chars=args.body_chars,
+        )
+    )
+
+
+def _cmd_which_corpus(args: argparse.Namespace) -> int:
+    down = _check_embed(None)
+    if down is not None:
+        return down
+    return _emit(tool_which_corpus(args.query, limit=args.limit))
 
 
 def _add_corpus_arg(sub: argparse.ArgumentParser) -> None:
@@ -291,7 +392,92 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_authors.set_defaults(func=_cmd_draft_authors)
 
+    _add_search_verbs(subparsers)
+
     return parser
+
+
+def _add_search_verbs(subparsers: Any) -> None:
+    """Register the semantic-search verbs (they embed the query, so they are
+    network when the embedding backend is remote, and get a distinct exit code
+    when it is unreachable). Split out of `build_parser` to keep it small."""
+    p_search = subparsers.add_parser(
+        "search", help="Semantic search within one corpus (embeds the query)."
+    )
+    _add_corpus_arg(p_search)
+    p_search.add_argument("query", metavar="QUERY", help="Search query.")
+    p_search.add_argument(
+        "-k", "--top", type=int, default=10, help="Number of hits (default: 10)."
+    )
+    p_search.add_argument("--file", help="Relpath LIKE filter (e.g. 'threads/%%').")
+    p_search.add_argument("--since", metavar="YYYY-MM-DD", help="On or after.")
+    p_search.add_argument("--until", metavar="YYYY-MM-DD", help="On or before.")
+    p_search.add_argument("--label", help="Filter by label / subject prefix.")
+    p_search.add_argument("--state", help="Filter by state.")
+    p_search.add_argument("--author", help="Filter by author.")
+    p_search.add_argument("--role", help="Filter by role.")
+    p_search.add_argument("--sort", help="Sort key (e.g. date).")
+    p_search.add_argument(
+        "--group-by", help="Roll up results (e.g. 'file' for one row per file)."
+    )
+    p_search.add_argument("--snippet-chars", type=int, help="Snippet length per hit.")
+    p_search.set_defaults(func=_cmd_search)
+
+    p_scorpora = subparsers.add_parser(
+        "search-corpora", help="Semantic search across several named corpora."
+    )
+    p_scorpora.add_argument("query", metavar="QUERY", help="Search query.")
+    corpus_opt = p_scorpora.add_argument(
+        "--corpus",
+        dest="corpus",
+        action="append",
+        required=True,
+        metavar="CORPUS",
+        help="A corpus to search (repeat for several).",
+    )
+    corpus_opt.completer = wg_completer
+    p_scorpora.add_argument(
+        "-k", "--top", type=int, default=10, help="Hits per corpus (default: 10)."
+    )
+    p_scorpora.add_argument("--since", metavar="YYYY-MM-DD", help="On or after.")
+    p_scorpora.add_argument("--until", metavar="YYYY-MM-DD", help="On or before.")
+    p_scorpora.add_argument("--label", help="Filter by label / subject prefix.")
+    p_scorpora.add_argument("--state", help="Filter by state.")
+    p_scorpora.add_argument("--author", help="Filter by author.")
+    p_scorpora.add_argument("--role", help="Filter by role.")
+    p_scorpora.add_argument("--snippet-chars", type=int, help="Snippet length per hit.")
+    p_scorpora.set_defaults(func=_cmd_search_corpora)
+
+    p_topic = subparsers.add_parser(
+        "read-topic",
+        help="Chronological narrative across threads/issues for a topic.",
+    )
+    _add_corpus_arg(p_topic)
+    p_topic.add_argument("query", metavar="QUERY", help="Topic query.")
+    p_topic.add_argument(
+        "-k", "--top", type=int, default=20, help="Messages to consider (default: 20)."
+    )
+    p_topic.add_argument("--file", help="Relpath LIKE filter (e.g. 'threads/%%').")
+    p_topic.add_argument("--since", metavar="YYYY-MM-DD", help="On or after.")
+    p_topic.add_argument("--until", metavar="YYYY-MM-DD", help="On or before.")
+    p_topic.add_argument(
+        "--include-replies",
+        action="store_true",
+        help="Pull in transitive replies to matched messages.",
+    )
+    p_topic.add_argument(
+        "--body-chars", type=int, help="Per-message body cap (default 4000)."
+    )
+    p_topic.set_defaults(func=_cmd_read_topic)
+
+    p_which = subparsers.add_parser(
+        "which-corpus", help="Route a question to the best-matching cached corpus."
+    )
+    p_which.add_argument("query", metavar="QUERY", help="Question / topic.")
+    p_which.add_argument(
+        "--limit", type=int, default=8, help="Max candidates (default: 8)."
+    )
+    p_which.set_defaults(func=_cmd_which_corpus)
 
 
 @graceful_keyboard_interrupt

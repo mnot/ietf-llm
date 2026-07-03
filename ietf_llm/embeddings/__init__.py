@@ -32,7 +32,14 @@ from .models import (
     _get_embed_model,
     is_remote_embed_model,
 )
-from .search import Hit, build_index, index_model, related, search
+from .search import (
+    Hit,
+    build_index,
+    index_model,
+    probe_embed_backend,
+    related,
+    search,
+)
 from .storage import (
     any_indexed_wg,
     chunk_counts,
@@ -58,6 +65,7 @@ __all__ = [
     "get_chunk",
     "get_messages",
     "index_model",
+    "probe_embed_backend",
     "probe_index",
     "read_topics",
     "related",
