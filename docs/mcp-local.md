@@ -150,11 +150,12 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or `.cursor/mcp.json
 
 ## 3. Gather
 
-Many of the tools require [gather a corpus of materials](gathering.md) from IETF servers. This can be done on the command line with `ietf-llm` (see the link above), or you can just ask the
-assistant to.
+Many of the tools require gather a corpus of materials from IETF servers. This can be done on the command line with `ietf-llm` (see [details](gathering.md)), or you can just ask the
+LLM to do it.
 
 A local stdio server registers the `start_gather` / `gather_status` tools by default, letting the
-assistant gather a corpus in-session instead of you running `ietf-llm <name>` in a shell.
+assistant gather a corpus in-session instead of you running `ietf-llm <name>` in a shell. The
+instructions that the MCP server give to clients tell them how to use it.
 
 To turn this **off** — for instance if this server points at a read-only-mounted cache — set
 `IETF_LLM_ENABLE_GATHER=0` in its `env`:
