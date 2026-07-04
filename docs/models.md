@@ -11,9 +11,6 @@ remote OpenAI-compatible endpoint:
 - The **summariser** writes short summaries into the issues and threads digests at gather time.
   Optional (`--summarize`).
 
-Going remote keeps the install — and any serving container — torch-free, and lets a deployment
-configure both touch-points from the environment with no secret on disk.
-
 ## Embeddings
 
 Both `ietf-llm-search` and the MCP `search_corpus` tool run over a per-corpus vector index built
@@ -142,6 +139,3 @@ The `*_BASE_URL` / `*_TOKEN` / `*_HEADERS` endpoint variables for either backend
 from the environment at gather time and are **never** persisted — secrets stay in the environment,
 not in the global config.
 
-> **Changed in 0.8.0:** these four moved from per-corpus `gather.json` to the global config. Old
-> per-corpus values are ignored; the first gather of a corpus that still carries them prints a
-> notice and removes them. Set them once, globally, instead.

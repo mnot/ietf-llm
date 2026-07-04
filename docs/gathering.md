@@ -1,29 +1,27 @@
 # Gathering a corpus
 
-**This document is for:** gathering an IETF corpus into the local cache — the shared first step for
-every workflow. — Back to the [docs index](README.md).
+**This document is for:** gathering a corpus of IETF materials into the local cache — the shared
+first step for every workflow. — Back to the [docs index](README.md).
 
-Every workflow starts here: gather a corpus once, then read it as often as you like.
+See the [reference](reference.md) for the full flag set, and
+[shell completion](shell-completion.md) to tab-complete commands and cached corpus names.
 
-**First run:** Install the package, then gather:
+## The basics
+
+**First run:** Install the package, then gather a group. For example:
 
 ```bash
-pipx install 'ietf-llm[local-embeddings]'
-ietf-llm httpbis --github httpwg/http-core --github httpwg/http-extensions
+ietf-llm netconf
 ```
 
-Everything lands in `~/.cache/ietf-llm/<name>/` — the single source of truth that the MCP server,
-NotebookLM exporter, and CLI search all read from.
+Everything lands in `~/.cache/ietf-llm/<name>/`.
 
-> **From an MCP client:** when in-session gather is enabled, an assistant can run the same gather
+> **From an MCP client:** when in-session gather is enabled, an assistant can gather
 > via the `start_gather` tool and watch it with `gather_status`, instead of you running
-> `ietf-llm <name>` in a shell. A local stdio server has it on by default
-> ([details](mcp-local.md#in-session-gather)); the shared
-> [HTTP server](mcp-server.md#in-session-gather) defaults it off. The CLI below is the canonical path
-> and is always available.
+> `ietf-llm <name>` in a shell. A local [stdio server](mcp-local.md) has it on by default;
+> the shared [HTTP server](mcp-server.md) defaults to off.
 
-Gathering also builds a **semantic-search index**, which powers both the MCP `search_corpus` tool
-and `ietf-llm-search`. By default it uses
+Gathering also builds a **semantic-search index**. By default it uses
 [`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5) on-device, which needs
 the `local-embeddings` extra (~130 MB, downloaded once and cached).
 
@@ -31,40 +29,17 @@ Prefer not to run a model locally? Omit `[local-embeddings]` and point at a remo
 OpenAI-compatible endpoint instead — see the [remote embedding backend](models.md). Or pass
 `--no-embed` to skip the index entirely (useful for [NotebookLM export](notebooklm.md)).
 
-**Behind a corporate firewall** with TLS interception? Gathering may need the `certs` extra:
-
-```bash
-pipx install 'ietf-llm[local-embeddings,certs]'
-```
-
 **Subsequent runs:** the flags you passed are persisted to `~/.config/ietf-llm/`, so to refresh
 just run `ietf-llm <name>` — no need to repeat `--github`, `--mailing-list`, etc. Pass extra flags
 to add to the set, or `--clear-config` to start over. (The embedding and summariser settings are an
 exception — they're properties of the tool, not a corpus, so they're set once and apply everywhere;
 see the [global model settings](models.md#global-settings).)
 
-### Keeping a set of corpora fresh
+**GitHub authentication:** Set `GITHUB_TOKEN` in the environment for gathers if you hit the
+anonymous 60-requests/hour API limit. A fine-scoped read-only token is plenty.
 
-`ietf-llm --all` re-gathers every corpus the store knows about, each with its own persisted config —
-the simplest way to keep a collection current from cron. On a [cloud deployment](storage.md#the-cloud-backend)
-this covers the whole fleet, and each corpus's config is read from the control plane, so a host
-refreshes corpora first gathered elsewhere correctly (no shared config mount). To avoid refreshing
-corpora nobody touches any more, add `--used-within DAYS`: it limits the refresh to corpora **read
-within that many days** through the MCP read tools, so a daily job keeps your active corpora fresh
-and lets the rest go stale:
 
-```bash
-# Refresh anything read in the last 30 days; skip the zombies.
-ietf-llm --all --used-within 30
-```
-
-A corpus that has been gathered but not yet read falls back to its gather time, so it isn't dropped
-on day one. Access is recorded on the read path (a coarse, per-corpus timestamp — at most one write
-per corpus every few hours, regardless of query volume); on a shared cloud deployment it reflects the
-whole fleet's usage. To turn access recording off entirely, set `IETF_LLM_RECORD_ACCESS=off` on the
-serving side — the filter then falls back to gather times for everything. See
-[Storage & locations](storage.md#read-path-access-recording) for where the timestamp lives on each
-backend.
+## Identifying what to gather
 
 A corpus doesn't have to be a Working Group — the name is classified automatically:
 
@@ -72,14 +47,22 @@ A corpus doesn't have to be a Working Group — the name is classified automatic
 |---|---|
 | `ietf-llm httpbis` | a WG / RG / editorial WG / BoF: charter, drafts, meetings, ballots, list |
 | `ietf-llm last-call` | a standalone mailing list (any archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor) |
-| `ietf-llm rfced --mailing-list rswg@rfc-editor.org` | a named list corpus (the address domain is optional) |
 | `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
 | `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored |
 
-For a working group or research group you don't need `--mailing-list` — its own list is
-discovered from Datatracker and synced automatically (so `ietf-llm netconf` already follows
-the netconf list). Reach for `--mailing-list` only to add *extra* lists the effort follows that
-Datatracker doesn't attribute to it.
+For most groups, mailing lists and GitHub repositories are automatically discovered. If you need
+to add additional lists, use `--mailing-list`; if you need to add issues lists from other GitHub repos, use `--github`. The `--months` flag controls the timeframe of materials that is gathered; it defaults to 12 months. See the [reference](reference.md) for more information.
 
-See the [command & gather reference](reference.md) for the full flag set, and
-[shell completion](shell-completion.md) to tab-complete commands and cached corpus names.
+
+## Keeping a set of corpora fresh
+
+`ietf-llm --all` re-gathers every corpus the store knows about.
+
+To avoid refreshing unused corpora, add `--used-within DAYS`: it limits the refresh to those read
+within that many days through the MCP read tools, so a daily cron job can keep your active corpora
+fresh and lets the rest go stale:
+
+```bash
+ietf-llm --all --used-within 30
+```
+

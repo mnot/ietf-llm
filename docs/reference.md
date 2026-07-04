@@ -33,12 +33,10 @@ ietf-llm [OPTIONS] <name>
 
 A name that is none of these and has no configured sources is rejected as a likely typo.
 
-**Sources** (what to gather; all repeatable / persisted):
+**Sources**:
 
-- `--github OWNER/REPO` — a GitHub repo whose issues to include. For a Working Group you usually
-  don't need this: the first gather auto-discovers the group's active draft repos (those in its
-  Datatracker GitHub org that hold Internet-Draft sources and have a live issue tracker) and tracks
-  the high-confidence ones. Use `--github` to override or extend that set.
+- `--github OWNER/REPO` — a GitHub repo whose issues to include. _Working Groups usually
+  don't need this_: the first gather auto-discovers the group's active draft repos based upon Datatracker. Use `--github` to override or extend that set.
 - `--draft DRAFT-NAME` — an extra Internet-Draft to track, beyond a WG's own documents. Version
   suffix stripped; every revision gathered.
 - `--mailing-list LIST` — an extra list to sync (any archived at mailarchive.ietf.org). A bare name
@@ -75,16 +73,13 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
   group name, list, or tracked author), then exit.
 - `--all` — refresh every gathered corpus the configured store knows about, each with its own
   persisted config (no positional NAME; `--clear-config` is refused). On the cloud backend this is
-  the whole fleet, not just this host's local cache — and because per-WG config also lives in the
-  control plane there, a host re-gathers a corpus first gathered elsewhere with its real sources, no
-  shared `IETF_LLM_CONFIG_DIR` mount required (see [Storage & locations](storage.md#the-cloud-backend)).
+  the whole fleet, not just this host's local cache — see [Storage &
+  locations](storage.md#the-cloud-backend).
 - `--all --used-within DAYS` — restrict `--all` to corpora **read within the last DAYS days** (via
   the MCP read tools). A corpus with no recorded access falls back to its last-gathered time, so a
   freshly gathered corpus that hasn't been read yet still gets a grace period rather than being
-  skipped. This lets a cron keep the corpora people actually use fresh without perpetuating
-  zombies — see [keeping a set fresh](gathering.md#keeping-a-set-of-corpora-fresh). Set
-  `IETF_LLM_RECORD_ACCESS=off` on the read deployment to disable access recording entirely (the
-  filter then sees only gather times).
+  skipped. Set `IETF_LLM_RECORD_ACCESS=off` on the read deployment to disable access recording
+  entirely (the filter then sees only gather times).
 - `--clear-cache` — wipe this corpus's cache and re-download.
 - `--clear-config` — clear this corpus's persisted config.
 - `--discover-github NAME` — print the GitHub repos discovery recommends tracking for a WG (those
@@ -96,18 +91,3 @@ Per-corpus settings live in `~/.config/ietf-llm/<name>/gather.json`; tool-wide s
 `~/.config/ietf-llm/config.json`. To put any of these directories elsewhere, see
 [Storage & locations](storage.md).
 
-**GitHub auth.** Setting `GITHUB_TOKEN` on the gather invocation (a fine-scoped read-only token is
-plenty) is **strongly encouraged** — without one you'll hit the anonymous 60-requests/hour API
-limit quickly. This matters more now that a WG's first gather auto-discovers its draft repos
-(extra API calls): when discovery is rate-limited it can't see the repos, so a tokenless gather on
-a busy host may silently track none of them (the `gather_status` notes say so, and it retries on
-the next gather). The same `GITHUB_TOKEN` covers discovery, the MCP `suggest_github_repos` tool,
-and issue downloads. Prefer inline-passing over exporting in your shell rc so the token doesn't
-leak into every other subprocess:
-
-```bash
-GITHUB_TOKEN=ghp_... ietf-llm httpbis
-# or, from a secret manager:
-GITHUB_TOKEN=$(security find-generic-password -s github-readonly -w) \
-    ietf-llm httpbis
-```

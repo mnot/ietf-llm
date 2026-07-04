@@ -29,9 +29,7 @@ By default everything lives under the usual home directories:
 ~/.config/ietf-llm/             config (global config.json, per-corpus dirs)
 ```
 
-The cache is the single source of truth; the corpus tree is self-contained and relocatable (chunk
-paths are relative to the cache root). Each location can be pointed elsewhere with an environment
-variable:
+Each location can be pointed elsewhere with an environment variable:
 
 | Variable | What | Default |
 |---|---|---|
@@ -40,13 +38,13 @@ variable:
 | `IETF_LLM_INDEX_DIR` | per-corpus `embeddings.db` files | the cache root |
 | `IETF_LLM_INDEX_IMMUTABLE` | read the index in SQLite immutable mode (read-only mounts) | off |
 
-An unset (or blank) variable falls back to the default, so the local CLI is unaffected. A read-only
-consumer (the MCP server, `ietf-llm-search`) only needs `IETF_LLM_CACHE_DIR` to *exist* and be
-readable; gather needs it writable. The layout under each root is the same as the defaults
-(`<root>/<name>/…`), so a directory is moved by setting the variable and relocating its contents —
-no re-gather required.
+An unset (or blank) variable falls back to the default, so the local CLI is unaffected.
 
-### Putting the index on faster storage
+A read-only consumer (the MCP server when gathering is disabled, `ietf-llm-search`) only needs
+`IETF_LLM_CACHE_DIR` to *exist* and be readable; gather needs it writable. The layout under each
+root is the same as the defaults (`<root>/<name>/…`).
+
+### Considerations for the index
 
 `IETF_LLM_INDEX_DIR` exists because the index has a different access profile from the rest of the
 corpus: search reads the whole of a corpus's `embeddings.db` on every query, where the corpus files
@@ -57,8 +55,6 @@ normal volume is worthwhile for a busy server:
 export IETF_LLM_CACHE_DIR=/data/ietf-llm        # corpus, on a normal volume
 export IETF_LLM_INDEX_DIR=/dev/shm/ietf-llm      # embeddings.db, on tmpfs
 ```
-
-### Where the index can live (it is SQLite)
 
 The index is a SQLite database in WAL mode. That constrains `IETF_LLM_INDEX_DIR`:
 
@@ -74,39 +70,33 @@ The index is a SQLite database in WAL mode. That constrains `IETF_LLM_INDEX_DIR`
 
 ## The cloud backend
 
-Set `IETF_LLM_STORE_BACKEND=cloud` for a replicated, ephemeral deployment — many serving containers,
-gather driven by cron *and* by the in-session MCP tools. One S3-compatible bucket holds everything:
-the immutable, versioned corpus content (`files/` + `embeddings.db`) and a small **control plane**
-(the version pointer, gather lease, status, the read-path access marker, and **per-WG config** keys).
-A replica resolves the current version through the control plane, materialises it onto local scratch,
-and serves reads from there. A publish is one atomic pointer flip, visible fleet-wide within the
-resolve TTL, with no torn read. The mechanics are in
-[architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable); what
-you provision is below.
+Set `IETF_LLM_STORE_BACKEND=cloud` for a replicated, ephemeral deployment — many serving
+containers, gather driven by cron *and/or* by the in-session MCP tools. One S3-compatible bucket
+holds everything: the immutable, versioned corpus content (`files/` + `embeddings.db`) and a small
+**control plane** (the version pointer, gather lease, status, the read-path access marker, and
+**per-WG config** keys).
 
-**Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives in
-the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's lease
-and read with a plain GET. So **you do not need to share `IETF_LLM_CONFIG_DIR`** across hosts: a host
-running `ietf-llm --all` re-gathers a corpus first gathered on another host with that corpus's real
-sources, not an empty config. Global service config (`config.json` — models, embed on/off) stays
-filesystem/env-bound, since it is what *selects* the backend; set it via environment on each host.
+**Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives
+in the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's
+lease and read with a plain GET. So **you do not need to share `IETF_LLM_CONFIG_DIR`** across
+hosts: a host running `ietf-llm --all` re-gathers a corpus first gathered on another host with that
+corpus's real sources, not an empty config. Global service config (`config.json` — models, embed
+on/off) stays filesystem/env-bound, since it is what *selects* the backend; set it via environment
+on each host.
 
 ### What you provision
 
 **A bucket on an object store with conditional writes.** `IETF_LLM_STORE_URL=s3://bucket/prefix`
 works against AWS S3, Cloudflare R2, or MinIO. The store **must support conditional writes**
-(`If-Match` / `If-None-Match`) — that is what makes the control-plane compare-and-swap safe; without
-it, two concurrent gathers could both believe they hold the lease. **Confirm this on your target**,
-notably Cloudflare R2, before relying on it. There is no `file://` control plane; for one box use the
-local backend.
+(`If-Match` / `If-None-Match`) — that is what makes the control-plane compare-and-swap safe;
+without it, two concurrent gathers could both believe they hold the lease. **Confirm this on your
+target** before relying on it.
 
-**The `s3` extra.** `pipx install 'ietf-llm[s3]'` (quote it so the shell doesn't glob the brackets).
-For a non-AWS endpoint set `IETF_LLM_STORE_ENDPOINT_URL` (e.g. your R2 or MinIO endpoint); leave it
-unset for AWS.
+**The `s3` extra.** `pipx install 'ietf-llm[s3]'`. For a non-AWS endpoint set
+`IETF_LLM_STORE_ENDPOINT_URL` (e.g. your R2 or MinIO endpoint); leave it unset for AWS.
 
 **Credentials**, from the standard AWS environment / instance-role chain (`AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY`, or an attached instance role). They are read from the environment only and
-never written to disk or returned to a client.
+`AWS_SECRET_ACCESS_KEY`, or an attached instance role).
 
 **An IAM policy** granting the role only what the store uses — whole-object reads/writes/deletes
 under the prefix, plus bucket listing. The store performs `GetObject`, `PutObject` (the conditional
@@ -144,15 +134,17 @@ per corpus**. **On tmpfs, scratch is RAM** — size the pod accordingly.
 
 **No bucket lifecycle rule needed.** Superseded *version blobs* are reaped by the application: each
 publish, after the pointer flip, deletes older versions in the object store, keeping the current
-version plus the immediately-previous one (`IETF_LLM_RETAIN_VERSIONS`, default `2`) and sweeping up any
-failed-publish orphan prefix at the same time. So object-store cost is bounded without an age-based
-lifecycle rule — which would be unsafe here anyway (age-based, not reference-based, it can expire the
-current version's blobs out from under readers if a corpus goes a long time without a re-gather).
-Keeping the *previous* version is what preserves the never-torn-read guarantee: a replica re-resolves
-the pointer every `IETF_LLM_RESOLVE_TTL` (≤10s) while publishes are hours apart, so it is at most one
-version behind, and the version it still believes is current must outlive the publish that superseded
-it. Raise `IETF_LLM_RETAIN_VERSIONS` for more headroom (e.g. forced back-to-back re-gathers); the floor
-is `1`.
+version plus the immediately-previous one (`IETF_LLM_RETAIN_VERSIONS`, default `2`) and sweeping up
+any failed-publish orphan prefix at the same time. So object-store cost is bounded without an
+age-based lifecycle rule — which would be unsafe here anyway (age-based, not reference-based, it
+can expire the current version's blobs out from under readers if a corpus goes a long time without
+a re-gather).
+
+Keeping the *previous* version is what preserves the never-torn-read guarantee: a replica
+re-resolves the pointer every `IETF_LLM_RESOLVE_TTL` (≤10s) while publishes are hours apart, so it
+is at most one version behind, and the version it still believes is current must outlive the
+publish that superseded it. Raise `IETF_LLM_RETAIN_VERSIONS` for more headroom (e.g. forced
+back-to-back re-gathers); the floor is `1`.
 
 ### Read-path access recording
 
@@ -191,11 +183,11 @@ rejected PUT never fails a read.) The cron that runs `--all` needs the normal re
 | `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per host — non-datatracker (default `6`) | — |
 | `IETF_LLM_HTTP_MAX_DATATRACKER` | max gather HTTP requests in flight to datatracker (default `2`) | — |
 
-The non-secret store knobs may instead go in the global `config.json` (`store_backend`, `store_url`,
-`scratch_dir`, `resolve_ttl`, `retain_versions`); the environment wins. The two `IETF_LLM_HTTP_MAX_*` caps are
-environment-only. Object-store credentials are environment-only (the AWS chain). The HTTP serve path
-validates all of this at boot and refuses to start if `cloud` is under-configured — see
-[mcp-server.md](mcp-server.md#boot-time-config-validation).
+The non-secret store knobs may instead go in the global `config.json` (`store_backend`,
+`store_url`, `scratch_dir`, `resolve_ttl`, `retain_versions`); the environment wins. The two
+`IETF_LLM_HTTP_MAX_*` caps are environment-only. Object-store credentials are environment-only (the
+AWS chain). The HTTP serve path validates all of this at boot and refuses to start if `cloud` is
+under-configured — see [mcp-server.md](mcp-server.md#boot-time-config-validation).
 
 ### Gather accelerator caches
 
@@ -220,11 +212,11 @@ single writer, so the write-conflict policy falls out:
   CAS, no merge. The restored `.etag` sidecars let the next gather revalidate (304) rather than
   re-fetch.
 
-The sync is best-effort — a failure just means a cold rebuild, never a failed gather. The large caches
-stay ephemeral: `imap-cache/` is genuinely per-corpus (and gathered mail is published as version
-content), and `_rfc/` is deferred — it mirrors a CDN, not a rate-limited API, so re-fetching it costs
-bandwidth, not API quota (`_catalog/` is the same shape but hits a *rate-limited* API, hence included).
-(Issue #82.)
+The sync is best-effort — a failure just means a cold rebuild, never a failed gather. The large
+caches stay ephemeral: `imap-cache/` is genuinely per-corpus (and gathered mail is published as
+version content), and `_rfc/` is deferred — it mirrors a CDN, not a rate-limited API, so
+re-fetching it costs bandwidth, not API quota (`_catalog/` is the same shape but hits a
+*rate-limited* API, hence included). (Issue #82.)
 
 At a glance — the local path a gather reads/writes, the cloud key it round-trips to, and the policy;
 plus what stays ephemeral:
@@ -238,20 +230,21 @@ plus what stays ephemeral:
 | `_rfc/` | *(not synced)* | deferred — CDN mirror, costs bandwidth not API quota |
 | `imap-cache/<wg>/…` | *(not synced)* | per-corpus; gathered mail published as version content |
 
-The paths differ but the **granularity matches** on both backends: the ETag store is per-corpus either
-way (a bound gather writes `.http-cache/<corpus>.json` — distinct from the unbound process-default
-`.http-cache.json` — mirroring the per-corpus cloud key), and the fleet singletons are one shared
-instance either way. The divergence is naming, not structure — so there is nothing to migrate: an
-existing local cache keeps working untouched (the sync is a cloud-backend no-op on local), and a fresh
-cloud deployment simply populates the keys on its first gather.
+The paths differ but the **granularity matches** on both backends: the ETag store is per-corpus
+either way (a bound gather writes `.http-cache/<corpus>.json` — distinct from the unbound
+process-default `.http-cache.json` — mirroring the per-corpus cloud key), and the fleet singletons
+are one shared instance either way. The divergence is naming, not structure — so there is nothing
+to migrate: an existing local cache keeps working untouched (the sync is a cloud-backend no-op on
+local), and a fresh cloud deployment simply populates the keys on its first gather.
 
 One more fleet key is **not** a gather cache: `fleet/routing/centroids.json` is the cross-corpus
-**centroid routing** table the `which_corpus` tool reads (issue #116). The cloud `publish` merges the
-just-published corpus's topic-map centroids into it under a per-corpus compare-and-swap (concurrent
-publishers of different corpora must not clobber — same merge discipline as the identity maps above),
-so a reader routes the whole fleet with one GET instead of materialising every version to reach its
-`topics.json`. On the local backend there is no such key — routing scans the local sidecars directly
-(`CorpusStore.routing_fleet_table` returns None there). See `routing.py` and `docs/architecture.md`.
+**centroid routing** table the `which_corpus` tool reads (issue #116). The cloud `publish` merges
+the just-published corpus's topic-map centroids into it under a per-corpus compare-and-swap
+(concurrent publishers of different corpora must not clobber — same merge discipline as the
+identity maps above), so a reader routes the whole fleet with one GET instead of materialising
+every version to reach its `topics.json`. On the local backend there is no such key — routing scans
+the local sidecars directly (`CorpusStore.routing_fleet_table` returns None there). See
+`routing.py` and `docs/architecture.md`.
 
 ### Publish visibility
 

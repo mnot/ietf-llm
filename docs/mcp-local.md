@@ -1,59 +1,49 @@
 # Running the MCP server locally
 
-**This document is for:** running `ietf-llm-mcp` on your own machine — one server subprocess per
-client — for use with Claude, Codex, Cursor, Gemini, opencode, Zed, and other MCP-capable agents. —
+**This document is for:** running `ietf-llm-mcp` over **stdio** on your own machine for use with  Claude Desktop, Claude Code, Codex, Cursor, Gemini, opencode, Zed, and other MCP-capable agents. —
 Back to the [docs index](README.md).
 
-`ietf-llm-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes
-the local corpus to any MCP-capable agent. Set up once, gather each corpus you care about once,
-then ask questions indefinitely. It speaks MCP over **stdio** — one server subprocess per client
-— which is what the per-client setups below expect. (To serve many clients from one shared process
-instead, see [Running the MCP server over HTTP](mcp-server.md).)
+To serve many clients from one shared process instead, see
+[Running the MCP server over HTTP](mcp-server.md).
 
-## Installing
+## 1. Install the package
+
+[pipx](https://pipx.pypa.io/stable/) is recommended (see [its installation instructions](https://pipx.pypa.io/stable/how-to/install-pipx/) if this fails):
 
 ```bash
 pipx install 'ietf-llm[local-embeddings]'
 ```
 
-Search needs an embedding backend: the on-device model via the `local-embeddings` extra, or a
-[remote endpoint](models.md) (no torch). Then [gather a corpus](gathering.md) before querying — or
-just ask the assistant to gather it for you in-session, which a local server enables by default (see
-[In-session gather](#in-session-gather)).
+The `[local-embeddings]` option installs an embedding backend for search (necessary for a local server).
 
-## Register with your client
+**Behind a corporate firewall** with TLS interception? If you encounter errors, you may need the
+`certs` extra:
 
-Register the same command — `ietf-llm-mcp` — via your client's config file. Clients are listed
-alphabetically; the snippets are correct as of writing, but if your client has changed since, its
-own MCP docs are authoritative.
+```bash
+pipx uninstall ietf-llm
+pipx install 'ietf-llm[local-embeddings,certs]'
+```
 
-**Gotcha (all clients):** if `ietf-llm-mcp` was installed via `pipx`, the binary is on your shell
-`PATH` but may not be on the `PATH` inherited by a GUI app launched from Finder / Spotlight /
-Explorer. Use the absolute path (`which ietf-llm-mcp`) if the client can't find the command.
 
-The server hands its routing and norms guidance to every client through the MCP `instructions` field,
-so any compliant client picks up the routing rules automatically — no skill required. You can
-optionally install the two IETF *norms* skills locally as a convenience (see below), but routing
-itself always comes from the server.
+## 2. Register the server with your client
+
+Register `ietf-llm-mcp` via your client's config file per below. Clients are listed alphabetically;
+the snippets are correct as of writing, but if your client has changed since, its own MCP docs are
+authoritative.
+
+**Gotcha (all clients):** the binary may be on your shell `PATH` but not on the `PATH` inherited by
+your client. Use the absolute path (`which ietf-llm-mcp`) if the client can't find the command.
+
+The server hands its routing and norms guidance to every client through the MCP `instructions`
+field, so any compliant client picks up the routing rules automatically — no skill required. You
+can optionally install the two IETF *norms* skills locally as a convenience (see below), but
+routing itself always comes from the server.
 
 ### Claude Code
 
 ```bash
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
-
-Optionally install the two IETF **norms** skills — `ietf-interpreting` and `ietf-contributing` (the
-read- and write-side norms the server also serves via `read_ietf_interpretation_norms` /
-`read_ietf_participation_norms`) — into every supported agent harness it detects (Claude Code, Codex,
-Gemini CLI, opencode):
-
-```bash
-ietf-llm --install-skills
-```
-
-This is a convenience: it installs the same two norm skills you can install yourself from
-[mnot/ietf-skill](https://github.com/mnot/ietf-skill) (their canonical home). Routing needs no skill
-— it comes from the server's `instructions`. Re-run after upgrading to pick up a newer pin.
 
 ### Claude Desktop
 
@@ -147,14 +137,15 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or `.cursor/mcp.json
 }
 ```
 
-## In-session gather
+## 3. Gather
+
+Many of the tools require [gather a corpus of materials](gathering.md) from IETF servers. This can be done on the command line with `ietf-llm` (see the link above), or you can just ask the
+assistant to.
 
 A local stdio server registers the `start_gather` / `gather_status` tools by default, letting the
-assistant gather a corpus in-session instead of you running `ietf-llm <name>` in a shell. (They are
-on here because you can already run `ietf-llm` against the same cache, so withholding them only adds
-friction; the shared HTTP deployment defaults them off.)
+assistant gather a corpus in-session instead of you running `ietf-llm <name>` in a shell.
 
-To turn them **off** — for instance if this server points at a read-only-mounted cache — set
+To turn this **off** — for instance if this server points at a read-only-mounted cache — set
 `IETF_LLM_ENABLE_GATHER=0` in its `env`:
 
 ```json
@@ -168,12 +159,25 @@ To turn them **off** — for instance if this server points at a read-only-mount
 }
 ```
 
-Gather writes to the cache and reaches the network — the one break from read-only. See the
-[full tool description](mcp-server.md#in-session-gather).
 
-## Tuning
+## 4. Installing the norm skills (optional)
+
+You can install the two IETF **norms** skills — `ietf-interpreting` and `ietf-contributing` (the
+read- and write-side norms the server also serves via `read_ietf_interpretation_norms` /
+`read_ietf_participation_norms`) — into every supported agent harness:
+
+```bash
+ietf-llm --install-skills
+```
+
+This is a convenience; it installs the same two norm skills you can install yourself from
+[mnot/ietf-skill](https://github.com/mnot/ietf-skill) (their canonical home). Re-run after
+upgrading to pick up a newer pin.
+
+
+## Tuning the MCP server
 
 Each tool call has a server-side deadline so a stuck call fails fast with a clear message rather
-than hanging to the client's timeout. It defaults to 120 seconds; override (or disable, with `0`) by
-setting `IETF_LLM_TOOL_TIMEOUT` in the server's environment — e.g. add
-`"env": {"IETF_LLM_TOOL_TIMEOUT": "180"}` to a client's JSON config.
+than hanging until the client's timeout. It defaults to 120 seconds; override (or disable, with
+`0`) by setting `IETF_LLM_TOOL_TIMEOUT` in the server's environment — e.g. add `"env":
+{"IETF_LLM_TOOL_TIMEOUT": "180"}` to a client's JSON config.

@@ -1,8 +1,7 @@
 # Running the MCP server over HTTP
 
 **This document is for:** running `ietf-llm-mcp` as a shared service — one process serving many
-clients over HTTP, rather than a per-user stdio subprocess. It is an operator runbook: what to set,
-what to run, how to check it, and what to do when it misbehaves. For *why* the server is shaped this
+clients over HTTP, rather than a per-user stdio subprocess. For *why* the server is shaped this
 way, see [architecture.md](architecture.md). — Back to the [docs index](README.md).
 
 For local use the server speaks stdio and needs none of this; see
@@ -11,7 +10,7 @@ For local use the server speaks stdio and needs none of this; see
 ## Quickstart
 
 A hosted deployment is the stdio server with three things configured around it: a **remote
-embeddings** endpoint (so the image carries no torch), an **HTTP transport**, and **storage** the
+embeddings** endpoint, an **HTTP transport**, and **storage** the
 replica reads. A minimal run:
 
 ```bash
@@ -32,9 +31,7 @@ export IETF_LLM_LOG_FORMAT=json
 ietf-llm-mcp
 ```
 
-The MCP endpoint is served at `/mcp`; `GET /health` is the readiness probe. The read path touches no
-network and never writes — every query opens its own read-only SQLite connection — so many clients,
-and a concurrent re-gather, are safe against one corpus.
+The MCP endpoint is served at `/mcp`; `GET /health` is the readiness probe.
 
 ## Before you start
 
@@ -56,9 +53,9 @@ and a concurrent re-gather, are safe against one corpus.
 Read this before exposing the HTTP server to anything but localhost.
 
 `ietf-llm-mcp` is a read-only query surface over the *public* IETF record. It is **not designed to
-sit on the open Internet.** It provides **no identity, rate limiting, or cost control** and assumes a
-trust boundary you control: run it on an internal interface (the default bind is `127.0.0.1`) and put
-your own proxy in front of anything wider.
+sit on the open Internet.** It provides **no identity, rate limiting, or cost control** and assumes
+a trust boundary you control: run it on an internal interface (the default bind is `127.0.0.1`) and
+put your own proxy in front of anything wider.
 
 **If you front it with a proxy, that proxy owns identity, rate limiting, and quota** — the server
 will not do any of it, now or by configuration:
@@ -71,14 +68,9 @@ will not do any of it, now or by configuration:
   `/v1/embeddings` call per request — no budget ceiling, no circuit breaker, no query-embedding
   cache. A busy or hostile client runs up the embedding bill.
 
-**What you're defending:** availability, the embedding bill, and abuse of compute — **not
-confidentiality.** The read path serves only the public IETF record (already public at ietf.org), so
-there is nothing secret to leak. The secrets that *do* exist (the embedding token, any object-store
-credential) are read from the environment only and never written to disk or returned to a client.
-
 The one break from "read-only" is [in-session gather](#in-session-gather), which writes and reaches
 the network. Its default tracks the transport — on for a local stdio server, off for a shared HTTP
-replica — and `IETF_LLM_ENABLE_GATHER` overrides either way; leave it off for an exposed replica.
+replica — and `IETF_LLM_ENABLE_GATHER` overrides either way.
 
 ## Configuration reference
 
@@ -129,21 +121,21 @@ IETF_LLM_MCP_TRANSPORT=http IETF_LLM_MCP_HOST=0.0.0.0 ietf-llm-mcp
 
 ### Stateless sessions
 
-The HTTP transport runs **stateless by default**: the server keeps no `Mcp-Session-Id` state between
-requests, so any replica behind a load balancer can answer any request with no session affinity — the
-right shape for this read-mostly server. Set `IETF_LLM_MCP_STATELESS=0` (or `false`/`no`/`off`) for
-stateful per-client sessions. The setting is ignored by the stdio transport. The boot posture banner
-reports the effective value.
+The HTTP transport runs **stateless by default**: the server keeps no `Mcp-Session-Id` state
+between requests, so any replica behind a load balancer can answer any request with no session
+affinity — the right shape for this read-mostly server. Set `IETF_LLM_MCP_STATELESS=0` (or
+`false`/`no`/`off`) for stateful per-client sessions. The setting is ignored by the stdio
+transport. The boot posture banner reports the effective value.
 
 ### Host / Origin allow-list
 
 By default the server does **no** `Host`-header validation: it assumes a proxy or firewall in front
-(the intended production shape). If you instead expose it directly, set `IETF_LLM_MCP_ALLOWED_HOSTS`
-to the exact public host(s) you serve under — this turns on DNS-rebinding protection, and any request
-whose `Host` is not on the list is rejected with `421 Misdirected Request`. Each entry is an exact
-`host` / `host:port`, or a `host:*` wildcard (e.g. `mcp.example.org,localhost:*`).
-`IETF_LLM_MCP_ALLOWED_ORIGINS` similarly restricts the browser `Origin` header. The boot banner
-reports the effective `host_allowlist` (`off` when unset).
+(the intended production shape). If you instead expose it directly, set
+`IETF_LLM_MCP_ALLOWED_HOSTS` to the exact public host(s) you serve under — this turns on
+DNS-rebinding protection, and any request whose `Host` is not on the list is rejected with `421
+Misdirected Request`. Each entry is an exact `host` / `host:port`, or a `host:*` wildcard (e.g.
+`mcp.example.org,localhost:*`). `IETF_LLM_MCP_ALLOWED_ORIGINS` similarly restricts the browser
+`Origin` header. The boot banner reports the effective `host_allowlist` (`off` when unset).
 
 ## Boot-time config validation
 
@@ -169,29 +161,28 @@ under-provisioned config fails fast at boot rather than minutes into a gather or
 
 `GET /health` is a readiness probe for a load balancer or orchestrator. It returns `200` once the
 index directory is mounted **and a corpus index actually opens** — the probe runs a trivial read
-against one `embeddings.db`, so an index that is present but unservable (e.g. a WAL database on a
-read-only mount without `IETF_LLM_INDEX_IMMUTABLE`, or a truncated file) fails the probe instead of
-passing it. A server with no corpora gathered yet is still ready. `503` otherwise, with a small JSON
-body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes **no** upstream call —
-a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured and ready
-to serve", not "the backend answered".
+against one `embeddings.db`, so an index that is present but unservable fails the probe instead of
+passing it. A server with no corpora gathered yet is still ready. `503` otherwise, with a small
+JSON body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes **no** upstream
+call — a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured
+and ready to serve", not "the backend answered".
 
 The JSON body also carries operator-facing fields that don't gate readiness:
 
 - `version` — the running package version, for correlating behaviour across a rolling deploy.
-- `gathers_inflight` — how many in-session gathers are running right now (an integer; `0` when gather
-  is disabled or idle). **A stable interface**: a fronting proxy can key a container-lifetime decision
-  off it — a background gather started via `start_gather` publishes nothing until it finishes, so a
-  hosting layer with an idle timeout reads this to keep the container alive past its window instead of
-  evicting it mid-gather. Keying off this JSON field avoids scraping and regex-parsing the
-  `ietf_llm_gathers_inflight` Prometheus series out of `/metrics` (a human/monitoring surface, not a
-  control-plane contract).
+- `gathers_inflight` — how many in-session gathers are running right now (an integer; `0` when
+  gather is disabled or idle). **A stable interface**: a fronting proxy can key a
+  container-lifetime decision off it — a background gather started via `start_gather` publishes
+  nothing until it finishes, so a hosting layer with an idle timeout reads this to keep the
+  container alive past its window instead of evicting it mid-gather. Keying off this JSON field
+  avoids scraping and regex-parsing the `ietf_llm_gathers_inflight` Prometheus series out of
+  `/metrics` (a human/monitoring surface, not a control-plane contract).
 - `corpora` — a bounded freshness summary read from the per-corpus `last-gathered` sentinels (no
   upstream call): `count` (all cached corpora), `tracked` (those carrying a sentinel — caches
-  predating freshness tracking have none), and `oldest` / `newest`, each
-  `{corpus, last_gathered, age_seconds}` (or `null` when nothing is tracked). `oldest` is the
-  staleness floor — a replica can be perfectly ready while serving a corpus that went stale days ago,
-  and this is how an operator sees that at a glance.
+  predating freshness tracking have none), and `oldest` / `newest`, each `{corpus, last_gathered,
+  age_seconds}` (or `null` when nothing is tracked). `oldest` is the staleness floor — a replica
+  can be perfectly ready while serving a corpus that went stale days ago, and this is how an
+  operator sees that at a glance.
 
 `GET /metrics` exposes a Prometheus scrape; it is read-only and zero-dependency. It carries RED per
 tool (with `tool_timeouts_total` separating deadline hits from exceptions, and latency buckets that
@@ -203,8 +194,8 @@ process gauges (`build_info{version=…}`, in-flight requests, and a per-corpus 
 ## Cache freshness and degraded mode
 
 **The serve process never writes the cache.** `gather` is the only writer (`ietf-llm <name>`), run
-out-of-band on a write node; a serving replica only ever reads. Fresh data reaches a replica in three
-steps:
+out-of-band on a write node; a serving replica only ever reads. Fresh data reaches a replica in
+three steps:
 
 1. Gather on the write side, producing the corpus tree and its `embeddings.db`.
 2. Publish those to the storage the replica reads — a shared mount, or a sync to local disk. Corpus
@@ -214,10 +205,9 @@ steps:
 3. The replica picks it up with no restart — every tool opens a fresh read-only connection per call.
 
 The **cloud store backend** (`IETF_LLM_STORE_BACKEND=cloud`, see
-[Storage](storage.md#the-cloud-backend)) does steps 2–3 for you: a publish is visible fleet-wide with
-no separate sync and no torn read. It is also what makes the
-[in-session gather](#in-session-gather) durable and fleet-coherent rather than a single-box
-convenience.
+[Storage](storage.md#the-cloud-backend)) does steps 2–3 for you: a publish is visible fleet-wide
+with no separate sync and no torn read. It is also what makes the [in-session
+gather](#in-session-gather) durable and fleet-coherent rather than a single-box convenience.
 
 **Degraded mode when the embedding upstream is down.** Only two tools embed their query, and they are
 the only ones that fail if the remote `/v1/embeddings` endpoint is unreachable:
@@ -235,53 +225,55 @@ readiness.
 ## Logging
 
 Set `IETF_LLM_LOG_FORMAT=json` for one-line structured records (`ts` / `level` / `msg`, plus any
-record-specific fields) a collector can ingest; the default is human-readable text. Logs go to stderr
-(stdout is reserved for the stdio protocol; container runtimes capture stderr) and carry no secrets.
-`IETF_LLM_DEBUG_LOG=1` additionally records per-request timing telemetry. When serving over HTTP, the
-server emits a one-line startup preamble — version, bind address, and the `corpora` freshness floor —
-mirroring `/health`, so a deploy log shows which build a replica came up on and how stale its caches
-were at boot.
+record-specific fields) a collector can ingest; the default is human-readable text. Logs go to
+stderr (stdout is reserved for the stdio protocol; container runtimes capture stderr) and carry no
+secrets. `IETF_LLM_DEBUG_LOG=1` additionally records per-request timing telemetry. When serving
+over HTTP, the server emits a one-line startup preamble — version, bind address, and the `corpora`
+freshness floor — mirroring `/health`, so a deploy log shows which build a replica came up on and
+how stale its caches were at boot.
 
 **Serve verbosity (`IETF_LLM_LOG_LEVEL`).** The serve path logs at a verbosity that, by default, is
 transport-aware: **`status`** on the HTTP transport (a hosted container has no other operational
 signal on stderr) and **`quiet`** on stdio (the local CLI / desktop client stays silent in an
 interactive session). Set `IETF_LLM_LOG_LEVEL` to `quiet`, `status`, or `verbose` to override in
-either direction; the resolved level is reported in the `serve posture:` startup banner (`log_level=…`).
+either direction; the resolved level is reported in the `serve posture:` startup banner
+(`log_level=…`).
 
-At `status` or above the HTTP server emits a **per-request access record** for every tool call — one
-structured line carrying `event=tool_call`, the `tool` name, the `status` (`ok` / `timeout` /
-`exception`), and `duration_ms` — so requests are queryable by field on the same stream as the rest,
-without scraping the `/metrics` aggregate. (`/metrics` remains the place for rates and histograms; the
-access record is the per-call line.) `verbose` additionally lets through the chattiest progress
-detail, e.g. mid-stage gather notes.
+At `status` or above the HTTP server emits a **per-request access record** for every tool call —
+one structured line carrying `event=tool_call`, the `tool` name, the `status` (`ok` / `timeout` /
+`exception`), and `duration_ms` — so requests are queryable by field on the same stream as the
+rest, without scraping the `/metrics` aggregate. (`/metrics` remains the place for rates and
+histograms; the access record is the per-call line.) `verbose` additionally lets through the
+chattiest progress detail, e.g. mid-stage gather notes.
 
 ## In-session gather
 
-The server registers two extra tools so a client can gather a new corpus without dropping to a shell.
-They are on by default for a **local stdio** server (that user can already run `ietf-llm` against the
-same cache, so withholding the tools only adds friction) and off by default for the **shared HTTP**
-deployment (keeping it read-only). `IETF_LLM_ENABLE_GATHER` overrides either way — set it falsy to
-turn the tools off on a stdio server (e.g. one pointed at a read-only-mounted cache), or truthy to
-turn them on for an HTTP server you trust:
+The server registers two extra tools so a client can gather a new corpus without dropping to a
+shell. They are on by default for a **local stdio** server (that user can already run `ietf-llm`
+against the same cache, so withholding the tools only adds friction) and off by default for the
+**shared HTTP** deployment (keeping it read-only). `IETF_LLM_ENABLE_GATHER` overrides either way —
+set it falsy to turn the tools off on a stdio server (e.g. one pointed at a read-only-mounted
+cache), or truthy to turn them on for an HTTP server you trust:
 
 - `start_gather(corpus, [mailing_list], [draft], [github], [author], [new_drafts], …)` — enqueues a
   gather and returns immediately. The corpus shape (group / list / custom / synthetic) is inferred
   from the arguments.
-- `gather_status([corpus])` — reports `queued`, `running` (with the current stage, e.g.
-  `stage 7/17 (github issues)`, and elapsed time), `done`, `failed` (with the error), or `interrupted`
-  (the gatherer ended before completion). Status is persisted to `<corpus>/gather-status.json` and,
-  on the cloud backend, to the control plane so any replica can report it.
+- `gather_status([corpus])` — reports `queued`, `running` (with the current stage, e.g. `stage 7/17
+  (github issues)`, and elapsed time), `done`, `failed` (with the error), or `interrupted` (the
+  gatherer ended before completion). Status is persisted to `<corpus>/gather-status.json` and, on
+  the cloud backend, to the control plane so any replica can report it.
+
 
 **This is the one break from the read-only / no-network contract.** The HTTP default is already
 **off**; keep it that way for an exposed replica. On a stdio server over a read-only-mounted cache
-*on the local backend* — where a gathered corpus is only durable on the box that wrote it — turn the
-default off with `IETF_LLM_ENABLE_GATHER=0` (or `IETF_LLM_INDEX_IMMUTABLE=1`, which marks the mount
-read-only and so suppresses the gather default on its own). On the **cloud backend** it is a
-first-class shape: the gather
-publishes a new immutable version through the store (atomic pointer flip, visible to every replica)
-under a cross-host lease, so enabling it on a replicated fleet is safe — see
-[Cache freshness](#cache-freshness-and-degraded-mode). If you enable it on the torch-free serve image,
-use a remote `openai-embed/...` embedding model so the gather's index build pulls no torch.
+*on the local backend* — where a gathered corpus is only durable on the box that wrote it — turn
+the default off with `IETF_LLM_ENABLE_GATHER=0` (or `IETF_LLM_INDEX_IMMUTABLE=1`, which marks the
+mount read-only and so suppresses the gather default on its own). On the **cloud backend** it is a
+first-class shape: the gather publishes a new immutable version through the store (atomic pointer
+flip, visible to every replica) under a cross-host lease, so enabling it on a replicated fleet is
+safe — see [Cache freshness](#cache-freshness-and-degraded-mode). If you enable it on the
+torch-free serve image, use a remote `openai-embed/...` embedding model so the gather's index build
+pulls no torch.
 
 ### Gather concurrency
 
@@ -297,11 +289,11 @@ GitHub) without making a second client wait behind the first. `IETF_LLM_GATHER_M
   backend the per-host worker pool is the bound.
 
 Set it to `1` for strictly serial gathering, or higher for more throughput at the cost of more
-concurrent upstream load. A request for a corpus already in flight (here or on another host) reports
-*already running*; a request for a different corpus when no slot is free is accepted as `queued`.
-Either way the client polls `gather_status` — it does not retry. The per-corpus lease is taken at
-enqueue, so the same corpus is never gathered twice across the fleet, and a `queued`/`running` record
-whose gatherer died is relabelled `interrupted` once its lease lapses.
+concurrent upstream load. A request for a corpus already in flight (here or on another host)
+reports *already running*; a request for a different corpus when no slot is free is accepted as
+`queued`. Either way the client polls `gather_status` — it does not retry. The per-corpus lease is
+taken at enqueue, so the same corpus is never gathered twice across the fleet, and a
+`queued`/`running` record whose gatherer died is relabelled `interrupted` once its lease lapses.
 
 > The CLI (`ietf-llm <corpus>`) does **not** yet participate in the fleet-wide slot, so a cron/shell
 > gather runs alongside the cap rather than counting toward it. Bringing the CLI under the same slot
@@ -309,11 +301,11 @@ whose gatherer died is relabelled `interrupted` once its lease lapses.
 
 ### Per-host request governor
 
-The gather-count cap above bounds *how many gathers* run; a separate, finer cap bounds *how many HTTP
-requests* any one gather (or all of them in a process) keeps in flight to a single host. Every gather
-fetch routes through a per-host slot pool, so a wide intra-gather fan-out — the draft / RFC text
-downloads run in parallel — can never exceed the budget for a host regardless of pipeline structure
-or concurrent gathers.
+The gather-count cap above bounds *how many gathers* run; a separate, finer cap bounds *how many
+HTTP requests* any one gather (or all of them in a process) keeps in flight to a single host. Every
+gather fetch routes through a per-host slot pool, so a wide intra-gather fan-out — the draft / RFC
+text downloads run in parallel — can never exceed the budget for a host regardless of pipeline
+structure or concurrent gathers.
 
 - `IETF_LLM_HTTP_MAX_DATATRACKER` (default `2`) — cap for `datatracker.ietf.org`, kept tight because
   it is a shared, database-backed community service.
@@ -325,37 +317,41 @@ document downloads against the static hosts.
 
 ### Keeping a gather alive on a scale-to-zero platform
 
-`start_gather` returns immediately and the gather runs as an in-process background task on the replica
-that accepted it; it only becomes durable at **publish** (on the cloud backend, the atomic pointer
-flip), so until then the in-progress tree lives on that replica's ephemeral local scratch. A long,
-quiet gather — a first-time full gather is the worst case (whole-list mbox download plus the index
-build) — emits no inbound requests for minutes. On a platform that sleeps or evicts an instance after
-an idle window — notably Cloudflare Containers, which defaults to `sleepAfter: "10m"` of *request*
-inactivity — the instance can sleep mid-gather, dropping the unpublished scratch. The gather's lease
-then lapses and `gather_status` relabels it `interrupted`; the work restarts from scratch on the next
-attempt, possibly never reaching publish.
+`start_gather` returns immediately and the gather runs as an in-process background task on the
+replica that accepted it; it only becomes durable at **publish** (on the cloud backend, the atomic
+pointer flip), so until then the in-progress tree lives on that replica's ephemeral local scratch.
+A long, quiet gather — a first-time full gather is the worst case (whole-list mbox download plus
+the index build) — emits no inbound requests for minutes. On a platform that sleeps or evicts an
+instance after an idle window — notably Cloudflare Containers, which defaults to `sleepAfter:
+"10m"` of *request* inactivity — the instance can sleep mid-gather, dropping the unpublished
+scratch. The gather's lease then lapses and `gather_status` relabels it `interrupted`; the work
+restarts from scratch on the next attempt, possibly never reaching publish.
 
-A live background thread does **not** count as activity on these platforms, and the container process
-cannot keep itself awake — only the controlling runtime can reset the idle timer (on Cloudflare,
-`renewActivityTimeout()`, called from the Worker / Durable Object side, not from inside the
-container). So this is a **deployment-side** requirement, not something the server does for you (and
-keeping it out of the server is what holds the no-platform-specific-code line):
+A live background thread does **not** count as activity on these platforms, and the container
+process cannot keep itself awake — only the controlling runtime can reset the idle timer (on
+Cloudflare, `renewActivityTimeout()`, called from the Worker / Durable Object side, not from inside
+the container). So this is a **deployment-side** requirement, not something the server does for you
+(and keeping it out of the server is what holds the no-platform-specific-code line):
 
-- **Keep the gathering instance awake for the duration of a gather.** Either raise the platform's idle
-  window beyond the longest expected gather, or have the controlling runtime renew the idle timer in a
-  loop while a gather is running. `gather_status` is the activity signal: poll it, and renew (or count
-  the poll as activity) while it reports `queued`/`running`.
-- **The keepalive must reach the *same* instance.** The gather is in-process on one specific replica; a
-  poll or renew that lands on another replica does nothing for it. With instance-addressed routing
-  (e.g. a Durable Object per gather) this is automatic; behind a naive load balancer it is not — route
-  the keepalive to the replica that owns the gather.
+- **Keep the gathering instance awake for the duration of a gather.** Either raise the platform's
+  idle window beyond the longest expected gather, or have the controlling runtime renew the idle
+  timer in a loop while a gather is running. `gather_status` is the activity signal: poll it, and
+  renew (or count the poll as activity) while it reports `queued`/`running`.
+
+- **The keepalive must reach the *same* instance.** The gather is in-process on one specific
+  replica; a poll or renew that lands on another replica does nothing for it. With
+  instance-addressed routing (e.g. a Durable Object per gather) this is automatic; behind a naive
+  load balancer it is not — route the keepalive to the replica that owns the gather.
+
 - **This narrows the window; it does not close it.** A deploy, eviction, crash, or a gather that
   outruns the idle window still loses the unpublished scratch. The gather accelerator caches (see
-  [storage.md](storage.md#gather-accelerator-caches)) blunt the *re-fetch* cost of a restart, but the
-  first-time full gather — nothing published to seed from, caches not yet persisted — is unprotected.
-  A robust fix is resumable gather (periodically checkpointing the in-progress tree to the store so a
-  restart continues rather than starting over), or running gather as a dedicated cron-triggered
-  invocation where the runtime owns the renew loop, rather than in-session inside a serving replica.
+  [storage.md](storage.md#gather-accelerator-caches)) blunt the *re-fetch* cost of a restart, but
+  the first-time full gather — nothing published to seed from, caches not yet persisted — is
+  unprotected. A robust fix is resumable gather (periodically checkpointing the in-progress tree to
+  the store so a restart continues rather than starting over), or running gather as a dedicated
+  cron-triggered invocation where the runtime owns the renew loop, rather than in-session inside a
+  serving replica.
+
 
 ## Troubleshooting
 
