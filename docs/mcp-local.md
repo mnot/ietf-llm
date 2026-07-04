@@ -1,7 +1,7 @@
 # Running the MCP server locally
 
-**This document is for:** running `ietf-llm-mcp` over **stdio** on your own machine for use with  Claude Desktop, Claude Code, Codex, Cursor, Gemini, opencode, Zed, and other MCP-capable agents. —
-Back to the [docs index](README.md).
+**This document is for:** running `ietf-llm-mcp` over **stdio** on your own machine, for use with
+MCP-capable agents. — Back to the [docs index](README.md).
 
 To serve many clients from one shared process instead, see
 [Running the MCP server over HTTP](mcp-server.md).
@@ -11,13 +11,6 @@ To serve many clients from one shared process instead, see
 
 - [1. Install the package](#1-install-the-package)
 - [2. Register the server with your client](#2-register-the-server-with-your-client)
-  - [Claude Code](#claude-code)
-  - [Claude Desktop](#claude-desktop)
-  - [Codex CLI (OpenAI)](#codex-cli-openai)
-  - [Cursor](#cursor)
-  - [Gemini CLI](#gemini-cli)
-  - [opencode](#opencode)
-  - [Zed](#zed)
 - [3. Gather](#3-gather)
 - [4. Installing the norm skills (optional)](#4-installing-the-norm-skills-optional)
 - [Tuning the MCP server](#tuning-the-mcp-server)
