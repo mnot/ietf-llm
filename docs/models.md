@@ -65,17 +65,13 @@ fan-out instead of exhausting the pool. The on-device model ignores this — it 
 
 ### One index, one backend
 
-The model id is stored in the index, and search reads it back to resolve the same backend
-automatically. Vectors are **not** portable across backends — even the "same" model isn't
-bit-identical across inference runtimes — so:
-
-- The on-device and remote id strings never collide (`sentence-transformers/…` vs `openai-embed/…`),
-  so an index built one way is never queried the other way by accident.
-- A change of model **or** vector dimension is detected and forces a rebuild on the next gather,
-  rather than mixing incompatible vectors.
-
-If you switch a corpus from local to remote (or vice versa), the next `ietf-llm <name>` re-embeds
-it.
+The embedding backend is a property of the index, not something you re-select at query time: the
+model id is stored in the index and search reads it back to resolve the same backend automatically.
+So if you switch a corpus from local to remote (or vice versa), the next `ietf-llm <name>` re-embeds
+it — vectors aren't portable across backends, and a change of model or vector dimension forces a
+rebuild rather than mixing incompatible vectors. The
+[reasoning](architecture.md#the-default-embedding-model-is-local-the-backend-is-pluggable) is in the
+architecture notes.
 
 ## Summarisation
 

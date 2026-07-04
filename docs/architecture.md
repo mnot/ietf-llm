@@ -649,7 +649,12 @@ write-throughs its own entry, so it never serves config it just wrote.
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
   the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins)
   — so an ephemeral host revalidates rather than re-hitting rate-limited upstreams
-  after scale-to-zero (issue #82); no-ops on local, all best-effort.
+  after scale-to-zero (issue #82); no-ops on local, all best-effort. The large
+  caches stay ephemeral by design: `imap-cache/` is per-corpus and its mail is
+  already published as version content, and `_rfc/` mirrors a CDN rather than a
+  rate-limited API (a restart re-fetches it for bandwidth, not API quota), so only
+  the rate-limited, shared, or per-corpus-lease-serialised caches above are
+  round-tripped.
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
   the version blobs): every *control* key is either a *published fact* (pointer,
