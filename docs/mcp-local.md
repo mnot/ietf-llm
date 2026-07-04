@@ -6,6 +6,24 @@ Back to the [docs index](README.md).
 To serve many clients from one shared process instead, see
 [Running the MCP server over HTTP](mcp-server.md).
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
+- [1. Install the package](#1-install-the-package)
+- [2. Register the server with your client](#2-register-the-server-with-your-client)
+  - [Claude Code](#claude-code)
+  - [Claude Desktop](#claude-desktop)
+  - [Codex CLI (OpenAI)](#codex-cli-openai)
+  - [Cursor](#cursor)
+  - [Gemini CLI](#gemini-cli)
+  - [opencode](#opencode)
+  - [Zed](#zed)
+- [3. Gather](#3-gather)
+- [4. Installing the norm skills (optional)](#4-installing-the-norm-skills-optional)
+- [Tuning the MCP server](#tuning-the-mcp-server)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 ## 1. Install the package
 
 [pipx](https://pipx.pypa.io/stable/) is recommended (see [its installation instructions](https://pipx.pypa.io/stable/how-to/install-pipx/) if this fails):

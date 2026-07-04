@@ -7,6 +7,27 @@ way, see [architecture.md](architecture.md). — Back to the [docs index](README
 For local use the server speaks stdio and needs none of this; see
 [Running the MCP server locally](mcp-local.md).
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
+- [Quickstart](#quickstart)
+- [Before you start](#before-you-start)
+- [Deployment contract](#deployment-contract)
+- [Configuration reference](#configuration-reference)
+  - [Stateless sessions](#stateless-sessions)
+  - [Host / Origin allow-list](#host--origin-allow-list)
+- [Boot-time config validation](#boot-time-config-validation)
+- [Health](#health)
+- [Cache freshness and degraded mode](#cache-freshness-and-degraded-mode)
+- [Logging](#logging)
+- [In-session gather](#in-session-gather)
+  - [Gather concurrency](#gather-concurrency)
+  - [Per-host request governor](#per-host-request-governor)
+  - [Keeping a gather alive on a scale-to-zero platform](#keeping-a-gather-alive-on-a-scale-to-zero-platform)
+- [Troubleshooting](#troubleshooting)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 ## Quickstart
 
 A hosted deployment is the stdio server with three things configured around it: a **remote

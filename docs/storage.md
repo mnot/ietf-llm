@@ -2,10 +2,22 @@
 
 **This document is for:** deciding where ietf-llm keeps its files and how a deployment
 reads them — relocating the cache/config/index onto faster or mounted volumes, or running the
-replicated **cloud** backend. It is task-oriented; for *why* the storage seam is shaped this way
-(the control plane, the compare-and-swap publish), see
-[architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable). —
-Back to the [docs index](README.md).
+replicated **cloud** backend. Back to the [docs index](README.md).
+
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
+- [Which backend do you need?](#which-backend-do-you-need)
+- [Relocating the local cache](#relocating-the-local-cache)
+  - [Considerations for the index](#considerations-for-the-index)
+- [The cloud backend](#the-cloud-backend)
+  - [What you provision](#what-you-provision)
+  - [Read-path access recording](#read-path-access-recording)
+  - [Configuration](#configuration)
+  - [Gather accelerator caches](#gather-accelerator-caches)
+  - [Publish visibility](#publish-visibility)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 ## Which backend do you need?
 

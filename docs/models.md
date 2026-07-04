@@ -11,6 +11,19 @@ remote OpenAI-compatible endpoint:
 - The **summariser** writes short summaries into the issues and threads digests at gather time.
   Optional (`--summarize`).
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
+- [Embeddings](#embeddings)
+  - [On-device (default)](#on-device-default)
+  - [Remote embedding endpoint](#remote-embedding-endpoint)
+  - [One index, one backend](#one-index-one-backend)
+- [Summarisation](#summarisation)
+  - [Remote summariser endpoint](#remote-summariser-endpoint)
+- [Global settings](#global-settings)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 ## Embeddings
 
 Both `ietf-llm-search` and the MCP `search_corpus` tool run over a per-corpus vector index built
