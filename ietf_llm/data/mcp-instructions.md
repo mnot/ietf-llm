@@ -41,9 +41,14 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   assert you're on a "read-only / HTTP replica" backend): it is available iff the
   `start_gather` tool is present — which may be **deferred**, so do a tool search
   for it before concluding it is absent — and `list_corpora` states, at the
-  bottom, which side this session is on. Only if it is genuinely unavailable,
-  tell the user to run `ietf-llm <name>` locally. `start_gather` returns when its
-  bounded wait
+  bottom, this session's **deployment mode** (local single-user vs possibly
+  shared) and gather availability. Read both from that line, never from the
+  transport-flavoured wording in tool descriptions: on a **local stdio** server a
+  gather costs only this user, so the "a wide gather costs everyone" cautions —
+  which are scoped to *shared* deployments — do not apply; don't hedge or ask
+  permission you don't need. Only if gather is genuinely unavailable, tell the
+  user to run `ietf-llm <name>` locally. `start_gather` returns when its bounded
+  wait
   elapses, naming the stage it reached (`stage 18/19 (embedding index)`) and how
   long it has run; the corpus is queryable once `gather_status` reports `done`.
   A cold first gather could take a few minutes — tell the user that and offer to

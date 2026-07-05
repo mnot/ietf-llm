@@ -76,6 +76,29 @@ def set_gather_default(enabled: bool) -> None:
     _GATHER_DEFAULT = enabled
 
 
+#: The MCP transport this server runs, set once at startup via
+#: `set_deployment_mode`: 'stdio' (local, single-user) or 'http' (possibly
+#: shared / hosted). Defaults to 'stdio' — the local single-user case, and the
+#: one that must NOT trigger shared-cost hedging; the HTTP entry point sets it
+#: explicitly. Read so the server can state its topology authoritatively, rather
+#: than leaving a client to infer it from transport-flavoured tool wording.
+_DEPLOYMENT_MODE = "stdio"
+
+
+def set_deployment_mode(mode: str) -> None:
+    """Record the resolved MCP transport ('stdio' or 'http') at server startup,
+    so tool output can state whether the deployment is local single-user or
+    possibly shared (which is what scopes the 'a wide gather costs everyone'
+    cautions). Anything but 'http' normalises to 'stdio'."""
+    global _DEPLOYMENT_MODE  # pylint: disable=global-statement
+    _DEPLOYMENT_MODE = "http" if mode == "http" else "stdio"
+
+
+def deployment_mode() -> str:
+    """The resolved MCP transport: 'stdio' (local, single-user) or 'http'."""
+    return _DEPLOYMENT_MODE
+
+
 def _gather_env_override() -> Optional[bool]:
     """The explicit `IETF_LLM_ENABLE_GATHER` setting as a bool, or None when
     unset (or unrecognised) so the caller falls back to `_GATHER_DEFAULT`."""

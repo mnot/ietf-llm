@@ -92,20 +92,38 @@ def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     assert "stray" not in out
 
 
-def test_list_corpora_states_gather_capability(
+def test_list_corpora_states_session_facts(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Availability must be read from the server, not guessed from the transport:
-    # list_corpora states it, server-authoritatively, at the bottom.
+    # Deployment topology and gather availability must be read from the server,
+    # not guessed from the transport: list_corpora states both, authoritatively.
+    from ietf_llm import freshness
+
     write_cache_file(isolated_home, "wg1", "x.txt")
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
     on = mcp_server.tool_list_corpora()
     assert "gather is available here" in on.lower()
     assert "start_gather" in on
+    assert "local stdio server (single-user)" in on.lower()
+    assert "costs only you" in on.lower()  # no shared-cost hedging locally
+    # HTTP: the shared-cost caution is scoped on, gather off.
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "http")
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
     off = mcp_server.tool_list_corpora()
     assert "gather is not available here" in off.lower()
     assert "ietf-llm <name>" in off
+    assert "possibly shared" in off.lower()
+
+
+def test_set_deployment_mode_normalises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import freshness
+
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
+    freshness.set_deployment_mode("http")
+    assert freshness.deployment_mode() == "http"
+    freshness.set_deployment_mode("streamable-anything-else")
+    assert freshness.deployment_mode() == "stdio"  # anything but 'http'
 
 
 def test_list_corpora_synthetic_status_disclaims_effort(isolated_home: Path) -> None:

@@ -93,10 +93,12 @@ from .embeddings import (
     search,
 )
 from .freshness import (
+    deployment_mode,
     freshness_line,
     gather_enabled,
     gather_suggestion,
     last_gathered,
+    set_deployment_mode,
     set_gather_default,
     staleness_warning,
 )
@@ -534,22 +536,40 @@ _NEXT_TOOLS_HINT = (
 )
 
 
-def _gather_capability_line() -> str:
-    """Server-authoritative note on whether in-session gather is available, so a
-    client reads its capability from the tool surface instead of inferring it
-    from the transport — the trap behind a confidently-wrong "gather is disabled
-    on this backend, run it yourself". `gather_enabled()` is derived from how
-    *this* server is configured, so unlike a guess it can't be wrong."""
+def _session_facts_line() -> str:
+    """Server-authoritative footer stating this session's deployment topology and
+    whether in-session gather is available, so a client reads both from the
+    server rather than inferring them from the transport-flavoured wording in the
+    tool descriptions. That inference has misfired both ways: a client on a local
+    stdio server assumed a *shared* deployment and hedged about per-user gather
+    costs that don't exist single-user, and another assumed gather was disabled.
+    These are derived from how *this* server is configured, so unlike a guess
+    they can't be wrong."""
+    if deployment_mode() == "http":
+        topo = (
+            "an HTTP server (possibly shared / hosted), so a wide gather fan-out "
+            "can cost other users — gather deliberately"
+        )
+    else:
+        topo = (
+            "a local stdio server (single-user), so a gather costs only you — "
+            "gather freely, no permission needed"
+        )
     if gather_enabled():
-        return (
-            "\n\n_In-session gather is available here: to add a corpus not listed "
-            'above, call `start_gather(corpus="<name>")` — do a tool search for it '
-            "first if it isn't loaded. Don't infer availability from the "
-            "transport; this line is authoritative._"
+        cap = (
+            "in-session gather is available here: call "
+            '`start_gather(corpus="<name>")` (do a tool search for it first if it '
+            "is not loaded)"
+        )
+    else:
+        cap = (
+            "in-session gather is not available here — run `ietf-llm <name>` "
+            "locally, then query it in this session"
         )
     return (
-        "\n\n_In-session gather is not available here; to add a corpus not listed "
-        "above, run `ietf-llm <name>` locally, then query it in this session._"
+        f"\n\n_This session: {topo}. To add a corpus not listed above, {cap}. "
+        "Read these from here, not from the transport wording in the tool "
+        "descriptions — this line is authoritative._"
     )
 
 
@@ -600,7 +620,7 @@ def tool_list_corpora() -> str:
         "the gather window and the exact repos.\n\n"
         + "\n".join(lines)
         + _NEXT_TOOLS_HINT
-        + _gather_capability_line()
+        + _session_facts_line()
     )
 
 
@@ -3969,6 +3989,10 @@ def main() -> None:  # pylint: disable=too-many-locals
     # value; IETF_LLM_ENABLE_GATHER still overrides either way.
     transport = _resolve_transport()
     set_gather_default(_startup_gather_default())
+    # Record the transport so tool output can state the deployment topology
+    # (local single-user vs possibly-shared) authoritatively — otherwise a
+    # client infers it from transport-flavoured wording and hedges wrongly.
+    set_deployment_mode(transport)
 
     # `instructions` is the MCP-spec mechanism for server-level guidance:
     # clients SHOULD surface it as system-prompt context. This carries the
