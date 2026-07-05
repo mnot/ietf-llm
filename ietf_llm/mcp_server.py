@@ -2829,9 +2829,16 @@ def _load_server_instructions() -> str:
     try:
         path = resources.files("ietf_llm").joinpath("data/mcp-instructions.md")
         text = _strip_frontmatter(path.read_text(encoding="utf-8"))
-        return text.replace("{{SESSION}}", _session_block())
     except (FileNotFoundError, OSError):
         return ""
+    # The mode-specific session facts must reach every client. Substitute at the
+    # placeholder; if the bundled markdown ever drops it, prepend rather than let
+    # the block silently vanish (the marker and the fallback are both covered by
+    # test_load_server_instructions_states_session_mode).
+    section = _session_section()
+    if "{{SESSION}}" in text:
+        return text.replace("{{SESSION}}", section)
+    return f"{section}\n\n{text}"
 
 
 # Named capability flags a skill or downstream tool can gate on, so it
@@ -2869,22 +2876,13 @@ def _gather_cost_clause() -> str:
 
 
 def _capability_phrase() -> str:
-    """One clause stating whether in-session gather + live Datatracker lookups
-    are available here (they share one gate), with the topology-scoped gather
-    cost when they are, and the fallback when not."""
+    """One terse clause stating whether in-session gather + live Datatracker
+    lookups are available here (they share one gate). The how-to lives in the
+    guidance paragraph of `_session_section`, mode-composed so a read-only
+    server never names `start_gather` and a stdio server never names cloud."""
     if gather_enabled():
-        return (
-            "in-session gather and live Datatracker lookups are available here — "
-            '`start_gather(corpus="<name>")` adds a corpus and `draft_status` / '
-            "`meeting_schedule` read live state (load a tool via a tool search if "
-            f"your client has not yet); {_gather_cost_clause()}"
-        )
-    return (
-        "this is a read-only server — `start_gather`, `draft_status`, and "
-        "`meeting_schedule` are not present; to add a corpus have the user run "
-        "`ietf-llm <name>` locally, and use `list_drafts` / `list_meetings` / "
-        "`read_minutes` for draft and meeting facts"
-    )
+        return "in-session gather and live Datatracker lookups are available here"
+    return "read-only (in-session gather and live Datatracker lookups are off)"
 
 
 def _gather_brief() -> str:
@@ -2903,18 +2901,41 @@ def _gather_brief() -> str:
     )
 
 
-def _session_block() -> str:
-    """The mode-specific facts injected into the `instructions` field at
-    `{{SESSION}}`, so a client reads its deployment and capability as stated
-    facts instead of inferring them from the (mode-neutral) tool descriptions —
-    the guessing that produced wrong 'shared backend' / 'gather disabled'
-    refusals. Composed once at startup; both axes are fixed for the session."""
-    return (
+def _session_section() -> str:
+    """The whole mode-specific region of the `instructions` field, injected at
+    `{{SESSION}}` and composed once at startup. States deployment + capability as
+    facts, then a single guidance paragraph written for the actual mode — so a
+    read-only server never mentions `start_gather` anywhere and a stdio server
+    never mentions cloud/shared operation. The (mode-neutral) tool descriptions
+    below carry none of this, so nothing forces the client to infer its mode."""
+    facts = (
         "Fixed for this server's lifetime — read these here, don't infer them "
         "from the tool descriptions below:\n\n"
         f"- **Deployment:** {_deployment_phrase()}.\n"
         f"- **Capability:** {_capability_phrase()}."
     )
+    if gather_enabled():
+        guidance = (
+            "To add or refresh a corpus, `start_gather(corpus=…)` — "
+            f"{_gather_cost_clause()}. It returns when its bounded wait elapses "
+            "(naming the stage and elapsed time); the corpus is queryable once "
+            "`gather_status` reports `done`. A cold first gather can take a few "
+            "minutes — tell the user and offer to check back, don't block "
+            "silently — and reads refuse until it finishes (a re-gather keeps "
+            "serving the previous snapshot); poll `gather_status(corpus=…, "
+            "wait=60)` rather than reading early. For live, daily-changing facts "
+            "use `draft_status` / `meeting_schedule`; otherwise the offline "
+            "`list_drafts` / `list_meetings` / `read_minutes`."
+        )
+    else:
+        guidance = (
+            "This server can't gather, and has no live Datatracker lookups. To "
+            "add a corpus `list_corpora` doesn't show, tell the user to run "
+            "`ietf-llm <name>` locally, then query it here; for draft and meeting "
+            "facts use the offline `list_drafts` / `list_meetings` / "
+            "`read_minutes`."
+        )
+    return f"{facts}\n\n{guidance}"
 
 
 def _capability_footer() -> str:
@@ -3302,8 +3323,8 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
         return (
             f"Queued '{corpus}' for gathering ({ahead} gather"
             f"{'s' if ahead != 1 else ''} ahead of it). Gathers are capped to a "
-            "few at once (per host and across the deployment) to stay polite to "
-            f"upstreams, so it starts when a slot frees. Poll "
+            "few at once to stay polite to upstreams (Datatracker / GitHub), so "
+            f"it starts when a slot frees. Poll "
             f'`gather_status(corpus="{corpus}")`.{stop_hint}'
         )
     first = not _corpus_exists(corpus)
@@ -4109,11 +4130,10 @@ def main() -> None:  # pylint: disable=too-many-locals
 
         The playbook: `find_efforts(topic)` → present the candidates
         (prefer the cached ones) → gather the **few** efforts that
-        dominate the topic (`start_gather` / `ietf-llm <acronym>`), not
+        dominate the topic (how to add one is in **This session**), not
         all of them, and tell the user what you skipped → query each
         gathered corpus → synthesize. Over-gathering is the failure mode
-        to avoid (slow, and on a shared server it costs others — see
-        **This session**).
+        to avoid — it is slow and wasteful.
 
         `limit` caps results (default 15).
         """
@@ -4272,8 +4292,8 @@ def main() -> None:  # pylint: disable=too-many-locals
         on Datatracker that the cached list omits (a revived draft to re-gather
         and consider). Use it when building an agenda or whenever the
         active-draft list must be exactly right; it hits Datatracker live (so
-        it is only available where gather is enabled — local stdio, off on the
-        shared HTTP replica) and is slower than the default offline overview.
+        it is only available where the live tools are enabled — see **This
+        session**) and is slower than the default offline overview.
 
         Args:
             corpus: The corpus shortname (`httpbis`, `tls`, …).
@@ -5225,11 +5245,10 @@ def main() -> None:  # pylint: disable=too-many-locals
               id, or exact name) or `new_drafts=True` (rolling window).
             - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
-            One gather per corpus runs at a time, across all hosts on a
-            shared deployment — so a call while it's in flight reports
-            "already running" even if another client started it. A
-            *different* corpus runs concurrently up to a small cap; beyond
-            that it reports "queued". Either way, poll `gather_status`,
+            One gather per corpus runs at a time — so a call while it's in
+            flight reports "already running". A *different* corpus runs
+            concurrently up to a small cap; beyond that it reports
+            "queued". Either way, poll `gather_status`,
             don't retry or `force` (which overrides only the freshness
             debounce below, never these limits).
 
@@ -5410,9 +5429,8 @@ def main() -> None:  # pylint: disable=too-many-locals
             **Omit `meeting`** to list the group's upcoming meetings (numbered +
             interim) — the way to discover an interim id, which isn't guessable.
 
-            Live (short TTL + freshness stamp), gather-gated — off on the shared
-            HTTP replica (it reaches the network). Times are venue-local — never
-            quote the UTC start as the local time.
+            Live (short TTL + freshness stamp; it reaches the network). Times
+            are venue-local — never quote the UTC start as the local time.
 
             Args:
                 corpus: The Working Group shortname (e.g. `httpbis`).
@@ -5438,8 +5456,8 @@ def main() -> None:  # pylint: disable=too-many-locals
             by days, so reach here when the *current* standing matters (deciding
             an agenda is the obvious case).
 
-            Live (short TTL + freshness stamp), gather-gated — off on the shared
-            HTTP replica; see the SKILL "Live Datatracker facts" section.
+            Live (short TTL + freshness stamp; it reaches the network); see the
+            SKILL "Live Datatracker facts" section.
 
             Args:
                 name: The draft name (`draft-ietf-httpbis-resumable-upload`);

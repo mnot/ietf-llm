@@ -38,26 +38,10 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   "who's on X", "open issues"), and **`list_corpora`** to see what's gathered.
 - **No named corpus, just a topic?** `find_efforts(topic)` ranks active efforts
   and flags which are cached; `which_corpus(query)` routes to a cached one.
-- **Corpus missing?** Gather it with `start_gather(corpus=…)` (availability and
-  cost are stated in **This session** above) — one gather reconstructs the whole
-  record into searchable files, rather than crawling Datatracker or the mail
-  archive by hand. It returns when its bounded wait elapses, naming the stage and
-  elapsed time; the corpus is queryable once `gather_status` reports `done`. A
-  **cold first gather can take a few minutes** — tell the user and offer to check
-  back, don't block silently — and reads refuse until it finishes (a re-gather,
-  by contrast, keeps serving the previous snapshot). Poll
-  `gather_status(corpus=…, wait=60)` rather than reading early.
+- **Corpus missing?** How to add one is stated in **This session** above (it
+  depends on this server's mode).
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
-
-## Offline vs. live
-
-Most tools are **offline** (cache reads). Two read **Datatracker live** for
-daily-changing facts — `draft_status` (a draft's WG-Last-Call / IESG state) and
-`meeting_schedule` (the live schedule); whether they're available here is stated
-in **This session** above. Prefer the live tool when a *current* fact matters;
-otherwise use the offline `list_drafts` (corpus-wide draft lifecycle) and
-`list_meetings` / `read_minutes` (the gathered meeting record).
 
 ## The tools (each tool's own description carries the detail)
 
