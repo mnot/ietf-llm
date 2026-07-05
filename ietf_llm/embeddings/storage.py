@@ -16,11 +16,13 @@ the cache root; see utils.get_index_dir), with two tables:
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import re
 import shutil
 import sqlite3
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -72,14 +74,69 @@ def _remove_db_files(path: str) -> None:
             pass
 
 
+def _clonefile(src: str, dst: str) -> None:
+    """Copy-on-write clone via macOS `clonefile(2)`. Raises `OSError` if the
+    clone can't be made (wrong filesystem, cross-volume, dst exists, ...)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    clone = libc.clonefile
+    clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+    clone.restype = ctypes.c_int
+    if clone(os.fsencode(src), os.fsencode(dst), 0) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), dst)
+
+
+def _copy_file_range(src: str, dst: str) -> None:
+    """Copy via Linux `copy_file_range(2)` — a reflink on a copy-on-write
+    filesystem (btrfs, XFS-with-reflink), an efficient in-kernel copy elsewhere.
+    Raises `OSError`/`AttributeError` where unavailable.
+
+    `copy_file_range` is Linux-only, so it is reached via `getattr` (typeshed
+    hides it off Linux); the `is None` guard makes the call safe."""
+    copy_range = getattr(os, "copy_file_range", None)
+    if copy_range is None:
+        raise AttributeError("os.copy_file_range unavailable")
+    # pylint: disable=not-callable  # guarded above; getattr() infers as Any/None
+    with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+        remaining = os.fstat(fsrc.fileno()).st_size
+        while remaining > 0:
+            copied = copy_range(fsrc.fileno(), fdst.fileno(), remaining)
+            if copied == 0:
+                break  # short of EOF should not happen for a regular file
+            remaining -= copied
+
+
+def _clone_or_copy(src: str, dst: str) -> None:
+    """Copy `src` to `dst`, preferring a copy-on-write clone where the platform
+    and filesystem support it (near-free), falling back to a full byte copy.
+
+    The scratch build DB is otherwise a full copy of the live index on every
+    gather, incremental or not; a reflink makes that near-free on APFS (macOS)
+    and btrfs / XFS-with-reflink (Linux). No metadata need survive the copy —
+    the build keys incremental skips on content hashes, not mtime — and the
+    clone is an independent object, so mutating the scratch never touches live."""
+    try:
+        if sys.platform == "darwin":
+            _clonefile(src, dst)
+        else:
+            _copy_file_range(src, dst)
+        return
+    except (OSError, AttributeError):
+        # CoW clone unsupported here (wrong fs, cross-device, ENOSYS, ...); the
+        # partial dst, if any, is cleared before the portable full-copy path.
+        _remove_db_files(dst)
+    shutil.copy2(src, dst)
+
+
 def seed_build_db(wg: str) -> str:
     """Prepare the scratch build DB and return its path.
 
     A build mutates this scratch copy, not the live index, so a concurrent
     reader never sees a half-populated DB — only the final atomic swap
     (`promote_build_db`) makes new content visible. Seeding from the current
-    live index (a plain file copy) keeps the build incremental: unchanged
-    files keep their embeddings and are skipped. Any leftover scratch from a
+    live index (a copy-on-write clone where the filesystem supports it, else a
+    full copy) keeps the build incremental: unchanged files keep their
+    embeddings and are skipped. Any leftover scratch from a
     killed prior build is discarded here and rebuilt from the live index, so a
     crash costs only the interrupted run's work, never the published index."""
     live = _db_path(wg)
@@ -87,7 +144,7 @@ def seed_build_db(wg: str) -> str:
     _remove_db_files(building)
     if os.path.exists(live):
         os.makedirs(os.path.dirname(building), exist_ok=True)
-        shutil.copy2(live, building)
+        _clone_or_copy(live, building)
     return building
 
 
