@@ -7,7 +7,11 @@ back into the caller's `progress`/`note` callbacks, so a CPU-heavy stage — the
 embedding-index build — can never hold the GIL and stall the server's event
 loop (a read that stalled during that stage used to be indistinguishable from a
 dead server). The worker thread blocks on the child's pipe, which releases the
-GIL, so the server stays responsive throughout.
+GIL, so the server stays responsive throughout. A subprocess stops the child
+holding the GIL but not competing for CPU, so the child is also niced
+(`gather_child._renice`) and its math-library thread pools capped
+(`_limit_child_cpu`) — a local embedding build can't peg every core and starve
+the server.
 
 Under `IETF_LLM_GATHER_INPROCESS` (the test suite, which stubs `run_gather` by
 monkeypatch — invisible across a process boundary) it calls `run_gather`
@@ -115,6 +119,28 @@ def _child_command(spec: "GatherSpec") -> List[str]:
     return [sys.executable, "-m", "ietf_llm.gather_child", *spec.to_argv()]
 
 
+def _limit_child_cpu(env: Dict[str, str]) -> None:
+    """Cap the gather child's math-library thread pools so a *local* embedding
+    build can't peg every core and starve the parent server (the child running
+    off-GIL stops it blocking the event loop, but not competing for CPU). Reserve
+    one core for the server; only fill vars the operator hasn't already set.
+
+    Set in the child's *environment* (read at numpy/torch import), not at child
+    runtime — too late by then. Harmless for a remote embedding backend, where
+    the child is network-bound rather than CPU-bound. Pairs with the child's
+    self-renice (`gather_child._renice`)."""
+    cap = str(max(1, (os.cpu_count() or 2) - 1))
+    for var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        env.setdefault(var, cap)
+    env.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
 def _run_pipeline_child(
     spec: "GatherSpec",
     progress: ProgressCallback,
@@ -128,6 +154,7 @@ def _run_pipeline_child(
     read_fd, write_fd = os.pipe()
     env = dict(os.environ)
     env["IETF_LLM_PROGRESS_FD"] = str(write_fd)
+    _limit_child_cpu(env)
     try:
         proc = subprocess.Popen(  # pylint: disable=consider-using-with
             _child_command(spec),

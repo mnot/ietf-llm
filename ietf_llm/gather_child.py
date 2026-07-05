@@ -30,7 +30,30 @@ from .gather_pipeline import CHILD_EXIT_UNUSABLE
 from .utils import Verbosity
 
 
+def _renice() -> None:
+    """Drop this child's scheduling priority so a CPU-heavy stage (the embedding
+    build) yields to the parent MCP server and keeps it responsive — a
+    subprocess stops the child holding the GIL, but not competing for CPU.
+
+    Best-effort and POSIX-only: unprivileged `os.nice` can only *lower* priority,
+    which is exactly what we want. `IETF_LLM_GATHER_NICE` tunes the increment
+    (default 10); 0 or negative disables it."""
+    if not hasattr(os, "nice"):
+        return
+    try:
+        increment = int(os.environ.get("IETF_LLM_GATHER_NICE", "10"))
+    except ValueError:
+        increment = 10
+    if increment <= 0:
+        return
+    try:
+        os.nice(increment)
+    except OSError:
+        pass
+
+
 def main() -> None:
+    _renice()
     fd_env = os.environ.get("IETF_LLM_PROGRESS_FD")
     sink = os.fdopen(int(fd_env), "w", encoding="utf-8") if fd_env else None
 

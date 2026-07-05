@@ -23,6 +23,45 @@ from ietf_llm import gather_child, gather_pipeline, gather_runner
 from ietf_llm.gather_runner import GatherSpec
 
 
+# --- CPU-contention hardening: nice + thread caps --------------------------
+
+
+def test_limit_child_cpu_reserves_a_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gather_pipeline.os, "cpu_count", lambda: 8)
+    env: dict = {}
+    gather_pipeline._limit_child_cpu(env)
+    # One core left for the server; the math libraries are capped to the rest.
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        assert env[var] == "7"
+    assert env["TOKENIZERS_PARALLELISM"] == "false"
+
+
+def test_limit_child_cpu_respects_operator_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gather_pipeline.os, "cpu_count", lambda: 8)
+    env = {"OMP_NUM_THREADS": "2"}  # operator pinned it
+    gather_pipeline._limit_child_cpu(env)
+    assert env["OMP_NUM_THREADS"] == "2"  # not overridden
+    assert env["MKL_NUM_THREADS"] == "7"  # the unset ones still filled
+
+
+def test_child_renices_by_default_and_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list = []
+    monkeypatch.setattr(gather_child.os, "nice", calls.append)
+    # Default: renice by +10 so the child yields CPU to the server.
+    monkeypatch.delenv("IETF_LLM_GATHER_NICE", raising=False)
+    gather_child._renice()
+    assert calls == [10]
+    # 0 disables it.
+    calls.clear()
+    monkeypatch.setenv("IETF_LLM_GATHER_NICE", "0")
+    gather_child._renice()
+    assert calls == []
+
+
 # --- the child side: emit protocol + exit codes ----------------------------
 
 
