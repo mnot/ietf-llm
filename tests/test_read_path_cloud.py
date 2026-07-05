@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ietf_llm import mcp_server
+from ietf_llm.mcp import common
 from ietf_llm.corpus_blobs import FileBlobStore
 from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.kv_control import KvControlPlane
@@ -36,7 +37,7 @@ def test_read_tools_serve_cloud_backend(
     root = isolated_home / "cloud"
     store = _cloud_store(root)
     _publish_tls(store, root)
-    monkeypatch.setattr(mcp_server, "get_corpus_store", lambda: store)
+    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
 
     # Existence + enumeration resolve through the cloud control plane...
     assert mcp_server._corpus_exists("tls") is True
@@ -76,7 +77,7 @@ def test_tool_call_retries_when_pinned_version_is_reaped(
     )
     _publish_version(reader, root, "v1", "from v1")
     _publish_version(writer, root, "v2", "from v2")
-    monkeypatch.setattr(mcp_server, "get_corpus_store", lambda: reader)
+    monkeypatch.setattr(common, "get_corpus_store", lambda: reader)
 
     out = mcp_server.tool_list_files("tls")
     # The retry served v2: its thread file is listed, v1's is gone.
@@ -91,7 +92,7 @@ def test_files_dir_raises_without_current_version(
     # surfaces the error rather than fabricating a path (the _requires_corpus
     # guard normally prevents a tool from ever reaching it for an absent corpus).
     store = _cloud_store(isolated_home / "empty")
-    monkeypatch.setattr(mcp_server, "get_corpus_store", lambda: store)
+    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
     assert mcp_server._corpus_exists("ghost") is False
     with pytest.raises(FileNotFoundError):
         mcp_server._files_dir("ghost")

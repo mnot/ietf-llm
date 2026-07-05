@@ -13,6 +13,7 @@ import os
 import pytest
 
 from ietf_llm import mcp_server
+from ietf_llm.mcp import drafts
 
 _DRAFT = """\
 Internet-Draft                                              Example Draft
@@ -38,8 +39,8 @@ def _seeded(tmp_path, monkeypatch):
     ddir.mkdir(parents=True)
     (ddir / "draft-ietf-xtest-foo-01.txt").write_text("old rev\n", encoding="utf-8")
     (ddir / "draft-ietf-xtest-foo-02.txt").write_text(_DRAFT, encoding="utf-8")
-    monkeypatch.setattr(mcp_server, "_list_wgs", lambda: ["xtest"])
-    monkeypatch.setattr(mcp_server, "_files_dir", lambda wg: str(tmp_path / "files"))
+    monkeypatch.setattr(drafts, "_list_wgs", lambda: ["xtest"])
+    monkeypatch.setattr(drafts, "_files_dir", lambda wg: str(tmp_path / "files"))
     return tmp_path
 
 
@@ -57,7 +58,7 @@ def test_draft_authors_accepts_versioned_name(_seeded):
 
 
 def test_draft_authors_unknown_draft(monkeypatch):
-    monkeypatch.setattr(mcp_server, "_list_wgs", lambda: [])
+    monkeypatch.setattr(drafts, "_list_wgs", lambda: [])
     out = mcp_server.tool_draft_authors("draft-ietf-xtest-missing")
     assert "No cached copy" in out
 
@@ -68,7 +69,7 @@ def test_draft_authors_empty_name():
 
 def test_find_latest_draft_file_none_when_absent(tmp_path, monkeypatch):
     (tmp_path / "files" / "drafts").mkdir(parents=True)
-    monkeypatch.setattr(mcp_server, "_list_wgs", lambda: ["xtest"])
-    monkeypatch.setattr(mcp_server, "_files_dir", lambda wg: str(tmp_path / "files"))
+    monkeypatch.setattr(drafts, "_list_wgs", lambda: ["xtest"])
+    monkeypatch.setattr(drafts, "_files_dir", lambda wg: str(tmp_path / "files"))
     assert mcp_server._find_latest_draft_file("draft-ietf-xtest-foo") is None
     assert os.path.isdir(tmp_path / "files" / "drafts")

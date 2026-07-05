@@ -12,6 +12,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from ietf_llm import __version__, mcp_server, serve_metrics
+from ietf_llm.mcp import serve
 from ietf_llm.utils import get_cache_dir
 
 
@@ -41,7 +42,7 @@ def test_readiness_ready(isolated_home):
 
 
 def test_readiness_not_ready_when_index_dir_missing(monkeypatch):
-    monkeypatch.setattr(mcp_server, "get_index_dir", lambda: "/no/such/dir/xyzzy")
+    monkeypatch.setattr(serve, "get_index_dir", lambda: "/no/such/dir/xyzzy")
     ready, detail = mcp_server._readiness()
     assert ready is False
     assert detail["index_dir_usable"] is False
@@ -61,7 +62,7 @@ def test_health_route_ok(isolated_home):
 
 
 def test_health_route_unavailable(monkeypatch):
-    monkeypatch.setattr(mcp_server, "get_index_dir", lambda: "/no/such/dir/xyzzy")
+    monkeypatch.setattr(serve, "get_index_dir", lambda: "/no/such/dir/xyzzy")
     client = TestClient(mcp_server._http_app(_FakeServer()))
     resp = client.get("/health")
     assert resp.status_code == 503

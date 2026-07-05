@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from ietf_llm import mcp_server
+from ietf_llm.mcp import serve
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +59,7 @@ def test_gather_plus_immutable_refuses(isolated_home, monkeypatch):
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
     monkeypatch.setenv("IETF_LLM_INDEX_IMMUTABLE", "1")
     # Stub torch present so only the 1a contradiction is in play here.
-    monkeypatch.setattr(mcp_server, "_torch_importable", lambda: True)
+    monkeypatch.setattr(serve, "_torch_importable", lambda: True)
     errs = _errors()
     assert len(errs) == 1
     assert "ENABLE_GATHER" in errs[0] and "INDEX_IMMUTABLE" in errs[0]
@@ -77,14 +78,14 @@ def test_immutable_alone_is_fine(isolated_home, monkeypatch):
 
 def test_gather_local_model_without_torch_refuses(isolated_home, monkeypatch):
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
-    monkeypatch.setattr(mcp_server, "_torch_importable", lambda: False)
+    monkeypatch.setattr(serve, "_torch_importable", lambda: False)
     errs = _errors()
     assert any("torch is not importable" in e for e in errs)
 
 
 def test_gather_local_model_with_torch_ok(isolated_home, monkeypatch):
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
-    monkeypatch.setattr(mcp_server, "_torch_importable", lambda: True)
+    monkeypatch.setattr(serve, "_torch_importable", lambda: True)
     assert _errors() == []
 
 
@@ -92,7 +93,7 @@ def test_gather_no_embed_skips_torch_check(isolated_home, monkeypatch):
     # --no-embed gather never reaches the embed step, so torch is moot.
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
     monkeypatch.setenv("IETF_LLM_NO_EMBED", "1")
-    monkeypatch.setattr(mcp_server, "_torch_importable", lambda: False)
+    monkeypatch.setattr(serve, "_torch_importable", lambda: False)
     assert _errors() == []
 
 
@@ -101,7 +102,7 @@ def test_gather_remote_model_skips_torch_check(isolated_home, monkeypatch):
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
     monkeypatch.setenv("IETF_LLM_EMBED_MODEL", "openai-embed/bge")
     monkeypatch.setenv("IETF_LLM_EMBED_BASE_URL", "https://host/v1")
-    monkeypatch.setattr(mcp_server, "_torch_importable", lambda: False)
+    monkeypatch.setattr(serve, "_torch_importable", lambda: False)
     assert _errors() == []
 
 
@@ -140,7 +141,7 @@ def test_nonloopback_warns_but_does_not_block(isolated_home):
 
 def test_nonloopback_warning_mentions_gather_egress(isolated_home, monkeypatch):
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
-    monkeypatch.setattr(mcp_server, "_torch_importable", lambda: True)
+    monkeypatch.setattr(serve, "_torch_importable", lambda: True)
     warnings = _warnings("0.0.0.0")
     assert any("egress" in w for w in warnings)
 

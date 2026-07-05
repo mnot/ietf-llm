@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from ietf_llm import mcp_server
+from ietf_llm.mcp import common, server
 
 from conftest import write_cache_file
 
@@ -577,11 +578,11 @@ def test_index_rebuilding_note(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda wg: {"corpus": wg, "state": "running", "stage_index": 18,
                     "stage_total": 19, "stage": "embedding index"},
     )
-    monkeypatch.setattr(srv, "probe_index", lambda wg: False)
+    monkeypatch.setattr(common, "probe_index", lambda wg: False)
     note = srv._index_rebuilding_note("wg")
     assert note is not None and "being rebuilt" in note and "18/19" in note
     # A servable index -> the empty result is real, no "not ready" caveat.
-    monkeypatch.setattr(srv, "probe_index", lambda wg: True)
+    monkeypatch.setattr(common, "probe_index", lambda wg: True)
     assert srv._index_rebuilding_note("wg") is None
     # No gather live -> no note.
     monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
@@ -1251,7 +1252,7 @@ def test_load_server_instructions_prepends_session_when_marker_missing(
     # the mode-specific block must still appear (prepended), not silently vanish.
     # Drive it by stubbing the markdown to marker-less text.
     monkeypatch.setattr(
-        mcp_server, "_strip_frontmatter", lambda _t: "# Routing\n\nbody, no marker"
+        server, "_strip_frontmatter", lambda _t: "# Routing\n\nbody, no marker"
     )
     out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
     assert "{{SESSION}}" not in out

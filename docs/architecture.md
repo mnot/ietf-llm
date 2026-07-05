@@ -327,7 +327,15 @@ ietf_llm/
 │                           # embed); also --list / --completion / --install-skills
 ├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
 ├── search_cli.py           # `ietf-llm-search` entry point
-├── mcp_server.py           # `ietf-llm-mcp` (FastMCP stdio server + tools)
+├── mcp/                    # `ietf-llm-mcp` server, split one module per tool domain
+│   ├── server.py               # FastMCP construction + main() + tool registration
+│   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
+│   │                           # freshness/grounding/nudge helpers)
+│   ├── serve.py                # HTTP transport, /health, /metrics, serve-config validation
+│   ├── corpus.py / search.py / digest.py / topic.py / chunks.py  # tool_* impls +
+│   ├── citations.py / drafts.py / meetings.py / gather.py / norms.py / rfcs.py
+│   │                           #   their `@server.tool()` wrappers, via `register()`
+├── mcp_server.py           # back-compat facade re-exporting `ietf_llm.mcp` (entry point)
 ├── skill_install.py        # --install-skills (multi-harness) + pristine-only auto-update on CLI gathers
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
@@ -431,8 +439,12 @@ ietf_llm/
 
 ## MCP tool surface
 
-`mcp_server.py` registers each tool as a thin wrapper over a pure
-`tool_*` function (so the logic is testable without MCP). The routing —
+The `ietf_llm.mcp` package registers each tool as a thin wrapper over a pure
+`tool_*` function (so the logic is testable without MCP), with one module per
+tool domain (`corpus`, `search`, `digest`, `topic`, …) plus `common` for the
+shared scaffolding, `serve` for the HTTP/transport surface, and `server` for
+construction + `main()`. `mcp_server.py` remains a back-compat facade that
+re-exports the package. The routing —
 which tool for which question, with worked examples — lives in
 `data/mcp-instructions.md` (below); this is just the map. Grouped by job:
 
@@ -944,12 +956,15 @@ on every push/PR across Python 3.10–3.14.
   synthetic (`x-`) WGs if it's Datatracker-backed.
 - **New digest** → add a builder under `digest/`, call it from
   `generate_digests()`, export from `__init__`.
-- **New MCP tool** → add a pure `tool_*` function in `mcp_server.py`,
-  then a thin `@server.tool()` wrapper in `main()`. Document the
-  routing in `data/mcp-instructions.md` (served as the `instructions` field).
+- **New MCP tool** → add a pure `tool_*` function and its thin
+  `@server.tool()` wrapper to the matching `ietf_llm/mcp/<domain>.py` (put
+  new-domain shared helpers in `mcp/common.py`), registering the wrapper in
+  that module's `register()`. Document the routing in
+  `data/mcp-instructions.md` (served as the `instructions` field).
   A tool that writes or reaches the
   network (like `start_gather`) must be registered behind the gather gate
-  (`_gather_enabled`, off for the shared HTTP replica), run its work
+  (`_gather_enabled`, off for the shared HTTP replica) — via a `register_live()`
+  hook that `main()` only calls when the gate is open — run its work
   off-thread, and be imported lazily so the read-only serve path stays clean.
 - **New chunker** → add to `embeddings/chunking.py`, dispatch in
   `_chunk_file()`.

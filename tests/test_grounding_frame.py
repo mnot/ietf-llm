@@ -17,6 +17,7 @@ from typing import Iterable, List
 import pytest
 
 from ietf_llm import embeddings, mcp_server
+from ietf_llm.mcp import common
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -31,7 +32,7 @@ _MARKER = "Before characterising any decision"
 
 def test_frame_fires_over_msg_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        mcp_server, "_thread_sizes", lambda wg: {"threads/big.md": ("325", "62")}
+        common, "_thread_sizes", lambda wg: {"threads/big.md": ("325", "62")}
     )
     out = mcp_server._grounding_frame("wg", ["threads/big.md"])
     assert _MARKER in out
@@ -43,14 +44,14 @@ def test_frame_fires_over_msg_threshold(monkeypatch: pytest.MonkeyPatch) -> None
 def test_frame_fires_on_participants_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     # Few messages but many distinct participants is still a real debate.
     monkeypatch.setattr(
-        mcp_server, "_thread_sizes", lambda wg: {"threads/wide.md": ("12", "9")}
+        common, "_thread_sizes", lambda wg: {"threads/wide.md": ("12", "9")}
     )
     assert "threads/wide.md" in mcp_server._grounding_frame("wg", ["threads/wide.md"])
 
 
 def test_frame_quiet_under_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        mcp_server, "_thread_sizes", lambda wg: {"threads/small.md": ("6", "3")}
+        common, "_thread_sizes", lambda wg: {"threads/small.md": ("6", "3")}
     )
     assert mcp_server._grounding_frame("wg", ["threads/small.md"]) == ""
 
@@ -58,14 +59,14 @@ def test_frame_quiet_under_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_frame_ignores_non_thread_files(monkeypatch: pytest.MonkeyPatch) -> None:
     # A draft file never triggers the frame even if (somehow) sized.
     monkeypatch.setattr(
-        mcp_server, "_thread_sizes", lambda wg: {"drafts/draft-x-00.txt": ("99", "99")}
+        common, "_thread_sizes", lambda wg: {"drafts/draft-x-00.txt": ("99", "99")}
     )
     assert mcp_server._grounding_frame("wg", ["drafts/draft-x-00.txt"]) == ""
 
 
 def test_frame_picks_largest_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        mcp_server,
+        common,
         "_thread_sizes",
         lambda wg: {"threads/a.md": ("25", "8"), "threads/b.md": ("400", "70")},
     )
@@ -77,7 +78,7 @@ def test_frame_tolerates_unparseable_size_cells(monkeypatch: pytest.MonkeyPatch)
     # A malformed digest row (non-numeric Msgs/Participants) parses to 0 via
     # _first_int and falls below threshold rather than crashing.
     monkeypatch.setattr(
-        mcp_server,
+        common,
         "_thread_sizes",
         lambda wg: {"threads/junk.md": ("(no subject)", "Selection, Config...")},
     )

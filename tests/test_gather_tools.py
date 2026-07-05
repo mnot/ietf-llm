@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 import pytest
 
 from ietf_llm import freshness, gather_runner, mcp_server
+from ietf_llm.mcp import gather
 
 
 # --- _gather_enabled ------------------------------------------------------
@@ -127,7 +128,7 @@ def test_start_gather_still_running_names_stage(
         lambda spec: {"started": True, "corpus": spec.corpus},
     )
     monkeypatch.setattr(
-        mcp_server, "_await_gather",
+        gather, "_await_gather",
         lambda corpus, budget: {"corpus": corpus, "state": "running",
                                 "stage_index": 18, "stage_total": 19,
                                 "stage": "embedding index"},
