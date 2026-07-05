@@ -15,7 +15,7 @@ route the HTTP serve path exposes (R8). It records, for the running server:
 
 Index-freshness gauges are NOT held here: they are derived at scrape time
 from the per-corpus `last-gathered` sentinels and passed into `render()`
-by the endpoint, so this module stays free of any `mcp_server` import
+by the endpoint, so this module stays free of any `ietf_llm.mcp` import
 (no cycle) and holds no state that can go stale between scrapes.
 
 Zero new dependencies: the Prometheus text exposition format (v0.0.4) is
@@ -127,7 +127,7 @@ _tools: Dict[str, _Histogram] = {}
 _store: Dict[str, _Histogram] = {}
 #: the remote /embeddings backend (a single unlabelled series)
 _embed = _Histogram()
-#: in-session gather lifecycle (see `mcp_server._gather_enabled`). The gather
+#: in-session gather lifecycle (see `mcp.common._gather_enabled`). The gather
 #: is the server's one write+network path and runs for minutes in the
 #: background, so its liveness is invisible to the per-tool RED above. We track
 #: how many run concurrently, how many have started, the terminal outcomes by
@@ -150,7 +150,7 @@ def record_tool(
 ) -> None:
     """Record one MCP tool invocation: its latency and whether it errored.
 
-    Called from `_offload` in `mcp_server.py` for every tool, on the way
+    Called from `_offload` in `mcp/common.py` for every tool, on the way
     out (the `finally`), so a timeout or exception is still counted. A
     deadline hit passes `timeout=True` (and `error=True`): it lands in
     both the errors total and the separate timeouts total."""
@@ -286,7 +286,7 @@ def render(
     `corpus_ages` is `(corpus, age_seconds)` pairs the endpoint derives
     from the `last-gathered` sentinels at scrape time (only tracked
     corpora; untracked ones are omitted). Passed in rather than computed
-    here so this module needs nothing from `mcp_server` / `freshness`.
+    here so this module needs nothing from `ietf_llm.mcp` / `freshness`.
     `version` is the package version for the `build_info` series, passed in
     for the same reason (the endpoint already holds `__version__`).
 

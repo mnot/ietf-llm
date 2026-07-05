@@ -5,7 +5,7 @@ ISO 8601 UTC timestamp:
 
   - `last-gathered` — the most recent successful gather. Written by
     `__main__._gather_one`; read by `export_cli` (stale-cache warning) and
-    `mcp_server` (one-line freshness note on top-level tool responses).
+    `ietf_llm.mcp` (one-line freshness note on top-level tool responses).
   - `last-accessed` — the most recent read-path use of the corpus. Written
     (coarsely) by `access.note_access` off the MCP read chokepoint; read by
     the `--all --used-within` refresh filter so a cron re-gathers only
@@ -120,10 +120,10 @@ def gather_enabled() -> bool:
     (stdio on, http off) via `set_gather_default`, and which every other
     context leaves at the conservative off.
 
-    Lives here, not only in `mcp_server`, so any module that emits a
+    Lives here, not only in `ietf_llm.mcp`, so any module that emits a
     "go gather this" hint can name the gather path the caller actually has:
     an MCP client can call `start_gather` but cannot run a shell command, so
-    pointing it at `ietf-llm` is a dead end. `mcp_server._gather_enabled`
+    pointing it at `ietf-llm` is a dead end. `mcp.common._gather_enabled`
     delegates here to keep one source of truth.
     """
     override = _gather_env_override()

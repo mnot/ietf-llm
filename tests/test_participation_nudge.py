@@ -10,11 +10,12 @@ get_chunk) emits a single nudge, not one per chunk.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 from typing import Iterable, List
 
-from ietf_llm import embeddings, mcp_server
+from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -28,10 +29,10 @@ _MARKER = "About to draft a contribution"
 
 
 def test_nudge_fires_for_thread_and_issue_files() -> None:
-    assert _MARKER in mcp_server._participation_nudge("threads/2026-04-09-x.md")
-    assert _MARKER in mcp_server._participation_nudge("issues/org-repo/12.md")
+    assert _MARKER in mcp.common._participation_nudge("threads/2026-04-09-x.md")
+    assert _MARKER in mcp.common._participation_nudge("issues/org-repo/12.md")
     # Case-insensitive on the prefix.
-    assert _MARKER in mcp_server._participation_nudge("Threads/2026-04-09-x.md")
+    assert _MARKER in mcp.common._participation_nudge("Threads/2026-04-09-x.md")
 
 
 def test_nudge_silent_for_non_quotable_files() -> None:
@@ -41,21 +42,21 @@ def test_nudge_silent_for_non_quotable_files() -> None:
         "digests/threads.md",
         "minutes/2026-03.md",
     ):
-        assert mcp_server._participation_nudge(path) == ""
+        assert mcp.common._participation_nudge(path) == ""
 
 
 def test_nudge_accepts_a_list_and_fires_if_any_qualifies() -> None:
-    assert _MARKER in mcp_server._participation_nudge(
+    assert _MARKER in mcp.common._participation_nudge(
         ["drafts/draft-foo-00.txt", "threads/2026-04-09-x.md"]
     )
-    assert mcp_server._participation_nudge(["drafts/a.txt", "rfc/b.txt"]) == ""
-    assert mcp_server._participation_nudge([]) == ""
+    assert mcp.common._participation_nudge(["drafts/a.txt", "rfc/b.txt"]) == ""
+    assert mcp.common._participation_nudge([]) == ""
 
 
 def test_nudge_points_at_participation_norms_only() -> None:
     # It is the WRITE-side gate: it must name the participation norms and must
     # not masquerade as the read-side interpretation gate.
-    out = mcp_server._participation_nudge("threads/2026-04-09-x.md")
+    out = mcp.common._participation_nudge("threads/2026-04-09-x.md")
     assert "read_ietf_participation_norms" in out
     assert "read_ietf_interpretation_norms" not in out
 
@@ -65,7 +66,7 @@ def test_nudge_points_at_participation_norms_only() -> None:
 
 def test_append_nudge_adds_footer_when_it_fires() -> None:
     body = "some message body"
-    out = mcp_server._append_participation_nudge("threads/2026-04-09-x.md", body)
+    out = mcp.common._append_participation_nudge("threads/2026-04-09-x.md", body)
     assert out.startswith(body)
     assert _MARKER in out
     # Footer, i.e. after the body.
@@ -74,13 +75,13 @@ def test_append_nudge_adds_footer_when_it_fires() -> None:
 
 def test_append_nudge_noop_for_non_quotable_file() -> None:
     body = "draft text"
-    assert mcp_server._append_participation_nudge("drafts/d-00.txt", body) == body
+    assert mcp.common._append_participation_nudge("drafts/d-00.txt", body) == body
 
 
 def test_append_nudge_enabled_false_suppresses() -> None:
     body = "body"
     assert (
-        mcp_server._append_participation_nudge(
+        mcp.common._append_participation_nudge(
             "threads/2026-04-09-x.md", body, enabled=False
         )
         == body
@@ -120,7 +121,7 @@ def _seed_thread(home: Path) -> None:
 def test_read_topic_appends_nudge_after_messages(isolated_home: Path) -> None:
     _seed_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=10)
     assert _MARKER in out
     # It is a footer — after the last rendered message header.
     assert out.rindex(_MARKER) > out.rindex("## [")
@@ -129,7 +130,7 @@ def test_read_topic_appends_nudge_after_messages(isolated_home: Path) -> None:
 def test_get_chunk_appends_nudge_for_thread_chunk(isolated_home: Path) -> None:
     _seed_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_get_chunk("wg", "threads/2026-04-10-mlkem.md", 1)
+    out = mcp.chunks.tool_get_chunk("wg", "threads/2026-04-10-mlkem.md", 1)
     assert _MARKER in out
 
 
@@ -138,7 +139,7 @@ def test_get_chunk_silent_for_draft_chunk(isolated_home: Path) -> None:
         isolated_home, "wg", "drafts/draft-foo-00.txt", "MLKEM draft text. " * 20
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_get_chunk("wg", "drafts/draft-foo-00.txt", 0)
+    out = mcp.chunks.tool_get_chunk("wg", "drafts/draft-foo-00.txt", 0)
     assert _MARKER not in out
 
 
@@ -147,7 +148,7 @@ def test_get_chunks_batch_emits_single_nudge(isolated_home: Path) -> None:
     # for the whole batch, not once per chunk.
     _seed_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_get_chunks_batch(
+    out = mcp.chunks.tool_get_chunks_batch(
         "wg",
         [
             {"file": "threads/2026-04-10-mlkem.md", "chunk_idx": 1},

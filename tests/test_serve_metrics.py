@@ -9,6 +9,7 @@ last-gathered sentinels.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 import asyncio
 import os
@@ -18,7 +19,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from ietf_llm import mcp_server, oai_compat, serve_metrics
+from ietf_llm import oai_compat, serve_metrics
 from ietf_llm.embeddings.models import _OpenAICompatEmbeddingModel
 from ietf_llm.utils import get_cache_dir
 
@@ -185,8 +186,8 @@ def test_timed_store_records_success_and_error():
 def test_serve_boundary_records_store_op(isolated_home):
     # Going through the serve read boundary records the store op it invoked.
     _seed_corpus("tls", "2025-01-01T00:00:00Z")
-    assert "tls" in mcp_server._list_wgs()
-    assert mcp_server._corpus_exists("tls")
+    assert "tls" in mcp.common._list_wgs()
+    assert mcp.common._corpus_exists("tls")
     body = serve_metrics.render()
     assert _metric_value(
         body, 'ietf_llm_store_requests_total{op="list_corpora"}'
@@ -256,7 +257,7 @@ def test_offload_records_tool_metric():
     def my_tool() -> str:
         return "ok"
 
-    result = asyncio.run(mcp_server._offload(my_tool))
+    result = asyncio.run(mcp.common._offload(my_tool))
     assert result == "ok"
     body = serve_metrics.render()
     assert _metric_value(
@@ -272,7 +273,7 @@ def test_offload_records_error_on_raise():
         raise ValueError("nope")
 
     with pytest.raises(ValueError):
-        asyncio.run(mcp_server._offload(boom))
+        asyncio.run(mcp.common._offload(boom))
     body = serve_metrics.render()
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="boom"}') == 1
 
@@ -286,7 +287,7 @@ def test_offload_records_timeout_as_timeout_and_error(monkeypatch):
         _time.sleep(0.5)
         return "too late"
 
-    result = asyncio.run(mcp_server._offload(slow))
+    result = asyncio.run(mcp.common._offload(slow))
     assert "timed out" in result.lower()
     body = serve_metrics.render()
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="slow"}') == 1
@@ -298,7 +299,7 @@ def test_offload_exception_is_error_but_not_timeout():
         raise ValueError("nope")
 
     with pytest.raises(ValueError):
-        asyncio.run(mcp_server._offload(boom))
+        asyncio.run(mcp.common._offload(boom))
     body = serve_metrics.render()
     assert _metric_value(body, 'ietf_llm_tool_errors_total{tool="boom"}') == 1
     assert _metric_value(body, 'ietf_llm_tool_timeouts_total{tool="boom"}') == 0
@@ -338,7 +339,7 @@ def test_embed_batch_records_error(monkeypatch):
 
 
 def test_metrics_route_content_type_and_families(isolated_home):
-    client = TestClient(mcp_server._http_app(_FakeServer()))
+    client = TestClient(mcp.serve._http_app(_FakeServer()))
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "text/plain" in resp.headers["content-type"]
@@ -353,7 +354,7 @@ def test_metrics_route_content_type_and_families(isolated_home):
 def test_metrics_route_freshness_gauge(isolated_home):
     _seed_corpus("tls", "2025-01-01T00:00:00Z")
     _seed_corpus("quic", None)  # counts as a corpus but no sentinel
-    client = TestClient(mcp_server._http_app(_FakeServer()))
+    client = TestClient(mcp.serve._http_app(_FakeServer()))
     body = client.get("/metrics").text
     assert (
         'ietf_llm_corpus_last_gathered_age_seconds{corpus="tls"}' in body

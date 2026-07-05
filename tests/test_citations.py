@@ -7,10 +7,10 @@ and renders the result as `digests/citations.md`. The
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm import mcp_server
 from ietf_llm.gather.citations import (
     citation_counts,
     normalize_draft_name,
@@ -174,7 +174,7 @@ def test_write_citations_digest_removes_stale_on_empty(
     # Re-gather with nothing cited (narrower window / quotes only).
     assert write_citations_digest(cache, {}, verbose=Verbosity.QUIET) is None
     assert not Path(path).exists()
-    out = mcp_server.tool_find_citations("wg", "draft-ietf-foo-bar")
+    out = mcp.citations.tool_find_citations("wg", "draft-ietf-foo-bar")
     assert "No citations digest" in out
 
 
@@ -187,7 +187,7 @@ def test_find_citations_returns_citing_files(isolated_home: Path) -> None:
     cache = get_wg_file_cache_dir("wg")
     citations = scan_citations(cache, verbose=Verbosity.QUIET)
     write_citations_digest(cache, citations, verbose=Verbosity.QUIET)
-    out = mcp_server.tool_find_citations("wg", "draft-ietf-foo-bar")
+    out = mcp.citations.tool_find_citations("wg", "draft-ietf-foo-bar")
     assert "threads/a.md" in out
     assert "threads/b.md" in out
 
@@ -199,7 +199,7 @@ def test_find_citations_tolerates_versioned_input(isolated_home: Path) -> None:
     write_citations_digest(cache, citations, verbose=Verbosity.QUIET)
     # Caller passes the versioned form — the tool normalises and
     # finds the same entry.
-    out = mcp_server.tool_find_citations("wg", "draft-ietf-foo-bar-07.txt")
+    out = mcp.citations.tool_find_citations("wg", "draft-ietf-foo-bar-07.txt")
     assert "threads/a.md" in out
 
 
@@ -208,7 +208,7 @@ def test_find_citations_friendly_when_unknown(isolated_home: Path) -> None:
     cache = get_wg_file_cache_dir("wg")
     citations = scan_citations(cache, verbose=Verbosity.QUIET)
     write_citations_digest(cache, citations, verbose=Verbosity.QUIET)
-    out = mcp_server.tool_find_citations("wg", "draft-nobody-knows")
+    out = mcp.citations.tool_find_citations("wg", "draft-nobody-knows")
     assert "No citations" in out
 
 
@@ -216,5 +216,5 @@ def test_find_citations_no_digest_yet(isolated_home: Path) -> None:
     # WG cache exists but no citations.md (gather pre-citations or
     # nothing was cited). Friendly error pointing at re-gather.
     write_cache_file(isolated_home, "wg", "digests/index.md", "# x\n")
-    out = mcp_server.tool_find_citations("wg", "draft-foo")
+    out = mcp.citations.tool_find_citations("wg", "draft-foo")
     assert "No citations digest" in out

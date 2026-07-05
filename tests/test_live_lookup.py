@@ -11,13 +11,15 @@ a slug.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from typing import Any, Dict, Optional
 
 import pytest
 
 from ietf_llm import live_lookup
-from ietf_llm.mcp_server import tool_draft_status, tool_meeting_schedule
+from ietf_llm.mcp.drafts import tool_draft_status
+from ietf_llm.mcp.meetings import tool_meeting_schedule
 
 # --- Canned Datatracker responses -----------------------------------------
 

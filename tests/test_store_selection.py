@@ -1,12 +1,12 @@
 """Backend selection, cloud-store construction, and serve-config validation."""
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 
 import pytest
 
-from ietf_llm import mcp_server
 from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
 from ietf_llm.corpus_store_cloud import CloudCorpusStore, build_cloud_store
 
@@ -56,7 +56,7 @@ def test_boot_validation_flags_cloud_misconfig(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
-    errors, _warnings = mcp_server._serve_config_problems("127.0.0.1")
+    errors, _warnings = mcp.serve._serve_config_problems("127.0.0.1")
     assert any("under-configured" in e for e in errors)
 
 
@@ -64,5 +64,5 @@ def test_boot_validation_unknown_backend(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "bogus")
-    errors, _warnings = mcp_server._serve_config_problems("127.0.0.1")
+    errors, _warnings = mcp.serve._serve_config_problems("127.0.0.1")
     assert any("not recognised" in e for e in errors)

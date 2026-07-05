@@ -10,6 +10,7 @@ Uses a stub embedding model (constant vector) so it's fast and offline.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 import os
 from contextlib import contextmanager
@@ -22,7 +23,7 @@ from ietf_llm import embeddings
 from ietf_llm.embeddings import storage
 from ietf_llm.embeddings.search import build_index, search
 from ietf_llm.embeddings.storage import _clone_or_copy, _db_building_path, _db_path
-from ietf_llm.mcp_server import _readiness
+from ietf_llm.mcp.serve import _readiness
 from ietf_llm.utils import Verbosity, get_index_dir, get_wg_file_cache_dir
 
 from conftest import write_cache_file

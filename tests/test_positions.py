@@ -9,10 +9,10 @@ see how much the heuristic missed.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm import mcp_server
 from ietf_llm.positions import (
     _SENDER_ROLE_SUFFIX,
     _THREAD_MSG_RE,
@@ -583,7 +583,7 @@ def test_tool_tally_positions_renders_summary(isolated_home: Path) -> None:
     write_cache_file(
         isolated_home, "wg", "threads/2026-04-10-wglc.md", _wglc_thread(),
     )
-    out = mcp_server.tool_tally_positions(
+    out = mcp.topic.tool_tally_positions(
         "wg", "threads/2026-04-10-wglc.md",
     )
     # Summary section names every bucket.
@@ -602,7 +602,7 @@ def test_tool_tally_positions_refuses_drafts(isolated_home: Path) -> None:
     write_cache_file(
         isolated_home, "wg", "drafts/draft-foo-00.txt", "Some draft body.",
     )
-    out = mcp_server.tool_tally_positions("wg", "drafts/draft-foo-00.txt")
+    out = mcp.topic.tool_tally_positions("wg", "drafts/draft-foo-00.txt")
     # Helpful error pointing at the right file types.
     assert "threads/" in out and "issues/" in out
 
@@ -610,7 +610,7 @@ def test_tool_tally_positions_refuses_drafts(isolated_home: Path) -> None:
 def test_tool_tally_positions_missing_file(isolated_home: Path) -> None:
     # Build a cache so the WG exists, then ask for a file that isn't there.
     get_wg_file_cache_dir("wg")
-    out = mcp_server.tool_tally_positions(
+    out = mcp.topic.tool_tally_positions(
         "wg", "threads/nonexistent.md",
     )
     assert "not found" in out.lower()
