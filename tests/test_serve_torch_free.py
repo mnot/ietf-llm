@@ -17,7 +17,7 @@ import sys
 _PROBE = r"""
 import os, sys
 os.environ["IETF_LLM_EMBED_BASE_URL"] = "https://example.invalid/v1"
-import ietf_llm.mcp_server  # imports the whole serve path
+import ietf_llm.mcp  # imports the whole serve path
 from ietf_llm.embeddings.models import _get_embed_model
 from ietf_llm.utils import Verbosity
 

@@ -8,10 +8,11 @@ how the model-id grouping renders, and how skips/caps are reported.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm import embeddings, mcp_server
+from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -38,7 +39,7 @@ def _seed_thread(isolated_home: Path, wg: str, slug: str, body: str) -> None:
 
 
 def test_empty_corpora_returns_guidance() -> None:
-    out = mcp_server.tool_search_corpora([], "anything")
+    out = mcp.search.tool_search_corpora([], "anything")
     assert "find_efforts" in out
     assert "list_corpora" in out
 
@@ -48,7 +49,7 @@ def test_merges_hits_tagged_by_corpus(isolated_home: Path) -> None:
     _seed_thread(isolated_home, "beta", "topic-b", "beta discusses the topic")
     _build("alpha")
     _build("beta")
-    out = mcp_server.tool_search_corpora(["alpha", "beta"], "topic")
+    out = mcp.search.tool_search_corpora(["alpha", "beta"], "topic")
     # Hits from both corpora, each tagged with its origin.
     assert "corpus=alpha" in out
     assert "corpus=beta" in out
@@ -61,7 +62,7 @@ def test_k_bounds_total_hits(isolated_home: Path) -> None:
     _seed_thread(isolated_home, "beta", "topic-b", "beta body")
     _build("alpha")
     _build("beta")
-    out = mcp_server.tool_search_corpora(["alpha", "beta"], "topic", k=1)
+    out = mcp.search.tool_search_corpora(["alpha", "beta"], "topic", k=1)
     # k caps the merged total, not per-corpus.
     assert "[1]" in out
     assert "[2]" not in out
@@ -70,7 +71,7 @@ def test_k_bounds_total_hits(isolated_home: Path) -> None:
 def test_unknown_corpus_reported_not_silent(isolated_home: Path) -> None:
     _seed_thread(isolated_home, "alpha", "topic-a", "alpha body")
     _build("alpha")
-    out = mcp_server.tool_search_corpora(["alpha", "nope"], "topic")
+    out = mcp.search.tool_search_corpora(["alpha", "nope"], "topic")
     assert "corpus=alpha" in out
     assert "Skipped" in out
     assert "nope" in out
@@ -81,7 +82,7 @@ def test_no_index_corpus_reported(isolated_home: Path) -> None:
     _build("alpha")
     # gamma has cached files but was never embedded.
     _seed_thread(isolated_home, "gamma", "topic-g", "gamma body")
-    out = mcp_server.tool_search_corpora(["alpha", "gamma"], "topic")
+    out = mcp.search.tool_search_corpora(["alpha", "gamma"], "topic")
     assert "corpus=alpha" in out
     assert "no embedding index" in out
     assert "gamma" in out
@@ -92,7 +93,7 @@ def test_mixed_models_grouped_and_interleaved(isolated_home: Path) -> None:
     _seed_thread(isolated_home, "beta", "topic-b", "beta body")
     _build("alpha", model_name="model-a")
     _build("beta", model_name="model-b")
-    out = mcp_server.tool_search_corpora(["alpha", "beta"], "topic")
+    out = mcp.search.tool_search_corpora(["alpha", "beta"], "topic")
     # Different models → not merged on raw score; grouped + interleaved.
     assert "different embedding models" in out
     assert "`model-a`" in out
@@ -104,7 +105,7 @@ def test_mixed_models_grouped_and_interleaved(isolated_home: Path) -> None:
 def test_no_results_still_reports_skips(isolated_home: Path) -> None:
     # All requested corpora are unknown → a no-results body that still
     # names why each was skipped.
-    out = mcp_server.tool_search_corpora(["nope1", "nope2"], "topic")
+    out = mcp.search.tool_search_corpora(["nope1", "nope2"], "topic")
     assert "no results" in out
     assert "nope1" in out
     assert "nope2" in out
@@ -114,7 +115,7 @@ def test_caps_fanout_and_reports_drop() -> None:
     # 13 names exceeds the 12-corpus cap; the overflow is reported, not
     # silently dropped. (All unknown here — the point is the cap note.)
     names = [f"c{i}" for i in range(13)]
-    out = mcp_server.tool_search_corpora(names, "topic")
+    out = mcp.search.tool_search_corpora(names, "topic")
     assert "cap" in out
     assert "c12" in out
 
@@ -122,6 +123,6 @@ def test_caps_fanout_and_reports_drop() -> None:
 def test_dedups_corpus_names(isolated_home: Path) -> None:
     _seed_thread(isolated_home, "alpha", "topic-a", "alpha body")
     _build("alpha")
-    out = mcp_server.tool_search_corpora(["alpha", "alpha", " alpha "], "topic")
+    out = mcp.search.tool_search_corpora(["alpha", "alpha", " alpha "], "topic")
     # De-duped to a single corpus; renders once in the comparable ranking.
     assert out.count("Ranked across 1 corpora") == 1

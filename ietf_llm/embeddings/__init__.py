@@ -62,7 +62,7 @@ __all__ = [
     "read_topics",
     "related",
     "search",
-    # Used by mcp_server.py for pre-warming
+    # Used by ietf_llm/mcp/server.py for pre-warming
     "_get_embed_model",
     "_MODEL_CACHE",
     "is_remote_embed_model",

@@ -1,7 +1,7 @@
 """Background gather orchestration for the MCP server.
 
 The MCP server is otherwise read-only and never touches the network; this
-module is the one deliberate exception, gated by `mcp_server._gather_enabled`
+module is the one deliberate exception, gated by `mcp.common._gather_enabled`
 (on by default for a local stdio server, off for the shared HTTP deployment;
 `IETF_LLM_ENABLE_GATHER` overrides either way). A `start_gather`
 tool call returns immediately, enqueuing the request; a background worker thread

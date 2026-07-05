@@ -8,6 +8,7 @@ the zero vector (cosine 0 — header chunks sink).
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 from typing import Iterable, List
@@ -143,22 +144,20 @@ def test_related_cross_surface_thread_to_issue(isolated_home: Path) -> None:
 
 
 def test_tool_find_related_renders_hits(isolated_home: Path) -> None:
-    from ietf_llm import mcp_server
 
     _seed_thread(isolated_home)
     _build_with_keyword_stub("wg")
-    out = mcp_server.tool_find_related("wg", "threads/2025-01-01-topic.md", 1, k=5)
+    out = mcp.search.tool_find_related("wg", "threads/2025-01-01-topic.md", 1, k=5)
     assert "score=" in out
     # Seed excluded; the related message [2] is rendered.
     assert "[2]" in out
 
 
 def test_tool_find_related_missing_chunk_message(isolated_home: Path) -> None:
-    from ietf_llm import mcp_server
 
     _seed_thread(isolated_home)
     _build_with_keyword_stub("wg")
-    out = mcp_server.tool_find_related("wg", "threads/2025-01-01-topic.md", 999)
+    out = mcp.search.tool_find_related("wg", "threads/2025-01-01-topic.md", 999)
     assert "no related chunks" in out
 
 
@@ -166,7 +165,6 @@ def test_tool_find_related_collapses_draft_versions(isolated_home: Path) -> None
     # Seeding near content shared by several revisions of one draft would
     # otherwise return -01/-02/-03 as separate hits. collapse_versions
     # (default on, as in search_corpus) keeps only the newest that matched.
-    from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "threads/2025-01-01-topic.md",
@@ -183,11 +181,11 @@ def test_tool_find_related_collapses_draft_versions(isolated_home: Path) -> None
     _build_with_keyword_stub("wg")
     seed = ("wg", "threads/2025-01-01-topic.md", 1)
     # Default: older -01 hidden, newest -02 kept, with the note.
-    out = mcp_server.tool_find_related(*seed, k=10)
+    out = mcp.search.tool_find_related(*seed, k=10)
     assert "draft-ietf-wg-foo-02.txt" in out
     assert "draft-ietf-wg-foo-01.txt" not in out
     assert "older draft revision" in out
     # Opt out: both revisions come back.
-    out2 = mcp_server.tool_find_related(*seed, k=10, collapse_versions=False)
+    out2 = mcp.search.tool_find_related(*seed, k=10, collapse_versions=False)
     assert "draft-ietf-wg-foo-01.txt" in out2
     assert "draft-ietf-wg-foo-02.txt" in out2

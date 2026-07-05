@@ -4,6 +4,7 @@ load balancer / orchestrator can probe the container.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 import os
 from typing import Any
@@ -11,8 +12,7 @@ from typing import Any
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from ietf_llm import __version__, mcp_server, serve_metrics
-from ietf_llm.mcp import serve
+from ietf_llm import __version__, serve_metrics
 from ietf_llm.utils import get_cache_dir
 
 
@@ -35,47 +35,47 @@ class _FakeServer:
 
 
 def test_readiness_ready(isolated_home):
-    ready, detail = mcp_server._readiness()
+    ready, detail = mcp.serve._readiness()
     assert ready is True
     assert detail["index_dir_usable"] is True
     assert "embed_endpoint_configured" in detail
 
 
 def test_readiness_not_ready_when_index_dir_missing(monkeypatch):
-    monkeypatch.setattr(serve, "get_index_dir", lambda: "/no/such/dir/xyzzy")
-    ready, detail = mcp_server._readiness()
+    monkeypatch.setattr(mcp.serve, "get_index_dir", lambda: "/no/such/dir/xyzzy")
+    ready, detail = mcp.serve._readiness()
     assert ready is False
     assert detail["index_dir_usable"] is False
 
 
 def test_readiness_reports_remote_endpoint(monkeypatch, isolated_home):
     monkeypatch.setenv("IETF_LLM_EMBED_BASE_URL", "https://host/v1")
-    _, detail = mcp_server._readiness()
+    _, detail = mcp.serve._readiness()
     assert detail["embed_endpoint_configured"] is True
 
 
 def test_health_route_ok(isolated_home):
-    client = TestClient(mcp_server._http_app(_FakeServer()))
+    client = TestClient(mcp.serve._http_app(_FakeServer()))
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
 
 def test_health_route_unavailable(monkeypatch):
-    monkeypatch.setattr(serve, "get_index_dir", lambda: "/no/such/dir/xyzzy")
-    client = TestClient(mcp_server._http_app(_FakeServer()))
+    monkeypatch.setattr(mcp.serve, "get_index_dir", lambda: "/no/such/dir/xyzzy")
+    client = TestClient(mcp.serve._http_app(_FakeServer()))
     resp = client.get("/health")
     assert resp.status_code == 503
     assert resp.json()["status"] == "unavailable"
 
 
 def test_readiness_reports_version(isolated_home):
-    _, detail = mcp_server._readiness()
+    _, detail = mcp.serve._readiness()
     assert detail["version"] == __version__
 
 
 def test_corpora_freshness_empty(isolated_home):
-    summary = mcp_server._corpora_freshness()
+    summary = mcp.serve._corpora_freshness()
     assert summary == {"count": 0, "tracked": 0, "oldest": None, "newest": None}
 
 
@@ -86,7 +86,7 @@ def test_corpora_freshness_summary(isolated_home):
     _seed_corpus(isolated_home, "httpbis", "2026-01-01T00:00:00Z")
     _seed_corpus(isolated_home, "quic", None)
 
-    summary = mcp_server._corpora_freshness()
+    summary = mcp.serve._corpora_freshness()
     assert summary["count"] == 3
     assert summary["tracked"] == 2
     assert summary["oldest"]["corpus"] == "tls"
@@ -98,11 +98,11 @@ def test_corpora_freshness_summary(isolated_home):
 
 def test_readiness_reports_gathers_inflight(isolated_home):
     serve_metrics.reset()
-    _, detail = mcp_server._readiness()
+    _, detail = mcp.serve._readiness()
     assert detail["gathers_inflight"] == 0
     serve_metrics.record_gather_started()
     try:
-        _, detail = mcp_server._readiness()
+        _, detail = mcp.serve._readiness()
         assert detail["gathers_inflight"] == 1
     finally:
         serve_metrics.reset()
@@ -112,7 +112,7 @@ def test_health_route_includes_gathers_inflight(isolated_home):
     serve_metrics.reset()
     serve_metrics.record_gather_started()
     try:
-        body = TestClient(mcp_server._http_app(_FakeServer())).get("/health").json()
+        body = TestClient(mcp.serve._http_app(_FakeServer())).get("/health").json()
         assert body["gathers_inflight"] == 1
     finally:
         serve_metrics.reset()
@@ -120,7 +120,7 @@ def test_health_route_includes_gathers_inflight(isolated_home):
 
 def test_health_route_includes_freshness(isolated_home):
     _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
-    client = TestClient(mcp_server._http_app(_FakeServer()))
+    client = TestClient(mcp.serve._http_app(_FakeServer()))
     body = client.get("/health").json()
     assert body["version"] == __version__
     assert body["corpora"]["count"] == 1

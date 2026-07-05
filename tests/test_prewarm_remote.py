@@ -5,10 +5,11 @@ remote OpenAI-compatible backend, which has nothing to warm.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from typing import Iterable, List
 
-from ietf_llm import embeddings, mcp_server
+from ietf_llm import embeddings
 from ietf_llm.embeddings.models import is_remote_embed_model
 
 
@@ -38,13 +39,13 @@ def _seed(model_name: str) -> _RecordingModel:
 
 def test_prewarm_skips_warmup_embed_for_remote():
     m = _seed("openai-embed/probe-model")
-    mcp_server._prewarm_one("openai-embed/probe-model")
+    mcp.server._prewarm_one("openai-embed/probe-model")
     # Constructed the client, but did NOT embed (no network round-trip).
     assert m.embed_calls == 0
 
 
 def test_prewarm_warms_on_device_model():
     m = _seed("sentence-transformers/x")
-    mcp_server._prewarm_one("sentence-transformers/x")
+    mcp.server._prewarm_one("sentence-transformers/x")
     # On-device: the warmup embed runs to force the weight load.
     assert m.embed_calls == 1

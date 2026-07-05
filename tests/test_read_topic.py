@@ -7,11 +7,12 @@ logic without depending on real semantic ranking.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 from typing import Iterable, List
 
-from ietf_llm import embeddings, mcp_server
+from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -73,7 +74,7 @@ def test_read_topic_returns_messages_in_chronological_order(
     _seed_two_threads(isolated_home)
     _build_with_stub("wg")
 
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=10)
 
     # All three messages render, each with its full body (not a snippet).
     assert "Body about MLKEM, opening the topic." in out
@@ -98,7 +99,7 @@ def test_read_topic_excludes_windowed_draft_chunks(isolated_home: Path) -> None:
     )
     _build_with_stub("wg")
 
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=10)
     # No draft file should appear among the rendered rows.
     assert "drafts/draft-foo-00.txt" not in out
 
@@ -118,7 +119,7 @@ def test_read_topic_renders_full_body_not_snippet(isolated_home: Path) -> None:
         ),
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=5)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=5)
     # The whole body — not a [truncated] snippet — appears.
     assert long_body.strip() in out
     assert "[truncated]" not in out
@@ -165,16 +166,16 @@ def test_read_topic_include_replies_pulls_descendants(
         "### [2] 2026-04-11 09:00 — Bob (reply to [1])\n"
         "### [3] 2026-04-12 09:00 — Carol (reply to [2])\n"
     )
-    graph = mcp_server._parse_reply_graph(text)  # pylint: disable=protected-access
+    graph = mcp.topic._parse_reply_graph(text)  # pylint: disable=protected-access
     assert graph == {1: [2], 2: [3]}
 
     # Descendants of 1 = [2, 3] (BFS).
-    desc = mcp_server._descendants(graph, 1)  # pylint: disable=protected-access
+    desc = mcp.topic._descendants(graph, 1)  # pylint: disable=protected-access
     assert desc == [2, 3]
     # Descendants of 2 = [3].
-    assert mcp_server._descendants(graph, 2) == [3]  # pylint: disable=protected-access
+    assert mcp.topic._descendants(graph, 2) == [3]  # pylint: disable=protected-access
     # Leaf node has no descendants.
-    assert mcp_server._descendants(graph, 3) == []  # pylint: disable=protected-access
+    assert mcp.topic._descendants(graph, 3) == []  # pylint: disable=protected-access
 
 
 def test_read_topic_include_replies_renders_replies_in_output(
@@ -205,13 +206,13 @@ def test_read_topic_include_replies_renders_replies_in_output(
 
     # Without include_replies, k=1 returns one matched message and no
     # extras.
-    bare = mcp_server.tool_read_topic("wg", "anything", k=1)
+    bare = mcp.topic.tool_read_topic("wg", "anything", k=1)
     assert bare.count("[matched]") == 1
     assert "[reply]" not in bare
 
     # With include_replies, descendants of the matched message in the
     # SAME thread file are pulled in.
-    expanded = mcp_server.tool_read_topic(
+    expanded = mcp.topic.tool_read_topic(
         "wg", "anything", k=1, include_replies=True,
     )
     # At least one [reply] appears (depending on which chunk search
@@ -244,7 +245,7 @@ def test_read_topic_numbers_messages_globally(isolated_home: Path) -> None:
         ),
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "anything", k=10)
+    out = mcp.topic.tool_read_topic("wg", "anything", k=10)
     # Global sequence, no repeated [1].
     assert "## [1] 2026-01-01 09:00 — Alice" in out
     assert "## [2] 2026-01-02 09:00 — Carol" in out
@@ -272,7 +273,7 @@ def test_read_topic_completeness_signal_and_scores(isolated_home: Path) -> None:
         ),
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=2)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=2)
     assert "relevance-ranked slice" in out
     assert "Not the whole debate" in out  # 4 matched, only 2 shown
     assert "raise `limit`" in out
@@ -294,7 +295,7 @@ def test_read_topic_thread_map_spans_threads(isolated_home: Path) -> None:
         "# B\n\n## Messages\n\n### [1] 2026-04-12 09:00 — Carol\n\nMLKEM ccc.\n",
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=10)
     assert "## Threads in this topic (2)" in out
     assert "threads/2026-04-10-a.md" in out
     assert "threads/2026-04-12-b.md" in out
@@ -310,7 +311,7 @@ def test_read_topic_no_thread_map_for_single_thread(isolated_home: Path) -> None
         "### [2] 2026-04-11 09:00 — Bob\n\nMLKEM bbb.\n",
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=10)
     assert "## Threads in this topic" not in out
 
 
@@ -322,10 +323,10 @@ def test_read_topic_body_chars_caps_message_length(isolated_home: Path) -> None:
         "### [1] 2026-04-10 09:00 — Alice\n\nMLKEM " + ("blah " * 300) + "\n",
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=5, body_chars=100)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=5, body_chars=100)
     assert "truncated at 100 chars" in out
     # Default (no cap) does not truncate this ~1500-char body at 100.
-    out_default = mcp_server.tool_read_topic("wg", "MLKEM", k=5)
+    out_default = mcp.topic.tool_read_topic("wg", "MLKEM", k=5)
     assert "truncated at 100 chars" not in out_default
 
 
@@ -338,7 +339,7 @@ def test_read_topic_no_thread_matches_returns_hint(isolated_home: Path) -> None:
         "Body of the draft. " * 50,
     )
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=5)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=5)
     # Drafts have no chunk_date so the sort="date" pre-filter drops them;
     # search returns nothing, and the "no results" hint kicks in.
     assert "no" in out.lower() and ("results" in out or "thread" in out)
@@ -362,7 +363,7 @@ def test_find_replies_returns_descendants_in_order(
         ),
     )
     _build_with_stub("wg")
-    out_from_root = mcp_server.tool_find_replies(
+    out_from_root = mcp.topic.tool_find_replies(
         "wg", "threads/2026-04-10-arc.md", chunk_idx=1,
     )
     assert "First reply." in out_from_root
@@ -374,7 +375,7 @@ def test_find_replies_returns_descendants_in_order(
     assert "### [2] 2026-04-11 09:00 — Bob (reply to [1])" in out_from_root
     assert out_from_root.count("09:00 — Bob") == 1
 
-    out_from_leaf = mcp_server.tool_find_replies(
+    out_from_leaf = mcp.topic.tool_find_replies(
         "wg", "threads/2026-04-10-arc.md", chunk_idx=3,
     )
     assert "No replies" in out_from_leaf
@@ -382,7 +383,7 @@ def test_find_replies_returns_descendants_in_order(
 
 def test_find_replies_refuses_issue_files(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "wg", "x.txt", "x")  # corpus must exist
-    out = mcp_server.tool_find_replies(
+    out = mcp.topic.tool_find_replies(
         "wg", "issues/org-repo/1.md", chunk_idx=1,
     )
     assert "issue" in out.lower()
@@ -397,7 +398,7 @@ def test_read_topic_clamps_excessive_k(isolated_home: Path) -> None:
     _build_with_stub("wg")
     # With only 3 dated messages in the corpus, k=500 still works and
     # returns those 3 — no error, no runaway.
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=500)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=500)
     assert "Body about MLKEM, opening the topic." in out
     assert "Later MLKEM discussion from Carol." in out
 
@@ -407,7 +408,7 @@ def test_read_topic_summary_line_counts_matched_and_replies(
 ) -> None:
     _seed_two_threads(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "MLKEM", k=10)
+    out = mcp.topic.tool_read_topic("wg", "MLKEM", k=10)
     # Summary line includes message count, file count, and "oldest first".
     assert "oldest first" in out
     assert "matched the query" in out

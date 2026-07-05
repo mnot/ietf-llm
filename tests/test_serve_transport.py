@@ -5,26 +5,27 @@ plus an end-to-end check that a disallowed Host is rejected.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 import pytest
 from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
-from ietf_llm import __version__, freshness, mcp_server
+from ietf_llm import __version__, freshness
 
 
 def test_csv_env_splits_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_X", " a.example , , b.example:* ")
-    assert mcp_server._csv_env("IETF_LLM_X") == ["a.example", "b.example:*"]
+    assert mcp.serve._csv_env("IETF_LLM_X") == ["a.example", "b.example:*"]
     monkeypatch.delenv("IETF_LLM_X", raising=False)
-    assert mcp_server._csv_env("IETF_LLM_X") == []
+    assert mcp.serve._csv_env("IETF_LLM_X") == []
 
 
 def test_transport_security_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # Unset must EXPLICITLY disable protection, overriding the MCP library's
     # loopback-only default (which 421s a fronted public-hostname deployment).
     monkeypatch.delenv("IETF_LLM_MCP_ALLOWED_HOSTS", raising=False)
-    settings = mcp_server._transport_security_settings()
+    settings = mcp.serve._transport_security_settings()
     assert settings is not None
     assert settings.enable_dns_rebinding_protection is False
 
@@ -37,7 +38,7 @@ def test_any_host_accepted_when_unset_end_to_end(
     monkeypatch.delenv("IETF_LLM_MCP_ALLOWED_HOSTS", raising=False)
     server = FastMCP(
         "ietf-llm", instructions="x",
-        transport_security=mcp_server._transport_security_settings(),
+        transport_security=mcp.serve._transport_security_settings(),
     )
     headers = {"Accept": "application/json, text/event-stream",
                "Content-Type": "application/json"}
@@ -52,7 +53,7 @@ def test_any_host_accepted_when_unset_end_to_end(
 def test_transport_security_on_when_hosts_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_MCP_ALLOWED_HOSTS", "mcp.example.org, localhost:*")
     monkeypatch.setenv("IETF_LLM_MCP_ALLOWED_ORIGINS", "https://app.example.org")
-    settings = mcp_server._transport_security_settings()
+    settings = mcp.serve._transport_security_settings()
     assert settings is not None
     assert settings.enable_dns_rebinding_protection is True
     assert settings.allowed_hosts == ["mcp.example.org", "localhost:*"]
@@ -61,16 +62,16 @@ def test_transport_security_on_when_hosts_set(monkeypatch: pytest.MonkeyPatch) -
 
 def test_posture_reports_host_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_MCP_ALLOWED_HOSTS", "mcp.example.org")
-    assert mcp_server._serve_posture("0.0.0.0", 8000)["host_allowlist"] == (
+    assert mcp.serve._serve_posture("0.0.0.0", 8000)["host_allowlist"] == (
         "mcp.example.org"
     )
     monkeypatch.delenv("IETF_LLM_MCP_ALLOWED_HOSTS", raising=False)
-    assert mcp_server._serve_posture("0.0.0.0", 8000)["host_allowlist"] == "off"
+    assert mcp.serve._serve_posture("0.0.0.0", 8000)["host_allowlist"] == "off"
 
 
 def test_stateless_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
-    assert mcp_server._stateless_http_enabled() is True
+    assert mcp.serve._stateless_http_enabled() is True
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "off"])
@@ -78,20 +79,20 @@ def test_stateless_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     monkeypatch.setenv("IETF_LLM_MCP_STATELESS", value)
-    assert mcp_server._stateless_http_enabled() is False
+    assert mcp.serve._stateless_http_enabled() is False
 
 
 def test_stateless_setting_flows_to_fastmcp(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
     server = FastMCP(
         "ietf-llm", instructions="x",
-        stateless_http=mcp_server._stateless_http_enabled(),
+        stateless_http=mcp.serve._stateless_http_enabled(),
     )
     assert server.settings.stateless_http is True
     monkeypatch.setenv("IETF_LLM_MCP_STATELESS", "0")
     server = FastMCP(
         "ietf-llm", instructions="x",
-        stateless_http=mcp_server._stateless_http_enabled(),
+        stateless_http=mcp.serve._stateless_http_enabled(),
     )
     assert server.settings.stateless_http is False
 
@@ -99,13 +100,13 @@ def test_stateless_setting_flows_to_fastmcp(monkeypatch: pytest.MonkeyPatch) -> 
 def test_log_verbosity_default_quiet_on_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_LOG_LEVEL", raising=False)
     monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
-    assert mcp_server._log_verbosity() is mcp_server.Verbosity.QUIET
+    assert mcp.common._log_verbosity() is mcp.common.Verbosity.QUIET
 
 
 def test_log_verbosity_default_status_on_http(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_LOG_LEVEL", raising=False)
     monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")
-    assert mcp_server._log_verbosity() is mcp_server.Verbosity.STATUS
+    assert mcp.common._log_verbosity() is mcp.common.Verbosity.STATUS
 
 
 @pytest.mark.parametrize(
@@ -125,7 +126,7 @@ def test_log_verbosity_explicit_override(
     # An explicit level overrides the transport default in either direction.
     monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")
     monkeypatch.setenv("IETF_LLM_LOG_LEVEL", value)
-    assert mcp_server._log_verbosity().name == expected
+    assert mcp.common._log_verbosity().name == expected
 
 
 def test_log_verbosity_unrecognised_falls_back_to_transport_default(
@@ -133,21 +134,21 @@ def test_log_verbosity_unrecognised_falls_back_to_transport_default(
 ) -> None:
     monkeypatch.setenv("IETF_LLM_LOG_LEVEL", "loud")
     monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", "http")
-    assert mcp_server._log_verbosity() is mcp_server.Verbosity.STATUS
+    assert mcp.common._log_verbosity() is mcp.common.Verbosity.STATUS
     monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
-    assert mcp_server._log_verbosity() is mcp_server.Verbosity.QUIET
+    assert mcp.common._log_verbosity() is mcp.common.Verbosity.QUIET
 
 
 def test_posture_reports_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_LOG_LEVEL", "verbose")
-    assert mcp_server._serve_posture("0.0.0.0", 8000)["log_level"] == "verbose"
+    assert mcp.serve._serve_posture("0.0.0.0", 8000)["log_level"] == "verbose"
 
 
 def test_posture_reports_stateless(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
-    assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "yes"
+    assert mcp.serve._serve_posture("0.0.0.0", 8000)["stateless"] == "yes"
     monkeypatch.setenv("IETF_LLM_MCP_STATELESS", "0")
-    assert mcp_server._serve_posture("0.0.0.0", 8000)["stateless"] == "no"
+    assert mcp.serve._serve_posture("0.0.0.0", 8000)["stateless"] == "no"
 
 
 @pytest.mark.parametrize(
@@ -164,7 +165,7 @@ def test_startup_gather_default_tracks_transport(
         monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
     else:
         monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", transport_env)
-    assert mcp_server._startup_gather_default() is expected
+    assert mcp.server._startup_gather_default() is expected
 
 
 def test_startup_gather_default_off_when_index_immutable(
@@ -173,7 +174,7 @@ def test_startup_gather_default_off_when_index_immutable(
     # A read-only mount must not default a writer on, even on stdio.
     monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)  # stdio
     monkeypatch.setenv("IETF_LLM_INDEX_IMMUTABLE", "1")
-    assert mcp_server._startup_gather_default() is False
+    assert mcp.server._startup_gather_default() is False
 
 
 def test_posture_reports_gather(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,9 +182,9 @@ def test_posture_reports_gather(monkeypatch: pytest.MonkeyPatch) -> None:
     saved = freshness._GATHER_DEFAULT
     try:
         freshness.set_gather_default(True)
-        assert mcp_server._serve_posture("0.0.0.0", 8000)["gather"] == "on"
+        assert mcp.serve._serve_posture("0.0.0.0", 8000)["gather"] == "on"
         freshness.set_gather_default(False)
-        assert mcp_server._serve_posture("0.0.0.0", 8000)["gather"] == "off"
+        assert mcp.serve._serve_posture("0.0.0.0", 8000)["gather"] == "off"
     finally:
         freshness.set_gather_default(saved)
 
@@ -198,9 +199,9 @@ def test_handshake_reports_ietf_llm_version() -> None:
 
 
 def test_capability_footer_names_version_and_every_feature() -> None:
-    footer = mcp_server._capability_footer()
+    footer = mcp.server._capability_footer()
     assert __version__ in footer
-    for flag in mcp_server.SERVER_FEATURES:
+    for flag in mcp.server.SERVER_FEATURES:
         assert flag in footer
 
 
@@ -211,7 +212,7 @@ def test_disallowed_host_is_rejected_end_to_end(
     server = FastMCP(
         "ietf-llm",
         instructions="x",
-        transport_security=mcp_server._transport_security_settings(),
+        transport_security=mcp.serve._transport_security_settings(),
     )
     headers = {"Accept": "application/json, text/event-stream",
                "Content-Type": "application/json"}

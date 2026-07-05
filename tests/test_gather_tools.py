@@ -1,16 +1,16 @@
 """Tests for the MCP gather tools and their opt-in gate
-(ietf_llm.mcp_server.tool_start_gather / tool_gather_status /
+(ietf_llm.mcp.gather.tool_start_gather / tool_gather_status /
 _gather_enabled / status formatting). The runner itself is stubbed.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from typing import Any, Dict, List
 
 import pytest
 
-from ietf_llm import freshness, gather_runner, mcp_server
-from ietf_llm.mcp import gather
+from ietf_llm import freshness, gather_runner
 
 
 # --- _gather_enabled ------------------------------------------------------
@@ -19,7 +19,7 @@ from ietf_llm.mcp import gather
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
 def test_gather_enabled_truthy(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", value)
-    assert mcp_server._gather_enabled() is True
+    assert mcp.common._gather_enabled() is True
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "off"])
@@ -29,7 +29,7 @@ def test_gather_enabled_explicit_falsy(
     # An explicit falsy value forces gather off regardless of the default.
     monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", value)
-    assert mcp_server._gather_enabled() is False
+    assert mcp.common._gather_enabled() is False
 
 
 def test_gather_enabled_unset_follows_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,9 +37,9 @@ def test_gather_enabled_unset_follows_default(monkeypatch: pytest.MonkeyPatch) -
     # (the MCP server sets it from the transport at startup).
     monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
     monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
-    assert mcp_server._gather_enabled() is True
+    assert mcp.common._gather_enabled() is True
     monkeypatch.setattr(freshness, "_GATHER_DEFAULT", False)
-    assert mcp_server._gather_enabled() is False
+    assert mcp.common._gather_enabled() is False
 
 
 def test_gather_enabled_unrecognised_follows_default(
@@ -48,14 +48,14 @@ def test_gather_enabled_unrecognised_follows_default(
     # A value that is neither truthy nor falsy is treated as unset.
     monkeypatch.setattr(freshness, "_GATHER_DEFAULT", True)
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "maybe")
-    assert mcp_server._gather_enabled() is True
+    assert mcp.common._gather_enabled() is True
 
 
 def test_explicit_truthy_overrides_off_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # The env is an override in both directions: on, even when default is off.
     monkeypatch.setattr(freshness, "_GATHER_DEFAULT", False)
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
-    assert mcp_server._gather_enabled() is True
+    assert mcp.common._gather_enabled() is True
 
 
 def test_set_gather_default_flows_to_gather_enabled(
@@ -79,7 +79,7 @@ def test_import_default_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     # gather stays off until the MCP server resolves a transport.
     monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
     assert freshness._GATHER_DEFAULT is False
-    assert mcp_server._gather_enabled() is False
+    assert mcp.common._gather_enabled() is False
 
 
 def test_gather_hint_phrasing_follows_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,7 +105,7 @@ def test_start_gather_forwards_spec_and_reports_started(
         return {"started": True, "corpus": spec.corpus}
 
     monkeypatch.setattr(gather_runner, "start", fake_start)
-    out = mcp_server.tool_start_gather(
+    out = mcp.gather.tool_start_gather(
         "tls", mailing_list=["tls@ietf.org"], github=["o/r"], months=6, wait=0
     )
     assert "Started gathering 'tls'" in out
@@ -128,12 +128,12 @@ def test_start_gather_still_running_names_stage(
         lambda spec: {"started": True, "corpus": spec.corpus},
     )
     monkeypatch.setattr(
-        gather, "_await_gather",
+        mcp.gather, "_await_gather",
         lambda corpus, budget: {"corpus": corpus, "state": "running",
                                 "stage_index": 18, "stage_total": 19,
                                 "stage": "embedding index"},
     )
-    out = mcp_server.tool_start_gather("tls", wait=1)
+    out = mcp.gather.tool_start_gather("tls", wait=1)
     assert "still gathering" in out
     assert "18/19" in out and "embedding index" in out
     assert "slow part" in out
@@ -144,7 +144,7 @@ def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
         gather_runner, "start",
         lambda spec: {"started": False, "reason": "already running"},
     )
-    out = mcp_server.tool_start_gather("tls", wait=0)
+    out = mcp.gather.tool_start_gather("tls", wait=0)
     assert "already running" in out
 
 
@@ -159,7 +159,7 @@ def test_start_gather_refuses_zero_months_without_force(
         return {"started": True, "corpus": spec.corpus}
 
     monkeypatch.setattr(gather_runner, "start", fake_start)
-    out = mcp_server.tool_start_gather("tls", months=0)
+    out = mcp.gather.tool_start_gather("tls", months=0)
     assert "force" in out
     assert called is False  # refused before a slot is spent
 
@@ -171,7 +171,7 @@ def test_start_gather_allows_zero_months_with_force(
         gather_runner, "start",
         lambda spec: {"started": True, "corpus": spec.corpus},
     )
-    out = mcp_server.tool_start_gather("tls", months=0, force=True, wait=0)
+    out = mcp.gather.tool_start_gather("tls", months=0, force=True, wait=0)
     assert "Started gathering 'tls'" in out
 
 
@@ -182,7 +182,7 @@ def test_start_gather_cautions_on_large_window(
         gather_runner, "start",
         lambda spec: {"started": True, "corpus": spec.corpus},
     )
-    out = mcp_server.tool_start_gather("tls", months=36, wait=0)
+    out = mcp.gather.tool_start_gather("tls", months=36, wait=0)
     assert "Started gathering 'tls'" in out
     assert "36-month window" in out
 
@@ -192,7 +192,7 @@ def test_start_gather_surfaces_stop_token(monkeypatch: pytest.MonkeyPatch) -> No
         gather_runner, "start",
         lambda spec: {"started": True, "corpus": spec.corpus, "cancel_token": "tok123"},
     )
-    out = mcp_server.tool_start_gather("tls", wait=0)
+    out = mcp.gather.tool_start_gather("tls", wait=0)
     assert "stop_gather" in out and "tok123" in out
 
 
@@ -209,7 +209,7 @@ def test_stop_gather_forwards_and_reports_requested(
         return {"stopped": True, "corpus": corpus}
 
     monkeypatch.setattr(gather_runner, "request_stop", fake_stop)
-    out = mcp_server.tool_stop_gather("tls", "tok123")
+    out = mcp.gather.tool_stop_gather("tls", "tok123")
     assert captured["args"] == ("tls", "tok123")
     assert "Requested stop for 'tls'" in out and "gather_status" in out
 
@@ -219,7 +219,7 @@ def test_stop_gather_bad_token(monkeypatch: pytest.MonkeyPatch) -> None:
         gather_runner, "request_stop",
         lambda corpus, token: {"stopped": False, "reason": "bad token"},
     )
-    out = mcp_server.tool_stop_gather("tls", "wrong")
+    out = mcp.gather.tool_stop_gather("tls", "wrong")
     assert "does not match" in out
 
 
@@ -228,7 +228,7 @@ def test_stop_gather_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
         gather_runner, "request_stop",
         lambda corpus, token: {"stopped": False, "reason": "not running", "state": "done"},
     )
-    out = mcp_server.tool_stop_gather("tls", "tok")
+    out = mcp.gather.tool_stop_gather("tls", "tok")
     assert "nothing to stop" in out and "done" in out
 
 
@@ -241,7 +241,7 @@ def test_stop_gather_rejects_unsafe_name(monkeypatch: pytest.MonkeyPatch) -> Non
         return {"stopped": True}
 
     monkeypatch.setattr(gather_runner, "request_stop", fake_stop)
-    out = mcp_server.tool_stop_gather("../etc", "tok")
+    out = mcp.gather.tool_stop_gather("../etc", "tok")
     assert "not a valid corpus name" in out
     assert called is False
 
@@ -254,7 +254,7 @@ def test_start_gather_forwards_force(monkeypatch: pytest.MonkeyPatch) -> None:
         return {"started": True, "corpus": spec.corpus}
 
     monkeypatch.setattr(gather_runner, "start", fake_start)
-    mcp_server.tool_start_gather("tls", force=True, wait=0)
+    mcp.gather.tool_start_gather("tls", force=True, wait=0)
     assert captured["spec"].force is True
 
 
@@ -271,7 +271,7 @@ def test_start_gather_similar_exists_steers_to_reuse(
             "corpus": "x-new",
         },
     )
-    out = mcp_server.tool_start_gather("x-new", draft=["draft-foo"])
+    out = mcp.gather.tool_start_gather("x-new", draft=["draft-foo"])
     # Names the existing corpus, steers to reuse, and offers force as the out.
     assert "x-old" in out
     assert "near-duplicate" in out
@@ -290,7 +290,7 @@ def test_start_gather_fresh_is_reported_as_success(
             "corpus": "tls",
         },
     )
-    out = mcp_server.tool_start_gather("tls")
+    out = mcp.gather.tool_start_gather("tls")
     # Surfaces the skip detail, frames it as success, and points at force=True.
     assert "skipped" in out
     assert "success" in out
@@ -299,7 +299,7 @@ def test_start_gather_fresh_is_reported_as_success(
 
 
 def test_start_gather_rejects_blank_corpus() -> None:
-    out = mcp_server.tool_start_gather("   ")
+    out = mcp.gather.tool_start_gather("   ")
     assert "corpus name" in out
 
 
@@ -311,7 +311,7 @@ def test_start_gather_rejects_unsafe_name_without_calling_runner(
         raise AssertionError("runner.start must not be reached for unsafe names")
 
     monkeypatch.setattr(gather_runner, "start", boom)
-    out = mcp_server.tool_start_gather(name)
+    out = mcp.gather.tool_start_gather(name)
     assert "not a valid corpus name" in out
 
 
@@ -327,13 +327,13 @@ def test_gather_status_one_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
             "started": "2026-06-03T12:00:00Z", "finished": None,
         },
     )
-    out = mcp_server.tool_gather_status("tls")
+    out = mcp.gather.tool_gather_status("tls")
     assert "**tls**" in out and "running" in out
     assert "stage 7/17 (github issues)" in out
 
 
 def test_gather_status_renders_stage_detail() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {
             "corpus": "httpbis", "state": "running", "stage": "mailing list",
             "stage_index": 3, "stage_total": 17,
@@ -346,7 +346,7 @@ def test_gather_status_renders_stage_detail() -> None:
 
 
 def test_gather_status_running_notes_stop_requested() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {
             "corpus": "tls", "state": "running", "stage": "mailing list",
             "stage_index": 3, "stage_total": 17, "cancel_requested": True,
@@ -357,7 +357,7 @@ def test_gather_status_running_notes_stop_requested() -> None:
 
 
 def test_gather_status_renders_cancelled() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {
             "corpus": "tls", "state": "cancelled",
             "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:01:00Z",
@@ -369,7 +369,7 @@ def test_gather_status_renders_cancelled() -> None:
 
 def test_gather_status_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gather_runner, "read_status", lambda corpus: None)
-    out = mcp_server.tool_gather_status("ghost")
+    out = mcp.gather.tool_gather_status("ghost")
     assert "No gather has been recorded for 'ghost'" in out
 
 
@@ -378,7 +378,7 @@ def test_gather_status_rejects_unsafe_name(monkeypatch: pytest.MonkeyPatch) -> N
         raise AssertionError("read_status must not see an unsafe name")
 
     monkeypatch.setattr(gather_runner, "read_status", boom)
-    out = mcp_server.tool_gather_status("../etc/passwd")
+    out = mcp.gather.tool_gather_status("../etc/passwd")
     assert "not a valid corpus name" in out
 
 
@@ -390,21 +390,21 @@ def test_gather_status_all(monkeypatch: pytest.MonkeyPatch) -> None:
          "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:00:05Z"},
     ]
     monkeypatch.setattr(gather_runner, "all_statuses", lambda: rows)
-    out = mcp_server.tool_gather_status(None)
+    out = mcp.gather.tool_gather_status(None)
     assert "**tls** — done" in out
     assert "**quic** — failed" in out and "error: boom" in out
 
 
 def test_gather_status_all_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gather_runner, "all_statuses", lambda: [])
-    assert "No gathers" in mcp_server.tool_gather_status(None)
+    assert "No gathers" in mcp.gather.tool_gather_status(None)
 
 
 # --- formatting helpers ---------------------------------------------------
 
 
 def test_format_done_includes_elapsed() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {"corpus": "tls", "state": "done",
          "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:03:20Z"}
     )
@@ -413,7 +413,7 @@ def test_format_done_includes_elapsed() -> None:
 
 
 def test_format_failed_includes_error() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {"corpus": "quic", "state": "failed", "error": "network down",
          "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:00:09Z"}
     )
@@ -422,11 +422,11 @@ def test_format_failed_includes_error() -> None:
 
 
 def test_elapsed_handles_missing_timestamps() -> None:
-    assert mcp_server._gather_elapsed({}) == ""
+    assert mcp.common._gather_elapsed({}) == ""
 
 
 def test_format_done_renders_pipeline_notes() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {
             "corpus": "httpbis", "state": "done",
             "started": "2026-06-03T12:00:00Z", "finished": "2026-06-03T12:03:20Z",
@@ -440,7 +440,7 @@ def test_format_done_renders_pipeline_notes() -> None:
 
 
 def test_format_interrupted_omits_growing_elapsed() -> None:
-    out = mcp_server._format_gather_status(
+    out = mcp.gather._format_gather_status(
         {"corpus": "tls", "state": "interrupted",
          "started": "2026-06-03T12:00:00Z", "finished": None}
     )
@@ -455,11 +455,11 @@ def test_format_interrupted_omits_growing_elapsed() -> None:
 
 
 def test_suggest_github_repos_empty_corpus() -> None:
-    assert "Provide a Working Group shortname" in mcp_server.tool_suggest_github_repos("")
+    assert "Provide a Working Group shortname" in mcp.gather.tool_suggest_github_repos("")
 
 
 def test_suggest_github_repos_invalid_name() -> None:
-    out = mcp_server.tool_suggest_github_repos("../etc")
+    out = mcp.gather.tool_suggest_github_repos("../etc")
     assert "not a valid corpus name" in out
 
 
@@ -479,7 +479,7 @@ def test_suggest_github_repos_renders_discovery(
             wg=wg, candidates=[cand], high_confidence=["httpwg/http-extensions"]
         ),
     )
-    out = mcp_server.tool_suggest_github_repos("httpbis")
+    out = mcp.gather.tool_suggest_github_repos("httpbis")
     assert "httpwg/http-extensions" in out
     assert 'github=["httpwg/http-extensions"]' in out
 
@@ -490,14 +490,14 @@ def test_suggest_github_repos_renders_discovery(
 def test_gather_wait_budget_defaults_and_clamps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
     # None -> the default budget; 0/negative -> no wait.
-    assert mcp_server._gather_wait_budget(None) == mcp_server._GATHER_WAIT_DEFAULT
-    assert mcp_server._gather_wait_budget(0) == 0.0
-    assert mcp_server._gather_wait_budget(-5) == 0.0
+    assert mcp.gather._gather_wait_budget(None) == mcp.gather._GATHER_WAIT_DEFAULT
+    assert mcp.gather._gather_wait_budget(0) == 0.0
+    assert mcp.gather._gather_wait_budget(-5) == 0.0
     # A request over the deadline headroom is clamped under it.
-    assert mcp_server._gather_wait_budget(10_000) == 120 - mcp_server._GATHER_WAIT_MARGIN
+    assert mcp.gather._gather_wait_budget(10_000) == 120 - mcp.gather._GATHER_WAIT_MARGIN
     # A disabled deadline honours the request as-is.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0")
-    assert mcp_server._gather_wait_budget(10_000) == 10_000
+    assert mcp.gather._gather_wait_budget(10_000) == 10_000
 
 
 def test_gather_wait_budget_clamps_against_elapsed(
@@ -507,9 +507,9 @@ def test_gather_wait_budget_clamps_against_elapsed(
     # budget so the wait can't outlive the offload deadline it stays under.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
     # 120 - 30 elapsed - 15 margin = 75 headroom; default 90 is clamped to it.
-    assert mcp_server._gather_wait_budget(None, elapsed=30) == 75
+    assert mcp.gather._gather_wait_budget(None, elapsed=30) == 75
     # No headroom left -> don't wait at all (rather than overshoot the deadline).
-    assert mcp_server._gather_wait_budget(None, elapsed=200) == 0.0
+    assert mcp.gather._gather_wait_budget(None, elapsed=200) == 0.0
 
 
 def test_start_gather_wait_returns_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,7 +521,7 @@ def test_start_gather_wait_returns_done(monkeypatch: pytest.MonkeyPatch) -> None
         gather_runner, "read_status",
         lambda corpus: {"corpus": corpus, "state": "done"},
     )
-    out = mcp_server.tool_start_gather("tls")  # blocks by default
+    out = mcp.gather.tool_start_gather("tls")  # blocks by default
     assert "done" in out
     assert "Ready" in out and "query 'tls'" in out
 
@@ -537,7 +537,7 @@ def test_start_gather_wait_times_out_reports_progress(
         gather_runner, "read_status",
         lambda corpus: {"corpus": corpus, "state": "running"},
     )
-    out = mcp_server.tool_start_gather("tls", wait=0.05)
+    out = mcp.gather.tool_start_gather("tls", wait=0.05)
     assert "still gathering" in out
     # Falls back to the start reply, so the poll hint + stop token survive.
     assert "gather_status" in out and "tok" in out
@@ -553,7 +553,7 @@ def test_start_gather_wait_zero_does_not_poll(monkeypatch: pytest.MonkeyPatch) -
         raise AssertionError("read_status must not be polled when wait=0")
 
     monkeypatch.setattr(gather_runner, "read_status", boom)
-    out = mcp_server.tool_start_gather("tls", wait=0)
+    out = mcp.gather.tool_start_gather("tls", wait=0)
     assert "Started gathering 'tls'" in out
 
 
@@ -569,7 +569,7 @@ def test_start_gather_wait_polls_already_running(
         gather_runner, "read_status",
         lambda corpus: {"corpus": corpus, "state": "done"},
     )
-    out = mcp_server.tool_start_gather("tls", wait=5)
+    out = mcp.gather.tool_start_gather("tls", wait=5)
     assert "done" in out and "Ready" in out
 
 
@@ -586,7 +586,7 @@ def test_start_gather_wait_does_not_poll_when_fresh(
         raise AssertionError("a fresh corpus must not be polled")
 
     monkeypatch.setattr(gather_runner, "read_status", boom)
-    out = mcp_server.tool_start_gather("tls")
+    out = mcp.gather.tool_start_gather("tls")
     assert "skipped" in out
 
 
@@ -603,7 +603,7 @@ def test_gather_status_immediate_by_default(monkeypatch: pytest.MonkeyPatch) -> 
         return {"corpus": corpus, "state": "running"}
 
     monkeypatch.setattr(gather_runner, "read_status", one_read)
-    out = mcp_server.tool_gather_status("tls")
+    out = mcp.gather.tool_gather_status("tls")
     assert "running" in out
     assert calls["n"] == 1
 
@@ -615,7 +615,7 @@ def test_gather_status_wait_blocks_to_done(monkeypatch: pytest.MonkeyPatch) -> N
         return {"corpus": corpus, "state": next(states, "done")}
 
     monkeypatch.setattr(gather_runner, "read_status", progressing)
-    out = mcp_server.tool_gather_status("tls", wait=5)
+    out = mcp.gather.tool_gather_status("tls", wait=5)
     assert "done" in out
 
 
@@ -630,7 +630,7 @@ def test_gather_status_wait_skips_when_already_terminal(
         return {"corpus": corpus, "state": "done"}
 
     monkeypatch.setattr(gather_runner, "read_status", one_read)
-    out = mcp_server.tool_gather_status("tls", wait=5)
+    out = mcp.gather.tool_gather_status("tls", wait=5)
     assert "done" in out
     assert calls["n"] == 1
 
@@ -639,5 +639,5 @@ def test_gather_status_unknown_corpus_does_not_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gather_runner, "read_status", lambda corpus: None)
-    out = mcp_server.tool_gather_status("tls", wait=5)
+    out = mcp.gather.tool_gather_status("tls", wait=5)
     assert "No gather has been recorded" in out

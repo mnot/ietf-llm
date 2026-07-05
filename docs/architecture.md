@@ -327,7 +327,7 @@ ietf_llm/
 │                           # embed); also --list / --completion / --install-skills
 ├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
 ├── search_cli.py           # `ietf-llm-search` entry point
-├── mcp/                    # `ietf-llm-mcp` server, split one module per tool domain
+├── mcp/                    # `ietf-llm-mcp` server (`mcp:main`), one module per tool domain
 │   ├── server.py               # FastMCP construction + main() + tool registration
 │   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
 │   │                           # freshness/grounding/nudge helpers)
@@ -335,7 +335,6 @@ ietf_llm/
 │   ├── corpus.py / search.py / digest.py / topic.py / chunks.py  # tool_* impls +
 │   ├── citations.py / drafts.py / meetings.py / gather.py / norms.py / rfcs.py
 │   │                           #   their `@server.tool()` wrappers, via `register()`
-├── mcp_server.py           # back-compat facade re-exporting `ietf_llm.mcp` (entry point)
 ├── skill_install.py        # --install-skills (multi-harness) + pristine-only auto-update on CLI gathers
 ├── config.py               # generic per-WG, per-scope JSON config (merge/persist)
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
@@ -443,8 +442,7 @@ The `ietf_llm.mcp` package registers each tool as a thin wrapper over a pure
 `tool_*` function (so the logic is testable without MCP), with one module per
 tool domain (`corpus`, `search`, `digest`, `topic`, …) plus `common` for the
 shared scaffolding, `serve` for the HTTP/transport surface, and `server` for
-construction + `main()`. `mcp_server.py` remains a back-compat facade that
-re-exports the package. The routing —
+construction + `main()`. The routing —
 which tool for which question, with worked examples — lives in
 `data/mcp-instructions.md` (below); this is just the map. Grouped by job:
 

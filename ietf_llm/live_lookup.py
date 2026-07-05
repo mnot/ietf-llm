@@ -7,7 +7,7 @@ and a gather cache (a 36-month window, often days stale) is too coarse for
 an agenda. They are therefore gated exactly like the gather tools
 (registered only when `freshness.gather_enabled()` is true: on for a local
 stdio server, off for the shared read-only HTTP replica) and imported
-lazily by `mcp_server`, so the default read path never pulls this in.
+lazily by `ietf_llm.mcp`, so the default read path never pulls this in.
 
 Unlike the gather layer it keeps only a small TTL cache — in-process, plus a
 best-effort cross-process copy on disk (`.live-cache.json` under the cache

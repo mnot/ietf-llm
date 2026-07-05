@@ -6,10 +6,10 @@ the resolver/citation graph, render the digest, and read it back through
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm import mcp_server
 from ietf_llm.gather.message_citations import (
     canonical_archive_url,
     scan_message_citations,
@@ -66,7 +66,7 @@ def test_scan_resolves_classifies_and_skips_self_and_quoted(
 ) -> None:
     write_cache_file(isolated_home, "wg", "threads/2026-01-01-origin.md", _origin())
     write_cache_file(isolated_home, "wg", "threads/2026-02-01-fork.md", _fork())
-    cache = mcp_server._files_dir("wg")
+    cache = mcp.common._files_dir("wg")
     cits = scan_message_citations(cache)
 
     resolved = [c for c in cits if c.target]
@@ -91,11 +91,11 @@ def test_scan_resolves_classifies_and_skips_self_and_quoted(
 def test_digest_and_tool_roundtrip(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "wg", "threads/2026-01-01-origin.md", _origin())
     write_cache_file(isolated_home, "wg", "threads/2026-02-01-fork.md", _fork())
-    cache = mcp_server._files_dir("wg")
+    cache = mcp.common._files_dir("wg")
     write_message_citations_digest(cache, scan_message_citations(cache))
 
     # Outbound for Bob's message: the resolved Alice target + the external.
-    out = mcp_server.tool_find_message_citations(
+    out = mcp.citations.tool_find_message_citations(
         "wg", "threads/2026-02-01-fork.md", 1
     )
     assert "Outbound" in out
@@ -105,7 +105,7 @@ def test_digest_and_tool_roundtrip(isolated_home: Path) -> None:
     assert "gather `uta`?" in out  # external list hint
 
     # Inbound for Alice's message: Bob cites it.
-    inb = mcp_server.tool_find_message_citations(
+    inb = mcp.citations.tool_find_message_citations(
         "wg", "threads/2026-01-01-origin.md", 1
     )
     assert "Inbound" in inb
@@ -114,7 +114,7 @@ def test_digest_and_tool_roundtrip(isolated_home: Path) -> None:
 
 def test_tool_missing_digest_message(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "wg", "charter.txt", "x")
-    out = mcp_server.tool_find_message_citations("wg", "threads/x.md")
+    out = mcp.citations.tool_find_message_citations("wg", "threads/x.md")
     assert "No message-citations digest" in out
 
 
@@ -126,13 +126,13 @@ def test_write_digest_removes_stale_on_empty(isolated_home: Path) -> None:
     # tool reports the no-digest message.
     write_cache_file(isolated_home, "wg", "threads/2026-01-01-origin.md", _origin())
     write_cache_file(isolated_home, "wg", "threads/2026-02-01-fork.md", _fork())
-    cache = mcp_server._files_dir("wg")
+    cache = mcp.common._files_dir("wg")
     path = write_message_citations_digest(cache, scan_message_citations(cache))
     assert path is not None and Path(path).is_file()
     # Re-gather with nothing cited (narrower window / quotes only).
     assert write_message_citations_digest(cache, []) is None
     assert not Path(path).exists()
-    out = mcp_server.tool_find_message_citations("wg", "threads/2026-02-01-fork.md", 1)
+    out = mcp.citations.tool_find_message_citations("wg", "threads/2026-02-01-fork.md", 1)
     assert "No message-citations digest" in out
 
 
@@ -140,7 +140,7 @@ def test_tool_no_citations_for_file(isolated_home: Path) -> None:
     # Digest exists but the queried file is not in the graph.
     write_cache_file(isolated_home, "wg", "threads/2026-01-01-origin.md", _origin())
     write_cache_file(isolated_home, "wg", "threads/2026-02-01-fork.md", _fork())
-    cache = mcp_server._files_dir("wg")
+    cache = mcp.common._files_dir("wg")
     write_message_citations_digest(cache, scan_message_citations(cache))
-    out = mcp_server.tool_find_message_citations("wg", "threads/nope.md")
+    out = mcp.citations.tool_find_message_citations("wg", "threads/nope.md")
     assert "No message citations recorded" in out

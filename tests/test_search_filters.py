@@ -10,6 +10,7 @@ which ones come back.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 from typing import Iterable, List
@@ -512,7 +513,6 @@ def test_tool_search_summarises_uniform_closed_state(
     # Consumer feedback: when every hit is from a closed issue, that's
     # the answer the user cares about. Surface it once as a result-set
     # summary instead of N times as a per-hit `[closed]` tag.
-    from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "issues/org-repo/1.md",
@@ -533,7 +533,7 @@ def test_tool_search_summarises_uniform_closed_state(
         ),
     )
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_search("wg", "x", k=10)
+    out = mcp.search.tool_search("wg", "x", k=10)
     # Summary line is present and concrete about what "all closed" implies.
     assert "All " in out and "closed" in out
     assert "resolved" in out.lower()
@@ -542,7 +542,6 @@ def test_tool_search_summarises_uniform_closed_state(
 
 
 def test_tool_search_no_summary_when_states_mixed(isolated_home: Path) -> None:
-    from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "issues/org-repo/1.md",
@@ -559,7 +558,7 @@ def test_tool_search_no_summary_when_states_mixed(isolated_home: Path) -> None:
         ),
     )
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_search("wg", "x", k=10)
+    out = mcp.search.tool_search("wg", "x", k=10)
     # Mixed state → don't make claims about resolution.
     assert "All " not in out or "hits are from" not in out
 
@@ -570,7 +569,6 @@ def test_tool_search_surfaces_github_url_for_issue_hits(
     # Consumer feedback (round N-1): file paths aren't citeable. For
     # issue chunks, the URL stamped on the chunk at index time should
     # surface as a `url:` row in each search hit.
-    from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "issues/org-repo/1.md",
@@ -584,7 +582,7 @@ def test_tool_search_surfaces_github_url_for_issue_hits(
         ),
     )
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_search("wg", "x", k=5)
+    out = mcp.search.tool_search("wg", "x", k=5)
     assert "url: https://github.com/org/repo/issues/1" in out
 
 
@@ -595,7 +593,6 @@ def test_tool_search_surfaces_archived_at_for_thread_hits(
     # permalinks should likewise surface in thread chunks. Each message
     # has its OWN URL, so different chunks in the same file get
     # different urls.
-    from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "threads/2025-01-01-topic.md",
@@ -613,7 +610,7 @@ def test_tool_search_surfaces_archived_at_for_thread_hits(
         ),
     )
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_search("wg", "x", k=10)
+    out = mcp.search.tool_search("wg", "x", k=10)
     # Both message URLs appear, on their respective hits — and they're
     # different from each other (per-message, not per-file).
     assert "url: https://mailarchive.ietf.org/arch/msg/wg/aaa/" in out
@@ -628,7 +625,6 @@ def test_tool_search_group_by_file_collapses_overlapping_hits(
     # a lot of context burn. `group_by="file"` collapses to one row
     # per file with a hit count, so the consumer sees the four
     # distinct threads directly.
-    from ietf_llm import mcp_server
 
     # Three threads, each contributing multiple chunks (multiple
     # message sections). The thread file format produces a chunk per
@@ -647,7 +643,7 @@ def test_tool_search_group_by_file_collapses_overlapping_hits(
         write_cache_file(isolated_home, "wg", f"threads/{slug}.md", body)
     _build_with_stub("wg", isolated_home)
 
-    out = mcp_server.tool_search("wg", "anything", k=3, group_by="file")
+    out = mcp.search.tool_search("wg", "anything", k=3, group_by="file")
     # Top-level summary line names the rollup.
     assert "collapsed" in out
     # All three threads appear once (no duplicates).
@@ -725,7 +721,6 @@ def test_tool_search_group_by_file_caps_at_k(isolated_home: Path) -> None:
     # rows (one per file). The internal fetch is wider so that the
     # rollup has enough material to rank from, but the visible output
     # respects k.
-    from ietf_llm import mcp_server
 
     for i in range(8):
         write_cache_file(
@@ -735,7 +730,7 @@ def test_tool_search_group_by_file_caps_at_k(isolated_home: Path) -> None:
         )
     _build_with_stub("wg", isolated_home)
 
-    out = mcp_server.tool_search("wg", "x", k=3, group_by="file")
+    out = mcp.search.tool_search("wg", "x", k=3, group_by="file")
     # Count file references — should be at most 3.
     n_files = sum(1 for line in out.splitlines() if "file=threads/" in line)
     assert n_files <= 3
@@ -744,14 +739,13 @@ def test_tool_search_group_by_file_caps_at_k(isolated_home: Path) -> None:
 def test_tool_search_omits_url_for_unurled_chunks(isolated_home: Path) -> None:
     # Drafts / threads without Archived-At have no url — the `url:`
     # line must NOT appear.
-    from ietf_llm import mcp_server
 
     write_cache_file(
         isolated_home, "wg", "threads/2025-01-01-topic.md",
         "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody (no archived-at)\n",
     )
     _build_with_stub("wg", isolated_home)
-    out = mcp_server.tool_search("wg", "x", k=5)
+    out = mcp.search.tool_search("wg", "x", k=5)
     assert "url:" not in out
 
 
@@ -771,8 +765,7 @@ def test_search_hits_surface_duplicate_of(isolated_home: Path) -> None:
         ),
     )
     _build_with_stub("wg", isolated_home)
-    from ietf_llm import mcp_server
-    out = mcp_server.tool_search("wg", "x", k=5)
+    out = mcp.search.tool_search("wg", "x", k=5)
     assert "duplicate of: #155" in out
 
 
@@ -796,8 +789,7 @@ def test_search_hits_surface_closing_rationale(isolated_home: Path) -> None:
         ),
     )
     _build_with_stub("wg", isolated_home)
-    from ietf_llm import mcp_server
-    out = mcp_server.tool_search("wg", "x", k=5)
+    out = mcp.search.tool_search("wg", "x", k=5)
     # The rationale substance appears on a `closing:` line. Check the
     # specific line (not the whole output, since chunk-0's snippet
     # contains the full header text including the formatted rationale
@@ -824,8 +816,7 @@ def test_search_hits_for_thread_chunks_omit_issue_signals(
         "# T\n\n### [1] 2025-01-01 10:00 — Alice\n\nbody\n",
     )
     _build_with_stub("wg", isolated_home)
-    from ietf_llm import mcp_server
-    out = mcp_server.tool_search("wg", "x", k=5)
+    out = mcp.search.tool_search("wg", "x", k=5)
     assert "duplicate of:" not in out
     assert "closing:" not in out
 

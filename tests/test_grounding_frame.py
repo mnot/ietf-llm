@@ -10,14 +10,14 @@ integration tests drive tool_search / tool_read_topic against a seeded digest.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 from typing import Iterable, List
 
 import pytest
 
-from ietf_llm import embeddings, mcp_server
-from ietf_llm.mcp import common
+from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -32,9 +32,9 @@ _MARKER = "Before characterising any decision"
 
 def test_frame_fires_over_msg_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        common, "_thread_sizes", lambda wg: {"threads/big.md": ("325", "62")}
+        mcp.common, "_thread_sizes", lambda wg: {"threads/big.md": ("325", "62")}
     )
-    out = mcp_server._grounding_frame("wg", ["threads/big.md"])
+    out = mcp.common._grounding_frame("wg", ["threads/big.md"])
     assert _MARKER in out
     assert "read_ietf_interpretation_norms" in out
     assert "325 msgs, 62 participants" in out
@@ -44,33 +44,33 @@ def test_frame_fires_over_msg_threshold(monkeypatch: pytest.MonkeyPatch) -> None
 def test_frame_fires_on_participants_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     # Few messages but many distinct participants is still a real debate.
     monkeypatch.setattr(
-        common, "_thread_sizes", lambda wg: {"threads/wide.md": ("12", "9")}
+        mcp.common, "_thread_sizes", lambda wg: {"threads/wide.md": ("12", "9")}
     )
-    assert "threads/wide.md" in mcp_server._grounding_frame("wg", ["threads/wide.md"])
+    assert "threads/wide.md" in mcp.common._grounding_frame("wg", ["threads/wide.md"])
 
 
 def test_frame_quiet_under_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        common, "_thread_sizes", lambda wg: {"threads/small.md": ("6", "3")}
+        mcp.common, "_thread_sizes", lambda wg: {"threads/small.md": ("6", "3")}
     )
-    assert mcp_server._grounding_frame("wg", ["threads/small.md"]) == ""
+    assert mcp.common._grounding_frame("wg", ["threads/small.md"]) == ""
 
 
 def test_frame_ignores_non_thread_files(monkeypatch: pytest.MonkeyPatch) -> None:
     # A draft file never triggers the frame even if (somehow) sized.
     monkeypatch.setattr(
-        common, "_thread_sizes", lambda wg: {"drafts/draft-x-00.txt": ("99", "99")}
+        mcp.common, "_thread_sizes", lambda wg: {"drafts/draft-x-00.txt": ("99", "99")}
     )
-    assert mcp_server._grounding_frame("wg", ["drafts/draft-x-00.txt"]) == ""
+    assert mcp.common._grounding_frame("wg", ["drafts/draft-x-00.txt"]) == ""
 
 
 def test_frame_picks_largest_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        common,
+        mcp.common,
         "_thread_sizes",
         lambda wg: {"threads/a.md": ("25", "8"), "threads/b.md": ("400", "70")},
     )
-    out = mcp_server._grounding_frame("wg", ["threads/a.md", "threads/b.md"])
+    out = mcp.common._grounding_frame("wg", ["threads/a.md", "threads/b.md"])
     assert "threads/b.md" in out and "400 msgs" in out
 
 
@@ -78,11 +78,11 @@ def test_frame_tolerates_unparseable_size_cells(monkeypatch: pytest.MonkeyPatch)
     # A malformed digest row (non-numeric Msgs/Participants) parses to 0 via
     # _first_int and falls below threshold rather than crashing.
     monkeypatch.setattr(
-        common,
+        mcp.common,
         "_thread_sizes",
         lambda wg: {"threads/junk.md": ("(no subject)", "Selection, Config...")},
     )
-    assert mcp_server._grounding_frame("wg", ["threads/junk.md"]) == ""
+    assert mcp.common._grounding_frame("wg", ["threads/junk.md"]) == ""
 
 
 # --- integration through the tools -----------------------------------------
@@ -148,7 +148,7 @@ def _seed_small_thread(home: Path) -> None:
 def test_tool_search_prepends_grounding_frame(isolated_home: Path) -> None:
     _seed_big_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_search("wg", "ML-DSA", k=10)
+    out = mcp.search.tool_search("wg", "ML-DSA", k=10)
     assert _MARKER in out
     assert "325 msgs, 62 participants" in out
     # Frame is at the TOP — before the first rendered hit.
@@ -158,7 +158,7 @@ def test_tool_search_prepends_grounding_frame(isolated_home: Path) -> None:
 def test_tool_search_no_frame_for_small_thread(isolated_home: Path) -> None:
     _seed_small_thread(isolated_home)
     _build_with_stub("wg")
-    assert _MARKER not in mcp_server.tool_search("wg", "ML-DSA", k=10)
+    assert _MARKER not in mcp.search.tool_search("wg", "ML-DSA", k=10)
 
 
 def test_tool_search_frame_survives_group_by_file(isolated_home: Path) -> None:
@@ -166,7 +166,7 @@ def test_tool_search_frame_survives_group_by_file(isolated_home: Path) -> None:
     # prepended independently and must still fire for the big thread.
     _seed_big_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_search("wg", "ML-DSA", k=10, group_by="file")
+    out = mcp.search.tool_search("wg", "ML-DSA", k=10, group_by="file")
     assert _MARKER in out and "325 msgs, 62 participants" in out
 
 
@@ -175,7 +175,7 @@ def test_read_topic_prepends_grounding_frame(isolated_home: Path) -> None:
     # the frame, and before the messages.
     _seed_big_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_read_topic("wg", "ML-DSA", k=10)
+    out = mcp.topic.tool_read_topic("wg", "ML-DSA", k=10)
     assert _MARKER in out
     # Frame precedes the first chronological message header (`## [1] …`).
     assert out.index(_MARKER) < out.index("## [1]")
@@ -184,7 +184,7 @@ def test_read_topic_prepends_grounding_frame(isolated_home: Path) -> None:
 def test_read_topic_no_frame_for_small_thread(isolated_home: Path) -> None:
     _seed_small_thread(isolated_home)
     _build_with_stub("wg")
-    assert _MARKER not in mcp_server.tool_read_topic("wg", "ML-DSA", k=10)
+    assert _MARKER not in mcp.topic.tool_read_topic("wg", "ML-DSA", k=10)
 
 
 def test_find_related_has_no_grounding_frame(isolated_home: Path) -> None:
@@ -192,5 +192,5 @@ def test_find_related_has_no_grounding_frame(isolated_home: Path) -> None:
     # _render_hits, so find_related (which also uses _render_hits) is unaffected.
     _seed_big_thread(isolated_home)
     _build_with_stub("wg")
-    out = mcp_server.tool_find_related("wg", "threads/2026-04-09-wglc-mldsa.md", 1)
+    out = mcp.search.tool_find_related("wg", "threads/2026-04-09-wglc-mldsa.md", 1)
     assert _MARKER not in out

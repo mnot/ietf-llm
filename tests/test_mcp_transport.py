@@ -4,12 +4,12 @@ configurable host/port. No socket is bound -- uvicorn.run is stubbed.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 import uvicorn
 import pytest
 from starlette.applications import Starlette
 
-from ietf_llm import mcp_server
 
 
 @pytest.mark.parametrize(
@@ -29,7 +29,7 @@ def test_resolve_transport(monkeypatch, value, expected):
         monkeypatch.delenv("IETF_LLM_MCP_TRANSPORT", raising=False)
     else:
         monkeypatch.setenv("IETF_LLM_MCP_TRANSPORT", value)
-    assert mcp_server._resolve_transport() == expected
+    assert mcp.common._resolve_transport() == expected
 
 
 class _FakeServer:
@@ -52,7 +52,7 @@ def test_run_http_binds_configured_host_port(monkeypatch):
     monkeypatch.setenv("IETF_LLM_MCP_HOST", "0.0.0.0")
     monkeypatch.setenv("IETF_LLM_MCP_PORT", "9001")
     srv = _FakeServer()
-    mcp_server._run_http(srv)
+    mcp.serve._run_http(srv)
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9001
     # The served app is the streamable-HTTP app (now carrying /health).
@@ -67,7 +67,7 @@ def test_run_http_defaults(monkeypatch):
     )
     monkeypatch.delenv("IETF_LLM_MCP_HOST", raising=False)
     monkeypatch.delenv("IETF_LLM_MCP_PORT", raising=False)
-    mcp_server._run_http(_FakeServer())
+    mcp.serve._run_http(_FakeServer())
     assert captured == {"host": "127.0.0.1", "port": 8000}
 
 
@@ -78,5 +78,5 @@ def test_run_http_bad_port_falls_back(monkeypatch):
         lambda app, host, port, **kw: captured.update(port=port),
     )
     monkeypatch.setenv("IETF_LLM_MCP_PORT", "notanint")
-    mcp_server._run_http(_FakeServer())
+    mcp.serve._run_http(_FakeServer())
     assert captured == {"port": 8000}

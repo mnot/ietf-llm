@@ -8,6 +8,7 @@ against real sidecars, not hand-built fixtures.
 """
 
 from __future__ import annotations
+from ietf_llm import mcp
 
 from pathlib import Path
 from typing import Iterable, List
@@ -16,7 +17,7 @@ from ietf_llm import embeddings, routing
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.embeddings.topics import generate_topics, routing_projection
 from ietf_llm.kv_store import InMemoryKvStore
-from ietf_llm.mcp_server import tool_which_corpus
+from ietf_llm.mcp.corpus import tool_which_corpus
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
 from conftest import write_cache_file
