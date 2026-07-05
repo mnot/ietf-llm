@@ -361,8 +361,11 @@ ietf_llm/
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
 │                           # ranks the _catalog/ singleton by topic, tags cached efforts
-├── gather_runner.py        # in-session gather: runs the __main__ pipeline off-thread,
+├── gather_runner.py        # in-session gather orchestration: queue/leases/heartbeat,
 │                           # writes gather-status.json (start_gather / gather_status)
+├── gather_pipeline.py      # runs the __main__ pipeline in a child process, streams
+│                           # its progress back (keeps a CPU-heavy stage off the server)
+├── gather_child.py         # the child entry point (python -m ietf_llm.gather_child)
 ├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
 ├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
 ├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
@@ -824,13 +827,33 @@ replica (which must stay read-only). `IETF_LLM_ENABLE_GATHER` overrides either
 way. The registration gate and the user-facing "go gather" hints read the one
 resolved value (`freshness.gather_enabled`), so the tool is registered iff the
 hints recommend it — they can't drift. `start_gather` runs the same `__main__`
-pipeline as the CLI in a **daemon thread** (`gather_runner`), never bounded by
-the per-call tool deadline (only the caller's optional `wait` is); progress
-lands in a per-corpus `gather-status.json` that `gather_status` reads back,
-stage-level via the shared `stage_plan`. A non-blocking per-corpus `file_lock`
-allows one gather per corpus (serialising against a concurrent CLI gather) while
-different corpora run in parallel. `gather_runner` and the pipeline are imported
-lazily so the default serve path never pulls them in.
+pipeline as the CLI, never bounded by the per-call tool deadline (only the
+caller's optional `wait` is); progress lands in a per-corpus `gather-status.json`
+that `gather_status` reads back, stage-level via the shared `stage_plan`. A
+non-blocking per-corpus `file_lock` allows one gather per corpus (serialising
+against a concurrent CLI gather) while different corpora run in parallel.
+`gather_runner` and the pipeline are imported lazily so the default serve path
+never pulls them in.
+
+A **daemon worker thread** (`gather_runner`) owns the queue, leases, heartbeat,
+and status record, but the pipeline itself runs in a **child process**
+(`gather_pipeline` → `python -m ietf_llm.gather_child`), streaming stage progress
+back to the worker over a pipe. This is deliberate: the embedding-index build is
+CPU-bound, and in-thread it held the GIL long enough to starve the server's
+event loop — so a read stalled during that stage (even the server's own tool
+deadline couldn't fire) and "still gathering" was indistinguishable from "server
+dead". Off-process, the worker only blocks on the pipe (GIL released) and the
+server stays responsive; a stalled read now times out cleanly, and its timeout
+message names the running stage. Cancellation (`stop_gather`) terminates the
+child; a child crash fails one gather instead of the whole server. Under
+`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
+which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
+the stage and how many are left) since there is no prior snapshot; a re-gather
+keeps serving the previous published version until the new one is ready. That
+last guarantee needs the index build to be **atomic**: the build writes a scratch
+DB (seeded from the live index, so it stays incremental) and `os.replace`s it
+into place as a standalone (DELETE-journal) file, so a reader never sees a
+half-populated index — see "Writers are write-if-changed and atomic".
 
 ### The networked read exception: live Datatracker lookups
 

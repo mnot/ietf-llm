@@ -1,14 +1,17 @@
-"""In-process background gather runner for the MCP server.
+"""Background gather orchestration for the MCP server.
 
 The MCP server is otherwise read-only and never touches the network; this
 module is the one deliberate exception, gated by `mcp_server._gather_enabled`
 (on by default for a local stdio server, off for the shared HTTP deployment;
 `IETF_LLM_ENABLE_GATHER` overrides either way). A `start_gather`
-tool call returns immediately, enqueuing the request; a background worker runs
-the same pipeline as the `ietf-llm` CLI and records stage-level progress to a
-per-corpus status record (`~/.cache/ietf-llm/<corpus>/gather-status.json` and,
-on the cloud backend, the control plane) that the `gather_status` tool reads
-back.
+tool call returns immediately, enqueuing the request; a background worker thread
+runs the same pipeline as the `ietf-llm` CLI — out of process, via
+`gather_pipeline` (so a CPU-heavy stage can't stall the server) — and records
+stage-level progress to a per-corpus status record
+(`~/.cache/ietf-llm/<corpus>/gather-status.json` and, on the cloud backend, the
+control plane) that the `gather_status` tool reads back. This module owns the
+queue, leases, heartbeat, and status record; `gather_pipeline` owns running the
+pipeline and streaming its progress back into the worker's callbacks.
 
 Concurrency model — `N = service_config.gather_max_inflight()` (default 3) caps
 gather concurrency two ways, keeping the pipeline polite to shared upstreams
@@ -45,7 +48,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import canonical, freshness, serve_metrics, service_config
+from . import canonical, freshness, gather_pipeline, serve_metrics, service_config
+
+# `GatherCancelled` lives in `gather_pipeline` (the raiser) and is re-exported
+# here so callers and `_run_one`'s `except` keep referring to it as
+# `gather_runner.GatherCancelled`. `gather_pipeline` is light (it defers the
+# heavy pipeline import to gather time) and never imports gather_runner — the
+# cancel check is passed in as a callback — so the dependency runs one way.
+from .gather_pipeline import GatherCancelled
 from .utils import (
     LogLevel,
     Verbosity,
@@ -124,12 +134,6 @@ _heartbeat_thread: "Optional[threading.Thread]" = None  # pylint: disable=invali
 #: which the worker polls — best-effort cross-host (see `request_stop`).
 _cancel_tokens: Dict[str, str] = {}
 _cancel_events: Dict[str, threading.Event] = {}
-
-
-class GatherCancelled(BaseException):
-    """Raised inside the gather worker when a stop has been requested, to unwind
-    the pipeline to a terminal `cancelled` status. Subclasses `BaseException` so
-    a stage's broad `except Exception` cannot swallow the stop signal."""
 
 
 def _hash_token(token: str) -> str:
@@ -650,11 +654,9 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     """Run one queued gather: wait for a fleet-wide slot, then run the pipeline,
     publishing status at each transition. Holds the per-corpus lease throughout
     (released by the worker loop). Never raises — failures become a `failed`
-    status."""
-    # Imported lazily so the read-only serve path doesn't pull the gather
-    # pipeline (and its many imports) unless gather is actually enabled.
-    from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
-
+    status. The pipeline itself runs in a subprocess (`gather_pipeline`), so this
+    worker thread only orchestrates and streams progress — a CPU-heavy stage
+    never holds the GIL here and stalls the server."""
     corpus = spec.corpus
     slot_owner = _slot_owner(owner, corpus)
     status = _new_status(spec, "queued")
@@ -763,8 +765,8 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
 
         try:
-            ok = gather_main.run_gather(
-                spec.to_argv(), Verbosity.STATUS, progress=_progress, note_fn=_note
+            ok = gather_pipeline.run_pipeline(
+                spec, _progress, _note, lambda: _cancel_requested(corpus)
             )
             if ok:
                 # Publish the gathered tree as a new version. A no-op finalise on
