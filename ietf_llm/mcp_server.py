@@ -277,6 +277,13 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
                 f"{gather_suggestion(wg, purpose='to gather it')}, or call "
                 "`list_corpora` to see what is available."
             )
+        # Refuse rather than serve half-built content while a corpus's *first*
+        # gather runs — there is no prior snapshot to fall back on, so the cache
+        # is being built in place. A re-gather is not guarded (it keeps serving
+        # the previous complete version).
+        first_gather = _first_gather_guard(wg)
+        if first_gather is not None:
+            return first_gather
         # Record the access now the corpus is known to exist: this guard fronts
         # every per-corpus read tool but not the cross-corpus discovery tools
         # (list_corpora / search_corpora / which_corpus), so listing never
@@ -321,6 +328,100 @@ _MAX_SEARCH_K = 100
 
 
 # --- Tool implementations (plain functions, also usable for unit tests) -----
+
+
+def _stage_phrase(status: Optional[Dict[str, Any]]) -> Optional[str]:
+    """`stage N/M (name)` for a running gather status, or None before any stage
+    is entered. Shared by the still-running / timeout / refusal messages so they
+    all name the same point in the pipeline (`stage_index` starts at 0)."""
+    if not status:
+        return None
+    idx = status.get("stage_index") or 0
+    total = status.get("stage_total")
+    stage = status.get("stage")
+    if total and idx:
+        return f"stage {idx}/{total}" + (f" ({stage})" if stage else "")
+    if stage:
+        return f"stage: {stage}"
+    return None
+
+
+def _first_gather_guard(wg: str) -> Optional[str]:
+    """Refuse a read while the corpus's *first* gather is still running, else
+    None.
+
+    A first gather has no previously-published snapshot to fall back on, so the
+    cache is being built in place and any read would serve half-built content
+    that reads like a real answer. Refuse, naming the stage, rather than return
+    it. A re-gather (a completed version exists — `last_gathered` is set) is not
+    guarded here: it keeps serving the previous complete snapshot with the
+    in-flight caveat from `_inflight_refresh_note`."""
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    status = gather_runner.local_inflight(wg)
+    if not status or last_gathered(wg) is not None:
+        return None
+    phrase = _stage_phrase(status) or "starting"
+    total = status.get("stage_total")
+    idx = status.get("stage_index") or 0
+    left = f", {total - idx} stage(s) left" if total and idx else ""
+    return (
+        f"First gather of '{wg}' is still in progress ({phrase}{left}); the "
+        "corpus is not queryable yet — its search index and digests are built in "
+        f'the final stages. Call `gather_status(corpus="{wg}", wait=60)` to block '
+        "until it reports `done`, then retry."
+    )
+
+
+def _index_rebuilding_note(wg: str) -> Optional[str]:
+    """Caveat for an empty index-backed read when a gather is running and the
+    index cannot be served yet (absent / mid-rebuild), else None.
+
+    With the atomic index swap a re-gather keeps the previous index servable
+    throughout, so this is a safety net (e.g. a legacy in-place index that never
+    completed): it turns a bare "no results" into "not ready yet"."""
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    status = gather_runner.local_inflight(wg)
+    if not status or probe_index(wg):
+        return None
+    phrase = _stage_phrase(status) or "in progress"
+    return (
+        f"the search index for '{wg}' is being rebuilt ({phrase}) and isn't ready "
+        f'yet — retry once `gather_status(corpus="{wg}")` reports `done`'
+    )
+
+
+def _timeout_inflight_note(
+    fn: Callable[..., str], args: "tuple[Any, ...]"
+) -> Optional[str]:
+    """A clearer read-timeout message when the slow call was a per-corpus read
+    and a gather for that corpus is running, else None.
+
+    Names the stage so "still gathering" is distinguishable from "server fell
+    over" — the exact ambiguity a client hits when a read stalls mid-gather. The
+    gather runs in a subprocess, so the server stays responsive and this
+    deadline fires cleanly; the read was slow because it touched the cache
+    mid-rebuild."""
+    if not args:
+        return None
+    corpus = args[0]
+    if not isinstance(corpus, str) or not corpus.strip():
+        return None
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    if not gather_runner.valid_corpus_name(corpus):
+        return None
+    status = gather_runner.local_inflight(corpus)
+    if not status:
+        return None
+    phrase = _stage_phrase(status) or "in progress"
+    return (
+        f"(The read timed out because a gather for '{corpus}' is still running "
+        f"({phrase}) — not because the server is unresponsive. It is serving the "
+        f'previous snapshot; retry once `gather_status(corpus="{corpus}")` '
+        "reports `done`.)"
+    )
 
 
 def _inflight_refresh_note(wg: str) -> Optional[str]:
@@ -1480,6 +1581,9 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         verbose=Verbosity.QUIET,
     )
     if not hits:
+        rebuilding = _index_rebuilding_note(wg)
+        if rebuilding is not None:
+            return _with_freshness(wg, f"(no results yet — {rebuilding})")
         no_index = (
             f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
             if gather_enabled()
@@ -1897,6 +2001,9 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         verbose=Verbosity.QUIET,
     )
     if not hits:
+        rebuilding = _index_rebuilding_note(wg)
+        if rebuilding is not None:
+            return _with_freshness(wg, f"(no results yet — {rebuilding})")
         no_index = (
             f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
             if gather_enabled()
@@ -2888,6 +2995,9 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         Verbosity.STATUS,
         level=LogLevel.ERROR,
     )
+    inflight = _timeout_inflight_note(fn, args)
+    if inflight is not None:
+        return inflight
     return (
         f"(Tool timed out after {int(timeout)}s. This is usually transient — "
         "retry. If it persists: the embedding model may still be loading "
@@ -3050,8 +3160,11 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         final = _await_gather(corpus, budget)
         if final and final.get("state") in _TERMINAL_GATHER_STATES:
             return _format_waited_result(final, corpus)
+        phrase = _stage_phrase(final)
+        at = f" (currently {phrase})" if phrase else ""
         return (
-            f"Waited ~{int(budget)}s; the gather is still in progress. "
+            f"Waited ~{int(budget)}s; the gather is still in progress{at}. The "
+            f"embedding-index and topic-map stages at the end are the slow tail. "
             f"⚠ Reads before it reports `done` may be stale or partial — search "
             f"and digests are built in the *final* stages, and a re-gather keeps "
             f"serving the previous snapshot until it finishes. To block until "
@@ -4976,11 +5089,18 @@ def main() -> None:  # pylint: disable=too-many-locals
             sleep. A quick re-gather usually completes within that window; a
             *first* gather of a corpus can run for minutes, so if it is still
             going when the wait elapses the reply falls back to a progress line
-            plus a stop token — then poll `gather_status(corpus=...)` until it
-            reports `done`. Pass `wait=0` to return immediately instead
-            (fire-and-forget: kick off the gather and do other work), or a
-            custom `wait` (seconds) to block longer or shorter. Later
-            re-gathers fetch only what changed since last time.
+            (the stage it reached, e.g. `stage 18/19 (embedding index)`) plus a
+            stop token — then poll `gather_status(corpus=...)` until it reports
+            `done`. Pass `wait=0` to return immediately instead (fire-and-forget:
+            kick off the gather and do other work), or a custom `wait` (seconds)
+            to block longer or shorter. Later re-gathers fetch only what changed
+            since last time.
+
+            The corpus isn't queryable until `done`. While a **first** gather
+            runs the read tools refuse (there's no prior snapshot to serve),
+            telling you the stage and how many are left — so poll rather than
+            read early. A **re-gather** keeps serving the previous snapshot
+            (flagged as a refresh in progress), so querying it meanwhile is fine.
 
             The corpus **shape is inferred** from what you pass — you don't
             declare it:

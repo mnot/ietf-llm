@@ -116,6 +116,28 @@ def test_start_gather_forwards_spec_and_reports_started(
     assert spec.months == 6
 
 
+def test_start_gather_still_running_names_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When the bounded wait expires with the gather still going, the reply must
+    # name the stage it is on (surfaced from the status the poll already read),
+    # so the caller isn't left guessing between "still working" and "stuck".
+    monkeypatch.setattr(
+        gather_runner, "start",
+        lambda spec: {"started": True, "corpus": spec.corpus},
+    )
+    monkeypatch.setattr(
+        mcp_server, "_await_gather",
+        lambda corpus, budget: {"corpus": corpus, "state": "running",
+                                "stage_index": 18, "stage_total": 19,
+                                "stage": "embedding index"},
+    )
+    out = mcp_server.tool_start_gather("tls", wait=1)
+    assert "still in progress" in out
+    assert "18/19" in out and "embedding index" in out
+    assert "slow tail" in out
+
+
 def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         gather_runner, "start",

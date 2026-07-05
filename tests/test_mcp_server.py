@@ -460,6 +460,100 @@ def test_inflight_note_omits_zero_index_stage(
     assert bare is not None and "in progress" in bare
 
 
+def test_stage_phrase_renders_or_none() -> None:
+    from ietf_llm import mcp_server as srv
+
+    assert srv._stage_phrase(None) is None
+    assert srv._stage_phrase({"stage_index": 0, "stage_total": 19}) is None
+    assert (
+        srv._stage_phrase(
+            {"stage_index": 18, "stage_total": 19, "stage": "embedding index"}
+        )
+        == "stage 18/19 (embedding index)"
+    )
+    assert srv._stage_phrase({"stage": "mailing list"}) == "stage: mailing list"
+
+
+def test_first_gather_guard_refuses_when_never_gathered(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A first gather has no prior snapshot, so reads must refuse (naming the
+    # stage and how many are left) rather than serve a half-built cache.
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 5,
+                    "stage_total": 19, "stage": "drafts"},
+    )
+    msg = srv._first_gather_guard("wg")
+    assert msg is not None
+    assert "first gather" in msg.lower()
+    assert "5/19" in msg
+    assert "14 stage" in msg  # 19 - 5 still to go
+    assert "gather_status" in msg
+
+
+def test_first_gather_guard_allows_regather_and_idle(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import gather_runner, mcp_server as srv
+    from ietf_llm.freshness import record_gather
+
+    # A completed version already exists -> a re-gather keeps serving it.
+    record_gather("wg")
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 5,
+                    "stage_total": 19},
+    )
+    assert srv._first_gather_guard("wg") is None
+    # No gather live -> no guard.
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    assert srv._first_gather_guard("wg") is None
+
+
+def test_timeout_note_names_running_gather(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 18,
+                    "stage_total": 19, "stage": "embedding index"},
+    )
+    note = srv._timeout_inflight_note(srv.tool_search, ("wg", "query"))
+    assert note is not None
+    assert "still running" in note.lower()
+    assert "18/19" in note and "embedding index" in note
+    assert "not because the server is unresponsive" in note
+    # A first arg that is not a valid corpus name (a query, a number) is ignored.
+    assert srv._timeout_inflight_note(srv.tool_search, ("a query!", "q")) is None
+    # Empty args (a no-corpus tool) -> no note.
+    assert srv._timeout_inflight_note(srv.tool_search, ()) is None
+    # No gather live -> no note.
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    assert srv._timeout_inflight_note(srv.tool_search, ("wg", "query")) is None
+
+
+def test_index_rebuilding_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 18,
+                    "stage_total": 19, "stage": "embedding index"},
+    )
+    monkeypatch.setattr(srv, "probe_index", lambda wg: False)
+    note = srv._index_rebuilding_note("wg")
+    assert note is not None and "being rebuilt" in note and "18/19" in note
+    # A servable index -> the empty result is real, no "not ready" caveat.
+    monkeypatch.setattr(srv, "probe_index", lambda wg: True)
+    assert srv._index_rebuilding_note("wg") is None
+    # No gather live -> no note.
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    assert srv._index_rebuilding_note("wg") is None
+
+
 def test_top_level_response_silent_when_no_sentinel(isolated_home: Path) -> None:
     # Legacy cache with no sentinel: no freshness line, just the body.
     write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
