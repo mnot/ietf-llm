@@ -133,9 +133,9 @@ def test_start_gather_still_running_names_stage(
                                 "stage": "embedding index"},
     )
     out = mcp_server.tool_start_gather("tls", wait=1)
-    assert "still in progress" in out
+    assert "still gathering" in out
     assert "18/19" in out and "embedding index" in out
-    assert "slow tail" in out
+    assert "slow part" in out
 
 
 def test_start_gather_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -537,7 +537,7 @@ def test_start_gather_wait_times_out_reports_progress(
         lambda corpus: {"corpus": corpus, "state": "running"},
     )
     out = mcp_server.tool_start_gather("tls", wait=0.05)
-    assert "still in progress" in out
+    assert "still gathering" in out
     # Falls back to the start reply, so the poll hint + stop token survive.
     assert "gather_status" in out and "tok" in out
 

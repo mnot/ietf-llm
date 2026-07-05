@@ -537,40 +537,12 @@ _NEXT_TOOLS_HINT = (
 
 
 def _session_facts_line() -> str:
-    """Server-authoritative footer stating this session's deployment topology and
-    whether in-session gather is available, so a client reads both from the
-    server rather than inferring them from the transport-flavoured wording in the
-    tool descriptions. That inference has misfired both ways: a client on a local
-    stdio server assumed a *shared* deployment and hedged about per-user gather
-    costs that don't exist single-user, and another assumed gather was disabled.
-    These are derived from how *this* server is configured, so unlike a guess
-    they can't be wrong."""
-    if deployment_mode() == "http":
-        topo = (
-            "an HTTP server (possibly shared / hosted), so a wide gather fan-out "
-            "can cost other users — gather deliberately"
-        )
-    else:
-        topo = (
-            "a local stdio server (single-user), so a gather costs only you — "
-            "gather freely, no permission needed"
-        )
-    if gather_enabled():
-        cap = (
-            "in-session gather is available here: call "
-            '`start_gather(corpus="<name>")` (do a tool search for it first if it '
-            "is not loaded)"
-        )
-    else:
-        cap = (
-            "in-session gather is not available here — run `ietf-llm <name>` "
-            "locally, then query it in this session"
-        )
-    return (
-        f"\n\n_This session: {topo}. To add a corpus not listed above, {cap}. "
-        "Read these from here, not from the transport wording in the tool "
-        "descriptions — this line is authoritative._"
-    )
+    """Server-authoritative footer restating this session's deployment and
+    capability (the same facts as the `instructions` session block, from the same
+    phrase helpers) at the point a client decides whether/how to add a missing
+    corpus — because the reports showed clients acting on `list_corpora` output
+    without having read the instructions."""
+    return f"\n\n_This session — {_deployment_phrase()}; {_gather_brief()}._"
 
 
 def _corpus_sources(wg: str) -> str:
@@ -2856,7 +2828,8 @@ def _load_server_instructions() -> str:
     """
     try:
         path = resources.files("ietf_llm").joinpath("data/mcp-instructions.md")
-        return _strip_frontmatter(path.read_text(encoding="utf-8"))
+        text = _strip_frontmatter(path.read_text(encoding="utf-8"))
+        return text.replace("{{SESSION}}", _session_block())
     except (FileNotFoundError, OSError):
         return ""
 
@@ -2872,6 +2845,76 @@ SERVER_FEATURES: tuple[str, ...] = (
     "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_schedule
     "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
 )
+
+
+def _deployment_phrase() -> str:
+    """One clause stating this server's topology (only) — fixed for its lifetime.
+    The gather-cost implication lives in `_gather_cost_clause`, since it only
+    applies when gather is actually available (a read-only server has no cost to
+    weigh). Shared by the session block and the `list_corpora` footer."""
+    if deployment_mode() == "http":
+        return "a shared HTTP server (may be multi-user)"
+    return "a local, single-user stdio server"
+
+
+def _gather_cost_clause() -> str:
+    """The cost caution for a gather, scoped to the topology — rendered only when
+    gather is available, so read-only mode never claims a gather is 'free'."""
+    if deployment_mode() == "http":
+        return (
+            "a wide gather fan-out can cost other users, so gather deliberately "
+            "(only the efforts that dominate the question)"
+        )
+    return "a gather costs only you, so gather freely, no permission needed"
+
+
+def _capability_phrase() -> str:
+    """One clause stating whether in-session gather + live Datatracker lookups
+    are available here (they share one gate), with the topology-scoped gather
+    cost when they are, and the fallback when not."""
+    if gather_enabled():
+        return (
+            "in-session gather and live Datatracker lookups are available here — "
+            '`start_gather(corpus="<name>")` adds a corpus and `draft_status` / '
+            "`meeting_schedule` read live state (load a tool via a tool search if "
+            f"your client has not yet); {_gather_cost_clause()}"
+        )
+    return (
+        "this is a read-only server — `start_gather`, `draft_status`, and "
+        "`meeting_schedule` are not present; to add a corpus have the user run "
+        "`ietf-llm <name>` locally, and use `list_drafts` / `list_meetings` / "
+        "`read_minutes` for draft and meeting facts"
+    )
+
+
+def _gather_brief() -> str:
+    """The gather half of `_capability_phrase`, trimmed for the `list_corpora`
+    footer (which only needs the add-a-corpus decision, not the live-tool
+    detail); carries the topology-scoped cost only when gather is available."""
+    if gather_enabled():
+        return (
+            'in-session gather is available (`start_gather(corpus="<name>")`; '
+            f"tool-search for it if your client has not loaded it) — "
+            f"{_gather_cost_clause()}"
+        )
+    return (
+        "read-only — no `start_gather`; to add a corpus have the user run "
+        "`ietf-llm <name>` locally"
+    )
+
+
+def _session_block() -> str:
+    """The mode-specific facts injected into the `instructions` field at
+    `{{SESSION}}`, so a client reads its deployment and capability as stated
+    facts instead of inferring them from the (mode-neutral) tool descriptions —
+    the guessing that produced wrong 'shared backend' / 'gather disabled'
+    refusals. Composed once at startup; both axes are fixed for the session."""
+    return (
+        "Fixed for this server's lifetime — read these here, don't infer them "
+        "from the tool descriptions below:\n\n"
+        f"- **Deployment:** {_deployment_phrase()}.\n"
+        f"- **Capability:** {_capability_phrase()}."
+    )
 
 
 def _capability_footer() -> str:
@@ -3209,15 +3252,12 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         where = "; ".join(p for p in (phrase, elapsed) if p)
         at = f" ({where})" if where else ""
         return (
-            f"Waited ~{int(budget)}s; the gather is still in progress{at}. The "
-            f"embedding-index and topic-map stages at the end are the slow tail. "
-            f"It could take a few more minutes — tell the user that and offer to "
-            f"check back once it reports `done`, rather than waiting silently. "
-            f"⚠ Reads before it reports `done` may be stale or partial — search "
-            f"and digests are built in the *final* stages, and a re-gather keeps "
-            f"serving the previous snapshot until it finishes. To block until "
-            f'done, call `gather_status(corpus="{corpus}", wait=60)` rather than '
-            f"reading now. {out}"
+            f"Waited ~{int(budget)}s; still gathering{at} — the embedding-index / "
+            f"topic-map tail is the slow part, so it could take a few more "
+            f"minutes. Tell the user and offer to check back once `gather_status` "
+            f"reports `done`; reads before then are stale or partial. Block with "
+            f'`gather_status(corpus="{corpus}", wait=60)` rather than reading now. '
+            f"{out}"
         )
     return out
 
@@ -4071,9 +4111,9 @@ def main() -> None:  # pylint: disable=too-many-locals
         (prefer the cached ones) → gather the **few** efforts that
         dominate the topic (`start_gather` / `ietf-llm <acronym>`), not
         all of them, and tell the user what you skipped → query each
-        gathered corpus → synthesize. On a shared server a wide gather
-        fan-out costs everyone, so over-gathering is the failure mode to
-        avoid.
+        gathered corpus → synthesize. Over-gathering is the failure mode
+        to avoid (slow, and on a shared server it costs others — see
+        **This session**).
 
         `limit` caps results (default 15).
         """

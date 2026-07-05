@@ -103,17 +103,17 @@ def test_list_corpora_states_session_facts(
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
     monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
     on = mcp_server.tool_list_corpora()
-    assert "gather is available here" in on.lower()
-    assert "start_gather" in on
-    assert "local stdio server (single-user)" in on.lower()
+    assert "single-user stdio server" in on.lower()
     assert "costs only you" in on.lower()  # no shared-cost hedging locally
-    # HTTP: the shared-cost caution is scoped on, gather off.
+    assert "in-session gather is available" in on.lower()
+    assert "start_gather" in on
+    # HTTP + read-only: the shared-cost caution is scoped on, gather off.
     monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "http")
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
     off = mcp_server.tool_list_corpora()
-    assert "gather is not available here" in off.lower()
+    assert "shared http server" in off.lower()
+    assert "read-only" in off.lower()
     assert "ietf-llm <name>" in off
-    assert "possibly shared" in off.lower()
 
 
 def test_set_deployment_mode_normalises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1222,6 +1222,23 @@ def test_load_server_instructions_is_markdown_heading() -> None:
     assert out is not None
     assert out.lstrip().startswith("#")
     assert "---" not in out.splitlines()[0]
+
+
+def test_load_server_instructions_states_session_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The {{SESSION}} placeholder must be substituted with the mode-specific
+    # facts (never served raw), so a client reads its deployment/capability
+    # instead of inferring it.
+    from ietf_llm import freshness
+
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
+    assert "{{SESSION}}" not in out  # placeholder resolved
+    assert "## This session" in out
+    assert "single-user stdio server" in out.lower()
+    assert "available here" in out.lower()
 
 
 def test_load_server_instructions_includes_load_bearing_content() -> None:

@@ -28,48 +28,35 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 > consensus** — any sentence asserting a collective outcome (settled, agreed,
 > rejected, "the WG wants") — call `read_ietf_interpretation_norms` first.
 
+## This session
+
+{{SESSION}}
+
 ## Orienting
 
 - **Start with `overview(corpus)`** for structural questions ("what is X doing",
   "who's on X", "open issues"), and **`list_corpora`** to see what's gathered.
 - **No named corpus, just a topic?** `find_efforts(topic)` ranks active efforts
   and flags which are cached; `which_corpus(query)` routes to a cached one.
-- **Corpus missing?** Gather it with `start_gather(corpus=…)` — one gather
-  reconstructs the whole record into searchable files, rather than crawling
-  Datatracker or the mail archive by hand. Whether gather is available is a
-  property of **this session**, not something to infer from the transport (don't
-  assert you're on a "read-only / HTTP replica" backend): it is available iff the
-  `start_gather` tool is present — which may be **deferred**, so do a tool search
-  for it before concluding it is absent — and `list_corpora` states, at the
-  bottom, this session's **deployment mode** (local single-user vs possibly
-  shared) and gather availability. Read both from that line, never from the
-  transport-flavoured wording in tool descriptions: on a **local stdio** server a
-  gather costs only this user, so the "a wide gather costs everyone" cautions —
-  which are scoped to *shared* deployments — do not apply; don't hedge or ask
-  permission you don't need. Only if gather is genuinely unavailable, tell the
-  user to run `ietf-llm <name>` locally. `start_gather` returns when its bounded
-  wait
-  elapses, naming the stage it reached (`stage 18/19 (embedding index)`) and how
-  long it has run; the corpus is queryable once `gather_status` reports `done`.
-  A cold first gather could take a few minutes — tell the user that and offer to
-  check back once it reports `done`, rather than blocking silently. While a
-  **first** gather runs there is nothing to serve yet, so reads refuse with the
-  stage and how many are left — poll `gather_status(corpus=…, wait=60)` rather
-  than reading early. A **re-gather** keeps serving the previous snapshot
-  (flagged as a refresh in progress), so you can keep querying it.
+- **Corpus missing?** Gather it with `start_gather(corpus=…)` (availability and
+  cost are stated in **This session** above) — one gather reconstructs the whole
+  record into searchable files, rather than crawling Datatracker or the mail
+  archive by hand. It returns when its bounded wait elapses, naming the stage and
+  elapsed time; the corpus is queryable once `gather_status` reports `done`. A
+  **cold first gather can take a few minutes** — tell the user and offer to check
+  back, don't block silently — and reads refuse until it finishes (a re-gather,
+  by contrast, keeps serving the previous snapshot). Poll
+  `gather_status(corpus=…, wait=60)` rather than reading early.
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
 
 ## Offline vs. live
 
-Most tools are **offline** (cache reads) and always work. Two reach
-**Datatracker live** for facts that change daily — `draft_status` (one draft's
-WG-Last-Call / IESG state) and `meeting_schedule` (the live schedule); on a
-read-only deployment they are disabled and simply **absent** from the tool
-surface. As with gather, that is a property of *this session*: read it from the
-tools you actually have (searching for deferred ones), never from the transport.
-Prefer the live tool when a *current* fact matters; where it is unavailable, fall
-back to its offline counterpart — `list_drafts` (corpus-wide draft lifecycle) and
+Most tools are **offline** (cache reads). Two read **Datatracker live** for
+daily-changing facts — `draft_status` (a draft's WG-Last-Call / IESG state) and
+`meeting_schedule` (the live schedule); whether they're available here is stated
+in **This session** above. Prefer the live tool when a *current* fact matters;
+otherwise use the offline `list_drafts` (corpus-wide draft lifecycle) and
 `list_meetings` / `read_minutes` (the gathered meeting record).
 
 ## The tools (each tool's own description carries the detail)
