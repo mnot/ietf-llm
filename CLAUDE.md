@@ -71,9 +71,11 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   now-unused helpers, superseded config.
 - **Docs.** `README.md` (usage) and `docs/architecture.md` (design) still
   accurate? Update them in the same PR.
-- **SKILL.md + tool docstrings.** `data/skill/SKILL.md` is the routing brain
-  (MCP `instructions` *and* the installed skill). Update it and the affected
-  tool docstrings whenever behaviour changes.
+- **Routing brain + tool docstrings.** `ietf_llm/data/mcp-instructions.md` is
+  the routing brain, served to clients as the MCP `instructions` field. Update
+  it and the affected tool docstrings whenever behaviour changes. (The vendored
+  norms skills under `ietf_llm/data/skills/<name>/SKILL.md` are separate
+  installed Agent Skills, not the routing brain.)
 - **The gate.** `make test lint typecheck` clean (pylint 10.00/10), and
   `ietf_llm/` is black-clean. See "The gate" above.
 
@@ -104,9 +106,10 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
 
 ## Conventions that are load-bearing
 
-- `data/skill/SKILL.md` is served to clients as the MCP `instructions`
-  field AND installed as the Claude skill — it's the routing brain.
-  Update it (and the tool docstrings) whenever behaviour changes.
+- `ietf_llm/data/mcp-instructions.md` is served to clients as the MCP
+  `instructions` field — it's the routing brain. Update it (and the tool
+  docstrings) whenever behaviour changes. (The installed Agent Skills live
+  separately under `ietf_llm/data/skills/<name>/SKILL.md`.)
 - The MCP server is read-only and never touches the network; gather is
   the only writer. Keep that boundary. (`get_wg_file_cache_dir` *creates*
   the dir — use a read-only existence check at the tool boundary so a
