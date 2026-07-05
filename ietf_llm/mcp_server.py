@@ -365,11 +365,15 @@ def _first_gather_guard(wg: str) -> Optional[str]:
     total = status.get("stage_total")
     idx = status.get("stage_index") or 0
     left = f", {total - idx} stage(s) left" if total and idx else ""
+    elapsed = _gather_elapsed(status)
+    so_far = f", {elapsed} so far" if elapsed else ""
     return (
-        f"First gather of '{wg}' is still in progress ({phrase}{left}); the "
-        "corpus is not queryable yet — its search index and digests are built in "
-        f'the final stages. Call `gather_status(corpus="{wg}", wait=60)` to block '
-        "until it reports `done`, then retry."
+        f"First gather of '{wg}' is still in progress ({phrase}{left}{so_far}); "
+        "the corpus is not queryable yet — its search index and digests are built "
+        "in the final stages. This is a one-time cold fetch that could take a few "
+        "minutes; tell the user that and offer to check back once it reports "
+        f'`done`, rather than waiting silently. Call `gather_status(corpus="{wg}", '
+        "wait=60)` to block until it reports `done`, then retry."
     )
 
 
@@ -3161,10 +3165,14 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         if final and final.get("state") in _TERMINAL_GATHER_STATES:
             return _format_waited_result(final, corpus)
         phrase = _stage_phrase(final)
-        at = f" (currently {phrase})" if phrase else ""
+        elapsed = _gather_elapsed(final) if final else ""
+        where = "; ".join(p for p in (phrase, elapsed) if p)
+        at = f" ({where})" if where else ""
         return (
             f"Waited ~{int(budget)}s; the gather is still in progress{at}. The "
             f"embedding-index and topic-map stages at the end are the slow tail. "
+            f"It could take a few more minutes — tell the user that and offer to "
+            f"check back once it reports `done`, rather than waiting silently. "
             f"⚠ Reads before it reports `done` may be stale or partial — search "
             f"and digests are built in the *final* stages, and a re-gather keeps "
             f"serving the previous snapshot until it finishes. To block until "
@@ -3218,16 +3226,24 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
             f"upstreams, so it starts when a slot frees. Poll "
             f'`gather_status(corpus="{corpus}")`.{stop_hint}'
         )
+    first = not _corpus_exists(corpus)
     timing = (
-        "re-gathers are usually quick — only new material is fetched"
-        if _corpus_exists(corpus)
-        else "a first gather of a corpus can take minutes"
+        "a first gather of a corpus can take minutes"
+        if first
+        else "re-gathers are usually quick — only new material is fetched"
+    )
+    user_note = (
+        " This is a one-time cold fetch that could take a few minutes; tell the "
+        "user that and offer to check back once it reports `done`, rather than "
+        "waiting silently."
+        if first
+        else ""
     )
     return (
         f"Started gathering '{corpus}' in the background ({timing}). Poll "
         f'`gather_status(corpus="{corpus}")` for stage-level progress; the '
         f"corpus is queryable once it reports `done` (reads before then are "
-        f"stale or partial).{stop_hint}"
+        f"stale or partial).{user_note}{stop_hint}"
     )
 
 

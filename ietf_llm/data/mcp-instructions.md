@@ -38,12 +38,14 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   present, else tell the user to run `ietf-llm <name>` — rather than crawling
   Datatracker or the mail archive by hand. One gather reconstructs the whole
   record into searchable files. `start_gather` returns when its bounded wait
-  elapses, naming the stage it reached (`stage 18/19 (embedding index)`); the
-  corpus is queryable once `gather_status` reports `done`. While a **first**
-  gather runs there is nothing to serve yet, so reads refuse with the stage and
-  how many are left — poll `gather_status(corpus=…, wait=60)` rather than
-  reading early. A **re-gather** keeps serving the previous snapshot (flagged as
-  a refresh in progress), so you can keep querying it.
+  elapses, naming the stage it reached (`stage 18/19 (embedding index)`) and how
+  long it has run; the corpus is queryable once `gather_status` reports `done`.
+  A cold first gather could take a few minutes — tell the user that and offer to
+  check back once it reports `done`, rather than blocking silently. While a
+  **first** gather runs there is nothing to serve yet, so reads refuse with the
+  stage and how many are left — poll `gather_status(corpus=…, wait=60)` rather
+  than reading early. A **re-gather** keeps serving the previous snapshot
+  (flagged as a refresh in progress), so you can keep querying it.
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
 
