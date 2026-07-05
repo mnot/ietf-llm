@@ -2918,14 +2918,17 @@ def _session_section() -> str:
     if gather_enabled():
         guidance = (
             "To add or refresh a corpus, `start_gather(corpus=…)` — "
-            f"{_gather_cost_clause()}. It returns when its bounded wait elapses "
-            "(naming the stage and elapsed time); the corpus is queryable once "
-            "`gather_status` reports `done`. A cold first gather can take a few "
-            "minutes — tell the user and offer to check back, don't block "
-            "silently — and reads refuse until it finishes (a re-gather keeps "
+            f"{_gather_cost_clause()}. **Set the user's expectations up front, "
+            "as you announce the gather:** a first gather is often a minute or "
+            "two, and several minutes for a very active group — say so, rather "
+            "than announcing it and going quiet (the call itself blocks for a "
+            "bounded wait, ~90s, before it even returns). It returns naming the "
+            "stage and elapsed time; the corpus is queryable once `gather_status` "
+            "reports `done`, and reads refuse until then (a re-gather keeps "
             "serving the previous snapshot); poll `gather_status(corpus=…, "
-            "wait=60)` rather than reading early. For live, daily-changing facts "
-            "use `draft_status` / `meeting_schedule`; otherwise the offline "
+            "wait=60)` and keep the user posted rather than going silent. For "
+            "live, daily-changing facts use `draft_status` / `meeting_schedule`; "
+            "otherwise the offline "
             "`list_drafts` / `list_meetings` / `read_minutes`."
         )
     else:

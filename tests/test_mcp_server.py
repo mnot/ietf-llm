@@ -1239,6 +1239,9 @@ def test_load_server_instructions_states_session_mode(
     assert "## This session" in out
     assert "single-user stdio server" in out.lower()
     assert "available here" in out.lower()
+    # Gather-enabled guidance nudges the client to set expectations up front,
+    # before the ~90s blocking wait (not only after start_gather returns).
+    assert "expectations up front" in out.lower()
 
 
 def test_load_server_instructions_prepends_session_when_marker_missing(
