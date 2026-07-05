@@ -92,6 +92,40 @@ def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     assert "stray" not in out
 
 
+def test_list_corpora_states_session_facts(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deployment topology and gather availability must be read from the server,
+    # not guessed from the transport: list_corpora states both, authoritatively.
+    from ietf_llm import freshness
+
+    write_cache_file(isolated_home, "wg1", "x.txt")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
+    on = mcp_server.tool_list_corpora()
+    assert "single-user stdio server" in on.lower()
+    assert "costs only you" in on.lower()  # no shared-cost hedging locally
+    assert "in-session gather is available" in on.lower()
+    assert "start_gather" in on
+    # HTTP + read-only: the shared-cost caution is scoped on, gather off.
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "http")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    off = mcp_server.tool_list_corpora()
+    assert "shared http server" in off.lower()
+    assert "read-only" in off.lower()
+    assert "ietf-llm <name>" in off
+
+
+def test_set_deployment_mode_normalises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import freshness
+
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
+    freshness.set_deployment_mode("http")
+    assert freshness.deployment_mode() == "http"
+    freshness.set_deployment_mode("streamable-anything-else")
+    assert freshness.deployment_mode() == "stdio"  # anything but 'http'
+
+
 def test_list_corpora_synthetic_status_disclaims_effort(isolated_home: Path) -> None:
     # A synthetic `x-` bundle must not read as a chartered effort: its
     # status cell, and the legend, say so explicitly.
@@ -458,6 +492,100 @@ def test_inflight_note_omits_zero_index_stage(
     )
     bare = srv._inflight_refresh_note("wg")
     assert bare is not None and "in progress" in bare
+
+
+def test_stage_phrase_renders_or_none() -> None:
+    from ietf_llm import mcp_server as srv
+
+    assert srv._stage_phrase(None) is None
+    assert srv._stage_phrase({"stage_index": 0, "stage_total": 19}) is None
+    assert (
+        srv._stage_phrase(
+            {"stage_index": 18, "stage_total": 19, "stage": "embedding index"}
+        )
+        == "stage 18/19 (embedding index)"
+    )
+    assert srv._stage_phrase({"stage": "mailing list"}) == "stage: mailing list"
+
+
+def test_first_gather_guard_refuses_when_never_gathered(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A first gather has no prior snapshot, so reads must refuse (naming the
+    # stage and how many are left) rather than serve a half-built cache.
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 5,
+                    "stage_total": 19, "stage": "drafts"},
+    )
+    msg = srv._first_gather_guard("wg")
+    assert msg is not None
+    assert "first gather" in msg.lower()
+    assert "5/19" in msg
+    assert "14 stage" in msg  # 19 - 5 still to go
+    assert "gather_status" in msg
+
+
+def test_first_gather_guard_allows_regather_and_idle(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import gather_runner, mcp_server as srv
+    from ietf_llm.freshness import record_gather
+
+    # A completed version already exists -> a re-gather keeps serving it.
+    record_gather("wg")
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 5,
+                    "stage_total": 19},
+    )
+    assert srv._first_gather_guard("wg") is None
+    # No gather live -> no guard.
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    assert srv._first_gather_guard("wg") is None
+
+
+def test_timeout_note_names_running_gather(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 18,
+                    "stage_total": 19, "stage": "embedding index"},
+    )
+    note = srv._timeout_inflight_note(srv.tool_search, ("wg", "query"))
+    assert note is not None
+    assert "still running" in note.lower()
+    assert "18/19" in note and "embedding index" in note
+    assert "not because the server is unresponsive" in note
+    # A first arg that is not a valid corpus name (a query, a number) is ignored.
+    assert srv._timeout_inflight_note(srv.tool_search, ("a query!", "q")) is None
+    # Empty args (a no-corpus tool) -> no note.
+    assert srv._timeout_inflight_note(srv.tool_search, ()) is None
+    # No gather live -> no note.
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    assert srv._timeout_inflight_note(srv.tool_search, ("wg", "query")) is None
+
+
+def test_index_rebuilding_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm import gather_runner, mcp_server as srv
+
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 18,
+                    "stage_total": 19, "stage": "embedding index"},
+    )
+    monkeypatch.setattr(srv, "probe_index", lambda wg: False)
+    note = srv._index_rebuilding_note("wg")
+    assert note is not None and "being rebuilt" in note and "18/19" in note
+    # A servable index -> the empty result is real, no "not ready" caveat.
+    monkeypatch.setattr(srv, "probe_index", lambda wg: True)
+    assert srv._index_rebuilding_note("wg") is None
+    # No gather live -> no note.
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    assert srv._index_rebuilding_note("wg") is None
 
 
 def test_top_level_response_silent_when_no_sentinel(isolated_home: Path) -> None:
@@ -1094,6 +1222,42 @@ def test_load_server_instructions_is_markdown_heading() -> None:
     assert out is not None
     assert out.lstrip().startswith("#")
     assert "---" not in out.splitlines()[0]
+
+
+def test_load_server_instructions_states_session_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The {{SESSION}} placeholder must be substituted with the mode-specific
+    # facts (never served raw), so a client reads its deployment/capability
+    # instead of inferring it.
+    from ietf_llm import freshness
+
+    monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
+    assert "{{SESSION}}" not in out  # placeholder resolved
+    assert "## This session" in out
+    assert "single-user stdio server" in out.lower()
+    assert "available here" in out.lower()
+    # Gather-enabled guidance nudges the client to set expectations up front,
+    # before the ~90s blocking wait (not only after start_gather returns).
+    assert "expectations up front" in out.lower()
+
+
+def test_load_server_instructions_prepends_session_when_marker_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fallback: if the bundled markdown ever loses the {{SESSION}} marker,
+    # the mode-specific block must still appear (prepended), not silently vanish.
+    # Drive it by stubbing the markdown to marker-less text.
+    monkeypatch.setattr(
+        mcp_server, "_strip_frontmatter", lambda _t: "# Routing\n\nbody, no marker"
+    )
+    out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
+    assert "{{SESSION}}" not in out
+    assert "Fixed for this server's lifetime" in out  # the session section
+    # Prepended, not appended, so it leads.
+    assert out.index("Fixed for this server") < out.index("body, no marker")
 
 
 def test_load_server_instructions_includes_load_bearing_content() -> None:

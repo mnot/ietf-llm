@@ -22,6 +22,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _gather_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the gather pipeline in-process during tests, not in a subprocess.
+
+    Production spawns a child so a CPU-heavy stage can't stall the server, but
+    the suite drives gather by monkeypatching `run_gather` / the stages, which a
+    separate process would not see. The real subprocess path has its own test
+    (`test_gather_subprocess.py`), which clears this flag explicitly."""
+    monkeypatch.setenv("IETF_LLM_GATHER_INPROCESS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _drain_gather_worker() -> Iterable[None]:
     """Wait for the shared gather worker to finish any in-flight job before the
     next test runs. The worker is a process-wide daemon, and a job's terminal

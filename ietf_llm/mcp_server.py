@@ -93,10 +93,12 @@ from .embeddings import (
     search,
 )
 from .freshness import (
+    deployment_mode,
     freshness_line,
     gather_enabled,
     gather_suggestion,
     last_gathered,
+    set_deployment_mode,
     set_gather_default,
     staleness_warning,
 )
@@ -277,6 +279,13 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
                 f"{gather_suggestion(wg, purpose='to gather it')}, or call "
                 "`list_corpora` to see what is available."
             )
+        # Refuse rather than serve half-built content while a corpus's *first*
+        # gather runs — there is no prior snapshot to fall back on, so the cache
+        # is being built in place. A re-gather is not guarded (it keeps serving
+        # the previous complete version).
+        first_gather = _first_gather_guard(wg)
+        if first_gather is not None:
+            return first_gather
         # Record the access now the corpus is known to exist: this guard fronts
         # every per-corpus read tool but not the cross-corpus discovery tools
         # (list_corpora / search_corpora / which_corpus), so listing never
@@ -321,6 +330,104 @@ _MAX_SEARCH_K = 100
 
 
 # --- Tool implementations (plain functions, also usable for unit tests) -----
+
+
+def _stage_phrase(status: Optional[Dict[str, Any]]) -> Optional[str]:
+    """`stage N/M (name)` for a running gather status, or None before any stage
+    is entered. Shared by the still-running / timeout / refusal messages so they
+    all name the same point in the pipeline (`stage_index` starts at 0)."""
+    if not status:
+        return None
+    idx = status.get("stage_index") or 0
+    total = status.get("stage_total")
+    stage = status.get("stage")
+    if total and idx:
+        return f"stage {idx}/{total}" + (f" ({stage})" if stage else "")
+    if stage:
+        return f"stage: {stage}"
+    return None
+
+
+def _first_gather_guard(wg: str) -> Optional[str]:
+    """Refuse a read while the corpus's *first* gather is still running, else
+    None.
+
+    A first gather has no previously-published snapshot to fall back on, so the
+    cache is being built in place and any read would serve half-built content
+    that reads like a real answer. Refuse, naming the stage, rather than return
+    it. A re-gather (a completed version exists — `last_gathered` is set) is not
+    guarded here: it keeps serving the previous complete snapshot with the
+    in-flight caveat from `_inflight_refresh_note`."""
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    status = gather_runner.local_inflight(wg)
+    if not status or last_gathered(wg) is not None:
+        return None
+    phrase = _stage_phrase(status) or "starting"
+    total = status.get("stage_total")
+    idx = status.get("stage_index") or 0
+    left = f", {total - idx} stage(s) left" if total and idx else ""
+    elapsed = _gather_elapsed(status)
+    so_far = f", {elapsed} so far" if elapsed else ""
+    return (
+        f"First gather of '{wg}' is still in progress ({phrase}{left}{so_far}); "
+        "the corpus is not queryable yet — its search index and digests are built "
+        "in the final stages. This is a one-time cold fetch that could take a few "
+        "minutes; tell the user that and offer to check back once it reports "
+        f'`done`, rather than waiting silently. Call `gather_status(corpus="{wg}", '
+        "wait=60)` to block until it reports `done`, then retry."
+    )
+
+
+def _index_rebuilding_note(wg: str) -> Optional[str]:
+    """Caveat for an empty index-backed read when a gather is running and the
+    index cannot be served yet (absent / mid-rebuild), else None.
+
+    With the atomic index swap a re-gather keeps the previous index servable
+    throughout, so this is a safety net (e.g. a legacy in-place index that never
+    completed): it turns a bare "no results" into "not ready yet"."""
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    status = gather_runner.local_inflight(wg)
+    if not status or probe_index(wg):
+        return None
+    phrase = _stage_phrase(status) or "in progress"
+    return (
+        f"the search index for '{wg}' is being rebuilt ({phrase}) and isn't ready "
+        f'yet — retry once `gather_status(corpus="{wg}")` reports `done`'
+    )
+
+
+def _timeout_inflight_note(
+    fn: Callable[..., str], args: "tuple[Any, ...]"
+) -> Optional[str]:
+    """A clearer read-timeout message when the slow call was a per-corpus read
+    and a gather for that corpus is running, else None.
+
+    Names the stage so "still gathering" is distinguishable from "server fell
+    over" — the exact ambiguity a client hits when a read stalls mid-gather. The
+    gather runs in a subprocess, so the server stays responsive and this
+    deadline fires cleanly; the read was slow because it touched the cache
+    mid-rebuild."""
+    if not args:
+        return None
+    corpus = args[0]
+    if not isinstance(corpus, str) or not corpus.strip():
+        return None
+    from . import gather_runner  # pylint: disable=import-outside-toplevel
+
+    if not gather_runner.valid_corpus_name(corpus):
+        return None
+    status = gather_runner.local_inflight(corpus)
+    if not status:
+        return None
+    phrase = _stage_phrase(status) or "in progress"
+    return (
+        f"(The read timed out because a gather for '{corpus}' is still running "
+        f"({phrase}) — not because the server is unresponsive. It is serving the "
+        f'previous snapshot; retry once `gather_status(corpus="{corpus}")` '
+        "reports `done`.)"
+    )
 
 
 def _inflight_refresh_note(wg: str) -> Optional[str]:
@@ -429,6 +536,15 @@ _NEXT_TOOLS_HINT = (
 )
 
 
+def _session_facts_line() -> str:
+    """Server-authoritative footer restating this session's deployment and
+    capability (the same facts as the `instructions` session block, from the same
+    phrase helpers) at the point a client decides whether/how to add a missing
+    corpus — because the reports showed clients acting on `list_corpora` output
+    without having read the instructions."""
+    return f"\n\n_This session — {_deployment_phrase()}; {_gather_brief()}._"
+
+
 def _corpus_sources(wg: str) -> str:
     """Compact source inventory for `wg` in `list_corpora`, read-only — resolves
     an already-materialised files dir (never forces a cloud download) and
@@ -476,6 +592,7 @@ def tool_list_corpora() -> str:
         "the gather window and the exact repos.\n\n"
         + "\n".join(lines)
         + _NEXT_TOOLS_HINT
+        + _session_facts_line()
     )
 
 
@@ -1480,6 +1597,9 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         verbose=Verbosity.QUIET,
     )
     if not hits:
+        rebuilding = _index_rebuilding_note(wg)
+        if rebuilding is not None:
+            return _with_freshness(wg, f"(no results yet — {rebuilding})")
         no_index = (
             f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
             if gather_enabled()
@@ -1897,6 +2017,9 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         verbose=Verbosity.QUIET,
     )
     if not hits:
+        rebuilding = _index_rebuilding_note(wg)
+        if rebuilding is not None:
+            return _with_freshness(wg, f"(no results yet — {rebuilding})")
         no_index = (
             f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
             if gather_enabled()
@@ -2705,9 +2828,18 @@ def _load_server_instructions() -> str:
     """
     try:
         path = resources.files("ietf_llm").joinpath("data/mcp-instructions.md")
-        return _strip_frontmatter(path.read_text(encoding="utf-8"))
+        text = _strip_frontmatter(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError):
         return ""
+    # The mode-specific session facts must reach every client. Substitute at the
+    # placeholder; if the bundled markdown ever drops it, prepend rather than let
+    # the block silently vanish. The marker path is covered by
+    # test_load_server_instructions_states_session_mode, the prepend fallback by
+    # test_load_server_instructions_prepends_session_when_marker_missing.
+    section = _session_section()
+    if "{{SESSION}}" in text:
+        return text.replace("{{SESSION}}", section)
+    return f"{section}\n\n{text}"
 
 
 # Named capability flags a skill or downstream tool can gate on, so it
@@ -2721,6 +2853,93 @@ SERVER_FEATURES: tuple[str, ...] = (
     "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_schedule
     "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
 )
+
+
+def _deployment_phrase() -> str:
+    """One clause stating this server's topology (only) — fixed for its lifetime.
+    The gather-cost implication lives in `_gather_cost_clause`, since it only
+    applies when gather is actually available (a read-only server has no cost to
+    weigh). Shared by the session block and the `list_corpora` footer."""
+    if deployment_mode() == "http":
+        return "a shared HTTP server (may be multi-user)"
+    return "a local, single-user stdio server"
+
+
+def _gather_cost_clause() -> str:
+    """The cost caution for a gather, scoped to the topology — rendered only when
+    gather is available, so read-only mode never claims a gather is 'free'."""
+    if deployment_mode() == "http":
+        return (
+            "a wide gather fan-out can cost other users, so gather deliberately "
+            "(only the efforts that dominate the question)"
+        )
+    return "a gather costs only you, so gather freely, no permission needed"
+
+
+def _capability_phrase() -> str:
+    """One terse clause stating whether in-session gather + live Datatracker
+    lookups are available here (they share one gate). The how-to lives in the
+    guidance paragraph of `_session_section`, mode-composed so a read-only
+    server never names `start_gather` and a stdio server never names cloud."""
+    if gather_enabled():
+        return "in-session gather and live Datatracker lookups are available here"
+    return "read-only (in-session gather and live Datatracker lookups are off)"
+
+
+def _gather_brief() -> str:
+    """The gather half of `_capability_phrase`, trimmed for the `list_corpora`
+    footer (which only needs the add-a-corpus decision, not the live-tool
+    detail); carries the topology-scoped cost only when gather is available."""
+    if gather_enabled():
+        return (
+            'in-session gather is available (`start_gather(corpus="<name>")`; '
+            f"tool-search for it if your client has not loaded it) — "
+            f"{_gather_cost_clause()}"
+        )
+    return (
+        "read-only — no `start_gather`; to add a corpus have the user run "
+        "`ietf-llm <name>` locally"
+    )
+
+
+def _session_section() -> str:
+    """The whole mode-specific region of the `instructions` field, injected at
+    `{{SESSION}}` and composed once at startup. States deployment + capability as
+    facts, then a single guidance paragraph written for the actual mode — so a
+    read-only server never mentions `start_gather` anywhere and a stdio server
+    never mentions cloud/shared operation. The (mode-neutral) tool descriptions
+    below carry none of this, so nothing forces the client to infer its mode."""
+    facts = (
+        "Fixed for this server's lifetime — read these here, don't infer them "
+        "from the tool descriptions below:\n\n"
+        f"- **Deployment:** {_deployment_phrase()}.\n"
+        f"- **Capability:** {_capability_phrase()}."
+    )
+    if gather_enabled():
+        guidance = (
+            "To add or refresh a corpus, `start_gather(corpus=…)` — "
+            f"{_gather_cost_clause()}. **Set the user's expectations up front, "
+            "as you announce the gather:** a first gather is often a minute or "
+            "two, and several minutes for a very active group — say so, rather "
+            "than announcing it and going quiet (the call itself blocks for a "
+            "bounded wait, ~90s, before it even returns). It returns naming the "
+            "stage and elapsed time; the corpus is queryable once `gather_status` "
+            "reports `done`, and reads refuse until then (a re-gather keeps "
+            "serving the previous snapshot); poll `gather_status(corpus=…, "
+            "wait=60)` and keep the user posted rather than going silent. For "
+            "live, daily-changing facts use `draft_status` / `meeting_schedule`; "
+            "otherwise the offline "
+            "`list_drafts` / `list_meetings` / `read_minutes`."
+        )
+    else:
+        guidance = (
+            "This server can't gather, and has no live Datatracker lookups. To "
+            "add a corpus `list_corpora` doesn't show, tell the user to run "
+            "`ietf-llm <name>` locally, then query it here; for draft and meeting "
+            "facts use the offline `list_drafts` / `list_meetings` / "
+            "`read_minutes`."
+        )
+    return f"{facts}\n\n{guidance}"
 
 
 def _capability_footer() -> str:
@@ -2888,6 +3107,9 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         Verbosity.STATUS,
         level=LogLevel.ERROR,
     )
+    inflight = _timeout_inflight_note(fn, args)
+    if inflight is not None:
+        return inflight
     return (
         f"(Tool timed out after {int(timeout)}s. This is usually transient — "
         "retry. If it persists: the embedding model may still be loading "
@@ -3050,13 +3272,17 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
         final = _await_gather(corpus, budget)
         if final and final.get("state") in _TERMINAL_GATHER_STATES:
             return _format_waited_result(final, corpus)
+        phrase = _stage_phrase(final)
+        elapsed = _gather_elapsed(final) if final else ""
+        where = "; ".join(p for p in (phrase, elapsed) if p)
+        at = f" ({where})" if where else ""
         return (
-            f"Waited ~{int(budget)}s; the gather is still in progress. "
-            f"⚠ Reads before it reports `done` may be stale or partial — search "
-            f"and digests are built in the *final* stages, and a re-gather keeps "
-            f"serving the previous snapshot until it finishes. To block until "
-            f'done, call `gather_status(corpus="{corpus}", wait=60)` rather than '
-            f"reading now. {out}"
+            f"Waited ~{int(budget)}s; still gathering{at} — the embedding-index / "
+            f"topic-map tail is the slow part, so it could take a few more "
+            f"minutes. Tell the user and offer to check back once `gather_status` "
+            f"reports `done`; reads before then are stale or partial. Block with "
+            f'`gather_status(corpus="{corpus}", wait=60)` rather than reading now. '
+            f"{out}"
         )
     return out
 
@@ -3101,20 +3327,28 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
         return (
             f"Queued '{corpus}' for gathering ({ahead} gather"
             f"{'s' if ahead != 1 else ''} ahead of it). Gathers are capped to a "
-            "few at once (per host and across the deployment) to stay polite to "
-            f"upstreams, so it starts when a slot frees. Poll "
+            "few at once to stay polite to upstreams (Datatracker / GitHub), so "
+            f"it starts when a slot frees. Poll "
             f'`gather_status(corpus="{corpus}")`.{stop_hint}'
         )
+    first = not _corpus_exists(corpus)
     timing = (
-        "re-gathers are usually quick — only new material is fetched"
-        if _corpus_exists(corpus)
-        else "a first gather of a corpus can take minutes"
+        "a first gather of a corpus can take minutes"
+        if first
+        else "re-gathers are usually quick — only new material is fetched"
+    )
+    user_note = (
+        " This is a one-time cold fetch that could take a few minutes; tell the "
+        "user that and offer to check back once it reports `done`, rather than "
+        "waiting silently."
+        if first
+        else ""
     )
     return (
         f"Started gathering '{corpus}' in the background ({timing}). Poll "
         f'`gather_status(corpus="{corpus}")` for stage-level progress; the '
         f"corpus is queryable once it reports `done` (reads before then are "
-        f"stale or partial).{stop_hint}"
+        f"stale or partial).{user_note}{stop_hint}"
     )
 
 
@@ -3820,6 +4054,10 @@ def main() -> None:  # pylint: disable=too-many-locals
     # value; IETF_LLM_ENABLE_GATHER still overrides either way.
     transport = _resolve_transport()
     set_gather_default(_startup_gather_default())
+    # Record the transport so tool output can state the deployment topology
+    # (local single-user vs possibly-shared) authoritatively — otherwise a
+    # client infers it from transport-flavoured wording and hedges wrongly.
+    set_deployment_mode(transport)
 
     # `instructions` is the MCP-spec mechanism for server-level guidance:
     # clients SHOULD surface it as system-prompt context. This carries the
@@ -3896,11 +4134,10 @@ def main() -> None:  # pylint: disable=too-many-locals
 
         The playbook: `find_efforts(topic)` → present the candidates
         (prefer the cached ones) → gather the **few** efforts that
-        dominate the topic (`start_gather` / `ietf-llm <acronym>`), not
+        dominate the topic (how to add one is in **This session**), not
         all of them, and tell the user what you skipped → query each
-        gathered corpus → synthesize. On a shared server a wide gather
-        fan-out costs everyone, so over-gathering is the failure mode to
-        avoid.
+        gathered corpus → synthesize. Over-gathering is the failure mode
+        to avoid — it is slow and wasteful.
 
         `limit` caps results (default 15).
         """
@@ -4059,8 +4296,8 @@ def main() -> None:  # pylint: disable=too-many-locals
         on Datatracker that the cached list omits (a revived draft to re-gather
         and consider). Use it when building an agenda or whenever the
         active-draft list must be exactly right; it hits Datatracker live (so
-        it is only available where gather is enabled — local stdio, off on the
-        shared HTTP replica) and is slower than the default offline overview.
+        it is only available where the live tools are enabled — see **This
+        session**) and is slower than the default offline overview.
 
         Args:
             corpus: The corpus shortname (`httpbis`, `tls`, …).
@@ -4976,11 +5213,18 @@ def main() -> None:  # pylint: disable=too-many-locals
             sleep. A quick re-gather usually completes within that window; a
             *first* gather of a corpus can run for minutes, so if it is still
             going when the wait elapses the reply falls back to a progress line
-            plus a stop token — then poll `gather_status(corpus=...)` until it
-            reports `done`. Pass `wait=0` to return immediately instead
-            (fire-and-forget: kick off the gather and do other work), or a
-            custom `wait` (seconds) to block longer or shorter. Later
-            re-gathers fetch only what changed since last time.
+            (the stage it reached, e.g. `stage 18/19 (embedding index)`) plus a
+            stop token — then poll `gather_status(corpus=...)` until it reports
+            `done`. Pass `wait=0` to return immediately instead (fire-and-forget:
+            kick off the gather and do other work), or a custom `wait` (seconds)
+            to block longer or shorter. Later re-gathers fetch only what changed
+            since last time.
+
+            The corpus isn't queryable until `done`. While a **first** gather
+            runs the read tools refuse (there's no prior snapshot to serve),
+            telling you the stage and how many are left — so poll rather than
+            read early. A **re-gather** keeps serving the previous snapshot
+            (flagged as a refresh in progress), so querying it meanwhile is fine.
 
             The corpus **shape is inferred** from what you pass — you don't
             declare it:
@@ -5005,11 +5249,10 @@ def main() -> None:  # pylint: disable=too-many-locals
               id, or exact name) or `new_drafts=True` (rolling window).
             - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
-            One gather per corpus runs at a time, across all hosts on a
-            shared deployment — so a call while it's in flight reports
-            "already running" even if another client started it. A
-            *different* corpus runs concurrently up to a small cap; beyond
-            that it reports "queued". Either way, poll `gather_status`,
+            One gather per corpus runs at a time — so a call while it's in
+            flight reports "already running". A *different* corpus runs
+            concurrently up to a small cap; beyond that it reports
+            "queued". Either way, poll `gather_status`,
             don't retry or `force` (which overrides only the freshness
             debounce below, never these limits).
 
@@ -5190,9 +5433,8 @@ def main() -> None:  # pylint: disable=too-many-locals
             **Omit `meeting`** to list the group's upcoming meetings (numbered +
             interim) — the way to discover an interim id, which isn't guessable.
 
-            Live (short TTL + freshness stamp), gather-gated — off on the shared
-            HTTP replica (it reaches the network). Times are venue-local — never
-            quote the UTC start as the local time.
+            Live (short TTL + freshness stamp; it reaches the network). Times
+            are venue-local — never quote the UTC start as the local time.
 
             Args:
                 corpus: The Working Group shortname (e.g. `httpbis`).
@@ -5218,8 +5460,8 @@ def main() -> None:  # pylint: disable=too-many-locals
             by days, so reach here when the *current* standing matters (deciding
             an agenda is the obvious case).
 
-            Live (short TTL + freshness stamp), gather-gated — off on the shared
-            HTTP replica; see the SKILL "Live Datatracker facts" section.
+            Live (short TTL + freshness stamp; it reaches the network); see the
+            SKILL "Live Datatracker facts" section.
 
             Args:
                 name: The draft name (`draft-ietf-httpbis-resumable-upload`);

@@ -28,28 +28,20 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 > consensus** — any sentence asserting a collective outcome (settled, agreed,
 > rejected, "the WG wants") — call `read_ietf_interpretation_norms` first.
 
+## This session
+
+{{SESSION}}
+
 ## Orienting
 
 - **Start with `overview(corpus)`** for structural questions ("what is X doing",
   "who's on X", "open issues"), and **`list_corpora`** to see what's gathered.
 - **No named corpus, just a topic?** `find_efforts(topic)` ranks active efforts
   and flags which are cached; `which_corpus(query)` routes to a cached one.
-- **Corpus missing?** Gather it — `start_gather(corpus=…)` when that tool is
-  present, else tell the user to run `ietf-llm <name>` — rather than crawling
-  Datatracker or the mail archive by hand. One gather reconstructs the whole
-  record into searchable files.
+- **Corpus missing?** How to add one is stated in **This session** above (it
+  depends on this server's mode).
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
-
-## Offline vs. live
-
-Most tools are **offline** (cache reads) and always work. A few reach
-**Datatracker live** for facts that change daily, and are gather-gated off on a
-shared read-only server: `draft_status` (one draft's WG-Last-Call / IESG state)
-and `meeting_schedule` (the live schedule). Prefer the live tool when a
-*current* fact matters; where it is unavailable, fall back to its offline
-counterpart — `list_drafts` (corpus-wide draft lifecycle) and `list_meetings` /
-`read_minutes` (the gathered meeting record).
 
 ## The tools (each tool's own description carries the detail)
 
