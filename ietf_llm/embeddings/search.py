@@ -44,6 +44,9 @@ from .storage import (
     _open_db,
     _pack,
     _unpack_matrix,
+    discard_build_db,
+    promote_build_db,
+    seed_build_db,
 )
 
 #: After every N files processed, emit a one-line STATUS progress update.
@@ -299,9 +302,22 @@ def build_index(
         return 0
     # Serialise concurrent builds of the same corpus -- a second gather, or
     # a future gather-triggering MCP tool -- so they don't interleave writes
-    # to one DB. Readers are unaffected: they use a busy timeout + WAL.
+    # to one scratch DB.
     with file_lock(_db_path(wg) + ".lock"):
-        return _build_index_locked(wg, cache_dir, model, model_name, rebuild, verbose)
+        # Build into a scratch copy and swap it in atomically, so a concurrent
+        # reader (an MCP query mid-gather) never sees the half-populated index
+        # the periodic-commit build would otherwise expose. The scratch is
+        # seeded from the live index, so the build stays incremental.
+        build_path = seed_build_db(wg)
+        try:
+            count = _build_index_locked(
+                wg, cache_dir, model, model_name, rebuild, verbose, build_path
+            )
+        except BaseException:
+            discard_build_db(wg)
+            raise
+        promote_build_db(wg)
+        return count
 
 
 def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,too-many-branches
@@ -311,8 +327,9 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     model_name: str,
     rebuild: bool,
     verbose: Verbosity,
+    build_path: Optional[str] = None,
 ) -> int:
-    conn = _open_db(wg)
+    conn = _open_db(wg, build_path)
     cur = conn.cursor()
 
     # Track which model produced the existing index; rebuild if it changed.
@@ -603,11 +620,13 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                 _fill()
 
     conn.commit()
-    # Fold the WAL back into the main DB file and truncate it, so the
-    # published index is a self-contained single object -- a reader (or an
-    # object-storage copy) never depends on a -wal sidecar that a single .db
-    # ship would leave behind.
+    # Finalise into a standalone single file: fold the WAL back in, then switch
+    # to DELETE journal mode so the promoted DB carries no -wal/-shm sidecar.
+    # That makes the atomic swap (`promote_build_db`) a single-file `os.replace`
+    # a reader can never catch mid-flight, and keeps the shipped object
+    # self-contained for a cloud copy or a read-only immutable replica.
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("PRAGMA journal_mode=DELETE")
     conn.close()
     elapsed = time.time() - start
     log(

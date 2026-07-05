@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,65 @@ def _db_path(wg: str) -> str:
     # / RAM-backed storage (tmpfs) via IETF_LLM_INDEX_DIR; see get_index_dir.
     # This is the *write* path (build_index); reads go through _db_path_ro.
     return os.path.join(get_index_dir(), wg, "embeddings.db")
+
+
+def _db_building_path(wg: str) -> str:
+    """The scratch path a build writes to before atomically swapping it over
+    the live `embeddings.db`. Same directory as the live DB (so `os.replace`
+    is atomic on one filesystem), suffixed so it never collides with a read."""
+    return _db_path(wg) + ".building"
+
+
+def _remove_db_files(path: str) -> None:
+    """Delete a SQLite DB and any WAL/SHM sidecars, ignoring absence."""
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
+
+
+def seed_build_db(wg: str) -> str:
+    """Prepare the scratch build DB and return its path.
+
+    A build mutates this scratch copy, not the live index, so a concurrent
+    reader never sees a half-populated DB — only the final atomic swap
+    (`promote_build_db`) makes new content visible. Seeding from the current
+    live index (a plain file copy) keeps the build incremental: unchanged
+    files keep their embeddings and are skipped. Any leftover scratch from a
+    killed prior build is discarded here and rebuilt from the live index, so a
+    crash costs only the interrupted run's work, never the published index."""
+    live = _db_path(wg)
+    building = _db_building_path(wg)
+    _remove_db_files(building)
+    if os.path.exists(live):
+        os.makedirs(os.path.dirname(building), exist_ok=True)
+        shutil.copy2(live, building)
+    return building
+
+
+def promote_build_db(wg: str) -> None:
+    """Atomically swap the finished scratch build over the live index.
+
+    `_build_index_locked` leaves the scratch DB in DELETE journal mode (a
+    standalone file, no `-wal`/`-shm`), so the swap is a single `os.replace`
+    and a reader sees the whole old index or the whole new one, never an
+    intermediate. Stale sidecars from the previous (possibly WAL-era) inode
+    are cleared so a reader never pairs the new DB with an old WAL."""
+    live = _db_path(wg)
+    building = _db_building_path(wg)
+    os.replace(building, live)
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(live + suffix)
+        except OSError:
+            pass
+
+
+def discard_build_db(wg: str) -> None:
+    """Drop the scratch build DB (e.g. after a failed build). The live index
+    is untouched, so the next gather reseeds from it."""
+    _remove_db_files(_db_building_path(wg))
 
 
 def _db_path_ro(wg: str) -> str:
@@ -121,8 +181,8 @@ def _connect_ro(wg: str) -> sqlite3.Connection:
     return _connect(path)
 
 
-def _open_db(wg: str) -> sqlite3.Connection:
-    path = _db_path(wg)
+def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
+    path = path or _db_path(wg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = _connect(path, write=True)
     conn.execute("""

@@ -20,7 +20,7 @@ import importlib
 
 from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index, search
-from ietf_llm.embeddings.storage import _db_path
+from ietf_llm.embeddings.storage import _db_building_path, _db_path
 from ietf_llm.mcp_server import _readiness
 from ietf_llm.utils import Verbosity, get_index_dir, get_wg_file_cache_dir
 
@@ -91,6 +91,49 @@ def test_build_index_leaves_no_wal_sidecar(isolated_home: Path) -> None:
     # Checkpoint(TRUNCATE) + close fold the WAL back in, so the published
     # index is a single self-contained object with no -wal dependency.
     assert not os.path.exists(db + "-wal")
+
+
+def _write_second(wg: str, isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, wg, "threads/2025-02-02-two.md",
+        "# Two\n\n## Messages\n\n### [1] 2025-02-02 10:00 — Bob\n\nsecond body\n",
+    )
+
+
+def test_failed_build_leaves_live_index_intact(isolated_home: Path, monkeypatch) -> None:
+    # A build writes a scratch copy and only swaps it in at the end, so a build
+    # that dies partway must leave the live index exactly as it was -- a reader
+    # keeps seeing the previous complete snapshot, never a half-built one.
+    _build("wg", isolated_home)
+    before = {h.file for h in search("wg", "q", k=50, verbose=Verbosity.QUIET)}
+    _write_second("wg", isolated_home)  # cache now has a second file to index
+    _seed_model()
+
+    def boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise RuntimeError("build blew up mid-embed")
+
+    monkeypatch.setattr(search_mod, "_build_index_locked", boom)
+    try:
+        build_index(
+            "wg", get_wg_file_cache_dir("wg"), model_name="stub", verbose=Verbosity.QUIET
+        )
+    except RuntimeError:
+        pass
+    after = {h.file for h in search("wg", "q", k=50, verbose=Verbosity.QUIET)}
+    assert after == before  # unchanged: the new file never made it in
+    assert not os.path.exists(_db_building_path("wg"))  # scratch discarded
+
+
+def test_successful_build_promotes_and_clears_scratch(isolated_home: Path) -> None:
+    _build("wg", isolated_home)
+    _write_second("wg", isolated_home)
+    _seed_model()
+    build_index(
+        "wg", get_wg_file_cache_dir("wg"), model_name="stub", verbose=Verbosity.QUIET
+    )
+    files = {h.file for h in search("wg", "q", k=50, verbose=Verbosity.QUIET)}
+    assert any("two" in f for f in files)  # new content visible after the swap
+    assert not os.path.exists(_db_building_path("wg"))  # no scratch left behind
 
 
 def test_build_index_takes_per_corpus_lock(isolated_home: Path, monkeypatch) -> None:
