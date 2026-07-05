@@ -534,6 +534,25 @@ _NEXT_TOOLS_HINT = (
 )
 
 
+def _gather_capability_line() -> str:
+    """Server-authoritative note on whether in-session gather is available, so a
+    client reads its capability from the tool surface instead of inferring it
+    from the transport — the trap behind a confidently-wrong "gather is disabled
+    on this backend, run it yourself". `gather_enabled()` is derived from how
+    *this* server is configured, so unlike a guess it can't be wrong."""
+    if gather_enabled():
+        return (
+            "\n\n_In-session gather is available here: to add a corpus not listed "
+            'above, call `start_gather(corpus="<name>")` — do a tool search for it '
+            "first if it isn't loaded. Don't infer availability from the "
+            "transport; this line is authoritative._"
+        )
+    return (
+        "\n\n_In-session gather is not available here; to add a corpus not listed "
+        "above, run `ietf-llm <name>` locally, then query it in this session._"
+    )
+
+
 def _corpus_sources(wg: str) -> str:
     """Compact source inventory for `wg` in `list_corpora`, read-only — resolves
     an already-materialised files dir (never forces a cloud download) and
@@ -581,6 +600,7 @@ def tool_list_corpora() -> str:
         "the gather window and the exact repos.\n\n"
         + "\n".join(lines)
         + _NEXT_TOOLS_HINT
+        + _gather_capability_line()
     )
 
 

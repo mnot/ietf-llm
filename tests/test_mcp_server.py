@@ -92,6 +92,22 @@ def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     assert "stray" not in out
 
 
+def test_list_corpora_states_gather_capability(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Availability must be read from the server, not guessed from the transport:
+    # list_corpora states it, server-authoritatively, at the bottom.
+    write_cache_file(isolated_home, "wg1", "x.txt")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    on = mcp_server.tool_list_corpora()
+    assert "gather is available here" in on.lower()
+    assert "start_gather" in on
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    off = mcp_server.tool_list_corpora()
+    assert "gather is not available here" in off.lower()
+    assert "ietf-llm <name>" in off
+
+
 def test_list_corpora_synthetic_status_disclaims_effort(isolated_home: Path) -> None:
     # A synthetic `x-` bundle must not read as a chartered effort: its
     # status cell, and the legend, say so explicitly.
