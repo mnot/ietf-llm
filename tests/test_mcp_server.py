@@ -1241,6 +1241,22 @@ def test_load_server_instructions_states_session_mode(
     assert "available here" in out.lower()
 
 
+def test_load_server_instructions_prepends_session_when_marker_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fallback: if the bundled markdown ever loses the {{SESSION}} marker,
+    # the mode-specific block must still appear (prepended), not silently vanish.
+    # Drive it by stubbing the markdown to marker-less text.
+    monkeypatch.setattr(
+        mcp_server, "_strip_frontmatter", lambda _t: "# Routing\n\nbody, no marker"
+    )
+    out = mcp_server._load_server_instructions()  # pylint: disable=protected-access
+    assert "{{SESSION}}" not in out
+    assert "Fixed for this server's lifetime" in out  # the session section
+    # Prepended, not appended, so it leads.
+    assert out.index("Fixed for this server") < out.index("body, no marker")
+
+
 def test_load_server_instructions_includes_load_bearing_content() -> None:
     # Spot-check that the routing rules the skill carries actually land
     # in the instructions string. If this regresses, the non-Claude

@@ -2833,8 +2833,9 @@ def _load_server_instructions() -> str:
         return ""
     # The mode-specific session facts must reach every client. Substitute at the
     # placeholder; if the bundled markdown ever drops it, prepend rather than let
-    # the block silently vanish (the marker and the fallback are both covered by
-    # test_load_server_instructions_states_session_mode).
+    # the block silently vanish. The marker path is covered by
+    # test_load_server_instructions_states_session_mode, the prepend fallback by
+    # test_load_server_instructions_prepends_session_when_marker_missing.
     section = _session_section()
     if "{{SESSION}}" in text:
         return text.replace("{{SESSION}}", section)
