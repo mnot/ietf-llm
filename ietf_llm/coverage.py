@@ -31,7 +31,7 @@ from typing import List, Optional, Tuple
 from . import paths
 from .config import load as load_config
 from .freshness import last_gathered
-from .utils import DEFAULT_MONTHS
+from .months import DEFAULT_MONTHS
 
 #: The gather config persists under this scope (matches `corpus._GATHER_SCOPE`).
 _GATHER_SCOPE = "gather"

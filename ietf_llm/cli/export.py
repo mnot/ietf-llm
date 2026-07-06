@@ -27,14 +27,10 @@ import os
 import sys
 
 from .. import __version__, config, export
+from ..completion import maybe_autocomplete, wg_completer
 from ..freshness import staleness_warning
 from ..paths import get_config_dir
-from ..utils import (
-    Verbosity,
-    graceful_keyboard_interrupt,
-    maybe_autocomplete,
-    wg_completer,
-)
+from ..utils import Verbosity, graceful_keyboard_interrupt
 
 SCOPE = "export"
 

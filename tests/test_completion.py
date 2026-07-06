@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.utils import cached_wg_names, maybe_autocomplete, wg_completer
+from ietf_llm.utils import cached_wg_names
+from ietf_llm.completion import maybe_autocomplete, wg_completer
 
 from conftest import write_cache_file
 
@@ -60,7 +61,7 @@ def test_print_completion_emits_registration_for_all_commands(
     # `ietf-llm --completion zsh` must print a snippet that registers
     # all three commands — driven through ietf-llm so it works under
     # pipx (which doesn't expose argcomplete's own scripts).
-    from ietf_llm.utils import print_completion_snippet
+    from ietf_llm.completion import print_completion_snippet
     rc = print_completion_snippet("zsh")
     assert rc == 0
     out = capsys.readouterr().out  # type: ignore[attr-defined]
@@ -70,7 +71,7 @@ def test_print_completion_emits_registration_for_all_commands(
 
 
 def test_print_completion_fish_format(capsys: object) -> None:
-    from ietf_llm.utils import print_completion_snippet
+    from ietf_llm.completion import print_completion_snippet
     rc = print_completion_snippet("fish")
     assert rc == 0
     out = capsys.readouterr().out  # type: ignore[attr-defined]

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ietf_llm import config, coverage
 from ietf_llm.freshness import _sentinel_path
-from ietf_llm.utils import DEFAULT_MONTHS
+from ietf_llm.months import DEFAULT_MONTHS
 from ietf_llm.paths import get_cache_dir
 
 from conftest import write_cache_file

@@ -370,8 +370,9 @@ ietf_llm/
 │   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
-├── utils.py                # log(), Verbosity/LogLevel, is_synthetic_wg,
-│                           # months + argcomplete helpers
+├── utils.py                # log(), Verbosity/LogLevel, is_synthetic_wg, cached_wg_names
+├── months.py               # gather --months window policy (validate / resolve; DEFAULT_MONTHS)
+├── completion.py           # shell tab-completion (argcomplete wiring for the ietf-llm CLIs)
 ├── atomicio.py             # concurrency-safe filesystem primitives: atomic writes
 │                           # (atomic_open / write_if_changed) + advisory file locks
 ├── net.py                  # HTTP transport: pooled retrying session, host-governed

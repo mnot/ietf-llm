@@ -7,7 +7,7 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ..utils import months_request_caution, months_request_error
+from ..months import months_request_caution, months_request_error
 from . import debug_log
 from .common import (
     _corpus_exists,
