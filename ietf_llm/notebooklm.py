@@ -1,3 +1,14 @@
+"""Google Cloud client for NotebookLM Enterprise (Discovery Engine).
+
+The API surface behind `ietf-llm-export`'s NotebookLM sink: OAuth user
+credentials (`get_credentials`), notebook creation (`create_notebook`), and
+per-source upload (`upload_source`) against the Discovery Engine REST API.
+
+The Google auth libraries are the optional `notebooklm` extra, so this module
+is imported lazily (only from `export.notebooklm`) — a base install without the
+extra still runs the rest of the CLI and the local-mirror export path.
+"""
+
 import base64
 import os
 from typing import Optional

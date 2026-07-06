@@ -63,9 +63,9 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   must keep working without importing torch.
 - **Operability.** New failure mode that needs to be diagnosable in the cloud
   deployment? Wire it into what exists — no external logging/metrics libs, all
-  hand-rolled: structured logs (`IETF_LLM_LOG_FORMAT=json`, `utils.log`),
+  hand-rolled: structured logs (`IETF_LLM_LOG_FORMAT=json`, `log.log`),
   Prometheus RED metrics at `GET /metrics` (`serve_metrics.py`), `GET /health`
-  readiness, per-gather egress in `gather-metrics.json` (`http_metrics.py`),
+  readiness, per-gather egress in `gather-metrics.json` (`net/http_metrics.py`),
   and opt-in request telemetry (`IETF_LLM_DEBUG_LOG`, `get_session_log`).
 - **Dead code sweep.** Remove anything this change orphans — old branches,
   now-unused helpers, superseded config.

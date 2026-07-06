@@ -169,9 +169,9 @@ def _render_upcoming_meetings(corpus: str) -> str:
         )
     lines = [f"# {corpus} — {len(meetings)} upcoming meeting(s)\n"]
     for mtg in meetings:
-        # One label source (`meeting_label`) for both surfaces; the raw id
+        # One label source (`meeting_id_label`) for both surfaces; the raw id
         # stays visible on the Logistics line below.
-        lines.append(f"- **{mtg.date}** — {live_lookup.meeting_label(mtg.number)}")
+        lines.append(f"- **{mtg.date}** — {live_lookup.meeting_id_label(mtg.number)}")
         lines.append(f"  - Agenda: {mtg.agenda_url}")
         lines.append(f"  - Logistics: `meeting_schedule({corpus!r}, {mtg.number!r})`")
     lines.append("")
@@ -214,7 +214,7 @@ def _render_meeting_sessions(corpus: str, meeting: str) -> str:
     """Render one meeting's sessions (numbered or interim), venue-local."""
     from .. import live_lookup  # pylint: disable=import-outside-toplevel
 
-    label = live_lookup.meeting_label(meeting)
+    label = live_lookup.meeting_id_label(meeting)
     sessions, fetched, error = live_lookup.fetch_meeting_sessions(corpus, meeting)
     if error:
         return error

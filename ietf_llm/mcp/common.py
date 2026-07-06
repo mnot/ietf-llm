@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 import anyio
 
 from .. import coverage, serve_metrics
-from ..access import note_access
+from ..access_stamp import note_access
 from ..digest.query import parse_md_tables
 from ..embeddings import probe_index
 from ..freshness import (

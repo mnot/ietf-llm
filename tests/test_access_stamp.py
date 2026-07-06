@@ -11,12 +11,12 @@ from typing import List
 
 import pytest
 
-from ietf_llm import access
+from ietf_llm import access_stamp
 
 
 @pytest.fixture(autouse=True)
 def _reset() -> None:
-    access._reset_for_test()
+    access_stamp._reset_for_test()
 
 
 def _stub_store(monkeypatch: pytest.MonkeyPatch) -> List[str]:
@@ -28,7 +28,7 @@ def _stub_store(monkeypatch: pytest.MonkeyPatch) -> List[str]:
         def record_access(self, corpus: str) -> None:
             calls.append(corpus)
 
-    monkeypatch.setattr(access, "get_corpus_store", lambda: _Store())
+    monkeypatch.setattr(access_stamp, "get_corpus_store", lambda: _Store())
     return calls
 
 
@@ -36,8 +36,8 @@ def test_note_access_records_once_then_debounces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _stub_store(monkeypatch)
-    access.note_access("tls")
-    access.note_access("tls")  # within the window -> suppressed
+    access_stamp.note_access("tls")
+    access_stamp.note_access("tls")  # within the window -> suppressed
     assert calls == ["tls"]
 
 
@@ -46,17 +46,17 @@ def test_note_access_stamps_again_after_window(
 ) -> None:
     calls = _stub_store(monkeypatch)
     clock = [1000.0]
-    monkeypatch.setattr(access.time, "monotonic", lambda: clock[0])
-    access.note_access("tls")
-    clock[0] += access.STAMP_MIN_INTERVAL_SECONDS + 1
-    access.note_access("tls")
+    monkeypatch.setattr(access_stamp.time, "monotonic", lambda: clock[0])
+    access_stamp.note_access("tls")
+    clock[0] += access_stamp.STAMP_MIN_INTERVAL_SECONDS + 1
+    access_stamp.note_access("tls")
     assert calls == ["tls", "tls"]
 
 
 def test_note_access_is_per_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub_store(monkeypatch)
-    access.note_access("tls")
-    access.note_access("httpbis")
+    access_stamp.note_access("tls")
+    access_stamp.note_access("httpbis")
     assert sorted(calls) == ["httpbis", "tls"]
 
 
@@ -65,9 +65,9 @@ def test_opt_out_skips_the_store_entirely(
 ) -> None:
     calls = _stub_store(monkeypatch)
     monkeypatch.setenv("IETF_LLM_RECORD_ACCESS", "off")
-    access.note_access("tls")
+    access_stamp.note_access("tls")
     assert calls == []
-    assert access.record_access_enabled() is False
+    assert access_stamp.record_access_enabled() is False
 
 
 def test_store_failure_never_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,6 +75,6 @@ def test_store_failure_never_propagates(monkeypatch: pytest.MonkeyPatch) -> None
         def record_access(self, corpus: str) -> None:
             raise RuntimeError("read-only IAM role")
 
-    monkeypatch.setattr(access, "get_corpus_store", lambda: _Boom())
+    monkeypatch.setattr(access_stamp, "get_corpus_store", lambda: _Boom())
     # Must not raise — a failed stamp can never fail the read that triggered it.
-    access.note_access("tls")
+    access_stamp.note_access("tls")

@@ -27,7 +27,7 @@ def is_interim_number(meeting: str) -> bool:
     return (meeting or "").strip().lower().startswith("interim-")
 
 
-def meeting_label(meeting: str) -> str:
+def meeting_id_label(meeting: str) -> str:
     """Human label for a meeting id: `IETF 126` for a numbered meeting, the
     canonical (lowercase) interim id (`interim-2026-aipref-05`) otherwise."""
     meeting = (meeting or "").strip()
@@ -185,7 +185,7 @@ def fetch_meeting_sessions(
     # resolves rather than 404-ing as "no agenda".
     if is_interim:
         meeting = meeting.lower()
-    label = meeting_label(meeting)
+    label = meeting_id_label(meeting)
     agenda, fetched = _cached_json(f"{_DT_BASE}/meeting/{meeting}/agenda.json")
     if agenda is None:
         return (
