@@ -64,7 +64,7 @@ from ..utils import (
     log,
     resolve_months,
 )
-from ..groups import fetch_group_object
+from ..datatracker_api import fetch_group_object
 
 SCOPE = "gather"
 

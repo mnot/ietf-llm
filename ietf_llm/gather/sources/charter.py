@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from ...utils import LogLevel, Verbosity, atomic_open, log
 from ...net import fetch_resource
-from ...groups import get_group_type
+from ...datatracker_api import get_group_type
 from .datatracker import _get_json
 
 

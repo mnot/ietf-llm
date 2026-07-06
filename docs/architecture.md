@@ -373,7 +373,7 @@ ietf_llm/
 │                           # atomic write/lock, is_synthetic_wg, months + argcomplete helpers
 ├── net.py                  # HTTP transport: pooled retrying session, host-governed
 │                           # GET, metered fetch_resource, clean_html
-├── groups.py               # IETF group metadata via the Datatracker API
+├── datatracker_api.py               # IETF group metadata via the Datatracker API
 │                           # (fetch_group_object + get_group_* + get_wg_title)
 ├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
@@ -639,9 +639,9 @@ Concretely, the gather layer reads from the API for:
 
 - **Group metadata** — type (WG/RG), title, mailing-list address,
   state, and parent area — via `/api/v1/group/group/?acronym=<wg>`
-  (`groups.fetch_group_object`), plus the "Additional Resources"
+  (`datatracker_api.fetch_group_object`), plus the "Additional Resources"
   (repos / home page / chat / alternate archives) from
-  `/api/v1/group/groupextresource/` (`groups.get_group_resources`).
+  `/api/v1/group/groupextresource/` (`datatracker_api.get_group_resources`).
   The off-IETF mailing-list fallback (httpbis → `httpbisa`) reads the
   alternate-archive resource here.
 - **Charter** — revision from the document API, then the published

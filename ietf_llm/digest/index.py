@@ -24,7 +24,7 @@ from ..paths import (
     digest_path,
 )
 from ..utils import LogLevel, Verbosity, atomic_open, log
-from ..groups import get_wg_title
+from ..datatracker_api import get_wg_title
 from .helpers import _fmt_size
 
 

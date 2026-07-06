@@ -22,7 +22,7 @@ from ...utils import (
     write_if_changed,
 )
 from ...net import governed_get
-from ...groups import get_mailing_list_name
+from ...datatracker_api import get_mailing_list_name
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993
