@@ -18,8 +18,8 @@ from typing import Any, Dict, List, Optional, cast
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
-from .kv_store import ABSENT, ANY, KvStore, Record
-from .s3_backend import NOT_FOUND, PRECONDITION_FAILED, S3Bucket
+from .kv import ABSENT, ANY, KvStore, Record
+from .s3 import NOT_FOUND, PRECONDITION_FAILED, S3Bucket
 
 
 class S3KvStore(KvStore):

@@ -19,9 +19,9 @@ from typing import List, Optional
 import pytest
 
 from ietf_llm.catalog import catalog_index_dir
-from ietf_llm.corpus_store import LocalCorpusStore
-from ietf_llm.corpus_store_cloud import CloudCorpusStore
-from ietf_llm.corpus_blobs import FileBlobStore
+from ietf_llm.store.corpus import LocalCorpusStore
+from ietf_llm.store.cloud import CloudCorpusStore
+from ietf_llm.store.blobs import FileBlobStore
 from ietf_llm.gather import (
     cache_sync,
     datatracker,
@@ -29,8 +29,8 @@ from ietf_llm.gather import (
     datatracker_people,
     github_users,
 )
-from ietf_llm.kv_control import KvControlPlane
-from ietf_llm.kv_store import ANY, InMemoryKvStore, KvStore, Record
+from ietf_llm.store.control import KvControlPlane
+from ietf_llm.store.kv import ANY, InMemoryKvStore, KvStore, Record
 
 
 @pytest.fixture(autouse=True)

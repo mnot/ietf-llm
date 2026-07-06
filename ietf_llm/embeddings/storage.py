@@ -177,7 +177,7 @@ def _db_path_ro(wg: str) -> str:
     cloud reader replica serves the current version's `embeddings.db`
     (materialised onto local scratch) instead of an empty local index dir. The
     local backend returns `<index_root>/<wg>`, so local reads are unchanged."""
-    from ..corpus_store import (  # pylint: disable=import-outside-toplevel
+    from ..store.corpus import (  # pylint: disable=import-outside-toplevel
         get_corpus_store,
     )
 

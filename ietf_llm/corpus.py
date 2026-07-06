@@ -20,7 +20,7 @@ import os
 from typing import Any, Dict, List, Tuple
 
 from . import config, paths
-from .corpus_store import get_corpus_store
+from .store.corpus import get_corpus_store
 from .utils import DEFAULT_MONTHS, is_synthetic_wg
 
 # The gather CLI persists its config under this scope.

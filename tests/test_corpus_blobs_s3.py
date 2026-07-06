@@ -10,7 +10,7 @@ import pytest
 from botocore.exceptions import ClientError, NoCredentialsError
 from moto import mock_aws
 
-from ietf_llm.corpus_blobs_s3 import S3AuthError, S3BlobStore
+from ietf_llm.store.blobs_s3 import S3AuthError, S3BlobStore
 
 
 @pytest.fixture

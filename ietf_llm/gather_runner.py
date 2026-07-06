@@ -324,7 +324,7 @@ def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
     # `force` overrides the freshness debounce only — never a gather in flight.
     # None on the local backend, where the in-process registry catches same-host
     # races (the lease below is the cross-host arbiter for the tight race).
-    from . import corpus_store  # pylint: disable=import-outside-toplevel
+    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
     if fleet is not None and fleet.get("state") in ("queued", "running"):
@@ -395,7 +395,7 @@ def start(  # pylint: disable=too-many-return-statements
     refusal = _pre_start_refusal(spec)
     if refusal is not None:
         return refusal
-    from . import corpus_store  # pylint: disable=import-outside-toplevel
+    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
 
     store = corpus_store.get_corpus_store()
     owner = _owner()
@@ -500,7 +500,7 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
         event = _cancel_events.get(corpus)
     if event is not None:
         event.set()
-    from . import corpus_store  # pylint: disable=import-outside-toplevel
+    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
 
     store = corpus_store.get_corpus_store()
     status["cancel_requested"] = True
@@ -558,7 +558,7 @@ def _store() -> Any:
     """The current CorpusStore. Fetched fresh (not captured) so the long-lived
     worker/heartbeat always honour the live config rather than whatever was set
     when they first started."""
-    from . import corpus_store  # pylint: disable=import-outside-toplevel
+    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
 
     return corpus_store.get_corpus_store()
 
@@ -835,7 +835,7 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     if not valid_corpus_name(corpus):
         return None
     # Fleet-visible status first (cloud backend); None on the local backend.
-    from . import corpus_store  # pylint: disable=import-outside-toplevel
+    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
     if fleet is not None:
@@ -894,7 +894,7 @@ def all_statuses() -> List[Dict[str, Any]]:
     no-corpus listing also sees gathers queued or running on other replicas,
     not just the corpora cached locally.
     """
-    from . import corpus_store  # pylint: disable=import-outside-toplevel
+    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
 
     out: List[Dict[str, Any]] = []
     seen: "set[str]" = set()

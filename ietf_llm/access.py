@@ -31,7 +31,7 @@ import threading
 import time
 from typing import Dict
 
-from .corpus_store import get_corpus_store
+from .store.corpus import get_corpus_store
 
 _RECORD_ACCESS_ENV = "IETF_LLM_RECORD_ACCESS"
 _FALSY = ("0", "false", "no", "off")

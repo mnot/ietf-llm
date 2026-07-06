@@ -22,7 +22,7 @@ from botocore.exceptions import (  # type: ignore[import-untyped]
     NoCredentialsError,
 )
 
-from .corpus_blobs import _safe_key, blob_concurrency
+from .blobs import _safe_key, blob_concurrency
 
 _T = TypeVar("_T")
 

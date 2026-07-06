@@ -15,7 +15,7 @@ import anyio
 
 from .. import _debug_log, coverage, serve_metrics
 from ..access import note_access
-from ..corpus_store import VersionVanished, get_corpus_store, pin_corpus_version
+from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from ..digest.query import parse_md_tables
 from ..embeddings import probe_index
 from ..freshness import (

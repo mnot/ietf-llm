@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 from . import corpus
-from .corpus_store import get_corpus_store
+from .store.corpus import get_corpus_store
 from .freshness import last_gathered
 from .utils import cached_wg_names
 

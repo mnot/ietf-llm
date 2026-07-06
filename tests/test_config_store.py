@@ -20,8 +20,8 @@ from ietf_llm.config_store import (
     LocalConfigStore,
     get_config_store,
 )
-from ietf_llm.kv_control import KvControlPlane
-from ietf_llm.kv_store import InMemoryKvStore
+from ietf_llm.store.control import KvControlPlane
+from ietf_llm.store.kv import InMemoryKvStore
 
 
 @pytest.fixture(autouse=True)

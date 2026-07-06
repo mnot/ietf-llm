@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.corpus_store import (
+from ietf_llm.store.corpus import (
     LOCAL_VERSION,
     CorpusStore,
     LocalCorpusStore,

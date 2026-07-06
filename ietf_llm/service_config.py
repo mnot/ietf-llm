@@ -20,7 +20,7 @@ authoritative. See `docs/storage.md`.
 | retain versions | IETF_LLM_RETAIN_VERSIONS   | retain_versions    | no     |
 
 The S3 endpoint for a non-AWS service (R2, MinIO) is `IETF_LLM_STORE_ENDPOINT_URL`
-(env only), read by `s3_backend`.
+(env only), read by `store.s3`.
 
 The per-host gather egress caps (`IETF_LLM_HTTP_MAX_PER_HOST`,
 `IETF_LLM_HTTP_MAX_DATATRACKER`) are deliberately *not* read here: `http_governor`

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ietf_llm.kv_store import ABSENT, InMemoryKvStore
+from ietf_llm.store.kv import ABSENT, InMemoryKvStore
 
 
 def test_put_get_roundtrip() -> None:

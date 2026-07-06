@@ -340,14 +340,15 @@ ietf_llm/
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # cache-layout single source of truth; meeting_label()
 ├── routing.py              # which_corpus: centroid routing over the topic-map sidecars + fleet key
-├── corpus_store.py         # CorpusStore seam: port + LocalCorpusStore + factory
-├── kv_store.py             # KvStore compare-and-swap seam + in-memory double
-├── kv_control.py           # cloud control plane: pointer / lease / slot / status over KvStore
-├── kv_store_s3.py          # S3-backed KvStore (object-store conditional writes; [s3])
-├── corpus_blobs.py         # cloud blob plane: immutable whole-object store (file://)
-├── corpus_blobs_s3.py      # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
-├── s3_backend.py           # shared S3Bucket: one boto3 client for blob + control planes
-├── corpus_store_cloud.py   # CloudCorpusStore: composes control + blob; publish + read + seed
+├── store/                  # storage seam: CorpusStore + backends (see "The storage seam")
+│   ├── corpus.py           # CorpusStore seam: port + LocalCorpusStore + factory
+│   ├── kv.py               # KvStore compare-and-swap seam + in-memory double
+│   ├── control.py          # cloud control plane: pointer / lease / slot / status over KvStore
+│   ├── kv_s3.py            # S3-backed KvStore (object-store conditional writes; [s3])
+│   ├── blobs.py            # cloud blob plane: immutable whole-object store (file://)
+│   ├── blobs_s3.py         # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
+│   ├── s3.py               # shared S3Bucket: one boto3 client for blob + control planes
+│   └── cloud.py            # CloudCorpusStore: composes control + blob; publish + read + seed
 ├── service_config.py       # deployment knobs (store backend, …): env > global > default
 ├── live_lookup.py          # live Datatracker reads (meeting_schedule / draft_status /
 │                           # overview reconciliation); gather-gated, the one networked read path
@@ -496,7 +497,7 @@ Every consumer reads from the cache. The cache is the contract. Adding
 a consumer never requires touching gather; gather never has to know
 who reads its output. This is the project's main architectural lever.
 
-The cache is reached through a seam — the `CorpusStore` (`corpus_store.py`) —
+The cache is reached through a seam — the `CorpusStore` (`ietf_llm/store/`) —
 so the *contract* generalises from "a local directory" to "whatever a
 `CorpusStore` materialises locally". The local filesystem is the default
 implementation and the only one the laptop CLI uses; a cloud deployment can

@@ -5,11 +5,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_store import LocalCorpusStore
-from ietf_llm.corpus_store_cloud import CloudCorpusStore
-from ietf_llm.kv_control import KvControlPlane
-from ietf_llm.kv_store import InMemoryKvStore
+from ietf_llm.store.blobs import FileBlobStore
+from ietf_llm.store.corpus import LocalCorpusStore
+from ietf_llm.store.cloud import CloudCorpusStore
+from ietf_llm.store.control import KvControlPlane
+from ietf_llm.store.kv import InMemoryKvStore
 
 
 def _cloud(tmp_path: Path) -> CloudCorpusStore:

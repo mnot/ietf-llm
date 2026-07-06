@@ -7,11 +7,11 @@ from typing import Tuple
 
 import pytest
 
-from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_store import VersionVanished, pin_corpus_version
-from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
-from ietf_llm.kv_control import KvControlPlane
-from ietf_llm.kv_store import InMemoryKvStore
+from ietf_llm.store.blobs import FileBlobStore
+from ietf_llm.store.corpus import VersionVanished, pin_corpus_version
+from ietf_llm.store.cloud import CloudCorpusStore, _clear_resolve_cache
+from ietf_llm.store.control import KvControlPlane
+from ietf_llm.store.kv import InMemoryKvStore
 
 
 def _store(tmp_path: Path) -> Tuple[CloudCorpusStore, KvControlPlane]:

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
-from ietf_llm.corpus_store_cloud import CloudCorpusStore, build_cloud_store
+from ietf_llm.store.corpus import LocalCorpusStore, get_corpus_store
+from ietf_llm.store.cloud import CloudCorpusStore, build_cloud_store
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",

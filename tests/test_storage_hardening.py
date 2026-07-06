@@ -11,12 +11,12 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from ietf_llm.corpus_blobs import FileBlobStore
-from ietf_llm.corpus_store import LocalCorpusStore, get_corpus_store
-from ietf_llm.corpus_store_cloud import CloudCorpusStore, _clear_resolve_cache
+from ietf_llm.store.blobs import FileBlobStore
+from ietf_llm.store.corpus import LocalCorpusStore, get_corpus_store
+from ietf_llm.store.cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.gather_runner import _owner
-from ietf_llm.kv_control import KvControlPlane
-from ietf_llm.kv_store import InMemoryKvStore
+from ietf_llm.store.control import KvControlPlane
+from ietf_llm.store.kv import InMemoryKvStore
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",
@@ -126,7 +126,7 @@ def test_cloud_index_dir_materialises_db(tmp_path: Path) -> None:
 def test_db_path_ro_routes_through_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm import corpus_store as cs_mod
+    from ietf_llm.store import corpus as cs_mod
     from ietf_llm.embeddings import storage as storage_mod
 
     store = _cloud(tmp_path)
@@ -142,7 +142,7 @@ def test_db_path_ro_routes_through_store(
 # G-1: a request-scoped pin keeps all reads on one version across a mid-request
 # publish (files and index both stay pinned).
 def test_version_pin_holds_across_publish(tmp_path: Path) -> None:
-    from ietf_llm.corpus_store import pin_corpus_version
+    from ietf_llm.store.corpus import pin_corpus_version
 
     store = _cloud(tmp_path)
     _publish_with_index(store, tmp_path)  # v1: files/x.md == "f"
@@ -304,7 +304,7 @@ def test_resolve_cache_negative_caching(tmp_path: Path) -> None:
 
 
 def test_resolve_cache_expires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm import corpus_store_cloud as csc
+    from ietf_llm.store import cloud as csc
 
     clock = {"t": 1000.0}
     monkeypatch.setattr(csc.time, "monotonic", lambda: clock["t"])
@@ -404,7 +404,7 @@ def test_reaper_removes_superseded_version(tmp_path: Path) -> None:
 
 
 def test_reaper_keeps_in_use_versions(tmp_path: Path) -> None:
-    from ietf_llm.corpus_store import pin_corpus_version
+    from ietf_llm.store.corpus import pin_corpus_version
 
     store = _cloud(tmp_path)
     for ver in ("v1", "v2"):
