@@ -9,7 +9,7 @@ import json
 import os
 from typing import Dict, Mapping
 
-from ...utils import atomic_open
+from ...atomicio import atomic_open
 
 
 def load_json_dict(path: str) -> Dict[str, str]:

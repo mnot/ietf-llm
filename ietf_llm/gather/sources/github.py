@@ -7,7 +7,8 @@ from typing import Any, Dict, Iterator, List, Optional
 import requests
 
 from ... import paths
-from ...utils import LogLevel, Verbosity, atomic_open, log
+from ...utils import LogLevel, Verbosity, log
+from ...atomicio import atomic_open
 from ...net import DEFAULT_HEADERS, governed_get
 
 

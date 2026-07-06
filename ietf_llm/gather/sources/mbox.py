@@ -13,14 +13,8 @@ from typing import Callable, Dict, List, NamedTuple, Optional
 import requests
 
 from ...paths import raw_dir, raw_mail_archive_path
-from ...utils import (
-    LogLevel,
-    Verbosity,
-    atomic_open_binary,
-    get_cache_dir,
-    log,
-    write_if_changed,
-)
+from ...utils import LogLevel, Verbosity, get_cache_dir, log
+from ...atomicio import atomic_open_binary, write_if_changed
 from ...net import governed_get
 from ...datatracker_api import get_mailing_list_name
 

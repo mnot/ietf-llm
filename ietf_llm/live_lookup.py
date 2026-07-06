@@ -39,7 +39,8 @@ import requests
 
 from .gather.sources.citations import normalize_draft_name
 from .gather.sources.meetings import _uri_id
-from .utils import atomic_open, file_lock, get_cache_dir
+from .utils import get_cache_dir
+from .atomicio import atomic_open, file_lock
 from .net import DEFAULT_HEADERS, governed_get
 
 _DT_BASE = "https://datatracker.ietf.org"

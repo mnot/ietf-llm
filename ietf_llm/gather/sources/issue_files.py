@@ -37,7 +37,8 @@ from ...paths import (
     issues_dir,
 )
 from ...people import Registry
-from ...utils import LogLevel, Verbosity, log, write_if_changed
+from ...utils import LogLevel, Verbosity, log
+from ...atomicio import write_if_changed
 
 # Lightweight HTML→Markdown normalisation for issue bodies and comments.
 # GitHub renders HTML inline (especially in tables, where Markdown lists

@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, List, Optional
 from dulwich import porcelain
 
 from ...paths import transcript_path, transcripts_dir
-from ...utils import LogLevel, Verbosity, atomic_open, file_lock, get_cache_dir, log
+from ...utils import LogLevel, Verbosity, get_cache_dir, log
+from ...atomicio import atomic_open, file_lock
 
 if TYPE_CHECKING:
     from .meetings import MeetingCluster

@@ -13,7 +13,8 @@ from __future__ import annotations
 from typing import List
 
 from ...paths import group_path
-from ...utils import LogLevel, Verbosity, log, write_if_changed
+from ...utils import LogLevel, Verbosity, log
+from ...atomicio import write_if_changed
 from ...datatracker_api import (
     get_group_area,
     get_group_name,

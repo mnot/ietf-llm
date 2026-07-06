@@ -58,14 +58,8 @@ from ..config import service as service_config
 # gather time) and never imports `runner` — the cancel check is passed in as a
 # callback — so the dependency runs one way.
 from .pipeline import GatherCancelled
-from ..utils import (
-    LogLevel,
-    Verbosity,
-    atomic_open,
-    get_cache_dir,
-    get_index_dir,
-    log,
-)
+from ..utils import LogLevel, Verbosity, get_cache_dir, get_index_dir, log
+from ..atomicio import atomic_open
 
 _STATUS_NAME = "gather-status.json"
 

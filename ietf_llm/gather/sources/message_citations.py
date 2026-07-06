@@ -50,7 +50,8 @@ from ...paths import (
     remove_stale_digest,
     threads_dir,
 )
-from ...utils import LogLevel, Verbosity, atomic_open, log
+from ...utils import LogLevel, Verbosity, log
+from ...atomicio import atomic_open
 
 # Archive permalinks, as they appear both on `_Archived-At:_` lines (the
 # resolver index) and inline in bodies (the citations we scan). Trailing

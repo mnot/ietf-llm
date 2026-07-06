@@ -43,7 +43,8 @@ import re
 import tempfile
 from typing import Dict, List, Tuple
 
-from .utils import LogLevel, Verbosity, get_wg_file_cache_dir, log, write_if_changed
+from .utils import LogLevel, Verbosity, get_wg_file_cache_dir, log
+from .atomicio import write_if_changed
 from .datatracker_api import get_wg_title
 
 # Files we mirror / upload. JSON archives are internal and excluded;
