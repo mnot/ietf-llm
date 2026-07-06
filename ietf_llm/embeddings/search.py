@@ -84,46 +84,33 @@ _FLUSH_EVERY_FILES = 25
 _EMBED_BUFFER = 512
 
 
-def _mps_mem_tools() -> (
-    Tuple[Optional[Callable[[], None]], Optional[Callable[[], int]]]
-):
-    """Return `(empty_cache, current_allocated_memory)` for torch's MPS
-    backend, or `(None, None)` when torch/MPS isn't in play.
+def _mps_empty_cache() -> Optional[Callable[[], None]]:
+    """Return torch's MPS `empty_cache`, or None when MPS isn't in play.
 
-    Embedding runs on Apple-Silicon MPS by default (sentence-transformers
-    selects `mps:0`). The MPS caching allocator holds freed blocks instead
-    of returning them to the OS, and forward passes leak a little, so a long
-    build's high-water mark climbs — and because torch's default
-    `PYTORCH_MPS_HIGH_WATERMARK_RATIO` (1.7) only errors *above* physical
-    RAM, an overrun thrashes swap and hangs the machine rather than raising.
-    We evict periodically to cap it, and surface the live figure in progress.
+    MPS is opt-in now (`IETF_LLM_EMBED_DEVICE=mps`; the default is CPU — see
+    `models._embed_device`), but on that path the MPS caching allocator holds
+    freed blocks and forward passes leak a little, so a long build's high-water
+    mark climbs — and because torch's default `PYTORCH_MPS_HIGH_WATERMARK_RATIO`
+    (1.7) only errors *above* physical RAM, an overrun thrashes swap rather than
+    raising. The on-device build evicts per window (`_flush_window`) to cap it.
 
     torch is imported lazily (only when a build actually runs) so the CLI and
-    the torch-free remote-embedding path pay nothing. Returns `(None, None)`
-    on CPU/CUDA or when torch is absent, so callers no-op transparently.
+    the torch-free remote-embedding path pay nothing. Returns None on CPU/CUDA
+    or when torch is absent (or lacks MPS), so callers no-op transparently.
     """
     try:
         # pylint: disable=import-outside-toplevel,import-error
         import torch  # type: ignore[import-not-found,unused-ignore]
     except ImportError:
-        return None, None
+        return None
     mps = getattr(torch, "mps", None)
     try:
         available = mps is not None and torch.backends.mps.is_available()
     except (AttributeError, RuntimeError):
         available = False
     if not available:
-        return None, None
-    # driver_allocated_memory is the swap-relevant figure: the Metal driver's
-    # total allocation for the process, including the caching allocator's
-    # reserved pool — which is what runs away and crosses into swap.
-    # current_allocated_memory counts only live tensors and stays roughly flat
-    # even while the reserved pool grows, so it can't reveal the leak we evict
-    # for. Prefer driver; fall back to current on older torch.
-    gauge = getattr(mps, "driver_allocated_memory", None) or getattr(
-        mps, "current_allocated_memory", None
-    )
-    return getattr(mps, "empty_cache", None), gauge
+        return None
+    return getattr(mps, "empty_cache", None)
 
 
 @dataclass
@@ -581,20 +568,16 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # embeds without spamming on small ones.
     files_done = 0
     last_status = start
-    # Chunks embedded since the last flush — drives the chunk-count side of the
-    # flush cadence (the side that actually bounds MPS memory; see
-    # `_FLUSH_EVERY_CHUNKS`).
+    # Chunks written since the last flush — drives the chunk-count side of the
+    # write-commit cadence (see `_FLUSH_EVERY_CHUNKS`).
     chunks_since_flush = 0
-    # MPS memory management: evict the allocator cache periodically and
-    # report the live high-water figure. No-ops off Apple Silicon, and
-    # skipped entirely on the remote backend — embedding happens over HTTP,
-    # so no tensors are allocated locally and the gauge reads ~0; reporting
-    # "mps 0MB" there is just noise (torch may still be installed for the
-    # local fallback, so _mps_mem_tools alone wouldn't suppress it).
+    # On-device only: the MPS allocator evictor, to cap the reserved pool on the
+    # opt-in `=mps` path (`_flush_window` and the flush cadence call it). None
+    # off MPS and on the remote backend (embedding happens over HTTP).
     if is_remote_embed_model(model_name):
-        mps_empty, mps_current = None, None
+        mps_empty = None
     else:
-        mps_empty, mps_current = _mps_mem_tools()
+        mps_empty = _mps_empty_cache()
     # Embed the planned files and write each result on this (main) thread, so
     # SQLite stays single-writer. The on-device model streams the corpus through
     # a bounded length-sort buffer (`_stream_embed`); the remote backend overlaps
@@ -637,15 +620,9 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS
         ):
             elapsed = now - start
-            mem = ""
-            if mps_current is not None:
-                try:
-                    mem = f", mps {mps_current() / (1024 * 1024):.0f}MB"
-                except (RuntimeError, OSError):
-                    mem = ""
             log(
                 f"  …{files_done}/{pending} files, "
-                f"{total_new} chunks, {elapsed:.0f}s elapsed{mem}",
+                f"{total_new} chunks, {elapsed:.0f}s elapsed",
                 verbose,
                 level=LogLevel.STATUS,
             )
@@ -680,16 +657,9 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             now = time.time()
             if now - embed_last >= _PROGRESS_SECS:
                 pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
-                mem = ""
-                if mps_current is not None:
-                    try:
-                        mem = f", mps {mps_current() / (1024 * 1024):.0f}MB"
-                    except (RuntimeError, OSError):
-                        mem = ""
                 log(
                     f"  …embedding {pct}% ({done_bytes >> 20}/"
-                    f"{pending_bytes >> 20} MB, {now - embed_start:.0f}s"
-                    f" elapsed{mem})",
+                    f"{pending_bytes >> 20} MB, {now - embed_start:.0f}s elapsed)",
                     verbose,
                     level=LogLevel.STATUS,
                 )
