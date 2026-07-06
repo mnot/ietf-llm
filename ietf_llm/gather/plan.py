@@ -1,6 +1,6 @@
 """Human-readable summary of an effective gather plan.
 
-Split out of `__main__` so the entry-point module stays under the
+Split out of `cli/main.py` so the entry-point module stays under the
 line-count cap; the logic is self-contained (it only reads attributes off
 the parsed/merged argparse namespace)."""
 

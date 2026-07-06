@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm import __main__ as main_mod
+from ietf_llm.cli import main as main_mod
 from ietf_llm.gather import sequencer
 from ietf_llm.log import Verbosity
 

@@ -8,7 +8,7 @@ import argparse
 import sys
 
 from .. import __version__
-from ..completion import maybe_autocomplete, wg_completer
+from .completion import maybe_autocomplete, wg_completer
 from ..embeddings import search
 from ..log import Verbosity, graceful_keyboard_interrupt
 

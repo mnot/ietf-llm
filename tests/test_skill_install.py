@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from ietf_llm import skill_install
+from ietf_llm.cli import skill_install
 from ietf_llm.log import Verbosity
 
 _MARKERS = {

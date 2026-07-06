@@ -38,9 +38,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, List
 
-from . import __version__
-from .log import LogLevel, Verbosity, log
-from .paths import get_cache_dir
+from .. import __version__
+from ..log import LogLevel, Verbosity, log
+from ..paths import get_cache_dir
 
 
 @dataclass(frozen=True)
