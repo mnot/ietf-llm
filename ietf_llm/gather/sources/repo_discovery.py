@@ -33,14 +33,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import requests
 
 from ... import config
-from ...utils import (
-    DEFAULT_HEADERS,
-    LogLevel,
-    Verbosity,
-    get_group_resources,
-    http_session,
-    log,
-)
+from ...utils import LogLevel, Verbosity, log
+from ...net import DEFAULT_HEADERS, http_session
+from ...groups import get_group_resources
 from .drafts import get_wg_documents
 
 #: How recently a repo must have been pushed to (and have issue activity) to

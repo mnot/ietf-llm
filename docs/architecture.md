@@ -255,7 +255,7 @@ Key invariants:
   run — request counts (transferred / revalidated / error), bytes, a
   per-host breakdown, and a top-N of URL patterns. `http_metrics.py`
   accumulates it at the two egress chokepoints (`datatracker._get_json`
-  and `utils.fetch_resource`) and the CLI prints a one-line summary at
+  and `net.fetch_resource`) and the CLI prints a one-line summary at
   the end of a gather. Beside the sentinel (one level above `files/`),
   so it is neither indexed nor exported.
 - **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
@@ -369,9 +369,12 @@ ietf_llm/
 │   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
-├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP
-│                           # defaults, group metadata via API, write_if_changed,
-│                           # is_synthetic_wg, cached_wg_names, argcomplete helpers
+├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs,
+│                           # atomic write/lock, is_synthetic_wg, months + argcomplete helpers
+├── net.py                  # HTTP transport: pooled retrying session, host-governed
+│                           # GET, metered fetch_resource, clean_html
+├── groups.py               # IETF group metadata via the Datatracker API
+│                           # (fetch_group_object + get_group_* + get_wg_title)
 ├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
@@ -636,9 +639,9 @@ Concretely, the gather layer reads from the API for:
 
 - **Group metadata** — type (WG/RG), title, mailing-list address,
   state, and parent area — via `/api/v1/group/group/?acronym=<wg>`
-  (`utils.fetch_group_object`), plus the "Additional Resources"
+  (`groups.fetch_group_object`), plus the "Additional Resources"
   (repos / home page / chat / alternate archives) from
-  `/api/v1/group/groupextresource/` (`utils.get_group_resources`).
+  `/api/v1/group/groupextresource/` (`groups.get_group_resources`).
   The off-IETF mailing-list fallback (httpbis → `httpbisa`) reads the
   alternate-archive resource here.
 - **Charter** — revision from the document API, then the published
@@ -658,7 +661,7 @@ Concretely, the gather layer reads from the API for:
   `datatracker_history.py`).
 
 `BeautifulSoup` survives only where there is no structured source:
-`utils.clean_html` cleans the MCP `get_by_url` tool's arbitrary
+`net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
 user-supplied pages and the handful of older minutes authored directly
 in HTML (served as a fragment when markdown is requested). New gather
 code that reaches for an HTML page should first confirm the API can't

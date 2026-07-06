@@ -47,14 +47,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from ...utils import (
-    DEFAULT_HEADERS,
-    LogLevel,
-    Verbosity,
-    get_cache_dir,
-    governed_get,
-    log,
-)
+from ...utils import LogLevel, Verbosity, get_cache_dir, log
+from ...net import DEFAULT_HEADERS, governed_get
 from . import identity_cache
 
 _CACHE_FILENAME = "_github-users.json"

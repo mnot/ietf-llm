@@ -23,7 +23,8 @@ from ..paths import (
     SUBDIR_TRANSCRIPTS,
     digest_path,
 )
-from ..utils import LogLevel, Verbosity, atomic_open, get_wg_title, log
+from ..utils import LogLevel, Verbosity, atomic_open, log
+from ..groups import get_wg_title
 from .helpers import _fmt_size
 
 

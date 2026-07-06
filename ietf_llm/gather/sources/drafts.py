@@ -5,7 +5,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ... import http_metrics
 from ...paths import drafts_dir
-from ...utils import LogLevel, Verbosity, fetch_resource, get_group_type, log
+from ...utils import LogLevel, Verbosity, log
+from ...net import fetch_resource
+from ...groups import get_group_type
 from .datatracker import (
     draft_state_slugs,
     iter_active_drafts_by_name,

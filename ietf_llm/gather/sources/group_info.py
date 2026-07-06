@@ -13,15 +13,12 @@ from __future__ import annotations
 from typing import List
 
 from ...paths import group_path
-from ...utils import (
-    LogLevel,
-    Verbosity,
+from ...utils import LogLevel, Verbosity, log, write_if_changed
+from ...groups import (
     get_group_area,
     get_group_name,
     get_group_resources,
     get_group_state,
-    log,
-    write_if_changed,
 )
 
 

@@ -25,14 +25,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 import requests
 
 from ... import http_metrics
-from ...utils import (
-    DEFAULT_HEADERS,
-    LogLevel,
-    Verbosity,
-    get_cache_dir,
-    governed_get,
-    log,
-)
+from ...utils import LogLevel, Verbosity, get_cache_dir, log
+from ...net import DEFAULT_HEADERS, governed_get
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
 
