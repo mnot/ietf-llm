@@ -60,7 +60,7 @@ from .meetings import (
     fetch_meeting_sessions,
     fetch_upcoming_meetings,
     is_interim_number,
-    meeting_label,
+    meeting_id_label,
 )
 
 __all__ = [
@@ -70,7 +70,7 @@ __all__ = [
     "fetch_meeting_sessions",
     "fetch_upcoming_meetings",
     "is_interim_number",
-    "meeting_label",
+    "meeting_id_label",
     # Drafts
     "DraftStatus",
     "DraftReconciliation",
