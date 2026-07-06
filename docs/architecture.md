@@ -109,7 +109,7 @@ persisting the accumulated set (`mentioned_drafts`) so it stays sticky
 and is retained through the new-drafts prune.
 
 The gather pipeline gates Datatracker-sourced steps on a single
-`group_backed` boolean (true only for the `group` kind). `corpus.py`
+`group_backed` boolean (true only for the `group` kind). `corpus/identity.py`
 derives `(kind, status)` from on-disk artifacts for `ietf-llm --list`
 and the MCP `list_corpora` tool identically, so they can't drift. The
 listing never shows a blank state — a `group` with no cached state shows
@@ -228,7 +228,7 @@ Key invariants:
   cache embedded before the topic map shipped has no sidecar until re-gathered,
   which `read_topics` / `overview` degrade past silently.
 - **The centroids are reused, reader-side, for two cross-corpus jobs.**
-  *Centroid routing* (`routing.py`, the `which_corpus` tool) scores each corpus
+  *Centroid routing* (`corpus/routing.py`, the `which_corpus` tool) scores each corpus
   as the max cosine of the query against its centroids and abstains below a
   floor — the entry point for "which gathered corpus is this about." *Generic-
   theme suppression* (`overview`) demotes a theme that recurs across much of the
@@ -239,7 +239,7 @@ Key invariants:
   `CorpusStore.routing_fleet_table` seam — a per-`topics.json` scan on local,
   one `fleet/routing/centroids.json` key (CAS-merged at `publish`) on cloud.
   Calibration constants and the `IETF_LLM_ROUTING_MIN_SCORE` override live in
-  `routing.py`.
+  `corpus/routing.py`.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
   files. Thread reconstruction walks that tree (two levels — one
   subdir per list, since a WG can follow several).
@@ -346,11 +346,14 @@ ietf_llm/
 │   ├── fs.py               # filesystem primitives leaf (per-WG + global config.json)
 │   ├── store.py            # ConfigStore seam: local + cloud (control-plane) per-WG config
 │   └── service.py          # deployment knobs (store backend, …): env > global > default
-├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
+├── corpus/                 # corpus resolution (identity / canonicalisation / routing);
+│   │                       # a package so it no longer name-collides with store/corpus.py
+│   ├── identity.py         # corpus kind/status + subject line (group/list/custom/synthetic)
+│   ├── canonical.py        # steer a new gather toward an existing overlapping corpus (write)
+│   └── routing.py          # which_corpus: centroid routing over the topic-map sidecars + fleet key
 ├── paths.py                # filesystem layout single source of truth: root dirs
 │                           # (get_config/cache/index_dir) + per-artefact paths; meeting_label();
 │                           # cached_wg_names / is_synthetic_wg (cache-dir listing predicates)
-├── routing.py              # which_corpus: centroid routing over the topic-map sidecars + fleet key
 ├── store/                  # storage seam: CorpusStore + backends (see "The storage seam")
 │   ├── corpus.py           # CorpusStore seam: port + LocalCorpusStore + factory
 │   ├── kv.py               # KvStore compare-and-swap seam + in-memory double
