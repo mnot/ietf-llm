@@ -12,7 +12,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from ietf_llm import __main__ as main_mod
+from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import corpus
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.store.corpus import get_corpus_store

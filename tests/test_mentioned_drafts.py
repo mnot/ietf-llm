@@ -9,7 +9,7 @@ from typing import Any, List
 
 import pytest
 
-from ietf_llm import __main__ as main_mod
+from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import config
 from ietf_llm.paths import drafts_dir
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir

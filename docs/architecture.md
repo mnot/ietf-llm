@@ -71,7 +71,7 @@ prints a shell tab-completion script.
 A corpus is not necessarily a Working Group — it's a named bundle of
 sources, and "a WG" is one preset. `<wg>` is a corpus name (the code
 keeps the historical `wg` parameter name). `_gather_one` classifies it
-once, in `__main__._resolve_corpus_shape`, into one of four **kinds**:
+once, in `gather.sequencer._resolve_corpus_shape`, into one of four **kinds**:
 
 - **group** — the name resolves to a Datatracker group (WG / IRTF RG /
   editorial WG / BoF). Gets the full auto-sourced pipeline: charter,
@@ -322,9 +322,9 @@ per-`<wg>` flow — see "Cross-corpus singletons" below.)
 
 ```
 ietf_llm/
-├── __main__.py             # `ietf-llm` (gather): argparse, persisted config,
-│                           # pipeline orchestration (charter → … → digests →
-│                           # embed); also --list / --completion / --install-skills
+├── __main__.py             # `ietf-llm` entry: argparse + dispatch; --list /
+│                           # --completion / --install-skills; the --all loop.
+│                           # The gather pipeline itself lives in gather/sequencer.py
 ├── cli/                    # auxiliary console scripts (the main `ietf-llm` is __main__)
 │   ├── export.py           # `ietf-llm-export` entry point
 │   ├── search.py           # `ietf-llm-search` entry point
@@ -389,6 +389,7 @@ ietf_llm/
 │   ├── stages.py               # stage_plan: canonical gather stage order (shared CLI ↔ runner)
 │   ├── plan.py                 # gather-plan summary (dry-run preview)
 │   ├── cli.py                  # build_parser: the `ietf-llm` gather argument parser
+│   ├── sequencer.py            # _gather_one / run_gather: walk one corpus through the gather stages
 │   └── sources/                # stage implementations: one module per thing gathered
 │       ├── charter.py              # charter text artifact (rev from doc API)
 │       ├── group_info.py           # group.md: name / status / area / Additional Resources
@@ -871,7 +872,7 @@ cache, so withholding it only adds friction), **off** for the shared HTTP
 replica (which must stay read-only). `IETF_LLM_ENABLE_GATHER` overrides either
 way. The registration gate and the user-facing "go gather" hints read the one
 resolved value (`freshness.gather_enabled`), so the tool is registered iff the
-hints recommend it — they can't drift. `start_gather` runs the same `__main__`
+hints recommend it — they can't drift. `start_gather` runs the same `gather.sequencer`
 pipeline as the CLI, never bounded by the per-call tool deadline (only the
 caller's optional `wait` is); progress lands in a per-corpus `gather-status.json`
 that `gather_status` reads back, stage-level via the shared `stage_plan`. A
@@ -984,8 +985,8 @@ on every push/PR across Python 3.10–3.14.
 
 ## Where to make changes
 
-- **New gather source** → add a module under `gather/`, hook into
-  `__main__.py`'s pipeline before the digest step. Skip it for
+- **New gather source** → add a module under `gather/sources/`, hook into
+  `gather/sequencer.py`'s pipeline (`_gather_one`) before the digest step. Skip it for
   synthetic (`x-`) WGs if it's Datatracker-backed.
 - **New digest** → add a builder under `digest/`, call it from
   `generate_digests()`, export from `__init__`.

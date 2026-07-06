@@ -1,6 +1,6 @@
 """Stage planning and progress tracking for the gather pipeline.
 
-Split out of `__main__` so the long pipeline orchestrator (`_gather_one`)
+Split out so the long pipeline orchestrator (`gather.sequencer._gather_one`)
 and the MCP gather runner share one definition of *which* stages run, in
 *what* order, for a given corpus shape. `stage_plan` is the single source
 of truth; `StageTracker` drives the progress callback and raises if the

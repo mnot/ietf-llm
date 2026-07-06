@@ -245,7 +245,7 @@ class GatherSpec:
         )
 
     def to_argv(self) -> List[str]:
-        """Render as CLI-style argv for `__main__.run_gather`."""
+        """Render as CLI-style argv for `sequencer.run_gather`."""
         argv: List[str] = [self.corpus]
         for value in self.mailing_list:
             argv += ["--mailing-list", value]
