@@ -1,4 +1,4 @@
-"""Tests for GitHub repo discovery (ietf_llm.gather.repo_discovery).
+"""Tests for GitHub repo discovery (ietf_llm.gather.sources.repo_discovery).
 
 Covers the contract:
 - enumerate a group's repos from its Datatracker `github_org` / `github_repo`
@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import pytest
 
-import ietf_llm.gather.repo_discovery as rd
+import ietf_llm.gather.sources.repo_discovery as rd
 from ietf_llm import config
 from ietf_llm.utils import Verbosity
 

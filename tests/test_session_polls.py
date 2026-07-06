@@ -2,7 +2,7 @@
 
 Polls are gathered via the Datatracker polls doctype. We stub
 `iter_group_documents` (the API doc lister) and `fetch_resource` at the
-`gather.session_polls` module boundary so no HTTP is hit. Tests cover:
+`gather.sources.session_polls` module boundary so no HTTP is hit. Tests cover:
 
 - The poll doc-name pattern matches `polls-<n>-<wg>-<dt>` and ignores
   slides / agenda names.
@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm.gather import session_polls
+from ietf_llm.gather.sources import session_polls
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
 

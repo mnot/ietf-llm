@@ -4,7 +4,7 @@ reaches (the window) and which sources it holds.
 Source detection reads on-disk artifacts; the window derives from the
 `last-gathered` sentinel and the persisted `months`. The GitHub-archive
 fixtures use the exact `{"repo": ..., "issues": [...]}` shape the gather
-writer emits (and that `gather.issue_files` reads back via `data["repo"]`),
+writer emits (and that `gather.sources.issue_files` reads back via `data["repo"]`),
 so the repo-name reader is exercised against real writer output, not an
 invented schema.
 """

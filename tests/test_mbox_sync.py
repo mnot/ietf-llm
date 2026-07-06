@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from ietf_llm.gather import mbox
+from ietf_llm.gather.sources import mbox
 from ietf_llm.utils import Verbosity
 
 

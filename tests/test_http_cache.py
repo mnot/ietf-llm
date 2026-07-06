@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.gather import datatracker
-from ietf_llm.gather.datatracker import _CACHE_MAX_AGE_DAYS, _decode_cached, _HttpCache
+from ietf_llm.gather.sources import datatracker
+from ietf_llm.gather.sources.datatracker import _CACHE_MAX_AGE_DAYS, _decode_cached, _HttpCache
 from ietf_llm.utils import get_cache_dir
 
 

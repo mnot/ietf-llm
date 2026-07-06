@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from ietf_llm.gather import author
+from ietf_llm.gather.sources import author
 from ietf_llm.utils import Verbosity
 
 Q = Verbosity.QUIET

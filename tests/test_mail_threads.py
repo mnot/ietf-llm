@@ -13,7 +13,7 @@ import email.message
 import email.policy
 from pathlib import Path
 
-from ietf_llm.gather.mail_threads import (
+from ietf_llm.gather.sources.mail_threads import (
     build_threads,
     elide_quotes,
     thread_slug,
@@ -403,7 +403,7 @@ def test_self_referential_in_reply_to_produces_no_thread(
 
 
 def _bare_msg(message_id: str) -> "Message":
-    from ietf_llm.gather.mail_threads import Message
+    from ietf_llm.gather.sources.mail_threads import Message
 
     return Message(
         message_id=message_id, subject="s", sender="A", date=None, body=""
@@ -415,7 +415,7 @@ def test_collect_subtree_terminates_on_self_edge() -> None:
     # (child id == its own parent id) would loop forever without it. Dedup in
     # build_threads makes this unreachable via the public API, so exercise the
     # guard at the unit level.
-    from ietf_llm.gather.mail_threads import _collect_subtree
+    from ietf_llm.gather.sources.mail_threads import _collect_subtree
 
     root = _bare_msg("<a@x>")
     children = {"<a@x>": [root]}  # a points to itself
@@ -426,7 +426,7 @@ def test_collect_subtree_terminates_on_self_edge() -> None:
 def test_collect_subtree_terminates_on_mutual_edge() -> None:
     # Two messages that parent each other form a 2-cycle in the children map.
     # The guard must visit each id at most once and terminate.
-    from ietf_llm.gather.mail_threads import _collect_subtree
+    from ietf_llm.gather.sources.mail_threads import _collect_subtree
 
     a = _bare_msg("<a@x>")
     b = _bare_msg("<b@x>")
@@ -642,7 +642,7 @@ def test_thread_file_no_role_for_unaffiliated(isolated_home: Path) -> None:
 
 
 def test_normalize_archived_at_strips_brackets() -> None:
-    from ietf_llm.gather.mail_threads import _normalize_archived_at
+    from ietf_llm.gather.sources.mail_threads import _normalize_archived_at
 
     # RFC 5064 form: URL wrapped in angle brackets.
     out = _normalize_archived_at(
@@ -652,7 +652,7 @@ def test_normalize_archived_at_strips_brackets() -> None:
 
 
 def test_normalize_archived_at_returns_bare_url() -> None:
-    from ietf_llm.gather.mail_threads import _normalize_archived_at
+    from ietf_llm.gather.sources.mail_threads import _normalize_archived_at
 
     # Unbracketed form, also valid.
     out = _normalize_archived_at(
@@ -662,7 +662,7 @@ def test_normalize_archived_at_returns_bare_url() -> None:
 
 
 def test_normalize_archived_at_rejects_non_url() -> None:
-    from ietf_llm.gather.mail_threads import _normalize_archived_at
+    from ietf_llm.gather.sources.mail_threads import _normalize_archived_at
 
     # Header value with no scheme — probably garbage, skip rather than
     # produce a broken citation URL.
@@ -680,7 +680,7 @@ def test_thread_file_includes_archived_at_per_message(
     # so the chunker can stamp it onto the chunk.
     from email.message import EmailMessage
     from email.policy import default as default_policy
-    from ietf_llm.gather.mail_threads import write_thread_files
+    from ietf_llm.gather.sources.mail_threads import write_thread_files
 
     imap_dir = (
         isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list"

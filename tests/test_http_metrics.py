@@ -17,7 +17,7 @@ import pytest
 import requests
 
 from ietf_llm import http_metrics, utils
-from ietf_llm.gather import datatracker
+from ietf_llm.gather.sources import datatracker
 
 # Captured at import (before conftest's autouse `_no_datatracker` stub binds
 # over it) so the chokepoint test can restore the genuine `_get_json`.

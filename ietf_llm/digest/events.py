@@ -1,7 +1,7 @@
 """Shared event dataclass for the chronological digest.
 
 Extracted from `digest.timeline` so that gather-side modules (notably
-`gather.datatracker_history`) can construct events without dragging in
+`gather.sources.datatracker_history`) can construct events without dragging in
 the rendering machinery. Keeping this small and dependency-free avoids
 the import cycle that would otherwise form between the gather and
 digest layers.

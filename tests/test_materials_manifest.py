@@ -8,8 +8,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ietf_llm.gather.materials_manifest import load_manifest, save_manifest
-from ietf_llm.gather.meetings import _needs_rebuild
+from ietf_llm.gather.sources.materials_manifest import load_manifest, save_manifest
+from ietf_llm.gather.sources.meetings import _needs_rebuild
 
 
 # --- manifest round-trip --------------------------------------------------

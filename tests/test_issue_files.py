@@ -1,6 +1,6 @@
 """Tests for per-issue Markdown files (symmetric with per-thread mail files).
 
-`gather/issue_files.py` writes one `<wg>-issue-<repo-slug>-<NNN>.md` per
+`gather/sources/issue_files.py` writes one `<wg>-issue-<repo-slug>-<NNN>.md` per
 GitHub issue, with frontmatter + outline + per-comment sections. These
 tests cover:
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.gather.issue_files import (
+from ietf_llm.gather.sources.issue_files import (
     _closing_rationale,
     _detect_duplicate_of,
     _normalise_html,

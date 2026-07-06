@@ -14,7 +14,7 @@ import pytest
 from ietf_llm.store.blobs import FileBlobStore
 from ietf_llm.store.corpus import LocalCorpusStore, get_corpus_store
 from ietf_llm.store.cloud import CloudCorpusStore, _clear_resolve_cache
-from ietf_llm.gather_runner import _owner
+from ietf_llm.gather.runner import _owner
 from ietf_llm.store.control import KvControlPlane
 from ietf_llm.store.kv import InMemoryKvStore
 
@@ -177,7 +177,7 @@ class _RenewSpy:
 
 
 def test_heartbeat_renews_until_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm import gather_runner as gr
+    from ietf_llm.gather import runner as gr
 
     monkeypatch.setattr(gr, "_LEASE_HEARTBEAT_S", 0.01)
     spy: Any = _RenewSpy(result=True)
@@ -192,7 +192,7 @@ def test_heartbeat_renews_until_stopped(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_heartbeat_stops_when_lease_lost(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm import gather_runner as gr
+    from ietf_llm.gather import runner as gr
 
     monkeypatch.setattr(gr, "_LEASE_HEARTBEAT_S", 0.01)
     spy: Any = _RenewSpy(result=False)  # lease was stolen after an expiry
@@ -358,7 +358,7 @@ def test_publish_includes_extra_files(tmp_path: Path) -> None:
 def test_index_extra_files_empty_when_inside_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm import gather_runner as gr
+    from ietf_llm.gather import runner as gr
 
     ws = tmp_path / "cache" / "tls"
     ws.mkdir(parents=True)
@@ -371,7 +371,7 @@ def test_index_extra_files_empty_when_inside_workspace(
 def test_index_extra_files_captures_split_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm import gather_runner as gr
+    from ietf_llm.gather import runner as gr
 
     ws = tmp_path / "cache" / "tls"
     ws.mkdir(parents=True)

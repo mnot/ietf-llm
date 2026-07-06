@@ -18,8 +18,8 @@ from typing import Callable, Dict, List
 
 import pytest
 
-from ietf_llm.gather import github_users
-from ietf_llm.gather.github_users import (
+from ietf_llm.gather.sources import github_users
+from ietf_llm.gather.sources.github_users import (
     _Outcome,
     _cache_path,
     resolve_logins,

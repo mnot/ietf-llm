@@ -63,7 +63,7 @@ DEFAULT_MIN_SCORE = _env_min_score()
 #: so a reader routes the whole fleet with a single GET instead of materialising
 #: each corpus's version to read its sidecar. Each gather merges *its own* entry
 #: under compare-and-swap (concurrent publishers of different corpora must not
-#: clobber), mirroring the shared identity maps in `gather/cache_sync.py`.
+#: clobber), mirroring the shared identity maps in `gather/sources/cache_sync.py`.
 FLEET_ROUTING_KEY = "fleet/routing/centroids.json"
 
 #: Bounded retries for the fleet-key compare-and-swap (mirrors `store.control`).

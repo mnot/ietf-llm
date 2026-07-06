@@ -37,8 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from .gather.citations import normalize_draft_name
-from .gather.meetings import _uri_id
+from .gather.sources.citations import normalize_draft_name
+from .gather.sources.meetings import _uri_id
 from .utils import (
     DEFAULT_HEADERS,
     atomic_open,
@@ -471,7 +471,7 @@ class UpcomingMeeting:
 def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str]]:
     """Batch-resolve meeting ids → `{number: (kind, date)}` via `id__in`.
 
-    The read-path twin of `gather.meetings._batch_fetch_meetings`: same
+    The read-path twin of `gather.sources.meetings._batch_fetch_meetings`: same
     `id__in` batching, but on the write-free `_cached_json` (not gather's
     on-disk ETag store) and keyed by meeting *number* (the caller builds
     agenda URLs / drill-in calls from it) rather than by uri-id. Keep the

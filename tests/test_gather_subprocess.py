@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm import gather_child, gather_pipeline, gather_runner
-from ietf_llm.gather_runner import GatherSpec
+from ietf_llm.gather import child as gather_child, pipeline as gather_pipeline, runner as gather_runner
+from ietf_llm.gather.runner import GatherSpec
 
 
 # --- CPU-contention hardening: nice + thread caps --------------------------
@@ -123,7 +123,7 @@ def test_child_unusable_corpus_maps_to_distinct_exit(
 
 
 def _fake_child(tmp_path: Path) -> Path:
-    """A stand-in for `ietf_llm.gather_child`: emits two records, then exits with
+    """A stand-in for `ietf_llm.gather.child`: emits two records, then exits with
     `FAKE_EXIT` (optionally sleeping first, for the cancellation test)."""
     script = tmp_path / "fake_child.py"
     script.write_text(

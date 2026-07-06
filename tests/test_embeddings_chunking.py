@@ -163,7 +163,7 @@ def test_windowed_draft_chunks_carry_datatracker_url() -> None:
 
 
 def test_windowed_charter_chunks_carry_source_url() -> None:
-    # The charter's `Source:` header line (what gather.charter writes) is
+    # The charter's `Source:` header line (what gather.sources.charter writes) is
     # lifted onto every chunk verbatim.
     text = (
         "Working Group Charter: httpbis\n"
@@ -271,7 +271,7 @@ def test_eligible_files_skips_rfc_and_replaced_draft_revisions(
 ) -> None:
     """Revisions of a draft in state rfc / repl are excluded; active /
     expired / unknown-state drafts and RFC .txt files stay eligible."""
-    from ietf_llm.gather.documents_manifest import save_documents_manifest
+    from ietf_llm.gather.sources.documents_manifest import save_documents_manifest
 
     save_documents_manifest(
         "wg",

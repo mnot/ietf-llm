@@ -261,13 +261,13 @@ Key invariants:
 - **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
   whole published RFC series from rfc.fyi (three JSON blobs), refreshed
   once per gather run after the per-corpus work, TTL-guarded and
-  best-effort (`gather/rfcs.py`). The leading underscore keeps it out of
+  best-effort (`gather/sources/rfcs.py`). The leading underscore keeps it out of
   `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
   `search_rfcs` / `get_rfc` tools read it; it is not embedded.
 - **`_catalog/` is the matching singleton for active efforts.** It
   mirrors the active (and BoF) slice of the Datatracker group list,
   refreshed beside `_rfc/` in tail housekeeping with the same TTL / ETag
-  / never-raises discipline (`gather/catalog.py`). Unlike the RFC mirror
+  / never-raises discipline (`gather/sources/catalog.py`). Unlike the RFC mirror
   its reader-facing file is *derived*: the raw source slices
   (`raw-active.json` / `raw-bof.json`) are kept for revalidation, then
   projected to the slim `catalog.json` record list the reader wants. The
@@ -376,48 +376,49 @@ ietf_llm/
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
 │                           # ranks the _catalog/ singleton by topic, tags cached efforts
-├── gather_runner.py        # in-session gather orchestration: queue/leases/heartbeat,
-│                           # writes gather-status.json (start_gather / gather_status)
-├── gather_pipeline.py      # runs the __main__ pipeline in a child process, streams
-│                           # its progress back (keeps a CPU-heavy stage off the server)
-├── gather_child.py         # the child entry point (python -m ietf_llm.gather_child)
-├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
 ├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms
 ├── data/skills/ietf-contributing/SKILL.md  # write-side norms (vendored), via read_ietf_participation_norms
 ├── data/skills/VENDORED.md               # provenance: norm skills vendored from mnot/ietf-skill
 │
-├── gather/                 # content acquisition + per-source post-processing
-│   ├── charter.py              # charter text artifact (rev from doc API)
-│   ├── group_info.py           # group.md: name / status / area / Additional Resources
-│   ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
-│   ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
-│   ├── author.py               # --author: a person's authored drafts
-│   ├── meetings.py             # minutes/agenda/slides via meeting API; clustering
-│   ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
-│   ├── transcript_context.py   # prepend meeting-context header to transcripts
-│   ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
-│   ├── mail_threads.py         # reconstruct per-thread .md files
-│   ├── github.py               # archive.json (gh-pages) or REST API
-│   ├── github_users.py         # resolve logins → real name + company
-│   ├── issue_files.py          # per-issue .md files
-│   ├── datatracker.py          # roles + paginated document listing via JSON API
-│   ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
-│   ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
-│   ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
-│   ├── cache_sync.py           # cloud: round-trip gather accelerator caches to the KvStore (issue #82)
-│   ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
-│   ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
-│   ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
-│   ├── datatracker_history.py  # governance / doc-lifecycle timeline events
-│   ├── datatracker_github.py   # github_username profile resources → person (by email)
-│   ├── datatracker_people.py   # mail address → person id (mail-side identity spine)
-│   ├── draft_authors.py        # parse Authors' Addresses (name + organization)
-│   ├── ballots.py              # IESG ballot positions (scoped to --months)
-│   ├── citations.py            # draft → citing thread/issue cross-reference
-│   ├── pdf_extract.py          # extract text from slide PDFs
-│   └── session_polls.py        # session polls (polls doctype) → JSON tallies
+├── gather/                 # orchestration (below) + content acquisition / per-source post-processing
+│   ├── runner.py               # in-session gather orchestration: queue/leases/heartbeat, gather-status.json
+│   ├── pipeline.py             # runs the sequencer in a child process, streams its progress back
+│   ├── child.py                # the child entry point (python -m ietf_llm.gather.child)
+│   ├── stages.py               # stage_plan: canonical gather stage order (shared CLI ↔ runner)
+│   ├── plan.py                 # gather-plan summary (dry-run preview)
+│   ├── cli.py                  # build_parser: the `ietf-llm` gather argument parser
+│   └── sources/                # stage implementations: one module per thing gathered
+│       ├── charter.py              # charter text artifact (rev from doc API)
+│       ├── group_info.py           # group.md: name / status / area / Additional Resources
+│       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
+│       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
+│       ├── author.py               # --author: a person's authored drafts
+│       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering
+│       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
+│       ├── transcript_context.py   # prepend meeting-context header to transcripts
+│       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
+│       ├── mail_threads.py         # reconstruct per-thread .md files
+│       ├── github.py               # archive.json (gh-pages) or REST API
+│       ├── github_users.py         # resolve logins → real name + company
+│       ├── issue_files.py          # per-issue .md files
+│       ├── datatracker.py          # roles + paginated document listing via JSON API
+│       ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
+│       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
+│       ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
+│       ├── cache_sync.py           # cloud: round-trip gather accelerator caches to the KvStore (issue #82)
+│       ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
+│       ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
+│       ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
+│       ├── datatracker_history.py  # governance / doc-lifecycle timeline events
+│       ├── datatracker_github.py   # github_username profile resources → person (by email)
+│       ├── datatracker_people.py   # mail address → person id (mail-side identity spine)
+│       ├── draft_authors.py        # parse Authors' Addresses (name + organization)
+│       ├── ballots.py              # IESG ballot positions (scoped to --months)
+│       ├── citations.py            # draft → citing thread/issue cross-reference
+│       ├── pdf_extract.py          # extract text from slide PDFs
+│       └── session_polls.py        # session polls (polls doctype) → JSON tallies
 │
 ├── digest/                 # corpus-level digest builders + consumers
 │   ├── __init__.py             # generate_digests() + re-exports
@@ -570,7 +571,7 @@ write-throughs its own entry, so it never serves config it just wrote.
   unchanged files — instead of starting cold; a no-op on the local backend
   (where the workspace already is the live cache), and a seed failure degrades
   to a full gather rather than failing it. Alongside the seed, `hydrate_gather_caches` /
-  `persist_gather_caches` (`gather/cache_sync.py`) round-trip the gather
+  `persist_gather_caches` (`gather/sources/cache_sync.py`) round-trip the gather
   accelerator caches through the `KvStore` — the datatracker ETag store sharded
   per corpus (`corpora/<name>/gather-cache/`, lease-serialised plain RMW), the
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
@@ -876,12 +877,12 @@ caller's optional `wait` is); progress lands in a per-corpus `gather-status.json
 that `gather_status` reads back, stage-level via the shared `stage_plan`. A
 non-blocking per-corpus `file_lock` allows one gather per corpus (serialising
 against a concurrent CLI gather) while different corpora run in parallel.
-`gather_runner` and the pipeline are imported lazily so the default serve path
+`gather.runner` and the pipeline are imported lazily so the default serve path
 never pulls them in.
 
-A **daemon worker thread** (`gather_runner`) owns the queue, leases, heartbeat,
+A **daemon worker thread** (`gather.runner`) owns the queue, leases, heartbeat,
 and status record, but the pipeline itself runs in a **child process**
-(`gather_pipeline` → `python -m ietf_llm.gather_child`), streaming stage progress
+(`gather.pipeline` → `python -m ietf_llm.gather.child`), streaming stage progress
 back to the worker over a pipe. This is deliberate: the embedding-index build is
 CPU-bound, and in-thread it held the GIL long enough to starve the server's
 event loop — so a read stalled during that stage (even the server's own tool
@@ -929,7 +930,7 @@ rather than folded into every corpus. `_rfc/` (mirrored from rfc.fyi's
 canonical JSON; read by `search_rfcs` / `get_rfc`) and `_catalog/` (the active
 + BoF slice of the Datatracker group collection; read by `find_efforts`) both
 live once at the cache root, refreshed in the same tail housekeeping as each
-gather run and sharing one mirror plumbing (`gather/_mirror.py`: TTL guard,
+gather run and sharing one mirror plumbing (`gather/sources/_mirror.py`: TTL guard,
 `If-None-Match` revalidation, and **never-raises** — a mirror hiccup must not
 fail a corpus gather). The read sides (`rfcs.py`, `catalog.py`) are read-only,
 offline, markdown-out — the same boundary as every other tool — and query the

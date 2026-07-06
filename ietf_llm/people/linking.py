@@ -27,9 +27,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, Iterable, List
 
-from ..gather.datatracker_github import resolve_via_datatracker
-from ..gather.datatracker_people import resolve_addresses
-from ..gather.github_users import resolve_logins
+from ..gather.sources.datatracker_github import resolve_via_datatracker
+from ..gather.sources.datatracker_people import resolve_addresses
+from ..gather.sources.github_users import resolve_logins
 from ..utils import LogLevel, Verbosity, log
 
 if TYPE_CHECKING:

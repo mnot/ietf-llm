@@ -13,10 +13,10 @@ from pathlib import Path
 import requests
 
 from ietf_llm import config
-from ietf_llm.gather import github
-from ietf_llm.gather.drafts import normalize_draft_name
-from ietf_llm.gather.github import normalize_repo_short, validate_github_repos
-from ietf_llm.gather.mbox import normalize_list_name
+from ietf_llm.gather.sources import github
+from ietf_llm.gather.sources.drafts import normalize_draft_name
+from ietf_llm.gather.sources.github import normalize_repo_short, validate_github_repos
+from ietf_llm.gather.sources.mbox import normalize_list_name
 from ietf_llm.utils import Verbosity
 
 
@@ -117,7 +117,7 @@ def test_validate_draft_names_drops_unresolved(
 ) -> None:
     # validate_draft_names should drop names that Datatracker doesn't
     # know, returning only the valid subset.
-    from ietf_llm.gather import drafts  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import drafts  # pylint: disable=import-outside-toplevel
     from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
 
     def fake_fetch_current_rev(name: str, _verbose: object) -> object:
@@ -141,7 +141,7 @@ class _StatusResp:
 def test_validate_list_names_drops_only_on_404(
     isolated_home: Path, monkeypatch: object,
 ) -> None:
-    from ietf_llm.gather import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
     from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
 
     def fake_get(url: str, **_kwargs: object) -> _StatusResp:
@@ -149,7 +149,7 @@ def test_validate_list_names_drops_only_on_404(
         return _StatusResp(200 if "/arch/browse/httpbis/" in url else 404)
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "ietf_llm.gather.mbox.governed_get", fake_get,
+        "ietf_llm.gather.sources.mbox.governed_get", fake_get,
     )
     valid = mbox.validate_list_names(
         ["httpbis@ietf.org", "ghost@ietf.org"],
@@ -163,14 +163,14 @@ def test_validate_list_names_keeps_on_transient_failure(
 ) -> None:
     # Regression: a network blip (RequestException) must NOT drop a list the
     # user explicitly passed — only a definitive 404 does.
-    from ietf_llm.gather import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
     from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
 
     def boom(url: str, **_kwargs: object) -> object:
         raise requests.ConnectionError("network down")
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "ietf_llm.gather.mbox.governed_get", boom,
+        "ietf_llm.gather.sources.mbox.governed_get", boom,
     )
     valid = mbox.validate_list_names(["foo@ietf.org"], verbose=Verbosity.QUIET)
     assert valid == ["foo@ietf.org"]

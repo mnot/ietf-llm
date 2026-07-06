@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ietf_llm.gather.recent_drafts import prune_drafts
+from ietf_llm.gather.sources.recent_drafts import prune_drafts
 from ietf_llm.paths import drafts_dir
 
 

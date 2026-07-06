@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from ..gather.documents_manifest import skip_embed_draft_names
-from ..gather.drafts import normalize_draft_name
+from ..gather.sources.documents_manifest import skip_embed_draft_names
+from ..gather.sources.drafts import normalize_draft_name
 
 # Character budget per embedded chunk. The embedding model only embeds the
 # first ~512 tokens of whatever text it's given; anything past that is silently
@@ -235,7 +235,7 @@ _ISSUE_RATIONALE_RE = re.compile(
 #   "_Archived-At:_ https://mailarchive.ietf.org/arch/msg/<list>/<tok>/"
 _THREAD_ARCHIVED_AT_RE = re.compile(r"^_Archived-At:_\s*(\S+)", re.MULTILINE)
 
-# Charter source line (gather.charter writes it as the second line):
+# Charter source line (gather.sources.charter writes it as the second line):
 #   "Source: https://www.ietf.org/charter/charter-ietf-<wg>-<rev>.txt"
 _CHARTER_SOURCE_RE = re.compile(r"^Source:\s*(\S+)", re.MULTILINE)
 

@@ -165,7 +165,7 @@ def test_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_write_group_info_renders_file(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from ietf_llm.gather import group_info
+    from ietf_llm.gather.sources import group_info
     from ietf_llm.paths import group_path
 
     monkeypatch.setattr(group_info, "get_group_name", lambda wg: "HTTP")
@@ -189,7 +189,7 @@ def test_write_group_info_renders_file(
 def test_write_group_info_noop_when_empty(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from ietf_llm.gather import group_info
+    from ietf_llm.gather.sources import group_info
     from ietf_llm.paths import group_path
 
     monkeypatch.setattr(group_info, "get_group_name", lambda wg: None)

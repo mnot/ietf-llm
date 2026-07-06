@@ -14,15 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-import ietf_llm.gather.meetings as meetings
-from ietf_llm.gather.meetings import (
+import ietf_llm.gather.sources.meetings as meetings
+from ietf_llm.gather.sources.meetings import (
     MeetingCluster,
     cluster_meetings,
     _absorb_meeting_dir,
     _collision_free_path,
     _download_slide,
 )
-from ietf_llm.gather.transcripts import _match_interim_cluster
+from ietf_llm.gather.sources.transcripts import _match_interim_cluster
 from ietf_llm.utils import Verbosity
 
 

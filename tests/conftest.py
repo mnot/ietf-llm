@@ -40,7 +40,7 @@ def _drain_gather_worker() -> Iterable[None]:
     this, a job from one test could still be popping `_jobs` (or releasing its
     lease) as the next test starts, contaminating it."""
     yield
-    from ietf_llm import gather_runner  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather import runner as gather_runner  # pylint: disable=import-outside-toplevel
 
     deadline = time.time() + 5.0
     while time.time() < deadline:
@@ -80,7 +80,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     `datatracker_history` (for governance events).
     """
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
-    from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
         ballots,
         datatracker,
         datatracker_github,

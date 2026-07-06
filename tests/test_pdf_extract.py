@@ -11,8 +11,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import ietf_llm.gather.pdf_extract as pdf_extract
-from ietf_llm.gather.pdf_extract import (
+import ietf_llm.gather.sources.pdf_extract as pdf_extract
+from ietf_llm.gather.sources.pdf_extract import (
     _strip_surrogates,
     extract_all_pdfs,
     extract_pdf_text,

@@ -1,4 +1,4 @@
-"""Tests for the background gather runner (ietf_llm.gather_runner) and the
+"""Tests for the background gather runner (ietf_llm.gather.runner) and the
 writer-side guard that `_gather_one`'s inline stage sequence matches
 `stage_plan` for each corpus shape.
 
@@ -20,8 +20,9 @@ from typing import Any, List, Tuple
 import pytest
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import config, freshness, gather_runner, serve_metrics, utils
-from ietf_llm.gather_stages import stage_plan
+from ietf_llm import config, freshness, serve_metrics, utils
+from ietf_llm.gather import runner as gather_runner
+from ietf_llm.gather.stages import stage_plan
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
 
@@ -42,7 +43,7 @@ def test_to_argv_always_suppresses_raw_and_pdf() -> None:
 def _stub_github_download(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub download_github_issues to "write" the JSON archive and report
     success, so download_github_archives reaches its raw/.txt decision."""
-    from ietf_llm.gather import github
+    from ietf_llm.gather.sources import github
 
     def fake_download(repo: str, json_path: str, verbose: Any = None) -> bool:
         with open(json_path, "w", encoding="utf-8") as handle:
@@ -56,7 +57,7 @@ def test_download_github_archives_writes_raw_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from ietf_llm import paths
-    from ietf_llm.gather.github import download_github_archives
+    from ietf_llm.gather.sources.github import download_github_archives
 
     _stub_github_download(monkeypatch)
     cache = str(tmp_path)
@@ -73,7 +74,7 @@ def test_download_github_archives_suppress_raw_keeps_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from ietf_llm import paths
-    from ietf_llm.gather.github import download_github_archives
+    from ietf_llm.gather.sources.github import download_github_archives
 
     _stub_github_download(monkeypatch)
     cache = str(tmp_path)
@@ -91,7 +92,7 @@ def test_download_github_archives_suppress_raw_sweeps_preexisting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from ietf_llm import paths
-    from ietf_llm.gather.github import download_github_archives
+    from ietf_llm.gather.sources.github import download_github_archives
 
     _stub_github_download(monkeypatch)
     cache = str(tmp_path)

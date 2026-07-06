@@ -37,21 +37,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from ..gather.ballots import _cutoff as _ballot_cutoff
-from ..gather.ballots import (
+from ..gather.sources.ballots import _cutoff as _ballot_cutoff
+from ..gather.sources.ballots import (
     ballot_events,
     fetch_ballots,
     write_ballot_files,
 )
-from ..gather.datatracker_history import (
+from ..gather.sources.datatracker_history import (
     fetch_doc_events,
     fetch_group_events,
     fetch_role_history,
 )
-from ..gather.github import iter_issue_archives
-from ..gather.mail_threads import Thread, build_threads, thread_slug
-from ..gather.session_polls import discover_local_polls
-from ..gather.transcript_context import transcript_context
+from ..gather.sources.github import iter_issue_archives
+from ..gather.sources.mail_threads import Thread, build_threads, thread_slug
+from ..gather.sources.session_polls import discover_local_polls
+from ..gather.sources.transcript_context import transcript_context
 from ..paths import (
     DIR_MEETINGS,
     digest_path,

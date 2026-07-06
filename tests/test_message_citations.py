@@ -10,7 +10,7 @@ from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm.gather.message_citations import (
+from ietf_llm.gather.sources.message_citations import (
     canonical_archive_url,
     scan_message_citations,
     write_message_citations_digest,

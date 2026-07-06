@@ -1,5 +1,5 @@
 """Tests for the gather stage plan and progress tracker
-(ietf_llm.gather_stages), plus the writer-side guard that the inline
+(ietf_llm.gather.stages), plus the writer-side guard that the inline
 `tracker.begin(...)` sequence in `_gather_one` matches `stage_plan`.
 """
 
@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from ietf_llm.gather_stages import StageTracker, stage_plan
+from ietf_llm.gather.stages import StageTracker, stage_plan
 
 
 def _args(**kw: Any) -> argparse.Namespace:

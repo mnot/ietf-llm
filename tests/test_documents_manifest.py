@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.gather import drafts as drafts_mod
-from ietf_llm.gather.documents_manifest import (
+from ietf_llm.gather.sources import drafts as drafts_mod
+from ietf_llm.gather.sources.documents_manifest import (
     load_documents_manifest,
     save_documents_manifest,
 )
@@ -52,7 +52,7 @@ def test_skip_embed_draft_names(isolated_home: Path) -> None:
     """Only drafts whose state is in SKIP_EMBED_STATES (rfc / repl) are
     returned; active / expired stay embeddable, as do unknown-state
     drafts."""
-    from ietf_llm.gather.documents_manifest import skip_embed_draft_names
+    from ietf_llm.gather.sources.documents_manifest import skip_embed_draft_names
 
     save_documents_manifest(
         "httpbis",

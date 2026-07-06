@@ -401,14 +401,16 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # gather modules (consistent with the import dodge in get_corpus_store).
         if self._kv is None:
             return
-        from ..gather import cache_sync  # pylint: disable=import-outside-toplevel
+        # pylint: disable-next=import-outside-toplevel
+        from ..gather.sources import cache_sync
 
         cache_sync.hydrate(self._kv, corpus)
 
     def persist_gather_caches(self, corpus: str) -> None:
         if self._kv is None:
             return
-        from ..gather import cache_sync  # pylint: disable=import-outside-toplevel
+        # pylint: disable-next=import-outside-toplevel
+        from ..gather.sources import cache_sync
 
         cache_sync.persist(self._kv, corpus)
 

@@ -1,4 +1,4 @@
-"""Tests for the cloud gather-cache sync (ietf_llm.gather.cache_sync) and the
+"""Tests for the cloud gather-cache sync (ietf_llm.gather.sources.cache_sync) and the
 CorpusStore hydrate/persist seam (issue #82).
 
 The sync round-trips the gather accelerator caches to the KvStore so an
@@ -22,7 +22,7 @@ from ietf_llm.catalog import catalog_index_dir
 from ietf_llm.store.corpus import LocalCorpusStore
 from ietf_llm.store.cloud import CloudCorpusStore
 from ietf_llm.store.blobs import FileBlobStore
-from ietf_llm.gather import (
+from ietf_llm.gather.sources import (
     cache_sync,
     datatracker,
     datatracker_github,

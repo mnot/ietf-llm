@@ -53,9 +53,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from ..gather.datatracker import fetch_wg_roles
-from ..gather.draft_authors import latest_draft_paths, parse_authors
-from ..gather.github import iter_issue_archives
+from ..gather.sources.datatracker import fetch_wg_roles
+from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
+from ..gather.sources.github import iter_issue_archives
 from ..paths import digest_path, remove_stale_digest
 from .linking import (
     reconcile_mail_via_datatracker,
