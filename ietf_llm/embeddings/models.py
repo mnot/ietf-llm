@@ -95,7 +95,7 @@ def _cuda_available() -> bool:
         return False
 
 
-def _embed_device() -> str:
+def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
     """Torch device for the local sentence-transformers backend.
 
     `IETF_LLM_EMBED_DEVICE` overrides; otherwise the default deliberately
@@ -107,10 +107,21 @@ def _embed_device() -> str:
     numerically-equivalent vectors (max abs diff ~3e-7, min cosine 0.99999982,
     so no re-embed). CUDA has no such pathology, so it is kept. See
     docs/architecture.md ("Embedding device") and the PyTorch MPS memory
-    issues; revisit the default (drop back to MPS) if that is fixed."""
+    issues; revisit the default (drop back to MPS) if that is fixed.
+
+    A recognised override (`cpu` / `mps` / `cuda`, optionally `:N`) is used
+    verbatim; an unknown value (a typo like `gpu`) is warned about and dropped
+    to the default rather than passed to torch to fail with a raw error."""
     override = os.environ.get("IETF_LLM_EMBED_DEVICE", "").strip().lower()
     if override:
-        return override
+        if override.split(":", 1)[0] in ("cpu", "mps", "cuda"):
+            return override
+        log(
+            f"Ignoring unknown IETF_LLM_EMBED_DEVICE={override!r} "
+            "(expected cpu, mps, or cuda); using the default.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
     return "cuda" if _cuda_available() else "cpu"
 
 
@@ -169,7 +180,7 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         # pre-seed its `_model` on the chosen device; the HF download triggers
         # here on first use.
         model = SentenceTransformerModel(f"{_ST_PREFIX}{bare}", bare, False)
-        device = _embed_device()
+        device = _embed_device(verbose)
         # pylint: disable=import-outside-toplevel,import-error,line-too-long
         from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
             SentenceTransformer,

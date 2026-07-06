@@ -228,3 +228,16 @@ def test_embed_device_prefers_cuda_when_present(monkeypatch):
     monkeypatch.setattr(models, "_cuda_available", lambda: True)
     assert _embed_device() == "cuda"
 
+
+def test_embed_device_accepts_indexed_form(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "cuda:1")
+    assert _embed_device() == "cuda:1"
+
+
+def test_embed_device_unknown_falls_back(monkeypatch):
+    # A typo like `gpu` is dropped to the default rather than handed to torch
+    # to fail with a raw error.
+    monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "gpu")
+    monkeypatch.setattr(models, "_cuda_available", lambda: False)
+    assert _embed_device() == "cpu"
+
