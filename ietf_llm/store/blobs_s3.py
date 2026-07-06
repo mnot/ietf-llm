@@ -19,8 +19,8 @@ from typing import Dict, List, Union, cast
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
-from .corpus_blobs import BlobStore, parallel_each
-from .s3_backend import NOT_FOUND, S3AuthError, S3Bucket
+from .blobs import BlobStore, parallel_each
+from .s3 import NOT_FOUND, S3AuthError, S3Bucket
 
 # Re-exported for callers / tests that import it from here.
 __all__ = ["S3AuthError", "S3BlobStore"]

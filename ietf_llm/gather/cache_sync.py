@@ -41,7 +41,7 @@ import os
 from typing import Any, Callable, Dict, Optional
 
 from ..catalog import catalog_index_dir
-from ..kv_store import ABSENT, KvStore
+from ..store.kv import ABSENT, KvStore
 from . import datatracker, datatracker_github, datatracker_people, github_users
 
 #: Per-corpus key — lease-serialised single writer, so a plain RMW is safe.
@@ -54,7 +54,7 @@ _DATATRACKER_PEOPLE_KEY = "fleet/gather-cache/datatracker-people.json"
 #: last-writer-wins (every gather mirrors identical upstream content).
 _CATALOG_PREFIX = "fleet/catalog/"
 
-#: Bounded retries for the shared-map compare-and-swap (mirrors `kv_control`).
+#: Bounded retries for the shared-map compare-and-swap (mirrors `store.control`).
 _CAS_RETRIES = 8
 
 MergeFn = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]

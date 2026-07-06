@@ -29,11 +29,11 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from . import config_fs, service_config
-from .kv_control import KvControlPlane
+from .store.control import KvControlPlane
 
 # Process-global, bounded-staleness cache of per-WG config reads on the cloud
 # backend: (cache_key, wg, scope) -> (raw payload or None, monotonic expiry).
-# Mirrors corpus_store_cloud._RESOLVE_CACHE and accepts the same trade-off the
+# Mirrors store.cloud._RESOLVE_CACHE and accepts the same trade-off the
 # version pointer already does — a re-gather's new config is visible within the
 # TTL, and the writing process refreshes its own entry immediately (write-through
 # in save / clear). Off unless a positive resolve TTL is configured. Negative
@@ -175,8 +175,8 @@ def build_cloud_config_store() -> CloudConfigStore:
             f"s3:// locator (got {store_url!r})"
         )
     try:
-        from .kv_store_s3 import S3KvStore  # pylint: disable=import-outside-toplevel
-        from .s3_backend import S3Bucket  # pylint: disable=import-outside-toplevel
+        from .store.kv_s3 import S3KvStore  # pylint: disable=import-outside-toplevel
+        from .store.s3 import S3Bucket  # pylint: disable=import-outside-toplevel
     except ImportError as err:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"

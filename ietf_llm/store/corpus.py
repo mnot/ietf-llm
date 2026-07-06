@@ -31,8 +31,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
-from . import freshness, service_config
-from .utils import cached_wg_names, get_cache_dir, get_index_dir
+from .. import freshness, service_config
+from ..utils import cached_wg_names, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local
 #: cache is single-version (the live tree on disk), so the value is opaque — it
@@ -418,10 +418,10 @@ def get_corpus_store() -> CorpusStore:
         return LocalCorpusStore()
     if backend == "cloud":
         # Loaded dynamically rather than with a static
-        # `from .corpus_store_cloud import ...`: that module imports CorpusStore
+        # `from .cloud import ...`: that module imports CorpusStore
         # from here, so a static back-import would be a cycle. The cloud
         # machinery stays out of the default local path entirely.
-        cloud = importlib.import_module(f"{__package__}.corpus_store_cloud")
+        cloud = importlib.import_module(f"{__package__}.cloud")
         return cast(CorpusStore, cloud.build_cloud_store())
     raise ValueError(
         f"unrecognised IETF_LLM_STORE_BACKEND={backend!r} (expected 'local' or 'cloud')"

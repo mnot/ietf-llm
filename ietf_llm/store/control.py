@@ -29,7 +29,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .kv_store import ABSENT, KvStore, Record
+from .kv import ABSENT, KvStore, Record
 
 _CORPORA = "corpora/"
 _SLOTS_KEY = "fleet/slots"

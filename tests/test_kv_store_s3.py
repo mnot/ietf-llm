@@ -16,9 +16,9 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from ietf_llm.kv_store import ABSENT
-from ietf_llm.kv_store_s3 import S3KvStore
-from ietf_llm.s3_backend import S3Bucket
+from ietf_llm.store.kv import ABSENT
+from ietf_llm.store.kv_s3 import S3KvStore
+from ietf_llm.store.s3 import S3Bucket
 
 
 @pytest.fixture

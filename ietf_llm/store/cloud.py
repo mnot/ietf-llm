@@ -32,17 +32,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .corpus_blobs import BlobStore, parallel_each
-from . import freshness
-from .corpus_store import (
+from .blobs import BlobStore, parallel_each
+from .. import freshness
+from .corpus import (
     CorpusStore,
     VersionVanished,
     pinned_version,
     pinned_versions_in_use,
 )
-from .kv_control import KvControlPlane
-from .kv_store import KvStore
-from .utils import get_index_dir
+from .control import KvControlPlane
+from .kv import KvStore
+from ..utils import get_index_dir
 
 #: Per-version manifest, stored as a blob inside the version prefix and stripped
 #: from the materialised tree so it never re-enters a re-gather workspace.
@@ -101,7 +101,7 @@ def build_cloud_store() -> "CloudCorpusStore":
     one S3-compatible bucket (object-store only — no SQL control plane). The
     serve path surfaces config problems earlier via boot-time validation; this
     guards the CLI / gather path too."""
-    from . import service_config  # pylint: disable=import-outside-toplevel
+    from .. import service_config  # pylint: disable=import-outside-toplevel
 
     store_url = service_config.store_url()
     scratch = service_config.scratch_dir()
@@ -125,13 +125,13 @@ def build_cloud_store() -> "CloudCorpusStore":
             f"s3:// locator (got {store_url!r})"
         )
     try:
-        from .corpus_blobs_s3 import (  # pylint: disable=import-outside-toplevel
+        from .blobs_s3 import (  # pylint: disable=import-outside-toplevel
             S3BlobStore,
         )
-        from .kv_store_s3 import (  # pylint: disable=import-outside-toplevel
+        from .kv_s3 import (  # pylint: disable=import-outside-toplevel
             S3KvStore,
         )
-        from .s3_backend import S3Bucket  # pylint: disable=import-outside-toplevel
+        from .s3 import S3Bucket  # pylint: disable=import-outside-toplevel
     except ImportError as err:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
@@ -400,14 +400,14 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # gather modules (consistent with the import dodge in get_corpus_store).
         if self._kv is None:
             return
-        from .gather import cache_sync  # pylint: disable=import-outside-toplevel
+        from ..gather import cache_sync  # pylint: disable=import-outside-toplevel
 
         cache_sync.hydrate(self._kv, corpus)
 
     def persist_gather_caches(self, corpus: str) -> None:
         if self._kv is None:
             return
-        from .gather import cache_sync  # pylint: disable=import-outside-toplevel
+        from ..gather import cache_sync  # pylint: disable=import-outside-toplevel
 
         cache_sync.persist(self._kv, corpus)
 
@@ -418,7 +418,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # to a local topics.json scan, which would materialise versions.
         if self._kv is None:
             return {}
-        from . import routing  # pylint: disable=import-outside-toplevel
+        from .. import routing  # pylint: disable=import-outside-toplevel
 
         return routing.read_fleet_table(self._kv)
 
@@ -430,8 +430,8 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # version. Best-effort: never fail an already-succeeded publish.
         if self._kv is None:
             return
-        from . import routing  # pylint: disable=import-outside-toplevel
-        from .embeddings.topics import (  # pylint: disable=import-outside-toplevel
+        from .. import routing  # pylint: disable=import-outside-toplevel
+        from ..embeddings.topics import (  # pylint: disable=import-outside-toplevel
             routing_projection,
         )
 

@@ -6,8 +6,8 @@ from __future__ import annotations
 import threading
 from typing import Callable, List
 
-from ietf_llm.kv_control import KvControlPlane
-from ietf_llm.kv_store import InMemoryKvStore
+from ietf_llm.store.control import KvControlPlane
+from ietf_llm.store.kv import InMemoryKvStore
 
 
 def _race(n: int, attempt: Callable[[int], bool]) -> int:

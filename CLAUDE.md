@@ -41,7 +41,7 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   flag it in the PR. See the section below.
 - **Local backend.** Default `local` (filesystem) path still works and is
   unchanged in behaviour? This is the path almost everyone runs.
-- **Cloud backend.** Touch `corpus_store` / S3 / the control plane? Re-check
+- **Cloud backend.** Touch `store/` / S3 / the control plane? Re-check
   the CAS pointer flip, the gather lease, the `fleet/slots` semaphore, and
   the accelerator caches. See "Conventions that are load-bearing".
 - **Concurrency.** Cloud is multi-host: any new shared state needs a
@@ -124,9 +124,9 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
     immutable index mount also forces the default off. When gather is
     disabled the tools aren't registered, so the HTTP surface keeps the
     boundary intact.
-- **The cache is reached through a `CorpusStore` seam** (`corpus_store.py`):
+- **The cache is reached through a `CorpusStore` seam** (`ietf_llm/store/`):
   read tools resolve a corpus's files dir via `get_corpus_store().local_cache_dir`
-  (the `_files_dir` / `_corpus_exists` boundary in `mcp_server`, which also keeps
+  (the `_files_dir` / `_corpus_exists` boundary in `mcp`, which also keeps
   the read-only existence check above), and a gather publishes via
   `store.publish`. The default `local` backend is today's filesystem — no
   behaviour change. The opt-in `cloud` backend (`IETF_LLM_STORE_BACKEND=cloud`,

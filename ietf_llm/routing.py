@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import numpy as np
 
 from .embeddings.storage import decode_centroid
-from .kv_store import ABSENT, KvStore
+from .store.kv import ABSENT, KvStore
 from .utils import Verbosity
 
 #: Cosine floor (on **mean-centered** scores) for a confident match: below it,
@@ -66,7 +66,7 @@ DEFAULT_MIN_SCORE = _env_min_score()
 #: clobber), mirroring the shared identity maps in `gather/cache_sync.py`.
 FLEET_ROUTING_KEY = "fleet/routing/centroids.json"
 
-#: Bounded retries for the fleet-key compare-and-swap (mirrors `kv_control`).
+#: Bounded retries for the fleet-key compare-and-swap (mirrors `store.control`).
 _CAS_RETRIES = 8
 
 #: Cross-corpus generic-theme suppression (issue #116 follow-on). A theme that
@@ -138,11 +138,11 @@ def _load_table() -> "Tuple[Dict[str, RoutingEntry], set[str]]":
 
     The cloud backend hands back its one fleet key; the local backend returns
     None, so we scan each corpus's `topics.json` (the embeddings read lives
-    here, not in `corpus_store`, to keep that module off the embeddings import
+    here, not in `store.corpus`, to keep that module off the embeddings import
     graph). The table is intersected with the cached set: the cloud key is
     additive per publish, so a removed corpus can linger there and must not be
     scored (the local scan is already cache-bounded)."""
-    from .corpus_store import (  # pylint: disable=import-outside-toplevel
+    from .store.corpus import (  # pylint: disable=import-outside-toplevel
         get_corpus_store,
     )
 
@@ -292,7 +292,7 @@ def generic_theme_flags(corpus: str) -> Optional[List[bool]]:
 def _scan_local(corpora: List[str]) -> Dict[str, Any]:
     """Assemble the routing table from local `topics.json` sidecars — the local
     backend's path (the cloud backend supplies a fleet key instead). Reads
-    `embeddings` here so `corpus_store` stays off that import graph."""
+    `embeddings` here so `store.corpus` stays off that import graph."""
     from .embeddings.storage import (  # pylint: disable=import-outside-toplevel
         read_topics,
     )

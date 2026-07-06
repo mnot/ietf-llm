@@ -249,8 +249,8 @@ def test_cloud_backend_trips_both_without_flags(
 ) -> None:
     # A CLI gather against a cloud backend suppresses even with no flags.
     from ietf_llm.config_store import CloudConfigStore
-    from ietf_llm.kv_control import KvControlPlane
-    from ietf_llm.kv_store import InMemoryKvStore
+    from ietf_llm.store.control import KvControlPlane
+    from ietf_llm.store.kv import InMemoryKvStore
 
     monkeypatch.setattr(main_mod.service_config, "store_backend", lambda: "cloud")
     # config.load now routes through the ConfigStore; on cloud that's the control
@@ -565,7 +565,7 @@ def test_queue_full_is_refused(
 
 
 def _patch_store(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
-    from ietf_llm import corpus_store
+    from ietf_llm.store import corpus as corpus_store
 
     monkeypatch.setattr(corpus_store, "get_corpus_store", lambda: store)
 
@@ -576,7 +576,7 @@ def test_start_refuses_when_another_host_is_running(
     """A gather running on another host is fleet-visible through the control
     plane: `start()` must report it as already running and NOT spawn a thread
     that would clobber the holder's shared status."""
-    from ietf_llm.corpus_store import LocalCorpusStore
+    from ietf_llm.store.corpus import LocalCorpusStore
 
     class _FleetRunning(LocalCorpusStore):
         def get_gather_status(self, corpus: str) -> Any:
@@ -597,7 +597,7 @@ def test_start_refuses_even_with_force_when_running(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`force` overrides the freshness debounce only — never a live gather."""
-    from ietf_llm.corpus_store import LocalCorpusStore
+    from ietf_llm.store.corpus import LocalCorpusStore
 
     class _FleetRunning(LocalCorpusStore):
         def get_gather_status(self, corpus: str) -> Any:
@@ -617,7 +617,7 @@ def test_lease_denied_at_enqueue_refuses_without_clobbering(
     """The per-corpus lease is taken at enqueue, so if another host owns the
     corpus, `start()` refuses synchronously (already running) without spawning
     a worker or writing any status over the holder's record."""
-    from ietf_llm.corpus_store import LocalCorpusStore
+    from ietf_llm.store.corpus import LocalCorpusStore
 
     class _LeaseDenied(LocalCorpusStore):
         def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:

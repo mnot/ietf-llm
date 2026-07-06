@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, List, Optional
 from .. import coverage
 from ..catalog import render_efforts
 from ..corpus import describe, kind_status, status_cell
-from ..corpus_store import get_corpus_store
+from ..store.corpus import get_corpus_store
 from ..digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,

@@ -16,7 +16,7 @@ from typing import Iterable, List
 from ietf_llm import embeddings, routing
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.embeddings.topics import generate_topics, routing_projection
-from ietf_llm.kv_store import InMemoryKvStore
+from ietf_llm.store.kv import InMemoryKvStore
 from ietf_llm.mcp.corpus import tool_which_corpus
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
@@ -169,7 +169,7 @@ def test_route_drops_stale_fleet_entry(monkeypatch) -> None:  # type: ignore[no-
     # The fleet key still has "removed", but list_corpora no longer reports it.
     table = {"live": entry(0), "removed": entry(1)}
     store = _FakeStore(table, ["live"])
-    monkeypatch.setattr("ietf_llm.corpus_store.get_corpus_store", lambda: store)
+    monkeypatch.setattr("ietf_llm.store.corpus.get_corpus_store", lambda: store)
 
     res = routing.route("quic")
     assert "removed" not in {m.corpus for m in res.matches}
@@ -198,7 +198,7 @@ def _shared_plus_unique(n: int) -> dict:
 
 def _patch_store(monkeypatch, raw: dict) -> None:  # type: ignore[no-untyped-def]
     store = _FakeStore(raw, list(raw))
-    monkeypatch.setattr("ietf_llm.corpus_store.get_corpus_store", lambda: store)
+    monkeypatch.setattr("ietf_llm.store.corpus.get_corpus_store", lambda: store)
 
 
 def test_generic_theme_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]

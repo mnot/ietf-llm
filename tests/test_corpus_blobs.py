@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.corpus_blobs import FileBlobStore, parallel_each
+from ietf_llm.store.blobs import FileBlobStore, parallel_each
 
 
 def test_put_get_exists_roundtrip(tmp_path: Path) -> None:
