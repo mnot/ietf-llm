@@ -49,75 +49,66 @@ from .storage import (
     seed_build_db,
 )
 
-#: After every N files processed, emit a one-line STATUS progress update.
-_PROGRESS_EVERY = 25
-#: …or after this many seconds of silence, whichever comes first. Picked
-#: short enough that a slow embed call doesn't look like the gather
-#: has hung, long enough that small WGs don't get spammed.
+#: Emit an embed-progress update (STATUS log + gather_status detail) at most
+#: this often. Short enough that a slow embed doesn't look like the gather has
+#: hung, long enough that small WGs don't get spammed.
 _PROGRESS_SECS = 20.0
-#: Commit the in-flight transaction and evict the MPS allocator cache on a
-#: dual cadence: after this many chunks embedded since the last flush, OR after
-#: `_FLUSH_EVERY_FILES` processed files — whichever comes first.
+#: Commit the in-flight transaction (and evict the allocator cache) on a dual
+#: cadence: after this many chunks written since the last flush, OR after
+#: `_FLUSH_EVERY_FILES` files — whichever comes first.
 #:
-#: The chunk trigger is what bounds MPS memory: the reserved pool grows with
-#: the number of chunks embedded since the last eviction, NOT the number of
-#: files, and late-corpus draft files run ~130 chunks each — so a pure
-#: file-count cadence lets a dense window pack thousands of chunks and spike
-#: the pool toward swap on smaller-RAM machines. Flushing per ~chunk keeps the
-#: peak uniform (~floor + this many chunks' worth) regardless of file density.
-#: Measured on the real httpbis rebuild, the dense-draft region costs ~4 MB of
-#: driver memory per chunk above a ~2 GB floor, so 500 holds the peak near
-#: ~4 GB — comfortable even on an 8 GB Mac (recommended_max ~5 GB there). The
-#: flush is cheap (commit + empty_cache), so the tighter cadence costs nothing
-#: measurable on throughput.
+#: This bounds the WRITE phase: it caps the in-flight SQLite transaction / WAL
+#: size and is a durability floor (a crash discards at most ~this many chunks'
+#: writes). MPS peak during embedding is bounded separately, by `_EMBED_BUFFER`
+#: (evicted per window), so the eviction here is now just cleanup. The value is
+#: inherited from when embed and write were interleaved per file and this
+#: trigger *was* the MPS bound: on the httpbis rebuild the dense-draft region
+#: cost ~4 MB of driver memory per chunk above a ~2 GB floor, so 500 held the
+#: peak near ~4 GB — and it stays a safe write-batch size regardless.
 _FLUSH_EVERY_CHUNKS = 500
 #: The file-count trigger is a durability floor for the opposite regime — a
 #: long run of small/sparse files (threads, issues) that never reaches the
 #: chunk threshold still commits periodically, so a crash doesn't discard much
 #: and the on-disk WAL stays bounded.
 _FLUSH_EVERY_FILES = 25
+#: On-device path: how many chunks to buffer across files before an embed
+#: flush. Chunks are pooled to ~this many and embedded in one batched call, so
+#: sentence-transformers gets a wide window to length-sort internally — tight
+#: padding and few calls, most of the speed of sorting the whole corpus but
+#: with bounded memory: only ~this many chunks (plus the few files feeding
+#: them) are ever resident, and each flush commits, so the build stays
+#: streaming and crash-durable. Also the progress cadence. 512 gives ST a deep
+#: sort window while keeping each flush short.
+_EMBED_BUFFER = 512
 
 
-def _mps_mem_tools() -> (
-    Tuple[Optional[Callable[[], None]], Optional[Callable[[], int]]]
-):
-    """Return `(empty_cache, current_allocated_memory)` for torch's MPS
-    backend, or `(None, None)` when torch/MPS isn't in play.
+def _mps_empty_cache() -> Optional[Callable[[], None]]:
+    """Return torch's MPS `empty_cache`, or None when MPS isn't in play.
 
-    Embedding runs on Apple-Silicon MPS by default (sentence-transformers
-    selects `mps:0`). The MPS caching allocator holds freed blocks instead
-    of returning them to the OS, and forward passes leak a little, so a long
-    build's high-water mark climbs — and because torch's default
-    `PYTORCH_MPS_HIGH_WATERMARK_RATIO` (1.7) only errors *above* physical
-    RAM, an overrun thrashes swap and hangs the machine rather than raising.
-    We evict periodically to cap it, and surface the live figure in progress.
+    MPS is opt-in now (`IETF_LLM_EMBED_DEVICE=mps`; the default is CPU — see
+    `models._embed_device`), but on that path the MPS caching allocator holds
+    freed blocks and forward passes leak a little, so a long build's high-water
+    mark climbs — and because torch's default `PYTORCH_MPS_HIGH_WATERMARK_RATIO`
+    (1.7) only errors *above* physical RAM, an overrun thrashes swap rather than
+    raising. The on-device build evicts per window (`_flush_window`) to cap it.
 
     torch is imported lazily (only when a build actually runs) so the CLI and
-    the torch-free remote-embedding path pay nothing. Returns `(None, None)`
-    on CPU/CUDA or when torch is absent, so callers no-op transparently.
+    the torch-free remote-embedding path pay nothing. Returns None on CPU/CUDA
+    or when torch is absent (or lacks MPS), so callers no-op transparently.
     """
     try:
         # pylint: disable=import-outside-toplevel,import-error
         import torch  # type: ignore[import-not-found,unused-ignore]
     except ImportError:
-        return None, None
+        return None
     mps = getattr(torch, "mps", None)
     try:
         available = mps is not None and torch.backends.mps.is_available()
     except (AttributeError, RuntimeError):
         available = False
     if not available:
-        return None, None
-    # driver_allocated_memory is the swap-relevant figure: the Metal driver's
-    # total allocation for the process, including the caching allocator's
-    # reserved pool — which is what runs away and crosses into swap.
-    # current_allocated_memory counts only live tensors and stays roughly flat
-    # even while the reserved pool grows, so it can't reveal the leak we evict
-    # for. Prefer driver; fall back to current on older torch.
-    gauge = getattr(mps, "driver_allocated_memory", None) or getattr(
-        mps, "current_allocated_memory", None
-    )
-    return getattr(mps, "empty_cache", None), gauge
+        return None
+    return getattr(mps, "empty_cache", None)
 
 
 @dataclass
@@ -285,17 +276,129 @@ def _write_file(
     return len(plan.chunks)
 
 
+def _flush_window(
+    model: Any,
+    plans: List[_FilePlan],
+    window: List[Tuple[int, int, str]],
+    mps_empty: Optional[Callable[[], None]],
+    verbose: Verbosity,
+) -> Iterator[Tuple[_FilePlan, List[Any]]]:
+    """Embed one buffered window and yield `(plan, vectors)` for each file whose
+    chunks all landed. `window` is `(plan_pos, chunk_idx, text)` triples into
+    `plans`; the whole window goes to one `embed_multi` call, which lets
+    sentence-transformers length-sort it for tight padding. A file with a chunk
+    in a failed call is not yielded (no hash stamp → retried next run)."""
+    if not window:
+        return
+    results: List[List[Any]] = [[None] * len(plan.texts) for plan in plans]
+    try:
+        vectors = list(model.embed_multi([text for _, _, text in window]))
+    except Exception as err:  # pylint: disable=broad-except
+        # The window failed (OOM, a provider error); drop the files it touched
+        # so none is stamped half-embedded, and keep going.
+        log(
+            f"Embedding failed for a batch of {len(window)} chunks: "
+            f"{type(err).__name__}: {err}",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        vectors = []
+    for (pos, li, _), vec in zip(window, vectors):
+        results[pos][li] = vec
+    # Evict the allocator cache between windows so its high-water stays near one
+    # window's footprint (no-op off MPS / on the remote backend).
+    if mps_empty is not None:
+        mps_empty()
+    for pos, plan in enumerate(plans):
+        buf = results[pos]
+        if all(vec is not None for vec in buf):
+            yield plan, buf
+
+
+def _stream_embed(
+    model: Any,
+    plans: Iterator[_FilePlan],
+    mps_empty: Optional[Callable[[], None]],
+    verbose: Verbosity,
+) -> Iterator[Tuple[_FilePlan, List[Any]]]:
+    """Embed planned files in a bounded streaming pass, yielding `(plan,
+    vectors)` as each file completes.
+
+    Embedding file by file fed the model — and, on MPS, its caching allocator —
+    a jarring short/tall sequence of batch shapes (a two-line issue, then a
+    200-message thread), fragmenting it into a multi-GB peak. Here chunks are
+    buffered across files up to `_EMBED_BUFFER`, then embedded in one call —
+    giving sentence-transformers a wide length-sort window (tight padding, few
+    calls) without pooling the whole corpus. At most one buffer's worth of
+    chunks (plus the files feeding it) is resident, so memory is bounded by the
+    buffer, not the corpus, and the caller commits per window. Whole files are
+    added before the size check, so a window holds only complete files — none
+    straddles two windows. Vectors are padding- and order-invariant, so the
+    output matches any other batching (no re-embed)."""
+    window_plans: List[_FilePlan] = []
+    window: List[Tuple[int, int, str]] = []
+    for plan in plans:
+        pos = len(window_plans)
+        window_plans.append(plan)
+        window.extend((pos, li, text) for li, text in enumerate(plan.texts))
+        if len(window) >= _EMBED_BUFFER:
+            yield from _flush_window(model, window_plans, window, mps_empty, verbose)
+            window_plans, window = [], []
+    yield from _flush_window(model, window_plans, window, mps_empty, verbose)
+
+
+def _file_bytes(cache_dir: str, relpath: str) -> int:
+    """A planned file's byte size, or 0 if unreadable. The numerator unit for
+    the byte-weighted embed progress — matches the `pending_bytes` denominator,
+    which is summed the same way."""
+    try:
+        return os.path.getsize(os.path.join(cache_dir, relpath))
+    except OSError:
+        return 0
+
+
+def _embed_progress(
+    done_bytes: int,
+    pending_bytes: int,
+    start: float,
+    verbose: Verbosity,
+    detail: Optional[Callable[[str], None]],
+) -> None:
+    """Emit a byte-weighted embed percent — to the STATUS log and, when the
+    gather passed one, to `detail` (which `gather_status` surfaces as
+    `stage_detail`). Shared by the on-device and remote paths so both report
+    identically. Bytes track embed cost better than a file count and are known
+    up front without pre-chunking."""
+    pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
+    log(
+        f"  …embedding {pct}% ({done_bytes >> 20}/{pending_bytes >> 20} MB, "
+        f"{time.time() - start:.0f}s elapsed)",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    if detail is not None:
+        # Also a cancellation checkpoint on the long embed stage: the gather
+        # runner polls the stop flag on each detail call.
+        detail(f"{pct}%")
+
+
 def build_index(
     wg: str,
     cache_dir: str,
     model_name: str = DEFAULT_EMBED_MODEL,
     rebuild: bool = False,
     verbose: Verbosity = Verbosity.STATUS,
+    detail: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Embed all eligible files. Returns number of chunks indexed.
 
     Incremental: chunks for an unchanged file (same content, same model) are
     skipped. Pass rebuild=True to drop and re-embed everything.
+
+    `detail`, if given, is called (throttled) with a short progress string like
+    `"45%"` during the on-device embed — the gather passes its stage tracker's
+    `detail` so the percentage surfaces through `gather_status`. It doubles as a
+    cancellation checkpoint on the otherwise-opaque embed stage.
     """
     model = _get_embed_model(model_name, verbose)
     if model is None:
@@ -311,7 +414,7 @@ def build_index(
         build_path = seed_build_db(wg)
         try:
             count = _build_index_locked(
-                wg, cache_dir, model, model_name, rebuild, verbose, build_path
+                wg, cache_dir, model, model_name, rebuild, verbose, build_path, detail
             )
         except BaseException:
             discard_build_db(wg)
@@ -328,6 +431,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     rebuild: bool,
     verbose: Verbosity,
     build_path: Optional[str] = None,
+    detail: Optional[Callable[[str], None]] = None,
 ) -> int:
     conn = _open_db(wg, build_path)
     cur = conn.cursor()
@@ -464,6 +568,12 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # of files — let the user see that up front instead of waiting
     # silently through 280 unchanged-file skips.
     pending = 0
+    # Total bytes of files that need embedding — the denominator for the
+    # on-device byte-weighted progress %. File bytes (a cheap stat, no read)
+    # track embed cost better than a file count, and are known here without
+    # pre-chunking; the on-device path advances the numerator as each file's
+    # bytes are written.
+    pending_bytes = 0
     for path in files:
         relpath = os.path.relpath(path, cache_dir)
         hash_key = f"hash:{relpath}"
@@ -473,6 +583,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         if relpath in already and prev and cur_hash is not None and prev[0] == cur_hash:
             continue
         pending += 1
+        try:
+            pending_bytes += os.path.getsize(path)
+        except OSError:
+            pass
     if pending == 0:
         log(
             "Embedding index already up to date.",
@@ -488,37 +602,36 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
 
     total_new = 0
     start = time.time()
-    # Periodic progress: emit a one-line update at STATUS level every
-    # `_PROGRESS_EVERY` processed files OR every `_PROGRESS_SECS`,
-    # whichever comes first. Keeps the user informed during long
-    # embeds without spamming on small ones.
     files_done = 0
-    last_status = start
-    # Chunks embedded since the last flush — drives the chunk-count side of the
-    # flush cadence (the side that actually bounds MPS memory; see
-    # `_FLUSH_EVERY_CHUNKS`).
+    # Chunks written since the last flush — drives the chunk-count side of the
+    # write-commit cadence (see `_FLUSH_EVERY_CHUNKS`).
     chunks_since_flush = 0
-    # MPS memory management: evict the allocator cache periodically and
-    # report the live high-water figure. No-ops off Apple Silicon, and
-    # skipped entirely on the remote backend — embedding happens over HTTP,
-    # so no tensors are allocated locally and the gauge reads ~0; reporting
-    # "mps 0MB" there is just noise (torch may still be installed for the
-    # local fallback, so _mps_mem_tools alone wouldn't suppress it).
+    # Byte-weighted embed progress, shared by both paths: the numerator accrues
+    # each written file's bytes against `pending_bytes`, emitted (STATUS log +
+    # gather_status `detail`) at most every `_PROGRESS_SECS`.
+    done_bytes = 0
+    embed_last = start
+    # On-device only: the MPS allocator evictor, to cap the reserved pool on the
+    # opt-in `=mps` path (`_flush_window` and the flush cadence call it). None
+    # off MPS and on the remote backend (embedding happens over HTTP).
     if is_remote_embed_model(model_name):
-        mps_empty, mps_current = None, None
+        mps_empty = None
     else:
-        mps_empty, mps_current = _mps_mem_tools()
+        mps_empty = _mps_empty_cache()
     # Embed the planned files and write each result on this (main) thread, so
-    # SQLite stays single-writer. On the remote backend each embed is a network
-    # round-trip, so we overlap them through a bounded pool; the on-device model
-    # is GPU-bound and so stays serial.
+    # SQLite stays single-writer. The on-device model streams the corpus through
+    # a bounded length-sort buffer (`_stream_embed`); the remote backend overlaps
+    # its per-file network round-trips through a bounded pool. `workers` sizes
+    # that pool and is used on the remote path only (it can be 1 — serial per
+    # file — which is NOT the on-device path).
     workers = embed_concurrency() if is_remote_embed_model(model_name) else 1
 
     def _record(plan: _FilePlan, vectors: List[Any]) -> None:
-        """Write one file's result and advance the flush / progress cadence.
-        Both the serial and concurrent paths call this from the main thread, so
-        the counters and the cursor need no locking."""
-        nonlocal total_new, files_done, chunks_since_flush, last_status
+        """Write one file's result and advance the flush cadence. Called from
+        the main thread by both paths, so the counters and the cursor need no
+        locking. Progress is reported by the caller (byte-weighted, via
+        `_embed_progress`); this only writes and commits."""
+        nonlocal total_new, files_done, chunks_since_flush
         written = _write_file(cur, plan, vectors, verbose)
         if not written:
             return
@@ -527,10 +640,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         chunks_since_flush += written
         # Periodic maintenance: commit so a crash doesn't discard the whole
         # build (we'd otherwise commit only at the end, and a WAL rollback loses
-        # every embedded file), and evict the MPS allocator cache so a long
-        # run's high-water mark doesn't climb into swap. Dual cadence: the chunk
-        # count bounds the MPS peak (it scales with chunks since the last
-        # evict), the file count is a durability floor over sparse files.
+        # every embedded file), and evict the MPS allocator cache (opt-in =mps
+        # path) so its high-water doesn't climb. Dual cadence: the chunk count
+        # bounds a dense window, the file count is a durability floor over
+        # sparse files.
         if (
             chunks_since_flush >= _FLUSH_EVERY_CHUNKS
             or files_done % _FLUSH_EVERY_FILES == 0
@@ -540,23 +653,6 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             if mps_empty is not None:
                 mps_empty()
             chunks_since_flush = 0
-        # Light-touch STATUS pulse so the user sees progress without --verbose.
-        now = time.time()
-        if files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS:
-            elapsed = now - start
-            mem = ""
-            if mps_current is not None:
-                try:
-                    mem = f", mps {mps_current() / (1024 * 1024):.0f}MB"
-                except (RuntimeError, OSError):
-                    mem = ""
-            log(
-                f"  …{files_done}/{pending} files, "
-                f"{total_new} chunks, {elapsed:.0f}s elapsed{mem}",
-                verbose,
-                level=LogLevel.STATUS,
-            )
-            last_status = now
 
     # Lazily plan (skip-check + chunk) each file on the main thread; the embed
     # call is the only off-thread work. The skip-unchanged and empty-file cases
@@ -569,22 +665,16 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         if plan is not None
     )
 
-    if workers == 1:
-        for plan in plans:
-            try:
-                vectors = list(model.embed_multi(plan.texts))
-            except Exception as err:  # pylint: disable=broad-except
-                # Failures vary by provider (HTTP, OOM, rate limits) and share
-                # no typed hierarchy; log and move on so one file can't abort
-                # the build (it carries no hash stamp, so it retries next run).
-                log(
-                    f"Embedding failed for {plan.relpath}: "
-                    f"{type(err).__name__}: {err}",
-                    verbose,
-                    level=LogLevel.ERROR,
-                )
-                continue
+    if not is_remote_embed_model(model_name):
+        # On-device: stream the corpus through a bounded length-sort buffer
+        # (`_stream_embed`) — bounded memory — writing each file via `_record`
+        # as it completes, reporting a byte-weighted % (`_embed_progress`).
+        for plan, vectors in _stream_embed(model, plans, mps_empty, verbose):
             _record(plan, vectors)
+            done_bytes += _file_bytes(cache_dir, plan.relpath)
+            if time.time() - embed_last >= _PROGRESS_SECS:
+                _embed_progress(done_bytes, pending_bytes, start, verbose, detail)
+                embed_last = time.time()
     else:
         # Bounded fan-out: keep at most 2x workers in flight so memory stays
         # bounded (only that many files' chunks held at once), writing each
@@ -617,6 +707,12 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                         )
                         continue
                     _record(plan, vectors)
+                    done_bytes += _file_bytes(cache_dir, plan.relpath)
+                    if time.time() - embed_last >= _PROGRESS_SECS:
+                        _embed_progress(
+                            done_bytes, pending_bytes, start, verbose, detail
+                        )
+                        embed_last = time.time()
                 _fill()
 
     conn.commit()

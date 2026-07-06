@@ -33,14 +33,21 @@ the same backend.
 ### On-device (default)
 
 `BAAI/bge-small-en-v1.5` runs locally via sentence-transformers — ~130 MB, ~33M params,
-MPS-accelerated on Apple Silicon, no API key. It requires installing the `local-embeddings` extra
-(torch is not in the base install):
+no API key. It requires installing the `local-embeddings` extra (torch is not in the base install):
 
 ```bash
 pipx install 'ietf-llm[local-embeddings]'
 ```
 
 The weights download from Hugging Face on first use and are cached; subsequent gathers reuse them.
+
+**Device.** Embedding runs on **CPU by default**. MPS (the Apple Silicon GPU) is deliberately
+avoided: PyTorch's MPS caching allocator fragments on the variable-length inputs a corpus produces,
+and indexing one modest corpus drove the process to ~11 GB of memory — enough to stall a co-resident
+read server — versus ~1–2 GB on CPU, for numerically-equivalent vectors at a ~15–30% time cost.
+Override with `IETF_LLM_EMBED_DEVICE` (`cpu` / `mps` / `cuda`); CUDA is auto-selected when present.
+This works around an upstream PyTorch MPS memory bug and is expected to revert to MPS once that is
+fixed.
 
 ### Remote embedding endpoint
 

@@ -17,6 +17,7 @@ from ietf_llm.embeddings import oai_compat
 from ietf_llm.embeddings import models
 from ietf_llm.embeddings.models import (
     _OpenAICompatEmbeddingModel,
+    _embed_device,
     _load_openai_compat,
 )
 from ietf_llm.utils import Verbosity
@@ -198,4 +199,45 @@ def test_load_bad_headers_json_ignored(monkeypatch):
     m = _load_openai_compat("openai-embed/m", Verbosity.QUIET)
     assert isinstance(m, _OpenAICompatEmbeddingModel)
     assert "Authorization" not in m._headers
+
+
+# --- local embedding device selection (IETF_LLM_EMBED_DEVICE) ---------------
+
+
+def test_embed_device_override_wins(monkeypatch):
+    for want in ("cpu", "mps", "cuda"):
+        monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", want)
+        assert _embed_device() == want
+
+
+def test_embed_device_override_normalised(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "  MPS ")
+    assert _embed_device() == "mps"
+
+
+def test_embed_device_defaults_to_cpu_without_cuda(monkeypatch):
+    # Torch-free: the cuda probe is stubbed, so no torch import happens. The
+    # default deliberately avoids MPS (fragmentation); see _embed_device.
+    monkeypatch.delenv("IETF_LLM_EMBED_DEVICE", raising=False)
+    monkeypatch.setattr(models, "_cuda_available", lambda: False)
+    assert _embed_device() == "cpu"
+
+
+def test_embed_device_prefers_cuda_when_present(monkeypatch):
+    monkeypatch.delenv("IETF_LLM_EMBED_DEVICE", raising=False)
+    monkeypatch.setattr(models, "_cuda_available", lambda: True)
+    assert _embed_device() == "cuda"
+
+
+def test_embed_device_accepts_indexed_form(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "cuda:1")
+    assert _embed_device() == "cuda:1"
+
+
+def test_embed_device_unknown_falls_back(monkeypatch):
+    # A typo like `gpu` is dropped to the default rather than handed to torch
+    # to fail with a raw error.
+    monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "gpu")
+    monkeypatch.setattr(models, "_cuda_available", lambda: False)
+    assert _embed_device() == "cpu"
 

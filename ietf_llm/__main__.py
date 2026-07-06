@@ -745,6 +745,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             model_name=args.embed_model or DEFAULT_EMBED_MODEL,
             rebuild=args.rebuild_embeddings,
             verbose=verbosity,
+            detail=tracker.detail,
         )
         # Topic map: cluster the freshly-built index into themes for `overview`
         # (and, later, centroid routing). Cheap next to the embed, write-side
