@@ -13,7 +13,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio
 
-from .. import _debug_log, coverage, serve_metrics
+from .. import coverage, serve_metrics
+from . import debug_log
 from ..access import note_access
 from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from ..digest.query import parse_md_tables
@@ -667,10 +668,10 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     # Telemetry: every call gets a request id and emits offload_start /
     # thread_started / thread_returned-or-error / offload_end events to
     # the debug log so stall investigations have something to chew on.
-    # See ietf_llm/_debug_log.py.
-    req_id = _debug_log.next_id()
+    # See ietf_llm/mcp/debug_log.py.
+    req_id = debug_log.next_id()
     t0 = time.monotonic()
-    _debug_log.log_event(
+    debug_log.log_event(
         req_id,
         "offload_start",
         tool=getattr(fn, "__name__", "tool"),
@@ -679,7 +680,7 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     )
 
     def _instrumented() -> str:
-        _debug_log.log_event(
+        debug_log.log_event(
             req_id,
             "thread_started",
             queue_wait=round(time.monotonic() - t0, 6),
@@ -687,14 +688,14 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         try:
             result = fn(*args, **kwargs)
         except BaseException as exc:  # pylint: disable=broad-except
-            _debug_log.log_event(
+            debug_log.log_event(
                 req_id,
                 "thread_error",
                 error_type=type(exc).__name__,
                 error=str(exc)[:500],
             )
             raise
-        _debug_log.log_event(
+        debug_log.log_event(
             req_id,
             "thread_returned",
             result_bytes=len(result) if isinstance(result, str) else None,
@@ -728,7 +729,7 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     finally:
         serve_metrics.adjust_inflight(-1)
         elapsed = time.monotonic() - t0
-        _debug_log.log_event(
+        debug_log.log_event(
             req_id,
             "offload_end",
             status=status,

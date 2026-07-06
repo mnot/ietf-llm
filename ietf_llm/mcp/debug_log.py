@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
-from .utils import get_cache_dir
+from ..utils import get_cache_dir
 
 _counter = itertools.count(1)
 _calls_seen = 0  # snapshot for heartbeat (itertools.count has no peek)
@@ -141,7 +141,7 @@ def _heartbeat_loop() -> None:
     # logging, so don't pull it into the import graph unless we're
     # actually going to call its getter.
     # pylint: disable=import-outside-toplevel
-    from . import _stdio_transport
+    from . import stdio
 
     while _enabled:
         time.sleep(10)
@@ -152,7 +152,7 @@ def _heartbeat_loop() -> None:
             "heartbeat",
             calls_seen=seen,
             uptime=round(time.monotonic() - _start_monotonic, 3),
-            writer_queue=_stdio_transport.queue_state(),
+            writer_queue=stdio.queue_state(),
         )
 
 

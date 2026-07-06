@@ -11,7 +11,8 @@ from typing import Any, Optional
 
 import anyio
 
-from .. import __version__, _debug_log, _stdio_transport
+from .. import __version__
+from . import debug_log, stdio
 from ..embeddings import _get_embed_model, is_remote_embed_model
 from ..freshness import set_deployment_mode, set_gather_default
 from ..utils import Verbosity, get_index_dir, graceful_keyboard_interrupt
@@ -175,7 +176,7 @@ async def _run_with_threaded_writer(server: Any) -> None:
     """Wire FastMCP's lowlevel server up to our threaded-writer stdio
     transport. Mirrors `FastMCP.run_stdio_async` (the function our
     transport replaces) line-for-line, swapping the transport."""
-    async with _stdio_transport.stdio_server_threaded_writer() as (
+    async with stdio.stdio_server_threaded_writer() as (
         read_stream,
         write_stream,
     ):
@@ -224,7 +225,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     # in the MCP server's launch env. When on, writes JSONL per-request
     # timing to a per-pid file under ~/.cache/ietf-llm/_debug/, and the
     # `get_session_log` tool returns its tail to the client.
-    _debug_log.init()
+    debug_log.init()
 
     # Resolve the in-session gather default up front (see
     # `_startup_gather_default`: stdio on, http off, immutable mount off). It
@@ -277,7 +278,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     # (IETF_LLM_DEBUG_LOG=1). With logging off the tool wouldn't have
     # anything useful to return, so we leave it out of the advertised
     # tool list entirely rather than ship a no-op tool.
-    if _debug_log.is_enabled():
+    if debug_log.is_enabled():
         gather.register_session_log(server)
 
     # `start_gather` / `gather_status` write to the cache and reach the
@@ -303,5 +304,5 @@ def main() -> None:  # pylint: disable=too-many-locals
     # those writes through the kernel pipe buffer — stalling every
     # queued response invisibly. Our transport hands serialized bytes
     # to a daemon thread via a bounded in-process queue, so the loop
-    # never awaits a kernel write. See ietf_llm/_stdio_transport.py.
+    # never awaits a kernel write. See ietf_llm/mcp/stdio.py.
     anyio.run(_run_with_threaded_writer, server)

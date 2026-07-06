@@ -7,7 +7,7 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from .. import _debug_log
+from . import debug_log
 from ..utils import months_request_caution, months_request_error
 from .common import (
     _corpus_exists,
@@ -27,10 +27,10 @@ def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
     Sync helper for the `get_session_log` MCP tool; lives next to
     `_offload` because it's part of the same diagnostic facility.
     Temporary — removed when stall investigation closes."""
-    events = _debug_log.read_tail(limit=limit, since_seconds=since_seconds)
+    events = debug_log.read_tail(limit=limit, since_seconds=since_seconds)
     payload = {
-        "path": _debug_log.current_path(),
-        "enabled": _debug_log.is_enabled(),
+        "path": debug_log.current_path(),
+        "enabled": debug_log.is_enabled(),
         "event_count": len(events),
         "events": events,
     }
