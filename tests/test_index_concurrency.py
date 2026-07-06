@@ -24,7 +24,7 @@ from ietf_llm.embeddings import storage
 from ietf_llm.embeddings.search import build_index, search
 from ietf_llm.embeddings.storage import _clone_or_copy, _db_building_path, _db_path
 from ietf_llm.mcp.serve import _readiness
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_index_dir, get_wg_file_cache_dir
 
 from conftest import write_cache_file

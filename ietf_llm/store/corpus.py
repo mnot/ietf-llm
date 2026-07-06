@@ -33,8 +33,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
 from .. import freshness
 from ..config import service as service_config
-from ..paths import get_cache_dir, get_index_dir
-from ..utils import cached_wg_names
+from ..paths import cached_wg_names, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local
 #: cache is single-version (the live tree on disk), so the value is opaque — it

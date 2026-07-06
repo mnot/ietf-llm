@@ -25,7 +25,7 @@ import os
 import sys
 from typing import Any, Optional
 
-from ..utils import Verbosity
+from ..log import Verbosity
 from .pipeline import CHILD_EXIT_UNUSABLE
 from .sequencer import run_gather
 

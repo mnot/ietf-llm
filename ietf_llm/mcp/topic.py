@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import get_messages, search
 from ..freshness import gather_enabled
+from ..log import Verbosity
 from ..people.positions import (
     extract_chair_statements,
     file_supports_tally,
@@ -15,7 +16,6 @@ from ..people.positions import (
     render_tally,
     tally_thread,
 )
-from ..utils import Verbosity
 from .common import (
     _append_participation_nudge,
     _files_dir,

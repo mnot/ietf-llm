@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Iterator, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 
 
 def get_config_dir() -> str:
@@ -107,6 +107,45 @@ def get_wg_file_cache_dir(wg_name: str) -> str:
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
+
+
+def cached_wg_names() -> List[str]:
+    """Shortnames of every gathered WG / corpus — directories with a
+    `files/` subdir under the cache root, sorted. Skips dot- and
+    underscore-prefixed entries (machinery like `_github-users.json`).
+
+    Shared by `ietf-llm --all` / `--list` and the shell-completion
+    completer for the `wg` positional, so they can't drift.
+    """
+    root = get_cache_dir()
+    if not os.path.isdir(root):
+        return []
+    out: List[str] = []
+    for name in sorted(os.listdir(root)):
+        if name.startswith(".") or name.startswith("_"):
+            continue
+        if os.path.isdir(os.path.join(root, name, "files")):
+            out.append(name)
+    return out
+
+
+def is_synthetic_wg(name: str) -> bool:
+    """True for synthetic / non-WG corpora (the `x-` prefix convention).
+
+    Some collections of drafts and mailing lists predate (or sit
+    parallel to) any formal WG, but it's still useful to gather them
+    into the same corpus shape so the MCP server and search tools
+    can answer questions about them. The `x-` prefix opts out of
+    every Datatracker / WG-page lookup (no charter, no leadership,
+    no auto-discovered drafts or mailing list, no transcripts) while
+    leaving everything else — mail thread reconstruction, GitHub
+    issue gathering, the explicit `--draft` / `--mailing-list`
+    additions, indexing — working as normal.
+
+    Naming convention chosen for brevity and zero risk of colliding
+    with a real IETF WG shortname (none start with `x-`).
+    """
+    return name.startswith("x-")
 
 
 # Top-level subdirectories under <wg>/files/.

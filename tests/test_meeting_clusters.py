@@ -23,7 +23,7 @@ from ietf_llm.gather.sources.meetings import (
     _download_slide,
 )
 from ietf_llm.gather.sources.transcripts import _match_interim_cluster
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 def _row(number: str, date: str) -> Dict[str, Any]:

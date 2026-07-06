@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, List, Optional, Tuple
 
 from . import config, freshness
-from .utils import cached_wg_names, is_synthetic_wg
+from .paths import cached_wg_names, is_synthetic_wg
 
 SCOPE = "gather"
 

@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 
 from ..atomicio import atomic_open
 from ..datatracker_api import get_wg_title
+from ..log import LogLevel, Verbosity, log
 from ..paths import (
     DIR_DIGESTS,
     DIR_DRAFTS,
@@ -25,7 +26,6 @@ from ..paths import (
     SUBDIR_TRANSCRIPTS,
     digest_path,
 )
-from ..utils import LogLevel, Verbosity, log
 from .helpers import _fmt_size
 
 

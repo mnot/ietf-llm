@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from ...utils import LogLevel, Verbosity, log
+from ...log import LogLevel, Verbosity, log
 from .datatracker import _get_json
 
 _PERSON_API = "https://datatracker.ietf.org/api/v1/person/person/"

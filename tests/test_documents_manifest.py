@@ -14,7 +14,7 @@ from ietf_llm.gather.sources.documents_manifest import (
     load_documents_manifest,
     save_documents_manifest,
 )
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 # --- manifest round-trip --------------------------------------------------

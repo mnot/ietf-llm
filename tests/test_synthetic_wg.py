@@ -14,7 +14,8 @@ from typing import Any
 
 from ietf_llm.gather.sources.mbox import sync_mailing_list
 from ietf_llm.people import Registry, build_registry
-from ietf_llm.utils import Verbosity, is_synthetic_wg
+from ietf_llm.log import Verbosity
+from ietf_llm.paths import is_synthetic_wg
 
 
 # --- is_synthetic_wg ------------------------------------------------------

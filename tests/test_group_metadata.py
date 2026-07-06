@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm import datatracker_api, utils
+from ietf_llm import datatracker_api, log
 
 
 class _FakeResp:
@@ -177,7 +177,7 @@ def test_write_group_info_renders_file(
         group_info, "get_group_resources",
         lambda wg: (("github_org", "repositories", "https://github.com/httpwg/"),),
     )
-    written = group_info.write_group_info("httpbis", str(tmp_path), utils.Verbosity.QUIET)
+    written = group_info.write_group_info("httpbis", str(tmp_path), log.Verbosity.QUIET)
     assert written
     text = open(group_path(str(tmp_path)), encoding="utf-8").read()
     assert "**Name:** HTTP" in text
@@ -196,7 +196,7 @@ def test_write_group_info_noop_when_empty(
     monkeypatch.setattr(group_info, "get_group_state", lambda wg: None)
     monkeypatch.setattr(group_info, "get_group_area", lambda wg: None)
     monkeypatch.setattr(group_info, "get_group_resources", lambda wg: ())
-    assert group_info.write_group_info("x-foo", str(tmp_path), utils.Verbosity.QUIET) == []
+    assert group_info.write_group_info("x-foo", str(tmp_path), log.Verbosity.QUIET) == []
     assert not os.path.exists(group_path(str(tmp_path)))
 
 

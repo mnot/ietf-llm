@@ -13,14 +13,14 @@ from typing import List
 
 from .. import corpus
 from ..freshness import last_gathered
+from ..paths import cached_wg_names
 from ..store.corpus import get_corpus_store
-from ..utils import cached_wg_names
 
 
 def discover_gathered_wgs() -> List[str]:
     """Acronyms of every WG with a files/ subdir in the cache.
 
-    Thin alias for `utils.cached_wg_names()` — kept as a named helper
+    Thin alias for `paths.cached_wg_names()` — kept as a named helper
     because `--list` reads naturally with it. Local-only: `--list`'s renderer
     reads each corpus's local cache, so it has nothing to show for a corpus
     that lives only in a remote store.

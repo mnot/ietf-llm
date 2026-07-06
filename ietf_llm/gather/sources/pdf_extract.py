@@ -26,8 +26,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ...log import LogLevel, Verbosity, log
 from ...paths import meeting_code_for_relpath, meeting_label, minutes_path
-from ...utils import LogLevel, Verbosity, log
 
 # pypdf emits a steady stream of "Ignoring wrong pointing object N 0
 # (offset 0)" warnings on slide decks exported from PowerPoint / Keynote

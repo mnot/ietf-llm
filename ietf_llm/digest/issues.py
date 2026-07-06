@@ -12,9 +12,9 @@ from typing import Optional
 
 from ..atomicio import atomic_open
 from ..gather.sources.issue_files import _detect_duplicate_of, _participants
+from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, github_dir, issue_path, remove_stale_digest
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, log
 from .helpers import _state_is_open
 from .summarizer import _Summarizer
 

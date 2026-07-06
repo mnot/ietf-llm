@@ -17,7 +17,7 @@ import pytest
 
 import ietf_llm.http_metrics as http_metrics
 from ietf_llm.gather.sources import drafts
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 class _Resp:

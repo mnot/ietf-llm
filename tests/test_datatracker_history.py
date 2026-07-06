@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from ietf_llm.gather.sources import datatracker_history
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 def _now_minus(days: int) -> str:

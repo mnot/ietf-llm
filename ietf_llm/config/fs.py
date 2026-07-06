@@ -22,8 +22,8 @@ import shutil
 from typing import Any, Dict, Mapping
 
 from ..atomicio import atomic_open
+from ..log import LogLevel, log
 from ..paths import get_config_dir
-from ..utils import LogLevel, log
 
 
 def config_path(wg: str, scope: str) -> str:

@@ -21,7 +21,7 @@ from typing import Any, cast
 
 import requests
 
-from ..utils import LogLevel, Verbosity, log
+from ..log import LogLevel, Verbosity, log
 
 #: HTTP statuses that mean "your credentials are missing/invalid/insufficient",
 #: not "try again later": 401 Unauthorized, 403 Forbidden, 407 Proxy Auth.

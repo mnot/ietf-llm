@@ -25,7 +25,7 @@ import pytest
 
 import ietf_llm.gather.sources.repo_discovery as rd
 from ietf_llm import config
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 # A timestamp far in the future is always "recent" relative to the staleness
 # window; one far in the past is always stale — so these tests don't depend on

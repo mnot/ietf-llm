@@ -34,8 +34,8 @@ import requests
 
 from ... import config
 from ...datatracker_api import get_group_resources
+from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, http_session
-from ...utils import LogLevel, Verbosity, log
 from .drafts import get_wg_documents
 
 #: How recently a repo must have been pushed to (and have issue activity) to

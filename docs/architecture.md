@@ -84,7 +84,7 @@ once, in `gather.sequencer._resolve_corpus_shape`, into one of four **kinds**:
 - **custom** — not a group; content comes from explicit `--draft` /
   `--mailing-list` / `--github` (the name is a label).
 - **synthetic** — an `x-` prefixed name (`x-webbotauth`); like custom
-  but explicitly skips even the group lookup. `utils.is_synthetic_wg()`
+  but explicitly skips even the group lookup. `paths.is_synthetic_wg()`
   is the predicate; the prefix is the only signal.
 
 Resolution **precedence** (first match wins): `x-` synthetic →
@@ -348,7 +348,8 @@ ietf_llm/
 │   └── service.py          # deployment knobs (store backend, …): env > global > default
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
 ├── paths.py                # filesystem layout single source of truth: root dirs
-│                           # (get_config/cache/index_dir) + per-artefact paths; meeting_label()
+│                           # (get_config/cache/index_dir) + per-artefact paths; meeting_label();
+│                           # cached_wg_names / is_synthetic_wg (cache-dir listing predicates)
 ├── routing.py              # which_corpus: centroid routing over the topic-map sidecars + fleet key
 ├── store/                  # storage seam: CorpusStore + backends (see "The storage seam")
 │   ├── corpus.py           # CorpusStore seam: port + LocalCorpusStore + factory
@@ -370,7 +371,8 @@ ietf_llm/
 │   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
-├── utils.py                # log(), Verbosity/LogLevel, is_synthetic_wg, cached_wg_names
+├── log.py                  # stderr output leaf: log(), Verbosity/LogLevel, _use_color
+│                           # (text + IETF_LLM_LOG_FORMAT=json), graceful_keyboard_interrupt
 ├── months.py               # gather --months window policy (validate / resolve; DEFAULT_MONTHS)
 ├── completion.py           # shell tab-completion (argcomplete wiring for the ietf-llm CLIs)
 ├── atomicio.py             # concurrency-safe filesystem primitives: atomic writes

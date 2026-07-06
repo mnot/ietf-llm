@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ietf_llm.gather import sequencer as main
 from ietf_llm import config
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 _LEGACY = ("embed_model", "summarize", "no_embed", "summarize_model")
 

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from ietf_llm.gather.sources import session_polls
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 

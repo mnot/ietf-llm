@@ -8,7 +8,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 
-from .utils import LogLevel, Verbosity, log
+from .log import LogLevel, Verbosity, log
 
 # Scopes required for Discovery Engine API
 SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]

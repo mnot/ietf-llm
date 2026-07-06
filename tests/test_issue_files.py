@@ -24,7 +24,7 @@ from ietf_llm.gather.sources.issue_files import (
     write_issue_files,
 )
 from ietf_llm.people import Registry
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import make_issue, write_github_archive

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import index_model, related, search
 from ..freshness import gather_enabled, staleness_warning
-from ..utils import Verbosity
+from ..log import Verbosity
 from .common import (
     _corpus_exists,
     _grounding_frame,

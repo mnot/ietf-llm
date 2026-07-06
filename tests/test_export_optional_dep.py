@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from ietf_llm import export
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 _PROBE = r"""
 import sys

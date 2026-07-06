@@ -23,7 +23,7 @@ from urllib3.util.retry import Retry
 
 from . import __version__, http_metrics
 from .http_governor import host_slot
-from .utils import LogLevel, log
+from .log import LogLevel, log
 
 # Identify the client and give upstream operators a contact path. A shared
 # community service (datatracker especially) would rather reach the tool's

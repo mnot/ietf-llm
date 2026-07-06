@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ietf_llm import export
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 from conftest import write_cache_file
 

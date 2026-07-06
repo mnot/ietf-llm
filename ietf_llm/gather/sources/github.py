@@ -8,8 +8,8 @@ import requests
 
 from ... import paths
 from ...atomicio import atomic_open
+from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
-from ...utils import LogLevel, Verbosity, log
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":

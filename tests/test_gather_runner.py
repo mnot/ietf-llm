@@ -20,10 +20,10 @@ from typing import Any, List, Tuple
 import pytest
 
 from ietf_llm.gather import sequencer as main_mod
-from ietf_llm import config, freshness, months, serve_metrics, utils
+from ietf_llm import config, freshness, months, serve_metrics
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.gather.stages import stage_plan
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 

@@ -20,7 +20,7 @@ from ietf_llm.embeddings.models import (
     _embed_device,
     _load_openai_compat,
 )
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 class _FakeResp:

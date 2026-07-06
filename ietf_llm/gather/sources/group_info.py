@@ -19,8 +19,8 @@ from ...datatracker_api import (
     get_group_resources,
     get_group_state,
 )
+from ...log import LogLevel, Verbosity, log
 from ...paths import group_path
-from ...utils import LogLevel, Verbosity, log
 
 
 def write_group_info(
