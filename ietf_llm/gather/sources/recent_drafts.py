@@ -22,8 +22,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Iterable, List, Optional
 
+from ...log import LogLevel, Verbosity, log
 from ...paths import drafts_dir
-from ...utils import LogLevel, Verbosity, log
 from .datatracker import _get_json
 from .drafts import normalize_draft_name
 

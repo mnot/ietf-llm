@@ -24,10 +24,10 @@ from ..freshness import (
     gather_suggestion,
     last_gathered,
 )
+from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path
 from ..people.positions import file_supports_tally
 from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
-from ..utils import LogLevel, Verbosity, log
 from . import debug_log
 
 MAX_LINES_DEFAULT = 400

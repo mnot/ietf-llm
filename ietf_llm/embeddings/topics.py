@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from ..utils import LogLevel, Verbosity, log
+from ..log import LogLevel, Verbosity, log
 from .clustering import choose_k, mini_batch_kmeans
 from .search import index_model
 from .storage import Document, encode_centroid, load_documents, write_topics

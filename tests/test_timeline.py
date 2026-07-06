@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ietf_llm.people import Registry
 from ietf_llm.digest.timeline import _meeting_label, build_events, write_timeline_digest
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import (

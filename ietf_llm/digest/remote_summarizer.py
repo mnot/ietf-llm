@@ -15,7 +15,7 @@ import os
 from typing import Optional
 
 from ..embeddings import oai_compat
-from ..utils import LogLevel, Verbosity, log
+from ..log import LogLevel, Verbosity, log
 
 #: Protocol-neutral prefix selecting the OpenAI-compatible chat backend,
 #: parallel to embeddings' ``openai-embed/``. The id after the prefix is

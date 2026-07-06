@@ -15,8 +15,8 @@ from ..embeddings import (
     probe_index,
 )
 from ..freshness import last_gathered
+from ..log import LogLevel, log
 from ..paths import get_index_dir
-from ..utils import LogLevel, log
 from .common import _gather_enabled, _list_wgs, _log_verbosity
 
 

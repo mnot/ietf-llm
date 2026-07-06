@@ -11,7 +11,7 @@ import sqlite3
 
 from ietf_llm.embeddings.search import search
 from ietf_llm.embeddings.storage import _db_path
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 def _write_old_schema_db(wg: str) -> str:

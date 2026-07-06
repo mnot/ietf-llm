@@ -53,6 +53,7 @@ from ..gather.sources.github import iter_issue_archives
 from ..gather.sources.mail_threads import Thread, build_threads, thread_slug
 from ..gather.sources.session_polls import discover_local_polls
 from ..gather.sources.transcript_context import transcript_context
+from ..log import LogLevel, Verbosity, log
 from ..paths import (
     DIR_MEETINGS,
     digest_path,
@@ -61,7 +62,6 @@ from ..paths import (
     remove_stale_digest,
 )
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, log
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------

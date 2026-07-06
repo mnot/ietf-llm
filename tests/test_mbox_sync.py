@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from ietf_llm.gather.sources import mbox
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 @pytest.fixture(autouse=True)

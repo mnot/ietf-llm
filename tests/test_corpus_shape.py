@@ -12,7 +12,7 @@ import pytest
 
 from ietf_llm import __main__ as main_mod
 from ietf_llm.gather import sequencer
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 def _args(wg: str, **kw: Any) -> argparse.Namespace:

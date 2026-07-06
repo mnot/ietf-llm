@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ...log import LogLevel, Verbosity, log
 from ...paths import (
     DIR_MEETINGS,
     SUBDIR_TRANSCRIPTS,
@@ -28,7 +29,6 @@ from ...paths import (
     meeting_label,
     minutes_path,
 )
-from ...utils import LogLevel, Verbosity, log
 
 _SENTINEL = "<!-- ietf-llm:context-header -->"
 

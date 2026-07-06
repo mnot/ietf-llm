@@ -17,7 +17,7 @@ from ietf_llm.gather.sources.citations import (
     scan_citations,
     write_citations_digest,
 )
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import write_cache_file

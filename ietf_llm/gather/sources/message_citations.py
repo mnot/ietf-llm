@@ -45,13 +45,13 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from ...atomicio import atomic_open
+from ...log import LogLevel, Verbosity, log
 from ...paths import (
     digest_path,
     iter_thread_issue_md_files,
     remove_stale_digest,
     threads_dir,
 )
-from ...utils import LogLevel, Verbosity, log
 
 # Archive permalinks, as they appear both on `_Archived-At:_` lines (the
 # resolver index) and inline in bodies (the citations we scan). Trailing

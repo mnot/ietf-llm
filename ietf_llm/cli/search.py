@@ -10,7 +10,7 @@ import sys
 from .. import __version__
 from ..completion import maybe_autocomplete, wg_completer
 from ..embeddings import search
-from ..utils import Verbosity, graceful_keyboard_interrupt
+from ..log import Verbosity, graceful_keyboard_interrupt
 
 
 @graceful_keyboard_interrupt

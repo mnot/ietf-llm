@@ -30,8 +30,8 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import numpy as np
 
 from .embeddings.storage import decode_centroid
+from .log import Verbosity
 from .store.kv import ABSENT, KvStore
-from .utils import Verbosity
 
 #: Cosine floor (on **mean-centered** scores) for a confident match: below it,
 #: routing abstains rather than name a least-bad corpus. Calibrated for the

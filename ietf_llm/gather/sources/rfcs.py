@@ -35,9 +35,9 @@ import os
 
 import requests
 
+from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
 from ...rfcs import RFC_FILES, rfc_index_dir
-from ...utils import LogLevel, Verbosity, log
 from . import _mirror
 
 RFC_DATA_BASE = "https://rfc.fyi/var"

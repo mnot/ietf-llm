@@ -5,7 +5,7 @@ A thin read layer over `/api/v1/group/…`: fetch a group's record by acronym
 parent area / mailing-list name / title / Additional Resources. Used by the
 gather sources, the corpus-shape resolver, and the live-lookup read path — so it
 sits below all of them, depending only on `net` (the HTTP transport) and
-`utils.is_synthetic_wg`.
+`paths.is_synthetic_wg`.
 
 (Distinct from `gather/sources/datatracker.py`, which is the gather stage that
 writes roles + the paginated document listing; this is the shared group-object
@@ -19,7 +19,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from .net import fetch_resource
-from .utils import is_synthetic_wg
+from .paths import is_synthetic_wg
 
 
 @lru_cache(maxsize=128)

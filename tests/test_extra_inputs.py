@@ -17,7 +17,7 @@ from ietf_llm.gather.sources import github
 from ietf_llm.gather.sources.drafts import normalize_draft_name
 from ietf_llm.gather.sources.github import normalize_repo_short, validate_github_repos
 from ietf_llm.gather.sources.mbox import normalize_list_name
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 # --- normalize_draft_name -------------------------------------------------
@@ -118,7 +118,7 @@ def test_validate_draft_names_drops_unresolved(
     # validate_draft_names should drop names that Datatracker doesn't
     # know, returning only the valid subset.
     from ietf_llm.gather.sources import drafts  # pylint: disable=import-outside-toplevel
-    from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
+    from ietf_llm.log import Verbosity
 
     def fake_fetch_current_rev(name: str, _verbose: object) -> object:
         return 7 if name == "draft-real-thing" else None
@@ -142,7 +142,7 @@ def test_validate_list_names_drops_only_on_404(
     isolated_home: Path, monkeypatch: object,
 ) -> None:
     from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
-    from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
+    from ietf_llm.log import Verbosity
 
     def fake_get(url: str, **_kwargs: object) -> _StatusResp:
         # Simulate mailarchive: `httpbis` exists (200); `ghost` is a real 404.
@@ -164,7 +164,7 @@ def test_validate_list_names_keeps_on_transient_failure(
     # Regression: a network blip (RequestException) must NOT drop a list the
     # user explicitly passed — only a definitive 404 does.
     from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
-    from ietf_llm.utils import Verbosity  # pylint: disable=import-outside-toplevel
+    from ietf_llm.log import Verbosity
 
     def boom(url: str, **_kwargs: object) -> object:
         raise requests.ConnectionError("network down")

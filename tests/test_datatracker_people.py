@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 import ietf_llm.gather.sources.datatracker_people as dtp
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_cache_dir
 
 

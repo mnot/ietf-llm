@@ -22,10 +22,10 @@ from ..digest import generate_digests
 from ..digest.timeline import write_timeline_digest
 from ..embeddings import DEFAULT_EMBED_MODEL, build_index, generate_topics
 from ..freshness import record_gather
+from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
-from ..paths import get_cache_dir, get_wg_file_cache_dir
+from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
 from ..people import build_registry, write_people_digest
-from ..utils import LogLevel, Verbosity, is_synthetic_wg, log
 from .cli import build_parser
 from .plan import _gather_plan_summary
 from .sources.author import fetch_author_draft_names, resolve_person

@@ -48,10 +48,10 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from ...atomicio import write_if_changed
+from ...log import LogLevel, Verbosity, log
 from ...paths import get_cache_dir, thread_path, threads_dir
 from ...people import Registry
 from ...text import _normalize_subject, _parse_date, _short_addr
-from ...utils import LogLevel, Verbosity, log
 from .mbox import extract_text_content
 
 

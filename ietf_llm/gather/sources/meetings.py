@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from ...atomicio import atomic_open_binary, write_if_changed
+from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
 from ...paths import (
     ORPHAN_MEETING_CODE,
@@ -16,10 +18,15 @@ from ...paths import (
     minutes_path,
     slides_dir,
 )
-from ...utils import LogLevel, Verbosity, format_filename, log
 from .datatracker import _get_json, iter_group_documents
 from .materials_manifest import load_manifest, save_manifest
 from .session_polls import process_session_polls
+
+
+def format_filename(name: str) -> str:
+    """Format a string to be a safe filename."""
+    return re.sub(r"[^\w\s-]", "", name).strip().lower().replace(" ", "_")
+
 
 # Material kinds we rev-gate (re-fetch content only when the document
 # revision changes). Slides are large and rarely revised, polls are

@@ -17,7 +17,7 @@ from ietf_llm.digest.remote_summarizer import (
     load_openai_compat_chat,
 )
 from ietf_llm.digest.summarizer import _Summarizer
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 class _FakeResp:

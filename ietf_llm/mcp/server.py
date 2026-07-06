@@ -14,8 +14,8 @@ import anyio
 from .. import __version__
 from ..embeddings import _get_embed_model, is_remote_embed_model
 from ..freshness import set_deployment_mode, set_gather_default
+from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_index_dir
-from ..utils import Verbosity, graceful_keyboard_interrupt
 from . import (
     chunks,
     citations,

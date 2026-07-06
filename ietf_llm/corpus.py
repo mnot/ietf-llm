@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Tuple
 
 from . import config, paths
 from .months import DEFAULT_MONTHS
+from .paths import is_synthetic_wg
 from .store.corpus import get_corpus_store
-from .utils import is_synthetic_wg
 
 # The gather CLI persists its config under this scope.
 _GATHER_SCOPE = "gather"

@@ -37,8 +37,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from ...atomicio import atomic_open
+from ...log import LogLevel, Verbosity, log
 from ...paths import digest_path, iter_thread_issue_md_files, remove_stale_digest
-from ...utils import LogLevel, Verbosity, log
 
 
 @dataclass

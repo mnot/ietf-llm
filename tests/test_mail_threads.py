@@ -19,7 +19,7 @@ from ietf_llm.gather.sources.mail_threads import (
     thread_slug,
     write_thread_files,
 )
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 
-from ietf_llm import utils
-from ietf_llm.utils import LogLevel, Verbosity, log
+from ietf_llm import log as logmod
+from ietf_llm.log import LogLevel, Verbosity, log
 
 
 def test_text_is_default(monkeypatch, capsys):
@@ -46,7 +46,7 @@ def test_warn_hidden_when_quiet(monkeypatch, capsys):
 def test_color_wraps_level_tag_on_tty(monkeypatch, capsys):
     # When colour is enabled, only the bracketed tag is wrapped — not the
     # message — and a reset follows before the space.
-    monkeypatch.setattr(utils, "_use_color", lambda: True)
+    monkeypatch.setattr(logmod, "_use_color", lambda: True)
     log("boom", level=LogLevel.ERROR)
     log("careful", level=LogLevel.WARN)
     err = capsys.readouterr().err
@@ -56,7 +56,7 @@ def test_color_wraps_level_tag_on_tty(monkeypatch, capsys):
 
 def test_no_color_when_uncoloured_level(monkeypatch, capsys):
     # STATUS has no tag, so colour gating never touches it.
-    monkeypatch.setattr(utils, "_use_color", lambda: True)
+    monkeypatch.setattr(logmod, "_use_color", lambda: True)
     log("plain", level=LogLevel.STATUS)
     assert capsys.readouterr().err.strip() == "plain"
 
@@ -72,18 +72,18 @@ def test_use_color_gating(monkeypatch):
         def isatty(self):
             return self._tty
 
-    monkeypatch.setattr(utils.sys, "stderr", _Fake(True))
-    assert utils._use_color() is True
-    monkeypatch.setattr(utils.sys, "stderr", _Fake(False))
-    assert utils._use_color() is False
+    monkeypatch.setattr(logmod.sys, "stderr", _Fake(True))
+    assert logmod._use_color() is True
+    monkeypatch.setattr(logmod.sys, "stderr", _Fake(False))
+    assert logmod._use_color() is False
     # NO_COLOR (any value, even empty) disables it even on a tty.
-    monkeypatch.setattr(utils.sys, "stderr", _Fake(True))
+    monkeypatch.setattr(logmod.sys, "stderr", _Fake(True))
     monkeypatch.setenv("NO_COLOR", "")
-    assert utils._use_color() is False
+    assert logmod._use_color() is False
     monkeypatch.delenv("NO_COLOR", raising=False)
     # JSON mode never colours.
     monkeypatch.setenv("IETF_LLM_LOG_FORMAT", "json")
-    assert utils._use_color() is False
+    assert logmod._use_color() is False
 
 
 def test_json_format(monkeypatch, capsys):

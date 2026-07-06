@@ -18,7 +18,7 @@ from ietf_llm.embeddings.search import build_index
 from ietf_llm.embeddings.topics import generate_topics, routing_projection
 from ietf_llm.store.kv import InMemoryKvStore
 from ietf_llm.mcp.corpus import tool_which_corpus
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import write_cache_file

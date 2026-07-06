@@ -19,7 +19,7 @@ from typing import Any, List, Optional, Tuple
 import pytest
 
 import ietf_llm.gather.sources.datatracker_github as dtg
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_cache_dir
 
 

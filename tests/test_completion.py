@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.utils import cached_wg_names
+from ietf_llm.paths import cached_wg_names
 from ietf_llm.completion import maybe_autocomplete, wg_completer
 
 from conftest import write_cache_file

@@ -25,9 +25,9 @@ from .gather.sequencer import _gather_one
 from .gather.sources.catalog import ensure_catalog_index
 from .gather.sources.repo_discovery import print_discovery
 from .gather.sources.rfcs import ensure_rfc_index
+from .log import Verbosity, graceful_keyboard_interrupt
 from .months import months_request_error
 from .skill_install import install_skills, sync_if_pristine
-from .utils import Verbosity, graceful_keyboard_interrupt
 
 
 @graceful_keyboard_interrupt

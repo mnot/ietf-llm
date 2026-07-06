@@ -24,7 +24,7 @@ import argparse
 import os
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from ..utils import LogLevel, log
+from ..log import LogLevel, log
 from . import fs
 from .store import get_config_store
 

@@ -19,7 +19,7 @@ import os
 import time
 from typing import Optional
 
-from ...utils import LogLevel, Verbosity, log
+from ...log import LogLevel, Verbosity, log
 
 
 def is_fresh(path: str, ttl_seconds: float) -> bool:

@@ -1,52 +1,21 @@
+"""Terminal / stderr output for the CLIs and the MCP server.
+
+`log()` writes verbosity-filtered status / progress / error messages to stderr —
+human-readable with optional ANSI colour, or one-line structured JSON when
+``IETF_LLM_LOG_FORMAT=json`` (for a cloud log collector). `Verbosity` /
+`LogLevel` classify what shows. `graceful_keyboard_interrupt` wraps a CLI entry
+point so Ctrl-C exits cleanly (status 130) instead of dumping a traceback.
+Stdlib-only leaf.
+"""
+
+from __future__ import annotations
+
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
-
-from . import __version__
-from .paths import get_cache_dir
-
-
-def cached_wg_names() -> List[str]:
-    """Shortnames of every gathered WG / corpus — directories with a
-    `files/` subdir under the cache root, sorted. Skips dot- and
-    underscore-prefixed entries (machinery like `_github-users.json`).
-
-    Shared by `ietf-llm --all` / `--list` and the shell-completion
-    completer for the `wg` positional, so they can't drift.
-    """
-    root = get_cache_dir()
-    if not os.path.isdir(root):
-        return []
-    out: List[str] = []
-    for name in sorted(os.listdir(root)):
-        if name.startswith(".") or name.startswith("_"):
-            continue
-        if os.path.isdir(os.path.join(root, name, "files")):
-            out.append(name)
-    return out
-
-
-def is_synthetic_wg(name: str) -> bool:
-    """True for synthetic / non-WG corpora (the `x-` prefix convention).
-
-    Some collections of drafts and mailing lists predate (or sit
-    parallel to) any formal WG, but it's still useful to gather them
-    into the same corpus shape so the MCP server and search tools
-    can answer questions about them. The `x-` prefix opts out of
-    every Datatracker / WG-page lookup (no charter, no leadership,
-    no auto-discovered drafts or mailing list, no transcripts) while
-    leaving everything else — mail thread reconstruction, GitHub
-    issue gathering, the explicit `--draft` / `--mailing-list`
-    additions, indexing — working as normal.
-
-    Naming convention chosen for brevity and zero risk of colliding
-    with a real IETF WG shortname (none start with `x-`).
-    """
-    return name.startswith("x-")
+from typing import Any, Callable, Dict, Optional
 
 
 def graceful_keyboard_interrupt(
@@ -166,8 +135,3 @@ def log(
     if prefix and _use_color():
         prefix = f"{_LEVEL_COLOR[level]}{prefix.rstrip()}{_ANSI_RESET} "
     print(f"{prefix}{message}", file=sys.stderr)
-
-
-def format_filename(name: str) -> str:
-    """Format a string to be a safe filename."""
-    return re.sub(r"[^\w\s-]", "", name).strip().lower().replace(" ", "_")

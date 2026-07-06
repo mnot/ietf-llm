@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from ...digest.events import Event
-from ...utils import LogLevel, Verbosity, log
+from ...log import LogLevel, Verbosity, log
 from .datatracker import _get_json
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"

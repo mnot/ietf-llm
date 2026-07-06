@@ -3,8 +3,8 @@ from typing import List, Optional
 
 from ...atomicio import atomic_open
 from ...datatracker_api import get_group_type
+from ...log import LogLevel, Verbosity, log
 from ...net import fetch_resource
-from ...utils import LogLevel, Verbosity, log
 from .datatracker import _get_json
 
 

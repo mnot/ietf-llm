@@ -19,7 +19,7 @@ import os, sys
 os.environ["IETF_LLM_EMBED_BASE_URL"] = "https://example.invalid/v1"
 import ietf_llm.mcp  # imports the whole serve path
 from ietf_llm.embeddings.models import _get_embed_model
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 # Resolving the remote backend must construct without touching torch.
 model = _get_embed_model("openai-embed/probe-model", Verbosity.QUIET)

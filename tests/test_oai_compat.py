@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from ietf_llm.embeddings import oai_compat
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 class _Resp:

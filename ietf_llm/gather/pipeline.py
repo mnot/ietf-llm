@@ -34,7 +34,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from ..utils import Verbosity
+from ..log import Verbosity
 
 if TYPE_CHECKING:
     from .runner import GatherSpec

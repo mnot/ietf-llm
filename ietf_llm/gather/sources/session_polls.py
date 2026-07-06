@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from ...atomicio import atomic_open
+from ...log import LogLevel, Verbosity, log
 from ...net import fetch_resource
 from ...paths import (
     DIR_MEETINGS,
@@ -33,7 +34,6 @@ from ...paths import (
     poll_path,
     polls_dir,
 )
-from ...utils import LogLevel, Verbosity, log
 from .datatracker import iter_group_documents
 
 #: Datatracker polls document name: `polls-<meeting>-<wg>-<YYYYMMDDHHmm>`.

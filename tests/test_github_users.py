@@ -24,7 +24,7 @@ from ietf_llm.gather.sources.github_users import (
     _cache_path,
     resolve_logins,
 )
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 
 def _stub_fetch(

@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from ..utils import LogLevel, Verbosity, log
+from ..log import LogLevel, Verbosity, log
 from .remote_summarizer import is_remote_summarize_model, load_openai_compat_chat
 
 #: Heartbeat cadence for the summarise progress pulse (wall-clock seconds).

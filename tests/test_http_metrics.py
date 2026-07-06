@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import pytest
 import requests
 
-from ietf_llm import http_metrics, net, utils
+from ietf_llm import http_metrics, net
 from ietf_llm.gather.sources import datatracker
 
 # Captured at import (before conftest's autouse `_no_datatracker` stub binds

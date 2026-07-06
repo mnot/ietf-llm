@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 from typing import Any, List
 
-from .utils import cached_wg_names
+from .paths import cached_wg_names
 
 
 def wg_completer(prefix: str, **_kwargs: Any) -> List[str]:

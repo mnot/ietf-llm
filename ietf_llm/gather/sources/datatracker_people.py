@@ -37,8 +37,8 @@ import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+from ...log import LogLevel, Verbosity, log
 from ...paths import get_cache_dir
-from ...utils import LogLevel, Verbosity, log
 from . import identity_cache
 from .datatracker import _get_json
 
