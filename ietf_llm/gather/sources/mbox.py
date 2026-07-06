@@ -12,11 +12,11 @@ from typing import Callable, Dict, List, NamedTuple, Optional
 
 import requests
 
-from ...paths import raw_dir, raw_mail_archive_path
-from ...utils import LogLevel, Verbosity, get_cache_dir, log
 from ...atomicio import atomic_open_binary, write_if_changed
-from ...net import governed_get
 from ...datatracker_api import get_mailing_list_name
+from ...net import governed_get
+from ...paths import get_cache_dir, raw_dir, raw_mail_archive_path
+from ...utils import LogLevel, Verbosity, log
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993

@@ -1,7 +1,7 @@
 """SQLite layer for the per-WG embedding index.
 
 One DB per WG at <index-dir>/<wg>/embeddings.db (the index dir defaults to
-the cache root; see utils.get_index_dir), with two tables:
+the cache root; see paths.get_index_dir), with two tables:
 
   chunks(id, file, chunk_idx, title, text, embedding)
       One row per indexed chunk. The embedding column holds a packed
@@ -31,7 +31,7 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from .. import serve_metrics
-from ..utils import get_index_dir
+from ..paths import get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
 #: databases forward via ALTER TABLE so users don't have to re-embed,

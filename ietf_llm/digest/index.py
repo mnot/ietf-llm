@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Tuple
 
+from ..atomicio import atomic_open
+from ..datatracker_api import get_wg_title
 from ..paths import (
     DIR_DIGESTS,
     DIR_DRAFTS,
@@ -24,8 +26,6 @@ from ..paths import (
     digest_path,
 )
 from ..utils import LogLevel, Verbosity, log
-from ..atomicio import atomic_open
-from ..datatracker_api import get_wg_title
 from .helpers import _fmt_size
 
 

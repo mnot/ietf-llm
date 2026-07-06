@@ -25,7 +25,8 @@ from ietf_llm.people import (
     parse_from_header,
     write_people_digest,
 )
-from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
+from ietf_llm.utils import Verbosity
+from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import write_eml, write_github_archive, make_issue
 

@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from ...atomicio import atomic_open_binary, write_if_changed
+from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
 from ...paths import (
     ORPHAN_MEETING_CODE,
     agenda_path,
@@ -15,8 +17,6 @@ from ...paths import (
     slides_dir,
 )
 from ...utils import LogLevel, Verbosity, format_filename, log
-from ...atomicio import atomic_open_binary, write_if_changed
-from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
 from .datatracker import _get_json, iter_group_documents
 from .materials_manifest import load_manifest, save_manifest
 from .session_polls import process_session_polls

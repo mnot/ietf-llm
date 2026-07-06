@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 from typing import Dict, Mapping
 
-from ...utils import get_cache_dir
+from ...paths import get_cache_dir
 from .json_store import load_json_dict, save_json_dict
 
 

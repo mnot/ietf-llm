@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, List, Optional
 from .. import coverage
 from ..catalog import render_efforts
 from ..corpus import describe, kind_status, status_cell
-from ..store.corpus import get_corpus_store
 from ..digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -20,6 +19,7 @@ from ..embeddings import chunk_counts
 from ..freshness import gather_enabled, gather_suggestion
 from ..paths import digest_kind_from_relpath
 from ..routing import DEFAULT_MIN_SCORE, route
+from ..store.corpus import get_corpus_store
 from .common import (
     _DIGEST_KINDS,
     _deployment_phrase,

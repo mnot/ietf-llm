@@ -12,12 +12,12 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from ..atomicio import atomic_open
 from ..gather.sources.mail_threads import build_threads, thread_slug
 from ..gather.sources.mbox import clean_email_text
 from ..paths import digest_path, remove_stale_digest, thread_path
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
-from ..atomicio import atomic_open
 from .summarizer import _Summarizer
 
 _THREAD_PROMPT = (

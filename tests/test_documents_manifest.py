@@ -37,7 +37,7 @@ def test_manifest_normalises_legacy_flat_shape(isolated_home: Path) -> None:
     keeps working until its next gather rewrites it."""
     import json
 
-    from ietf_llm.utils import get_cache_dir
+    from ietf_llm.paths import get_cache_dir
 
     path = os.path.join(get_cache_dir(), "httpbis", "documents.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -72,7 +72,7 @@ def test_skip_embed_draft_names(isolated_home: Path) -> None:
 
 
 def test_manifest_corrupt_returns_empty(isolated_home: Path) -> None:
-    from ietf_llm.utils import get_cache_dir
+    from ietf_llm.paths import get_cache_dir
 
     path = os.path.join(get_cache_dir(), "httpbis", "documents.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)

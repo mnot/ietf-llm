@@ -17,7 +17,7 @@ from ietf_llm import corpus
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.store.corpus import get_corpus_store
 from ietf_llm.store.cloud import _clear_resolve_cache
-from ietf_llm.utils import get_cache_dir
+from ietf_llm.paths import get_cache_dir
 
 
 def _wait_done(corpus: str, timeout: float = 5.0) -> None:

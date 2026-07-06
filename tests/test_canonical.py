@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 
 from ietf_llm import canonical, config, freshness
-from ietf_llm.utils import get_wg_file_cache_dir
+from ietf_llm.paths import get_wg_file_cache_dir
 
 
 def _seed(corpus: str, **sources: object) -> None:

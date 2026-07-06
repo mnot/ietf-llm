@@ -22,7 +22,7 @@ from starlette.testclient import TestClient
 from ietf_llm import serve_metrics
 from ietf_llm.embeddings import oai_compat
 from ietf_llm.embeddings.models import _OpenAICompatEmbeddingModel
-from ietf_llm.utils import get_cache_dir
+from ietf_llm.paths import get_cache_dir
 
 
 @pytest.fixture(autouse=True)

@@ -34,8 +34,8 @@ import json
 import os
 from typing import Dict, Mapping, Optional
 
-from ...utils import get_cache_dir
 from ...atomicio import atomic_open
+from ...paths import get_cache_dir
 
 #: A single draft's record: ISO expiry (or "") and Datatracker state slug
 #: (or None when unknown — e.g. captured during an API outage).

@@ -32,17 +32,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .blobs import BlobStore, parallel_each
 from .. import freshness
+from ..paths import get_index_dir
+from .blobs import BlobStore, parallel_each
+from .control import KvControlPlane
 from .corpus import (
     CorpusStore,
     VersionVanished,
     pinned_version,
     pinned_versions_in_use,
 )
-from .control import KvControlPlane
 from .kv import KvStore
-from ..utils import get_index_dir
 
 #: Per-version manifest, stored as a blob inside the version prefix and stripped
 #: from the materialised tree so it never re-enters a re-gather workspace.

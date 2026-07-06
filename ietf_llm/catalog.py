@@ -29,7 +29,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .corpus import kind_status
-from .utils import get_cache_dir
+from .paths import get_cache_dir
 
 #: Cache subdirectory for the effort-catalog singleton.
 CATALOG_DIR = "_catalog"

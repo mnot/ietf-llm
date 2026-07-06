@@ -13,7 +13,8 @@ from typing import Iterable, List, Optional
 from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index, search
 from ietf_llm.embeddings.storage import _db_path
-from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
+from ietf_llm.utils import Verbosity
+from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import write_cache_file
 

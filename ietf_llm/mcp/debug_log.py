@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
-from ..utils import get_cache_dir
+from ..paths import get_cache_dir
 
 _counter = itertools.count(1)
 _calls_seen = 0  # snapshot for heartbeat (itertools.count has no peek)

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ietf_llm.digest import generate_digests
-from ietf_llm.utils import get_wg_file_cache_dir
+from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import make_issue, write_github_archive
 
