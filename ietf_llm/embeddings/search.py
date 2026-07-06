@@ -55,27 +55,33 @@ _PROGRESS_EVERY = 25
 #: short enough that a slow embed call doesn't look like the gather
 #: has hung, long enough that small WGs don't get spammed.
 _PROGRESS_SECS = 20.0
-#: Commit the in-flight transaction and evict the MPS allocator cache on a
-#: dual cadence: after this many chunks embedded since the last flush, OR after
-#: `_FLUSH_EVERY_FILES` processed files — whichever comes first.
+#: Commit the in-flight transaction (and evict the allocator cache) on a dual
+#: cadence: after this many chunks written since the last flush, OR after
+#: `_FLUSH_EVERY_FILES` files — whichever comes first.
 #:
-#: The chunk trigger is what bounds MPS memory: the reserved pool grows with
-#: the number of chunks embedded since the last eviction, NOT the number of
-#: files, and late-corpus draft files run ~130 chunks each — so a pure
-#: file-count cadence lets a dense window pack thousands of chunks and spike
-#: the pool toward swap on smaller-RAM machines. Flushing per ~chunk keeps the
-#: peak uniform (~floor + this many chunks' worth) regardless of file density.
-#: Measured on the real httpbis rebuild, the dense-draft region costs ~4 MB of
-#: driver memory per chunk above a ~2 GB floor, so 500 holds the peak near
-#: ~4 GB — comfortable even on an 8 GB Mac (recommended_max ~5 GB there). The
-#: flush is cheap (commit + empty_cache), so the tighter cadence costs nothing
-#: measurable on throughput.
+#: This bounds the WRITE phase: it caps the in-flight SQLite transaction / WAL
+#: size and is a durability floor (a crash discards at most ~this many chunks'
+#: writes). MPS peak during embedding is bounded separately, by `_EMBED_BUFFER`
+#: (evicted per window), so the eviction here is now just cleanup. The value is
+#: inherited from when embed and write were interleaved per file and this
+#: trigger *was* the MPS bound: on the httpbis rebuild the dense-draft region
+#: cost ~4 MB of driver memory per chunk above a ~2 GB floor, so 500 held the
+#: peak near ~4 GB — and it stays a safe write-batch size regardless.
 _FLUSH_EVERY_CHUNKS = 500
 #: The file-count trigger is a durability floor for the opposite regime — a
 #: long run of small/sparse files (threads, issues) that never reaches the
 #: chunk threshold still commits periodically, so a crash doesn't discard much
 #: and the on-disk WAL stays bounded.
 _FLUSH_EVERY_FILES = 25
+#: On-device path: how many chunks to buffer across files before an embed
+#: flush. Chunks are pooled to ~this many and embedded in one batched call, so
+#: sentence-transformers gets a wide window to length-sort internally — tight
+#: padding and few calls, most of the speed of sorting the whole corpus but
+#: with bounded memory: only ~this many chunks (plus the few files feeding
+#: them) are ever resident, and each flush commits, so the build stays
+#: streaming and crash-durable. Also the progress cadence. 512 gives ST a deep
+#: sort window while keeping each flush short.
+_EMBED_BUFFER = 512
 
 
 def _mps_mem_tools() -> (
@@ -285,6 +291,77 @@ def _write_file(
     return len(plan.chunks)
 
 
+def _flush_window(
+    model: Any,
+    plans: List[_FilePlan],
+    window: List[Tuple[int, int, str]],
+    mps_empty: Optional[Callable[[], None]],
+    verbose: Verbosity,
+) -> Iterator[Tuple[_FilePlan, List[Any]]]:
+    """Embed one buffered window and yield `(plan, vectors)` for each file whose
+    chunks all landed. `window` is `(plan_pos, chunk_idx, text)` triples into
+    `plans`; the whole window goes to one `embed_multi` call, which lets
+    sentence-transformers length-sort it for tight padding. A file with a chunk
+    in a failed call is not yielded (no hash stamp → retried next run)."""
+    if not window:
+        return
+    results: List[List[Any]] = [[None] * len(plan.texts) for plan in plans]
+    try:
+        vectors = list(model.embed_multi([text for _, _, text in window]))
+    except Exception as err:  # pylint: disable=broad-except
+        # The window failed (OOM, a provider error); drop the files it touched
+        # so none is stamped half-embedded, and keep going.
+        log(
+            f"Embedding failed for a batch of {len(window)} chunks: "
+            f"{type(err).__name__}: {err}",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        vectors = []
+    for (pos, li, _), vec in zip(window, vectors):
+        results[pos][li] = vec
+    # Evict the allocator cache between windows so its high-water stays near one
+    # window's footprint (no-op off MPS / on the remote backend).
+    if mps_empty is not None:
+        mps_empty()
+    for pos, plan in enumerate(plans):
+        buf = results[pos]
+        if all(vec is not None for vec in buf):
+            yield plan, buf
+
+
+def _stream_embed(
+    model: Any,
+    plans: Iterator[_FilePlan],
+    mps_empty: Optional[Callable[[], None]],
+    verbose: Verbosity,
+) -> Iterator[Tuple[_FilePlan, List[Any]]]:
+    """Embed planned files in a bounded streaming pass, yielding `(plan,
+    vectors)` as each file completes.
+
+    Embedding file by file fed the model — and, on MPS, its caching allocator —
+    a jarring short/tall sequence of batch shapes (a two-line issue, then a
+    200-message thread), fragmenting it into a multi-GB peak. Here chunks are
+    buffered across files up to `_EMBED_BUFFER`, then embedded in one call —
+    giving sentence-transformers a wide length-sort window (tight padding, few
+    calls) without pooling the whole corpus. At most one buffer's worth of
+    chunks (plus the files feeding it) is resident, so memory is bounded by the
+    buffer, not the corpus, and the caller commits per window. Whole files are
+    added before the size check, so a window holds only complete files — none
+    straddles two windows. Vectors are padding- and order-invariant, so the
+    output matches any other batching (no re-embed)."""
+    window_plans: List[_FilePlan] = []
+    window: List[Tuple[int, int, str]] = []
+    for plan in plans:
+        pos = len(window_plans)
+        window_plans.append(plan)
+        window.extend((pos, li, text) for li, text in enumerate(plan.texts))
+        if len(window) >= _EMBED_BUFFER:
+            yield from _flush_window(model, window_plans, window, mps_empty, verbose)
+            window_plans, window = [], []
+    yield from _flush_window(model, window_plans, window, mps_empty, verbose)
+
+
 def build_index(
     wg: str,
     cache_dir: str,
@@ -464,6 +541,12 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # of files — let the user see that up front instead of waiting
     # silently through 280 unchanged-file skips.
     pending = 0
+    # Total bytes of files that need embedding — the denominator for the
+    # on-device byte-weighted progress %. File bytes (a cheap stat, no read)
+    # track embed cost better than a file count, and are known here without
+    # pre-chunking; the on-device path advances the numerator as each file's
+    # bytes are written.
+    pending_bytes = 0
     for path in files:
         relpath = os.path.relpath(path, cache_dir)
         hash_key = f"hash:{relpath}"
@@ -473,6 +556,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         if relpath in already and prev and cur_hash is not None and prev[0] == cur_hash:
             continue
         pending += 1
+        try:
+            pending_bytes += os.path.getsize(path)
+        except OSError:
+            pass
     if pending == 0:
         log(
             "Embedding index already up to date.",
@@ -509,15 +596,19 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     else:
         mps_empty, mps_current = _mps_mem_tools()
     # Embed the planned files and write each result on this (main) thread, so
-    # SQLite stays single-writer. On the remote backend each embed is a network
-    # round-trip, so we overlap them through a bounded pool; the on-device model
-    # is GPU-bound and so stays serial.
+    # SQLite stays single-writer. The on-device model streams the corpus through
+    # a bounded length-sort buffer (`_stream_embed`); the remote backend overlaps
+    # its per-file network round-trips through a bounded pool. `workers` sizes
+    # that pool and is used on the remote path only (it can be 1 — serial per
+    # file — which is NOT the on-device path).
     workers = embed_concurrency() if is_remote_embed_model(model_name) else 1
 
-    def _record(plan: _FilePlan, vectors: List[Any]) -> None:
+    def _record(plan: _FilePlan, vectors: List[Any], progress: bool = True) -> None:
         """Write one file's result and advance the flush / progress cadence.
-        Both the serial and concurrent paths call this from the main thread, so
-        the counters and the cursor need no locking."""
+        Called from the main thread by both paths, so the counters and the
+        cursor need no locking. The on-device path passes `progress=False` — it
+        reports a byte-weighted % in the caller and only writes here — so the
+        file-count STATUS line is left to the remote (per-file) path."""
         nonlocal total_new, files_done, chunks_since_flush, last_status
         written = _write_file(cur, plan, vectors, verbose)
         if not written:
@@ -542,7 +633,9 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             chunks_since_flush = 0
         # Light-touch STATUS pulse so the user sees progress without --verbose.
         now = time.time()
-        if files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS:
+        if progress and (
+            files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS
+        ):
             elapsed = now - start
             mem = ""
             if mps_current is not None:
@@ -569,22 +662,38 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         if plan is not None
     )
 
-    if workers == 1:
-        for plan in plans:
+    if not is_remote_embed_model(model_name):
+        # On-device: stream the corpus through a bounded length-sort buffer
+        # (`_stream_embed`) — bounded memory — writing each file via `_record`
+        # as it completes. `_record`'s per-file STATUS line is suppressed;
+        # progress here is byte-weighted (a truer cost proxy than a file count)
+        # against the pending-bytes total from the first pass.
+        done_bytes = 0
+        embed_start = time.time()
+        embed_last = embed_start
+        for plan, vectors in _stream_embed(model, plans, mps_empty, verbose):
+            _record(plan, vectors, progress=False)
             try:
-                vectors = list(model.embed_multi(plan.texts))
-            except Exception as err:  # pylint: disable=broad-except
-                # Failures vary by provider (HTTP, OOM, rate limits) and share
-                # no typed hierarchy; log and move on so one file can't abort
-                # the build (it carries no hash stamp, so it retries next run).
+                done_bytes += os.path.getsize(os.path.join(cache_dir, plan.relpath))
+            except OSError:
+                pass
+            now = time.time()
+            if now - embed_last >= _PROGRESS_SECS:
+                pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
+                mem = ""
+                if mps_current is not None:
+                    try:
+                        mem = f", mps {mps_current() / (1024 * 1024):.0f}MB"
+                    except (RuntimeError, OSError):
+                        mem = ""
                 log(
-                    f"Embedding failed for {plan.relpath}: "
-                    f"{type(err).__name__}: {err}",
+                    f"  …embedding {pct}% ({done_bytes >> 20}/"
+                    f"{pending_bytes >> 20} MB, {now - embed_start:.0f}s"
+                    f" elapsed{mem})",
                     verbose,
-                    level=LogLevel.ERROR,
+                    level=LogLevel.STATUS,
                 )
-                continue
-            _record(plan, vectors)
+                embed_last = now
     else:
         # Bounded fan-out: keep at most 2x workers in flight so memory stays
         # bounded (only that many files' chunks held at once), writing each

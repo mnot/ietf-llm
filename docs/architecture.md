@@ -781,6 +781,18 @@ point; `IETF_LLM_EMBED_DEVICE` overrides (`cpu` / `mps` / `cuda`). This is a
 workaround for the upstream PyTorch MPS memory bug (pytorch/pytorch#77753,
 #164299) — **revisit and drop back to MPS if that is fixed.**
 
+**Embedding pass.** The on-device build streams chunks through a bounded
+length-sort buffer (`_stream_embed`) rather than embedding file by file:
+chunks are pooled across files up to `_EMBED_BUFFER`, embedded in one call so
+sentence-transformers length-sorts a wide window (tight padding — ~20% faster,
+and on MPS far less allocator fragmentation), then written per file as they
+complete. Memory is bounded by the buffer, not the corpus; each window commits
+(crash-durable); and progress is byte-weighted against the pending-files byte
+total (a truer cost proxy than a file count, known without pre-chunking).
+Batching order and padding do not change vectors, so this needs no re-embed
+and existing indexes stay valid. The remote backend keeps its per-file network
+fan-out (`workers` sizes that pool; on-device does not use it).
+
 ### `--summarize` requires explicit setup; embedding doesn't
 
 Embedding is on by default (opt out with `--no-embed`) and tolerates a
