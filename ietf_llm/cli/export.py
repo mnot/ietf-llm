@@ -26,9 +26,9 @@ import argparse
 import os
 import sys
 
-from . import __version__, config, export
-from .freshness import staleness_warning
-from .utils import (
+from .. import __version__, config, export
+from ..freshness import staleness_warning
+from ..utils import (
     Verbosity,
     get_config_dir,
     graceful_keyboard_interrupt,

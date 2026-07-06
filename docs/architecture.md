@@ -196,7 +196,7 @@ Key invariants:
   multiple emails, GitHub logins — into one canonical `Person`, resolving
   addresses through Datatracker's curated email→person table (exact-match, so
   collision-free) and linking GitHub logins by each person's Datatracker
-  `github_username` profile (`people_linking`). A `Person` carries
+  `github_username` profile (`people.linking`). A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
@@ -325,8 +325,11 @@ ietf_llm/
 ├── __main__.py             # `ietf-llm` (gather): argparse, persisted config,
 │                           # pipeline orchestration (charter → … → digests →
 │                           # embed); also --list / --completion / --install-skills
-├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
-├── search_cli.py           # `ietf-llm-search` entry point
+├── cli/                    # auxiliary console scripts (the main `ietf-llm` is __main__)
+│   ├── export.py           # `ietf-llm-export` entry point
+│   ├── search.py           # `ietf-llm-search` entry point
+│   └── list.py             # corpus-listing helpers (`--list`; shared with MCP)
+├── export.py               # mirror / NotebookLM export logic (used by cli.export)
 ├── mcp/                    # `ietf-llm-mcp` server (`mcp:main`), one module per tool domain
 │   ├── server.py               # FastMCP construction + main() + tool registration
 │   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
@@ -358,9 +361,10 @@ ietf_llm/
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
-├── people.py               # actor/identity registry (roles, affiliations, domains)
-├── people_linking.py       # attach GitHub logins to identities (Datatracker, then name)
-├── positions.py            # heuristic position / poll / chair-statement extraction
+├── people/                 # actor/identity registry + position extraction
+│   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)
+│   ├── linking.py          # attach GitHub logins to identities (Datatracker, then name)
+│   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP

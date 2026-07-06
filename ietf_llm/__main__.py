@@ -21,7 +21,8 @@ import shutil
 import sys
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import canonical, cli_list, config, http_metrics, paths
+from . import canonical, config, http_metrics, paths
+from .cli import list as cli_list
 from .config import service as service_config
 from .digest import generate_digests
 from .digest.timeline import write_timeline_digest

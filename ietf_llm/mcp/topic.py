@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import get_messages, search
 from ..freshness import gather_enabled
-from ..positions import (
+from ..people.positions import (
     extract_chair_statements,
     file_supports_tally,
     load_people_context,

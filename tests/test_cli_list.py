@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.cli_list import discover_gathered_wgs, print_cached_wgs
+from ietf_llm.cli.list import discover_gathered_wgs, print_cached_wgs
 
 from conftest import write_cache_file
 
@@ -51,7 +51,7 @@ def test_print_cached_wgs_shows_last_gathered(
     isolated_home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: object,
 ) -> None:
     import datetime
-    from ietf_llm import cli_list
+    from ietf_llm.cli import list as cli_list
     write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
     fake = datetime.datetime(2026, 5, 27, tzinfo=datetime.timezone.utc)
     # `cli_list` binds `last_gathered` at import time (from .freshness
@@ -77,7 +77,7 @@ def test_print_cached_wgs_empty(
 
 
 def test_all_corpora_uses_the_store(isolated_home: Path) -> None:
-    from ietf_llm.cli_list import all_corpora
+    from ietf_llm.cli.list import all_corpora
 
     write_cache_file(isolated_home, "tls", "digests/index.md", "# x\n")
     write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
@@ -89,7 +89,7 @@ def test_filter_recently_used_by_access_time(
 ) -> None:
     import datetime
 
-    from ietf_llm import cli_list
+    from ietf_llm.cli import list as cli_list
 
     now = datetime.datetime.now(datetime.timezone.utc)
     accessed = {
@@ -113,7 +113,7 @@ def test_filter_falls_back_to_gather_time_when_never_accessed(
 ) -> None:
     import datetime
 
-    from ietf_llm import cli_list
+    from ietf_llm.cli import list as cli_list
 
     now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -132,7 +132,7 @@ def test_filter_falls_back_to_gather_time_when_never_accessed(
 def test_filter_keeps_corpus_with_no_timestamps(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm import cli_list
+    from ietf_llm.cli import list as cli_list
 
     class _Store:
         def last_accessed(self, name: str):

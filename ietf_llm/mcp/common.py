@@ -26,7 +26,7 @@ from ..freshness import (
     last_gathered,
 )
 from ..paths import digest_path
-from ..positions import file_supports_tally
+from ..people.positions import file_supports_tally
 from ..utils import LogLevel, Verbosity, log
 
 MAX_LINES_DEFAULT = 400

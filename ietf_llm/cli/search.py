@@ -7,9 +7,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__
-from .embeddings import search
-from .utils import (
+from .. import __version__
+from ..embeddings import search
+from ..utils import (
     Verbosity,
     graceful_keyboard_interrupt,
     maybe_autocomplete,

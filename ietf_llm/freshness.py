@@ -4,7 +4,7 @@ Two per-corpus sentinel files under `~/.cache/ietf-llm/<wg>/`, each an
 ISO 8601 UTC timestamp:
 
   - `last-gathered` — the most recent successful gather. Written by
-    `__main__._gather_one`; read by `export_cli` (stale-cache warning) and
+    `__main__._gather_one`; read by `cli.export` (stale-cache warning) and
     `ietf_llm.mcp` (one-line freshness note on top-level tool responses).
   - `last-accessed` — the most recent read-path use of the corpus. Written
     (coarsely) by `access.note_access` off the MCP read chokepoint; read by
