@@ -1,6 +1,6 @@
 """Serve-side RED metrics for the hosted HTTP deployment — the read side.
 
-Distinct from `http_metrics.py` (gather/write-side egress accounting): this
+Distinct from `net/http_metrics.py` (gather/write-side egress accounting): this
 module is the process-global, in-memory registry behind the `GET /metrics`
 route the HTTP serve path exposes (R8). It records, for the running server:
 

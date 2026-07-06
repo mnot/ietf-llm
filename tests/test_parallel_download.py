@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-import ietf_llm.http_metrics as http_metrics
+import ietf_llm.net.http_metrics as http_metrics
 from ietf_llm.gather.sources import drafts
 from ietf_llm.log import Verbosity
 
