@@ -87,7 +87,8 @@ def _cuda_available() -> bool:
     """True if a CUDA device is usable. Isolated so the device default can be
     tested without importing torch (CI stays torch-free)."""
     try:
-        import torch  # pylint: disable=import-outside-toplevel,import-error
+        # pylint: disable=import-outside-toplevel,import-error
+        import torch  # type: ignore[import-untyped,import-not-found,unused-ignore]
 
         return bool(torch.cuda.is_available())
     except ImportError:
@@ -169,7 +170,8 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         # here on first use.
         model = SentenceTransformerModel(f"{_ST_PREFIX}{bare}", bare, False)
         device = _embed_device()
-        from sentence_transformers import (  # pylint: disable=import-outside-toplevel,import-error
+        # pylint: disable=import-outside-toplevel,import-error,line-too-long
+        from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
             SentenceTransformer,
         )
 
