@@ -1,7 +1,7 @@
 """Tests for IESG ballot gathering and rendering.
 
 The Datatracker calls themselves are mocked at the `_get_json` seam
-in `gather.ballots`, so the tests exercise scoping, position
+in `gather.sources.ballots`, so the tests exercise scoping, position
 collapse (latest-event-per-AD wins), and rendering without hitting
 the network.
 """
@@ -14,8 +14,8 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from ietf_llm.gather import ballots as ballots_module
-from ietf_llm.gather.ballots import (
+from ietf_llm.gather.sources import ballots as ballots_module
+from ietf_llm.gather.sources.ballots import (
     Ballot,
     Position,
     ballot_events,

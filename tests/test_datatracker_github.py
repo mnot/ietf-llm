@@ -1,5 +1,5 @@
 """Tests for the Datatracker `github_username` resolver
-(ietf_llm.gather.datatracker_github).
+(ietf_llm.gather.sources.datatracker_github).
 
 Covers the contract:
 - build the global github_username -> person index, then resolve a login
@@ -18,7 +18,7 @@ from typing import Any, List, Optional, Tuple
 
 import pytest
 
-import ietf_llm.gather.datatracker_github as dtg
+import ietf_llm.gather.sources.datatracker_github as dtg
 from ietf_llm.utils import Verbosity, get_cache_dir
 
 

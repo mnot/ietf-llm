@@ -11,7 +11,7 @@ from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm.gather.citations import (
+from ietf_llm.gather.sources.citations import (
     citation_counts,
     normalize_draft_name,
     scan_citations,

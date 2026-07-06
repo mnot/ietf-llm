@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ietf_llm.gather.mbox import sync_mailing_list
+from ietf_llm.gather.sources.mbox import sync_mailing_list
 from ietf_llm.people import Registry, build_registry
 from ietf_llm.utils import Verbosity, is_synthetic_wg
 
@@ -72,7 +72,7 @@ def test_sync_mailing_list_auto_discover_false_skips_get_list_name(
     isolated_home: Path, monkeypatch: Any,
 ) -> None:
     # Stub get_mailing_list_name so we can detect whether it's called.
-    from ietf_llm.gather import mbox
+    from ietf_llm.gather.sources import mbox
     calls: list[str] = []
 
     def fake_get_list_name(wg: str) -> str:
@@ -107,7 +107,7 @@ def test_sync_mailing_list_auto_discover_false_skips_get_list_name(
 def _stub_mail_sync(monkeypatch: Any) -> None:
     """Stub the IMAP sync + cache read so sync_mailing_list reaches the
     merge/write step with one year of content, without any network."""
-    from ietf_llm.gather import mbox
+    from ietf_llm.gather.sources import mbox
 
     monkeypatch.setattr(mbox, "get_mailing_list_name", lambda wg: f"{wg}-list")
     # Non-empty UIDs so the per-list branch runs process_cache.

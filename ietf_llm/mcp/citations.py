@@ -7,7 +7,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..freshness import gather_suggestion
-from ..gather.citations import normalize_draft_name
+from ..gather.sources.citations import normalize_draft_name
 from ..paths import digest_path
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
 
@@ -27,7 +27,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     necessarily current activity.
 
     Reads `digests/citations.md` (built at gather time by
-    `gather.citations.scan_citations`). Draft name is normalised the
+    `gather.sources.citations.scan_citations`). Draft name is normalised the
     same way the scanner normalises matches (lowercase, version
     suffix stripped), so `draft-Foo-Bar-07` and `draft-foo-bar` both
     yield the same result.
@@ -68,7 +68,7 @@ def tool_find_citations(wg: str, draft_name: str) -> str:
     return _with_freshness(wg, "\n".join(out))
 
 
-# digests/message_citations.md structure (gather.message_citations):
+# digests/message_citations.md structure (gather.sources.message_citations):
 #   ## Resolved (target gathered here)
 #   ### `threads/<file>.md` [chunk N] — Sender, DATE — "Subject"
 #   cited by:

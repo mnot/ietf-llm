@@ -8,7 +8,7 @@ rather than under a corpus name.
 
 The data is one derived JSON blob — `_catalog/catalog.json`, a slim list
 of effort records — synthesised from the Datatracker group collection by
-`gather.catalog.ensure_catalog_index` (the only writer):
+`gather.sources.catalog.ensure_catalog_index` (the only writer):
 
   [{acronym, name, type, state, area, area_name, description}, ...]
 

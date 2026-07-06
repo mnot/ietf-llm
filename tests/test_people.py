@@ -324,7 +324,7 @@ def test_build_registry_links_github_via_datatracker(
         [make_issue(1, "Hi", author="ioggstream")],
     )
 
-    from ietf_llm.gather import datatracker_github as dtg  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import datatracker_github as dtg  # pylint: disable=import-outside-toplevel
 
     def fake_get_json(
         path_or_url: str, timeout: float = 10.0,  # noqa: ARG001
@@ -371,7 +371,7 @@ def test_build_registry_reconciles_mail_via_datatracker_person(
         "Tue, 02 Jan 2024 10:00:00 +0000",
     )
 
-    from ietf_llm.gather import datatracker_people as dtp  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import datatracker_people as dtp  # pylint: disable=import-outside-toplevel
     from urllib.parse import unquote  # pylint: disable=import-outside-toplevel
 
     def fake_get_json(

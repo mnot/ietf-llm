@@ -1,5 +1,5 @@
 """Tests for the effort catalog: reader (`ietf_llm.catalog`) and the
-Datatracker mirror writer (`ietf_llm.gather.catalog`).
+Datatracker mirror writer (`ietf_llm.gather.sources.catalog`).
 
 The reader is exercised against a small seeded `_catalog/catalog.json`;
 the writer against a stubbed HTTP session so no HTTP is hit. The final
@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from ietf_llm import catalog
-from ietf_llm.gather import catalog as gather_catalog
+from ietf_llm.gather.sources import catalog as gather_catalog
 
 # --- Synthetic Datatracker payloads ---------------------------------------
 

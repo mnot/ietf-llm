@@ -6,7 +6,7 @@ underscore keeps it out of `list_corpora` / `ietf-llm --list`, which
 enumerate real corpora) rather than under a corpus name.
 
 The data is three JSON blobs mirrored from rfc.fyi by
-`gather.rfcs.ensure_rfc_index` (the only writer):
+`gather.sources.rfcs.ensure_rfc_index` (the only writer):
 
   _rfc/rfcs.json   per-RFC metadata (title, status, stream, level,
                    keywords, wg, area, obsoletes)

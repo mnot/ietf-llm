@@ -80,7 +80,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     `datatracker_history` (for governance events).
     """
     from ietf_llm import people  # pylint: disable=import-outside-toplevel
-    from ietf_llm.gather import (  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
         ballots,
         datatracker,
         datatracker_github,

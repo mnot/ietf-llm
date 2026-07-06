@@ -1,5 +1,5 @@
 """Tests for the Datatracker mail-address -> person-id resolver
-(ietf_llm.gather.datatracker_people).
+(ietf_llm.gather.sources.datatracker_people).
 
 Covers the contract:
 - resolve a batch of addresses to their Datatracker person uris in one
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-import ietf_llm.gather.datatracker_people as dtp
+import ietf_llm.gather.sources.datatracker_people as dtp
 from ietf_llm.utils import Verbosity, get_cache_dir
 
 

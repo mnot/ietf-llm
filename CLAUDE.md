@@ -137,7 +137,7 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   one `S3Bucket`. Per-corpus control lives under `corpora/<name>/{pointer,lease,
   status}`, content (and its manifest) under `corpora/<name>/versions/<version>/`,
   and the one cross-corpora key — the gather-slot semaphore — at `fleet/slots`.
-  The same bucket also holds the **gather accelerator caches** (`gather/cache_sync.py`),
+  The same bucket also holds the **gather accelerator caches** (`gather/sources/cache_sync.py`),
   hydrated before a gather and persisted after so an ephemeral host doesn't re-hit
   rate-limited upstreams: `.http-cache.json` sharded per corpus at
   `corpora/<name>/gather-cache/` (lease-serialised, plain RMW), the shared

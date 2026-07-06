@@ -1,4 +1,4 @@
-"""The parallel document downloader in `gather.drafts`.
+"""The parallel document downloader in `gather.sources.drafts`.
 
 Two invariants matter: every task's file is written, and every worker thread's
 request is still counted in the gather's egress total. The accumulator is
@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 import ietf_llm.http_metrics as http_metrics
-from ietf_llm.gather import drafts
+from ietf_llm.gather.sources import drafts
 from ietf_llm.utils import Verbosity
 
 

@@ -28,37 +28,37 @@ from .digest import generate_digests
 from .digest.timeline import write_timeline_digest
 from .embeddings import DEFAULT_EMBED_MODEL, build_index, generate_topics
 from .freshness import record_gather
-from .gather.author import fetch_author_draft_names, resolve_person
-from .gather.catalog import ensure_catalog_index
-from .gather.charter import process_charter
-from .gather.citations import (
+from .gather.sources.author import fetch_author_draft_names, resolve_person
+from .gather.sources.catalog import ensure_catalog_index
+from .gather.sources.charter import process_charter
+from .gather.sources.citations import (
     citation_counts,
     scan_citations,
     write_citations_digest,
 )
-from .gather.drafts import (
+from .gather.sources.drafts import (
     normalize_draft_name,
     process_documents,
     process_extra_drafts,
     validate_draft_names,
 )
-from .gather.github import (
+from .gather.sources.github import (
     download_github_archives,
     process_github_issues,
     validate_github_repos,
 )
-from .gather.group_info import write_group_info
-from .gather.issue_files import write_issue_files
-from .gather.mail_threads import write_thread_files
-from .gather.mbox import sync_mailing_list, validate_list_names
-from .gather.meetings import process_meetings
-from .gather.message_citations import build_message_citations
-from .gather.pdf_extract import extract_all_pdfs
-from .gather.recent_drafts import fetch_new_draft_names, prune_drafts
-from .gather.repo_discovery import autotrack_github, print_discovery
-from .gather.rfcs import ensure_rfc_index
-from .gather.transcript_context import enrich_transcripts
-from .gather.transcripts import process_transcripts
+from .gather.sources.group_info import write_group_info
+from .gather.sources.issue_files import write_issue_files
+from .gather.sources.mail_threads import write_thread_files
+from .gather.sources.mbox import sync_mailing_list, validate_list_names
+from .gather.sources.meetings import process_meetings
+from .gather.sources.message_citations import build_message_citations
+from .gather.sources.pdf_extract import extract_all_pdfs
+from .gather.sources.recent_drafts import fetch_new_draft_names, prune_drafts
+from .gather.sources.repo_discovery import autotrack_github, print_discovery
+from .gather.sources.rfcs import ensure_rfc_index
+from .gather.sources.transcript_context import enrich_transcripts
+from .gather.sources.transcripts import process_transcripts
 from .gather.cli import build_parser
 from .gather.plan import _gather_plan_summary
 from .gather.stages import ProgressFn, StageTracker, stage_plan

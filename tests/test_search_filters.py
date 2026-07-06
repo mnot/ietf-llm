@@ -129,7 +129,7 @@ def test_rebuild_prunes_chunks_for_now_ineligible_draft(
     pruned on the next build even though its file is unchanged (mtime
     skip can't catch it — _eligible_files no longer returns it)."""
     from ietf_llm.embeddings.storage import chunk_counts
-    from ietf_llm.gather.documents_manifest import save_documents_manifest
+    from ietf_llm.gather.sources.documents_manifest import save_documents_manifest
 
     write_cache_file(
         isolated_home, "wg", "drafts/draft-ietf-wg-foo-00.txt",
@@ -906,7 +906,7 @@ def test_issue_writer_output_splits_long_comment_and_reads_back(
     # description must chunk into covering fragments that share the issue's
     # metadata, and read back whole through get_chunk.
     from ietf_llm.embeddings.chunking import _chunk_file
-    from ietf_llm.gather.issue_files import write_issue_files
+    from ietf_llm.gather.sources.issue_files import write_issue_files
     from conftest import make_issue, write_github_archive
 
     long_desc = "the working group discussed cookie partitioning at length " * 90

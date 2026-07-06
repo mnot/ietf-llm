@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ietf_llm.gather.transcript_context import (
+from ietf_llm.gather.sources.transcript_context import (
     _SENTINEL,
     enrich_transcripts,
     transcript_context,

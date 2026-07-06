@@ -1,6 +1,6 @@
 """Tests for orphan pruning in the GitHub gather stage.
 
-`gather/github.py:_prune_github_orphans` sweeps archive JSONs, raw dumps,
+`gather/sources/github.py:_prune_github_orphans` sweeps archive JSONs, raw dumps,
 and per-issue dirs for repos a corpus no longer tracks — the guard that
 keeps a dropped (or leaked) repo's issues from lingering in the cache and
 surfacing as if still tracked. Symmetric with the thread / ballot stages.
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ietf_llm.gather.github import _prune_github_orphans
+from ietf_llm.gather.sources.github import _prune_github_orphans
 from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
 
 

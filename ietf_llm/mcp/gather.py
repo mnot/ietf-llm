@@ -366,7 +366,7 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
 def tool_suggest_github_repos(corpus: str) -> str:
     # pylint: disable-next=import-outside-toplevel
     from ..gather import runner as gather_runner
-    from ..gather.repo_discovery import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.repo_discovery import (  # pylint: disable=import-outside-toplevel
         discover_group_repos,
         format_discovery,
     )

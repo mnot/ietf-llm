@@ -8,8 +8,8 @@ import re
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from ..freshness import gather_suggestion
-from ..gather.citations import normalize_draft_name
-from ..gather.documents_manifest import load_documents_manifest
+from ..gather.sources.citations import normalize_draft_name
+from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import drafts_dir, issue_path, issues_dir
 from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_freshness
 
@@ -56,7 +56,7 @@ def tool_draft_authors(name: str) -> str:
     itself records; a chair may know a better working address from mail and
     can override.
     """
-    from ..gather.draft_authors import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.draft_authors import (  # pylint: disable=import-outside-toplevel
         parse_authors,
     )
 

@@ -7,7 +7,7 @@ GitHub, and draft hosts. This module gives us visibility into how much
 upstream load we generate: a passive accumulator that the two network
 chokepoints record every request into —
 
-  - `_get_json` in `gather/datatracker.py` (the ETag-aware JSON API path)
+  - `_get_json` in `gather/sources/datatracker.py` (the ETag-aware JSON API path)
   - `fetch_resource` in `utils.py` (raw resource fetches)
 
 — which together cover essentially all egress. It counts requests split

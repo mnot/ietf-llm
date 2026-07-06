@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.gather.github import process_github_issues
+from ietf_llm.gather.sources.github import process_github_issues
 from ietf_llm.people import Registry
 
 from conftest import write_github_archive, make_issue

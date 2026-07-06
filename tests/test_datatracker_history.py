@@ -1,6 +1,6 @@
 """Tests for Datatracker-sourced governance / lifecycle events.
 
-We stub `_get_json` in `ietf_llm.gather.datatracker` so no HTTP is
+We stub `_get_json` in `ietf_llm.gather.sources.datatracker` so no HTTP is
 hit. Tests cover:
 
 - Parsing of group state vs charter events
@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm.gather import datatracker_history
+from ietf_llm.gather.sources import datatracker_history
 from ietf_llm.utils import Verbosity
 
 
@@ -305,7 +305,7 @@ def test_doc_events_handles_missing_body(
 
 
 def test_slug_from_url_extracts_final_segment() -> None:
-    from ietf_llm.gather.datatracker_history import _slug_from_url
+    from ietf_llm.gather.sources.datatracker_history import _slug_from_url
     assert _slug_from_url(
         "/api/v1/doc/document/draft-ietf-aipref-vocab/"
     ) == "draft-ietf-aipref-vocab"
@@ -318,7 +318,7 @@ def test_slug_from_url_extracts_final_segment() -> None:
 
 
 def test_parse_dt_time_attaches_utc() -> None:
-    from ietf_llm.gather.datatracker_history import _parse_dt_time
+    from ietf_llm.gather.sources.datatracker_history import _parse_dt_time
     parsed = _parse_dt_time("2024-09-12T14:21:33")
     assert parsed is not None
     assert parsed.tzinfo is not None

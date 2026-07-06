@@ -1,5 +1,5 @@
 """Tests for the RFC-series index: reader (`ietf_llm.rfcs`) and the
-rfc.fyi mirror writer (`ietf_llm.gather.rfcs`).
+rfc.fyi mirror writer (`ietf_llm.gather.sources.rfcs`).
 
 The reader is exercised against a small seeded `_rfc/` cache; the writer
 against a stubbed HTTP session so no HTTP is hit. The final block is a
@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from ietf_llm import rfcs
-from ietf_llm.gather import rfcs as gather_rfcs
+from ietf_llm.gather.sources import rfcs as gather_rfcs
 
 # --- Synthetic dataset -----------------------------------------------------
 

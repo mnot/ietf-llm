@@ -135,7 +135,7 @@ def issue_path(cache_dir: str, repo: str, number: Any) -> str:
 def iter_thread_issue_md_files(cache_dir: str) -> Iterator[Tuple[str, str]]:
     """Yield `(abs_path, relpath)` for every `.md` under `threads/` and
     `issues/`, in stable (sorted) order. The shared walk behind the
-    body-scanning passes (`gather.citations`, `gather.message_citations`)
+    body-scanning passes (`gather.sources.citations`, `gather.sources.message_citations`)
     so they don't each reimplement it."""
     for root_dir in (threads_dir(cache_dir), issues_dir(cache_dir)):
         if not os.path.isdir(root_dir):
