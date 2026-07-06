@@ -6,7 +6,8 @@ import datetime
 import os
 from typing import Any, Dict, List, Tuple
 
-from .. import __version__, config, serve_metrics, service_config
+from .. import __version__, config, serve_metrics
+from ..config import service as service_config
 from ..embeddings import (
     DEFAULT_EMBED_MODEL,
     any_indexed_wg,

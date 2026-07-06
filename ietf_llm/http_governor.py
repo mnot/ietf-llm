@@ -20,9 +20,9 @@ parallelise (fast) while keeping datatracker polite (safe).
 
 Deliberately stdlib-only — it imports nothing from the rest of the package.
 `utils` (which the governor wraps) sits *below* `config` in the import graph, so
-anything `utils` imports must not reach `config`/`service_config`, or it forms a
-cycle. The two caps are therefore read straight from the environment here rather
-than through `service_config`:
+anything `utils` imports must not reach the `config` package (including
+`config.service`), or it forms a cycle. The two caps are therefore read straight
+from the environment here rather than through `config.service`:
 
   - ``IETF_LLM_HTTP_MAX_PER_HOST`` (default 6) — the general per-host cap.
   - ``IETF_LLM_HTTP_MAX_DATATRACKER`` (default 2) — the tighter datatracker cap.

@@ -31,7 +31,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
-from .. import freshness, service_config
+from .. import freshness
+from ..config import service as service_config
 from ..utils import cached_wg_names, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local

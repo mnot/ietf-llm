@@ -3,12 +3,12 @@
 A leaf module (imports only `utils`) holding the on-disk read/write of per-WG
 config (`~/.config/ietf-llm/<wg>/<scope>.json`) and the global service config
 (`~/.config/ietf-llm/config.json`). It is the local backend of the `ConfigStore`
-seam (`config_store.py`) and the *only* home of global config.
+seam (`config/store.py`) and the *only* home of global config.
 
 Why split out of `config.py`: per-WG config is dispatched through a store
 (`config.load/save/clear` → `get_config_store()`), and the cloud store is chosen
-by `service_config.store_backend()`, which reads global config. Keeping these
-filesystem primitives here — depended on by `service_config` and the local store
+by `config.service.store_backend()`, which reads global config. Keeping these
+filesystem primitives here — depended on by `config.service` and the local store
 but importing neither — keeps the graph one-directional, the same shape
 `freshness.py` has. Global config in particular *must* stay filesystem/env-bound:
 it selects the backend, so it can't route through a store chosen by itself.
@@ -21,7 +21,7 @@ import os
 import shutil
 from typing import Any, Dict, Mapping
 
-from .utils import LogLevel, atomic_open, get_config_dir, log
+from ..utils import LogLevel, atomic_open, get_config_dir, log
 
 
 def config_path(wg: str, scope: str) -> str:
@@ -71,7 +71,7 @@ def load_global() -> Dict[str, Any]:
     Holds settings that are properties of the tool / deployment rather than
     of a corpus (the embedding model, summariser model, embed on/off),
     so they are configured once and apply to every corpus. Always filesystem
-    (env-overridable via `service_config`) — never store-routed, since it is
+    (env-overridable via `config.service`) — never store-routed, since it is
     what selects the store backend.
     """
     path = _global_config_path()

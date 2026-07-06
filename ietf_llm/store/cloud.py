@@ -101,7 +101,8 @@ def build_cloud_store() -> "CloudCorpusStore":
     one S3-compatible bucket (object-store only — no SQL control plane). The
     serve path surfaces config problems earlier via boot-time validation; this
     guards the CLI / gather path too."""
-    from .. import service_config  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..config import service as service_config
 
     store_url = service_config.store_url()
     scratch = service_config.scratch_dir()

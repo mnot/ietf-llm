@@ -248,7 +248,7 @@ def test_cloud_backend_trips_both_without_flags(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A CLI gather against a cloud backend suppresses even with no flags.
-    from ietf_llm.config_store import CloudConfigStore
+    from ietf_llm.config.store import CloudConfigStore
     from ietf_llm.store.control import KvControlPlane
     from ietf_llm.store.kv import InMemoryKvStore
 
