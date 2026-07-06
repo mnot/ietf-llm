@@ -248,7 +248,8 @@ def _first_gather_guard(wg: str) -> Optional[str]:
     it. A re-gather (a completed version exists — `last_gathered` is set) is not
     guarded here: it keeps serving the previous complete snapshot with the
     in-flight caveat from `_inflight_refresh_note`."""
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     status = gather_runner.local_inflight(wg)
     if not status or last_gathered(wg) is not None:
@@ -276,7 +277,8 @@ def _index_rebuilding_note(wg: str) -> Optional[str]:
     With the atomic index swap a re-gather keeps the previous index servable
     throughout, so this is a safety net (e.g. a legacy in-place index that never
     completed): it turns a bare "no results" into "not ready yet"."""
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     status = gather_runner.local_inflight(wg)
     if not status or probe_index(wg):
@@ -304,7 +306,8 @@ def _timeout_inflight_note(
     corpus = args[0]
     if not isinstance(corpus, str) or not corpus.strip():
         return None
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     if not gather_runner.valid_corpus_name(corpus):
         return None
@@ -336,7 +339,8 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     status record — so that case is unflagged. Closing it would need the CLI to
     publish an in-process marker; out of scope here.
     """
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     status = gather_runner.local_inflight(wg)
     if not status:

@@ -1,15 +1,15 @@
 """Runs one gather's pipeline, out of the server process.
 
-`gather_runner` owns the queue, leases, heartbeat, and status record; this
+`runner` owns the queue, leases, heartbeat, and status record; this
 module is the seam where the actual pipeline runs. In production it spawns a
-child process (`ietf_llm.gather_child`) and streams the child's stage progress
+child process (`ietf_llm.gather.child`) and streams the child's stage progress
 back into the caller's `progress`/`note` callbacks, so a CPU-heavy stage — the
 embedding-index build — can never hold the GIL and stall the server's event
 loop (a read that stalled during that stage used to be indistinguishable from a
 dead server). The worker thread blocks on the child's pipe, which releases the
 GIL, so the server stays responsive throughout. A subprocess stops the child
 holding the GIL but not competing for CPU, so the child is also niced
-(`gather_child._renice`) and its math-library thread pools capped
+(`child._renice`) and its math-library thread pools capped
 (`_limit_child_cpu`) — a local embedding build can't peg every core and starve
 the server.
 
@@ -17,10 +17,10 @@ Under `IETF_LLM_GATHER_INPROCESS` (the test suite, which stubs `run_gather` by
 monkeypatch — invisible across a process boundary) it calls `run_gather`
 directly in this process instead.
 
-This module deliberately does not import `gather_runner`: the cancel check comes
+This module deliberately does not import `runner`: the cancel check comes
 in as a callback and cancellation raises `GatherCancelled` (defined here,
-re-exported by `gather_runner` for callers), so the dependency runs one way
-(`gather_runner` -> `gather_pipeline`) with no cycle.
+re-exported by `runner` for callers), so the dependency runs one way
+(`runner` -> `pipeline`) with no cycle.
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from .utils import Verbosity
+from ..utils import Verbosity
 
 if TYPE_CHECKING:
-    from .gather_runner import GatherSpec
+    from .runner import GatherSpec
 
 #: How often the parent wakes to poll for a cancel while a gather subprocess
 #: runs silently (e.g. deep in the embedding stage, which emits no progress
@@ -55,7 +55,7 @@ CHILD_EXIT_UNUSABLE = 3
 
 #: A stage-progress callback (name, index, total, detail), a one-line note
 #: callback, and a "has a stop been requested?" predicate — matching the
-#: closures `gather_runner._run_one` builds. `run_pipeline` feeds these whether
+#: closures `runner._run_one` builds. `run_pipeline` feeds these whether
 #: it runs the pipeline in this process or streams a subprocess's records back.
 ProgressCallback = Callable[[str, int, int, Optional[str]], None]
 NoteCallback = Callable[[str], None]
@@ -103,7 +103,8 @@ def run_pipeline(
     `GatherCancelled` if a stop is honoured, and `RuntimeError` if the
     subprocess dies unexpectedly."""
     if _gather_in_process():
-        from . import __main__ as gather_main  # pylint: disable=import-outside-toplevel
+        # pylint: disable-next=import-outside-toplevel
+        from .. import __main__ as gather_main
 
         return gather_main.run_gather(
             spec.to_argv(), Verbosity.STATUS, progress=progress, note_fn=note
@@ -114,9 +115,9 @@ def run_pipeline(
 def _child_command(spec: "GatherSpec") -> List[str]:
     """The argv that runs one gather as a child process — the same corpus +
     source argv `to_argv` builds for the in-process path, under
-    `ietf_llm.gather_child`. A seam so a test can substitute a fake child
+    `ietf_llm.gather.child`. A seam so a test can substitute a fake child
     without spawning the real pipeline (and its network)."""
-    return [sys.executable, "-m", "ietf_llm.gather_child", *spec.to_argv()]
+    return [sys.executable, "-m", "ietf_llm.gather.child", *spec.to_argv()]
 
 
 def _limit_child_cpu(env: Dict[str, str]) -> None:
@@ -128,7 +129,7 @@ def _limit_child_cpu(env: Dict[str, str]) -> None:
     Set in the child's *environment* (read at numpy/torch import), not at child
     runtime — too late by then. Harmless for a remote embedding backend, where
     the child is network-bound rather than CPU-bound. Pairs with the child's
-    self-renice (`gather_child._renice`)."""
+    self-renice (`child._renice`)."""
     cap = str(max(1, (os.cpu_count() or 2) - 1))
     for var in (
         "OMP_NUM_THREADS",

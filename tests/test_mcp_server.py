@@ -447,7 +447,7 @@ def test_top_level_response_flags_an_in_flight_refresh(
     # stamp but gains a caveat that a refresh is running and the body predates
     # it. Regression guard for the "gathered today (mid-gather)" false-confidence
     # trap.
-    from ietf_llm import gather_runner
+    from ietf_llm.gather import runner as gather_runner
     from ietf_llm.freshness import record_gather
 
     write_cache_file(isolated_home, "wg", "digests/people.md", "# people\n")
@@ -473,7 +473,7 @@ def test_inflight_note_omits_zero_index_stage(
     # `stage_index` is 0 until the first progress call; the note must not render
     # a meaningless "stage 0/7". It falls back to the stage name when present,
     # else a bare "in progress".
-    from ietf_llm import gather_runner
+    from ietf_llm.gather import runner as gather_runner
 
     monkeypatch.setattr(
         gather_runner,
@@ -512,7 +512,7 @@ def test_first_gather_guard_refuses_when_never_gathered(
 ) -> None:
     # A first gather has no prior snapshot, so reads must refuse (naming the
     # stage and how many are left) rather than serve a half-built cache.
-    from ietf_llm import gather_runner
+    from ietf_llm.gather import runner as gather_runner
 
     monkeypatch.setattr(
         gather_runner, "local_inflight",
@@ -530,7 +530,7 @@ def test_first_gather_guard_refuses_when_never_gathered(
 def test_first_gather_guard_allows_regather_and_idle(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm import gather_runner
+    from ietf_llm.gather import runner as gather_runner
     from ietf_llm.freshness import record_gather
 
     # A completed version already exists -> a re-gather keeps serving it.
@@ -547,7 +547,7 @@ def test_first_gather_guard_allows_regather_and_idle(
 
 
 def test_timeout_note_names_running_gather(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm import gather_runner
+    from ietf_llm.gather import runner as gather_runner
 
     monkeypatch.setattr(
         gather_runner, "local_inflight",
@@ -569,7 +569,7 @@ def test_timeout_note_names_running_gather(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_index_rebuilding_note(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm import gather_runner
+    from ietf_llm.gather import runner as gather_runner
 
     monkeypatch.setattr(
         gather_runner, "local_inflight",

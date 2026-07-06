@@ -376,19 +376,19 @@ ietf_llm/
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
 │                           # ranks the _catalog/ singleton by topic, tags cached efforts
-├── gather_runner.py        # in-session gather orchestration: queue/leases/heartbeat,
-│                           # writes gather-status.json (start_gather / gather_status)
-├── gather_pipeline.py      # runs the __main__ pipeline in a child process, streams
-│                           # its progress back (keeps a CPU-heavy stage off the server)
-├── gather_child.py         # the child entry point (python -m ietf_llm.gather_child)
-├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
 ├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms
 ├── data/skills/ietf-contributing/SKILL.md  # write-side norms (vendored), via read_ietf_participation_norms
 ├── data/skills/VENDORED.md               # provenance: norm skills vendored from mnot/ietf-skill
 │
-├── gather/                 # content acquisition + per-source post-processing
+├── gather/                 # orchestration (below) + content acquisition / per-source post-processing
+│   ├── runner.py               # in-session gather orchestration: queue/leases/heartbeat, gather-status.json
+│   ├── pipeline.py             # runs the sequencer in a child process, streams its progress back
+│   ├── child.py                # the child entry point (python -m ietf_llm.gather.child)
+│   ├── stages.py               # stage_plan: canonical gather stage order (shared CLI ↔ runner)
+│   ├── plan.py                 # gather-plan summary (dry-run preview)
+│   ├── cli.py                  # build_parser: the `ietf-llm` gather argument parser
 │   ├── charter.py              # charter text artifact (rev from doc API)
 │   ├── group_info.py           # group.md: name / status / area / Additional Resources
 │   ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
@@ -876,12 +876,12 @@ caller's optional `wait` is); progress lands in a per-corpus `gather-status.json
 that `gather_status` reads back, stage-level via the shared `stage_plan`. A
 non-blocking per-corpus `file_lock` allows one gather per corpus (serialising
 against a concurrent CLI gather) while different corpora run in parallel.
-`gather_runner` and the pipeline are imported lazily so the default serve path
+`gather.runner` and the pipeline are imported lazily so the default serve path
 never pulls them in.
 
-A **daemon worker thread** (`gather_runner`) owns the queue, leases, heartbeat,
+A **daemon worker thread** (`gather.runner`) owns the queue, leases, heartbeat,
 and status record, but the pipeline itself runs in a **child process**
-(`gather_pipeline` → `python -m ietf_llm.gather_child`), streaming stage progress
+(`gather.pipeline` → `python -m ietf_llm.gather.child`), streaming stage progress
 back to the worker over a pipe. This is deliberate: the embedding-index build is
 CPU-bound, and in-thread it held the GIL long enough to starve the server's
 event loop — so a read stalled during that stage (even the server's own tool

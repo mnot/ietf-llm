@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm import gather_child, gather_pipeline, gather_runner
-from ietf_llm.gather_runner import GatherSpec
+from ietf_llm.gather import child as gather_child, pipeline as gather_pipeline, runner as gather_runner
+from ietf_llm.gather.runner import GatherSpec
 
 
 # --- CPU-contention hardening: nice + thread caps --------------------------

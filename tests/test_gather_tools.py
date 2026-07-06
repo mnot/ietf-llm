@@ -10,7 +10,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from ietf_llm import freshness, gather_runner
+from ietf_llm import freshness
+from ietf_llm.gather import runner as gather_runner
 
 
 # --- _gather_enabled ------------------------------------------------------

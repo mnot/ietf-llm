@@ -40,7 +40,7 @@ def _drain_gather_worker() -> Iterable[None]:
     this, a job from one test could still be popping `_jobs` (or releasing its
     lease) as the next test starts, contaminating it."""
     yield
-    from ietf_llm import gather_runner  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather import runner as gather_runner  # pylint: disable=import-outside-toplevel
 
     deadline = time.time() + 5.0
     while time.time() < deadline:

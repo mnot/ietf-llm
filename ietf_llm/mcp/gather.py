@@ -88,7 +88,8 @@ def _await_gather(corpus: str, budget: float) -> Optional[Dict[str, Any]]:
     Runs inside the `_offload` worker thread, so the blocking `time.sleep` is
     off the event loop and the server stays responsive to other requests.
     """
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     deadline = time.monotonic() + budget
     status = gather_runner.read_status(corpus)
@@ -130,7 +131,8 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     force: bool = False,
     wait: Optional[float] = None,
 ) -> str:
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     wait_started = time.monotonic()
     corpus = (corpus or "").strip()
@@ -253,7 +255,8 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
 def tool_gather_status(
     corpus: Optional[str] = None, wait: Optional[float] = None
 ) -> str:
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     wait_started = time.monotonic()
     if corpus:
@@ -280,7 +283,8 @@ def tool_gather_status(
 
 
 def tool_stop_gather(corpus: str, token: str) -> str:
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     corpus = (corpus or "").strip()
     if not corpus:
@@ -360,7 +364,8 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
 
 
 def tool_suggest_github_repos(corpus: str) -> str:
-    from .. import gather_runner  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
     from ..gather.repo_discovery import (  # pylint: disable=import-outside-toplevel
         discover_group_repos,
         format_discovery,

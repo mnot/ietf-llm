@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from ietf_llm.gather_stages import StageTracker, stage_plan
+from ietf_llm.gather.stages import StageTracker, stage_plan
 
 
 def _args(**kw: Any) -> argparse.Namespace:

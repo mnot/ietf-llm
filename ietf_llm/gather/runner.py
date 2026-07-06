@@ -6,11 +6,11 @@ module is the one deliberate exception, gated by `mcp.common._gather_enabled`
 `IETF_LLM_ENABLE_GATHER` overrides either way). A `start_gather`
 tool call returns immediately, enqueuing the request; a background worker thread
 runs the same pipeline as the `ietf-llm` CLI — out of process, via
-`gather_pipeline` (so a CPU-heavy stage can't stall the server) — and records
+`pipeline` (so a CPU-heavy stage can't stall the server) — and records
 stage-level progress to a per-corpus status record
 (`~/.cache/ietf-llm/<corpus>/gather-status.json` and, on the cloud backend, the
 control plane) that the `gather_status` tool reads back. This module owns the
-queue, leases, heartbeat, and status record; `gather_pipeline` owns running the
+queue, leases, heartbeat, and status record; `pipeline` owns running the
 pipeline and streaming its progress back into the worker's callbacks.
 
 Concurrency model — `N = service_config.gather_max_inflight()` (default 3) caps
@@ -48,16 +48,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import canonical, freshness, gather_pipeline, serve_metrics
-from .config import service as service_config
+from .. import canonical, freshness, serve_metrics
+from . import pipeline
+from ..config import service as service_config
 
-# `GatherCancelled` lives in `gather_pipeline` (the raiser) and is re-exported
-# here so callers and `_run_one`'s `except` keep referring to it as
-# `gather_runner.GatherCancelled`. `gather_pipeline` is light (it defers the
-# heavy pipeline import to gather time) and never imports gather_runner — the
-# cancel check is passed in as a callback — so the dependency runs one way.
-from .gather_pipeline import GatherCancelled
-from .utils import (
+# `GatherCancelled` lives in `pipeline` (the raiser) and is re-exported here so
+# callers keep catching it as `gather_runner.GatherCancelled` (this module's
+# public alias). `pipeline` is light (it defers the heavy pipeline import to
+# gather time) and never imports `runner` — the cancel check is passed in as a
+# callback — so the dependency runs one way.
+from .pipeline import GatherCancelled
+from ..utils import (
     LogLevel,
     Verbosity,
     atomic_open,
@@ -325,7 +326,8 @@ def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
     # `force` overrides the freshness debounce only — never a gather in flight.
     # None on the local backend, where the in-process registry catches same-host
     # races (the lease below is the cross-host arbiter for the tight race).
-    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..store import corpus as corpus_store
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
     if fleet is not None and fleet.get("state") in ("queued", "running"):
@@ -396,7 +398,8 @@ def start(  # pylint: disable=too-many-return-statements
     refusal = _pre_start_refusal(spec)
     if refusal is not None:
         return refusal
-    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..store import corpus as corpus_store
 
     store = corpus_store.get_corpus_store()
     owner = _owner()
@@ -501,7 +504,8 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
         event = _cancel_events.get(corpus)
     if event is not None:
         event.set()
-    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..store import corpus as corpus_store
 
     store = corpus_store.get_corpus_store()
     status["cancel_requested"] = True
@@ -541,7 +545,7 @@ def _write_status(store: Any, status: Dict[str, Any]) -> None:
             json.dump(status, handle, indent=2, sort_keys=True)
     except OSError as err:
         log(
-            f"gather_runner: could not write status for {corpus}: {err}",
+            f"gather.runner: could not write status for {corpus}: {err}",
             Verbosity.STATUS,
             level=LogLevel.ERROR,
         )
@@ -549,7 +553,7 @@ def _write_status(store: Any, status: Dict[str, Any]) -> None:
         store.put_gather_status(corpus, status)
     except Exception as err:  # pylint: disable=broad-except
         log(
-            f"gather_runner: could not publish status for {corpus}: {err}",
+            f"gather.runner: could not publish status for {corpus}: {err}",
             Verbosity.STATUS,
             level=LogLevel.ERROR,
         )
@@ -559,7 +563,8 @@ def _store() -> Any:
     """The current CorpusStore. Fetched fresh (not captured) so the long-lived
     worker/heartbeat always honour the live config rather than whatever was set
     when they first started."""
-    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..store import corpus as corpus_store
 
     return corpus_store.get_corpus_store()
 
@@ -635,7 +640,7 @@ def _worker_loop(owner: str) -> None:
         except BaseException as err:  # pylint: disable=broad-except
             # The worker must outlive any single job's failure.
             log(
-                f"gather_runner: worker error on {corpus}: {err}",
+                f"gather.runner: worker error on {corpus}: {err}",
                 Verbosity.STATUS,
                 level=LogLevel.ERROR,
             )
@@ -655,7 +660,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     """Run one queued gather: wait for a fleet-wide slot, then run the pipeline,
     publishing status at each transition. Holds the per-corpus lease throughout
     (released by the worker loop). Never raises — failures become a `failed`
-    status. The pipeline itself runs in a subprocess (`gather_pipeline`), so this
+    status. The pipeline itself runs in a subprocess (`pipeline`), so this
     worker thread only orchestrates and streams progress — a CPU-heavy stage
     never holds the GIL here and stalls the server."""
     corpus = spec.corpus
@@ -766,7 +771,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
 
         try:
-            ok = gather_pipeline.run_pipeline(
+            ok = pipeline.run_pipeline(
                 spec, _progress, _note, lambda: _cancel_requested(corpus)
             )
             if ok:
@@ -836,7 +841,8 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     if not valid_corpus_name(corpus):
         return None
     # Fleet-visible status first (cloud backend); None on the local backend.
-    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..store import corpus as corpus_store
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
     if fleet is not None:
@@ -895,7 +901,8 @@ def all_statuses() -> List[Dict[str, Any]]:
     no-corpus listing also sees gathers queued or running on other replicas,
     not just the corpora cached locally.
     """
-    from .store import corpus as corpus_store  # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
+    from ..store import corpus as corpus_store
 
     out: List[Dict[str, Any]] = []
     seen: "set[str]" = set()

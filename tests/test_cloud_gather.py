@@ -13,7 +13,8 @@ import pytest
 from moto import mock_aws
 
 from ietf_llm import __main__ as main_mod
-from ietf_llm import corpus, gather_runner
+from ietf_llm import corpus
+from ietf_llm.gather import runner as gather_runner
 from ietf_llm.store.corpus import get_corpus_store
 from ietf_llm.store.cloud import _clear_resolve_cache
 from ietf_llm.utils import get_cache_dir

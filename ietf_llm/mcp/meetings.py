@@ -188,10 +188,10 @@ def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
     in; registered only behind the gather gate. Times are venue-local,
     converted from the agenda's UTC.
     """
-    from .. import (  # pylint: disable=import-outside-toplevel
-        gather_runner,
-        live_lookup,
-    )
+    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
 
     corpus = (corpus or "").strip()
     meeting = str(meeting or "").strip()

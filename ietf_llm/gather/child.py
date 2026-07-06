@@ -10,7 +10,7 @@ progress back to the parent as newline-delimited JSON on the fd named by the
 status-record updates it already writes, so nothing downstream of the worker
 changes.
 
-Invoked as `python -m ietf_llm.gather_child <corpus> [--source ...]` — the same
+Invoked as `python -m ietf_llm.gather.child <corpus> [--source ...]` — the same
 argv `GatherSpec.to_argv()` produces for the in-process path.
 
 Exit codes: 0 = the gather succeeded; 3 = the corpus name was unusable
@@ -25,9 +25,9 @@ import os
 import sys
 from typing import Any, Optional
 
-from .__main__ import run_gather
-from .gather_pipeline import CHILD_EXIT_UNUSABLE
-from .utils import Verbosity
+from ..__main__ import run_gather
+from .pipeline import CHILD_EXIT_UNUSABLE
+from ..utils import Verbosity
 
 
 def _renice() -> None:

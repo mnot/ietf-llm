@@ -59,9 +59,9 @@ from .gather.repo_discovery import autotrack_github, print_discovery
 from .gather.rfcs import ensure_rfc_index
 from .gather.transcript_context import enrich_transcripts
 from .gather.transcripts import process_transcripts
-from .gather_cli import build_parser
-from .gather_plan import _gather_plan_summary
-from .gather_stages import ProgressFn, StageTracker, stage_plan
+from .gather.cli import build_parser
+from .gather.plan import _gather_plan_summary
+from .gather.stages import ProgressFn, StageTracker, stage_plan
 from .people import build_registry, write_people_digest
 from .skill_install import install_skills, sync_if_pristine
 from .utils import (
