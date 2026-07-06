@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from .. import oai_compat
+from ..embeddings import oai_compat
 from ..utils import LogLevel, Verbosity, log
 
 #: Protocol-neutral prefix selecting the OpenAI-compatible chat backend,

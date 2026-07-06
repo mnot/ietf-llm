@@ -19,7 +19,8 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from ietf_llm import oai_compat, serve_metrics
+from ietf_llm import serve_metrics
+from ietf_llm.embeddings import oai_compat
 from ietf_llm.embeddings.models import _OpenAICompatEmbeddingModel
 from ietf_llm.utils import get_cache_dir
 

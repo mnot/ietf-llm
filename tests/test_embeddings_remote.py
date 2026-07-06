@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 import requests
 
-from ietf_llm import oai_compat
+from ietf_llm.embeddings import oai_compat
 from ietf_llm.embeddings import models
 from ietf_llm.embeddings.models import (
     _OpenAICompatEmbeddingModel,

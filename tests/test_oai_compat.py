@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ietf_llm import oai_compat
+from ietf_llm.embeddings import oai_compat
 from ietf_llm.utils import Verbosity
 
 

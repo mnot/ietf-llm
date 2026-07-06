@@ -335,6 +335,8 @@ ietf_llm/
 │   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
 │   │                           # freshness/grounding/nudge helpers)
 │   ├── serve.py                # HTTP transport, /health, /metrics, serve-config validation
+│   ├── stdio.py                # threaded-writer stdio transport (sidesteps upstream blocking write)
+│   ├── debug_log.py            # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 │   ├── corpus.py / search.py / digest.py / topic.py / chunks.py  # tool_* impls +
 │   ├── citations.py / drafts.py / meetings.py / gather.py / norms.py / rfcs.py
 │   │                           #   their `@server.tool()` wrappers, via `register()`
@@ -370,8 +372,6 @@ ietf_llm/
 ├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP
 │                           # defaults, group metadata via API, write_if_changed,
 │                           # is_synthetic_wg, cached_wg_names, argcomplete helpers
-├── oai_compat.py           # shared OpenAI-compatible HTTP plumbing (auth headers,
-│                           # retry + Retry-After) for the remote embed / summarise backends
 ├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
@@ -382,8 +382,6 @@ ietf_llm/
 │                           # its progress back (keeps a CPU-heavy stage off the server)
 ├── gather_child.py         # the child entry point (python -m ietf_llm.gather_child)
 ├── gather_stages.py        # stage_plan: canonical gather stage order (shared CLI ↔ runner)
-├── _stdio_transport.py     # threaded-writer stdio transport (sidesteps upstream blocking write)
-├── _debug_log.py           # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
 ├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms
@@ -438,6 +436,8 @@ ietf_llm/
     ├── chunking.py             # per-message / per-issue / windowed chunkers; splits long sections
     ├── storage.py              # sqlite schema, vector packing, lookup, topics.json sidecar IO
     ├── models.py               # embedding-model loading + process-level cache
+    ├── oai_compat.py           # OpenAI-compatible HTTP plumbing (auth, retry + Retry-After)
+    │                           #   for the remote embed / summarise backends
     ├── snippet.py              # structure-aware snippet rendering for hits
     ├── clustering.py           # numpy mini-batch k-means (torch-free clustering primitive)
     ├── topics.py               # topic map: cluster docs into labelled themes (topics.json)
@@ -805,7 +805,7 @@ upstream call, so readiness never waits on the network. `read_file_section`
 is hard-capped (default 400 lines, max 5000) as context hygiene.
 
 The default transport is the custom threaded-writer **stdio** path (see
-`_stdio_transport.py`, which sidesteps an upstream loop-blocking write).
+`mcp/stdio.py`, which sidesteps an upstream loop-blocking write).
 Setting `IETF_LLM_MCP_TRANSPORT=http` serves standard MCP **Streamable
 HTTP** instead — FastMCP's `streamable_http_app()` under uvicorn, with
 `GET /health` (readiness) and `GET /metrics` (Prometheus scrape) routes
