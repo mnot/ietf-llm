@@ -390,10 +390,10 @@ ietf_llm/
 │   └── http_metrics.py     # per-gather upstream HTTP egress accounting (thread-local)
 ├── datatracker_api.py               # IETF group metadata via the Datatracker API
 │                           # (fetch_group_object + get_group_* + get_wg_title)
-├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);
-│                           # reads the _rfc/ singleton mirrored from rfc.fyi
-├── catalog.py              # cross-corpus active-effort reader (find_efforts);
-│                           # ranks the _catalog/ singleton by topic, tags cached efforts
+├── singletons/             # cross-corpus singleton readers (fleet-wide indexes, offline read side;
+│   │                       # each the read twin of a gather/sources/ writer that mirrors into it)
+│   ├── rfcs.py             # RFC-series reader (search_rfcs / get_rfc); reads _rfc/ (mirrored from rfc.fyi)
+│   └── catalog.py          # active-effort reader (find_efforts); ranks _catalog/ by topic, tags cached
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
 ├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms

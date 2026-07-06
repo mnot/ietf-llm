@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm import rfcs
+from ietf_llm.singletons import rfcs
 from ietf_llm.gather.sources import rfcs as gather_rfcs
 
 # --- Synthetic dataset -----------------------------------------------------

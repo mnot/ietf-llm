@@ -18,7 +18,7 @@ from typing import List, Optional
 
 import pytest
 
-from ietf_llm.catalog import catalog_index_dir
+from ietf_llm.singletons.catalog import catalog_index_dir
 from ietf_llm.store.corpus import LocalCorpusStore
 from ietf_llm.store.cloud import CloudCorpusStore
 from ietf_llm.store.blobs import FileBlobStore

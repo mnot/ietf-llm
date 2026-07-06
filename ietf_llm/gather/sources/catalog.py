@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from ...catalog import CATALOG_FILE, catalog_index_dir
+from ...singletons.catalog import CATALOG_FILE, catalog_index_dir
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
 from . import _mirror

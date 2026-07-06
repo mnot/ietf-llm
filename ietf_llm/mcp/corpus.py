@@ -8,7 +8,7 @@ import os
 from typing import TYPE_CHECKING, List, Optional
 
 from .. import coverage
-from ..catalog import render_efforts
+from ..singletons.catalog import render_efforts
 from ..corpus import describe, kind_status, status_cell
 from ..digest.overview import (
     _label_frequencies,
