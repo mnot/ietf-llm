@@ -24,7 +24,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
-from ... import http_metrics
+from ...net import http_metrics
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
 from ...paths import get_cache_dir

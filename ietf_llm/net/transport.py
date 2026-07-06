@@ -4,7 +4,7 @@ A process-wide pooled, retrying `requests.Session`; a per-host-governed GET
 (`governed_get`), the metered `fetch_resource`, and HTML→text cleaning
 (`clean_html`). Sits low in the import graph: it depends only on
 `http_governor` (the per-host concurrency slot), `http_metrics` (egress
-accounting), and `utils` for logging — nothing that reaches `config`.
+accounting), and `log` for logging — nothing that reaches `config`.
 
 The gather sources and the live-lookup read path fetch through here; the
 offline read path imports none of this.
@@ -21,9 +21,10 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from . import __version__, http_metrics
+from .. import __version__
+from ..log import LogLevel, log
+from . import http_metrics
 from .http_governor import host_slot
-from .log import LogLevel, log
 
 # Identify the client and give upstream operators a contact path. A shared
 # community service (datatracker especially) would rather reach the tool's

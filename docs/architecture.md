@@ -253,7 +253,7 @@ Key invariants:
   GitHub issues and drafts are the full set.
 - **`gather-metrics.json`** records the upstream HTTP load of the last
   run — request counts (transferred / revalidated / error), bytes, a
-  per-host breakdown, and a top-N of URL patterns. `http_metrics.py`
+  per-host breakdown, and a top-N of URL patterns. `net/http_metrics.py`
   accumulates it at the two egress chokepoints (`datatracker._get_json`
   and `net.fetch_resource`) and the CLI prints a one-line summary at
   the end of a gather. Beside the sentinel (one level above `files/`),
@@ -370,7 +370,6 @@ ietf_llm/
 │   └── drafts.py           # per-draft live status + overview reconciliation
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── coverage.py             # reader-side window + source inventory (no network)
-├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
 ├── people/                 # actor/identity registry + position extraction
 │   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)
 │   ├── linking.py          # attach GitHub logins to identities (Datatracker, then name)
@@ -383,8 +382,11 @@ ietf_llm/
 ├── completion.py           # shell tab-completion (argcomplete wiring for the ietf-llm CLIs)
 ├── atomicio.py             # concurrency-safe filesystem primitives: atomic writes
 │                           # (atomic_open / write_if_changed) + advisory file locks
-├── net.py                  # HTTP transport: pooled retrying session, host-governed
-│                           # GET, metered fetch_resource, clean_html
+├── net/                    # gather-side HTTP egress (the offline read path imports none of it)
+│   ├── transport.py        # pooled retrying session, host-governed GET,
+│   │                       # metered fetch_resource, clean_html (re-exported from net/)
+│   ├── http_governor.py    # per-host concurrency slots (datatracker kept tight)
+│   └── http_metrics.py     # per-gather upstream HTTP egress accounting (thread-local)
 ├── datatracker_api.py               # IETF group metadata via the Datatracker API
 │                           # (fetch_group_object + get_group_* + get_wg_title)
 ├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);

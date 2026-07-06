@@ -3,7 +3,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
-from ... import http_metrics
+from ...net import http_metrics
 from ...datatracker_api import get_group_type
 from ...log import LogLevel, Verbosity, log
 from ...net import fetch_resource

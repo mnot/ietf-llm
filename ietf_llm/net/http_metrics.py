@@ -8,7 +8,7 @@ upstream load we generate: a passive accumulator that the two network
 chokepoints record every request into —
 
   - `_get_json` in `gather/sources/datatracker.py` (the ETag-aware JSON API path)
-  - `fetch_resource` in `net.py` (raw resource fetches)
+  - `fetch_resource` in `net/transport.py` (raw resource fetches)
 
 — which together cover essentially all egress. It counts requests split
 by outcome (real transfer / 304 revalidation / error), total bytes

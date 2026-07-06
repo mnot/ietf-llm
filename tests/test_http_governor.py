@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from ietf_llm import http_governor
-from ietf_llm.http_governor import host_slot
+from ietf_llm.net import http_governor
+from ietf_llm.net.http_governor import host_slot
 
 
 @pytest.fixture(autouse=True)

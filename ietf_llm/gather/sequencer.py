@@ -15,7 +15,8 @@ import shutil
 import sys
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from .. import config, http_metrics, paths
+from .. import config, paths
+from ..net import http_metrics
 from ..corpus import canonical
 from ..config import service as service_config
 from ..datatracker_api import fetch_group_object
