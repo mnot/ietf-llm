@@ -80,7 +80,7 @@ def status_cell(kind: str, status: str) -> str:
     `group.md` predates the status field. A non-group corpus has no group
     state at all — the cell says so explicitly rather than rendering an
     empty `—` that a reader could mistake for an active effort. Shared by
-    `ietf-llm --list` (`cli_list`) and the MCP `list_corpora` so both
+    `ietf-llm --list` (`cli.list`) and the MCP `list_corpora` so both
     describe a corpus identically.
     """
     if status:

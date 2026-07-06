@@ -87,8 +87,8 @@ Issues = "https://github.com/mnot/ietf-llm/issues"
 
 [project.scripts]
 ietf-llm = "ietf_llm.__main__:main"
-ietf-llm-export = "ietf_llm.export_cli:main"
-ietf-llm-search = "ietf_llm.search_cli:main"
+ietf-llm-export = "ietf_llm.cli.export:main"
+ietf-llm-search = "ietf_llm.cli.search:main"
 ietf-llm-mcp = "ietf_llm.mcp:main"
 
 

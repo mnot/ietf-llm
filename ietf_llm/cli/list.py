@@ -11,10 +11,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-from . import corpus
-from .store.corpus import get_corpus_store
-from .freshness import last_gathered
-from .utils import cached_wg_names
+from .. import corpus
+from ..store.corpus import get_corpus_store
+from ..freshness import last_gathered
+from ..utils import cached_wg_names
 
 
 def discover_gathered_wgs() -> List[str]:

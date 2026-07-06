@@ -325,8 +325,11 @@ ietf_llm/
 ├── __main__.py             # `ietf-llm` (gather): argparse, persisted config,
 │                           # pipeline orchestration (charter → … → digests →
 │                           # embed); also --list / --completion / --install-skills
-├── export_cli.py / export.py   # `ietf-llm-export` entry point + mirror/NotebookLM logic
-├── search_cli.py           # `ietf-llm-search` entry point
+├── cli/                    # auxiliary console scripts (the main `ietf-llm` is __main__)
+│   ├── export.py           # `ietf-llm-export` entry point
+│   ├── search.py           # `ietf-llm-search` entry point
+│   └── list.py             # corpus-listing helpers (`--list`; shared with MCP)
+├── export.py               # mirror / NotebookLM export logic (used by cli.export)
 ├── mcp/                    # `ietf-llm-mcp` server (`mcp:main`), one module per tool domain
 │   ├── server.py               # FastMCP construction + main() + tool registration
 │   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
