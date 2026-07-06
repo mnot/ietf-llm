@@ -97,3 +97,27 @@ def test_stale_mtime_rows_migrated(isolated_home: Path) -> None:
     _build("wg")
     assert _meta_keys("wg", "mtime:%") == []
     assert _meta_keys("wg", "hash:%") == ["hash:drafts/draft-x.txt"]
+
+
+def test_embed_feeds_percent_to_detail(isolated_home: Path, monkeypatch) -> None:
+    # The on-device embed feeds a byte-weighted % into the stage `detail`
+    # callback that gather_status surfaces. Force the progress throttle to fire
+    # on every file so a fast stub build still emits at least once.
+    import importlib
+
+    # `embeddings.search` the attribute is the exported function, not the
+    # module, so fetch the module object explicitly to patch its constant.
+    search_module = importlib.import_module("ietf_llm.embeddings.search")
+    monkeypatch.setattr(search_module, "_PROGRESS_SECS", 0)
+    for i in range(3):
+        write_cache_file(isolated_home, "wg", f"drafts/draft-{i}.txt", f"body {i}\n")
+    _seed()
+    seen: List[str] = []
+    build_index(
+        "wg",
+        get_wg_file_cache_dir("wg"),
+        model_name="stub",
+        verbose=Verbosity.QUIET,
+        detail=seen.append,
+    )
+    assert seen and all(s.endswith("%") for s in seen)

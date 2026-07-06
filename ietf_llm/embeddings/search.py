@@ -355,11 +355,17 @@ def build_index(
     model_name: str = DEFAULT_EMBED_MODEL,
     rebuild: bool = False,
     verbose: Verbosity = Verbosity.STATUS,
+    detail: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Embed all eligible files. Returns number of chunks indexed.
 
     Incremental: chunks for an unchanged file (same content, same model) are
     skipped. Pass rebuild=True to drop and re-embed everything.
+
+    `detail`, if given, is called (throttled) with a short progress string like
+    `"45%"` during the on-device embed — the gather passes its stage tracker's
+    `detail` so the percentage surfaces through `gather_status`. It doubles as a
+    cancellation checkpoint on the otherwise-opaque embed stage.
     """
     model = _get_embed_model(model_name, verbose)
     if model is None:
@@ -375,7 +381,7 @@ def build_index(
         build_path = seed_build_db(wg)
         try:
             count = _build_index_locked(
-                wg, cache_dir, model, model_name, rebuild, verbose, build_path
+                wg, cache_dir, model, model_name, rebuild, verbose, build_path, detail
             )
         except BaseException:
             discard_build_db(wg)
@@ -392,6 +398,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     rebuild: bool,
     verbose: Verbosity,
     build_path: Optional[str] = None,
+    detail: Optional[Callable[[str], None]] = None,
 ) -> int:
     conn = _open_db(wg, build_path)
     cur = conn.cursor()
@@ -663,6 +670,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                     verbose,
                     level=LogLevel.STATUS,
                 )
+                if detail is not None:
+                    # Surfaces through gather_status (stage_detail); also a
+                    # cancellation checkpoint on the long embed stage.
+                    detail(f"{pct}%")
                 embed_last = now
     else:
         # Bounded fan-out: keep at most 2x workers in flight so memory stays
