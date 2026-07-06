@@ -2,7 +2,7 @@
 two MCP tool renderers that consume them (`meeting_schedule`,
 `draft_status`).
 
-The single network seam is `live_lookup._fetch_json`; every test stubs it
+The single network seam is `live_lookup.cache._fetch_json`; every test stubs it
 with canned JSON keyed by URL, so nothing here touches the network. The
 canned shapes mirror what Datatracker actually serves (verified against
 live `agenda.json` / `doc/document` responses): the agenda's `start` is
@@ -171,7 +171,7 @@ def _stub_fetch(monkeypatch, isolated_home):
     test never touches the real user cache.
     """
     live_lookup._reset_cache()
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: _canned(url))
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: _canned(url))
     yield
     live_lookup._reset_cache()
 
@@ -208,7 +208,7 @@ def test_meeting_sessions_no_session_for_group():
 
 
 def test_meeting_sessions_no_agenda(monkeypatch):
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: None)
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: None)
     sessions, _, error = live_lookup.fetch_meeting_sessions("httpbis", "999")
     assert sessions == []
     assert error and "999" in error
@@ -293,7 +293,7 @@ def test_draft_status_unknown_doc():
 def test_draft_status_rfc_ed_queue_is_in_iesg(monkeypatch):
     doc = dict(_DOC_ACTIVE, states=["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"])
     monkeypatch.setattr(
-        live_lookup,
+        live_lookup.cache,
         "_fetch_json",
         lambda url, timeout=10.0: doc if "/doc/document/" in url else _canned(url),
     )
@@ -306,7 +306,7 @@ def test_draft_status_rfc_ed_queue_is_in_iesg(monkeypatch):
 def test_draft_status_published_by_rfc_number(monkeypatch):
     doc = dict(_DOC_ACTIVE, rfc_number=9999, states=[])
     monkeypatch.setattr(
-        live_lookup,
+        live_lookup.cache,
         "_fetch_json",
         lambda url, timeout=10.0: doc if "/doc/document/" in url else _canned(url),
     )
@@ -320,7 +320,7 @@ def test_draft_status_empty_states_corroborated_dead(monkeypatch):
     # No states AND an expiry in the past -> dead, with a corroboration note.
     doc = dict(_DOC_ACTIVE, states=[], expires="2000-01-01T00:00:00Z")
     monkeypatch.setattr(
-        live_lookup,
+        live_lookup.cache,
         "_fetch_json",
         lambda url, timeout=10.0: doc if "/doc/document/" in url else _canned(url),
     )
@@ -356,7 +356,7 @@ def test_ttl_cache_fetches_once(monkeypatch):
         calls["n"] += 1
         return _canned(url)
 
-    monkeypatch.setattr(live_lookup, "_fetch_json", _counting)
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _counting)
     live_lookup._reset_cache()
     live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     after_first = calls["n"]
@@ -372,7 +372,7 @@ def test_disk_cache_serves_cold_process(monkeypatch):
     calls = []
     url = "https://datatracker.ietf.org/api/v1/doc/document/?name=x"
     monkeypatch.setattr(
-        live_lookup,
+        live_lookup.cache,
         "_fetch_json",
         lambda u, timeout=10.0: calls.append(u) or {"ok": True},
     )
@@ -388,11 +388,11 @@ def test_disk_cache_stale_fallback_on_cold_process(monkeypatch):
     # A cold process whose only prior data is an EXPIRED disk entry, with
     # Datatracker down, still returns the stale answer rather than nothing.
     url = "https://datatracker.ietf.org/api/v1/doc/document/?name=z"
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda u, timeout=10.0: {"ok": 1})
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda u, timeout=10.0: {"ok": 1})
     live_lookup._cached_json(url)  # populate the disk cache
     live_lookup._reset_cache()  # cold process: empty in-process cache
     monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")  # the disk entry is now stale
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda u, timeout=10.0: None)  # down
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda u, timeout=10.0: None)  # down
     body, _ = live_lookup._cached_json(url)
     assert body == {"ok": 1}  # served the stale disk datum, not None
 
@@ -416,11 +416,11 @@ def test_disk_get_rejects_non_dict_body():
 
 def test_stale_fallback_on_fetch_failure(monkeypatch):
     live_lookup._reset_cache()
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: _canned(url))
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: _canned(url))
     live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     # TTL 0 forces re-fetch; the seam now fails -> stale cache is returned.
     monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: None)
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: None)
     status, _ = live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     assert status is not None and status.draft_state == "Active"
 
@@ -460,7 +460,7 @@ def _canned_recon(url: str):
 
 
 def test_reconcile_flags_advanced_and_revived(monkeypatch):
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: _canned_recon(url))
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: _canned_recon(url))
     live_lookup._reset_cache()
     recon, _ = live_lookup.reconcile_active_drafts(
         "httpbis", ["draft-ietf-httpbis-foo", "draft-ietf-httpbis-bar"]
@@ -489,14 +489,14 @@ def test_reconcile_revived_requires_in_wg_not_just_future_expiry(monkeypatch):
             return drafts
         return _canned(url)
 
-    monkeypatch.setattr(live_lookup, "_fetch_json", _stub)
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
     live_lookup._reset_cache()
     recon, _ = live_lookup.reconcile_active_drafts("httpbis", [])
     assert recon.revived == []  # future expiry alone is not enough
 
 
 def test_reconcile_clean_when_aligned(monkeypatch):
-    monkeypatch.setattr(live_lookup, "_fetch_json", lambda url, timeout=10.0: _canned_recon(url))
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: _canned_recon(url))
     live_lookup._reset_cache()
     # foo and baz are exactly Datatracker's active adopted set; foo is in-WG.
     recon, _ = live_lookup.reconcile_active_drafts(
