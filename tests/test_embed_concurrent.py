@@ -165,3 +165,26 @@ def test_concurrent_one_file_failure_isolated(
     n = build_index("wg", cache, _REMOTE, verbose=Verbosity.QUIET)
     assert n > 0  # the retried file embedded
     assert "drafts/draft-02.txt" in {r[0] for r in _chunk_rows("wg")}
+
+
+def test_remote_reports_percent_to_detail(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # The remote (pool) path feeds the same byte-weighted % to the stage
+    # `detail` callback gather_status surfaces. Force the throttle open so every
+    # completed file emits.
+    import importlib
+
+    search_module = importlib.import_module("ietf_llm.embeddings.search")
+    monkeypatch.setattr(search_module, "_PROGRESS_SECS", 0)
+    embeddings._MODEL_CACHE[_REMOTE] = _SerialStub()  # noqa: SLF001
+    _seed_files(isolated_home, "wg", 3)
+    seen: List[str] = []
+    build_index(
+        "wg",
+        get_wg_file_cache_dir("wg"),
+        _REMOTE,
+        verbose=Verbosity.QUIET,
+        detail=seen.append,
+    )
+    assert seen and all(s.endswith("%") for s in seen)

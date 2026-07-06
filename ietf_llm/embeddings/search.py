@@ -49,11 +49,9 @@ from .storage import (
     seed_build_db,
 )
 
-#: After every N files processed, emit a one-line STATUS progress update.
-_PROGRESS_EVERY = 25
-#: …or after this many seconds of silence, whichever comes first. Picked
-#: short enough that a slow embed call doesn't look like the gather
-#: has hung, long enough that small WGs don't get spammed.
+#: Emit an embed-progress update (STATUS log + gather_status detail) at most
+#: this often. Short enough that a slow embed doesn't look like the gather has
+#: hung, long enough that small WGs don't get spammed.
 _PROGRESS_SECS = 20.0
 #: Commit the in-flight transaction (and evict the allocator cache) on a dual
 #: cadence: after this many chunks written since the last flush, OR after
@@ -349,6 +347,41 @@ def _stream_embed(
     yield from _flush_window(model, window_plans, window, mps_empty, verbose)
 
 
+def _file_bytes(cache_dir: str, relpath: str) -> int:
+    """A planned file's byte size, or 0 if unreadable. The numerator unit for
+    the byte-weighted embed progress — matches the `pending_bytes` denominator,
+    which is summed the same way."""
+    try:
+        return os.path.getsize(os.path.join(cache_dir, relpath))
+    except OSError:
+        return 0
+
+
+def _embed_progress(
+    done_bytes: int,
+    pending_bytes: int,
+    start: float,
+    verbose: Verbosity,
+    detail: Optional[Callable[[str], None]],
+) -> None:
+    """Emit a byte-weighted embed percent — to the STATUS log and, when the
+    gather passed one, to `detail` (which `gather_status` surfaces as
+    `stage_detail`). Shared by the on-device and remote paths so both report
+    identically. Bytes track embed cost better than a file count and are known
+    up front without pre-chunking."""
+    pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
+    log(
+        f"  …embedding {pct}% ({done_bytes >> 20}/{pending_bytes >> 20} MB, "
+        f"{time.time() - start:.0f}s elapsed)",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    if detail is not None:
+        # Also a cancellation checkpoint on the long embed stage: the gather
+        # runner polls the stop flag on each detail call.
+        detail(f"{pct}%")
+
+
 def build_index(
     wg: str,
     cache_dir: str,
@@ -569,15 +602,15 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
 
     total_new = 0
     start = time.time()
-    # Periodic progress: emit a one-line update at STATUS level every
-    # `_PROGRESS_EVERY` processed files OR every `_PROGRESS_SECS`,
-    # whichever comes first. Keeps the user informed during long
-    # embeds without spamming on small ones.
     files_done = 0
-    last_status = start
     # Chunks written since the last flush — drives the chunk-count side of the
     # write-commit cadence (see `_FLUSH_EVERY_CHUNKS`).
     chunks_since_flush = 0
+    # Byte-weighted embed progress, shared by both paths: the numerator accrues
+    # each written file's bytes against `pending_bytes`, emitted (STATUS log +
+    # gather_status `detail`) at most every `_PROGRESS_SECS`.
+    done_bytes = 0
+    embed_last = start
     # On-device only: the MPS allocator evictor, to cap the reserved pool on the
     # opt-in `=mps` path (`_flush_window` and the flush cadence call it). None
     # off MPS and on the remote backend (embedding happens over HTTP).
@@ -593,13 +626,12 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # file — which is NOT the on-device path).
     workers = embed_concurrency() if is_remote_embed_model(model_name) else 1
 
-    def _record(plan: _FilePlan, vectors: List[Any], progress: bool = True) -> None:
-        """Write one file's result and advance the flush / progress cadence.
-        Called from the main thread by both paths, so the counters and the
-        cursor need no locking. The on-device path passes `progress=False` — it
-        reports a byte-weighted % in the caller and only writes here — so the
-        file-count STATUS line is left to the remote (per-file) path."""
-        nonlocal total_new, files_done, chunks_since_flush, last_status
+    def _record(plan: _FilePlan, vectors: List[Any]) -> None:
+        """Write one file's result and advance the flush cadence. Called from
+        the main thread by both paths, so the counters and the cursor need no
+        locking. Progress is reported by the caller (byte-weighted, via
+        `_embed_progress`); this only writes and commits."""
+        nonlocal total_new, files_done, chunks_since_flush
         written = _write_file(cur, plan, vectors, verbose)
         if not written:
             return
@@ -608,10 +640,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         chunks_since_flush += written
         # Periodic maintenance: commit so a crash doesn't discard the whole
         # build (we'd otherwise commit only at the end, and a WAL rollback loses
-        # every embedded file), and evict the MPS allocator cache so a long
-        # run's high-water mark doesn't climb into swap. Dual cadence: the chunk
-        # count bounds the MPS peak (it scales with chunks since the last
-        # evict), the file count is a durability floor over sparse files.
+        # every embedded file), and evict the MPS allocator cache (opt-in =mps
+        # path) so its high-water doesn't climb. Dual cadence: the chunk count
+        # bounds a dense window, the file count is a durability floor over
+        # sparse files.
         if (
             chunks_since_flush >= _FLUSH_EVERY_CHUNKS
             or files_done % _FLUSH_EVERY_FILES == 0
@@ -621,19 +653,6 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             if mps_empty is not None:
                 mps_empty()
             chunks_since_flush = 0
-        # Light-touch STATUS pulse so the user sees progress without --verbose.
-        now = time.time()
-        if progress and (
-            files_done % _PROGRESS_EVERY == 0 or (now - last_status) >= _PROGRESS_SECS
-        ):
-            elapsed = now - start
-            log(
-                f"  …{files_done}/{pending} files, "
-                f"{total_new} chunks, {elapsed:.0f}s elapsed",
-                verbose,
-                level=LogLevel.STATUS,
-            )
-            last_status = now
 
     # Lazily plan (skip-check + chunk) each file on the main thread; the embed
     # call is the only off-thread work. The skip-unchanged and empty-file cases
@@ -649,32 +668,13 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     if not is_remote_embed_model(model_name):
         # On-device: stream the corpus through a bounded length-sort buffer
         # (`_stream_embed`) — bounded memory — writing each file via `_record`
-        # as it completes. `_record`'s per-file STATUS line is suppressed;
-        # progress here is byte-weighted (a truer cost proxy than a file count)
-        # against the pending-bytes total from the first pass.
-        done_bytes = 0
-        embed_start = time.time()
-        embed_last = embed_start
+        # as it completes, reporting a byte-weighted % (`_embed_progress`).
         for plan, vectors in _stream_embed(model, plans, mps_empty, verbose):
-            _record(plan, vectors, progress=False)
-            try:
-                done_bytes += os.path.getsize(os.path.join(cache_dir, plan.relpath))
-            except OSError:
-                pass
-            now = time.time()
-            if now - embed_last >= _PROGRESS_SECS:
-                pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
-                log(
-                    f"  …embedding {pct}% ({done_bytes >> 20}/"
-                    f"{pending_bytes >> 20} MB, {now - embed_start:.0f}s elapsed)",
-                    verbose,
-                    level=LogLevel.STATUS,
-                )
-                if detail is not None:
-                    # Surfaces through gather_status (stage_detail); also a
-                    # cancellation checkpoint on the long embed stage.
-                    detail(f"{pct}%")
-                embed_last = now
+            _record(plan, vectors)
+            done_bytes += _file_bytes(cache_dir, plan.relpath)
+            if time.time() - embed_last >= _PROGRESS_SECS:
+                _embed_progress(done_bytes, pending_bytes, start, verbose, detail)
+                embed_last = time.time()
     else:
         # Bounded fan-out: keep at most 2x workers in flight so memory stays
         # bounded (only that many files' chunks held at once), writing each
@@ -707,6 +707,12 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                         )
                         continue
                     _record(plan, vectors)
+                    done_bytes += _file_bytes(cache_dir, plan.relpath)
+                    if time.time() - embed_last >= _PROGRESS_SECS:
+                        _embed_progress(
+                            done_bytes, pending_bytes, start, verbose, detail
+                        )
+                        embed_last = time.time()
                 _fill()
 
     conn.commit()
