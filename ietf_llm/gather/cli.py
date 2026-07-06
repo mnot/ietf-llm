@@ -1,6 +1,6 @@
 """Argument parser for the `ietf-llm` gather CLI.
 
-Split out of `__main__` so the flag surface lives in one focused module:
+Split out of `cli/main.py` so the flag surface lives in one focused module:
 both `main()` and the programmatic entry point (`run_gather`, used by the
 MCP gather runner) build the same fully-defaulted Namespace from it.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 
 from .. import __version__
-from ..completion import wg_completer
+from ..cli.completion import wg_completer
 from ..months import DEFAULT_MONTHS
 
 

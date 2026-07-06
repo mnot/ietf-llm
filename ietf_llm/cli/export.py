@@ -27,7 +27,7 @@ import os
 import sys
 
 from .. import __version__, config, export
-from ..completion import maybe_autocomplete, wg_completer
+from .completion import maybe_autocomplete, wg_completer
 from ..freshness import staleness_warning
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_config_dir

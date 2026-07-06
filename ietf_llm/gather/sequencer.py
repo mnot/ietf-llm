@@ -4,7 +4,7 @@
 stages in order (charter → sources → digests → embed), populating
 ~/.cache/ietf-llm/<wg>/. `run_gather` is the programmatic entry (a CLI-style
 `argv`), used by the MCP gather runner and the `gather.child` subprocess. The
-`ietf-llm` CLI entry (`__main__.main`) parses arguments and dispatches here.
+`ietf-llm` CLI entry (`cli.main.main`) parses arguments and dispatches here.
 """
 
 from __future__ import annotations

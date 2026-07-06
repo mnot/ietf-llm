@@ -7,7 +7,7 @@ re-run that pipeline we mirror its output into
 `~/.cache/ietf-llm/_rfc/`, where `rfcs.RfcData` reads it network-free.
 
 This is a singleton, not a per-corpus artifact: `ensure_rfc_index` runs
-once per `ietf-llm` invocation (see `__main__.main`), invisibly. It is
+once per `ietf-llm` invocation (see `cli.main.main`), invisibly. It is
 cheap to call:
 
   - **TTL guard.** If the local copy is younger than `RFC_TTL_SECONDS`

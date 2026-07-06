@@ -322,13 +322,16 @@ per-`<wg>` flow — see "Cross-corpus singletons" below.)
 
 ```
 ietf_llm/
-├── __main__.py             # `ietf-llm` entry: argparse + dispatch; --list /
-│                           # --completion / --install-skills; the --all loop.
-│                           # The gather pipeline itself lives in gather/sequencer.py
-├── cli/                    # auxiliary console scripts (the main `ietf-llm` is __main__)
+├── __main__.py             # thin `python -m ietf_llm` shim over cli/main.py
+├── cli/                    # every `ietf-llm*` console script's implementation
+│   ├── main.py             # `ietf-llm` entry: argparse + dispatch; --list /
+│   │                       # --completion / --install-skills; the --all loop.
+│   │                       # The gather pipeline itself lives in gather/sequencer.py
 │   ├── export.py           # `ietf-llm-export` entry point
 │   ├── search.py           # `ietf-llm-search` entry point
-│   └── list.py             # corpus-listing helpers (`--list`; shared with MCP)
+│   ├── list.py             # corpus-listing helpers (`--list`; shared with MCP)
+│   ├── completion.py       # shell tab-completion (argcomplete wiring for the ietf-llm CLIs)
+│   └── skill_install.py    # --install-skills (multi-harness) + pristine-only auto-update
 ├── export.py               # mirror / NotebookLM export logic (used by cli.export)
 ├── mcp/                    # `ietf-llm-mcp` server (`mcp:main`), one module per tool domain
 │   ├── server.py               # FastMCP construction + main() + tool registration
@@ -340,7 +343,6 @@ ietf_llm/
 │   ├── corpus.py / search.py / digest.py / topic.py / chunks.py  # tool_* impls +
 │   ├── citations.py / drafts.py / meetings.py / gather.py / norms.py / rfcs.py
 │   │                           #   their `@server.tool()` wrappers, via `register()`
-├── skill_install.py        # --install-skills (multi-harness) + pristine-only auto-update on CLI gathers
 ├── config/                 # configuration seam (per-WG + service/deployment)
 │   ├── __init__.py         # generic per-WG, per-scope JSON config (merge/persist)
 │   ├── fs.py               # filesystem primitives leaf (per-WG + global config.json)
@@ -379,7 +381,6 @@ ietf_llm/
 ├── log.py                  # stderr output leaf: log(), Verbosity/LogLevel, _use_color
 │                           # (text + IETF_LLM_LOG_FORMAT=json), graceful_keyboard_interrupt
 ├── months.py               # gather --months window policy (validate / resolve; DEFAULT_MONTHS)
-├── completion.py           # shell tab-completion (argcomplete wiring for the ietf-llm CLIs)
 ├── atomicio.py             # concurrency-safe filesystem primitives: atomic writes
 │                           # (atomic_open / write_if_changed) + advisory file locks
 ├── net/                    # gather-side HTTP egress (the offline read path imports none of it)

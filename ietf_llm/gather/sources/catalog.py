@@ -6,7 +6,7 @@ slice into `~/.cache/ietf-llm/_catalog/`, where `catalog.render_efforts`
 reads it network-free and ranks efforts by topic.
 
 This is a singleton, not a per-corpus artifact: `ensure_catalog_index`
-runs once per `ietf-llm` invocation (see `__main__.main`), invisibly,
+runs once per `ietf-llm` invocation (see `cli.main.main`), invisibly,
 and is cheap to call — same discipline as the RFC mirror (`gather.rfcs`):
 
   - **TTL guard.** If the derived `catalog.json` is younger than
