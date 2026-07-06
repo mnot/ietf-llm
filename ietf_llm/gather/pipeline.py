@@ -104,7 +104,7 @@ def run_pipeline(
     subprocess dies unexpectedly."""
     if _gather_in_process():
         # pylint: disable-next=import-outside-toplevel
-        from .. import __main__ as gather_main
+        from . import sequencer as gather_main
 
         return gather_main.run_gather(
             spec.to_argv(), Verbosity.STATUS, progress=progress, note_fn=note

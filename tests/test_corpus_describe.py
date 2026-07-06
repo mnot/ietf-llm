@@ -124,7 +124,7 @@ def test_status_cell_non_group_kinds_disclaim_chartered_status() -> None:
 
 
 def test_persist_author_name_records_resolved_identity(isolated_home: Path) -> None:
-    from ietf_llm import __main__ as main_mod
+    from ietf_llm.gather import sequencer as main_mod
 
     config.save("ekr", SCOPE, {"author": "ekr@example.com"})
     main_mod._persist_author_name("ekr", "Eric Rescorla")

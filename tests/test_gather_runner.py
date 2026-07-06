@@ -19,7 +19,7 @@ from typing import Any, List, Tuple
 
 import pytest
 
-from ietf_llm import __main__ as main_mod
+from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import config, freshness, serve_metrics, utils
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.gather.stages import stage_plan

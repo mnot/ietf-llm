@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm import __main__ as main
+from ietf_llm.gather import sequencer as main
 from ietf_llm import config
 from ietf_llm.utils import Verbosity
 
