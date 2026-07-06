@@ -26,9 +26,11 @@ from requests.adapters import HTTPAdapter
 from .. import oai_compat, serve_metrics
 from ..utils import LogLevel, Verbosity, log
 
-#: Default embedding model. Local, no API key, MPS-accelerated on Apple
-#: Silicon via sentence-transformers. ~33M params, 384-dim. Good quality for
-#: technical English with a small DB footprint and ~2-minute index time per WG.
+#: Default embedding model. Local, no API key, via sentence-transformers.
+#: ~33M params, 384-dim. Good quality for technical English with a small DB
+#: footprint and ~2-minute index time per WG. Runs on CPU by default; MPS is
+#: deliberately avoided (see `_embed_device`), overridable via
+#: IETF_LLM_EMBED_DEVICE.
 DEFAULT_EMBED_MODEL = "sentence-transformers/BAAI/bge-small-en-v1.5"
 
 _ST_PREFIX = "sentence-transformers/"
@@ -81,6 +83,36 @@ _MODEL_CACHE: dict[str, Any] = {}
 _MODEL_LOAD_LOCK = threading.Lock()
 
 
+def _cuda_available() -> bool:
+    """True if a CUDA device is usable. Isolated so the device default can be
+    tested without importing torch (CI stays torch-free)."""
+    try:
+        import torch  # pylint: disable=import-outside-toplevel,import-error
+
+        return bool(torch.cuda.is_available())
+    except ImportError:
+        return False
+
+
+def _embed_device() -> str:
+    """Torch device for the local sentence-transformers backend.
+
+    `IETF_LLM_EMBED_DEVICE` overrides; otherwise the default deliberately
+    **avoids MPS**. PyTorch's MPS caching allocator fragments badly on our
+    variable-length inputs: indexing one modest corpus (bge-small, ~11k chunks
+    spanning ~50–50000 chars) drove the process footprint to ~11 GB on Apple
+    Silicon — enough to push a co-resident reader into memory pressure — while
+    CPU held ~1–2 GB for the same work, at a ~15–30% time cost and
+    numerically-equivalent vectors (max abs diff ~3e-7, min cosine 0.99999982,
+    so no re-embed). CUDA has no such pathology, so it is kept. See
+    docs/architecture.md ("Embedding device") and the PyTorch MPS memory
+    issues; revisit the default (drop back to MPS) if that is fixed."""
+    override = os.environ.get("IETF_LLM_EMBED_DEVICE", "").strip().lower()
+    if override:
+        return override
+    return "cuda" if _cuda_available() else "cpu"
+
+
 def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
     """Construct (and persist registration of) a sentence-transformers model.
 
@@ -130,8 +162,22 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
             )
             models.append({"name": bare, "trust_remote_code": False})
             write_models(models)
-        # Constructing the model triggers the HF download on first use.
-        return SentenceTransformerModel(f"{_ST_PREFIX}{bare}", bare, False)
+        # The plugin lazily builds its underlying SentenceTransformer with no
+        # device argument (auto-selecting MPS on Apple Silicon), which we must
+        # not do — see `_embed_device`. Construct the wrapper (cheap) and
+        # pre-seed its `_model` on the chosen device; the HF download triggers
+        # here on first use.
+        model = SentenceTransformerModel(f"{_ST_PREFIX}{bare}", bare, False)
+        device = _embed_device()
+        from sentence_transformers import (  # pylint: disable=import-outside-toplevel,import-error
+            SentenceTransformer,
+        )
+
+        model._model = SentenceTransformer(  # pylint: disable=protected-access
+            bare, device=device, trust_remote_code=False
+        )
+        log(f"Loaded {bare} on device={device}.", verbose, level=LogLevel.PROGRESS)
+        return model
     except Exception as err:  # pylint: disable=broad-except
         # The underlying stack (huggingface_hub, sentence-transformers,
         # torch) doesn't expose a stable exception hierarchy, so we

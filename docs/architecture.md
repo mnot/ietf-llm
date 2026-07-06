@@ -749,8 +749,9 @@ new notebook each update rather than merge into an existing one.
 ### The default embedding model is local; the backend is pluggable
 
 `sentence-transformers/BAAI/bge-small-en-v1.5` is the default (~130 MB,
-MPS-accelerated, no API key), but it lives behind the optional
-`local-embeddings` extra (torch is not in the base install). The
+no API key, CPU by default — see *Embedding device* below), but it lives
+behind the optional `local-embeddings` extra (torch is not in the base
+install). The
 `_get_embed_model` choke point dispatches on an id *prefix*:
 `sentence-transformers/` constructs the local model;
 `openai-embed/<model>` constructs a provider-neutral, network-backed
@@ -766,6 +767,19 @@ Vectors are *not* portable across backends — even the "same" model isn't
 bit-identical across runtimes — so the id prefixes never collide and a
 dimension change forces a rebuild. See the *Embedding backends* doc
 (`models.md`) for the variables.
+
+**Embedding device.** The local backend runs on **CPU by default**, not MPS.
+PyTorch's MPS caching allocator fragments badly on variable-length inputs:
+indexing one modest corpus (bge-small, ~11k chunks spanning ~50–50000 chars)
+drove the process footprint to ~11 GB on Apple Silicon — enough to push a
+co-resident reader into memory pressure and stall it — while CPU held ~1–2 GB
+for the same work at a ~15–30% time cost. The vectors are numerically
+equivalent across the two devices (max abs diff ~3e-7, min cosine 0.99999982),
+so the choice needs no re-embed and the recorded model id is unchanged. CUDA
+has no such pathology and is still auto-selected. `_embed_device` is the choke
+point; `IETF_LLM_EMBED_DEVICE` overrides (`cpu` / `mps` / `cuda`). This is a
+workaround for the upstream PyTorch MPS memory bug (pytorch/pytorch#77753,
+#164299) — **revisit and drop back to MPS if that is fixed.**
 
 ### `--summarize` requires explicit setup; embedding doesn't
 
