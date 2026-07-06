@@ -40,7 +40,7 @@ import json
 import os
 from typing import Any, Callable, Dict, Optional
 
-from ...catalog import catalog_index_dir
+from ...singletons.catalog import catalog_index_dir
 from ...store.kv import ABSENT, KvStore
 from . import datatracker, datatracker_github, datatracker_people, github_users
 

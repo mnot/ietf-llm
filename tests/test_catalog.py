@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm import catalog
+from ietf_llm.singletons import catalog
 from ietf_llm.gather.sources import catalog as gather_catalog
 
 # --- Synthetic Datatracker payloads ---------------------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from ..rfcs import render_rfc, render_search
+from ..singletons.rfcs import render_rfc, render_search
 from .common import _offload
 
 if TYPE_CHECKING:
