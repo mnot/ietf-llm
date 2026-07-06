@@ -19,9 +19,9 @@ that tolerate more. The caps are the keystone that lets the document stage
 parallelise (fast) while keeping datatracker polite (safe).
 
 Deliberately stdlib-only — it imports nothing from the rest of the package.
-`utils` (which the governor wraps) sits *below* `config` in the import graph, so
-anything `utils` imports must not reach the `config` package (including
-`config.service`), or it forms a cycle. The two caps are therefore read straight
+`net` (whose `governed_get` wraps the governor) and `utils` both sit *below*
+`config` in the import graph, so nothing they import must reach the `config`
+package (including `config.service`), or it forms a cycle. The two caps are therefore read straight
 from the environment here rather than through `config.service`:
 
   - ``IETF_LLM_HTTP_MAX_PER_HOST`` (default 6) — the general per-host cap.

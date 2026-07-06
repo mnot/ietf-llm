@@ -3,32 +3,18 @@ import json
 import os
 import re
 import sys
-import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
-from functools import lru_cache
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-
-import requests
-from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
     _fcntl = None  # type: ignore[assignment]
 
-from . import __version__, http_metrics
-from .http_governor import host_slot
+from . import __version__
 
-# Identify the client and give upstream operators a contact path. A shared
-# community service (datatracker especially) would rather reach the tool's
-# author than blind-block a misbehaving User-Agent; the repo URL is that path.
-DEFAULT_HEADERS = {
-    "User-Agent": f"ietf-llm/{__version__} (+https://github.com/mnot/ietf-llm)"
-}
 DEFAULT_MONTHS = 12
 
 
@@ -85,49 +71,6 @@ def resolve_months(months: Optional[int], force: bool) -> Tuple[int, Optional[st
             f"default {DEFAULT_MONTHS}-month window"
         )
     return (DEFAULT_MONTHS if months is None else months), None
-
-
-# --- Shared HTTP session ---------------------------------------------------
-#
-# A single gather fires dozens-to-hundreds of sequential HTTPS requests,
-# almost all to datatracker.ietf.org. A bare requests.get() opens a fresh
-# TCP + TLS connection every time, so the handshake (1-2 RTT) is paid per
-# request — pure waste against a keep-alive host. One process-wide Session
-# with a connection pool amortises that across the whole run. The mounted
-# adapter also retries transient transport errors and 5xx / 429 with
-# exponential backoff (the pipeline otherwise has none), honouring
-# Retry-After. Every gather-side fetch routes through this.
-
-_SESSION: Optional[requests.Session] = None
-_SESSION_LOCK = threading.Lock()
-
-
-def http_session() -> requests.Session:
-    """Return the process-wide pooled, retrying `requests.Session`.
-
-    Lazily built under a lock (the MCP runner can gather two corpora in
-    separate threads); urllib3's underlying pool is thread-safe for the
-    concurrent GETs the pipeline issues."""
-    global _SESSION  # pylint: disable=global-statement
-    if _SESSION is None:
-        with _SESSION_LOCK:
-            if _SESSION is None:
-                session = requests.Session()
-                retry = Retry(
-                    total=3,
-                    backoff_factor=0.5,
-                    status_forcelist=(429, 500, 502, 503, 504),
-                    allowed_methods=frozenset({"GET", "HEAD"}),
-                    respect_retry_after_header=True,
-                    raise_on_status=False,
-                )
-                adapter = HTTPAdapter(
-                    pool_connections=8, pool_maxsize=8, max_retries=retry
-                )
-                session.mount("https://", adapter)
-                session.mount("http://", adapter)
-                _SESSION = session
-    return _SESSION
 
 
 def cached_wg_names() -> List[str]:
@@ -445,173 +388,6 @@ def write_if_changed(path: str, content: str) -> bool:
     return True
 
 
-@lru_cache(maxsize=128)
-def fetch_group_object(wg_name: str) -> Optional[Dict[str, Any]]:
-    """Fetch a group's Datatracker record by acronym, or None.
-
-    One JSON call to `/api/v1/group/group/?acronym=<wg>` backs all the
-    group-metadata helpers (type, title, mailing list) so we read
-    structured fields instead of scraping the group's About page.
-    Cached per process, so a single gather resolves each group once
-    across charter / drafts / mbox / index / export.
-
-    Synthetic (`x-`) corpora have no Datatracker record, so the lookup
-    is skipped entirely (returns None; callers fall back to defaults).
-    """
-    if is_synthetic_wg(wg_name):
-        return None
-    url = (
-        "https://datatracker.ietf.org/api/v1/group/group/"
-        f"?acronym={wg_name}&format=json"
-    )
-    res = fetch_resource(url)
-    if not res:
-        return None
-    try:
-        objects = res.json().get("objects") or []
-    except ValueError:
-        return None
-    return objects[0] if objects else None
-
-
-@lru_cache(maxsize=128)
-def get_group_resources(wg_name: str) -> Tuple[Tuple[str, str, str], ...]:
-    """A group's "Additional Resources" as `((slug, label, value), …)`.
-
-    `slug` is the resource type from the extresourcename URI
-    (`github_org`, `webpage`, `zulip`, `mailing_list_archive`, …);
-    `label` is the human display name ("repositories", "alternate
-    list archives", …), falling back to the slug; `value` is its
-    URL / string. Empty for synthetic corpora or groups with no
-    resources. Read from `/api/v1/group/groupextresource/`, cached
-    per run. Returns a tuple so it stays hashable for the cache.
-    """
-    group = fetch_group_object(wg_name)
-    if not group or group.get("id") is None:
-        return ()
-    url = (
-        "https://datatracker.ietf.org/api/v1/group/groupextresource/"
-        f"?group={group['id']}&format=json&limit=200"
-    )
-    res = fetch_resource(url)
-    if not res:
-        return ()
-    try:
-        objects = res.json().get("objects") or []
-    except ValueError:
-        return ()
-    out: List[Tuple[str, str, str]] = []
-    for obj in objects:
-        slug = (obj.get("name") or "").rstrip("/").rsplit("/", 1)[-1]
-        value = obj.get("value") or ""
-        if slug and value:
-            out.append((slug, obj.get("display_name") or slug, value))
-    # Sort for deterministic output: group.md is write-if-changed, so a
-    # non-deterministic API ordering would churn the file (and re-embed)
-    # on every gather.
-    return tuple(sorted(out))
-
-
-#: List name embedded in a mailarchive.ietf.org browse URL.
-_MAILARCHIVE_BROWSE_RE = re.compile(
-    r"mailarchive\.ietf\.org/arch/browse/([^/?#]+)", re.IGNORECASE
-)
-
-
-def get_mailing_list_name(wg_name: str) -> str:
-    """Return the WG's mailing list name for the IMAP archive.
-
-    Normally the local part of the Datatracker `list_email` (e.g.
-    `tls` for tls@ietf.org). When the list is hosted off the IETF
-    infrastructure — httpbis runs at w3.org — the IETF keeps a mirror
-    under a different name; the "alternate list archives" Additional
-    Resource points at `mailarchive.ietf.org/arch/browse/<name>/`,
-    which is what the IMAP server exposes, so we prefer that `<name>`
-    (httpbis → `httpbisa`). Falls back to the WG shortname when no
-    record / address is found.
-    """
-    group = fetch_group_object(wg_name)
-    if not group:
-        return wg_name
-    list_email = group.get("list_email") or ""
-    if "@" not in list_email:
-        return wg_name
-    primary, domain = list_email.split("@", 1)
-    if domain.lower() not in ("ietf.org", "irtf.org"):
-        for slug, _label, value in get_group_resources(wg_name):
-            if slug == "mailing_list_archive":
-                match = _MAILARCHIVE_BROWSE_RE.search(value)
-                if match:
-                    return match.group(1)
-    return primary or wg_name
-
-
-def get_group_type(wg_name: str) -> str:
-    """'ietf' for a Working Group, 'irtf' for a Research Group.
-
-    Read from the group's `type` field on Datatracker
-    (`.../grouptypename/wg|rg/`). Defaults to 'ietf'.
-    """
-    group = fetch_group_object(wg_name)
-    if group:
-        type_uri = (group.get("type") or "").rstrip("/")
-        if type_uri.endswith("/rg"):
-            return "irtf"
-    return "ietf"
-
-
-def get_group_state(wg_name: str) -> Optional[str]:
-    """Group state slug — `active`, `concluded`, `replaced`, … — from
-    the Datatracker `state` field, or None when there's no record.
-
-    Worth surfacing because it changes how a consumer reads the
-    corpus: a concluded WG won't see new activity, so 'latest thread'
-    being old is expected rather than a staleness signal.
-    """
-    group = fetch_group_object(wg_name)
-    if not group:
-        return None
-    state_uri = (group.get("state") or "").rstrip("/")
-    return state_uri.rsplit("/", 1)[-1] or None if state_uri else None
-
-
-def get_group_name(wg_name: str) -> Optional[str]:
-    """The group's human-readable name (e.g. httpbis -> 'HTTP'), or None.
-
-    Persisted into `group.md` so the corpus listing can name a group by
-    its title rather than just its shortname, without a network call.
-    """
-    group = fetch_group_object(wg_name)
-    if not group:
-        return None
-    return (group.get("name") or "").strip() or None
-
-
-def get_group_area(wg_name: str) -> Optional[Tuple[str, str]]:
-    """The group's parent area as `(acronym, name)`, or None.
-
-    Resolves the `parent` link on the group record (e.g. httpbis →
-    `('wit', 'Web and Internet Transport')`). Returns None for groups
-    with no parent or when the lookup fails.
-    """
-    group = fetch_group_object(wg_name)
-    if not group:
-        return None
-    parent_uri = group.get("parent")
-    if not parent_uri:
-        return None
-    res = fetch_resource(f"https://datatracker.ietf.org{parent_uri}?format=json")
-    if not res:
-        return None
-    try:
-        parent = res.json()
-    except ValueError:
-        return None
-    acronym = parent.get("acronym") or ""
-    name = parent.get("name") or ""
-    return (acronym, name) if (acronym or name) else None
-
-
 def graceful_keyboard_interrupt(
     entry: "Callable[[], None]",
 ) -> "Callable[[], None]":
@@ -731,116 +507,6 @@ def log(
     print(f"{prefix}{message}", file=sys.stderr)
 
 
-def governed_get(url: str, **kwargs: Any) -> requests.Response:
-    """GET `url` through the shared session while holding a per-host
-    concurrency slot (see `http_governor`).
-
-    Every gather-side fetch routes through here — `fetch_resource` and the
-    direct `http_session().get` call sites in `gather/*` — so that a wide
-    fan-out or several concurrent gathers can never exceed the per-host budget,
-    datatracker especially. The GET is non-streaming, so the slot is held for
-    the whole request including the body transfer — which is what bounds
-    concurrency through large draft / RFC downloads. Callers handle status,
-    retries (via the adapter), and metrics exactly as for a bare session GET."""
-    with host_slot(url):
-        return http_session().get(url, **kwargs)
-
-
-def fetch_resource(
-    url: str, headers: Optional[Dict[str, str]] = None
-) -> Optional[requests.Response]:
-    """Fetch a resource and return the response object."""
-    combined_headers = DEFAULT_HEADERS.copy()
-    if headers:
-        combined_headers.update(headers)
-    try:
-        res = governed_get(url, headers=combined_headers, timeout=30)
-        res.raise_for_status()
-        http_metrics.record(url, res.status_code, len(res.content))
-        return res
-    except requests.RequestException as err:
-        status = err.response.status_code if err.response is not None else 0
-        n_bytes = len(err.response.content) if err.response is not None else 0
-        http_metrics.record(url, status, n_bytes, error=True)
-        log(f"Error fetching {url}: {err}", level=LogLevel.ERROR)
-        return None
-
-
-def clean_html(html_content: str) -> str:
-    """Simple HTML to text conversion using BeautifulSoup with aggressive cleaning."""
-    if not html_content:
-        return ""
-    bs_soup = BeautifulSoup(html_content, "html.parser")
-
-    # Remove common navigation and header/footer tags
-    for element in bs_soup(["script", "style", "nav", "header", "footer", "aside"]):
-        element.decompose()
-
-    # Strip specific navigation and alert components
-    for cls_name in ["navbar", "alert", "modal", "visually-hidden"]:
-
-        def match_class(cls_val: Optional[str], target: str = cls_name) -> bool:
-            return bool(
-                cls_val and any(val.startswith(target) for val in cls_val.split())
-            )
-
-        for element in bs_soup.find_all(class_=match_class):
-            if element.name not in ["body", "html", "main"]:
-                element.decompose()
-
-    # Specifically remove the "Skip to main content" links
-    for skip_link in bs_soup.find_all("a"):
-        skip_text = skip_link.get_text(strip=True).lower()
-        if "skip to" in skip_text:
-            skip_link.decompose()
-
-    # Get text
-    text = bs_soup.get_text()
-
-    # Break into lines and remove leading and trailing space on each
-    lines = (line.strip() for line in text.splitlines())
-
-    # Prohibited patterns (mostly IETF boilerplate/footer links)
-    prohibited = [
-        r"^Privacy Statement$",
-        r"^About IETF Datatracker$",
-        r"^Version \d",
-        r"^System Status$",
-        r"^Report a bug$",
-        r"^IETF LLC$",
-        r"^IETF Trust$",
-        r"^RFC Editor$",
-        r"^IANA$",
-        r"^NomComs$",
-        r"^Downref registry$",
-        r"^Liaison statements$",
-    ]
-    prohibited_regex = re.compile("|".join(prohibited), re.I)
-
-    # Filter out lines that match prohibited patterns or are empty
-    filtered_lines = []
-    for line in lines:
-        if not line:
-            continue
-        if prohibited_regex.match(line):
-            continue
-        filtered_lines.append(line)
-
-    # Reassemble and drop blank lines
-    text = "\n".join(filtered_lines)
-
-    return text.strip()
-
-
 def format_filename(name: str) -> str:
     """Format a string to be a safe filename."""
     return re.sub(r"[^\w\s-]", "", name).strip().lower().replace(" ", "_")
-
-
-def get_wg_title(wg_name: str) -> str:
-    """Full group name from the IETF Datatracker (e.g. 'Transport Layer
-    Security'), or a generic fallback when no record is found."""
-    group = fetch_group_object(wg_name)
-    if group and group.get("name"):
-        return str(group["name"])
-    return f"{wg_name.upper()} Working Group"

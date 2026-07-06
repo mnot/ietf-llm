@@ -18,11 +18,11 @@ from ...utils import (
     Verbosity,
     atomic_open_binary,
     get_cache_dir,
-    get_mailing_list_name,
-    governed_get,
     log,
     write_if_changed,
 )
+from ...net import governed_get
+from ...datatracker_api import get_mailing_list_name
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993

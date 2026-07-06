@@ -1,4 +1,4 @@
-"""Tests for Datatracker group-metadata helpers in `utils`.
+"""Tests for Datatracker group-metadata helpers in `datatracker_api`.
 
 `get_mailing_list_name` / `get_group_resources` read the group record
 and its Additional Resources from the API. We stub `fetch_resource`
@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ietf_llm import utils
+from ietf_llm import datatracker_api, utils
 
 
 class _FakeResp:
@@ -32,10 +32,10 @@ def _stub_api(
     group: Optional[Dict[str, Any]],
     resources: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Stub utils.fetch_resource: group record by acronym, extresources
+    """Stub datatracker_api.fetch_resource: group record by acronym, extresources
     by group id. Clears the per-process caches first."""
-    utils.fetch_group_object.cache_clear()
-    utils.get_group_resources.cache_clear()
+    datatracker_api.fetch_group_object.cache_clear()
+    datatracker_api.get_group_resources.cache_clear()
 
     def fake_fetch(
         url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
@@ -46,7 +46,7 @@ def _stub_api(
             return _FakeResp({"objects": resources or []})
         return None
 
-    monkeypatch.setattr(utils, "fetch_resource", fake_fetch)
+    monkeypatch.setattr(datatracker_api, "fetch_resource", fake_fetch)
 
 
 def test_mailing_list_name_primary_for_ietf_list(
@@ -54,7 +54,7 @@ def test_mailing_list_name_primary_for_ietf_list(
 ) -> None:
     _stub_api(monkeypatch, {"id": 1, "list_email": "tls@ietf.org"})
     # An ietf.org list uses its local part directly; no resource lookup.
-    assert utils.get_mailing_list_name("tls") == "tls"
+    assert datatracker_api.get_mailing_list_name("tls") == "tls"
 
 
 def test_mailing_list_name_falls_back_to_alternate_archive(
@@ -75,7 +75,7 @@ def test_mailing_list_name_falls_back_to_alternate_archive(
             },
         ],
     )
-    assert utils.get_mailing_list_name("httpbis") == "httpbisa"
+    assert datatracker_api.get_mailing_list_name("httpbis") == "httpbisa"
 
 
 def test_mailing_list_name_external_without_alternate_keeps_primary(
@@ -84,14 +84,14 @@ def test_mailing_list_name_external_without_alternate_keeps_primary(
     # Off-IETF list but no mailing_list_archive resource → best-effort
     # primary local part (mail sync will just find nothing, gracefully).
     _stub_api(monkeypatch, {"id": 2, "list_email": "some-list@example.com"}, [])
-    assert utils.get_mailing_list_name("foo") == "some-list"
+    assert datatracker_api.get_mailing_list_name("foo") == "some-list"
 
 
 def test_mailing_list_name_no_record_uses_shortname(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_api(monkeypatch, None)
-    assert utils.get_mailing_list_name("ghostwg") == "ghostwg"
+    assert datatracker_api.get_mailing_list_name("ghostwg") == "ghostwg"
 
 
 def test_group_resources_parses_slug_label_and_value(
@@ -114,7 +114,7 @@ def test_group_resources_parses_slug_label_and_value(
         ],
     )
     by_slug = {slug: (label, value) for slug, label, value in
-               utils.get_group_resources("httpbis")}
+               datatracker_api.get_group_resources("httpbis")}
     assert by_slug["webpage"] == ("home page", "https://httpwg.org/")
     assert by_slug["zulip"][0] == "zulip"  # slug fallback
     assert by_slug["zulip"][1].endswith("225-httpbis")
@@ -122,7 +122,7 @@ def test_group_resources_parses_slug_label_and_value(
 
 def test_group_state_and_area(monkeypatch: pytest.MonkeyPatch) -> None:
     # State comes off the group record; area resolves the parent link.
-    utils.fetch_group_object.cache_clear()
+    datatracker_api.fetch_group_object.cache_clear()
 
     def fake_fetch(
         url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
@@ -137,13 +137,13 @@ def test_group_state_and_area(monkeypatch: pytest.MonkeyPatch) -> None:
             return _FakeResp({"acronym": "wit", "name": "Web and Internet Transport"})
         return None
 
-    monkeypatch.setattr(utils, "fetch_resource", fake_fetch)
-    assert utils.get_group_state("httpbis") == "active"
-    assert utils.get_group_area("httpbis") == ("wit", "Web and Internet Transport")
+    monkeypatch.setattr(datatracker_api, "fetch_resource", fake_fetch)
+    assert datatracker_api.get_group_state("httpbis") == "active"
+    assert datatracker_api.get_group_area("httpbis") == ("wit", "Web and Internet Transport")
 
 
 def test_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    utils.fetch_group_object.cache_clear()
+    datatracker_api.fetch_group_object.cache_clear()
 
     def fake_fetch(
         url: str, headers: Optional[Dict[str, str]] = None,  # noqa: ARG001
@@ -152,11 +152,11 @@ def test_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
             return _FakeResp({"objects": [{"id": 1718, "name": "HTTP"}]})
         return None
 
-    monkeypatch.setattr(utils, "fetch_resource", fake_fetch)
-    assert utils.get_group_name("httpbis") == "HTTP"
-    utils.fetch_group_object.cache_clear()
-    monkeypatch.setattr(utils, "fetch_resource", lambda *a, **k: None)
-    assert utils.get_group_name("nope") is None
+    monkeypatch.setattr(datatracker_api, "fetch_resource", fake_fetch)
+    assert datatracker_api.get_group_name("httpbis") == "HTTP"
+    datatracker_api.fetch_group_object.cache_clear()
+    monkeypatch.setattr(datatracker_api, "fetch_resource", lambda *a, **k: None)
+    assert datatracker_api.get_group_name("nope") is None
 
 
 # --- group.md writer + overview surfacing --------------------------------

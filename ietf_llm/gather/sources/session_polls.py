@@ -31,7 +31,8 @@ from ...paths import (
     poll_path,
     polls_dir,
 )
-from ...utils import LogLevel, Verbosity, atomic_open, fetch_resource, log
+from ...utils import LogLevel, Verbosity, atomic_open, log
+from ...net import fetch_resource
 from .datatracker import iter_group_documents
 
 #: Datatracker polls document name: `polls-<meeting>-<wg>-<YYYYMMDDHHmm>`.

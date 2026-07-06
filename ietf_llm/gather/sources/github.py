@@ -7,14 +7,8 @@ from typing import Any, Dict, Iterator, List, Optional
 import requests
 
 from ... import paths
-from ...utils import (
-    DEFAULT_HEADERS,
-    LogLevel,
-    Verbosity,
-    atomic_open,
-    governed_get,
-    log,
-)
+from ...utils import LogLevel, Verbosity, atomic_open, log
+from ...net import DEFAULT_HEADERS, governed_get
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":

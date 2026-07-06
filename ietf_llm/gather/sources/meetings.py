@@ -15,17 +15,14 @@ from ...paths import (
     slides_dir,
 )
 from ...utils import (
-    DEFAULT_HEADERS,
     LogLevel,
     Verbosity,
     atomic_open_binary,
-    clean_html,
-    fetch_resource,
     format_filename,
-    governed_get,
     log,
     write_if_changed,
 )
+from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
 from .datatracker import _get_json, iter_group_documents
 from .materials_manifest import load_manifest, save_manifest
 from .session_polls import process_session_polls

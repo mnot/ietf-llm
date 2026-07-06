@@ -58,13 +58,13 @@ from ..utils import (
     DEFAULT_MONTHS,
     LogLevel,
     Verbosity,
-    fetch_group_object,
     get_cache_dir,
     get_wg_file_cache_dir,
     is_synthetic_wg,
     log,
     resolve_months,
 )
+from ..datatracker_api import fetch_group_object
 
 SCOPE = "gather"
 

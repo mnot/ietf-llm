@@ -8,7 +8,7 @@ upstream load we generate: a passive accumulator that the two network
 chokepoints record every request into —
 
   - `_get_json` in `gather/sources/datatracker.py` (the ETag-aware JSON API path)
-  - `fetch_resource` in `utils.py` (raw resource fetches)
+  - `fetch_resource` in `net.py` (raw resource fetches)
 
 — which together cover essentially all egress. It counts requests split
 by outcome (real transfer / 304 revalidation / error), total bytes
@@ -215,8 +215,8 @@ def persist(wg_cache_dir: str) -> None:
     """Write the current accumulator to `<wg_cache_dir>/gather-metrics.json`.
 
     The caller passes the corpus directory (`<cache>/<wg>/`) so this module
-    needs nothing from `utils`, which imports us back (it hosts one of the
-    chokepoints). Best-effort, like the freshness sentinel it sits beside:
+    needs nothing from the rest of the package; `net` imports us back (it hosts
+    the `fetch_resource` chokepoint). Best-effort, like the freshness sentinel it sits beside:
     a failed write just means there's no baseline to compare next run."""
     path = os.path.join(wg_cache_dir, _METRICS_NAME)
     try:
