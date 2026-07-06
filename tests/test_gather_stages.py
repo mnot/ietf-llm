@@ -1,5 +1,5 @@
 """Tests for the gather stage plan and progress tracker
-(ietf_llm.gather_stages), plus the writer-side guard that the inline
+(ietf_llm.gather.stages), plus the writer-side guard that the inline
 `tracker.begin(...)` sequence in `_gather_one` matches `stage_plan`.
 """
 

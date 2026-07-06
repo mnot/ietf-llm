@@ -1,4 +1,4 @@
-"""Tests for the background gather runner (ietf_llm.gather_runner) and the
+"""Tests for the background gather runner (ietf_llm.gather.runner) and the
 writer-side guard that `_gather_one`'s inline stage sequence matches
 `stage_plan` for each corpus shape.
 

@@ -123,7 +123,7 @@ def test_child_unusable_corpus_maps_to_distinct_exit(
 
 
 def _fake_child(tmp_path: Path) -> Path:
-    """A stand-in for `ietf_llm.gather_child`: emits two records, then exits with
+    """A stand-in for `ietf_llm.gather.child`: emits two records, then exits with
     `FAKE_EXIT` (optionally sleeping first, for the cancellation test)."""
     script = tmp_path / "fake_child.py"
     script.write_text(
