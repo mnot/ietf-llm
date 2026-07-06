@@ -48,7 +48,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .. import canonical, freshness, serve_metrics
+from .. import freshness, serve_metrics
+from ..corpus import canonical
 from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log

@@ -13,7 +13,8 @@ from ietf_llm import mcp
 from pathlib import Path
 from typing import Iterable, List
 
-from ietf_llm import embeddings, routing
+from ietf_llm import embeddings
+from ietf_llm.corpus import routing
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.embeddings.topics import generate_topics, routing_projection
 from ietf_llm.store.kv import InMemoryKvStore

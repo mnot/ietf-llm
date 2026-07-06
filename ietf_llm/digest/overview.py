@@ -23,7 +23,7 @@ from ..embeddings.storage import read_topics
 from ..freshness import gather_suggestion
 from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import ballots_dir, charter_path, group_path, threads_dir
-from ..routing import generic_theme_flags
+from ..corpus.routing import generic_theme_flags
 from .query import (
     is_ballot_position,
     is_idaction_publication,

@@ -421,7 +421,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # to a local topics.json scan, which would materialise versions.
         if self._kv is None:
             return {}
-        from .. import routing  # pylint: disable=import-outside-toplevel
+        from ..corpus import routing  # pylint: disable=import-outside-toplevel
 
         return routing.read_fleet_table(self._kv)
 
@@ -433,7 +433,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # version. Best-effort: never fail an already-succeeded publish.
         if self._kv is None:
             return
-        from .. import routing  # pylint: disable=import-outside-toplevel
+        from ..corpus import routing  # pylint: disable=import-outside-toplevel
         from ..embeddings.topics import (  # pylint: disable=import-outside-toplevel
             routing_projection,
         )

@@ -18,7 +18,7 @@ from ..digest.overview import (
 from ..embeddings import chunk_counts
 from ..freshness import gather_enabled, gather_suggestion
 from ..paths import digest_kind_from_relpath
-from ..routing import DEFAULT_MIN_SCORE, route
+from ..corpus.routing import DEFAULT_MIN_SCORE, route
 from ..store.corpus import get_corpus_store
 from .common import (
     _DIGEST_KINDS,

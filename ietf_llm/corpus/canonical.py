@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import Any, List, Optional, Tuple
 
-from . import config, freshness
-from .paths import cached_wg_names, is_synthetic_wg
+from .. import config, freshness
+from ..paths import cached_wg_names, is_synthetic_wg
 
 SCOPE = "gather"
 
@@ -26,7 +26,7 @@ SCOPE = "gather"
 def _norm_draft(name: str) -> str:
     # Lazy import keeps the gather pipeline's deps off the read-only path;
     # this module is only consulted at the gather entry point.
-    from .gather.sources.drafts import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.drafts import (  # pylint: disable=import-outside-toplevel
         normalize_draft_name,
     )
 
@@ -34,7 +34,7 @@ def _norm_draft(name: str) -> str:
 
 
 def _norm_list(name: str) -> str:
-    from .gather.sources.mbox import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.mbox import (  # pylint: disable=import-outside-toplevel
         normalize_list_name,
     )
 

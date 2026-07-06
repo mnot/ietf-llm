@@ -29,9 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 
-from .embeddings.storage import decode_centroid
-from .log import Verbosity
-from .store.kv import ABSENT, KvStore
+from ..embeddings.storage import decode_centroid
+from ..log import Verbosity
+from ..store.kv import ABSENT, KvStore
 
 #: Cosine floor (on **mean-centered** scores) for a confident match: below it,
 #: routing abstains rather than name a least-bad corpus. Calibrated for the
@@ -142,7 +142,7 @@ def _load_table() -> "Tuple[Dict[str, RoutingEntry], set[str]]":
     graph). The table is intersected with the cached set: the cloud key is
     additive per publish, so a removed corpus can linger there and must not be
     scored (the local scan is already cache-bounded)."""
-    from .store.corpus import (  # pylint: disable=import-outside-toplevel
+    from ..store.corpus import (  # pylint: disable=import-outside-toplevel
         get_corpus_store,
     )
 
@@ -293,10 +293,10 @@ def _scan_local(corpora: List[str]) -> Dict[str, Any]:
     """Assemble the routing table from local `topics.json` sidecars — the local
     backend's path (the cloud backend supplies a fleet key instead). Reads
     `embeddings` here so `store.corpus` stays off that import graph."""
-    from .embeddings.storage import (  # pylint: disable=import-outside-toplevel
+    from ..embeddings.storage import (  # pylint: disable=import-outside-toplevel
         read_topics,
     )
-    from .embeddings.topics import (  # pylint: disable=import-outside-toplevel
+    from ..embeddings.topics import (  # pylint: disable=import-outside-toplevel
         routing_projection,
     )
 
@@ -317,7 +317,7 @@ def _embed_query(
     """Embed and L2-normalise `query` with `model_id`, or None if the model
     can't load or the embed fails (same provider-variability story as
     `search`)."""
-    from .embeddings.models import (  # pylint: disable=import-outside-toplevel
+    from ..embeddings.models import (  # pylint: disable=import-outside-toplevel
         _get_embed_model,
     )
 

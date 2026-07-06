@@ -1,4 +1,4 @@
-"""Tests for custom/synthetic-corpus canonicalisation (ietf_llm.canonical):
+"""Tests for custom/synthetic-corpus canonicalisation (ietf_llm.corpus.canonical):
 a new corpus whose explicit sources overlap an already-cached one is steered
 toward reuse rather than minted afresh. Group / list corpora and re-gathers
 of an existing corpus are out of scope.
@@ -9,7 +9,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ietf_llm import canonical, config, freshness
+from ietf_llm import config, freshness
+from ietf_llm.corpus import canonical
 from ietf_llm.paths import get_wg_file_cache_dir
 
 
