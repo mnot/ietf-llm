@@ -360,8 +360,11 @@ ietf_llm/
 │   ├── blobs_s3.py         # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
 │   ├── s3.py               # shared S3Bucket: one boto3 client for blob + control planes
 │   └── cloud.py            # CloudCorpusStore: composes control + blob; publish + read + seed
-├── live_lookup.py          # live Datatracker reads (meeting_schedule / draft_status /
-│                           # overview reconciliation); gather-gated, the one networked read path
+├── live_lookup/            # live Datatracker reads (meeting_schedule / draft_status /
+│   │                       # overview reconciliation); gather-gated, the one networked read path
+│   ├── cache.py            # TTL-cached fetch seam (_fetch_json) + in-proc/on-disk cache; age_stamp
+│   ├── meetings.py         # a group's sessions at a meeting + its upcoming meetings
+│   └── drafts.py           # per-draft live status + overview reconciliation
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
@@ -914,7 +917,7 @@ half-populated index — see "Writers are write-if-changed and atomic".
 
 A narrower break from the no-network contract: `meeting_schedule`,
 `draft_status`, and `overview(corpus, live=True)` read **live** from Datatracker
-(`live_lookup.py`) because meeting schedules and IESG states change daily, so an
+(`live_lookup/`) because meeting schedules and IESG states change daily, so an
 agenda built on the (often days-stale) gather cache is wrong at the edges. A
 small TTL cache (`IETF_LLM_LIVE_TTL`, default 300s) is in-process plus a
 best-effort `.live-cache.json` on disk — the *only* thing this path writes,
