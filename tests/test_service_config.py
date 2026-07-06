@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm import config, service_config
+from ietf_llm import config
+from ietf_llm.config import service as service_config
 
 _STORE_ENV = (
     "IETF_LLM_STORE_BACKEND",

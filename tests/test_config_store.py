@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm import config_store
-from ietf_llm.config_store import (
+from ietf_llm.config import store as config_store
+from ietf_llm.config.store import (
     CloudConfigStore,
     ConfigStore,
     LocalConfigStore,

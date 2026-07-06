@@ -48,7 +48,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import canonical, freshness, gather_pipeline, serve_metrics, service_config
+from . import canonical, freshness, gather_pipeline, serve_metrics
+from .config import service as service_config
 
 # `GatherCancelled` lives in `gather_pipeline` (the raiser) and is re-exported
 # here so callers and `_run_one`'s `except` keep referring to it as

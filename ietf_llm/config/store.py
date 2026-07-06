@@ -3,7 +3,7 @@
 A sibling of `CorpusStore`, dispatched by the same `IETF_LLM_STORE_BACKEND`
 selector but kept separate on purpose:
 
-  - **Layering.** Global config selects the store backend (`service_config`
+  - **Layering.** Global config selects the store backend (`config.service`
     reads it), so it is structurally filesystem/env-bound and stays out of any
     store. This seam carries only *per-WG* config, which makes that boundary
     explicit.
@@ -26,10 +26,12 @@ import json
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 
-from . import config_fs, service_config
-from .store.control import KvControlPlane
+from . import fs, service
+
+if TYPE_CHECKING:  # annotation only; the runtime import is deferred to the cloud path
+    from ..store.control import KvControlPlane
 
 # Process-global, bounded-staleness cache of per-WG config reads on the cloud
 # backend: (cache_key, wg, scope) -> (raw payload or None, monotonic expiry).
@@ -80,16 +82,16 @@ class ConfigStore(ABC):
 
 class LocalConfigStore(ConfigStore):
     """Filesystem backend — today's behaviour, unchanged. Delegates straight to
-    `config_fs`, so the laptop CLI is unaffected."""
+    `config.fs`, so the laptop CLI is unaffected."""
 
     def load(self, wg: str, scope: str) -> Dict[str, Any]:
-        return config_fs.load(wg, scope)
+        return fs.load(wg, scope)
 
     def save(self, wg: str, scope: str, data: Mapping[str, Any]) -> None:
-        config_fs.save(wg, scope, data)
+        fs.save(wg, scope, data)
 
     def clear(self, wg: str) -> bool:
-        return config_fs.clear(wg)
+        return fs.clear(wg)
 
 
 class CloudConfigStore(ConfigStore):
@@ -163,7 +165,7 @@ def build_cloud_config_store() -> CloudConfigStore:
     if selected but under-configured. Builds its own `KvControlPlane` over the
     one S3 bucket (a cheap, lazily-connecting handle); the keys live under the
     same `corpora/<name>/` prefix as the corpus store's control keys."""
-    store_url = service_config.store_url()
+    store_url = service.store_url()
     if not store_url:
         raise ValueError(
             "cloud config store selected but not configured: missing "
@@ -175,15 +177,25 @@ def build_cloud_config_store() -> CloudConfigStore:
             f"s3:// locator (got {store_url!r})"
         )
     try:
-        from .store.kv_s3 import S3KvStore  # pylint: disable=import-outside-toplevel
-        from .store.s3 import S3Bucket  # pylint: disable=import-outside-toplevel
+        from ..store.kv_s3 import S3KvStore  # pylint: disable=import-outside-toplevel
+        from ..store.s3 import S3Bucket  # pylint: disable=import-outside-toplevel
     except ImportError as err:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
         ) from err
+    # Deferred on purpose — and load-bearing, not just lazy. This is the only
+    # `store` import in the whole `config` package. `store.corpus` imports
+    # `config.service`, so importing config already reaches back into store's
+    # consumers; hoisting this to module top would close a real cycle:
+    #   config.store -> store.control -> store/__init__ -> store.corpus
+    #     -> config.service -> config.store
+    # Keep it here (and the sibling S3 imports above) function-local. Do not tidy up.
+    # pylint: disable-next=import-outside-toplevel
+    from ..store.control import KvControlPlane
+
     return CloudConfigStore(
         KvControlPlane(S3KvStore(S3Bucket(store_url))),
-        resolve_ttl=service_config.resolve_ttl(),
+        resolve_ttl=service.resolve_ttl(),
         cache_key=store_url,
     )
 
@@ -195,7 +207,7 @@ def get_config_store() -> ConfigStore:
     routes per-WG config through the control plane, so a fleet shares it with no
     `IETF_LLM_CONFIG_DIR` mount. Same backend selector as `get_corpus_store`; an
     unrecognised value raises rather than silently falling back to local."""
-    backend = service_config.store_backend()
+    backend = service.store_backend()
     if backend == "local":
         return LocalConfigStore()
     if backend == "cloud":

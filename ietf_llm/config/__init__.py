@@ -24,16 +24,16 @@ import argparse
 import os
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from . import config_fs
-from .config_store import get_config_store
-from .utils import LogLevel, log
+from . import fs
+from .store import get_config_store
+from ..utils import LogLevel, log
 
 # Per-WG config (load / save / clear) is dispatched through the ConfigStore seam,
 # so a cloud deployment shares it fleet-wide via the control plane with no
 # IETF_LLM_CONFIG_DIR mount; the local backend keeps today's filesystem
 # behaviour. Global config is *not* store-routed — it selects the backend — so
 # load_global / save_global go straight to the filesystem leaf. See
-# config_store.py / config_fs.py.
+# config/store.py / config/fs.py.
 
 
 def load(wg: str, scope: str) -> Dict[str, Any]:
@@ -57,15 +57,15 @@ def load_global() -> Dict[str, Any]:
 
     Settings that are properties of the tool / deployment rather than a corpus
     (embedding model, summariser model, embed on/off), configured once and
-    applied everywhere. Always filesystem (env-overridable via `service_config`),
+    applied everywhere. Always filesystem (env-overridable via `config.service`),
     never store-routed — it is what selects the store backend.
     """
-    return config_fs.load_global()
+    return fs.load_global()
 
 
 def save_global(data: Mapping[str, Any]) -> None:
     """Persist the global service config (filesystem only)."""
-    config_fs.save_global(data)
+    fs.save_global(data)
 
 
 def _coerce_env(raw: str, default: Any) -> Any:
