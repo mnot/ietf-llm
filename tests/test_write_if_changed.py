@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ietf_llm.utils import write_if_changed
+from ietf_llm.atomicio import write_if_changed
 
 
 def test_crlf_content_is_written_once_then_stable(tmp_path: Path) -> None:

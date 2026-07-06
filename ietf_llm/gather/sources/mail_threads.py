@@ -50,7 +50,8 @@ from typing import Dict, List, Optional
 from ...paths import thread_path, threads_dir
 from ...people import Registry
 from ...text import _normalize_subject, _parse_date, _short_addr
-from ...utils import LogLevel, Verbosity, get_cache_dir, log, write_if_changed
+from ...utils import LogLevel, Verbosity, get_cache_dir, log
+from ...atomicio import write_if_changed
 from .mbox import extract_text_content
 
 

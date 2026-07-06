@@ -13,7 +13,8 @@ from typing import Optional
 from ..gather.sources.issue_files import _detect_duplicate_of, _participants
 from ..paths import digest_path, github_dir, issue_path, remove_stale_digest
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, atomic_open, log
+from ..utils import LogLevel, Verbosity, log
+from ..atomicio import atomic_open
 from .helpers import _state_is_open
 from .summarizer import _Summarizer
 

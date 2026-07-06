@@ -27,7 +27,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
-from ..utils import LogLevel, Verbosity, file_lock, log
+from ..utils import LogLevel, Verbosity, log
+from ..atomicio import file_lock
 from .chunking import CHUNKER_VERSION, _chunk_file, _eligible_files
 from .models import (
     DEFAULT_EMBED_MODEL,

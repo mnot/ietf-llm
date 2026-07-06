@@ -370,7 +370,9 @@ ietf_llm/
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs,
-│                           # atomic write/lock, is_synthetic_wg, months + argcomplete helpers
+│                           # is_synthetic_wg, months + argcomplete helpers
+├── atomicio.py             # concurrency-safe filesystem primitives: atomic writes
+│                           # (atomic_open / write_if_changed) + advisory file locks
 ├── net.py                  # HTTP transport: pooled retrying session, host-governed
 │                           # GET, metered fetch_resource, clean_html
 ├── datatracker_api.py               # IETF group metadata via the Datatracker API
@@ -692,7 +694,7 @@ affordances; we use all three:
 
 `mail_threads`, `issue_files`, `ballots`, and the digest/minutes
 writers regenerate content every gather but write a file only when its
-bytes actually changed (`utils.write_if_changed`). A byte-identical
+bytes actually changed (`atomicio.write_if_changed`). A byte-identical
 re-render leaves the file (and its mtime) untouched, avoiding needless
 I/O and churn. The embedder keys its incremental skip on each file's
 content hash — stable across hosts, so a cloud replica that materialises
@@ -707,7 +709,7 @@ chunks from lingering and doubles as the migration path when the
 eligibility rules change (an existing cache sheds the now-skipped
 revisions on its next gather, no `--rebuild` needed).
 
-Every-gather corpus writes also go through `utils.atomic_open` (temp +
+Every-gather corpus writes also go through `atomicio.atomic_open` (temp +
 `os.replace`), so the write is atomic — see the concurrency note below.
 
 ### Concurrency: gathers and servers can overlap
@@ -734,7 +736,7 @@ servers) can run at once. The safety model:
   (drafts, RFCs, transcripts, slide text) are written once and not
   listed until indexed, so their first-write window isn't observable.
 - **Shared single-clone / shared caches.** The one transcripts git
-  clone is guarded by `utils.file_lock` (flock) so concurrent gathers
+  clone is guarded by `atomicio.file_lock` (flock) so concurrent gathers
   serialise their clone/pull. The JSON side-caches
   (`.http-cache.json`, `materials.json`, `_github-users.json`,
   config) are written temp + rename; concurrent writers are

@@ -60,7 +60,8 @@ from ..paths import (
     remove_stale_digest,
 )
 from ..people import Registry
-from ..utils import LogLevel, Verbosity, atomic_open, log
+from ..utils import LogLevel, Verbosity, log
+from ..atomicio import atomic_open
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------

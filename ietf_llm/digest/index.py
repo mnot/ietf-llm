@@ -23,7 +23,8 @@ from ..paths import (
     SUBDIR_TRANSCRIPTS,
     digest_path,
 )
-from ..utils import LogLevel, Verbosity, atomic_open, log
+from ..utils import LogLevel, Verbosity, log
+from ..atomicio import atomic_open
 from ..datatracker_api import get_wg_title
 from .helpers import _fmt_size
 

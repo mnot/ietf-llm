@@ -1,7 +1,8 @@
 import os
 from typing import List, Optional
 
-from ...utils import LogLevel, Verbosity, atomic_open, log
+from ...utils import LogLevel, Verbosity, log
+from ...atomicio import atomic_open
 from ...net import fetch_resource
 from ...datatracker_api import get_group_type
 from .datatracker import _get_json

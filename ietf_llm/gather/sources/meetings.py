@@ -14,14 +14,8 @@ from ...paths import (
     minutes_path,
     slides_dir,
 )
-from ...utils import (
-    LogLevel,
-    Verbosity,
-    atomic_open_binary,
-    format_filename,
-    log,
-    write_if_changed,
-)
+from ...utils import LogLevel, Verbosity, format_filename, log
+from ...atomicio import atomic_open_binary, write_if_changed
 from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
 from .datatracker import _get_json, iter_group_documents
 from .materials_manifest import load_manifest, save_manifest

@@ -31,7 +31,8 @@ from ...paths import (
     poll_path,
     polls_dir,
 )
-from ...utils import LogLevel, Verbosity, atomic_open, log
+from ...utils import LogLevel, Verbosity, log
+from ...atomicio import atomic_open
 from ...net import fetch_resource
 from .datatracker import iter_group_documents
 

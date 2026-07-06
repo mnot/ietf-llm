@@ -63,14 +63,8 @@ from .linking import (
     resolve_github_via_datatracker,
 )
 from ..text import _parse_date
-from ..utils import (
-    LogLevel,
-    Verbosity,
-    atomic_open,
-    get_cache_dir,
-    get_wg_file_cache_dir,
-    log,
-)
+from ..utils import LogLevel, Verbosity, get_cache_dir, get_wg_file_cache_dir, log
+from ..atomicio import atomic_open
 
 # --- Person model ----------------------------------------------------------
 
