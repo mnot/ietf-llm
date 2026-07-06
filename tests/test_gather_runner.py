@@ -20,7 +20,7 @@ from typing import Any, List, Tuple
 import pytest
 
 from ietf_llm.gather import sequencer as main_mod
-from ietf_llm import config, freshness, serve_metrics, utils
+from ietf_llm import config, freshness, months, serve_metrics, utils
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.gather.stages import stage_plan
 from ietf_llm.utils import Verbosity
@@ -158,7 +158,7 @@ def test_stored_zero_months_degrades_without_force(
     config.save("myorg", main_mod.SCOPE, {"months": 0})
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)
-    assert args.months == utils.DEFAULT_MONTHS
+    assert args.months == months.DEFAULT_MONTHS
 
 
 def test_stored_zero_months_kept_with_force(

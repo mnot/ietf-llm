@@ -19,19 +19,15 @@ import copy
 import sys
 
 from .cli import list as cli_list
+from .completion import maybe_autocomplete, print_completion_snippet
 from .gather.cli import build_parser
 from .gather.sequencer import _gather_one
 from .gather.sources.catalog import ensure_catalog_index
 from .gather.sources.repo_discovery import print_discovery
 from .gather.sources.rfcs import ensure_rfc_index
+from .months import months_request_error
 from .skill_install import install_skills, sync_if_pristine
-from .utils import (
-    Verbosity,
-    graceful_keyboard_interrupt,
-    maybe_autocomplete,
-    months_request_error,
-    print_completion_snippet,
-)
+from .utils import Verbosity, graceful_keyboard_interrupt
 
 
 @graceful_keyboard_interrupt

@@ -4,67 +4,10 @@ import re
 import sys
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from . import __version__
 from .paths import get_cache_dir
-
-DEFAULT_MONTHS = 12
-
-
-def months_request_error(months: Optional[int], force: bool) -> Optional[str]:
-    """Validate a requested `--months` window, returning a refusal message or
-    None.
-
-    `months=0` means *all history* — an unbounded gather that, on an active
-    list, pulls tens of thousands of messages over IMAP and can run for a very
-    long time (and, on an ephemeral host, may be lost if it is recycled before
-    it publishes). So it is honoured only with `force`, to keep it from being
-    selected by accident (e.g. a caller meaning "minimal" passing 0). A negative
-    window is nonsensical. A bounded window (>=1) — or an unset `None` that later
-    defaults to `DEFAULT_MONTHS` — is always allowed."""
-    if months is None:
-        return None
-    if months < 0:
-        return (
-            f"months must be 0 or a positive number (got {months}): 0 means all "
-            "history, a positive number is a month window."
-        )
-    if months == 0 and not force:
-        return (
-            "months=0 fetches the entire list history — on an active list that "
-            "is tens of thousands of messages over IMAP and can take a very long "
-            "time. Pass a bounded window instead (e.g. 12), or force to confirm "
-            "you really want all of it."
-        )
-    return None
-
-
-def months_request_caution(months: Optional[int]) -> Optional[str]:
-    """A non-blocking heads-up for a large but bounded window, or None. Bounded
-    windows are always allowed; this just flags that one well past the default
-    will be slower. The unbounded `0` case is handled by `months_request_error`."""
-    if months is not None and months > DEFAULT_MONTHS:
-        return (
-            f"Note: a {months}-month window is well past the {DEFAULT_MONTHS}-"
-            "month default; on an active list expect a longer gather — poll "
-            "gather_status to watch it."
-        )
-    return None
-
-
-def resolve_months(months: Optional[int], force: bool) -> Tuple[int, Optional[str]]:
-    """Resolve the effective month window after config has been merged, returning
-    `(window, note)`. all-history (`months=0`) is a per-invocation choice, not a
-    sticky setting: it applies only with `force`, so a *stored* 0 on an unforced
-    run degrades to `DEFAULT_MONTHS` (with an explanatory `note`) rather than
-    silently making every refresh unbounded. `None` resolves to the default."""
-    if months == 0 and not force:
-        return DEFAULT_MONTHS, (
-            f"stored months=0 (all history) applies only with --force; using the "
-            f"default {DEFAULT_MONTHS}-month window"
-        )
-    return (DEFAULT_MONTHS if months is None else months), None
 
 
 def cached_wg_names() -> List[str]:
@@ -85,57 +28,6 @@ def cached_wg_names() -> List[str]:
         if os.path.isdir(os.path.join(root, name, "files")):
             out.append(name)
     return out
-
-
-def wg_completer(prefix: str, **_kwargs: Any) -> List[str]:
-    """argcomplete completer for a `wg` positional: cached shortnames
-    matching `prefix`. Keep it fast — argcomplete spins a fresh
-    interpreter per <TAB>, so this is just a directory listing.
-    """
-    return [w for w in cached_wg_names() if w.startswith(prefix)]
-
-
-def maybe_autocomplete(parser: Any) -> None:
-    """Wire argcomplete into `parser` if the package is installed.
-
-    Called right before `parse_args()`. A no-op (not an error) when
-    argcomplete isn't present, so a minimal / editable install
-    without the dependency still runs the CLI normally.
-    """
-    try:
-        import argcomplete  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        return
-    argcomplete.autocomplete(parser)
-
-
-def print_completion_snippet(shell: str) -> int:
-    """Print the argcomplete registration snippet for every ietf-llm
-    command, for the given shell. Returns an exit code.
-
-    Routed through `ietf-llm` itself (not argcomplete's own
-    `register-python-argcomplete` script) because under `pipx` only
-    this package's declared entry points are on PATH — a dependency's
-    scripts aren't exposed. `eval "$(ietf-llm --completion zsh)"`
-    works regardless of how the package was installed.
-    """
-    try:
-        import argcomplete  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        print(
-            "argcomplete is not installed (it ships with ietf-llm; "
-            "try reinstalling).",
-            file=sys.stderr,
-        )
-        return 1
-    commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
-    # argcomplete ships no type stubs; shellcode isn't in its __all__.
-    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
-        commands,
-        shell=shell,
-    )
-    print(snippet)
-    return 0
 
 
 def is_synthetic_wg(name: str) -> bool:

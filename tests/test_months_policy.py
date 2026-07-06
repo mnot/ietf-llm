@@ -1,15 +1,11 @@
-"""Tests for the months-window policy (ietf_llm.utils.months_request_error /
+"""Tests for the months-window policy (ietf_llm.months.months_request_error /
 months_request_caution): months=0 is the all-history sentinel and is refused
 without force, negatives are refused, and a large bounded window draws a
 non-blocking caution."""
 
 from __future__ import annotations
 
-from ietf_llm.utils import (
-    DEFAULT_MONTHS,
-    months_request_caution,
-    months_request_error,
-)
+from ietf_llm.months import DEFAULT_MONTHS, months_request_caution, months_request_error
 
 
 def test_unset_months_is_allowed() -> None:

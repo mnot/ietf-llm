@@ -1,0 +1,66 @@
+"""Shell tab-completion for the ietf-llm command family.
+
+The argcomplete wiring shared by the CLI entry points (`ietf-llm`,
+`ietf-llm-export`, `ietf-llm-search`): the `wg`-positional completer, the
+per-parser hookup, and the registration-snippet printer. argcomplete is
+optional — each function degrades to a no-op / clear message when it is not
+installed, so a minimal install still runs the CLI.
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import Any, List
+
+from .utils import cached_wg_names
+
+
+def wg_completer(prefix: str, **_kwargs: Any) -> List[str]:
+    """argcomplete completer for a `wg` positional: cached shortnames
+    matching `prefix`. Keep it fast — argcomplete spins a fresh
+    interpreter per <TAB>, so this is just a directory listing.
+    """
+    return [w for w in cached_wg_names() if w.startswith(prefix)]
+
+
+def maybe_autocomplete(parser: Any) -> None:
+    """Wire argcomplete into `parser` if the package is installed.
+
+    Called right before `parse_args()`. A no-op (not an error) when
+    argcomplete isn't present, so a minimal / editable install
+    without the dependency still runs the CLI normally.
+    """
+    try:
+        import argcomplete  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return
+    argcomplete.autocomplete(parser)
+
+
+def print_completion_snippet(shell: str) -> int:
+    """Print the argcomplete registration snippet for every ietf-llm
+    command, for the given shell. Returns an exit code.
+
+    Routed through `ietf-llm` itself (not argcomplete's own
+    `register-python-argcomplete` script) because under `pipx` only
+    this package's declared entry points are on PATH — a dependency's
+    scripts aren't exposed. `eval "$(ietf-llm --completion zsh)"`
+    works regardless of how the package was installed.
+    """
+    try:
+        import argcomplete  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        print(
+            "argcomplete is not installed (it ships with ietf-llm; "
+            "try reinstalling).",
+            file=sys.stderr,
+        )
+        return 1
+    commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
+    # argcomplete ships no type stubs; shellcode isn't in its __all__.
+    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
+        commands,
+        shell=shell,
+    )
+    print(snippet)
+    return 0

@@ -10,7 +10,8 @@ from __future__ import annotations
 import argparse
 
 from .. import __version__
-from ..utils import DEFAULT_MONTHS, wg_completer
+from ..completion import wg_completer
+from ..months import DEFAULT_MONTHS
 
 
 def build_parser() -> argparse.ArgumentParser:
