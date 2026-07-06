@@ -13,7 +13,7 @@ from ietf_llm import mcp
 
 from pathlib import Path
 
-from ietf_llm.positions import (
+from ietf_llm.people.positions import (
     _SENDER_ROLE_SUFFIX,
     _THREAD_MSG_RE,
     ChairStatement,
@@ -518,7 +518,7 @@ def test_file_supports_tally_rejects_digests() -> None:
 def test_extract_chair_statements_finds_consensus_call(
     isolated_home: Path,
 ) -> None:
-    from ietf_llm.positions import extract_chair_statements
+    from ietf_llm.people.positions import extract_chair_statements
     text = (
         "# WGLC\n\n## Messages\n\n"
         "### [1] 2026-04-10 09:00 — Alice Chen\n\n"
@@ -552,7 +552,7 @@ def test_extract_chair_statements_finds_consensus_call(
 def test_extract_chair_statements_skips_non_chairs(
     isolated_home: Path,
 ) -> None:
-    from ietf_llm.positions import extract_chair_statements
+    from ietf_llm.people.positions import extract_chair_statements
     # Same procedural phrase but from a non-chair → not a statement.
     text = (
         "# T\n\n## Messages\n\n"
@@ -569,7 +569,7 @@ def test_extract_chair_statements_skips_chair_without_decision_language(
     # Chair posts a technical question without procedural language —
     # not a chair statement. Avoids flooding the section with every
     # chair post on the list.
-    from ietf_llm.positions import extract_chair_statements
+    from ietf_llm.people.positions import extract_chair_statements
     text = (
         "# T\n\n## Messages\n\n"
         "### [1] 2026-04-10 09:00 — Alice (Chair)\n\n"

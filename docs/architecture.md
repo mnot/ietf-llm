@@ -196,7 +196,7 @@ Key invariants:
   multiple emails, GitHub logins — into one canonical `Person`, resolving
   addresses through Datatracker's curated email→person table (exact-match, so
   collision-free) and linking GitHub logins by each person's Datatracker
-  `github_username` profile (`people_linking`). A `Person` carries
+  `github_username` profile (`people.linking`). A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
@@ -358,9 +358,10 @@ ietf_llm/
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── http_metrics.py         # per-gather upstream HTTP egress accounting (thread-local)
-├── people.py               # actor/identity registry (roles, affiliations, domains)
-├── people_linking.py       # attach GitHub logins to identities (Datatracker, then name)
-├── positions.py            # heuristic position / poll / chair-statement extraction
+├── people/                 # actor/identity registry + position extraction
+│   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)
+│   ├── linking.py          # attach GitHub logins to identities (Datatracker, then name)
+│   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP

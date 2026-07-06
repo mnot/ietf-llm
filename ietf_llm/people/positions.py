@@ -37,8 +37,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from .digest.query import parse_md_tables
-from .paths import digest_path
+from ..digest.query import parse_md_tables
+from ..paths import digest_path
 
 # Number of leading non-quoted lines we scan for the strong patterns.
 # Long messages bury their position under preamble; a real declaration
