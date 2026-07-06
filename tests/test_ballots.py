@@ -23,7 +23,8 @@ from ietf_llm.gather.sources.ballots import (
     render_ballot,
     write_ballot_files,
 )
-from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
+from ietf_llm.utils import Verbosity
+from ietf_llm.paths import get_wg_file_cache_dir
 
 
 # --- Mock helpers ---------------------------------------------------------

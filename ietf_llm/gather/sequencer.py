@@ -17,10 +17,23 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .. import canonical, config, http_metrics, paths
 from ..config import service as service_config
+from ..datatracker_api import fetch_group_object
 from ..digest import generate_digests
 from ..digest.timeline import write_timeline_digest
 from ..embeddings import DEFAULT_EMBED_MODEL, build_index, generate_topics
 from ..freshness import record_gather
+from ..paths import get_cache_dir, get_wg_file_cache_dir
+from ..people import build_registry, write_people_digest
+from ..utils import (
+    DEFAULT_MONTHS,
+    LogLevel,
+    Verbosity,
+    is_synthetic_wg,
+    log,
+    resolve_months,
+)
+from .cli import build_parser
+from .plan import _gather_plan_summary
 from .sources.author import fetch_author_draft_names, resolve_person
 from .sources.charter import process_charter
 from .sources.citations import (
@@ -50,21 +63,7 @@ from .sources.recent_drafts import fetch_new_draft_names, prune_drafts
 from .sources.repo_discovery import autotrack_github
 from .sources.transcript_context import enrich_transcripts
 from .sources.transcripts import process_transcripts
-from .cli import build_parser
-from .plan import _gather_plan_summary
 from .stages import ProgressFn, StageTracker, stage_plan
-from ..people import build_registry, write_people_digest
-from ..utils import (
-    DEFAULT_MONTHS,
-    LogLevel,
-    Verbosity,
-    get_cache_dir,
-    get_wg_file_cache_dir,
-    is_synthetic_wg,
-    log,
-    resolve_months,
-)
-from ..datatracker_api import fetch_group_object
 
 SCOPE = "gather"
 

@@ -23,7 +23,8 @@ from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import config, freshness, serve_metrics, utils
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.gather.stages import stage_plan
-from ietf_llm.utils import Verbosity, get_wg_file_cache_dir
+from ietf_llm.utils import Verbosity
+from ietf_llm.paths import get_wg_file_cache_dir
 
 
 # --- to_argv suppression flags --------------------------------------------

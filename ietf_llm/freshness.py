@@ -29,7 +29,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from .utils import get_cache_dir
+from .paths import get_cache_dir
 
 #: Cache older than this prompts the warning. Picked to be long enough
 #: that day-to-day reading doesn't constantly nag, but short enough that

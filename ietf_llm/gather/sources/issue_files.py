@@ -30,6 +30,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from ...atomicio import write_if_changed
 from ...paths import (
     github_dir,
     issue_path,
@@ -38,7 +39,6 @@ from ...paths import (
 )
 from ...people import Registry
 from ...utils import LogLevel, Verbosity, log
-from ...atomicio import write_if_changed
 
 # Lightweight HTML→Markdown normalisation for issue bodies and comments.
 # GitHub renders HTML inline (especially in tables, where Markdown lists

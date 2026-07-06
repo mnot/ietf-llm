@@ -22,7 +22,7 @@ from ietf_llm.people.positions import (
     render_tally,
     tally_thread,
 )
-from ietf_llm.utils import get_wg_file_cache_dir
+from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import write_cache_file
 

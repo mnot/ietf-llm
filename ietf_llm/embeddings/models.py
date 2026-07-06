@@ -23,9 +23,9 @@ from typing import Any, Iterable, Sequence
 import requests
 from requests.adapters import HTTPAdapter
 
-from . import oai_compat
 from .. import serve_metrics
 from ..utils import LogLevel, Verbosity, log
+from . import oai_compat
 
 #: Default embedding model. Local, no API key, via sentence-transformers.
 #: ~33M params, 384-dim. Good quality for technical English with a small DB

@@ -24,9 +24,9 @@ import argparse
 import os
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from ..utils import LogLevel, log
 from . import fs
 from .store import get_config_store
-from ..utils import LogLevel, log
 
 # Per-WG config (load / save / clear) is dispatched through the ConfigStore seam,
 # so a cloud deployment shares it fleet-wide via the control plane with no

@@ -34,10 +34,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from ...atomicio import write_if_changed
 from ...digest.events import Event
 from ...paths import ballot_path, ballots_dir
 from ...utils import LogLevel, Verbosity, log
-from ...atomicio import write_if_changed
 from .datatracker import (  # pylint: disable=protected-access
     _get_json,
     fetch_person_names,

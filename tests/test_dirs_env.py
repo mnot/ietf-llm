@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.utils import get_cache_dir, get_config_dir, get_index_dir
+from ietf_llm.paths import get_cache_dir, get_config_dir, get_index_dir
 
 
 def test_cache_dir_honours_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

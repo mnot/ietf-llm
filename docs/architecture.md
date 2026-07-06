@@ -347,7 +347,8 @@ ietf_llm/
 │   ├── store.py            # ConfigStore seam: local + cloud (control-plane) per-WG config
 │   └── service.py          # deployment knobs (store backend, …): env > global > default
 ├── corpus.py               # corpus kind/status + subject line (group/list/custom/synthetic)
-├── paths.py                # cache-layout single source of truth; meeting_label()
+├── paths.py                # filesystem layout single source of truth: root dirs
+│                           # (get_config/cache/index_dir) + per-artefact paths; meeting_label()
 ├── routing.py              # which_corpus: centroid routing over the topic-map sidecars + fleet key
 ├── store/                  # storage seam: CorpusStore + backends (see "The storage seam")
 │   ├── corpus.py           # CorpusStore seam: port + LocalCorpusStore + factory
@@ -369,8 +370,8 @@ ietf_llm/
 │   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
-├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs,
-│                           # is_synthetic_wg, months + argcomplete helpers
+├── utils.py                # log(), Verbosity/LogLevel, is_synthetic_wg,
+│                           # months + argcomplete helpers
 ├── atomicio.py             # concurrency-safe filesystem primitives: atomic writes
 │                           # (atomic_open / write_if_changed) + advisory file locks
 ├── net.py                  # HTTP transport: pooled retrying session, host-governed

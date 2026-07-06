@@ -29,7 +29,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .utils import get_cache_dir
+from .paths import get_cache_dir
 
 #: Cache subdirectory for the RFC index singleton.
 RFC_DIR = "_rfc"

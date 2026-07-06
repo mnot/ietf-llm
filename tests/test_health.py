@@ -13,7 +13,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from ietf_llm import __version__, serve_metrics
-from ietf_llm.utils import get_cache_dir
+from ietf_llm.paths import get_cache_dir
 
 
 def _seed_corpus(home: Any, wg: str, sentinel: str | None) -> None:

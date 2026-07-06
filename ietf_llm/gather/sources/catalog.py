@@ -36,8 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from ...catalog import CATALOG_FILE, catalog_index_dir
-from ...utils import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
+from ...utils import LogLevel, Verbosity, log
 from . import _mirror
 
 _API = "https://datatracker.ietf.org/api/v1/group/group/"

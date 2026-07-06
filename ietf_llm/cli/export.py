@@ -28,9 +28,9 @@ import sys
 
 from .. import __version__, config, export
 from ..freshness import staleness_warning
+from ..paths import get_config_dir
 from ..utils import (
     Verbosity,
-    get_config_dir,
     graceful_keyboard_interrupt,
     maybe_autocomplete,
     wg_completer,

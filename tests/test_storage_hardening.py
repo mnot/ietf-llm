@@ -108,7 +108,7 @@ def _publish_with_index(store: CloudCorpusStore, tmp_path: Path) -> None:
 
 # G-2: the search index resolves through the store.
 def test_local_index_dir_is_index_root(isolated_home: Path) -> None:
-    from ietf_llm.utils import get_index_dir
+    from ietf_llm.paths import get_index_dir
 
     assert LocalCorpusStore().local_index_dir("tls") == os.path.join(
         get_index_dir(), "tls"

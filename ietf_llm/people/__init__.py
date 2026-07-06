@@ -53,18 +53,23 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from ..atomicio import atomic_open
 from ..gather.sources.datatracker import fetch_wg_roles
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
-from ..paths import digest_path, remove_stale_digest
+from ..paths import (
+    digest_path,
+    get_cache_dir,
+    get_wg_file_cache_dir,
+    remove_stale_digest,
+)
+from ..text import _parse_date
+from ..utils import LogLevel, Verbosity, log
 from .linking import (
     reconcile_mail_via_datatracker,
     resolve_github_user_names,
     resolve_github_via_datatracker,
 )
-from ..text import _parse_date
-from ..utils import LogLevel, Verbosity, get_cache_dir, get_wg_file_cache_dir, log
-from ..atomicio import atomic_open
 
 # --- Person model ----------------------------------------------------------
 

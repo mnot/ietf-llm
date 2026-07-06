@@ -43,9 +43,10 @@ import re
 import tempfile
 from typing import Dict, List, Tuple
 
-from .utils import LogLevel, Verbosity, get_wg_file_cache_dir, log
 from .atomicio import write_if_changed
 from .datatracker_api import get_wg_title
+from .paths import get_wg_file_cache_dir
+from .utils import LogLevel, Verbosity, log
 
 # Files we mirror / upload. JSON archives are internal and excluded;
 # PDFs aren't supported by the downstream sinks (NotebookLM wants text).

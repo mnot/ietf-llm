@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from ..atomicio import atomic_open
 from ..gather.sources.ballots import _cutoff as _ballot_cutoff
 from ..gather.sources.ballots import (
     ballot_events,
@@ -61,7 +62,6 @@ from ..paths import (
 )
 from ..people import Registry
 from ..utils import LogLevel, Verbosity, log
-from ..atomicio import atomic_open
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------

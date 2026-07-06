@@ -51,6 +51,64 @@ import os
 import re
 from typing import Any, Iterator, Optional, Tuple
 
+
+def get_config_dir() -> str:
+    """Return the configuration directory, creating it if necessary.
+
+    Honours ``IETF_LLM_CONFIG_DIR`` (env > default) so a deployment can
+    point per-WG config at a mounted location; defaults to
+    ``~/.config/ietf-llm`` for the local CLI.
+    """
+    config_dir = os.environ.get("IETF_LLM_CONFIG_DIR", "").strip()
+    if not config_dir:
+        config_dir = os.path.expanduser("~/.config/ietf-llm")
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+
+def get_cache_dir() -> str:
+    """Return the cache directory, creating it if necessary.
+
+    Honours ``IETF_LLM_CACHE_DIR`` (env > default) so a deployment can
+    point the corpus root at the synced / mounted location; defaults to
+    ``~/.cache/ietf-llm`` for the local CLI. The tree is relocatable
+    (chunk paths are relative to the cache root), so an absolute override
+    here moves the whole corpus.
+    """
+    cache_dir = os.environ.get("IETF_LLM_CACHE_DIR", "").strip()
+    if not cache_dir:
+        cache_dir = os.path.expanduser("~/.cache/ietf-llm")
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def get_index_dir() -> str:
+    """Return the directory tree holding per-WG embedding index databases.
+
+    Honours ``IETF_LLM_INDEX_DIR`` (env > default) so a deployment can put
+    the hot, frequently-read ``<wg>/embeddings.db`` files on fast or
+    RAM-backed storage (tmpfs) separately from the corpus files. Defaults
+    to the cache root, so the local layout
+    (``<cache>/<wg>/embeddings.db``) is unchanged.
+    """
+    index_dir = os.environ.get("IETF_LLM_INDEX_DIR", "").strip()
+    if not index_dir:
+        index_dir = get_cache_dir()
+    if not os.path.exists(index_dir):
+        os.makedirs(index_dir, exist_ok=True)
+    return index_dir
+
+
+def get_wg_file_cache_dir(wg_name: str) -> str:
+    """Get the local file cache directory for a Working Group."""
+    cache_dir = os.path.join(get_cache_dir(), wg_name, "files")
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
 # Top-level subdirectories under <wg>/files/.
 DIR_DIGESTS = "digests"
 DIR_DRAFTS = "drafts"

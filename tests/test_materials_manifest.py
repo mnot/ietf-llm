@@ -22,7 +22,7 @@ def test_manifest_roundtrip(isolated_home: Path) -> None:
 
 
 def test_manifest_corrupt_returns_empty(isolated_home: Path) -> None:
-    from ietf_llm.utils import get_cache_dir
+    from ietf_llm.paths import get_cache_dir
 
     path = os.path.join(get_cache_dir(), "httpbis", "materials.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)

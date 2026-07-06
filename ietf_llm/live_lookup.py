@@ -37,11 +37,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from .atomicio import atomic_open, file_lock
 from .gather.sources.citations import normalize_draft_name
 from .gather.sources.meetings import _uri_id
-from .utils import get_cache_dir
-from .atomicio import atomic_open, file_lock
 from .net import DEFAULT_HEADERS, governed_get
+from .paths import get_cache_dir
 
 _DT_BASE = "https://datatracker.ietf.org"
 _API_BASE = f"{_DT_BASE}/api/v1"

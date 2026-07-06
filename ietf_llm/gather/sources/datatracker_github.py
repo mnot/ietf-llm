@@ -40,7 +40,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from ...utils import LogLevel, Verbosity, get_cache_dir, log
+from ...paths import get_cache_dir
+from ...utils import LogLevel, Verbosity, log
 from . import identity_cache
 from .datatracker import _get_json
 

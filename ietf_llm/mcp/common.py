@@ -14,9 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 import anyio
 
 from .. import coverage, serve_metrics
-from . import debug_log
 from ..access import note_access
-from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from ..digest.query import parse_md_tables
 from ..embeddings import probe_index
 from ..freshness import (
@@ -28,7 +26,9 @@ from ..freshness import (
 )
 from ..paths import digest_path
 from ..people.positions import file_supports_tally
+from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from ..utils import LogLevel, Verbosity, log
+from . import debug_log
 
 MAX_LINES_DEFAULT = 400
 

@@ -25,9 +25,9 @@ import os
 import sys
 from typing import Any, Optional
 
-from .sequencer import run_gather
-from .pipeline import CHILD_EXIT_UNUSABLE
 from ..utils import Verbosity
+from .pipeline import CHILD_EXIT_UNUSABLE
+from .sequencer import run_gather
 
 
 def _renice() -> None:

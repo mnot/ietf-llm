@@ -50,7 +50,7 @@ def test_local_cache_dir_present_vs_absent(isolated_home: Path) -> None:
 
 def test_absent_corpus_is_never_materialised(isolated_home: Path) -> None:
     # The typo-safety invariant: probing a corpus that does not exist must
-    # not create its cache dir (unlike utils.get_wg_file_cache_dir, which does).
+    # not create its cache dir (unlike paths.get_wg_file_cache_dir, which does).
     store = LocalCorpusStore()
     store.corpus_exists("ghost")
     store.resolve_current("ghost")
