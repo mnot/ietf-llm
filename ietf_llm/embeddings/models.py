@@ -23,7 +23,8 @@ from typing import Any, Iterable, Sequence
 import requests
 from requests.adapters import HTTPAdapter
 
-from .. import oai_compat, serve_metrics
+from . import oai_compat
+from .. import serve_metrics
 from ..utils import LogLevel, Verbosity, log
 
 #: Default embedding model. Local, no API key, MPS-accelerated on Apple

@@ -372,8 +372,6 @@ ietf_llm/
 ├── utils.py                # log(), Verbosity/LogLevel, cache/config dirs, HTTP
 │                           # defaults, group metadata via API, write_if_changed,
 │                           # is_synthetic_wg, cached_wg_names, argcomplete helpers
-├── oai_compat.py           # shared OpenAI-compatible HTTP plumbing (auth headers,
-│                           # retry + Retry-After) for the remote embed / summarise backends
 ├── rfcs.py                 # cross-corpus RFC-series reader (search_rfcs / get_rfc);
 │                           # reads the _rfc/ singleton mirrored from rfc.fyi
 ├── catalog.py              # cross-corpus active-effort reader (find_efforts);
@@ -438,6 +436,8 @@ ietf_llm/
     ├── chunking.py             # per-message / per-issue / windowed chunkers; splits long sections
     ├── storage.py              # sqlite schema, vector packing, lookup, topics.json sidecar IO
     ├── models.py               # embedding-model loading + process-level cache
+    ├── oai_compat.py           # OpenAI-compatible HTTP plumbing (auth, retry + Retry-After)
+    │                           #   for the remote embed / summarise backends
     ├── snippet.py              # structure-aware snippet rendering for hits
     ├── clustering.py           # numpy mini-batch k-means (torch-free clustering primitive)
     ├── topics.py               # topic map: cluster docs into labelled themes (topics.json)

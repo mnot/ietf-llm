@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import requests
 
-from ietf_llm import oai_compat
+from ietf_llm.embeddings import oai_compat
 from ietf_llm.digest.remote_summarizer import (
     _OpenAICompatChatModel,
     is_remote_summarize_model,
