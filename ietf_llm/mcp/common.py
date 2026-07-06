@@ -618,7 +618,10 @@ def _session_section() -> str:
     if gather_enabled():
         guidance = (
             "To add or refresh a corpus, `start_gather(corpus=…)` — "
-            f"{_gather_cost_clause()}. **Set the user's expectations up front, "
+            f"{_gather_cost_clause()}. To extend a corpus that already exists, "
+            "re-call it with just the new `draft` / `mailing_list` / `github` "
+            "source: sources accumulate (set-union), so pass only the addition "
+            "and it runs without `force`. **Set the user's expectations up front, "
             "as you announce the gather:** a first gather is often a minute or "
             "two, and several minutes for a very active group — say so, rather "
             "than announcing it and going quiet (the call itself blocks for a "

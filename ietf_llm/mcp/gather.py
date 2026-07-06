@@ -441,6 +441,15 @@ def register(server: "FastMCP") -> None:
           id, or exact name) or `new_drafts=True` (rolling window).
         - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
+        **Extending an existing corpus:** to add a draft (or list / repo)
+        to a corpus that already exists, re-call with just the new source —
+        `draft` / `mailing_list` / `github` **accumulate** into what the
+        corpus already tracks (set-union), so pass only the addition, not the
+        full prior list. Because that is a scope change, the re-gather runs
+        even inside the freshness window (no `force` needed — see below).
+        There is no per-source *removal* here: narrowing a corpus is a
+        CLI/config operation, not something these tools expose.
+
         One gather per corpus runs at a time — so a call while it's in
         flight reports "already running". A *different* corpus runs
         concurrently up to a small cap; beyond that it reports
@@ -451,7 +460,10 @@ def register(server: "FastMCP") -> None:
         A corpus gathered within the freshness window (default 6h) is
         **not** re-gathered — the call returns a "fresh, skipped" note.
         That is success: query the existing snapshot, don't retry. Only
-        pass `force=True` when the user explicitly wants fresh data.
+        pass `force=True` when the user explicitly wants fresh data. (A call
+        that adds a source — `draft` / `mailing_list` / `github`, per
+        "Extending an existing corpus" above — is a scope change, not a plain
+        refresh, so it is never debounced and needs no `force`.)
 
         Custom / synthetic (`x-`) names are free-form and don't self-
         deduplicate, so before minting one this checks `list_corpora` for
@@ -470,10 +482,13 @@ def register(server: "FastMCP") -> None:
             corpus: Corpus name — a WG/RG/BoF shortname, a mailing-list
                 name, or any label for a custom/synthetic corpus.
             mailing_list: Extra mailing lists to sync (bare name or
-                full address; domain optional).
+                full address; domain optional). Accumulates across gathers.
             draft: Internet-Drafts to track (`draft-foo-bar`; version
-                suffix ignored, all revisions gathered).
+                suffix ignored, all revisions gathered). Accumulates across
+                gathers — on a re-gather, pass only the new draft(s); they
+                add to (never replace) the corpus's tracked set.
             github: GitHub repos whose issues to gather (`owner/repo`).
+                Accumulates across gathers.
             author: Make this a follow-an-author corpus (drafts by this
                 person; email is the unambiguous form).
             new_drafts: Make this a rolling 'new Internet-Drafts'
