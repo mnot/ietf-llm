@@ -183,6 +183,13 @@ def build_cloud_config_store() -> CloudConfigStore:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
         ) from err
+    # Deferred on purpose — and load-bearing, not just lazy. This is the only
+    # `store` import in the whole `config` package. `store.corpus` imports
+    # `config.service`, so importing config already reaches back into store's
+    # consumers; hoisting this to module top would close a real cycle:
+    #   config.store -> store.control -> store/__init__ -> store.corpus
+    #     -> config.service -> config.store
+    # Keep it here (and the sibling S3 imports above) function-local. Do not tidy up.
     # pylint: disable-next=import-outside-toplevel
     from ..store.control import KvControlPlane
 
