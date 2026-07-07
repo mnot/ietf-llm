@@ -76,6 +76,17 @@ Edit `claude_desktop_config.json` (create it if missing):
 
 Quit and relaunch Claude Desktop — the config is only read at startup.
 
+**NOTE**: Claude Desktop seems to have an MCP performance issue in the 'Chat' tab.
+The 'Code' tab does not encounter this issue. Adding this to the MCP server
+configuration may help:
+
+```json
+      "env": {
+        "IETF_LLM_GATHER_MAX_WAIT": "0"
+      }
+```
+
+
 ### Codex CLI (OpenAI)
 
 `~/.codex/config.toml`:
