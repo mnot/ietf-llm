@@ -134,3 +134,15 @@ def test_embed_progress_eta_phrase() -> None:
     seen: List[str] = []
     _embed_progress(25, 100, _time.time() - 40, Verbosity.QUIET, seen.append)
     assert seen == ["25% embedded, ~2m00s left"]
+
+
+def test_embed_progress_withholds_early_eta() -> None:
+    # Below the threshold the estimate is withheld — an extrapolation from the
+    # first few percent is noise. Just the percent, no "~... left".
+    import time as _time
+
+    from ietf_llm.embeddings.search import _embed_progress
+
+    seen: List[str] = []
+    _embed_progress(5, 100, _time.time() - 10, Verbosity.QUIET, seen.append)
+    assert seen == ["5% embedded"]

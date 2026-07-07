@@ -358,6 +358,13 @@ def _file_bytes(cache_dir: str, relpath: str) -> int:
         return 0
 
 
+#: Don't show the embed ETA below this percent. A linear extrapolation from
+#: the first few percent is dominated by startup/warm-up and reads as wildly
+#: wrong; by ~a fifth of the way in enough of the run has been observed for it
+#: to be worth showing.
+_ETA_MIN_PCT = 20
+
+
 def _fmt_secs(secs: float) -> str:
     """`45s` / `3m12s` — matches gather_status's own elapsed format so the two
     times in one status line read consistently."""
@@ -381,13 +388,16 @@ def _embed_progress(
     because it lands in gather_status next to a *gather*-total elapsed with no
     label — so it names its own baseline (embedding progress) and carries a
     stage ETA. The ETA is a linear extrapolation from bytes done; the embed
-    rate is ~constant, so it is a reasonable estimate, marked `~`. Bytes track
+    rate is ~constant, so it is a reasonable estimate, marked `~` — but withheld
+    below `_ETA_MIN_PCT`, where the extrapolation is still noise. Bytes track
     embed cost better than a file count and are known up front without
     pre-chunking."""
     elapsed = time.time() - start
     pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
     eta = ""
-    if 0 < done_bytes < pending_bytes:
+    # Withhold the ETA until enough of the run has been seen (see _ETA_MIN_PCT);
+    # an estimate from the first few percent is noise and misleads the reader.
+    if done_bytes > 0 and _ETA_MIN_PCT <= pct < 100:
         remaining = (pending_bytes - done_bytes) * elapsed / done_bytes
         eta = f", ~{_fmt_secs(remaining)} left"
     phrase = f"{pct}% embedded{eta}"
