@@ -45,9 +45,10 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `done`: a first gather *refuses* them until then, and "the files are
   downloaded" is not "there is a readable snapshot" (the catalogue, digests and
   embedding index — which the overview themes come from — are built in the
-  final stages). Poll `gather_status` with a short `wait` (≤15s), relay the
+  final stages). Poll `gather_status` with a short `wait` (≤10s), relay the
   percent / ETA to the user between polls, and read once it's `done` — don't
-  tight-loop.
+  tight-loop, and don't wait via a long `bash sleep` either (a tool call left
+  outstanding much beyond ~10s can wedge some clients).
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
 

@@ -494,8 +494,9 @@ def test_gather_wait_budget_defaults_and_clamps(monkeypatch: pytest.MonkeyPatch)
     assert mcp.gather._gather_wait_budget(None) == mcp.gather._GATHER_WAIT_DEFAULT
     assert mcp.gather._gather_wait_budget(0) == 0.0
     assert mcp.gather._gather_wait_budget(-5) == 0.0
-    # A request under the cap is honoured as-is.
-    assert mcp.gather._gather_wait_budget(10) == 10
+    # A request under the cap is honoured as-is (strictly below the 10s cap, so
+    # this distinguishes "honoured" from "clamped to the cap").
+    assert mcp.gather._gather_wait_budget(8) == 8
     # Any larger request is clamped to the hard max, well under the deadline
     # headroom (a long blocking call hurts some clients).
     assert mcp.gather._gather_wait_budget(10_000) == mcp.gather._GATHER_WAIT_MAX
@@ -510,17 +511,18 @@ def test_gather_wait_budget_clamps_against_elapsed(
     # Time already spent in the call (e.g. a slow cloud `start()`) shrinks the
     # budget so the wait can't outlive the offload deadline — even below the max.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
-    # 120 - 100 elapsed - 15 margin = 5 headroom, below the 30s max -> 5.
+    # 120 - 100 elapsed - 15 margin = 5 headroom, below the 10s cap -> 5.
     assert mcp.gather._gather_wait_budget(None, elapsed=100) == 5
     # No headroom left -> don't wait at all (rather than overshoot the deadline).
     assert mcp.gather._gather_wait_budget(None, elapsed=200) == 0.0
 
 
-def test_gather_status_uses_tighter_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    # gather_status is polled repeatedly, so it caps the wait tighter than
-    # start_gather; a large request clamps to the status cap, not the default.
+def test_gather_status_wait_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    # gather_status has its own cap (its own knob, so it can go tighter than
+    # start_gather if needed; both sit at 10s today): a large request clamps to
+    # the status cap, not the raw request.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
-    assert mcp.gather._GATHER_STATUS_WAIT_MAX < mcp.gather._GATHER_WAIT_MAX
+    assert mcp.gather._GATHER_STATUS_WAIT_MAX <= mcp.gather._GATHER_WAIT_MAX
     assert (
         mcp.gather._gather_wait_budget(60, max_wait=mcp.gather._GATHER_STATUS_WAIT_MAX)
         == mcp.gather._GATHER_STATUS_WAIT_MAX
