@@ -516,6 +516,19 @@ def test_gather_wait_budget_clamps_against_elapsed(
     assert mcp.gather._gather_wait_budget(None, elapsed=200) == 0.0
 
 
+def test_gather_status_uses_tighter_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    # gather_status is polled repeatedly, so it caps the wait tighter than
+    # start_gather; a large request clamps to the status cap, not the default.
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
+    assert mcp.gather._GATHER_STATUS_WAIT_MAX < mcp.gather._GATHER_WAIT_MAX
+    assert (
+        mcp.gather._gather_wait_budget(60, max_wait=mcp.gather._GATHER_STATUS_WAIT_MAX)
+        == mcp.gather._GATHER_STATUS_WAIT_MAX
+    )
+    # A request under the status cap is still honoured.
+    assert mcp.gather._gather_wait_budget(5, max_wait=mcp.gather._GATHER_STATUS_WAIT_MAX) == 5
+
+
 def test_start_gather_wait_returns_done(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         gather_runner, "start",
