@@ -131,6 +131,7 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | `IETF_LLM_ENABLE_GATHER` | register the gather tools (writes + network); overrides the transport default | on for stdio, off for http |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | max gathers concurrently — per host and fleet-wide | `3` |
 | `IETF_LLM_GATHER_QUEUE_MAX` | max queued gathers before `start_gather` is refused | `16` |
+| `IETF_LLM_GATHER_MAX_WAIT` | seconds `start_gather` / `gather_status` block for a gather (`0` = never block, both return immediately). Keep short: a tool call outstanding much beyond ~10s degrades some MCP clients | `10` |
 | `IETF_LLM_HTTP_MAX_DATATRACKER` | max gather HTTP requests in flight to datatracker | `2` |
 | `IETF_LLM_HTTP_MAX_PER_HOST` | max gather HTTP requests in flight per other host | `6` |
 

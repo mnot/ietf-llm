@@ -490,19 +490,20 @@ def test_suggest_github_repos_renders_discovery(
 
 def test_gather_wait_budget_defaults_and_clamps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
-    # None -> the default budget; 0/negative -> no wait.
-    assert mcp.gather._gather_wait_budget(None) == mcp.gather._GATHER_WAIT_DEFAULT
+    monkeypatch.delenv("IETF_LLM_GATHER_MAX_WAIT", raising=False)
+    cap = mcp.common._GATHER_WAIT_MAX_DEFAULT
+    # None -> the default budget (block up to the cap); 0/negative -> no wait.
+    assert mcp.gather._gather_wait_budget(None) == cap
     assert mcp.gather._gather_wait_budget(0) == 0.0
     assert mcp.gather._gather_wait_budget(-5) == 0.0
-    # A request under the cap is honoured as-is (strictly below the 10s cap, so
-    # this distinguishes "honoured" from "clamped to the cap").
-    assert mcp.gather._gather_wait_budget(8) == 8
-    # Any larger request is clamped to the hard max, well under the deadline
-    # headroom (a long blocking call hurts some clients).
-    assert mcp.gather._gather_wait_budget(10_000) == mcp.gather._GATHER_WAIT_MAX
-    # The max applies even with the deadline disabled.
+    # A request under the cap is honoured as-is (strictly below it, so this
+    # distinguishes "honoured" from "clamped to the cap").
+    assert mcp.gather._gather_wait_budget(cap - 2) == cap - 2
+    # Any larger request is clamped to the cap, well under the deadline headroom.
+    assert mcp.gather._gather_wait_budget(10_000) == cap
+    # The cap applies even with the deadline disabled.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0")
-    assert mcp.gather._gather_wait_budget(10_000) == mcp.gather._GATHER_WAIT_MAX
+    assert mcp.gather._gather_wait_budget(10_000) == cap
 
 
 def test_gather_wait_budget_clamps_against_elapsed(
@@ -517,18 +518,46 @@ def test_gather_wait_budget_clamps_against_elapsed(
     assert mcp.gather._gather_wait_budget(None, elapsed=200) == 0.0
 
 
-def test_gather_status_wait_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    # gather_status has its own cap (its own knob, so it can go tighter than
-    # start_gather if needed; both sit at 10s today): a large request clamps to
-    # the status cap, not the raw request.
+def test_gather_max_wait_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # One knob for both tools, from IETF_LLM_GATHER_MAX_WAIT.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
-    assert mcp.gather._GATHER_STATUS_WAIT_MAX <= mcp.gather._GATHER_WAIT_MAX
-    assert (
-        mcp.gather._gather_wait_budget(60, max_wait=mcp.gather._GATHER_STATUS_WAIT_MAX)
-        == mcp.gather._GATHER_STATUS_WAIT_MAX
-    )
-    # A request under the status cap is still honoured.
-    assert mcp.gather._gather_wait_budget(5, max_wait=mcp.gather._GATHER_STATUS_WAIT_MAX) == 5
+    default = mcp.common._GATHER_WAIT_MAX_DEFAULT
+    # Unset -> the built-in default; unparseable -> the default too.
+    monkeypatch.delenv("IETF_LLM_GATHER_MAX_WAIT", raising=False)
+    assert mcp.common._gather_max_wait() == default
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "not-a-number")
+    assert mcp.common._gather_max_wait() == default
+    # A positive value re-caps both tools (request clamped; default block == cap).
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "5")
+    assert mcp.common._gather_max_wait() == 5.0
+    assert mcp.gather._gather_wait_budget(30) == 5
+    assert mcp.gather._gather_wait_budget(None) == 5
+    # Negative clamps to 0.
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "-3")
+    assert mcp.common._gather_max_wait() == 0.0
+
+
+def test_gather_max_wait_zero_disables_blocking(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 0 makes both tools return immediately, whatever wait is requested.
+    monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "0")
+    assert mcp.gather._gather_wait_budget(None) == 0.0
+    assert mcp.gather._gather_wait_budget(30) == 0.0
+    assert mcp.gather._gather_wait_budget(0) == 0.0
+
+
+def test_gather_status_call_hint_respects_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The poll hint carries wait= at the cap, and drops it entirely when 0.
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "10")
+    assert "wait=10" in mcp.common._gather_status_call("tls")
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "0")
+    hint = mcp.common._gather_status_call("tls")
+    assert "wait" not in hint
+    assert 'gather_status(corpus="tls")' in hint
+    # A sub-second (but non-zero) cap still blocks, so the hint shows wait>=1
+    # rather than a contradictory "wait=0".
+    monkeypatch.setenv("IETF_LLM_GATHER_MAX_WAIT", "0.5")
+    assert "wait=1" in mcp.common._gather_status_call("tls")
 
 
 def test_start_gather_wait_returns_done(monkeypatch: pytest.MonkeyPatch) -> None:
