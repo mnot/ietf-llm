@@ -40,23 +40,25 @@ def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
 # How long `start_gather(wait=...)` blocks for a gather to finish before
 # falling back to the progress-and-poll reply. Blocking is the default (the
 # dominant flow is gather-then-read, one call), and `wait=0` restores
-# fire-and-forget. Capped at `_GATHER_WAIT_MAX`: a long-blocking tool call
-# degrades some MCP clients, and 30s is enough for a quick re-gather of an
-# existing repo to finish inline — anything longer returns the poll reply. The
+# fire-and-forget. Capped at `_GATHER_WAIT_MAX` (~10s; see there): a tool call
+# outstanding much longer degrades some MCP clients, so a quick re-gather may
+# finish inline but anything longer returns the poll reply. The
 # budget is also clamped under the `_offload` deadline so the wait loop returns
 # its own "still running, poll" message rather than the generic tool-timeout
 # firing first.
-_GATHER_WAIT_DEFAULT = 30.0
+_GATHER_WAIT_DEFAULT = 10.0
 
-# Hard ceiling on the wait budget — the default and any requested `wait`. A
-# long blocking call hurts some clients, so it's capped. start_gather blocks
-# once (the gather-then-read convenience) and gets the larger cap; gather_status
-# is polled repeatedly, and a run of long-outstanding requests is what seems to
-# upset some clients, so it gets a tighter one (and — unlike a wedged read —
-# the model can't route around it with a `bash sleep`, so keeping it short is
-# worthwhile).
-_GATHER_WAIT_MAX = 30.0
-_GATHER_STATUS_WAIT_MAX = 15.0
+# Hard ceiling on the wait budget — the default and any requested `wait`.
+# Claude Desktop (Anthropic support flagged this as known behaviour, and our
+# stdio reader instrumentation confirmed it) degrades when a tool call stays
+# outstanding much beyond ~10s: after a session with such calls it stops
+# sending follow-up requests. So keep every blocking gather call at/under 10s.
+# Two knobs — start_gather blocks once, gather_status is polled — kept separate
+# so the polled one can go tighter if that threshold turns out lower; both sit
+# at 10s today. (A short cap can't be routed around the way an immediate return
+# could: the model would just `bash sleep`, the same long outstanding call.)
+_GATHER_WAIT_MAX = 10.0
+_GATHER_STATUS_WAIT_MAX = 10.0
 
 
 _GATHER_WAIT_MARGIN = 15.0
@@ -200,7 +202,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
             f"topic-map tail is the slow part, so it could take a few more "
             f"minutes. Tell the user and offer to check back once `gather_status` "
             f"reports `done`; reads before then are stale or partial. Block with "
-            f'`gather_status(corpus="{corpus}", wait=15)` rather than reading now. '
+            f'`gather_status(corpus="{corpus}", wait=10)` rather than reading now. '
             f"{out}"
         )
     return out
@@ -423,7 +425,7 @@ def register(server: "FastMCP") -> None:
 
         Use this when a corpus the user asks about isn't cached yet
         (`list_corpora` doesn't show it). **By default this blocks** until
-        the gather finishes (up to ~30s) and reports `done`, so the common
+        the gather finishes (up to ~10s) and reports `done`, so the common
         gather-then-read flow is a single call — no poll loop, no guessed
         sleep. A quick re-gather usually completes within that window; a
         *first* gather of a corpus can run for minutes, so if it is still
@@ -532,8 +534,8 @@ def register(server: "FastMCP") -> None:
                 on an explicit request for fresh data.
             wait: Seconds to block waiting for the gather to finish before
                 returning a progress line to poll on. Omit to block for the
-                default (~30s); `0` returns immediately (fire-and-forget).
-                Clamped to ~30s and to stay under the server's per-call tool
+                default (~10s); `0` returns immediately (fire-and-forget).
+                Clamped to ~10s and to stay under the server's per-call tool
                 deadline.
                 Also waits when the corpus is already being gathered (by
                 another client or a CLI run).
@@ -571,14 +573,15 @@ def register(server: "FastMCP") -> None:
         `search_corpus`, …) work on it.
 
         Returns the current state immediately by default. Pass a short `wait`
-        (seconds, **capped at ~15s**) to **block** until a still-running gather
+        (seconds, **capped at ~10s**) to **block** until a still-running gather
         reaches a terminal state (or the wait elapses) — the no-sleep way to
         wait out the tail after `start_gather`'s own wait returned it still in
-        progress. Poll periodically (a `wait` of ~10–15s per call), relaying
+        progress. Poll periodically (a `wait` of ~10s per call), relaying
         the stage / percent / ETA to the user between polls, rather than
-        tight-looping. The cap is deliberately tight: a run of long-outstanding
-        tool calls degrades some clients. Ignored for the no-`corpus`
-        list-all form.
+        tight-looping. The cap is deliberately tight: a tool call left
+        outstanding much beyond ~10s degrades some clients — so don't route
+        around it with a long `bash sleep` either, that's the same long call.
+        Ignored for the no-`corpus` list-all form.
 
         Don't query before `done`. The catalogue and search layers
         (digests, embedding index) are built in the *final* gather
@@ -592,7 +595,7 @@ def register(server: "FastMCP") -> None:
             corpus: The corpus to report on. Omit to list all.
             wait: Seconds to block for a still-running gather to finish
                 before reporting. Omit/`0` reports immediately; capped at
-                ~15s and under the server's per-call tool deadline.
+                ~10s and under the server's per-call tool deadline.
         """
         return await _offload(tool_gather_status, corpus, wait)
 
