@@ -54,6 +54,8 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from mcp import types
 from mcp.shared.message import SessionMessage
 
+from . import debug_log
+
 DEFAULT_QUEUE_MAX_ITEMS = 1024
 """Cap on queued outbound messages. A typical response is a few KB
 to a few tens of KB; 1024 items ≈ tens of MB worst case. Past this,
@@ -106,6 +108,10 @@ async def stdio_server_threaded_writer(
     Yields the same `(read_stream, write_stream)` pair upstream does,
     so it slots into `Server.run(read, write, init_options)` with no
     other changes."""
+    # Let the debug heartbeat include our writer-queue snapshot without
+    # importing this module (which would cycle: we log reader markers through
+    # debug_log). No-op unless IETF_LLM_DEBUG_LOG is set.
+    debug_log.set_writer_state_getter(queue_state)
     stdin = anyio.wrap_file(
         TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
     )
@@ -160,19 +166,31 @@ async def stdio_server_threaded_writer(
     thread.start()
 
     async def stdin_reader() -> None:
-        # Verbatim from upstream stdio_server — the read side has no
-        # equivalent backpressure pathology.
+        # Upstream read loop, plus debug markers (no-ops unless
+        # IETF_LLM_DEBUG_LOG is set; see debug_log). They let a stall
+        # investigation tell apart a reader parked waiting for input (the client
+        # never delivered the request) from one that read a request but never
+        # handed it off (a server-side dispatch wedge): at a stall, a trailing
+        # `reader_dispatched` with no following `reader_line` means the former,
+        # a `reader_line` with no following `reader_dispatched` the latter.
         try:
             async with read_stream_writer:
                 async for line in stdin:
+                    debug_log.log_event(0, "reader_line", nbytes=len(line))
                     try:
                         message = types.JSONRPCMessage.model_validate_json(line)
                     except Exception as exc:  # pylint: disable=broad-except
                         await read_stream_writer.send(exc)
+                        debug_log.log_event(0, "reader_dispatched", parse_error=True)
                         continue
                     await read_stream_writer.send(SessionMessage(message))
+                    debug_log.log_event(0, "reader_dispatched")
         except anyio.ClosedResourceError:  # pragma: no cover
             await anyio.lowlevel.checkpoint()
+        finally:
+            # A reader that exits (EOF / shutdown) logs it, so a stall with no
+            # `reader_exit` confirms the reader is still alive and blocked.
+            debug_log.log_event(0, "reader_exit")
 
     def _put_or_give_up(data: bytes) -> None:
         # Block until the queue has room, waking periodically to check whether
