@@ -42,7 +42,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from ..paths import get_cache_dir
 
@@ -54,6 +54,19 @@ _fd: Optional[int] = None
 _path: Optional[Path] = None
 _enabled = False
 _heartbeat_thread: Optional[threading.Thread] = None
+#: Getter for the stdio writer-queue snapshot, registered by the transport at
+#: startup. Kept as a registered callable rather than importing the transport
+#: here, so debug_log stays a leaf module — no import cycle with stdio, which
+#: logs its reader markers through us.
+_writer_state_getter: Optional[Callable[[], Any]] = None
+
+
+def set_writer_state_getter(getter: Callable[[], Any]) -> None:
+    """Register the transport's queue-state snapshot for the heartbeat to
+    include. Called by `stdio` at startup."""
+    global _writer_state_getter  # pylint: disable=global-statement
+    _writer_state_getter = getter
+
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -137,22 +150,17 @@ def _heartbeat_loop() -> None:
     *process* (paused, swapped out, killed), while heartbeats continuing
     through a long quiet stretch confirm the process is alive and the
     issue is upstream (stdin not delivering, client not sending)."""
-    # Lazy import: the transport module is independent of debug
-    # logging, so don't pull it into the import graph unless we're
-    # actually going to call its getter.
-    # pylint: disable=import-outside-toplevel
-    from . import stdio
-
     while _enabled:
         time.sleep(10)
         with _calls_lock:
             seen = _calls_seen
+        getter = _writer_state_getter
         log_event(
             0,
             "heartbeat",
             calls_seen=seen,
             uptime=round(time.monotonic() - _start_monotonic, 3),
-            writer_queue=stdio.queue_state(),
+            writer_queue=getter() if getter is not None else None,
         )
 
 
