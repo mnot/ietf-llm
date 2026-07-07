@@ -40,10 +40,18 @@ def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
 # How long `start_gather(wait=...)` blocks for a gather to finish before
 # falling back to the progress-and-poll reply. Blocking is the default (the
 # dominant flow is gather-then-read, one call), and `wait=0` restores
-# fire-and-forget. The budget is always clamped under the `_offload` deadline
-# so the wait loop returns its own "still running, poll" message rather than
-# the generic tool-timeout firing first.
-_GATHER_WAIT_DEFAULT = 90.0
+# fire-and-forget. Capped at `_GATHER_WAIT_MAX`: a long-blocking tool call
+# degrades some MCP clients, and 30s is enough for a quick re-gather of an
+# existing repo to finish inline — anything longer returns the poll reply. The
+# budget is also clamped under the `_offload` deadline so the wait loop returns
+# its own "still running, poll" message rather than the generic tool-timeout
+# firing first.
+_GATHER_WAIT_DEFAULT = 30.0
+
+# Hard ceiling on the wait budget — the default and any requested `wait`, for
+# both start_gather and gather_status. A long blocking call hurts some clients,
+# and a quick re-gather finishes well within this.
+_GATHER_WAIT_MAX = 30.0
 
 
 _GATHER_WAIT_MARGIN = 15.0
@@ -60,9 +68,10 @@ def _gather_wait_budget(requested: Optional[float], elapsed: float = 0.0) -> flo
     offload deadline.
 
     `None` → the default budget (blocking by default); `<= 0` → don't wait
-    (fire-and-forget). A positive request is honoured but clamped to leave
-    headroom under `IETF_LLM_TOOL_TIMEOUT`, so the wait loop always gets to
-    return its own progress reply instead of the offload deadline cancelling
+    (fire-and-forget). A positive request is honoured but clamped to
+    `_GATHER_WAIT_MAX` (a long blocking tool call degrades some clients) and to
+    leave headroom under `IETF_LLM_TOOL_TIMEOUT`, so the wait loop always gets
+    to return its own progress reply instead of the offload deadline cancelling
     the call first.
 
     `elapsed` is the wall-clock already spent in this tool call before the wait
@@ -75,6 +84,7 @@ def _gather_wait_budget(requested: Optional[float], elapsed: float = 0.0) -> flo
     base = _GATHER_WAIT_DEFAULT if requested is None else float(requested)
     if base <= 0:
         return 0.0
+    base = min(base, _GATHER_WAIT_MAX)
     timeout = _tool_timeout_seconds()
     if timeout > 0:
         base = min(base, max(0.0, timeout - elapsed - _GATHER_WAIT_MARGIN))
@@ -181,7 +191,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
             f"topic-map tail is the slow part, so it could take a few more "
             f"minutes. Tell the user and offer to check back once `gather_status` "
             f"reports `done`; reads before then are stale or partial. Block with "
-            f'`gather_status(corpus="{corpus}", wait=60)` rather than reading now. '
+            f'`gather_status(corpus="{corpus}", wait=30)` rather than reading now. '
             f"{out}"
         )
     return out
@@ -400,7 +410,7 @@ def register(server: "FastMCP") -> None:
 
         Use this when a corpus the user asks about isn't cached yet
         (`list_corpora` doesn't show it). **By default this blocks** until
-        the gather finishes (up to ~90s) and reports `done`, so the common
+        the gather finishes (up to ~30s) and reports `done`, so the common
         gather-then-read flow is a single call — no poll loop, no guessed
         sleep. A quick re-gather usually completes within that window; a
         *first* gather of a corpus can run for minutes, so if it is still
@@ -509,8 +519,9 @@ def register(server: "FastMCP") -> None:
                 on an explicit request for fresh data.
             wait: Seconds to block waiting for the gather to finish before
                 returning a progress line to poll on. Omit to block for the
-                default (~90s); `0` returns immediately (fire-and-forget).
-                Clamped to stay under the server's per-call tool deadline.
+                default (~30s); `0` returns immediately (fire-and-forget).
+                Clamped to ~30s and to stay under the server's per-call tool
+                deadline.
                 Also waits when the corpus is already being gathered (by
                 another client or a CLI run).
         """
