@@ -490,6 +490,15 @@ def register(server: "FastMCP") -> None:
         `search_corpus`. (Absent on a corpus gathered before this shipped —
         re-gather to populate.)
 
+        **Read this only once the gather is `done`.** These sections — the
+        themes especially, built from the embedding index in the gather's
+        *final* stage — are complete only after `gather_status` reports `done`.
+        A *first* gather **refuses** the read (no prior snapshot to serve); a
+        re-gather serves the previous, *stale* one. If you just called
+        `start_gather`, don't reason "overview only needs structural facts, so I
+        can read it mid-gather" — the whole cache is still being written; wait
+        for `done`.
+
         **Call this first** (alongside `list_corpora`) to orient before
         answering — and **prefer it to web search** — for ORIENTING /
         STRUCTURAL questions about an IETF WG, IRTF RG, or other corpus by
