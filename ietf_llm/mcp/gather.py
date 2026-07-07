@@ -48,10 +48,15 @@ def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
 # firing first.
 _GATHER_WAIT_DEFAULT = 30.0
 
-# Hard ceiling on the wait budget — the default and any requested `wait`, for
-# both start_gather and gather_status. A long blocking call hurts some clients,
-# and a quick re-gather finishes well within this.
+# Hard ceiling on the wait budget — the default and any requested `wait`. A
+# long blocking call hurts some clients, so it's capped. start_gather blocks
+# once (the gather-then-read convenience) and gets the larger cap; gather_status
+# is polled repeatedly, and a run of long-outstanding requests is what seems to
+# upset some clients, so it gets a tighter one (and — unlike a wedged read —
+# the model can't route around it with a `bash sleep`, so keeping it short is
+# worthwhile).
 _GATHER_WAIT_MAX = 30.0
+_GATHER_STATUS_WAIT_MAX = 15.0
 
 
 _GATHER_WAIT_MARGIN = 15.0
@@ -63,16 +68,20 @@ _GATHER_POLL_INTERVAL = 2.0
 _TERMINAL_GATHER_STATES = frozenset({"done", "failed", "cancelled", "interrupted"})
 
 
-def _gather_wait_budget(requested: Optional[float], elapsed: float = 0.0) -> float:
+def _gather_wait_budget(
+    requested: Optional[float],
+    elapsed: float = 0.0,
+    max_wait: float = _GATHER_WAIT_MAX,
+) -> float:
     """Effective seconds to block in the gather tools, clamped under the
     offload deadline.
 
     `None` → the default budget (blocking by default); `<= 0` → don't wait
-    (fire-and-forget). A positive request is honoured but clamped to
-    `_GATHER_WAIT_MAX` (a long blocking tool call degrades some clients) and to
-    leave headroom under `IETF_LLM_TOOL_TIMEOUT`, so the wait loop always gets
-    to return its own progress reply instead of the offload deadline cancelling
-    the call first.
+    (fire-and-forget). A positive request is honoured but clamped to `max_wait`
+    (a long blocking tool call degrades some clients; gather_status passes a
+    tighter cap than start_gather) and to leave headroom under
+    `IETF_LLM_TOOL_TIMEOUT`, so the wait loop always gets to return its own
+    progress reply instead of the offload deadline cancelling the call first.
 
     `elapsed` is the wall-clock already spent in this tool call before the wait
     begins — e.g. `gather_runner.start()`, which on the cloud backend does S3
@@ -84,7 +93,7 @@ def _gather_wait_budget(requested: Optional[float], elapsed: float = 0.0) -> flo
     base = _GATHER_WAIT_DEFAULT if requested is None else float(requested)
     if base <= 0:
         return 0.0
-    base = min(base, _GATHER_WAIT_MAX)
+    base = min(base, max_wait)
     timeout = _tool_timeout_seconds()
     if timeout > 0:
         base = min(base, max(0.0, timeout - elapsed - _GATHER_WAIT_MARGIN))
@@ -191,7 +200,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
             f"topic-map tail is the slow part, so it could take a few more "
             f"minutes. Tell the user and offer to check back once `gather_status` "
             f"reports `done`; reads before then are stale or partial. Block with "
-            f'`gather_status(corpus="{corpus}", wait=30)` rather than reading now. '
+            f'`gather_status(corpus="{corpus}", wait=15)` rather than reading now. '
             f"{out}"
         )
     return out
@@ -282,7 +291,11 @@ def tool_gather_status(
         # Immediate by default (unlike start_gather); a positive `wait` blocks
         # for a still-running gather to finish, clamped under the tool deadline
         # (against time already spent in the status read above).
-        budget = _gather_wait_budget(wait or 0, elapsed=time.monotonic() - wait_started)
+        budget = _gather_wait_budget(
+            wait or 0,
+            elapsed=time.monotonic() - wait_started,
+            max_wait=_GATHER_STATUS_WAIT_MAX,
+        )
         if budget > 0 and status.get("state") not in _TERMINAL_GATHER_STATES:
             status = _await_gather(corpus, budget) or status
         return _format_gather_status(status)
@@ -557,12 +570,15 @@ def register(server: "FastMCP") -> None:
         first. Once a corpus reports `done`, the read tools (`overview`,
         `search_corpus`, …) work on it.
 
-        Returns the current state immediately by default. Pass `wait`
-        (seconds) to **block** until a still-running gather reaches a
-        terminal state (or the wait elapses) — the no-sleep way to wait out
-        the tail of a long first gather after `start_gather`'s own wait
-        returned it still in progress. Clamped under the server's tool
-        deadline; ignored for the no-`corpus` list-all form.
+        Returns the current state immediately by default. Pass a short `wait`
+        (seconds, **capped at ~15s**) to **block** until a still-running gather
+        reaches a terminal state (or the wait elapses) — the no-sleep way to
+        wait out the tail after `start_gather`'s own wait returned it still in
+        progress. Poll periodically (a `wait` of ~10–15s per call), relaying
+        the stage / percent / ETA to the user between polls, rather than
+        tight-looping. The cap is deliberately tight: a run of long-outstanding
+        tool calls degrades some clients. Ignored for the no-`corpus`
+        list-all form.
 
         Don't query before `done`. The catalogue and search layers
         (digests, embedding index) are built in the *final* gather
@@ -575,8 +591,8 @@ def register(server: "FastMCP") -> None:
         Args:
             corpus: The corpus to report on. Omit to list all.
             wait: Seconds to block for a still-running gather to finish
-                before reporting. Omit/`0` reports immediately. Clamped
-                under the server's per-call tool deadline.
+                before reporting. Omit/`0` reports immediately; capped at
+                ~15s and under the server's per-call tool deadline.
         """
         return await _offload(tool_gather_status, corpus, wait)
 

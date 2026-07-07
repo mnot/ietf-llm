@@ -40,6 +40,14 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   and flags which are cached; `which_corpus(query)` routes to a cached one.
 - **Corpus missing?** How to add one is stated in **This session** above (it
   depends on this server's mode).
+- **Just started a gather? Wait for `done` before reading.** `overview`,
+  `search_corpus`, `read_digest`, … only work once `gather_status` reports
+  `done`: a first gather *refuses* them until then, and "the files are
+  downloaded" is not "there is a readable snapshot" (the catalogue, digests and
+  embedding index — which the overview themes come from — are built in the
+  final stages). Poll `gather_status` with a short `wait` (≤15s), relay the
+  percent / ETA to the user between polls, and read once it's `done` — don't
+  tight-loop.
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
 
