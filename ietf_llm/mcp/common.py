@@ -265,8 +265,8 @@ def _first_gather_guard(wg: str) -> Optional[str]:
         "the corpus is not queryable yet — its search index and digests are built "
         "in the final stages. This is a one-time cold fetch that could take a few "
         "minutes; tell the user that and offer to check back once it reports "
-        f'`done`, rather than waiting silently. Call `gather_status(corpus="{wg}", '
-        "wait=60)` to block until it reports `done`, then retry."
+        f"`done`, rather than waiting silently. Call {_gather_status_call(wg)} "
+        "and retry once it reports `done`."
     )
 
 
@@ -616,6 +616,14 @@ def _session_section() -> str:
         f"- **Capability:** {_capability_phrase()}."
     )
     if gather_enabled():
+        cap = _gather_max_wait()
+        blocks = (
+            f"the call itself blocks for a bounded wait, up to ~{max(1, int(cap))}s, "
+            "before it even returns"
+            if cap > 0
+            else "the call returns immediately — this server does not block on a "
+            "gather"
+        )
         guidance = (
             "To add or refresh a corpus, `start_gather(corpus=…)` — "
             f"{_gather_cost_clause()}. To extend a corpus that already exists, "
@@ -624,14 +632,13 @@ def _session_section() -> str:
             "and it runs without `force`. **Set the user's expectations up front, "
             "as you announce the gather:** a first gather is often a minute or "
             "two, and several minutes for a very active group — say so, rather "
-            "than announcing it and going quiet (the call itself blocks for a "
-            "bounded wait, ~90s, before it even returns). It returns naming the "
-            "stage and elapsed time; the corpus is queryable once `gather_status` "
-            "reports `done`, and reads refuse until then (a re-gather keeps "
-            "serving the previous snapshot); poll `gather_status(corpus=…, "
-            "wait=60)` and keep the user posted rather than going silent. For "
-            "live, daily-changing facts use `draft_status` / `meeting_schedule`; "
-            "otherwise the offline "
+            f"than announcing it and going quiet ({blocks}). It returns naming "
+            "the stage and elapsed time; the corpus is queryable once "
+            "`gather_status` reports `done`, and reads refuse until then (a "
+            "re-gather keeps serving the previous snapshot); poll "
+            f"{_gather_status_call('…')} and keep the user posted rather than "
+            "going silent. For live, daily-changing facts use `draft_status` / "
+            "`meeting_schedule`; otherwise the offline "
             "`list_drafts` / `list_meetings` / `read_minutes`."
         )
     else:
@@ -796,6 +803,40 @@ def _tool_timeout_seconds() -> float:
         return float(os.environ.get("IETF_LLM_TOOL_TIMEOUT", "120"))
     except ValueError:
         return 120.0
+
+
+#: Default cap (seconds) on how long the gather tools block, used when
+#: `IETF_LLM_GATHER_MAX_WAIT` is unset. A tool call left outstanding much beyond
+#: ~10s degrades some MCP clients (Claude Desktop; confirmed with the stdio
+#: reader instrumentation), so the default is deliberately short.
+_GATHER_WAIT_MAX_DEFAULT = 10.0
+
+
+def _gather_max_wait() -> float:
+    """Cap (seconds) on how long `start_gather` / `gather_status` block, from
+    `IETF_LLM_GATHER_MAX_WAIT` (default `_GATHER_WAIT_MAX_DEFAULT`).
+
+    One knob for both tools. `0` — or a negative value, clamped to it — disables
+    blocking entirely: both tools return immediately, for a client that a
+    long-running call upsets. An unparseable value falls back to the default."""
+    raw = os.environ.get("IETF_LLM_GATHER_MAX_WAIT")
+    if raw is None:
+        return _GATHER_WAIT_MAX_DEFAULT
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _GATHER_WAIT_MAX_DEFAULT
+
+
+def _gather_status_call(corpus: str) -> str:
+    """The `gather_status(...)` call to suggest for polling, carrying a `wait=`
+    that matches the current cap — or no `wait` at all when blocking is disabled
+    (`IETF_LLM_GATHER_MAX_WAIT=0`), so we never nudge the model toward a wait the
+    server will ignore. Used wherever a message tells the client how to poll."""
+    cap = _gather_max_wait()
+    if cap <= 0:
+        return f'`gather_status(corpus="{corpus}")`'
+    return f'`gather_status(corpus="{corpus}", wait={max(1, int(cap))})`'
 
 
 def _gather_enabled() -> bool:

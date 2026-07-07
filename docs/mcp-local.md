@@ -193,3 +193,10 @@ Each tool call has a server-side deadline so a stuck call fails fast with a clea
 than hanging until the client's timeout. It defaults to 120 seconds; override (or disable, with
 `0`) by setting `IETF_LLM_TOOL_TIMEOUT` in the server's environment — e.g. add `"env":
 {"IETF_LLM_TOOL_TIMEOUT": "180"}` to a client's JSON config.
+
+`start_gather` and `gather_status` block for up to `IETF_LLM_GATHER_MAX_WAIT` seconds
+(default `10`) so a quick gather finishes in one call — but a tool call left outstanding
+much beyond ~10s degrades some MCP clients. If your client turns choppy or stops
+responding while a gather runs, set `IETF_LLM_GATHER_MAX_WAIT` lower, or to `0` to make
+both tools return immediately (the model then polls `gather_status` without ever
+blocking) — e.g. `"env": {"IETF_LLM_GATHER_MAX_WAIT": "0"}`.
