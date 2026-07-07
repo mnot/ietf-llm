@@ -187,4 +187,4 @@ def test_remote_reports_percent_to_detail(
         verbose=Verbosity.QUIET,
         detail=seen.append,
     )
-    assert seen and all(s.endswith("%") for s in seen)
+    assert seen and all("%" in s and "embedded" in s for s in seen)
