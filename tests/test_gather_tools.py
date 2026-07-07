@@ -494,21 +494,24 @@ def test_gather_wait_budget_defaults_and_clamps(monkeypatch: pytest.MonkeyPatch)
     assert mcp.gather._gather_wait_budget(None) == mcp.gather._GATHER_WAIT_DEFAULT
     assert mcp.gather._gather_wait_budget(0) == 0.0
     assert mcp.gather._gather_wait_budget(-5) == 0.0
-    # A request over the deadline headroom is clamped under it.
-    assert mcp.gather._gather_wait_budget(10_000) == 120 - mcp.gather._GATHER_WAIT_MARGIN
-    # A disabled deadline honours the request as-is.
+    # A request under the cap is honoured as-is.
+    assert mcp.gather._gather_wait_budget(10) == 10
+    # Any larger request is clamped to the hard max, well under the deadline
+    # headroom (a long blocking call hurts some clients).
+    assert mcp.gather._gather_wait_budget(10_000) == mcp.gather._GATHER_WAIT_MAX
+    # The max applies even with the deadline disabled.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "0")
-    assert mcp.gather._gather_wait_budget(10_000) == 10_000
+    assert mcp.gather._gather_wait_budget(10_000) == mcp.gather._GATHER_WAIT_MAX
 
 
 def test_gather_wait_budget_clamps_against_elapsed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Time already spent in the call (e.g. a slow cloud `start()`) shrinks the
-    # budget so the wait can't outlive the offload deadline it stays under.
+    # budget so the wait can't outlive the offload deadline — even below the max.
     monkeypatch.setenv("IETF_LLM_TOOL_TIMEOUT", "120")
-    # 120 - 30 elapsed - 15 margin = 75 headroom; default 90 is clamped to it.
-    assert mcp.gather._gather_wait_budget(None, elapsed=30) == 75
+    # 120 - 100 elapsed - 15 margin = 5 headroom, below the 30s max -> 5.
+    assert mcp.gather._gather_wait_budget(None, elapsed=100) == 5
     # No headroom left -> don't wait at all (rather than overshoot the deadline).
     assert mcp.gather._gather_wait_budget(None, elapsed=200) == 0.0
 
