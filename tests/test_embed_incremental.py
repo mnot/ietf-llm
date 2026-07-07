@@ -121,4 +121,16 @@ def test_embed_feeds_percent_to_detail(isolated_home: Path, monkeypatch) -> None
         verbose=Verbosity.QUIET,
         detail=seen.append,
     )
-    assert seen and all(s.endswith("%") for s in seen)
+    assert seen and all("%" in s and "embedded" in s for s in seen)
+
+
+def test_embed_progress_eta_phrase() -> None:
+    # The detail phrase is self-describing and carries a linear byte-ETA: 25%
+    # of the bytes done after ~40s implies ~120s (3x) remaining.
+    import time as _time
+
+    from ietf_llm.embeddings.search import _embed_progress
+
+    seen: List[str] = []
+    _embed_progress(25, 100, _time.time() - 40, Verbosity.QUIET, seen.append)
+    assert seen == ["25% embedded, ~2m00s left"]

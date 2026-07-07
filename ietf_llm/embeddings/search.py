@@ -358,6 +358,13 @@ def _file_bytes(cache_dir: str, relpath: str) -> int:
         return 0
 
 
+def _fmt_secs(secs: float) -> str:
+    """`45s` / `3m12s` — matches gather_status's own elapsed format so the two
+    times in one status line read consistently."""
+    whole = max(0, int(secs))
+    return f"{whole // 60}m{whole % 60:02d}s" if whole >= 60 else f"{whole}s"
+
+
 def _embed_progress(
     done_bytes: int,
     pending_bytes: int,
@@ -365,22 +372,35 @@ def _embed_progress(
     verbose: Verbosity,
     detail: Optional[Callable[[str], None]],
 ) -> None:
-    """Emit a byte-weighted embed percent — to the STATUS log and, when the
-    gather passed one, to `detail` (which `gather_status` surfaces as
+    """Emit a byte-weighted embed progress line — to the STATUS log and, when
+    the gather passed one, to `detail` (which `gather_status` surfaces as
     `stage_detail`). Shared by the on-device and remote paths so both report
-    identically. Bytes track embed cost better than a file count and are known
-    up front without pre-chunking."""
+    identically.
+
+    The `detail` phrase is self-describing (`"7% embedded, ~2m10s left"`)
+    because it lands in gather_status next to a *gather*-total elapsed with no
+    label — so it names its own baseline (embedding progress) and carries a
+    stage ETA. The ETA is a linear extrapolation from bytes done; the embed
+    rate is ~constant, so it is a reasonable estimate, marked `~`. Bytes track
+    embed cost better than a file count and are known up front without
+    pre-chunking."""
+    elapsed = time.time() - start
     pct = 100 * done_bytes // pending_bytes if pending_bytes else 100
+    eta = ""
+    if 0 < done_bytes < pending_bytes:
+        remaining = (pending_bytes - done_bytes) * elapsed / done_bytes
+        eta = f", ~{_fmt_secs(remaining)} left"
+    phrase = f"{pct}% embedded{eta}"
     log(
-        f"  …embedding {pct}% ({done_bytes >> 20}/{pending_bytes >> 20} MB, "
-        f"{time.time() - start:.0f}s elapsed)",
+        f"  …embedding {phrase} "
+        f"({done_bytes >> 20}/{pending_bytes >> 20} MB, {elapsed:.0f}s)",
         verbose,
         level=LogLevel.STATUS,
     )
     if detail is not None:
         # Also a cancellation checkpoint on the long embed stage: the gather
         # runner polls the stop flag on each detail call.
-        detail(f"{pct}%")
+        detail(phrase)
 
 
 def build_index(
