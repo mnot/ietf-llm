@@ -23,7 +23,12 @@ from ..config import service as service_config
 from ..datatracker_api import fetch_group_object
 from ..digest import generate_digests
 from ..digest.timeline import write_timeline_digest
-from ..embeddings import DEFAULT_EMBED_MODEL, build_index, generate_topics
+from ..embeddings import (
+    DEFAULT_EMBED_MODEL,
+    build_index,
+    generate_topics,
+    has_topics,
+)
 from ..freshness import last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
@@ -812,7 +817,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # to defer the embed cost).
     if not args.no_embed:
         tracker.begin("embedding index")
-        build_index(
+        index_changed = build_index(
             args.wg,
             cache_dir,
             model_name=args.embed_model or DEFAULT_EMBED_MODEL,
@@ -820,19 +825,23 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             verbose=verbosity,
             detail=tracker.detail,
         )
-        # Topic map: cluster the freshly-built index into themes for `overview`
-        # (and, later, centroid routing). Cheap next to the embed, write-side
-        # (a `topics.json` sidecar beside the index that rides publish), and
-        # best-effort — a failure here must not fail an otherwise good gather.
+        # Topic map: cluster the index into themes for `overview` (and centroid
+        # routing). Write-side (a `topics.json` sidecar beside the index that
+        # rides publish), and best-effort — a failure here must not fail an
+        # otherwise good gather. Recomputing is O(corpus) k-means, so skip it when
+        # the index didn't change and a sidecar already exists — the recompute is
+        # dead CPU on a no-op re-gather or a seeded corpus whose delta was zero
+        # (issue #190).
         tracker.begin("topic map")
-        try:
-            generate_topics(args.wg, verbose=verbosity)
-        except Exception as err:  # pylint: disable=broad-except
-            log(
-                f"Topic map skipped ({type(err).__name__}: {err}).",
-                verbosity,
-                level=LogLevel.PROGRESS,
-            )
+        if index_changed or not has_topics(args.wg):
+            try:
+                generate_topics(args.wg, verbose=verbosity)
+            except Exception as err:  # pylint: disable=broad-except
+                log(
+                    f"Topic map skipped ({type(err).__name__}: {err}).",
+                    verbosity,
+                    level=LogLevel.PROGRESS,
+                )
 
     # Record successful gather so freshness checks (export warning,
     # MCP staleness banner) know when to nag. Best-effort; never fatal.

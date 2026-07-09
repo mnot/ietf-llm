@@ -42,7 +42,7 @@ from .storage import (
     probe_index,
     read_topics,
 )
-from .topics import build_topics, generate_topics
+from .topics import build_topics, generate_topics, has_topics
 
 __all__ = [
     # Public surface
@@ -55,6 +55,7 @@ __all__ = [
     "chunk_counts",
     "find_chunks_by_url",
     "generate_topics",
+    "has_topics",
     "get_chunk",
     "get_messages",
     "index_model",

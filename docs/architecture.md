@@ -240,7 +240,11 @@ Key invariants:
   centroid, a keyword label, and its most-central documents. `overview` renders
   the largest themes. It rides publish like the index and is **write-side** — a
   cache embedded before the topic map shipped has no sidecar until re-gathered,
-  which `read_topics` / `overview` degrade past silently.
+  which `read_topics` / `overview` degrade past silently. The recompute (O(corpus)
+  k-means) is **skipped when the index didn't change** and a sidecar already
+  exists — `build_index` returns whether anything was embedded or pruned, so a
+  no-op re-gather (or a seeded corpus whose delta was zero) doesn't re-cluster for
+  nothing (#190).
 - **The centroids are reused, reader-side, for two cross-corpus jobs.**
   *Centroid routing* (`corpus/routing.py`, the `which_corpus` tool) scores each corpus
   as the max cosine of the query against its centroids and abstains below a

@@ -456,8 +456,10 @@ def build_index(
     rebuild: bool = False,
     verbose: Verbosity = Verbosity.STATUS,
     detail: Optional[Callable[[str], None]] = None,
-) -> int:
-    """Embed all eligible files. Returns number of chunks indexed.
+) -> bool:
+    """Embed all eligible files. Returns True if the index changed this run (any
+    chunk embedded or pruned, or a full rebuild), False if it was already up to
+    date — the caller uses this to skip the topic-map recompute (issue #190).
 
     Incremental: chunks for an unchanged file (same content, same model) are
     skipped. Pass rebuild=True to drop and re-embed everything.
@@ -469,7 +471,7 @@ def build_index(
     """
     model = _get_embed_model(model_name, verbose)
     if model is None:
-        return 0
+        return False
     # Serialise concurrent builds of the same corpus -- a second gather, or
     # a future gather-triggering MCP tool -- so they don't interleave writes
     # to one scratch DB.
@@ -480,14 +482,14 @@ def build_index(
         # seeded from the live index, so the build stays incremental.
         build_path = seed_build_db(wg)
         try:
-            count = _build_index_locked(
+            changed = _build_index_locked(
                 wg, cache_dir, model, model_name, rebuild, verbose, build_path, detail
             )
         except BaseException:
             discard_build_db(wg)
             raise
         promote_build_db(wg)
-        return count
+        return changed
 
 
 def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,too-many-branches
@@ -499,7 +501,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     verbose: Verbosity,
     build_path: Optional[str] = None,
     detail: Optional[Callable[[str], None]] = None,
-) -> int:
+) -> bool:
     conn = _open_db(wg, build_path)
     cur = conn.cursor()
 
@@ -615,6 +617,11 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             level=LogLevel.STATUS,
         )
 
+    # Did the vector set change this run? A rebuild or a prune already changed it;
+    # any written file below sets it too. Lets the caller skip the topic-map
+    # recompute when nothing changed (issue #190).
+    changed = rebuild or bool(orphans)
+
     # Content hashes for every eligible file, computed once and reused by both
     # the pending-count pass and the embed pass below, so each file is read at
     # most once for hashing. None means the file couldn't be read; treated as
@@ -698,7 +705,14 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         the main thread by both paths, so the counters and the cursor need no
         locking. Progress is reported by the caller (byte-weighted, via
         `_embed_progress`); this only writes and commits."""
-        nonlocal total_new, files_done, chunks_since_flush
+        nonlocal total_new, files_done, chunks_since_flush, changed
+        # A planned file reaching here means its content changed; mark the index
+        # changed before writing, so the topic-map recompute still fires even if
+        # the write returns 0 after mutating (the IntegrityError path DELETEs the
+        # file's old chunks first). Conservative: the rare no-mutation skip (a
+        # vector/chunk count mismatch, checked before any DELETE) also flips it,
+        # which only over-recomputes — the safe direction.
+        changed = True
         written = _write_file(cur, plan, vectors, verbose)
         if not written:
             return
@@ -797,7 +811,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         verbose,
         level=LogLevel.STATUS,
     )
-    return total_new
+    return changed
 
 
 def index_model(wg: str) -> Optional[str]:

@@ -17,6 +17,7 @@ stays clustered and routing keeps complete coverage.
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional
@@ -26,7 +27,22 @@ import numpy as np
 from ..log import LogLevel, Verbosity, log
 from .clustering import choose_k, mini_batch_kmeans
 from .search import index_model
-from .storage import Document, encode_centroid, load_documents, write_topics
+from .storage import (
+    Document,
+    _topics_path,
+    encode_centroid,
+    load_documents,
+    write_topics,
+)
+
+
+def has_topics(wg: str) -> bool:
+    """True if `wg`'s topic-map sidecar already exists (write side). The gather
+    skips regenerating the topic map when the index did not change, but only when
+    a sidecar is already present, so a first build (or one whose earlier topic
+    step failed) still gets one (issue #190)."""
+    return os.path.isfile(_topics_path(wg, write=True))
+
 
 #: Below this many documents a corpus is too small to theme usefully — skip
 #: the topic map rather than emit one-document "themes".
