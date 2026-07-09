@@ -28,6 +28,8 @@ For an introduction to ietf-llm, see the [main README](../README.md).
   (OpenAI-compatible), and how the global model settings resolve.
 - **[Storage & locations](storage.md)** — relocate the cache, config, and index directories (e.g.
   the hot index onto tmpfs).
+- **[Seed store](seed-store.md)** — the public fast-start mirror a local gather seeds a corpus from
+  before freshening (`IETF_LLM_SEED_URL`, `--no-seed`), and how to publish one.
 
 
 ## Contributing

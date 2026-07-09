@@ -41,3 +41,9 @@ There are three supported workflows:
 See the workflow documentation linked above for installation and use instructions, or the
 [full documentation listing](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
 
+All three read a corpus you first **gather** with `ietf-llm <corpus>`. When a
+[seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) is configured
+(`IETF_LLM_SEED_URL`), a gather of a covered corpus starts from a prebuilt public snapshot and only
+freshens the delta — skipping most of the embedding and download cost. It is opt-out (`--no-seed`)
+and best-effort: an unreachable or unlisted corpus just gathers from scratch.
+

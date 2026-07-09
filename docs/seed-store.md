@@ -1,8 +1,11 @@
 # Seed store (design)
 
-**Status:** design — issue [#182](https://github.com/mnot/ietf-llm/issues/182).
-Not yet implemented. This document is the plan; it becomes the operator doc when
-the code lands. Back to the [docs index](README.md).
+**Status:** implemented — issue [#182](https://github.com/mnot/ietf-llm/issues/182).
+The producer (`scripts/publish_seeds.py`), consumer (`ietf_llm/seed/`,
+`IETF_LLM_SEED_URL`), and the gather seed step are in place. The one thing still
+pending before opt-out is live for everyone: a **default hosting URL**
+(`config.service._DEFAULT_SEED_URL` is `None`, so seeding is off until an operator
+sets `IETF_LLM_SEED_URL`). Back to the [docs index](README.md).
 
 ## The problem
 
