@@ -120,26 +120,70 @@ its locally-held base predates a newer snapshot.
 
 ## Producer side
 
-Publishing is decoupled from gathering — one writer to the cache stays the gather
-CLI. The producer runs its normal `ietf-llm <wg> --months 12` on a schedule, then
-a thin **`scripts/publish_seeds.py <dir> <corpus…>`** operator script (not a
-`[project.scripts]` console entry — producer-only, kept out of the installed CLI
-surface and never imported by the read path) reads each already-gathered corpus
-from the local cache and:
+The publisher is **`scripts/publish_seeds.py`** — an operator script (not a
+`[project.scripts]` console entry; producer-only, kept out of the installed CLI
+surface and never imported by the read path). It is a **one-shot**: for each
+member of the store it incremental-gathers, then publishes.
 
-1. assembles the tree (the included set above), tars + gzips it, hashes it;
-2. reads `(schema_version, model, chunker_version, embed_dim)` from
+**The store is the curated list.** Membership lives in the store's `index.json`,
+not in the package and not retyped each run — the store directory is the operator's
+own artifact (outside the package), so curation stays operator-owned but
+persistent. You bootstrap the set once and edit it occasionally:
+
+```
+python scripts/publish_seeds.py ~/seed-store --add httpbis --add tls --add quic  # bootstrap
+python scripts/publish_seeds.py ~/seed-store                                      # refresh all members
+python scripts/publish_seeds.py ~/seed-store --add cfrg --months 12               # add one
+python scripts/publish_seeds.py ~/seed-store --remove old-bof                     # drop one
+```
+
+A bare run is the whole monthly job — gather each member on its stored window,
+publish what changed, sync:
+
+```
+python scripts/publish_seeds.py ~/seed-store --prune && rsync -a ~/seed-store/ host:/var/www/seed/
+```
+
+Per member the script:
+
+1. **gathers** it (the normal `gather.sequencer` pipeline, incremental, on its
+   stored `window_months`) — `--no-gather` skips this to publish the cache as-is;
+2. assembles the bundle tree (the included set above), tars + gzips it, hashes it;
+3. reads `(schema_version, model, chunker_version, embed_dim)` from
    `embeddings.db` `meta`;
-3. writes `<name>/manifest.json` and the bundle;
-4. rebuilds the root `index.json`.
+4. writes `<name>/manifest.json` and the bundle;
+5. rebuilds the root `index.json` **last** (so it never references a missing
+   bundle), then drops the superseded bundle.
 
-The operator syncs `<dir>` to the static host. The curated corpus list is
-**operator-supplied** (CLI args or a file the operator keeps outside the package),
-never a package default — so curation is a pure operational choice, changed
-without a repo commit or release. The mirror's own `index.json` is the single
-source of truth for what a consumer can pull; the client learns coverage from it,
-so no shipped list is needed (and none can drift from what the mirror actually
-holds).
+"One writer to the cache" still holds: the gather step *invokes* the same pipeline
+the CLI does — the publisher is not a second writer, and publishing only *reads*
+the cache. And the store's own `index.json` stays the single source of truth for
+what a consumer can pull, so a shipped list is neither needed nor able to drift
+from what the mirror actually holds.
+
+| Option | Effect |
+|---|---|
+| `corpus…` (positional, optional) | process only these members this run (default: all) |
+| `--add <corpus>` `[--months N]` | add a corpus to the store (records its window; default the store's) |
+| `--remove <corpus>` | drop a corpus from membership |
+| `--no-gather` | publish current cache contents without re-gathering first |
+| `--force` | re-bundle members already published at their current version |
+| `--prune` | delete bundles/dirs for corpora no longer members (default: additive) |
+| `--dry-run` | print the gather / publish / skip / prune plan; write nothing |
+| `-v` | per-file progress |
+
+**Incremental.** A member whose `last-gathered` already matches its published
+`version` is bundle-skipped (`--force` overrides); the gather step is itself
+incremental, so an unchanged member is cheap end-to-end.
+
+**One model per store (guardrail).** The root `index.json` carries one
+compatibility tuple, so every member must share `(schema_version, model,
+chunker_version, vector_dim)`. A member embedded with a different model is refused
+with a clear message rather than writing an inconsistent index — use a separate
+store dir for a different model.
+
+**Host sync is out of scope.** The script only manages a local directory; you push
+it with `rsync` / `aws s3 sync` / `wrangler r2` (host-agnostic).
 
 ## Consumer side
 
