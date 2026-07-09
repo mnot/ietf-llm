@@ -148,44 +148,70 @@ read-only boundary it lives on the **gather path only** — never the MCP read t
 or `ietf-llm-search`, which stay offline and untouched.
 
 **Seeding is on by default (opt-out).** The package ships a default
-`IETF_LLM_SEED_URL` pointing at the project's public mirror, so a first gather of a
-covered corpus starts from the seed with no configuration. This is deliberate:
-gather is already the networked writer, so reaching the seed mirror on the same
-path is in character — and opt-out is the only way the feature helps the median
-user, who will never flip an opt-in. (Consequence: **a default mirror URL ships in
-the package**, so the project commits to a stable public hosting URL; a client
-reaching a dead or moved URL degrades to a cold gather, never an error — see
-"Failure is soft" below.)
+`IETF_LLM_SEED_URL` pointing at the project's public mirror, so a covered corpus
+starts from the seed with no configuration. This is deliberate: gather is already
+the networked writer, so reaching the seed mirror on the same path is in character
+— and opt-out is the only way the feature helps the median user, who will never
+flip an opt-in. (Consequence: **a default mirror URL ships in the package**, so the
+project commits to a stable public hosting URL; a client reaching a dead or moved
+URL degrades to a cold gather, never an error — see "Failure is soft" below.)
+
+**The seed is trusted as an authoritative fresh base.** A client uses it whenever
+it offers a *fresher, compatible* base than what is on local disk — cold start and
+stale-corpus refresh are the same rule, not two. A local corpus older than the
+snapshot is **automatically jumped forward** to it; the user opts out, never in.
 
 Pre-gather step in `gather/sequencer.py`:
 
-1. **Gate.** Seeding is enabled (a URL is present and not disabled), the corpus
-   is **absent locally**, is listed in the seed index, and the compatibility tuple
-   matches the client's configured embedding model.
+1. **Gate.** Seeding is enabled (a URL is present and not disabled), the corpus is
+   listed in the seed index, and the compatibility tuple matches the client's
+   configured embedding model. Then choose the base by comparing what the seed
+   offers against what is local:
+   - **No local copy** → seed (cold start — the seed is trivially fresher).
+   - **Local older than the snapshot** (`seed.gathered` > local `last-gathered`)
+     *and* the seed is a full stand-in for the user's config (its window ≥ the
+     configured window; no custom `--draft` / `--mailing-list` / `--github` /
+     generative sources the seed does not cover) → **re-seed**: replace the base,
+     then freshen. This is the opt-out judgment call — trust the fresher seed over
+     a stale local base.
+   - **Otherwise** (local is as fresh or fresher, or the seed would narrow the
+     window / underserve custom sources) → skip seeding; incremental-gather as
+     normal.
 2. **Fetch + verify.** Download the bundle to a temp dir, verify `bundle_sha256`.
 3. **Install.** Unpack and atomically install into `~/.cache/ietf-llm/<corpus>/`
-   (temp + `os.replace`, via `atomicio`). Record provenance in a `seed-source`
-   sentinel (url + version + fetched-at) beside `last-gathered`, so
-   `ietf-llm --list` can show "seeded from snapshot 2026-07-01."
+   (temp + `os.replace`, via `atomicio`; a re-seed swaps the existing base aside
+   and restores it on any failure, so a killed re-seed never leaves a torn tree).
+   Record provenance in a `seed-source` sentinel (url + version + fetched-at)
+   beside `last-gathered`, so `ietf-llm --list` can show "seeded from snapshot
+   2026-07-01."
 4. **Freshen.** Continue the normal incremental gather. With the snapshot in
-   place, it fetches and embeds only what changed since — the delta.
+   place, it fetches and embeds only what changed since — the delta — and
+   reconciles the tree to the user's persisted config.
 
-**Seeding fires only for a corpus with no local copy.** An existing local corpus
-is never silently re-seeded: the normal incremental gather runs, and re-pulling a
-fresh base over it is always the explicit `--refresh-base`. So opt-out governs the
-*cold start* only — it can never clobber locally-freshened state.
+**Why auto re-seeding a stale corpus is safe.** The freshen pass runs the user's
+own persisted config, so a re-seed loses nothing permanently: a wider window or
+custom sources are reconstructed on freshen (and the result is often *cleaner*
+than an incrementally-accreted old corpus). The guardrails above — seed window ≥
+the configured window, custom sources covered — are not about trust; they exist so
+the jump is actually *cheaper*. Re-seeding to a narrower base, or one missing the
+user's custom sources, would make freshen re-fetch and re-embed the difference and
+cost more than a plain incremental. Within those bounds the seed is trusted and the
+base moves forward automatically. The base only ever moves **forward**: seeding
+never replaces a local copy that is already fresher than the snapshot.
 
 Disabling / overriding:
 
-- **`--no-seed`** — skip the seed for this gather (cold gather instead).
+- **`--no-seed`** — skip seeding for this gather (pure incremental, or a cold
+  gather if there is no local copy).
 - **`IETF_LLM_SEED_URL=`** (empty), or global `config.json` `seed_url: ""` —
   disable seeding persistently. Setting it to a *different* URL points the client
   at your own mirror.
-- **`--refresh-base`** — re-pull even when a local copy exists, replacing the base
-  before freshening (always explicit; never automatic).
+- **`--refresh-base`** — force a re-seed even when local is not stale (e.g. to
+  re-pull the current snapshot over a suspect local tree).
 
-**Transparency.** When a gather seeds, it logs `seeding <corpus> from <url>` at
-normal verbosity, so an auto-pull is visible rather than silent.
+**Transparency.** When a gather (re-)seeds, it logs it at normal verbosity —
+`seeding <corpus> from <url> (snapshot 2026-07-01, replacing base gathered
+2025-08-12)` — so an automatic base jump is always visible, never silent.
 
 **Failure is soft.** Not covered, tuple mismatch, disabled, offline, or a
 fetch/verify error → fall through to a normal cold gather (quietly for the common
@@ -219,8 +245,10 @@ unreachable.
   Publishing per-model variants (so remote-embed clients benefit too) is more work
   and can come later; the format already namespaces by the tuple, so variants slot
   in without a format change.
-- **Auto re-seed over a freshened copy.** Opt-out seeds *cold* corpora only; it
-  never auto-re-pulls over an existing local corpus. `--refresh-base` is always
-  explicit.
+- **Going backwards.** Seeding only ever moves the base *forward*: it never
+  replaces a local copy that is fresher than the snapshot, and never auto-narrows a
+  wider-window or custom-source corpus (those incremental-gather instead). Auto
+  re-seeding of a *stale* compatible corpus, by contrast, is the intended default
+  (see Consumer side), not a non-goal.
 - **Compression.** v1 uses gzip (stdlib, zero-dep). `zstd` compresses the DB
   better but adds a dependency — revisit if bundle size warrants it.
