@@ -149,10 +149,10 @@ def test_maybe_seed_no_seed_flag(isolated_home, tmp_path, monkeypatch):
     assert not os.path.exists(os.path.join(get_cache_dir(), "httpbis"))
 
 
-def test_maybe_seed_disabled_when_no_url(isolated_home, tmp_path, monkeypatch):
+def test_maybe_seed_disabled_when_off(isolated_home, tmp_path, monkeypatch):
     store = _store(tmp_path)
     shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
-    monkeypatch.delenv("IETF_LLM_SEED_URL", raising=False)
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "off")  # explicit opt-out
     _maybe_seed(_seed_args("httpbis"), on_cloud=False, verbosity=Verbosity.QUIET)
     assert not os.path.exists(os.path.join(get_cache_dir(), "httpbis"))
 

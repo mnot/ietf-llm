@@ -30,6 +30,10 @@ def _gather_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
     separate process would not see. The real subprocess path has its own test
     (`test_gather_subprocess.py`), which clears this flag explicitly."""
     monkeypatch.setenv("IETF_LLM_GATHER_INPROCESS", "1")
+    # Never reach the real seed store over the network during tests (the baked
+    # default IETF_LLM_SEED_URL is a live host). Seed tests opt in by setting it
+    # to a local file store; the disable tests set it explicitly.
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "off")
 
 
 @pytest.fixture(autouse=True)

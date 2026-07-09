@@ -61,11 +61,13 @@ GATHER_MAX_INFLIGHT: Tuple[str, str] = (
 RETAIN_VERSIONS: Tuple[str, str] = ("IETF_LLM_RETAIN_VERSIONS", "retain_versions")
 SEED_URL: Tuple[str, str] = ("IETF_LLM_SEED_URL", "seed_url")
 
-#: The baked-in default seed-store mirror. Opt-out seeding needs a default here so
-#: a client seeds with no configuration — but it commits the project to a stable
-#: public URL, so it stays None until hosting is chosen (issue #182). While None,
-#: seeding is effectively off unless the operator sets IETF_LLM_SEED_URL.
-_DEFAULT_SEED_URL: Optional[str] = None
+#: The baked-in default seed-store mirror (opt-out): a covered corpus seeds from
+#: here with no configuration. Override with IETF_LLM_SEED_URL, or disable with
+#: `off` / an empty value. A dedicated hostname (not a path on the main site) so
+#: hosting can move to a CDN or bucket by repointing DNS without breaking the
+#: baked-in default. The host must be serving before a release ships this default;
+#: until it is, clients soft-fail to a cold gather. See docs/seed-store.md (#182).
+_DEFAULT_SEED_URL: Optional[str] = "https://ietf-llm-seeds.mnot.net/"
 
 #: Values that explicitly disable seeding (opt-out), case-insensitive.
 _SEED_DISABLED = ("", "off", "none")

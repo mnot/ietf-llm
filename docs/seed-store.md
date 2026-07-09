@@ -7,10 +7,12 @@ paying the full embed + download cost from scratch. Issue
 [#182](https://github.com/mnot/ietf-llm/issues/182). Back to the
 [docs index](README.md).
 
-**Status:** implemented, but off by default until a **default hosting URL** is
-chosen (`config.service._DEFAULT_SEED_URL` is `None`); until then seeding runs
-only when an operator sets `IETF_LLM_SEED_URL`. This is for **local** users, not
-the cloud `CorpusStore` backend (which has its own seeding).
+**Status:** implemented and **on by default** — a covered corpus seeds from
+`https://ietf-llm-seeds.mnot.net/` unless disabled (`--no-seed`,
+`IETF_LLM_SEED_URL=off`). Until that host is actually serving a store, clients
+soft-fail to a cold gather, so it is harmless before the mirror is stood up. This
+is for **local** users, not the cloud `CorpusStore` backend (which has its own
+seeding).
 
 ## What is published
 
@@ -117,7 +119,20 @@ the directory to any static host and note its public base URL:
 - **Cloudflare R2** — `aws s3 sync` against the R2 endpoint, or `wrangler r2`
 - **GitHub Pages** — commit the directory to a Pages repo (fine for small stores)
 
-No server-side logic, auth, or CORS is needed; the client only does GET.
+No server-side logic, auth, or CORS is needed; the client only does GET. Use a
+**dedicated hostname** (e.g. `ietf-llm-seeds.example.net`) rather than a path on a
+larger site, so hosting can later move to a CDN or bucket by repointing DNS — the
+hostname is the stable contract clients are pinned to.
+
+**Cache headers** matter, especially behind a CDN, because the two file kinds have
+opposite lifetimes:
+
+- **Bundles** (`*-<version>.tar.gz`) are immutable (versioned filenames) →
+  `Cache-Control: public, max-age=31536000, immutable`. This is what makes a CDN
+  nearly free to run.
+- **`index.json` / `manifest.json`** change every publish → a **short** TTL (a few
+  minutes) or `must-revalidate` + ETag, so a new snapshot becomes visible promptly
+  instead of being pinned to a stale index at the edge.
 
 ### 4. Point clients at it
 
@@ -149,7 +164,9 @@ use the seed whenever it is a fresher, compatible base than what is local:
 - **No local copy** → seed (cold start).
 - **Local older than the snapshot**, and the snapshot is a full stand-in (window
   not narrowed; no extra `--draft` / `--mailing-list` / generative sources) →
-  **re-seed**, jumping the base forward, then freshen.
+  **re-seed**, jumping the base forward, then freshen. (A refinement to only jump
+  when the local copy is *well* behind — not merely one snapshot period — is
+  tracked in [#187](https://github.com/mnot/ietf-llm/issues/187).)
 - **Otherwise** (local as fresh or fresher, or the seed would narrow it) → skip;
   gather incrementally.
 

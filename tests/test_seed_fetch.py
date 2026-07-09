@@ -157,7 +157,7 @@ def test_swap_dir_restores_prior_corpus_on_failure(isolated_home, tmp_path, monk
 
 def test_seed_url_disable_semantics(isolated_home, monkeypatch):
     monkeypatch.delenv("IETF_LLM_SEED_URL", raising=False)
-    assert service.seed_url() is None  # default None until hosting chosen
+    assert service.seed_url() == service._DEFAULT_SEED_URL  # baked opt-out default
     monkeypatch.setenv("IETF_LLM_SEED_URL", "https://seed.example/")
     assert service.seed_url() == "https://seed.example/"
     for off in ("", "  ", "off", "None"):
