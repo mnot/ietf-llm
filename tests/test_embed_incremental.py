@@ -129,6 +129,31 @@ def test_append_reembeds_only_new_message(isolated_home: Path) -> None:
     assert all(h is not None for _, _, h in after)
 
 
+def test_build_index_returns_changed_flag(isolated_home: Path) -> None:
+    # Issue #190: build_index reports whether the index changed, so the gather can
+    # skip the topic-map recompute on a no-op re-gather.
+    _seed()
+    p = write_cache_file(isolated_home, "wg", "drafts/draft-x.txt", "body text\n")
+    assert _build("wg") is True  # first build embeds → changed
+    assert _build("wg") is False  # nothing changed → not changed
+    p.write_text("different body\n")
+    assert _build("wg") is True  # content changed → changed
+    assert _build("wg") is False
+    os.remove(p)
+    assert _build("wg") is True  # file gone → chunks pruned → changed
+
+
+def test_has_topics_reflects_sidecar(isolated_home: Path) -> None:
+    from ietf_llm.embeddings import has_topics
+    from ietf_llm.embeddings.storage import _topics_path
+
+    assert has_topics("wg") is False
+    path = _topics_path("wg", write=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").close()
+    assert has_topics("wg") is True
+
+
 def test_unchanged_file_skipped_despite_newer_mtime(isolated_home: Path) -> None:
     path = write_cache_file(isolated_home, "wg", "drafts/draft-x.txt", "body text\n")
     _seed()
