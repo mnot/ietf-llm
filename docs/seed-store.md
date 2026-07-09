@@ -1,4 +1,4 @@
-# Central embedding store (design)
+# Seed store (design)
 
 **Status:** design — issue [#182](https://github.com/mnot/ietf-llm/issues/182).
 Not yet implemented. This document is the plan; it becomes the operator doc when
@@ -14,15 +14,16 @@ independently. `embeddings.db` files range 2–116 MB, so re-deriving them per
 client is real, avoidable work.
 
 The idea: publish a small set of curated corpora — "interesting" groups, a ~1y
-window each, refreshed ~monthly — to a **static, publicly-hosted directory**, and
-let a client pull a corpus as the *basis* of its own work. If a group is covered,
-a client only has to gather and embed what has changed since the snapshot
-(generally < 1 month of material) instead of starting cold.
+window each, refreshed ~monthly — to a **static, publicly-hosted directory** (the
+*seed store*), and let a client **seed** a corpus from it as the basis of its own
+work, then grow it by freshening. If a group is covered, a client only gathers and
+embeds what has changed since the snapshot (generally < 1 month of material)
+instead of starting cold.
 
 **Scope: this is for local-focused users only.** It is not the cloud
 `CorpusStore` backend (that solves a different problem — a replicated serving
 fleet with a control plane). This is a laptop running the default `local` backend
-that wants to *bootstrap* a corpus from a public mirror. No control plane, no
+that wants to bootstrap a corpus from a public mirror. No control plane, no
 leases, no compare-and-swap — just static files a client downloads.
 
 ## What is published: the matched pair
@@ -50,7 +51,7 @@ the index alone. This is the load-bearing decision; the rationale:
   embeddings-only ship would not be a usable corpus.
 - Seeding `files/` also cuts **source burden**: the gather's existence-checks
   then skip re-downloading immutable inputs (drafts, RFCs, minutes), so the
-  central store saves both embedding compute *and* upstream fetches.
+  seed store saves both embedding compute *and* upstream fetches.
 
 The `files/` text is largely redundant with the chunk text already stored in the
 DB (`chunks.text`), so shipping it adds roughly 30–60 % over the index alone,
@@ -121,7 +122,7 @@ its locally-held base predates a newer snapshot.
 
 Publishing is decoupled from gathering — one writer to the cache stays the gather
 CLI. The producer runs its normal `ietf-llm <wg> --months 12` on a schedule, then
-a thin **`scripts/publish_central.py <dir> <corpus…>`** operator script (not a
+a thin **`scripts/publish_seeds.py <dir> <corpus…>`** operator script (not a
 `[project.scripts]` console entry — producer-only, kept out of the installed CLI
 surface and never imported by the read path) reads each already-gathered corpus
 from the local cache and:
@@ -146,33 +147,51 @@ Pulling from the mirror is a **network + write** operation, so by the project's
 read-only boundary it lives on the **gather path only** — never the MCP read tools
 or `ietf-llm-search`, which stay offline and untouched.
 
-New service-scope config **`IETF_LLM_CENTRAL_URL`** (env > global `config.json` >
-default None; the feature is off until set). A pre-gather step in
-`gather/sequencer.py`:
+**Seeding is on by default (opt-out).** The package ships a default
+`IETF_LLM_SEED_URL` pointing at the project's public mirror, so a first gather of a
+covered corpus starts from the seed with no configuration. This is deliberate:
+gather is already the networked writer, so reaching the seed mirror on the same
+path is in character — and opt-out is the only way the feature helps the median
+user, who will never flip an opt-in. (Consequence: **a default mirror URL ships in
+the package**, so the project commits to a stable public hosting URL; a client
+reaching a dead or moved URL degrades to a cold gather, never an error — see
+"Failure is soft" below.)
 
-1. **Gate.** `IETF_LLM_CENTRAL_URL` is set, the corpus is absent locally (or the
-   user passed `--refresh-base`), the corpus is listed in the central index, and
-   the compatibility tuple matches the client's configured embedding model.
+Pre-gather step in `gather/sequencer.py`:
+
+1. **Gate.** Seeding is enabled (a URL is present and not disabled), the corpus
+   is **absent locally**, is listed in the seed index, and the compatibility tuple
+   matches the client's configured embedding model.
 2. **Fetch + verify.** Download the bundle to a temp dir, verify `bundle_sha256`.
 3. **Install.** Unpack and atomically install into `~/.cache/ietf-llm/<corpus>/`
-   (temp + `os.replace`, via `atomicio`). Record provenance in a `central-source`
+   (temp + `os.replace`, via `atomicio`). Record provenance in a `seed-source`
    sentinel (url + version + fetched-at) beside `last-gathered`, so
-   `ietf-llm --list` can show "based on central snapshot 2026-07-01."
+   `ietf-llm --list` can show "seeded from snapshot 2026-07-01."
 4. **Freshen.** Continue the normal incremental gather. With the snapshot in
    place, it fetches and embeds only what changed since — the delta.
 
-Flags:
+**Seeding fires only for a corpus with no local copy.** An existing local corpus
+is never silently re-seeded: the normal incremental gather runs, and re-pulling a
+fresh base over it is always the explicit `--refresh-base`. So opt-out governs the
+*cold start* only — it can never clobber locally-freshened state.
 
-- **`--pull-only`** — install the base and stop (pure consumption; accepts the
-  snapshot's staleness, does no local gather).
+Disabling / overriding:
+
+- **`--no-seed`** — skip the seed for this gather (cold gather instead).
+- **`IETF_LLM_SEED_URL=`** (empty), or global `config.json` `seed_url: ""` —
+  disable seeding persistently. Setting it to a *different* URL points the client
+  at your own mirror.
 - **`--refresh-base`** — re-pull even when a local copy exists, replacing the base
-  before freshening. Off by default: a local copy may already have been freshened
-  past the snapshot, so re-pulling is an explicit choice, never automatic.
+  before freshening (always explicit; never automatic).
 
-**Failure is soft.** Not covered, tuple mismatch, or a fetch/verify error → log
-and fall through to a normal cold gather. The mirror only ever accelerates; it can
-never fail a gather. This also means a client can point at a stale or partial
-mirror without risk.
+**Transparency.** When a gather seeds, it logs `seeding <corpus> from <url>` at
+normal verbosity, so an auto-pull is visible rather than silent.
+
+**Failure is soft.** Not covered, tuple mismatch, disabled, offline, or a
+fetch/verify error → fall through to a normal cold gather (quietly for the common
+"not covered" case). The mirror only ever accelerates; it can never fail or block
+a gather, so a client always works even if the mirror is down, stale, moved, or
+unreachable.
 
 ## Correctness & compatibility
 
@@ -200,7 +219,8 @@ mirror without risk.
   Publishing per-model variants (so remote-embed clients benefit too) is more work
   and can come later; the format already namespaces by the tuple, so variants slot
   in without a format change.
-- **Automatic base refresh.** The client never auto-re-pulls over a freshened
-  local copy; `--refresh-base` is always explicit.
+- **Auto re-seed over a freshened copy.** Opt-out seeds *cold* corpora only; it
+  never auto-re-pulls over an existing local corpus. `--refresh-base` is always
+  explicit.
 - **Compression.** v1 uses gzip (stdlib, zero-dep). `zstd` compresses the DB
   better but adds a dependency — revisit if bundle size warrants it.
