@@ -41,10 +41,14 @@ There are three supported workflows:
 See the workflow documentation linked above for installation and use instructions, or the
 [full documentation listing](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
 
-All three read a corpus you first **gather** with `ietf-llm <corpus>`. By default a gather of a
-corpus covered by the public
-[seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) starts from a prebuilt
-snapshot and only freshens the delta — skipping most of the embedding and download cost. It is
-opt-out (`--no-seed`, or `IETF_LLM_SEED_URL=off`) and best-effort: an unreachable or unlisted corpus
-just gathers from scratch.
+All three read a corpus you first **gather** with `ietf-llm <corpus>`.
+
+> **Heads up — gathering reaches the network by default.** To make a first gather fast, `ietf-llm`
+> pulls a prebuilt snapshot of covered corpora from the public
+> [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at
+> `seed-store.mnot.net` (and `list_corpora` looks its catalog up there), then freshens only the
+> delta — skipping most of the embedding and download cost. **To turn this off:** `ietf-llm <corpus>
+> --no-seed` (it *persists* across gathers; re-enable with `--seed`), or set `IETF_LLM_SEED_ENABLED=off`
+> (or `IETF_LLM_SEED_URL=off`) in your environment. With seeding off, gathers run fully cold and
+> offline. It is best-effort either way — an unreachable or unlisted corpus just gathers from scratch.
 

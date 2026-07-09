@@ -40,7 +40,7 @@ def refresh_mirror() -> None:
     from ..config import service
     from ..freshness import gather_enabled
 
-    if not gather_enabled():
+    if not gather_enabled() or not service.seeding_enabled():
         return
     seed_url = service.seed_url()
     if not seed_url or _recently_attempted():

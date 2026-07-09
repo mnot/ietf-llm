@@ -341,6 +341,13 @@ def _seed_stale_jump_margin() -> timedelta:
     return timedelta(days=days)
 
 
+def _persist_seed_toggle(args: argparse.Namespace) -> None:
+    """Persist a supplied `--no-seed` / `--seed` toggle to the global config so it
+    sticks across gathers. `args.seed` is None when neither flag was passed."""
+    if args.seed is not None:
+        service_config.set_seeding_enabled(args.seed)
+
+
 def _seed_covers_config(args: argparse.Namespace, entry: Any) -> bool:
     """True when the snapshot is a full stand-in for this corpus's config, so a
     stale-jump is cheaper than an incremental: the window must not narrow, and the
@@ -412,10 +419,11 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
     (issue #182).
 
     Opt-out and best-effort: a no-op unless a seed store is configured
-    (IETF_LLM_SEED_URL) and enabled (not --no-seed, not --clear-cache, not the
-    cloud backend, which has its own seeding). Any failure logs and falls through
-    to a normal gather, so the seed store only ever accelerates."""
-    if on_cloud or args.no_seed or args.clear_cache:
+    (IETF_LLM_SEED_URL) and enabled (`seeding_enabled` — the persistent
+    --no-seed/--seed toggle; also off for --clear-cache and the cloud backend,
+    which has its own seeding). Any failure logs and falls through to a normal
+    gather, so the seed store only ever accelerates."""
+    if on_cloud or not service_config.seeding_enabled() or args.clear_cache:
         return
     seed_url = service_config.seed_url()
     if not seed_url:
@@ -517,6 +525,11 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     if shape is None:
         return False  # unusable name (typo); _resolve_corpus_shape logged why
     synth, group_backed = shape
+
+    # Persist a --no-seed / --seed toggle before anything can short-circuit (a
+    # freshness debounce below returns early), so the flip sticks for future
+    # gathers even on a run that does no work.
+    _persist_seed_toggle(args)
 
     # Skip an unnecessary gather (checked on raw CLI args, before merge folds
     # in persisted sources): a reuse hint when a new custom/synthetic corpus

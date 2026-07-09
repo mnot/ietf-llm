@@ -82,7 +82,10 @@ def _available_to_seed(local: List[str]) -> str:
     index live (bounded + throttled), so a cold-start client with nothing gathered
     still sees the catalog. Empty when seeding is disabled or the store is
     unreachable."""
-    if not gather_enabled():
+    # pylint: disable-next=import-outside-toplevel
+    from ..config import service
+
+    if not gather_enabled() or not service.seeding_enabled():
         return ""
     # pylint: disable-next=import-outside-toplevel
     from ..seed import catalog as seed_catalog

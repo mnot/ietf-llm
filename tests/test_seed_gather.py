@@ -167,12 +167,26 @@ def test_maybe_seed_not_covered_noop(isolated_home, tmp_path, monkeypatch):
     assert not os.path.exists(os.path.join(get_cache_dir(), "httpbis"))
 
 
-def test_maybe_seed_no_seed_flag(isolated_home, tmp_path, monkeypatch):
+def test_maybe_seed_respects_persisted_disable(isolated_home, tmp_path, monkeypatch):
+    from ietf_llm.config import service
     store = _store(tmp_path)
     shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
     monkeypatch.setenv("IETF_LLM_SEED_URL", store)
-    _maybe_seed(_seed_args("httpbis", no_seed=True), on_cloud=False, verbosity=Verbosity.QUIET)
+    service.set_seeding_enabled(False)  # a prior --no-seed persisted this
+    _maybe_seed(_seed_args("httpbis"), on_cloud=False, verbosity=Verbosity.QUIET)
     assert not os.path.exists(os.path.join(get_cache_dir(), "httpbis"))
+
+
+def test_persist_seed_toggle_roundtrip(isolated_home):
+    from ietf_llm.config import service
+    from ietf_llm.gather.sequencer import _persist_seed_toggle
+    assert service.seeding_enabled() is True  # opt-out default
+    _persist_seed_toggle(_seed_args("httpbis", seed=False))
+    assert service.seeding_enabled() is False  # --no-seed persisted
+    _persist_seed_toggle(_seed_args("httpbis"))  # no flag → unchanged
+    assert service.seeding_enabled() is False
+    _persist_seed_toggle(_seed_args("httpbis", seed=True))  # --seed re-enables
+    assert service.seeding_enabled() is True
 
 
 def test_maybe_seed_disabled_when_off(isolated_home, tmp_path, monkeypatch):

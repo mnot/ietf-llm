@@ -19,12 +19,16 @@ authoritative. See `docs/storage.md`.
 | gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
 | retain versions | IETF_LLM_RETAIN_VERSIONS   | retain_versions    | no     |
 | seed store URL  | IETF_LLM_SEED_URL          | seed_url           | no     |
+| seeding on/off  | IETF_LLM_SEED_ENABLED      | seed_enabled       | no     |
 
-The **seed store** URL is the consumer knob (issue #182): a static mirror a local
-gather seeds a corpus from before freshening. It is unrelated to the cloud
-`store_url` above. Seeding is opt-out, so an empty / `off` / `none` value
-*disables* it explicitly (unlike the other knobs, where empty falls through to the
-default) — `seed_url()` implements that rather than `_resolve`.
+The **seed store** (issue #182) has two consumer knobs. `seed_url` is *where* — a
+static mirror a local gather seeds a corpus from before freshening (unrelated to
+the cloud `store_url` above); an empty / `off` / `none` value disables it. `seed_enabled`
+is *whether* — a persistent on/off toggle, default **on** (opt-out), that
+`--no-seed` / `--seed` flip via `set_seeding_enabled`. Kept separate so turning
+seeding off does not clobber a configured URL. Both use disable semantics the
+generic `_resolve` cannot express, so `seed_url()` / `seeding_enabled()` implement
+them directly.
 
 The S3 endpoint for a non-AWS service (R2, MinIO) is `IETF_LLM_STORE_ENDPOINT_URL`
 (env only), read by `store.s3`.
@@ -141,6 +145,31 @@ def _seed_value(raw: str) -> Optional[str]:
     tokens to None. A present-but-disabled value returns None (seeding off)."""
     value = raw.strip()
     return None if value.lower() in _SEED_DISABLED else value
+
+
+def seeding_enabled() -> bool:
+    """Whether seeding from the seed store is on (issue #182). Default **on**
+    (opt-out); `--no-seed` / `--seed` persist the flip via `set_seeding_enabled`.
+    Resolves env `IETF_LLM_SEED_ENABLED` > global `seed_enabled` > default, reading
+    `0`/`false`/`no`/`off` (case-insensitive) as off."""
+    raw = os.environ.get("IETF_LLM_SEED_ENABLED")
+    if raw is not None and raw.strip():
+        return raw.strip().lower() not in ("0", "false", "no", "off")
+    value = fs.load_global().get("seed_enabled")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return True
+
+
+def set_seeding_enabled(enabled: bool) -> None:
+    """Persist the seeding on/off toggle to the global config (`seed_enabled`), so
+    `--no-seed` / `--seed` stick across gathers. Env `IETF_LLM_SEED_ENABLED` still
+    overrides a persisted value at read time."""
+    data = dict(fs.load_global())
+    data["seed_enabled"] = enabled
+    fs.save_global(data)
 
 
 def resolve_ttl() -> float:

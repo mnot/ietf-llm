@@ -157,9 +157,11 @@ Membership persists, so a refresh needs no arguments — run it on a schedule
 ## Using a seed store (consumer)
 
 Seeding is a network + write step, so it lives on the **gather path only**; the
-MCP read tools and `ietf-llm-search` stay offline. It is **opt-out**: when
-`IETF_LLM_SEED_URL` is set, a gather seeds before running. The rule is one thing —
-use the seed whenever it is a fresher, compatible base than what is local:
+MCP read tools and `ietf-llm-search` stay offline. It is **opt-out and on by
+default**: unless disabled (see Controls), a gather reaches the public seed store
+(`seed-store.mnot.net`) to fetch a covered corpus's snapshot before running. The
+rule is one thing — use the seed whenever it is a fresher, compatible base than
+what is local:
 
 - **No local copy** → seed (cold start).
 - **Local well behind the snapshot** (by more than ~60 days —
@@ -179,11 +181,16 @@ moves **forward**.
 
 Controls:
 
-- **`--no-seed`** — cold gather for this run.
+- **`--no-seed`** — stop seeding, and **remember it**: persists across gathers
+  until `--seed`. Gathers then run fully cold and offline, and `list_corpora`
+  drops the catalog lookup.
+- **`--seed`** — re-enable seeding (persists); undoes `--no-seed`.
+- **`IETF_LLM_SEED_ENABLED=off`** (env) or global `seed_enabled: false` — the same
+  on/off toggle without a gather; env overrides the persisted flag.
 - **`--refresh-base`** — re-seed even when not stale (an explicit override; pulls
   the snapshot as-is, freshen re-fetches any wider window / extra sources).
-- **`IETF_LLM_SEED_URL=`** empty / `off`, or global `seed_url: ""` — disable; a
-  different URL points at your own mirror.
+- **`IETF_LLM_SEED_URL=`** empty / `off`, or global `seed_url: ""` — disable by
+  URL, or set a different URL to point at your own mirror.
 
 **Best-effort.** Not covered, tuple mismatch, disabled, offline, or a verify
 failure all fall through to a normal cold gather — the mirror only ever

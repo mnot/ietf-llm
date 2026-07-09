@@ -236,12 +236,24 @@ def build_parser() -> argparse.ArgumentParser:
         "Auto-enabled for MCP gathers and the cloud backend; local keeps them.",
     )
     parser.add_argument(
-        "--no-seed",
+        "--seed",
+        dest="seed",
         action="store_true",
-        help="Don't seed this corpus from the public seed store before "
-        "gathering (issue #182). Seeding is on by default when a seed store is "
-        "configured (IETF_LLM_SEED_URL): a covered corpus is pulled as a fast "
-        "start, then freshened. This flag forces a cold gather.",
+        default=None,
+        help="Re-enable seeding from the public seed store (persists across "
+        "gathers). Undoes a previous --no-seed. See --no-seed.",
+    )
+    parser.add_argument(
+        "--no-seed",
+        dest="seed",
+        action="store_false",
+        default=None,
+        help="Stop seeding from the public seed store, and remember it: this "
+        "persists across gathers until you pass --seed (issue #182). By default "
+        "a gather of a covered corpus fetches a prebuilt snapshot over the "
+        "network from the seed store (IETF_LLM_SEED_URL) and freshens it, and "
+        "`list_corpora` looks the catalog up there; --no-seed turns both off so "
+        "gathers run fully cold and offline.",
     )
     parser.add_argument(
         "--refresh-base",
