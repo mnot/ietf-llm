@@ -45,6 +45,7 @@ from .storage import (
     _open_db,
     _pack,
     _unpack_matrix,
+    chunk_hash,
     discard_build_db,
     promote_build_db,
     seed_build_db,
@@ -167,14 +168,30 @@ def _file_hash(path: str) -> Optional[str]:
 
 @dataclass
 class _FilePlan:
-    """One file's embedding work, prepared on the main thread (DB skip-check
-    + chunking) so only the network embed runs off-thread."""
+    """One changed file's embedding work, prepared on the main thread (DB
+    skip-check + chunking + per-chunk reuse) so only the network embed runs
+    off-thread.
+
+    `chunks` is the file's full new chunk set, in order. `reused[i]` is the
+    stored embedding blob to keep for `chunks[i]` (its embedded text is unchanged
+    since last build), or None when the chunk must be embedded. `texts` holds only
+    the to-embed texts, in `chunks` order; `hashes[i]` is `chunks[i]`'s content
+    hash, stored on write for the next build's reuse."""
 
     relpath: str
     hash_key: str
     cur_hash: Optional[str]
     chunks: List[Any]
     texts: List[str]
+    reused: List[Optional[bytes]]
+    hashes: List[str]
+
+
+def _embed_text_of(chunk: Any) -> str:
+    """The exact text embedded for a chunk: a split section's `sub_idx 0` sets
+    `embed_text` to just its first window; everything else embeds its full
+    `text`."""
+    return str(chunk.embed_text if chunk.embed_text is not None else chunk.text)
 
 
 def _plan_file(
@@ -188,7 +205,11 @@ def _plan_file(
 
     Returns a `_FilePlan` for a file that needs (re-)embedding, or None to
     skip. Runs on the main thread — it reads the cursor and the chunker, but
-    never embeds, so the slow network call can be dispatched off-thread."""
+    never embeds, so the slow network call can be dispatched off-thread.
+
+    For a changed file, diffs the new chunks against the stored ones by content
+    hash (issue #183): a chunk whose embedded text is unchanged reuses its stored
+    vector, so only genuinely new/changed chunks are embedded."""
     relpath = os.path.relpath(path, cache_dir)
     hash_key = f"hash:{relpath}"
     cur_hash = file_hashes[relpath]
@@ -199,11 +220,18 @@ def _plan_file(
     chunks = _chunk_file(path, relpath)
     if not chunks:
         return None
-    # A split section's sub_idx 0 stores the full message in `text` but sets
-    # `embed_text` to just its first window, so we embed the window — the tail
-    # is covered by the later sub_idx fragments' own vectors.
-    texts = [c.embed_text if c.embed_text is not None else c.text for c in chunks]
-    return _FilePlan(relpath, hash_key, cur_hash, chunks, texts)
+    # Stored vectors keyed by their content hash, for reuse. NULL hashes (legacy
+    # rows not yet backfilled, or windowed chunks) don't participate.
+    reuse: Dict[str, bytes] = {}
+    for stored_hash, embedding in cur.execute(
+        "SELECT chunk_hash, embedding FROM chunks WHERE file=?", (relpath,)
+    ):
+        if stored_hash is not None and stored_hash not in reuse:
+            reuse[stored_hash] = embedding
+    hashes = [chunk_hash(_embed_text_of(c)) for c in chunks]
+    reused: List[Optional[bytes]] = [reuse.get(h) for h in hashes]
+    texts = [_embed_text_of(c) for c, r in zip(chunks, reused) if r is None]
+    return _FilePlan(relpath, hash_key, cur_hash, chunks, texts, reused, hashes)
 
 
 def _write_file(
@@ -213,34 +241,39 @@ def _write_file(
     its content hash. Returns chunks written, or 0 when the file is skipped
     (a vector/chunk count mismatch or a duplicate key). DB-only and
     main-thread; the caller owns commit cadence and progress."""
-    if len(vectors) != len(plan.chunks):
+    n_embed = sum(1 for r in plan.reused if r is None)
+    if len(vectors) != n_embed:
         # A short vector list would silently drop the trailing chunks (zip
         # stops at the shorter sequence) while a hash stamp would mark the file
         # fully indexed. Skip instead, so it is retried next run.
         log(
-            f"Embedding returned {len(vectors)} vectors for {len(plan.chunks)} "
+            f"Embedding returned {len(vectors)} vectors for {n_embed} to-embed "
             f"chunks in {plan.relpath}; skipping (retried next run).",
             verbose,
             level=LogLevel.ERROR,
         )
         return 0
+    fresh = iter(vectors)
     try:
-        # Drop any stale chunks for this file, then insert the new set.
+        # Drop any stale chunks for this file, then insert the new set — each
+        # chunk carrying either its reused stored vector or a freshly embedded
+        # one, plus its content hash for the next build's reuse (issue #183).
         cur.execute("DELETE FROM chunks WHERE file=?", (plan.relpath,))
-        for chunk, vec in zip(plan.chunks, vectors):
+        for chunk, reuse, chash in zip(plan.chunks, plan.reused, plan.hashes):
+            embedding = reuse if reuse is not None else _pack(next(fresh))
             cur.execute(
                 "INSERT INTO chunks "
                 "(file, chunk_idx, sub_idx, title, text, embedding, "
                 " start_line, end_line, chunk_date, labels, state, "
-                " url, duplicate_of, closing_rationale) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " url, duplicate_of, closing_rationale, chunk_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.file,
                     chunk.chunk_idx,
                     chunk.sub_idx,
                     chunk.title,
                     chunk.text,
-                    _pack(vec),
+                    embedding,
                     chunk.start_line,
                     chunk.end_line,
                     chunk.chunk_date,
@@ -249,6 +282,7 @@ def _write_file(
                     chunk.url,
                     chunk.duplicate_of,
                     chunk.closing_rationale,
+                    chash,
                 ),
             )
     except sqlite3.IntegrityError as err:
@@ -269,8 +303,10 @@ def _write_file(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
             (plan.hash_key, plan.cur_hash),
         )
+    reused = len(plan.chunks) - n_embed
+    suffix = f" ({reused} reused)" if reused else ""
     log(
-        f"  embedded {plan.relpath}: {len(plan.chunks)} chunks",
+        f"  embedded {plan.relpath}: {n_embed}/{len(plan.chunks)} chunks{suffix}",
         verbose,
         level=LogLevel.PROGRESS,
     )

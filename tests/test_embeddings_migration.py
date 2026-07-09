@@ -60,6 +60,24 @@ def _make_v7_db(wg: str) -> None:
     conn.close()
 
 
+def test_v8_to_v9_backfills_chunk_hash(isolated_home: Path) -> None:
+    from ietf_llm.embeddings.storage import chunk_hash
+    _make_v7_db("wg")  # migrates all the way to v9
+
+    conn = _open_db("wg")
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
+        assert "chunk_hash" in cols
+        # A non-windowed chunk's embedded text is exactly its stored text, so the
+        # migration backfills the hash without re-embedding.
+        h = conn.execute(
+            "SELECT chunk_hash FROM chunks WHERE file='threads/t.md'"
+        ).fetchone()[0]
+        assert h == chunk_hash("old body")
+    finally:
+        conn.close()
+
+
 def test_v7_to_v8_preserves_rows_and_widens_unique(isolated_home: Path) -> None:
     _make_v7_db("wg")
 
@@ -72,7 +90,7 @@ def test_v7_to_v8_preserves_rows_and_widens_unique(isolated_home: Path) -> None:
         row = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()
-        assert row[0] == "8"
+        assert row[0] == "9"
 
         # The existing row survived, carried forward as sub_idx 0 with all
         # its metadata intact.

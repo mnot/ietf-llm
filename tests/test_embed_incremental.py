@@ -60,6 +60,75 @@ def _build(wg: str) -> int:
     )
 
 
+class _CountingStub:
+    """Like `_StubModel`, but records every text it is asked to embed, so a test
+    can assert *which* chunks were (re-)embedded."""
+
+    def __init__(self) -> None:
+        self.embedded: List[str] = []
+
+    def embed(self, text: str) -> Iterable[float]:
+        self.embedded.append(text)
+        return [1.0, 0.0, 0.0, 0.0]
+
+    def embed_multi(self, texts: List[str]) -> Iterable[List[float]]:
+        return [list(self.embed(t)) for t in texts]
+
+
+_THREAD_HEAD = (
+    "# Topic A\n\n**Span:** 2025-01-01 → 2025-01-03\n**Messages:** 3\n\n"
+    "## Messages\n\n"
+)
+_MSG1 = "### [1] 2025-01-01 10:00 — Alice\n\nfirst message body\n\n"
+_MSG2 = "### [2] 2025-01-02 11:00 — Bob\n\nsecond message body\n\n"
+_MSG3 = "### [3] 2025-01-03 12:00 — Carol\n\nthird message body\n"
+
+
+def _chunk_rows(wg: str, relpath: str) -> List[tuple]:
+    conn = sqlite3.connect(_db_path(wg))
+    try:
+        return conn.execute(
+            "SELECT chunk_idx, embedding, chunk_hash FROM chunks WHERE file=? "
+            "ORDER BY chunk_idx, sub_idx",
+            (relpath,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_append_reembeds_only_new_message(isolated_home: Path) -> None:
+    # Issue #183: a thread that gains one message embeds only that message; the
+    # earlier messages keep their stored vectors.
+    stub = _CountingStub()
+    embeddings._MODEL_CACHE["stub"] = stub  # noqa
+    write_cache_file(isolated_home, "wg", "threads/t.md", _THREAD_HEAD + _MSG1 + _MSG2)
+    assert _build("wg") > 0
+    assert any("first message body" in t for t in stub.embedded)
+    assert any("second message body" in t for t in stub.embedded)
+    before = _chunk_rows("wg", "threads/t.md")
+    assert all(h is not None for _, _, h in before)
+
+    stub.embedded.clear()
+    write_cache_file(
+        isolated_home, "wg", "threads/t.md", _THREAD_HEAD + _MSG1 + _MSG2 + _MSG3
+    )
+    assert _build("wg") > 0
+    # The whole point of #183: [1] and [2] were NOT re-embedded (their vectors
+    # are reused); only the appended [3] was embedded. (A one-off "dimension
+    # probe" embed is unrelated, so assert on the message texts.)
+    assert not any(
+        "first message body" in t or "second message body" in t
+        for t in stub.embedded
+    )
+    assert sum("third message body" in t for t in stub.embedded) == 1
+    # Exactly one new chunk; every prior chunk carried forward its exact stored
+    # vector (reused, not re-embedded), and all chunks now carry a hash.
+    after = _chunk_rows("wg", "threads/t.md")
+    assert len(after) == len(before) + 1
+    assert [row[1] for row in after[: len(before)]] == [row[1] for row in before]
+    assert all(h is not None for _, _, h in after)
+
+
 def test_unchanged_file_skipped_despite_newer_mtime(isolated_home: Path) -> None:
     path = write_cache_file(isolated_home, "wg", "drafts/draft-x.txt", "body text\n")
     _seed()

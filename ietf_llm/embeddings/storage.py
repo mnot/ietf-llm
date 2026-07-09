@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -38,7 +39,7 @@ from ..paths import get_index_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 #: Trailing "(part k/n)" hint the chunker appends to the title of a split
 #: message's fragments (for search-hit legibility). Stripped when a read
@@ -259,6 +260,7 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
             url        TEXT,              -- citation URL: GitHub issue / Archived-At / draft / charter; NULL elsewhere
             duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
+            chunk_hash TEXT,               -- SHA-256 of the embedded text; per-chunk incremental reuse
             UNIQUE (file, chunk_idx, sub_idx)
         )
         """)
@@ -360,11 +362,54 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE chunks")
         conn.execute("ALTER TABLE chunks_v8 RENAME TO chunks")
 
+    # v8 → v9: per-chunk content hash for per-chunk incremental re-embedding
+    # (issue #183) — a changed file re-embeds only its changed chunks (e.g. a
+    # thread that gains one message embeds that message, not all of them). Added
+    # as a plain column (existing vectors preserved, no re-embed) and backfilled
+    # from stored text for the chunks that embedded their full text, so the win
+    # applies immediately without a rebuild.
+    if "chunk_hash" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN chunk_hash TEXT")
+        _backfill_chunk_hash(conn)
+
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
         (str(_SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def chunk_hash(text: str) -> str:
+    """The per-chunk identity/change key: SHA-256 of the exact text embedded
+    (`embed_text` when a long section was windowed, else the chunk's full
+    `text`). Two chunks with the same embedded text yield the same vector under a
+    fixed model, so a matching hash means the stored vector can be reused."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _backfill_chunk_hash(conn: sqlite3.Connection) -> None:
+    """Populate `chunk_hash` for existing rows without re-embedding (v8 → v9).
+
+    A chunk embedded its full `text` unless its section was windowed into
+    fragments — i.e. unless its `(file, chunk_idx)` group has any `sub_idx > 0`
+    row. For those non-windowed chunks the embedded text is exactly the stored
+    `text`, so `chunk_hash` is recomputable here. Windowed chunks (rare long
+    messages) are left NULL and re-embed on their next change, which stamps the
+    hash going forward."""
+    split = {
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT DISTINCT file, chunk_idx FROM chunks WHERE sub_idx > 0"
+        )
+    }
+    updates = [
+        (chunk_hash(text), cid)
+        for cid, file, cidx, text in conn.execute(
+            "SELECT id, file, chunk_idx, text FROM chunks WHERE chunk_hash IS NULL"
+        )
+        if (file, cidx) not in split
+    ]
+    conn.executemany("UPDATE chunks SET chunk_hash=? WHERE id=?", updates)
 
 
 def _pack(vec: Iterable[float]) -> bytes:
