@@ -369,7 +369,9 @@ def _log_seeded(
     log(msg, verbosity, level=LogLevel.STATUS)
 
 
-def _maybe_seed(args: argparse.Namespace, on_cloud: bool, verbosity: Verbosity) -> None:
+def _maybe_seed(  # pylint: disable=too-many-return-statements
+    args: argparse.Namespace, on_cloud: bool, verbosity: Verbosity
+) -> None:
     """Seed `args.wg` from the public seed store before the gather stages run,
     when the store offers a fresher, compatible base than what is local
     (issue #182).
