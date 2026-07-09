@@ -799,7 +799,7 @@ def test_role_tag_returns_all_hats(isolated_home: Path) -> None:
         "Multi Role", "multi@example.com",
         document="draft-foo", is_editor=True,
     )
-    assert r.role_tag("Multi Role") == "Chair/Editor"
+    assert r.role_tag("Multi Role") == "Chair/Editor of draft-foo"
 
 
 def test_role_tag_orders_leadership_first(isolated_home: Path) -> None:
@@ -819,7 +819,7 @@ def test_role_tag_returns_editor_when_no_formal_role(
         "Martin Thomson", "mt@example.com",
         document="draft-foo", is_editor=True,
     )
-    assert r.role_tag("Martin Thomson") == "Editor"
+    assert r.role_tag("Martin Thomson") == "Editor of draft-foo"
 
 
 def test_role_tag_returns_author_when_only_authorship(
@@ -831,4 +831,42 @@ def test_role_tag_returns_author_when_only_authorship(
         "Paul Keller", "paul@example.com",
         document="draft-foo", is_editor=False,
     )
-    assert r.role_tag("Paul Keller") == "Author"
+    assert r.role_tag("Paul Keller") == "Author of draft-foo"
+
+
+def test_role_tag_lists_multiple_documents(isolated_home: Path) -> None:
+    # In a multi-draft group the bare "Author" is misleading; the tag names
+    # the documents so it's clear which one the person is on. Names sorted.
+    r = Registry()
+    r.add_email_message("Prolific Person <pp@example.com>", None)
+    r.add_document_author("Prolific Person", "pp@example.com", document="draft-b")
+    r.add_document_author("Prolific Person", "pp@example.com", document="draft-a")
+    assert r.role_tag("Prolific Person") == "Author of draft-a, draft-b"
+
+
+def test_role_tag_collapses_many_documents_to_count(isolated_home: Path) -> None:
+    # Beyond the cap, listing every draft is noise (and repeats per message),
+    # so the tag shows a count instead.
+    r = Registry()
+    r.add_email_message("Very Prolific <vp@example.com>", None)
+    for i in range(5):
+        r.add_document_author(
+            "Very Prolific", "vp@example.com", document=f"draft-{i}"
+        )
+    assert r.role_tag("Very Prolific") == "Author of 5 drafts"
+
+
+def test_role_tag_qualifies_editor_and_author_separately(
+    isolated_home: Path,
+) -> None:
+    # A person editing one draft and authoring another: each role names its
+    # own document(s).
+    r = Registry()
+    r.add_email_message("Dual Hat <dh@example.com>", None)
+    r.add_document_author(
+        "Dual Hat", "dh@example.com", document="draft-edited", is_editor=True
+    )
+    r.add_document_author(
+        "Dual Hat", "dh@example.com", document="draft-authored", is_editor=False
+    )
+    assert r.role_tag("Dual Hat") == "Editor of draft-edited/Author of draft-authored"

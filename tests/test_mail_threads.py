@@ -872,8 +872,8 @@ def test_participants_line_includes_affiliation_when_known(
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
     # Multi-hat: he's a Chair AND has an authored draft, so role_tag
-    # returns "Chair/Author". Affiliation comes after the role bits.
-    assert "Mark Nottingham (Chair/Author · Cloudflare, 1)" in text
+    # returns "Chair/Author of draft-ietf-foo". Affiliation comes after.
+    assert "Mark Nottingham (Chair/Author of draft-ietf-foo · Cloudflare, 1)" in text
 
 
 def test_participants_line_affiliation_without_role(
@@ -898,7 +898,10 @@ def test_participants_line_affiliation_without_role(
     cache = get_wg_file_cache_dir("wg")
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
-    assert "Alice (Author · Mozilla, 1)" in text or "Alice (Mozilla, 1)" in text
+    assert (
+        "Alice (Author of draft-ietf-foo · Mozilla, 1)" in text
+        or "Alice (Mozilla, 1)" in text
+    )
     # Critically, no role-less " · Mozilla" form should appear.
     assert "Alice ( · Mozilla" not in text
 
