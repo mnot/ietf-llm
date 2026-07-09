@@ -204,6 +204,30 @@ def test_header_labels_are_not_speakers(isolated_home: Path) -> None:
     assert names == {"Mark Nottingham", "Tommy Pauly"}
 
 
+def test_rendered_header_labels_never_parse_as_speakers(isolated_home: Path) -> None:
+    # Guard the coupling both ways: feed a header rendered by the real writer
+    # (`_render_header`) through the speaker parser and confirm none of its
+    # labels leak in as speakers. If a label is renamed in transcript_context,
+    # this fails.
+    from ietf_llm.people.meetings import _speakers_in  # noqa: PLC0415
+    from ietf_llm.gather.sources.transcript_context import (  # noqa: PLC0415
+        TranscriptContext,
+        _render_header,
+    )
+
+    ctx = TranscriptContext(wg="httpbis", date="2026-03-14", time="09:00")
+    ctx.meeting = "ietf125"
+    ctx.minutes_file = "meetings/ietf125/minutes.md"
+    header = _render_header("meetings/ietf125/transcripts/x.md", ctx)
+
+    cache = get_wg_file_cache_dir(WG)
+    tdir = transcripts_dir(cache, "ietf125")
+    os.makedirs(tdir, exist_ok=True)
+    with open(os.path.join(tdir, "x.md"), "w", encoding="utf-8") as fh:
+        fh.write(header + "\n**Mark Nottingham:** Hello.\n")
+    assert _speakers_in(tdir) == {"Mark Nottingham"}
+
+
 def test_no_meetings_dir_is_noop(isolated_home: Path) -> None:
     reg = _seed_registry()
     ingest_meeting_participation(reg, WG, Verbosity.QUIET)  # must not raise

@@ -27,6 +27,7 @@ import re
 from typing import TYPE_CHECKING, Dict, Set
 
 from ..gather.sources.datatracker_people import resolve_addresses
+from ..gather.sources.transcript_context import CONTEXT_HEADER_LABELS
 from ..log import LogLevel, Verbosity, log
 from ..paths import (
     attendance_data_path,
@@ -42,8 +43,10 @@ if TYPE_CHECKING:
 _SPEAKER_RE = re.compile(r"^\*\*(?P<name>[^*\n:]+):\*\*", re.MULTILINE)
 
 # The context header `enrich_transcripts` prepends uses the same `**Label:**`
-# shape; these are not speakers.
-_HEADER_LABELS = {"working group", "date / time", "meeting", "minutes"}
+# shape; its labels are not speakers. Sourced from `transcript_context` (the
+# writer) so a label rename there can't silently turn a header line into a
+# phantom speaker here.
+_HEADER_LABELS = CONTEXT_HEADER_LABELS
 
 
 def ingest_meeting_participation(
@@ -69,9 +72,10 @@ def ingest_meeting_participation(
 
 def _uri_to_person(registry: "Registry", verbose: Verbosity) -> "Dict[str, Person]":
     """Map each Datatracker person uri to its registry Person, via the
-    person's known addresses. Reuses the cached address→uri resolution the
-    mail-reconciliation pass already performed, so this makes no fresh
-    network calls in a normal gather."""
+    person's known addresses. Resolves every registry address — including
+    draft / GitHub / role-derived ones the mail-reconciliation pass may not
+    have queried — but the resolution is per-address cached, so on a warm
+    cache this is mostly free and a first gather just populates it."""
     addresses = sorted({e for p in registry.persons for e in p.emails})
     if not addresses:
         return {}
