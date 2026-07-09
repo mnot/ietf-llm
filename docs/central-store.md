@@ -121,9 +121,10 @@ its locally-held base predates a newer snapshot.
 
 Publishing is decoupled from gathering — one writer to the cache stays the gather
 CLI. The producer runs its normal `ietf-llm <wg> --months 12` on a schedule, then
-a thin **`ietf-llm-publish-central <dir> <corpus…>`** tool (a new `central/`
-package, producer-only, never imported by the read path) reads each already-
-gathered corpus from the local cache and:
+a thin **`scripts/publish_central.py <dir> <corpus…>`** operator script (not a
+`[project.scripts]` console entry — producer-only, kept out of the installed CLI
+surface and never imported by the read path) reads each already-gathered corpus
+from the local cache and:
 
 1. assembles the tree (the included set above), tars + gzips it, hashes it;
 2. reads `(schema_version, model, chunker_version, embed_dim)` from
@@ -132,8 +133,12 @@ gathered corpus from the local cache and:
 4. rebuilds the root `index.json`.
 
 The operator syncs `<dir>` to the static host. The curated corpus list is
-operator-supplied (a file or CLI args), not baked into the package, so curation is
-not coupled to releases.
+**operator-supplied** (CLI args or a file the operator keeps outside the package),
+never a package default — so curation is a pure operational choice, changed
+without a repo commit or release. The mirror's own `index.json` is the single
+source of truth for what a consumer can pull; the client learns coverage from it,
+so no shipped list is needed (and none can drift from what the mirror actually
+holds).
 
 ## Consumer side
 
@@ -199,12 +204,3 @@ mirror without risk.
   local copy; `--refresh-base` is always explicit.
 - **Compression.** v1 uses gzip (stdlib, zero-dep). `zstd` compresses the DB
   better but adds a dependency — revisit if bundle size warrants it.
-
-## Open questions
-
-- Should the curated list ship as a package default (`data/central-corpora.*`) for
-  discoverability, or stay entirely operator-supplied? (Leaning operator-supplied,
-  to keep curation off the release cadence.)
-- Is `ietf-llm-publish-central` a new console script, or a `--publish-central`
-  mode on an existing CLI? (Leaning a dedicated script, kept out of the read
-  path.)
