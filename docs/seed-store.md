@@ -14,28 +14,21 @@ the cloud `CorpusStore` backend (which has its own seeding).
 
 ## What is published
 
-A published corpus is its **`files/` tree and its `embeddings.db` together**, not
-the index alone. `embeddings.db` records a per-file content SHA-256, and a
-re-gather skips embedding any file whose bytes still match — so shipping the exact
-`files/` the vectors were built from makes that skip deterministic. Independent
-gathers do *not* reproduce byte-identical `files/` (thread/issue rendering depends
-on time-varying Datatracker identity data), and the read tools need `files/`
-anyway, so an embeddings-only ship would be neither usable nor a reliable saving.
-The `files/` text is mostly redundant with the DB's chunk text, so it adds little
-over the index the vectors already dominate.
+A published corpus is the **matched pair** — its `files/` tree *and* its
+`embeddings.db`. The index alone is not a usable corpus (the read tools need
+`files/`) and would not reliably skip re-embedding, so both ship together; the
+text adds little over the vectors.
 
 - **Included:** `files/` (minus `raw/`), `embeddings.db`, `topics.json`, and the
   incremental-gather manifests (`documents.json`, `materials.json`,
   `last-gathered`, `github/`).
-- **Excluded:** `files/raw/` (not indexed), `imap-cache/` (large, already
-  materialised in `threads/`), and producer-local sidecars
-  (`gather-metrics.json`, `seed-source`, …).
+- **Excluded:** `files/raw/` (not indexed), `imap-cache/` (large; already in
+  `threads/`), and producer-local sidecars (`gather-metrics.json`, `seed-source`).
 
 ## Format
 
-A directory servable by any static host (web server, R2/S3 public bucket, GitHub
-Pages); a client needs only HTTPS GET. Root **`index.json`** is the entry point
-and compatibility gate:
+A directory servable by any static host; a client needs only HTTPS GET. Root
+**`index.json`** is the entry point and compatibility gate:
 
 ```json
 {
@@ -65,35 +58,88 @@ usable by a client whose model and versions match, so a store holds **one model*
 publishing the default local model covers most clients (remote-embed clients
 gather cold — see Non-goals).
 
-## Producer
+## Publishing a seed store
 
-`scripts/publish_seeds.py` is an operator script (not a console entry; never
-imported by the read path). A one-shot: for each member it incremental-gathers,
-then bundles and publishes. Membership lives in the store (`--add`/`--remove`), so
-a bare run refreshes what's already there.
+`scripts/publish_seeds.py` builds and refreshes a store from your local cache. It
+is an operator script (not a console entry; never imported by the read path).
+
+### Prerequisites
+
+- A machine with the normal `ietf-llm` install including the local embedding model
+  (default `sentence-transformers/BAAI/bge-small-en-v1.5`) — a store holds one
+  model, and the default covers the most clients.
+- A static HTTPS host for the output (web server, S3/R2 bucket, GitHub Pages).
+
+You do **not** need to pre-gather: the publisher gathers each member itself.
+
+### 1. Bootstrap the membership
+
+Add the corpora you want to cover. Membership persists in the store, so you only
+do this once (and edit it occasionally):
 
 ```
-python scripts/publish_seeds.py ~/seed-store --add httpbis --add tls   # bootstrap
-python scripts/publish_seeds.py ~/seed-store --prune                   # monthly: gather + publish
-rsync -a ~/seed-store/ host:/var/www/seed/                             # then sync (out of scope)
+python scripts/publish_seeds.py ~/seed-store --add httpbis --add tls --add quic
+```
+
+`--add <corpus> [--months N]` records each member's window; `--remove <corpus>`
+drops one.
+
+### 2. Publish
+
+A bare run gathers each member (incremental, on its stored window), bundles what
+changed, and rebuilds `index.json`:
+
+```
+python scripts/publish_seeds.py ~/seed-store --prune
 ```
 
 | Option | Effect |
 |---|---|
 | `corpus…` (positional) | process only these members this run (default: all) |
-| `--add <corpus>` `[--months N]` | add a corpus (records its window) |
-| `--remove <corpus>` | drop a corpus from membership |
 | `--no-gather` | publish the current cache as-is, no re-gather |
 | `--force` | re-bundle members already at their published version |
 | `--prune` | delete store dirs for corpora no longer members |
 | `--dry-run` | print the plan; write nothing |
 
-The gather step invokes the normal pipeline, so "one writer to the cache" still
-holds. `index.json` is written last (never references a missing bundle) and is the
-sole source of truth for coverage. A member on a different embedding model is
-refused rather than writing an inconsistent index.
+The gather step invokes the normal pipeline (so "one writer to the cache" holds);
+`index.json` is written last and is the sole source of truth for coverage. A
+member on a different embedding model is refused rather than writing an
+inconsistent index.
 
-## Consumer
+### 3. Host it
+
+The store is just static files served over HTTPS — `index.json`, each
+`manifest.json`, and the `.tar.gz` bundles, all fetched with anonymous GET. Sync
+the directory to any static host and note its public base URL:
+
+- **Web server** — `rsync -a ~/seed-store/ host:/var/www/seed/` → `https://host/seed/`
+- **S3 + CDN** — `aws s3 sync ~/seed-store/ s3://bucket/seed/` (front with a CDN)
+- **Cloudflare R2** — `aws s3 sync` against the R2 endpoint, or `wrangler r2`
+- **GitHub Pages** — commit the directory to a Pages repo (fine for small stores)
+
+No server-side logic, auth, or CORS is needed; the client only does GET.
+
+### 4. Point clients at it
+
+Clients set the base URL and seeding is automatic (opt-out):
+
+```
+export IETF_LLM_SEED_URL=https://host/seed/
+```
+
+or persist it as `"seed_url"` in `~/.config/ietf-llm/config.json`. A covered
+corpus is then seeded on its next `ietf-llm <corpus>`.
+
+### 5. Keep it fresh
+
+Membership persists, so a refresh needs no arguments — run it on a schedule
+(monthly matches the ~1y window well):
+
+```
+0 4 1 * * python .../publish_seeds.py ~/seed-store --prune && rsync -a ~/seed-store/ host:/var/www/seed/
+```
+
+## Using a seed store (consumer)
 
 Seeding is a network + write step, so it lives on the **gather path only**; the
 MCP read tools and `ietf-llm-search` stay offline. It is **opt-out**: when
@@ -102,16 +148,16 @@ use the seed whenever it is a fresher, compatible base than what is local:
 
 - **No local copy** → seed (cold start).
 - **Local older than the snapshot**, and the snapshot is a full stand-in (window
-  not narrowed; no extra `--draft`/`--mailing-list`/generative sources) →
+  not narrowed; no extra `--draft` / `--mailing-list` / generative sources) →
   **re-seed**, jumping the base forward, then freshen.
 - **Otherwise** (local as fresh or fresher, or the seed would narrow it) → skip;
   gather incrementally.
 
 Install downloads the bundle, verifies its `bundle_sha256`, and atomically swaps
 the tree into `~/.cache/ietf-llm/<corpus>/` (a failed swap restores the prior
-corpus). A `seed-source` sentinel records provenance. The follow-on gather then
-freshens the delta and reconciles to the user's persisted config, so a re-seed
-loses nothing permanently — the base only ever moves **forward**.
+corpus). The follow-on gather then freshens the delta and reconciles to the user's
+persisted config, so a re-seed loses nothing permanently — the base only ever
+moves **forward**.
 
 Controls:
 
