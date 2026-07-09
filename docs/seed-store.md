@@ -189,6 +189,13 @@ Controls:
 failure all fall through to a normal cold gather — the mirror only ever
 accelerates, and a (re-)seed is logged so an automatic base jump is visible.
 
+**Visibility.** A seed doesn't slow a gather, so a seeded first gather is quick
+rather than a minutes-long cold fetch — the `start_gather` reply and routing
+instructions say so. `gather_status` emits a note when a run seeded, and
+`list_corpora` marks a seeded corpus with a trailing `· seeded <date>`, so a
+client can tell a corpus was reconstituted from the mirror rather than gathered
+cold.
+
 ## Non-goals
 
 - **Embeddings-only distribution** — not usable without `files/`, and the

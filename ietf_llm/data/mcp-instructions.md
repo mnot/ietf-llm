@@ -45,7 +45,11 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `done`: a first gather *refuses* them until then, and "the files are
   downloaded" is not "there is a readable snapshot" (the catalogue, digests and
   embedding index — which the overview themes come from — are built in the
-  final stages). Poll `gather_status` (with the short `wait` shown in **This
+  final stages). A first gather is often *quick* now: if the corpus is covered by
+  the public seed store it is reconstituted from a prebuilt snapshot and only the
+  delta is freshened, so don't tell the user to expect a long cold fetch —
+  `gather_status` notes when a corpus was seeded (an uncovered corpus is the
+  slower cold case). Poll `gather_status` (with the short `wait` shown in **This
   session** — which may be `0`, i.e. return immediately), relay the percent / ETA
   to the user between polls, and read once it's `done`. Don't tight-loop, and
   don't wait via a long `bash sleep` (a tool call left outstanding much beyond

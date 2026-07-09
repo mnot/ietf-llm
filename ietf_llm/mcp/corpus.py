@@ -16,7 +16,7 @@ from ..digest.overview import (
     build_overview,
 )
 from ..embeddings import chunk_counts
-from ..freshness import gather_enabled, gather_suggestion
+from ..freshness import gather_enabled, gather_suggestion, seed_source
 from ..paths import digest_kind_from_relpath
 from ..corpus.routing import DEFAULT_MIN_SCORE, route
 from ..store.corpus import get_corpus_store
@@ -62,6 +62,16 @@ def _corpus_sources(wg: str) -> str:
     return coverage.compact_sources_line(cache)
 
 
+def _seed_marker(wg: str) -> str:
+    """A compact `seeded <date>` provenance suffix for `list_corpora`, or '' if
+    the corpus was not reconstituted from the seed store (issue #182)."""
+    src = seed_source(wg)
+    if not src:
+        return ""
+    date = str(src.get("gathered") or "")[:10]
+    return f"seeded {date}" if date else "seeded"
+
+
 def tool_list_corpora() -> str:
     wgs = _list_wgs()
     if not wgs:
@@ -70,16 +80,18 @@ def tool_list_corpora() -> str:
     for wg in wgs:
         kind, status = kind_status(wg)
         tag = f"{kind} · {status_cell(kind, status)}"
-        rows.append((wg, tag, describe(wg), _corpus_sources(wg)))
-    name_w = max(len(w) for w, _, _, _ in rows)
-    tag_w = max(len(t) for _, t, _, _ in rows)
+        rows.append((wg, tag, describe(wg), _corpus_sources(wg), _seed_marker(wg)))
+    name_w = max(len(w) for w, _, _, _, _ in rows)
+    tag_w = max(len(t) for _, t, _, _, _ in rows)
     lines = []
-    for wg, tag, subject, sources in rows:
+    for wg, tag, subject, sources, seed in rows:
         line = f"{wg.ljust(name_w)}  {tag.ljust(tag_w)}"
         if subject:
             line += f"  {subject}"
         if sources:
             line += f"  ({sources})"
+        if seed:
+            line += f"  · {seed}"
         lines.append(line.rstrip())
     return (
         "Gathered corpora (name · kind [· status] · what it's about · "
@@ -95,8 +107,10 @@ def tool_list_corpora() -> str:
         "subject — the group name, the list followed, the tracked author. "
         "The trailing `(…)` is the source inventory — which of mailing "
         "`list`, GitHub `issues`, `drafts`, `RFCs`, `minutes` are present — "
-        "so you can tell what each corpus actually holds. Call `overview` for "
-        "the gather window and the exact repos.\n\n"
+        "so you can tell what each corpus actually holds. A trailing `· seeded "
+        "<date>` marks a corpus that was reconstituted from the public seed "
+        "store (a prebuilt snapshot) and then freshened locally. Call "
+        "`overview` for the gather window and the exact repos.\n\n"
         + "\n".join(lines)
         + _NEXT_TOOLS_HINT
         + _session_facts_line()

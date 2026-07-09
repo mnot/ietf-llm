@@ -92,6 +92,16 @@ def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     assert "stray" not in out
 
 
+def test_list_corpora_marks_seeded(isolated_home: Path) -> None:
+    from ietf_llm import freshness
+    write_cache_file(isolated_home, "httpbis", "x.txt")
+    freshness.record_seed_source(
+        "httpbis", url="https://seed/", version="v1",
+        gathered="2026-07-01T00:00:00Z")
+    out = mcp.corpus.tool_list_corpora()
+    assert "seeded 2026-07-01" in out
+
+
 def test_list_corpora_states_session_facts(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

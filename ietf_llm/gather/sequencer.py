@@ -402,7 +402,10 @@ def _log_seeded(
 
 
 def _maybe_seed(  # pylint: disable=too-many-return-statements
-    args: argparse.Namespace, on_cloud: bool, verbosity: Verbosity
+    args: argparse.Namespace,
+    on_cloud: bool,
+    verbosity: Verbosity,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Seed `args.wg` from the public seed store before the gather stages run,
     when the store offers a fresher, compatible base than what is local
@@ -451,6 +454,12 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
         )
         return
     _log_seeded(args.wg, seed_url, entry, prior, reason, verbosity)
+    if note_fn is not None:
+        verb = "seeded" if reason == "cold" else "re-seeded"
+        note_fn(
+            f"{verb} from the seed store {seed_url} (snapshot {entry.gathered}); "
+            "the stages below only freshen the delta"
+        )
 
 
 def run_gather(
@@ -576,7 +585,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # Seed from the public seed store before the stages run, if it offers a
     # fresher, compatible base than what is local (issue #182). Best-effort and
     # opt-out; a no-op unless IETF_LLM_SEED_URL is configured.
-    _maybe_seed(args, on_cloud, verbosity)
+    _maybe_seed(args, on_cloud, verbosity, note_fn)
 
     # `synth` (x-) and `group_backed` were resolved above. A corpus
     # that's neither is "custom" (list/draft/github sources only).

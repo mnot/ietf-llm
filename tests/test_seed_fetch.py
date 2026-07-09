@@ -155,6 +155,16 @@ def test_swap_dir_restores_prior_corpus_on_failure(isolated_home, tmp_path, monk
     assert not os.path.exists(os.path.join(dest, "NEW"))
 
 
+def test_freshness_seed_source_roundtrip(isolated_home):
+    assert freshness.seed_source("httpbis") is None
+    freshness.record_seed_source(
+        "httpbis", url="https://seed/", version="v1",
+        gathered="2026-07-01T00:00:00Z")
+    src = freshness.seed_source("httpbis")
+    assert src["url"] == "https://seed/" and src["version"] == "v1"
+    assert src["gathered"] == "2026-07-01T00:00:00Z" and "fetched" in src
+
+
 def test_seed_url_disable_semantics(isolated_home, monkeypatch):
     monkeypatch.delenv("IETF_LLM_SEED_URL", raising=False)
     assert service.seed_url() == service._DEFAULT_SEED_URL  # baked opt-out default

@@ -150,6 +150,16 @@ def test_maybe_seed_cold_installs(isolated_home, tmp_path, monkeypatch):
         os.path.join(get_cache_dir(), "httpbis", "files", "charter.txt"))
 
 
+def test_maybe_seed_emits_note(isolated_home, tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    notes = []
+    _maybe_seed(_seed_args("httpbis"), on_cloud=False, verbosity=Verbosity.QUIET,
+                note_fn=notes.append)
+    assert any("seeded from" in n for n in notes)
+
+
 def test_maybe_seed_not_covered_noop(isolated_home, tmp_path, monkeypatch):
     store = _store(tmp_path, name="tls")
     monkeypatch.setenv("IETF_LLM_SEED_URL", store)

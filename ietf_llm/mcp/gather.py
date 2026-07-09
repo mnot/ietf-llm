@@ -240,14 +240,16 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
         )
     first = not _corpus_exists(corpus)
     timing = (
-        "a first gather of a corpus can take minutes"
+        "a first gather is quick if the corpus is covered by the public seed "
+        "store (it's reconstituted from a prebuilt snapshot, then freshened), or "
+        "several minutes if not (a cold fetch)"
         if first
         else "re-gathers are usually quick — only new material is fetched"
     )
     user_note = (
-        " This is a one-time cold fetch that could take a few minutes; tell the "
-        "user that and offer to check back once it reports `done`, rather than "
-        "waiting silently."
+        " If it isn't seeded this is a one-time cold fetch of a few minutes; "
+        "`gather_status` notes whether the corpus was seeded, so watch it and "
+        "offer to check back once it reports `done` rather than waiting silently."
         if first
         else ""
     )
