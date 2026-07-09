@@ -173,7 +173,6 @@ from what the mirror actually holds.
 | `--force` | re-bundle members already published at their current version |
 | `--prune` | delete bundles/dirs for corpora no longer members (default: additive) |
 | `--dry-run` | print the gather / publish / skip / prune plan; write nothing |
-| `-v` | per-file progress |
 
 **Incremental.** A member whose `last-gathered` already matches its published
 `version` is bundle-skipped (`--force` overrides); the gather step is itself

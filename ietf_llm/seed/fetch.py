@@ -122,7 +122,12 @@ def install(seed_url: str, entry: fmt.IndexEntry) -> str:
     gather."""
     corpus = entry.name
     manifest = load_manifest(seed_url, entry)
-    with tempfile.TemporaryDirectory(prefix="ietf-seed-") as tmp:
+    # Stage under the cache dir (not the system temp, which is often tmpfs on a
+    # different filesystem) so the install swap is a true same-filesystem
+    # os.rename — atomic, and never an EXDEV fall back to a non-atomic copy that
+    # could leave a torn corpus.
+    os.makedirs(get_cache_dir(), exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".ietf-seed-", dir=get_cache_dir()) as tmp:
         bundle_path = os.path.join(tmp, "bundle.tar.gz")
         _download(_child(seed_url, manifest.bundle), bundle_path)
         fmt.verify_sha256(bundle_path, manifest.bundle_sha256)
@@ -153,23 +158,22 @@ def _install_tree(corpus: str, staging: str) -> None:
 
 
 def _swap_dir(staging: str, dest: str) -> None:
-    """Atomically replace `dest` with `staging`: move any existing tree aside,
-    rename the staged tree into place, restore on failure, then drop the old."""
+    """Atomically replace `dest` with `staging` via `os.rename`. `install` stages
+    under the cache dir, so `staging` and `dest` are always on one filesystem and
+    the rename never crosses filesystems (no EXDEV, no non-atomic copy).
+
+    Move any existing tree aside first and restore it if the rename fails, so a
+    failed — or killed — re-seed never destroys a good corpus."""
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     old: Optional[str] = None
+    if os.path.exists(dest):
+        old = f"{dest}.old.{uuid.uuid4().hex[:8]}"
+        os.rename(dest, old)
     try:
-        if os.path.exists(dest):
-            old = f"{dest}.old.{uuid.uuid4().hex[:8]}"
-            os.rename(dest, old)
-        # staging is on the tempdir's filesystem, which may differ from dest's;
-        # rename across filesystems fails, so fall back to a copy+replace.
-        try:
-            os.rename(staging, dest)
-        except OSError:
-            shutil.copytree(staging, dest)
+        os.rename(staging, dest)
     except OSError as err:
-        if old is not None and not os.path.exists(dest):
-            os.rename(old, dest)
+        if old is not None:
+            os.rename(old, dest)  # restore the prior corpus; rename left dest absent
             old = None
         raise SeedFetchError(f"cannot install {dest}: {err}") from err
     finally:

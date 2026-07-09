@@ -248,7 +248,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-pull the seed base even when a local copy exists and is not "
         "stale, replacing it before freshening. Normally seeding only jumps a "
-        "cold or stale-relative-to-the-snapshot corpus forward.",
+        "cold or stale-relative-to-the-snapshot corpus forward. This is an "
+        "explicit override that pulls the snapshot as-is; if your window is "
+        "wider or you carry extra sources, freshen re-fetches the difference.",
     )
     parser.add_argument(
         "--rfcs",

@@ -28,6 +28,10 @@ def _gathered(name, *, model="sentence-transformers/BAAI/bge-small-en-v1.5"):
     os.makedirs(files, exist_ok=True)
     with open(os.path.join(files, "charter.txt"), "w") as fh:
         fh.write(f"charter for {name}")
+    # An incremental-gather manifest belongs in the bundle so a follow-on gather
+    # is incremental, not cold.
+    with open(os.path.join(get_cache_dir(), name, "documents.json"), "w") as fh:
+        fh.write("{}")
     db = os.path.join(get_index_dir(), name, "embeddings.db")
     os.makedirs(os.path.dirname(db), exist_ok=True)
     conn = sqlite3.connect(db)
@@ -69,6 +73,10 @@ def test_roundtrip_install(isolated_home, tmp_path):
     corpus = os.path.join(get_cache_dir(), "httpbis")
     assert open(os.path.join(corpus, "files", "charter.txt")).read() == "charter for httpbis"
     assert os.path.isfile(os.path.join(corpus, "embeddings.db"))
+    # Incremental-usability: the installed manifests + last-gathered read back, so
+    # a follow-on gather sees a non-None prior and goes incremental, not cold.
+    assert os.path.isfile(os.path.join(corpus, "documents.json"))
+    assert freshness.last_gathered("httpbis") is not None
     src = fetch.seed_source("httpbis")
     assert src["version"] == entry.version and src["url"] == store
 
@@ -120,6 +128,31 @@ def test_tamper_detected(isolated_home, tmp_path):
         fh.write(b"tampered")
     with pytest.raises((fetch.SeedFetchError, fmt.SeedFormatError)):
         fetch.install(store, entry)
+
+
+def test_swap_dir_restores_prior_corpus_on_failure(isolated_home, tmp_path, monkeypatch):
+    # If the staging->dest rename fails, the prior corpus must be put back — a
+    # failed re-seed can never destroy a good corpus.
+    dest = str(tmp_path / "corpus")
+    os.makedirs(dest)
+    open(os.path.join(dest, "GOOD"), "w").close()
+    staging = str(tmp_path / "staging")
+    os.makedirs(staging)
+    open(os.path.join(staging, "NEW"), "w").close()
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the staging -> dest rename
+            raise OSError("boom")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(fetch.os, "rename", flaky)
+    with pytest.raises(fetch.SeedFetchError):
+        fetch._swap_dir(staging, dest)
+    assert os.path.isfile(os.path.join(dest, "GOOD"))  # restored
+    assert not os.path.exists(os.path.join(dest, "NEW"))
 
 
 def test_seed_url_disable_semantics(isolated_home, monkeypatch):

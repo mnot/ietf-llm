@@ -370,7 +370,12 @@ def iter_bundle_members(corpus_dir: str, index_dir: str) -> List[Tuple[str, str]
 def _excluded_from_bundle(arc: str) -> bool:
     if arc.startswith("files/raw/") or arc == "files/raw":
         return True
-    if arc in ("gather-metrics.json", "last-accessed", ".live-cache.json"):
+    if arc in (
+        "gather-metrics.json",
+        "last-accessed",
+        ".live-cache.json",
+        "seed-source",  # a producer that itself seeds must not ship its provenance
+    ):
         return True
     # Index files come from index_dir explicitly (below); a scratch build DB is
     # never shipped.

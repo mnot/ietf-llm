@@ -96,6 +96,8 @@ def _seed_corpus(root):
         fh.write("2026-07-01T00:00:00Z")
     with open(os.path.join(corpus, "gather-metrics.json"), "w") as fh:
         fh.write("{}")
+    with open(os.path.join(corpus, "seed-source"), "w") as fh:
+        fh.write("{}")  # a producer that itself seeds
     _make_db(os.path.join(corpus, "embeddings.db"))
     with open(os.path.join(corpus, "topics.json"), "w") as fh:
         fh.write("{}")
@@ -115,6 +117,7 @@ def test_iter_bundle_members_selection(tmp_path):
     # Excluded:
     assert not any(a.startswith("files/raw/") for a in arcs)
     assert "gather-metrics.json" not in arcs
+    assert "seed-source" not in arcs
 
 
 def test_iter_bundle_members_split_index(tmp_path):
@@ -189,5 +192,18 @@ def test_extract_refuses_path_traversal(tmp_path):
         fh.write("x")
     with tarfile.open(evil, "w:gz") as tar:
         tar.add(victim, arcname="../escape.txt", recursive=False)
+    with pytest.raises(fmt.SeedFormatError):
+        fmt.extract_bundle(evil, os.path.join(str(tmp_path), "dest"))
+
+
+def test_extract_refuses_symlink(tmp_path):
+    # A symlink member could redirect a later write outside the destination; the
+    # isfile/isdir guard must reject it (only path-traversal was covered before).
+    evil = os.path.join(str(tmp_path), "evil.tar.gz")
+    with tarfile.open(evil, "w:gz") as tar:
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tar.addfile(info)
     with pytest.raises(fmt.SeedFormatError):
         fmt.extract_bundle(evil, os.path.join(str(tmp_path), "dest"))

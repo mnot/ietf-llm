@@ -71,6 +71,17 @@ def test_covers_config_custom_sources_block_stalejump():
     assert not _seed_covers_config(_args(mailing_list=["extra"]), _entry("g"))
     assert not _seed_covers_config(_args(new_drafts=True), _entry("g"))
     assert not _seed_covers_config(_args(author="Jane"), _entry("g"))
+    assert not _seed_covers_config(_args(add_mentioned_drafts=True), _entry("g"))
+
+
+def test_covers_config_unknown_window():
+    # An entry with no recorded window can't be proven a full stand-in.
+    assert not _seed_covers_config(_args(months=12), _entry("g", window=None))
+
+
+def test_decision_none_when_gathered_unparseable():
+    prior = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert _seed_decision(_args(), _entry("not-a-date"), prior) is None
 
 
 def test_stalejump_refused_when_window_narrows():
@@ -160,4 +171,22 @@ def test_maybe_seed_model_mismatch_noop(isolated_home, tmp_path, monkeypatch):
     monkeypatch.setenv("IETF_LLM_SEED_URL", store)
     _maybe_seed(_seed_args("httpbis"), on_cloud=False, verbosity=Verbosity.QUIET)
     # Default client model != the store's model → no install.
+    assert not os.path.exists(os.path.join(get_cache_dir(), "httpbis"))
+
+
+def test_maybe_seed_soft_fails_on_bad_bundle(isolated_home, tmp_path, monkeypatch):
+    # The feature's whole contract: a failed install must not break the gather —
+    # it swallows the error, logs, and leaves no partial corpus behind.
+    store = _store(tmp_path)
+    shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
+    bundle = next(
+        os.path.join(store, "httpbis", f)
+        for f in os.listdir(os.path.join(store, "httpbis"))
+        if f.endswith(".tar.gz")
+    )
+    with open(bundle, "ab") as fh:
+        fh.write(b"corrupt")  # breaks the sha256 verify during install
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    # Must not raise, and must not leave a corpus dir.
+    _maybe_seed(_seed_args("httpbis"), on_cloud=False, verbosity=Verbosity.QUIET)
     assert not os.path.exists(os.path.join(get_cache_dir(), "httpbis"))
