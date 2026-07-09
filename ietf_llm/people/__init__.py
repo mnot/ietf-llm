@@ -91,31 +91,22 @@ class Person:
     # `edited_documents` so callers can distinguish.
     authored_documents: Set[str] = field(default_factory=set)
     edited_documents: Set[str] = field(default_factory=set)
-    # Affiliations gathered from multiple sources, keyed by source tag.
-    # Tag conventions:
-    #   "draft:<doc-id>"  — Authors' Addresses block of a specific
-    #                       draft / RFC the person has authored. The
-    #                       most authoritative source: author-curated,
-    #                       chair-reviewed, per-document.
-    #   "github"          — GitHub user `company` field, self-reported
-    #                       free text. Useful as a corroborating
-    #                       second signal; sometimes stale or terse.
-    #   (future: "datatracker", "signature")
-    # People legitimately ship different affiliations across drafts
-    # (joined a company mid-WG, "Independent" on one draft and an
-    # employer on another). Per-source keying preserves that. The
-    # renderer aggregates distinct *values* with their source list so
-    # the consumer can see "Cloudflare (draft, github)" — agreement
-    # across independent sources is itself signal.
-    # Empty for people with no documented affiliation.
+    # Affiliations gathered from multiple sources, keyed by source tag:
+    #   "draft:<doc-id>" — Authors' Addresses block of a draft/RFC the
+    #       person authored; most authoritative (author-curated,
+    #       chair-reviewed, per-document).
+    #   "github" — GitHub `company` field, self-reported; corroborating
+    #       second signal, sometimes stale. (future: datatracker, signature)
+    # People legitimately ship different affiliations across drafts (job
+    # change mid-WG, "Independent" on one and an employer on another) —
+    # per-source keying preserves that; the renderer aggregates distinct
+    # *values* with their sources ("Cloudflare (draft, github)"), so
+    # cross-source agreement is itself signal. Empty when undocumented.
     affiliations: Dict[str, str] = field(default_factory=dict)
-    # Domains of every email address we've seen for this person.
-    # Stored separately from `affiliations` because email domain is
-    # NOT the same as affiliation: participants often use personal
-    # email, and some hold multiple affiliations, representing some or
-    # none of those interests in a given discussion. Surfaced only on
-    # explicit request, with the framing that it's a fallback signal —
-    # not an attribution.
+    # Domains of every email seen. NOT the same as affiliation
+    # (participants often use personal email, and some hold several
+    # affiliations); surfaced only on explicit request as a fallback
+    # signal, not an attribution.
     email_domains: Set[str] = field(default_factory=set)
     message_count: int = 0
     issue_count: int = 0
@@ -154,6 +145,9 @@ _LEADERSHIP_ROLE_ORDER = {
     "Tech Advisor": 2,
     "Secretary": 3,
 }
+
+#: Editor/Author tags name up to this many documents, then show a count.
+_ROLE_DOC_CAP = 2
 
 
 def _normalise_email(address: str) -> Optional[str]:
@@ -562,13 +556,13 @@ class Registry:
     def role_tag(self, canonical_name: str) -> Optional[str]:
         """All relevant role tags for inline use, "/"-joined.
 
-        Order: formal leadership (Chair > AD > Tech Advisor > Secretary),
-        then document editorship, then authorship. ALL applicable roles
-        are returned, joined with `/`. Multi-hat status is *load-bearing*
-        for IETF interpretation — a Chair who is also an Author of the
-        draft being discussed has a procedural conflict of interest
-        worth surfacing. Collapsing to one tag (the previous behaviour)
-        hid that.
+        Order: leadership (Chair > AD > Tech Advisor > Secretary), then
+        editorship, then authorship — ALL applicable, joined with `/`.
+        Multi-hat status is load-bearing (a Chair who also authored the
+        draft under discussion has a procedural conflict worth surfacing).
+        Editor/Author name their document(s) — a bare "Author" misleads in
+        a multi-draft group — up to `_ROLE_DOC_CAP`, then a count ("Author
+        of 5 drafts"): a long list neither disambiguates nor fits inline.
 
         Returns None when the person carries no role we surface.
         """
@@ -576,15 +570,22 @@ class Registry:
         if person is None:
             return None
         bits: List[str] = []
-        # Datatracker labels come in verbose form; map the ones that
-        # benefit from shortening, pass others through.
         for label in ("Chair", "Area Director", "Tech Advisor", "Secretary"):
             if label in person.roles:
                 bits.append({"Area Director": "AD"}.get(label, label))
-        if person.edited_documents:
-            bits.append("Editor")
-        if person.authored_documents:
-            bits.append("Author")
+        for role, docs in (
+            ("Editor", person.edited_documents),
+            ("Author", person.authored_documents),
+        ):
+            if not docs:
+                continue
+            names = sorted(docs)
+            listed = ", ".join(names)
+            bits.append(
+                f"{role} of {listed}"
+                if len(names) <= _ROLE_DOC_CAP
+                else f"{role} of {len(names)} drafts"
+            )
         if not bits:
             return None
         return "/".join(bits)

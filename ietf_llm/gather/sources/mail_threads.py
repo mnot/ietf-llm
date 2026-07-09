@@ -304,6 +304,55 @@ def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     return None
 
 
+#: Armor lines of an inline (clear-signed) OpenPGP message, per RFC 4880.
+#: The signed-message header (and its `Hash:`/armor-header lines up to the
+#: blank separator) and the whole signature block are noise in a rendered
+#: thread — the crypto is not human-readable and only clutters the record.
+_PGP_SIGNED_HEADER_RE = re.compile(r"^-----BEGIN PGP SIGNED MESSAGE-----\s*$")
+_PGP_SIG_BEGIN_RE = re.compile(r"^-----BEGIN PGP SIGNATURE-----\s*$")
+_PGP_SIG_END_RE = re.compile(r"^-----END PGP SIGNATURE-----\s*$")
+
+
+def _strip_pgp(lines: List[str]) -> List[str]:
+    """Drop inline OpenPGP armor from a plain-text body.
+
+    Removes the `-----BEGIN PGP SIGNED MESSAGE-----` header and its armor
+    headers (up to the blank line before the signed content) and the entire
+    `-----BEGIN PGP SIGNATURE-----`…`-----END PGP SIGNATURE-----` block. A
+    signature block with no closing marker (truncated body) is dropped to
+    EOF. Within the signed content, RFC 4880 dash-escaping (`- ` prefix) is
+    undone so the original text is restored.
+    """
+    out: List[str] = []
+    i = 0
+    total = len(lines)
+    in_signed = False
+    while i < total:
+        line = lines[i]
+        stripped = line.strip()
+        if _PGP_SIGNED_HEADER_RE.match(stripped):
+            i += 1
+            while i < total and lines[i].strip():  # skip Hash:/armor headers
+                i += 1
+            if i < total:  # skip the blank separator too
+                i += 1
+            in_signed = True
+            continue
+        if _PGP_SIG_BEGIN_RE.match(stripped):
+            in_signed = False
+            i += 1
+            while i < total and not _PGP_SIG_END_RE.match(lines[i].strip()):
+                i += 1
+            if i < total:  # skip the closing END line
+                i += 1
+            continue
+        if in_signed and line.startswith("- "):
+            line = line[2:]  # undo dash-escaping
+        out.append(line)
+        i += 1
+    return out
+
+
 def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     """Collapse quoted reply trails so a thread file is readable.
 
@@ -311,7 +360,10 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     `keep_threshold` collapse to a single `> [N lines elided]` marker,
     while the author's own (unprefixed) lines are kept — so an inline /
     bottom-posted reply, where new prose is interleaved with `>` quotes,
-    survives intact. And the no-`>` quoting that Outlook / Exchange / Apple
+    survives intact. A blank line sitting between two quoted lines (some
+    MUAs insert one between every quoted line) counts as interior to the
+    run rather than breaking it, so such a quote still folds. And the
+    no-`>` quoting that Outlook / Exchange / Apple
     Mail produce — a `-----Original Message-----` separator, a
     `From:`/`Sent:`/`Subject:` header block, or an `On … wrote:` attribution
     that is followed by unprefixed text, after which the prior thread is
@@ -320,8 +372,12 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     messages, which the thread file already carries as their own sections, so
     nothing is lost. An attribution followed by `>`-prefixed quoting is an
     inline reply, not a top-post trail, so it is left to the run-collapse.
+
+    Inline OpenPGP armor (a clear-signed message's header and signature
+    block) is stripped up front — it is not human-readable and only clutters
+    the thread file.
     """
-    lines = text.splitlines()
+    lines = _strip_pgp(text.splitlines())
 
     # Drop a trailing signature block at the RFC 3676 `-- ` delimiter (also
     # the bare `--` some clients send). Only an unquoted delimiter counts — a
@@ -342,22 +398,37 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
 
     out: List[str] = []
     run: List[str] = []
-    for line in lines:
-        if line.lstrip().startswith(">"):
-            run.append(line)
-            continue
-        if run:
-            if len(run) > keep_threshold:
-                out.append(f"> [{len(run)} quoted lines elided]")
-            else:
-                out.extend(run)
-            run = []
-        out.append(line)
-    if run:
+    # Blank lines seen since the last quoted line, fate not yet decided. A
+    # blank line *between* two quoted lines is interior spacing — some MUAs
+    # insert one between every quoted line — and must not break the run, or a
+    # long quote never reaches `keep_threshold` and so never folds. We hold
+    # such blanks and drop them when the next non-blank line is another quote;
+    # if instead the run ends (prose follows, or EOF), they were trailing
+    # blanks after the quote block and are emitted before that prose.
+    pending_blanks: List[str] = []
+
+    def flush_run() -> None:
+        if not run:
+            return
         if len(run) > keep_threshold:
             out.append(f"> [{len(run)} quoted lines elided]")
         else:
             out.extend(run)
+        run.clear()
+
+    for line in lines:
+        if line.lstrip().startswith(">"):
+            pending_blanks.clear()  # interior blanks: drop, keep the run whole
+            run.append(line)
+            continue
+        if run and not line.strip():
+            pending_blanks.append(line)
+            continue
+        flush_run()
+        out.extend(pending_blanks)
+        pending_blanks.clear()
+        out.append(line)
+    flush_run()
     if trail_marker is not None:
         while out and not out[-1].strip():
             out.pop()

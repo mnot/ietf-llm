@@ -86,6 +86,87 @@ def test_elide_quotes_handles_trailing_quote() -> None:
     assert "> [4 quoted lines elided]" in result
 
 
+def test_elide_quotes_strips_inline_pgp_signature() -> None:
+    # A clear-signed message: armor header, signed content, signature block.
+    text = (
+        "-----BEGIN PGP SIGNED MESSAGE-----\n"
+        "Hash: SHA512\n"
+        "\n"
+        "I support publication of this draft.\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "\n"
+        "iQIzBAEBCgAdFiEEabc123...\n"
+        "=Ab3d\n"
+        "-----END PGP SIGNATURE-----\n"
+    )
+    result = elide_quotes(text)
+    assert "I support publication of this draft." in result
+    assert "PGP" not in result
+    assert "Hash:" not in result
+    assert "iQIzBAEBCgAd" not in result
+    assert "=Ab3d" not in result
+
+
+def test_elide_quotes_undoes_pgp_dash_escaping() -> None:
+    text = (
+        "-----BEGIN PGP SIGNED MESSAGE-----\n"
+        "Hash: SHA256\n"
+        "\n"
+        "- - a dash-escaped bullet\n"
+        "normal line\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "blob\n"
+        "-----END PGP SIGNATURE-----\n"
+    )
+    result = elide_quotes(text)
+    assert "- a dash-escaped bullet" in result
+    assert "- - a dash-escaped bullet" not in result
+    assert "normal line" in result
+
+
+def test_elide_quotes_strips_truncated_pgp_signature() -> None:
+    # A signature block with no closing END marker is dropped to EOF.
+    text = (
+        "My comment stands.\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "iQIzBAEBCgAdblob...\n"
+    )
+    result = elide_quotes(text)
+    assert "My comment stands." in result
+    assert "PGP" not in result
+    assert "iQIzBAEBCgAd" not in result
+
+
+def test_elide_quotes_folds_across_interior_blank_lines() -> None:
+    # A pathological MUA inserts a blank line between every quoted line.
+    # Those blanks must not reset the run counter, or the block never folds.
+    text = (
+        "My reply.\n"
+        "> a\n"
+        "\n"
+        "> b\n"
+        "\n"
+        "> c\n"
+        "\n"
+        "> d\n"
+        "\n"
+        "> e\n"
+    )
+    result = elide_quotes(text, keep_threshold=2)
+    assert "> [5 quoted lines elided]" in result
+    assert "> a" not in result
+    assert "My reply." in result
+
+
+def test_elide_quotes_blank_after_quote_before_prose_kept() -> None:
+    # A blank that separates the quote block from the author's own prose is
+    # not interior — the prose must survive with its separating blank.
+    text = "> a\n> b\n> c\n\nMy own analysis follows.\n"
+    result = elide_quotes(text, keep_threshold=2)
+    assert "> [3 quoted lines elided]" in result
+    assert "My own analysis follows." in result
+
+
 def test_elide_quotes_collapses_outlook_header_block() -> None:
     # No `>` prefixes — Outlook/Exchange quoting. The reply is kept; the
     # From:/Sent:/Subject: header and everything after it is elided.
@@ -791,8 +872,8 @@ def test_participants_line_includes_affiliation_when_known(
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
     # Multi-hat: he's a Chair AND has an authored draft, so role_tag
-    # returns "Chair/Author". Affiliation comes after the role bits.
-    assert "Mark Nottingham (Chair/Author · Cloudflare, 1)" in text
+    # returns "Chair/Author of draft-ietf-foo". Affiliation comes after.
+    assert "Mark Nottingham (Chair/Author of draft-ietf-foo · Cloudflare, 1)" in text
 
 
 def test_participants_line_affiliation_without_role(
@@ -817,7 +898,10 @@ def test_participants_line_affiliation_without_role(
     cache = get_wg_file_cache_dir("wg")
     paths = write_thread_files("wg", cache, registry=r, verbose=Verbosity.QUIET)
     text = Path(paths[0]).read_text()
-    assert "Alice (Author · Mozilla, 1)" in text or "Alice (Mozilla, 1)" in text
+    assert (
+        "Alice (Author of draft-ietf-foo · Mozilla, 1)" in text
+        or "Alice (Mozilla, 1)" in text
+    )
     # Critically, no role-less " · Mozilla" form should appear.
     assert "Alice ( · Mozilla" not in text
 
