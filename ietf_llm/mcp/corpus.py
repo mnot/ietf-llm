@@ -76,12 +76,12 @@ def _available_to_seed(local: List[str]) -> str:
     """A one-line 'available to fast-start' hint listing seed-store corpora not
     yet gathered locally, or '' when none / no cache.
 
-    Only shown where in-session gather is available (`gather_enabled`) — a
-    read-only HTTP replica can't act on it, so it neither lists nor fetches. There
-    it uses the sanctioned networked-read exception: `refresh_mirror` fetches the
-    index live (bounded + throttled), so a cold-start client with nothing gathered
-    still sees the catalog. Empty when seeding is disabled or the store is
-    unreachable."""
+    Only shown where in-session gather is available (`gather_enabled`) and seeding
+    is on — a read-only HTTP replica neither lists nor fetches. Uses the sanctioned
+    networked-read exception, stale-while-revalidate: `refresh_mirror` serves the
+    cached catalog and revalidates in the background, blocking only on a cold miss
+    (nothing cached yet) so a fresh client still sees it. Empty when seeding is
+    disabled or the store is unreachable."""
     # pylint: disable-next=import-outside-toplevel
     from ..config import service
 

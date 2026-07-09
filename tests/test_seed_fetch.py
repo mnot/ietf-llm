@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 
 import pytest
 
@@ -195,6 +196,55 @@ def test_refresh_mirror_gated_off_when_gather_disabled(
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")  # gather off → no live fetch
     catalog.refresh_mirror()
     assert catalog.cached_index() is None
+
+
+def test_refresh_mirror_swr_revalidates_when_stale(
+        isolated_home, tmp_path, monkeypatch):
+    from ietf_llm.paths import seed_index_cache_path
+    from ietf_llm.seed import catalog
+    store = str(tmp_path / "store")
+    _gathered("httpbis")
+    publish.publish_store(store, add=["httpbis"], no_gather=True,
+                          gather=lambda n, m: None)
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    # A stale mirror listing a different, old corpus.
+    catalog.cache_index(fmt.Index(
+        generated="g", compat=fmt.CompatTuple(8, "m", "2", 384),
+        corpora=[fmt.IndexEntry("oldwg", "group", "", 12, "g", "v",
+                                "oldwg/manifest.json", 1)]))
+    old = time.time() - 4000  # older than the 1h TTL
+    os.utime(seed_index_cache_path(), (old, old))
+    catalog.refresh_mirror()  # present+stale → revalidate (inline under test flag)
+    idx = catalog.cached_index()
+    assert idx is not None and idx.entry("httpbis") is not None
+
+
+def test_refresh_mirror_skips_when_fresh(isolated_home, monkeypatch):
+    from ietf_llm.seed import catalog
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "https://unused.example/")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    catalog.cache_index(fmt.Index(
+        generated="g", compat=fmt.CompatTuple(8, "m", "2", 384),
+        corpora=[fmt.IndexEntry("wg", "group", "", 12, "g", "v",
+                                "wg/manifest.json", 1)]))
+    calls = []
+    monkeypatch.setattr("ietf_llm.seed.fetch.load_index",
+                        lambda *a, **k: calls.append(1))
+    catalog.refresh_mirror()  # fresh mirror → no fetch
+    assert not calls
+
+
+def test_refresh_mirror_throttles_repeated_cold_attempts(isolated_home, monkeypatch):
+    from ietf_llm.seed import catalog
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "https://down.example/")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    calls = []
+    monkeypatch.setattr("ietf_llm.seed.fetch.load_index",
+                        lambda *a, **k: calls.append(1))  # returns None → "fails"
+    catalog.refresh_mirror()  # cold → one attempt
+    catalog.refresh_mirror()  # throttled → no second attempt
+    assert len(calls) == 1
 
 
 def test_freshness_seed_source_roundtrip(isolated_home):

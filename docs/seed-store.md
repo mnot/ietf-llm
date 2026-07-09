@@ -205,9 +205,11 @@ cold. `list_corpora` also lists the store's **un-gathered** corpora ("available 
 fast-start"), so a cold-start client with nothing gathered still knows what it can
 pull cheaply. This is the one read-surface network touch, and it rides the same
 gather gate as the live Datatracker lookups: a local stdio server (where you can
-`start_gather`) refreshes the catalog with a bounded, throttled fetch cached to
-`_seed/index.json`; the read-only HTTP replica never fetches and omits the section
-(you can't gather there anyway).
+`start_gather`) refreshes the catalog **stale-while-revalidate** — it serves the
+cached `_seed/index.json` and revalidates in the background (bounded + throttled to
+≤1/hour), blocking only on the cold first fetch when nothing is cached yet — so a
+routine `list_corpora` never stalls. The read-only HTTP replica never fetches and
+omits the section (you can't gather there anyway).
 
 ## Non-goals
 

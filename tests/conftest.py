@@ -37,6 +37,16 @@ def _gather_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_seed_catalog() -> None:
+    """Clear the seed-catalog in-process refresh throttle before each test — it is
+    process-global, so it would otherwise leak across the per-test isolated caches
+    and suppress a legitimate refresh."""
+    from ietf_llm.seed import catalog  # pylint: disable=import-outside-toplevel
+
+    catalog.reset_state()
+
+
+@pytest.fixture(autouse=True)
 def _drain_gather_worker() -> Iterable[None]:
     """Wait for the shared gather worker to finish any in-flight job before the
     next test runs. The worker is a process-wide daemon, and a job's terminal
