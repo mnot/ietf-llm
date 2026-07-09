@@ -162,11 +162,12 @@ MCP read tools and `ietf-llm-search` stay offline. It is **opt-out**: when
 use the seed whenever it is a fresher, compatible base than what is local:
 
 - **No local copy** → seed (cold start).
-- **Local older than the snapshot**, and the snapshot is a full stand-in (window
-  not narrowed; no extra `--draft` / `--mailing-list` / generative sources) →
-  **re-seed**, jumping the base forward, then freshen. (A refinement to only jump
-  when the local copy is *well* behind — not merely one snapshot period — is
-  tracked in [#187](https://github.com/mnot/ietf-llm/issues/187).)
+- **Local well behind the snapshot** (by more than ~60 days —
+  `IETF_LLM_SEED_STALE_DAYS`), and the snapshot is a full stand-in (window not
+  narrowed; no extra `--draft` / `--mailing-list` / generative sources) →
+  **re-seed**, jumping the base forward, then freshen. A corpus only a snapshot
+  period stale gathers incrementally instead — re-downloading a whole bundle to
+  save embedding a delta it would gather for free is pure waste (issue #187).
 - **Otherwise** (local as fresh or fresher, or the seed would narrow it) → skip;
   gather incrementally.
 

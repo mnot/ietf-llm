@@ -13,6 +13,7 @@ import argparse
 import os
 import shutil
 import sys
+from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .. import config, paths
@@ -315,6 +316,31 @@ def _client_compat(args: argparse.Namespace) -> Any:
     )
 
 
+#: A stale local corpus is re-seeded (jumped forward to a fresher snapshot) only
+#: when it is behind by MORE than this many days — a snapshot-period-ish margin, so
+#: a client merely one period stale gathers incrementally instead of re-downloading
+#: a whole bundle to save a delta it would embed for free (issue #187). Snapshots
+#: refresh ~monthly, so ~60 days keeps a monthly gatherer on the incremental path.
+#: Override via IETF_LLM_SEED_STALE_DAYS.
+_SEED_STALE_JUMP_DAYS = 60.0
+
+
+def _seed_stale_jump_margin() -> timedelta:
+    """The minimum local-vs-snapshot age gap that justifies a re-seed. Reads
+    IETF_LLM_SEED_STALE_DAYS (a non-negative number of days); falls back to the
+    default on an unset or invalid value."""
+    days = _SEED_STALE_JUMP_DAYS
+    raw = os.environ.get("IETF_LLM_SEED_STALE_DAYS")
+    if raw:
+        try:
+            parsed = float(raw)
+            if parsed >= 0:
+                days = parsed
+        except ValueError:
+            pass
+    return timedelta(days=days)
+
+
 def _seed_covers_config(args: argparse.Namespace, entry: Any) -> bool:
     """True when the snapshot is a full stand-in for this corpus's config, so a
     stale-jump is cheaper than an incremental: the window must not narrow, and the
@@ -345,6 +371,12 @@ def _seed_decision(
     seed_time = parse_iso(entry.gathered)
     if seed_time is None or seed_time <= prior:
         return None  # local is at least as fresh as the snapshot
+    if seed_time - prior <= _seed_stale_jump_margin():
+        # Only a snapshot-period behind: gathering incrementally re-embeds the
+        # same small delta a re-seed would freshen anyway, so re-downloading the
+        # whole bundle would be pure waste. Only jump when *well* behind, where
+        # the re-seed saves re-embedding many periods at once (issue #187).
+        return None
     if not _seed_covers_config(args, entry):
         return None
     return "stale"

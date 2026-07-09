@@ -50,9 +50,25 @@ def test_decision_refresh_flag():
                           _entry("2026-01-01T00:00:00+00:00"), prior) == "refresh"
 
 
-def test_decision_stale_when_snapshot_newer():
-    prior = datetime(2026, 1, 1, tzinfo=timezone.utc)
+def test_decision_stale_when_well_behind():
+    prior = datetime(2026, 1, 1, tzinfo=timezone.utc)  # ~6 months behind
     assert _seed_decision(_args(), _entry("2026-07-01T00:00:00+00:00"), prior) == "stale"
+
+
+def test_decision_none_when_barely_stale():
+    # Snapshot is newer, but only ~16 days: gathering incrementally re-embeds the
+    # same delta a re-seed would, so no re-download (issue #187).
+    prior = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    assert _seed_decision(_args(), _entry("2026-07-01T00:00:00+00:00"), prior) is None
+
+
+def test_stale_jump_margin_env_override(monkeypatch):
+    prior = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    entry = _entry("2026-07-01T00:00:00+00:00")  # ~16 days newer
+    monkeypatch.setenv("IETF_LLM_SEED_STALE_DAYS", "7")  # lower the bar
+    assert _seed_decision(_args(), entry, prior) == "stale"
+    monkeypatch.setenv("IETF_LLM_SEED_STALE_DAYS", "365")  # raise it
+    assert _seed_decision(_args(), entry, prior) is None
 
 
 def test_decision_none_when_local_fresher():
