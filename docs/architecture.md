@@ -224,7 +224,11 @@ Key invariants:
   version, and vector dimension; a change to any forces a rebuild, and the model
   id is read back at query time to resolve the same backend. The `chunks` table
   carries `start_line`/`end_line`, `chunk_date`, `labels`, `state`, `url`,
-  `duplicate_of`, `closing_rationale` for faceted search. Not everything is
+  `duplicate_of`, `closing_rationale` for faceted search, and a `chunk_hash`
+  (SHA-256 of the embedded text) that drives **per-chunk** incremental
+  re-embedding: a changed file re-embeds only the chunks whose text changed,
+  reusing the stored vectors of the rest (so a thread that gains one message
+  embeds that message, not all of them — issue #183). Not everything is
   embedded: `raw/`, `github/`, digests, and PDFs are excluded, and a draft's
   revision stack is skipped once its state is `rfc` (the RFC is canonical) or
   `repl` (content lives in its successor) — those revisions stay on disk for
@@ -728,7 +732,11 @@ re-render leaves the file (and its mtime) untouched, avoiding needless
 I/O and churn. The embedder keys its incremental skip on each file's
 content hash — stable across hosts, so a cloud replica that materialises
 a published version onto fresh local files still recognises the bytes as
-already-embedded rather than re-embedding the whole corpus. The hash
+already-embedded rather than re-embedding the whole corpus. A file that
+*did* change is diffed at the **chunk** level (by each chunk's `chunk_hash`,
+see `embeddings.db` above): only new/changed chunks are embedded and the
+rest reuse their stored vectors, so appending one message to a thread costs
+one embed, not a whole-file re-embed (#183). The hash
 check alone can't catch a file that becomes *ineligible* without
 changing — a removed
 thread/issue, or a draft that flips to `rfc`/`repl` and is now skipped
