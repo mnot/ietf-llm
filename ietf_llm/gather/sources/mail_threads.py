@@ -311,7 +311,10 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     `keep_threshold` collapse to a single `> [N lines elided]` marker,
     while the author's own (unprefixed) lines are kept — so an inline /
     bottom-posted reply, where new prose is interleaved with `>` quotes,
-    survives intact. And the no-`>` quoting that Outlook / Exchange / Apple
+    survives intact. A blank line sitting between two quoted lines (some
+    MUAs insert one between every quoted line) counts as interior to the
+    run rather than breaking it, so such a quote still folds. And the
+    no-`>` quoting that Outlook / Exchange / Apple
     Mail produce — a `-----Original Message-----` separator, a
     `From:`/`Sent:`/`Subject:` header block, or an `On … wrote:` attribution
     that is followed by unprefixed text, after which the prior thread is
@@ -342,22 +345,37 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
 
     out: List[str] = []
     run: List[str] = []
-    for line in lines:
-        if line.lstrip().startswith(">"):
-            run.append(line)
-            continue
-        if run:
-            if len(run) > keep_threshold:
-                out.append(f"> [{len(run)} quoted lines elided]")
-            else:
-                out.extend(run)
-            run = []
-        out.append(line)
-    if run:
+    # Blank lines seen since the last quoted line, fate not yet decided. A
+    # blank line *between* two quoted lines is interior spacing — some MUAs
+    # insert one between every quoted line — and must not break the run, or a
+    # long quote never reaches `keep_threshold` and so never folds. We hold
+    # such blanks and drop them when the next non-blank line is another quote;
+    # if instead the run ends (prose follows, or EOF), they were trailing
+    # blanks after the quote block and are emitted before that prose.
+    pending_blanks: List[str] = []
+
+    def flush_run() -> None:
+        if not run:
+            return
         if len(run) > keep_threshold:
             out.append(f"> [{len(run)} quoted lines elided]")
         else:
             out.extend(run)
+        run.clear()
+
+    for line in lines:
+        if line.lstrip().startswith(">"):
+            pending_blanks.clear()  # interior blanks: drop, keep the run whole
+            run.append(line)
+            continue
+        if run and not line.strip():
+            pending_blanks.append(line)
+            continue
+        flush_run()
+        out.extend(pending_blanks)
+        pending_blanks.clear()
+        out.append(line)
+    flush_run()
     if trail_marker is not None:
         while out and not out[-1].strip():
             out.pop()

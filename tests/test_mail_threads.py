@@ -86,6 +86,36 @@ def test_elide_quotes_handles_trailing_quote() -> None:
     assert "> [4 quoted lines elided]" in result
 
 
+def test_elide_quotes_folds_across_interior_blank_lines() -> None:
+    # A pathological MUA inserts a blank line between every quoted line.
+    # Those blanks must not reset the run counter, or the block never folds.
+    text = (
+        "My reply.\n"
+        "> a\n"
+        "\n"
+        "> b\n"
+        "\n"
+        "> c\n"
+        "\n"
+        "> d\n"
+        "\n"
+        "> e\n"
+    )
+    result = elide_quotes(text, keep_threshold=2)
+    assert "> [5 quoted lines elided]" in result
+    assert "> a" not in result
+    assert "My reply." in result
+
+
+def test_elide_quotes_blank_after_quote_before_prose_kept() -> None:
+    # A blank that separates the quote block from the author's own prose is
+    # not interior — the prose must survive with its separating blank.
+    text = "> a\n> b\n> c\n\nMy own analysis follows.\n"
+    result = elide_quotes(text, keep_threshold=2)
+    assert "> [3 quoted lines elided]" in result
+    assert "My own analysis follows." in result
+
+
 def test_elide_quotes_collapses_outlook_header_block() -> None:
     # No `>` prefixes — Outlook/Exchange quoting. The reply is kept; the
     # From:/Sent:/Subject: header and everything after it is elided.
