@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 
 import pytest
 
@@ -153,6 +154,107 @@ def test_swap_dir_restores_prior_corpus_on_failure(isolated_home, tmp_path, monk
         fetch._swap_dir(staging, dest)
     assert os.path.isfile(os.path.join(dest, "GOOD"))  # restored
     assert not os.path.exists(os.path.join(dest, "NEW"))
+
+
+def test_seed_catalog_roundtrip(isolated_home):
+    from ietf_llm.seed import catalog
+    assert catalog.cached_index() is None
+    idx = fmt.Index(
+        generated="2026-07-01T00:00:00Z",
+        compat=fmt.CompatTuple(8, "m", "2", 384),
+        corpora=[fmt.IndexEntry("aipref", "group", "AIPREF", 12,
+                                "2026-07-01T00:00:00Z", "v",
+                                "aipref/manifest.json", 1)])
+    catalog.cache_index(idx)
+    back = catalog.cached_index()
+    assert back is not None and back.entry("aipref") is not None
+
+
+def test_list_corpora_cold_start_lists_catalog(isolated_home, tmp_path, monkeypatch):
+    import shutil as _sh
+    from ietf_llm.mcp import corpus as mcp_corpus
+    store = str(tmp_path / "store")
+    _gathered("httpbis")
+    publish.publish_store(store, add=["httpbis"], no_gather=True,
+                          gather=lambda n, m: None)
+    _sh.rmtree(os.path.join(get_cache_dir(), "httpbis"))  # cold client, nothing local
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    out = mcp_corpus.tool_list_corpora()
+    # The live refresh populated the mirror, so the catalog shows even cold.
+    assert "Available to fast-start" in out and "httpbis" in out
+
+
+def test_refresh_mirror_gated_off_when_gather_disabled(
+        isolated_home, tmp_path, monkeypatch):
+    from ietf_llm.seed import catalog
+    store = str(tmp_path / "store")
+    _gathered("httpbis")
+    publish.publish_store(store, add=["httpbis"], no_gather=True,
+                          gather=lambda n, m: None)
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")  # gather off → no live fetch
+    catalog.refresh_mirror()
+    assert catalog.cached_index() is None
+
+
+def test_refresh_mirror_swr_revalidates_when_stale(
+        isolated_home, tmp_path, monkeypatch):
+    from ietf_llm.paths import seed_index_cache_path
+    from ietf_llm.seed import catalog
+    store = str(tmp_path / "store")
+    _gathered("httpbis")
+    publish.publish_store(store, add=["httpbis"], no_gather=True,
+                          gather=lambda n, m: None)
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    # A stale mirror listing a different, old corpus.
+    catalog.cache_index(fmt.Index(
+        generated="g", compat=fmt.CompatTuple(8, "m", "2", 384),
+        corpora=[fmt.IndexEntry("oldwg", "group", "", 12, "g", "v",
+                                "oldwg/manifest.json", 1)]))
+    old = time.time() - 4000  # older than the 1h TTL
+    os.utime(seed_index_cache_path(), (old, old))
+    catalog.refresh_mirror()  # present+stale → revalidate (inline under test flag)
+    idx = catalog.cached_index()
+    assert idx is not None and idx.entry("httpbis") is not None
+
+
+def test_refresh_mirror_skips_when_fresh(isolated_home, monkeypatch):
+    from ietf_llm.seed import catalog
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "https://unused.example/")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    catalog.cache_index(fmt.Index(
+        generated="g", compat=fmt.CompatTuple(8, "m", "2", 384),
+        corpora=[fmt.IndexEntry("wg", "group", "", 12, "g", "v",
+                                "wg/manifest.json", 1)]))
+    calls = []
+    monkeypatch.setattr("ietf_llm.seed.fetch.load_index",
+                        lambda *a, **k: calls.append(1))
+    catalog.refresh_mirror()  # fresh mirror → no fetch
+    assert not calls
+
+
+def test_refresh_mirror_throttles_repeated_cold_attempts(isolated_home, monkeypatch):
+    from ietf_llm.seed import catalog
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "https://down.example/")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    calls = []
+    monkeypatch.setattr("ietf_llm.seed.fetch.load_index",
+                        lambda *a, **k: calls.append(1))  # returns None → "fails"
+    catalog.refresh_mirror()  # cold → one attempt
+    catalog.refresh_mirror()  # throttled → no second attempt
+    assert len(calls) == 1
+
+
+def test_freshness_seed_source_roundtrip(isolated_home):
+    assert freshness.seed_source("httpbis") is None
+    freshness.record_seed_source(
+        "httpbis", url="https://seed/", version="v1",
+        gathered="2026-07-01T00:00:00Z")
+    src = freshness.seed_source("httpbis")
+    assert src["url"] == "https://seed/" and src["version"] == "v1"
+    assert src["gathered"] == "2026-07-01T00:00:00Z" and "fetched" in src
 
 
 def test_seed_url_disable_semantics(isolated_home, monkeypatch):

@@ -11,7 +11,6 @@ module owns the mechanics: load, verify, atomically install, and stamp provenanc
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import tempfile
@@ -22,10 +21,6 @@ from typing import Any, Dict, Optional
 from .. import freshness
 from ..paths import get_cache_dir, get_index_dir
 from . import format as fmt
-
-#: Provenance sentinel written into a seeded corpus dir (url + version + times),
-#: so `ietf-llm --list` can show what a corpus was seeded from.
-SEED_SOURCE_SENTINEL = "seed-source"
 
 #: Network read timeout (seconds) for an http(s) seed base.
 _HTTP_TIMEOUT = 30
@@ -52,12 +47,12 @@ def _child(base: str, rel: str) -> str:
     return os.path.join(base, *rel.split("/"))
 
 
-def _read_bytes(location: str) -> bytes:
+def _read_bytes(location: str, timeout: Optional[float] = None) -> bytes:
     """Read a small resource (index/manifest) fully into memory."""
     try:
         if _is_url(location):
             with urllib.request.urlopen(  # nosec B310 — operator/user-set base
-                location, timeout=_HTTP_TIMEOUT
+                location, timeout=_HTTP_TIMEOUT if timeout is None else timeout
             ) as resp:
                 return bytes(resp.read())
         with open(location, "rb") as handle:
@@ -88,12 +83,14 @@ def _download(location: str, dest_path: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def load_index(seed_url: str) -> Optional[fmt.Index]:
+def load_index(seed_url: str, timeout: Optional[float] = None) -> Optional[fmt.Index]:
     """Fetch and parse the store's `index.json`. **Best-effort**: returns None on
     any failure (unreachable, malformed, unsupported format) so a gather degrades
-    to a cold gather rather than erroring — the seed store only ever accelerates."""
+    to a cold gather rather than erroring — the seed store only ever accelerates.
+    `timeout` bounds the HTTP read (default `_HTTP_TIMEOUT`); the catalog refresh
+    passes a short one so a read tool never hangs on a slow mirror."""
     try:
-        raw = _read_bytes(_child(seed_url, fmt.INDEX_NAME))
+        raw = _read_bytes(_child(seed_url, fmt.INDEX_NAME), timeout=timeout)
         return fmt.Index.from_json(raw.decode("utf-8"))
     except (SeedFetchError, fmt.SeedFormatError, UnicodeDecodeError):
         return None
@@ -182,30 +179,14 @@ def _swap_dir(staging: str, dest: str) -> None:
 
 
 def _write_seed_source(corpus: str, seed_url: str, manifest: fmt.Manifest) -> None:
-    """Stamp the provenance sentinel in the seeded corpus dir (best-effort)."""
-    corpus_dir = os.path.join(get_cache_dir(), corpus)
-    payload = {
-        "url": seed_url,
-        "version": manifest.version,
-        "gathered": manifest.gathered,
-        "fetched": freshness.iso_now(),
-    }
-    try:
-        os.makedirs(corpus_dir, exist_ok=True)
-        with open(
-            os.path.join(corpus_dir, SEED_SOURCE_SENTINEL), "w", encoding="utf-8"
-        ) as handle:
-            json.dump(payload, handle, indent=2)
-    except OSError:
-        pass
+    """Stamp the provenance sentinel (best-effort). It lives in `freshness` (a
+    read-safe leaf) so the read tools can surface it without importing this
+    gather-path module."""
+    freshness.record_seed_source(
+        corpus, url=seed_url, version=manifest.version, gathered=manifest.gathered
+    )
 
 
 def seed_source(corpus: str) -> Optional[Dict[str, Any]]:
     """The provenance recorded when `corpus` was last seeded, or None."""
-    path = os.path.join(get_cache_dir(), corpus, SEED_SOURCE_SENTINEL)
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        return None
+    return freshness.seed_source(corpus)

@@ -157,9 +157,11 @@ Membership persists, so a refresh needs no arguments — run it on a schedule
 ## Using a seed store (consumer)
 
 Seeding is a network + write step, so it lives on the **gather path only**; the
-MCP read tools and `ietf-llm-search` stay offline. It is **opt-out**: when
-`IETF_LLM_SEED_URL` is set, a gather seeds before running. The rule is one thing —
-use the seed whenever it is a fresher, compatible base than what is local:
+MCP read tools and `ietf-llm-search` stay offline. It is **opt-out and on by
+default**: unless disabled (see Controls), a gather reaches the public seed store
+(`seed-store.mnot.net`) to fetch a covered corpus's snapshot before running. The
+rule is one thing — use the seed whenever it is a fresher, compatible base than
+what is local:
 
 - **No local copy** → seed (cold start).
 - **Local well behind the snapshot** (by more than ~60 days —
@@ -179,15 +181,35 @@ moves **forward**.
 
 Controls:
 
-- **`--no-seed`** — cold gather for this run.
+- **`--no-seed`** — stop seeding, and **remember it**: persists across gathers
+  until `--seed`. Gathers then run fully cold and offline, and `list_corpora`
+  drops the catalog lookup.
+- **`--seed`** — re-enable seeding (persists); undoes `--no-seed`.
+- **`IETF_LLM_SEED_ENABLED=off`** (env) or global `seed_enabled: false` — the same
+  on/off toggle without a gather; env overrides the persisted flag.
 - **`--refresh-base`** — re-seed even when not stale (an explicit override; pulls
   the snapshot as-is, freshen re-fetches any wider window / extra sources).
-- **`IETF_LLM_SEED_URL=`** empty / `off`, or global `seed_url: ""` — disable; a
-  different URL points at your own mirror.
+- **`IETF_LLM_SEED_URL=`** empty / `off`, or global `seed_url: ""` — disable by
+  URL, or set a different URL to point at your own mirror.
 
 **Best-effort.** Not covered, tuple mismatch, disabled, offline, or a verify
 failure all fall through to a normal cold gather — the mirror only ever
 accelerates, and a (re-)seed is logged so an automatic base jump is visible.
+
+**Visibility.** A seed doesn't slow a gather, so a seeded first gather is quick
+rather than a minutes-long cold fetch — the `start_gather` reply and routing
+instructions say so. `gather_status` emits a note when a run seeded, and
+`list_corpora` marks a seeded corpus with a trailing `· seeded <date>`, so a
+client can tell a corpus was reconstituted from the mirror rather than gathered
+cold. `list_corpora` also lists the store's **un-gathered** corpora ("available to
+fast-start"), so a cold-start client with nothing gathered still knows what it can
+pull cheaply. This is the one read-surface network touch, and it rides the same
+gather gate as the live Datatracker lookups: a local stdio server (where you can
+`start_gather`) refreshes the catalog **stale-while-revalidate** — it serves the
+cached `_seed/index.json` and revalidates in the background (bounded + throttled to
+≤1/hour), blocking only on the cold first fetch when nothing is cached yet — so a
+routine `list_corpora` never stalls. The read-only HTTP replica never fetches and
+omits the section (you can't gather there anyway).
 
 ## Non-goals
 

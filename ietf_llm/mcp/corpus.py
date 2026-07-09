@@ -16,7 +16,7 @@ from ..digest.overview import (
     build_overview,
 )
 from ..embeddings import chunk_counts
-from ..freshness import gather_enabled, gather_suggestion
+from ..freshness import gather_enabled, gather_suggestion, seed_source
 from ..paths import digest_kind_from_relpath
 from ..corpus.routing import DEFAULT_MIN_SCORE, route
 from ..store.corpus import get_corpus_store
@@ -62,24 +62,70 @@ def _corpus_sources(wg: str) -> str:
     return coverage.compact_sources_line(cache)
 
 
+def _seed_marker(wg: str) -> str:
+    """A compact `seeded <date>` provenance suffix for `list_corpora`, or '' if
+    the corpus was not reconstituted from the seed store (issue #182)."""
+    src = seed_source(wg)
+    if not src:
+        return ""
+    date = str(src.get("gathered") or "")[:10]
+    return f"seeded {date}" if date else "seeded"
+
+
+def _available_to_seed(local: List[str]) -> str:
+    """A one-line 'available to fast-start' hint listing seed-store corpora not
+    yet gathered locally, or '' when none / no cache.
+
+    Only shown where in-session gather is available (`gather_enabled`) and seeding
+    is on — a read-only HTTP replica neither lists nor fetches. Uses the sanctioned
+    networked-read exception, stale-while-revalidate: `refresh_mirror` serves the
+    cached catalog and revalidates in the background, blocking only on a cold miss
+    (nothing cached yet) so a fresh client still sees it. Empty when seeding is
+    disabled or the store is unreachable."""
+    # pylint: disable-next=import-outside-toplevel
+    from ..config import service
+
+    if not gather_enabled() or not service.seeding_enabled():
+        return ""
+    # pylint: disable-next=import-outside-toplevel
+    from ..seed import catalog as seed_catalog
+
+    seed_catalog.refresh_mirror()
+    index = seed_catalog.cached_index()
+    if index is None:
+        return ""
+    known = set(local)
+    names = sorted(e.name for e in index.corpora if e.name not in known)
+    if not names:
+        return ""
+    return (
+        "\n\nAvailable to fast-start from the public seed store (not yet "
+        f"gathered): {', '.join(names)}. Each pulls a prebuilt snapshot, so "
+        f"gathering one is quick — {gather_suggestion('<name>')}."
+    )
+
+
 def tool_list_corpora() -> str:
     wgs = _list_wgs()
+    available = _available_to_seed(wgs)
     if not wgs:
-        return f"(no corpora gathered yet — {gather_suggestion('<name>')})"
+        return f"(no corpora gathered yet — {gather_suggestion('<name>')}){available}"
     rows = []
     for wg in wgs:
         kind, status = kind_status(wg)
         tag = f"{kind} · {status_cell(kind, status)}"
-        rows.append((wg, tag, describe(wg), _corpus_sources(wg)))
-    name_w = max(len(w) for w, _, _, _ in rows)
-    tag_w = max(len(t) for _, t, _, _ in rows)
+        rows.append((wg, tag, describe(wg), _corpus_sources(wg), _seed_marker(wg)))
+    name_w = max(len(w) for w, _, _, _, _ in rows)
+    tag_w = max(len(t) for _, t, _, _, _ in rows)
     lines = []
-    for wg, tag, subject, sources in rows:
+    for wg, tag, subject, sources, seed in rows:
         line = f"{wg.ljust(name_w)}  {tag.ljust(tag_w)}"
         if subject:
             line += f"  {subject}"
         if sources:
             line += f"  ({sources})"
+        if seed:
+            line += f"  · {seed}"
         lines.append(line.rstrip())
     return (
         "Gathered corpora (name · kind [· status] · what it's about · "
@@ -95,9 +141,12 @@ def tool_list_corpora() -> str:
         "subject — the group name, the list followed, the tracked author. "
         "The trailing `(…)` is the source inventory — which of mailing "
         "`list`, GitHub `issues`, `drafts`, `RFCs`, `minutes` are present — "
-        "so you can tell what each corpus actually holds. Call `overview` for "
-        "the gather window and the exact repos.\n\n"
+        "so you can tell what each corpus actually holds. A trailing `· seeded "
+        "<date>` marks a corpus that was reconstituted from the public seed "
+        "store (a prebuilt snapshot) and then freshened locally. Call "
+        "`overview` for the gather window and the exact repos.\n\n"
         + "\n".join(lines)
+        + available
         + _NEXT_TOOLS_HINT
         + _session_facts_line()
     )

@@ -25,9 +25,10 @@ timestamp format both backends use.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from .paths import get_cache_dir
 
@@ -227,6 +228,42 @@ def last_accessed(wg: str) -> Optional[datetime]:
     """The WG's last read-path access time, or None if unrecorded /
     unreadable."""
     return _read_sentinel(wg, _ACCESSED_SENTINEL)
+
+
+#: Provenance sentinel written when a corpus is (re-)seeded from the seed store
+#: (issue #182): a small JSON record `{url, version, gathered, fetched}`. Kept
+#: here — a read-safe leaf — so the read tools (`list_corpora`) can surface "this
+#: corpus was seeded" without importing the gather-path seed consumer.
+_SEED_SOURCE_SENTINEL = "seed-source"
+
+
+def record_seed_source(wg: str, *, url: str, version: str, gathered: str) -> None:
+    """Stamp `wg`'s seed provenance (best-effort). `gathered` is the snapshot's
+    gather time; `fetched` is stamped now."""
+    path = _sentinel_path(wg, _SEED_SOURCE_SENTINEL)
+    payload = {
+        "url": url,
+        "version": version,
+        "gathered": gathered,
+        "fetched": iso_now(),
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+    except OSError:
+        pass
+
+
+def seed_source(wg: str) -> Optional[Dict[str, Any]]:
+    """`wg`'s seed provenance record, or None if it was never seeded."""
+    path = _sentinel_path(wg, _SEED_SOURCE_SENTINEL)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _humanize_age(age_days: int) -> str:
