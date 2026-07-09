@@ -1,0 +1,210 @@
+# Central embedding store (design)
+
+**Status:** design — issue [#182](https://github.com/mnot/ietf-llm/issues/182).
+Not yet implemented. This document is the plan; it becomes the operator doc when
+the code lands. Back to the [docs index](README.md).
+
+## The problem
+
+Embedding a corpus is the expensive part of a gather — CPU time to run the local
+model, and upstream load on Datatracker / IMAP / GitHub to fetch the source. All
+of that produces **public** data: the same `httpbis` corpus embedded on one
+laptop is byte-for-byte useful on any other. Today every user pays the full cost
+independently. `embeddings.db` files range 2–116 MB, so re-deriving them per
+client is real, avoidable work.
+
+The idea: publish a small set of curated corpora — "interesting" groups, a ~1y
+window each, refreshed ~monthly — to a **static, publicly-hosted directory**, and
+let a client pull a corpus as the *basis* of its own work. If a group is covered,
+a client only has to gather and embed what has changed since the snapshot
+(generally < 1 month of material) instead of starting cold.
+
+**Scope: this is for local-focused users only.** It is not the cloud
+`CorpusStore` backend (that solves a different problem — a replicated serving
+fleet with a control plane). This is a laptop running the default `local` backend
+that wants to *bootstrap* a corpus from a public mirror. No control plane, no
+leases, no compare-and-swap — just static files a client downloads.
+
+## What is published: the matched pair
+
+A published corpus is the **`files/` tree and its `embeddings.db` together**, not
+the index alone. This is the load-bearing decision; the rationale:
+
+- `embeddings.db`'s `meta` table records a per-file content SHA-256
+  (`hash:<relpath>`). A re-gather skips embedding any file whose current bytes
+  hash-match the stored value (`_plan_file` in `embeddings/search.py`). Shipping
+  the *exact* `files/` the vectors were computed against guarantees every file
+  unchanged in the window hash-matches and is skipped **completely** — so the
+  consumer re-embeds only material that genuinely postdates the snapshot.
+- The embed-skip is **per-file, not per-chunk** (see
+  [#183](https://github.com/mnot/ietf-llm/issues/183)). A thread that differs
+  from the producer's rendering *at all* re-embeds wholesale. Thread/issue
+  rendering depends on `people.Registry` (affiliations, GitHub-login linking —
+  both pulled live from Datatracker and time-varying), so *independent* gathers
+  do **not** reliably reproduce byte-identical `files/`. Shipping the producer's
+  `files/` is what makes the skip deterministic rather than a coin-flip on the
+  bulk of the corpus.
+- The consumer needs `files/` anyway: `overview`, `read_digest`,
+  `read_file_section`, `read_topic`, and `get_by_url` read it directly, the
+  digests are not in the DB, and corpus existence is a `files/` check. An
+  embeddings-only ship would not be a usable corpus.
+- Seeding `files/` also cuts **source burden**: the gather's existence-checks
+  then skip re-downloading immutable inputs (drafts, RFCs, minutes), so the
+  central store saves both embedding compute *and* upstream fetches.
+
+The `files/` text is largely redundant with the chunk text already stored in the
+DB (`chunks.text`), so shipping it adds roughly 30–60 % over the index alone,
+while the vectors dominate the size either way — a good trade for a deterministic,
+complete skip.
+
+**Excluded from the bundle:** `raw/` (year mail-dumps + raw GitHub — not indexed,
+NotebookLM/grep only), `imap-cache/` (lives outside `<corpus>/`, large, and its
+content is already materialised in `threads/`), and `gather-metrics.json` (the
+producer's egress accounting). A consumer that later wants the NotebookLM export
+re-gathers to regenerate `raw/`. **Included:** `files/` (minus `raw/`),
+`embeddings.db`, `topics.json`, and the incremental-gather manifests
+(`documents.json`, `materials.json`, `last-gathered`, `github/`) so the follow-on
+gather is fully incremental.
+
+## The format: a JSON-described static directory
+
+A directory servable by any static host (a web server, an R2/S3 public bucket,
+GitHub Pages). The client is pointed at its base URL and needs only HTTPS GET.
+
+**Root `index.json`** — the entry point and the compatibility gate:
+
+```json
+{
+  "format": 1,
+  "generated": "2026-07-01T00:00:00Z",
+  "schema_version": 8,
+  "embedding_model": "sentence-transformers/BAAI/bge-small-en-v1.5",
+  "chunker_version": 7,
+  "vector_dim": 384,
+  "corpora": [
+    { "name": "httpbis", "kind": "group", "subject": "HTTP Working Group",
+      "window_months": 12, "gathered": "2026-07-01T00:00:00Z",
+      "version": "20260701T000000Z", "manifest": "httpbis/manifest.json",
+      "bytes": 47185920 }
+  ]
+}
+```
+
+**Per-corpus `<name>/manifest.json`** — self-describing (repeats the
+compatibility tuple so a corpus fetched directly is still checkable) and points at
+the payload with its integrity hash:
+
+```json
+{ "name": "httpbis", "version": "20260701T000000Z",
+  "schema_version": 8, "embedding_model": "…", "chunker_version": 7,
+  "vector_dim": 384, "window_months": 12, "gathered": "2026-07-01T00:00:00Z",
+  "bundle": "httpbis/httpbis-20260701T000000Z.tar.gz",
+  "bundle_sha256": "…", "bundle_bytes": 47185920 }
+```
+
+**The payload** is one gzipped tar per corpus: `<name>/<name>-<version>.tar.gz`.
+One bundle plus one manifest is a few GETs per corpus (CDN-friendly, kind to the
+source) rather than the hundreds a loose file tree would cost.
+
+The compatibility tuple — `(schema_version, embedding_model, chunker_version,
+vector_dim)` — is read straight from the producer's `embeddings.db` `meta` at
+publish time. It is the existing vector-compatibility gate: a client whose
+configured embedding model or installed `chunker_version` does not match cannot
+use the vectors and must gather cold. Publishing the *default* local model (the
+free, no-API-key one everyone gets out of the box) covers the majority of clients;
+remote-embed-model clients are out of scope for v1 (see Non-goals).
+
+`version` is the gather timestamp (`last-gathered`), so a client can tell whether
+its locally-held base predates a newer snapshot.
+
+## Producer side
+
+Publishing is decoupled from gathering — one writer to the cache stays the gather
+CLI. The producer runs its normal `ietf-llm <wg> --months 12` on a schedule, then
+a thin **`ietf-llm-publish-central <dir> <corpus…>`** tool (a new `central/`
+package, producer-only, never imported by the read path) reads each already-
+gathered corpus from the local cache and:
+
+1. assembles the tree (the included set above), tars + gzips it, hashes it;
+2. reads `(schema_version, model, chunker_version, embed_dim)` from
+   `embeddings.db` `meta`;
+3. writes `<name>/manifest.json` and the bundle;
+4. rebuilds the root `index.json`.
+
+The operator syncs `<dir>` to the static host. The curated corpus list is
+operator-supplied (a file or CLI args), not baked into the package, so curation is
+not coupled to releases.
+
+## Consumer side
+
+Pulling from the mirror is a **network + write** operation, so by the project's
+read-only boundary it lives on the **gather path only** — never the MCP read tools
+or `ietf-llm-search`, which stay offline and untouched.
+
+New service-scope config **`IETF_LLM_CENTRAL_URL`** (env > global `config.json` >
+default None; the feature is off until set). A pre-gather step in
+`gather/sequencer.py`:
+
+1. **Gate.** `IETF_LLM_CENTRAL_URL` is set, the corpus is absent locally (or the
+   user passed `--refresh-base`), the corpus is listed in the central index, and
+   the compatibility tuple matches the client's configured embedding model.
+2. **Fetch + verify.** Download the bundle to a temp dir, verify `bundle_sha256`.
+3. **Install.** Unpack and atomically install into `~/.cache/ietf-llm/<corpus>/`
+   (temp + `os.replace`, via `atomicio`). Record provenance in a `central-source`
+   sentinel (url + version + fetched-at) beside `last-gathered`, so
+   `ietf-llm --list` can show "based on central snapshot 2026-07-01."
+4. **Freshen.** Continue the normal incremental gather. With the snapshot in
+   place, it fetches and embeds only what changed since — the delta.
+
+Flags:
+
+- **`--pull-only`** — install the base and stop (pure consumption; accepts the
+  snapshot's staleness, does no local gather).
+- **`--refresh-base`** — re-pull even when a local copy exists, replacing the base
+  before freshening. Off by default: a local copy may already have been freshened
+  past the snapshot, so re-pulling is an explicit choice, never automatic.
+
+**Failure is soft.** Not covered, tuple mismatch, or a fetch/verify error → log
+and fall through to a normal cold gather. The mirror only ever accelerates; it can
+never fail a gather. This also means a client can point at a stale or partial
+mirror without risk.
+
+## Correctness & compatibility
+
+- **Vectors gate on the tuple.** `(schema_version, model, chunker_version,
+  vector_dim)` must match; `build_index`/`search` already discard vectors on a
+  mismatch, so a wrong-tuple bundle could never silently serve bad results even if
+  the gate were bypassed.
+- **Content drift self-heals.** After install, the follow-on gather re-hashes
+  every file; any that differ from the producer's bytes are re-embedded (fresh
+  text + vectors, atomic per file) and `build_index` prunes files no longer
+  eligible. So a snapshot that is slightly behind head is corrected on freshen,
+  never served wrong.
+- **Reader-side vs write-side.** Installing a snapshot writes the cache, so it is
+  write-side by definition — but it is confined to the gather path, and the result
+  is an ordinary local corpus indistinguishable from one gathered from scratch.
+
+## Non-goals / future
+
+- **Embeddings-only distribution.** Rejected for v1: not a usable corpus without
+  `files/`, and the per-file embed-skip makes the payoff an unpredictable
+  coin-flip on thread/issue-heavy corpora. Reconsider *after*
+  [#183](https://github.com/mnot/ietf-llm/issues/183) (per-chunk incremental)
+  shrinks the re-embed delta.
+- **Multiple embedding-model variants.** v1 publishes one default-model index.
+  Publishing per-model variants (so remote-embed clients benefit too) is more work
+  and can come later; the format already namespaces by the tuple, so variants slot
+  in without a format change.
+- **Automatic base refresh.** The client never auto-re-pulls over a freshened
+  local copy; `--refresh-base` is always explicit.
+- **Compression.** v1 uses gzip (stdlib, zero-dep). `zstd` compresses the DB
+  better but adds a dependency — revisit if bundle size warrants it.
+
+## Open questions
+
+- Should the curated list ship as a package default (`data/central-corpora.*`) for
+  discoverability, or stay entirely operator-supplied? (Leaning operator-supplied,
+  to keep curation off the release cadence.)
+- Is `ietf-llm-publish-central` a new console script, or a `--publish-central`
+  mode on an existing CLI? (Leaning a dedicated script, kept out of the read
+  path.)
