@@ -304,6 +304,55 @@ def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     return None
 
 
+#: Armor lines of an inline (clear-signed) OpenPGP message, per RFC 4880.
+#: The signed-message header (and its `Hash:`/armor-header lines up to the
+#: blank separator) and the whole signature block are noise in a rendered
+#: thread — the crypto is not human-readable and only clutters the record.
+_PGP_SIGNED_HEADER_RE = re.compile(r"^-----BEGIN PGP SIGNED MESSAGE-----\s*$")
+_PGP_SIG_BEGIN_RE = re.compile(r"^-----BEGIN PGP SIGNATURE-----\s*$")
+_PGP_SIG_END_RE = re.compile(r"^-----END PGP SIGNATURE-----\s*$")
+
+
+def _strip_pgp(lines: List[str]) -> List[str]:
+    """Drop inline OpenPGP armor from a plain-text body.
+
+    Removes the `-----BEGIN PGP SIGNED MESSAGE-----` header and its armor
+    headers (up to the blank line before the signed content) and the entire
+    `-----BEGIN PGP SIGNATURE-----`…`-----END PGP SIGNATURE-----` block. A
+    signature block with no closing marker (truncated body) is dropped to
+    EOF. Within the signed content, RFC 4880 dash-escaping (`- ` prefix) is
+    undone so the original text is restored.
+    """
+    out: List[str] = []
+    i = 0
+    total = len(lines)
+    in_signed = False
+    while i < total:
+        line = lines[i]
+        stripped = line.strip()
+        if _PGP_SIGNED_HEADER_RE.match(stripped):
+            i += 1
+            while i < total and lines[i].strip():  # skip Hash:/armor headers
+                i += 1
+            if i < total:  # skip the blank separator too
+                i += 1
+            in_signed = True
+            continue
+        if _PGP_SIG_BEGIN_RE.match(stripped):
+            in_signed = False
+            i += 1
+            while i < total and not _PGP_SIG_END_RE.match(lines[i].strip()):
+                i += 1
+            if i < total:  # skip the closing END line
+                i += 1
+            continue
+        if in_signed and line.startswith("- "):
+            line = line[2:]  # undo dash-escaping
+        out.append(line)
+        i += 1
+    return out
+
+
 def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     """Collapse quoted reply trails so a thread file is readable.
 
@@ -323,8 +372,12 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     messages, which the thread file already carries as their own sections, so
     nothing is lost. An attribution followed by `>`-prefixed quoting is an
     inline reply, not a top-post trail, so it is left to the run-collapse.
+
+    Inline OpenPGP armor (a clear-signed message's header and signature
+    block) is stripped up front — it is not human-readable and only clutters
+    the thread file.
     """
-    lines = text.splitlines()
+    lines = _strip_pgp(text.splitlines())
 
     # Drop a trailing signature block at the RFC 3676 `-- ` delimiter (also
     # the bare `--` some clients send). Only an unquoted delimiter counts — a

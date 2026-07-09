@@ -86,6 +86,57 @@ def test_elide_quotes_handles_trailing_quote() -> None:
     assert "> [4 quoted lines elided]" in result
 
 
+def test_elide_quotes_strips_inline_pgp_signature() -> None:
+    # A clear-signed message: armor header, signed content, signature block.
+    text = (
+        "-----BEGIN PGP SIGNED MESSAGE-----\n"
+        "Hash: SHA512\n"
+        "\n"
+        "I support publication of this draft.\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "\n"
+        "iQIzBAEBCgAdFiEEabc123...\n"
+        "=Ab3d\n"
+        "-----END PGP SIGNATURE-----\n"
+    )
+    result = elide_quotes(text)
+    assert "I support publication of this draft." in result
+    assert "PGP" not in result
+    assert "Hash:" not in result
+    assert "iQIzBAEBCgAd" not in result
+    assert "=Ab3d" not in result
+
+
+def test_elide_quotes_undoes_pgp_dash_escaping() -> None:
+    text = (
+        "-----BEGIN PGP SIGNED MESSAGE-----\n"
+        "Hash: SHA256\n"
+        "\n"
+        "- - a dash-escaped bullet\n"
+        "normal line\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "blob\n"
+        "-----END PGP SIGNATURE-----\n"
+    )
+    result = elide_quotes(text)
+    assert "- a dash-escaped bullet" in result
+    assert "- - a dash-escaped bullet" not in result
+    assert "normal line" in result
+
+
+def test_elide_quotes_strips_truncated_pgp_signature() -> None:
+    # A signature block with no closing END marker is dropped to EOF.
+    text = (
+        "My comment stands.\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "iQIzBAEBCgAdblob...\n"
+    )
+    result = elide_quotes(text)
+    assert "My comment stands." in result
+    assert "PGP" not in result
+    assert "iQIzBAEBCgAd" not in result
+
+
 def test_elide_quotes_folds_across_interior_blank_lines() -> None:
     # A pathological MUA inserts a blank line between every quoted line.
     # Those blanks must not reset the run counter, or the block never folds.
