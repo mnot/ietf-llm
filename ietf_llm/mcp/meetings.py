@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import TYPE_CHECKING, List
 
-from ..paths import agenda_path, meetings_dir, minutes_path, polls_dir, transcripts_dir
+from ..paths import (
+    agenda_path,
+    attendance_data_path,
+    attendance_path,
+    meetings_dir,
+    minutes_path,
+    polls_dir,
+    transcripts_dir,
+)
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
 
 if TYPE_CHECKING:
@@ -57,6 +66,16 @@ def _dir_md_count(directory: str) -> int:
     return len([f for f in os.listdir(directory) if f.endswith(".md")])
 
 
+def _attendee_count(cache: str, code: str) -> int:
+    """Number of recorded attendees for a meeting (0 if no roster)."""
+    try:
+        with open(attendance_data_path(cache, code), encoding="utf-8") as handle:
+            rows = json.load(handle)
+    except (OSError, ValueError):
+        return 0
+    return len(rows) if isinstance(rows, list) else 0
+
+
 def _session_artifacts(cache: str, code: str) -> str:
     """Compact 'minutes · agenda · N transcripts · N polls' inventory."""
     parts: List[str] = []
@@ -70,6 +89,9 @@ def _session_artifacts(cache: str, code: str) -> str:
     n_polls = _dir_md_count(polls_dir(cache, code))
     if n_polls:
         parts.append(f"{n_polls} poll{'s' if n_polls != 1 else ''}")
+    n_att = _attendee_count(cache, code)
+    if n_att:
+        parts.append(f"{n_att} attendees")
     return " · ".join(parts) or "(no artifacts)"
 
 
@@ -149,6 +171,14 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
         body += (
             "\n\n## Polls\n\n_Raw poll tallies — a poll is a sense of the room, "
             "not a decision; the chair declares consensus._\n\n" + polls
+        )
+    n_att = _attendee_count(cache, meeting)
+    if n_att:
+        roster = os.path.relpath(attendance_path(cache, meeting), cache)
+        body += (
+            f"\n\n## Attendance\n\n_{n_att} recorded attendees — presence in "
+            "the room, NOT a position on any question. Read the full roster "
+            f'with `read_file_section(file="{roster}")`._\n'
         )
     return _with_freshness(wg, body)
 
@@ -270,7 +300,9 @@ def register(server: "FastMCP") -> None:
         Requires the `meeting` code (e.g. `ietf125`, `interim20260401`) — call
         `list_meetings` first to find it. The appended polls are raw
         sense-of-the-room tallies, NOT decisions — the chair declares consensus
-        (see `read_ietf_interpretation_norms`).
+        (see `read_ietf_interpretation_norms`). When an attendance record
+        exists, a count and a pointer to the full roster are appended;
+        attendance is presence, not a position.
         """
         return await _offload(tool_read_minutes, corpus, meeting)
 

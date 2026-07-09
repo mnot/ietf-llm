@@ -1,9 +1,10 @@
+import json
 import os
 import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
@@ -13,6 +14,8 @@ from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
 from ...paths import (
     ORPHAN_MEETING_CODE,
     agenda_path,
+    attendance_data_path,
+    attendance_path,
     meeting_dir,
     meetings_dir,
     minutes_path,
@@ -607,3 +610,175 @@ def _parse_meeting_date(date_str: str) -> Optional[datetime]:
         return datetime.strptime(date_str.split(" ")[0], "%Y-%m-%d")
     except (ValueError, IndexError):
         return None
+
+
+# --- Attendance rosters ----------------------------------------------------
+#
+# The Datatracker `attended` API records who was present at each *session*,
+# each row referencing a person id (not a name) — so attendance links to the
+# people registry by id, collision-free. We gather it per meeting cluster
+# into `attendance.json` (the machine sidecar the registry reads back to link
+# attendees) and `attendance.md` (a human roster beside `minutes.md`). This is
+# the "who was in the room" record; the registry's link-only enrichment then
+# attaches it to people already known from mail / drafts / GitHub. Best-effort:
+# any network failure leaves existing rosters untouched.
+
+#: Sessions per `attended` request (session__in filter, one page).
+_ATTENDED_CHUNK = 40
+#: Person ids per `person` batch resolve.
+_PERSON_CHUNK = 100
+
+
+def _session_meeting_ids(wg_name: str) -> Dict[str, str]:
+    """Walk the WG's sessions → `{session_id: meeting_id}` (all history).
+
+    Mirrors `get_meeting_links`' pass 1 but keeps the *session* id (which
+    the attendance API keys on) rather than the materials."""
+    out: Dict[str, str] = {}
+    path: Optional[str] = _SESSION_API.format(wg=wg_name)
+    while path:
+        body = _get_json(path)
+        if not body:
+            break
+        for sess in body.get("objects") or []:
+            meeting_uri = sess.get("meeting")
+            sess_uri = sess.get("resource_uri")
+            if meeting_uri and sess_uri:
+                out[_uri_id(str(sess_uri))] = _uri_id(str(meeting_uri))
+        path = (body.get("meta") or {}).get("next") or None
+    return out
+
+
+def _fetch_attendance(session_ids: List[str]) -> Dict[str, Set[str]]:
+    """`{session_id: {person_uri, …}}` from `/meeting/attended/`."""
+    out: Dict[str, Set[str]] = {}
+    ordered = sorted(session_ids)
+    for start in range(0, len(ordered), _ATTENDED_CHUNK):
+        chunk = ",".join(ordered[start : start + _ATTENDED_CHUNK])
+        path: Optional[str] = f"/api/v1/meeting/attended/?session__in={chunk}&limit=500"
+        while path:
+            body = _get_json(path)
+            if not body:
+                break
+            for att in body.get("objects") or []:
+                sess = att.get("session")
+                person = att.get("person")
+                if sess and person:
+                    out.setdefault(_uri_id(str(sess)), set()).add(
+                        str(person).rstrip("/")
+                    )
+            path = (body.get("meta") or {}).get("next") or None
+    return out
+
+
+def _resolve_person_names(person_uris: Set[str]) -> Dict[str, str]:
+    """`{person_uri: display_name}` via batched `/person/person/?id__in=`."""
+    out: Dict[str, str] = {}
+    ids = sorted({_uri_id(u) for u in person_uris})
+    for start in range(0, len(ids), _PERSON_CHUNK):
+        chunk = ",".join(ids[start : start + _PERSON_CHUNK])
+        body = _get_json(f"/api/v1/person/person/?id__in={chunk}&limit=100")
+        if not body:
+            continue
+        for person in body.get("objects") or []:
+            uri = str(person.get("resource_uri") or "").rstrip("/")
+            name = person.get("name") or person.get("ascii") or ""
+            if uri and name:
+                out[uri] = str(name)
+    return out
+
+
+def _write_roster(
+    destination: str,
+    code: str,
+    person_uris: Set[str],
+    names: Dict[str, str],
+    when: datetime,
+) -> None:
+    """Write `attendance.json` + `attendance.md` for one meeting code.
+
+    The JSON is the registry's read-back source (name + person uri). The
+    markdown is the human roster. Both are write-if-changed so an unchanged
+    roster doesn't churn the cache (or re-embed)."""
+    rows = sorted(
+        ({"name": names.get(u, ""), "person": u} for u in person_uris),
+        key=lambda r: ((r["name"] or "~").lower(), r["person"]),
+    )
+    os.makedirs(meeting_dir(destination, code), exist_ok=True)
+    write_if_changed(
+        attendance_data_path(destination, code),
+        json.dumps(rows, indent=1, ensure_ascii=False) + "\n",
+    )
+    lines = [
+        f"# Attendance — {code}",
+        "",
+        f"_{len(rows)} recorded attendees ({when.strftime('%Y-%m-%d')}), from "
+        "the Datatracker attendance record. Presence in the room — NOT a "
+        "position on any question; the chair declares consensus (see "
+        "`read_ietf_interpretation_norms`)._",
+        "",
+    ]
+    for row in rows:
+        lines.append(f"- {row['name'] or row['person']}")
+    lines.append("")
+    write_if_changed(attendance_path(destination, code), "\n".join(lines))
+
+
+def process_attendance(
+    wg_name: str,
+    destination: str,
+    clusters: List[MeetingCluster],
+    verbose: Verbosity = Verbosity.STATUS,
+) -> None:
+    """Fetch per-session attendance and write per-meeting rosters.
+
+    `clusters` (from `process_meetings`) supplies the meeting→code mapping
+    and bounds the work to the gathered window: attendance is written only
+    for meetings that already have a cache dir. Best-effort — a Datatracker
+    outage logs and returns, leaving existing rosters in place."""
+    if not clusters:
+        return
+    # meeting display ("IETF 125" / interim raw) → canonical cache code.
+    display_to_code = {
+        str(sess["number"]): cluster.code
+        for cluster in clusters
+        for sess in cluster.sessions
+    }
+    sessions = _session_meeting_ids(wg_name)
+    if not sessions:
+        return
+    meta = _batch_fetch_meetings(set(sessions.values()))
+    # session id → code, dropping sessions outside the gathered window.
+    session_code: Dict[str, str] = {}
+    for sess_id, meeting_id in sessions.items():
+        info = meta.get(meeting_id)
+        if not info:
+            continue
+        code = display_to_code.get(info[0])
+        if code:
+            session_code[sess_id] = code
+    if not session_code:
+        return
+
+    attendance = _fetch_attendance(list(session_code))
+    by_code: Dict[str, Set[str]] = {}
+    for sess_id, person_uris in attendance.items():
+        code = session_code.get(sess_id)
+        if code:
+            by_code.setdefault(code, set()).update(person_uris)
+    if not by_code:
+        return
+
+    all_uris: Set[str] = set().union(*by_code.values())
+    names = _resolve_person_names(all_uris)
+    code_when = {cluster.code: cluster.start for cluster in clusters}
+    for code, person_uris in by_code.items():
+        _write_roster(
+            destination, code, person_uris, names, code_when.get(code, datetime.now())
+        )
+    log(
+        f"Attendance: {len(by_code)} meeting roster(s), "
+        f"{len(all_uris)} distinct attendees.",
+        verbose,
+        level=LogLevel.STATUS,
+    )

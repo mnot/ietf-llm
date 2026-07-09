@@ -61,7 +61,9 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 - **Catalogue:** `read_digest` (filtered issue / thread / people / timeline
   tables), `list_labels`, `list_files`.
 - **Meetings:** `list_meetings` (gathered), `read_minutes` (minutes + poll
-  tallies for one), `meeting_schedule` (live schedule).
+  tallies + attendance count for one), `meeting_schedule` (live schedule).
+  A meeting's full attendance roster is in `meetings/<code>/attendance.md`
+  (`read_file_section`); attendance is presence, NOT a position.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state),
   `draft_authors`, `get_draft` (verbatim text).
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,

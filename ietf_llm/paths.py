@@ -261,6 +261,19 @@ def agenda_path(cache_dir: str, code: str) -> str:
     return os.path.join(meeting_dir(cache_dir, code), "agenda.md")
 
 
+def attendance_path(cache_dir: str, code: str) -> str:
+    """Human-readable per-meeting attendance roster (from the Datatracker
+    `attended` API). Sits beside `minutes.md`."""
+    return os.path.join(meeting_dir(cache_dir, code), "attendance.md")
+
+
+def attendance_data_path(cache_dir: str, code: str) -> str:
+    """Machine-readable sidecar for `attendance_path`: a JSON list of
+    `{"name", "person"}` rows the registry reads back to link attendees to
+    known participants by Datatracker person id."""
+    return os.path.join(meeting_dir(cache_dir, code), "attendance.json")
+
+
 def slides_dir(cache_dir: str, code: str) -> str:
     return os.path.join(meeting_dir(cache_dir, code), SUBDIR_SLIDES)
 

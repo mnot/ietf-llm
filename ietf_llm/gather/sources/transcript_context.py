@@ -139,20 +139,35 @@ def transcript_context(
     return ctx
 
 
+# Labels the context header emits as `**Label:**` lines. They share the
+# `**Name:**` shape of transcript speaker cues, so `people.meetings` excludes
+# them when parsing speakers — it imports `CONTEXT_HEADER_LABELS` (below) so
+# the two stay in lock-step. `_render_header` builds its lines from these same
+# constants, so renaming a label here forces the exclusion set to follow.
+_LABEL_WG = "Working Group"
+_LABEL_DATETIME = "Date / time"
+_LABEL_MEETING = "Meeting"
+_LABEL_MINUTES = "Minutes"
+CONTEXT_HEADER_LABELS = frozenset(
+    label.lower()
+    for label in (_LABEL_WG, _LABEL_DATETIME, _LABEL_MEETING, _LABEL_MINUTES)
+)
+
+
 def _render_header(filename: str, ctx: TranscriptContext) -> str:
     lines = [
         _SENTINEL,
         f"# {filename}",
         "",
-        f"**Working Group:** {ctx.wg}",
-        f"**Date / time:** {ctx.date} {ctx.time}",
+        f"**{_LABEL_WG}:** {ctx.wg}",
+        f"**{_LABEL_DATETIME}:** {ctx.date} {ctx.time}",
     ]
     if ctx.label:
-        lines.append(f"**Meeting:** {ctx.label}")
+        lines.append(f"**{_LABEL_MEETING}:** {ctx.label}")
     elif ctx.meeting:
-        lines.append(f"**Meeting:** {ctx.meeting}")
+        lines.append(f"**{_LABEL_MEETING}:** {ctx.meeting}")
     if ctx.minutes_file:
-        lines.append(f"**Minutes:** `{ctx.minutes_file}`")
+        lines.append(f"**{_LABEL_MINUTES}:** `{ctx.minutes_file}`")
     lines.append("")
     return "\n".join(lines) + "\n"
 

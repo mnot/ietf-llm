@@ -52,7 +52,7 @@ from .sources.group_info import write_group_info
 from .sources.issue_files import write_issue_files
 from .sources.mail_threads import write_thread_files
 from .sources.mbox import sync_mailing_list, validate_list_names
-from .sources.meetings import process_meetings
+from .sources.meetings import process_attendance, process_meetings
 from .sources.message_citations import build_message_citations
 from .sources.pdf_extract import extract_all_pdfs
 from .sources.recent_drafts import fetch_new_draft_names, prune_drafts
@@ -463,6 +463,10 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             verbose=verbosity,
             months=args.months,
         )
+        # Per-meeting attendance rosters (Datatracker `attended` API). Writes
+        # attendance.md / attendance.json beside each meeting's minutes; the
+        # registry reads the sidecars back to link attendees by person id.
+        process_attendance(args.wg, cache_dir, meeting_clusters, verbose=verbosity)
 
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.

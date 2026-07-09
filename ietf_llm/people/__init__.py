@@ -53,23 +53,31 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from ..atomicio import atomic_open
 from ..gather.sources.datatracker import fetch_wg_roles
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
 from ..log import LogLevel, Verbosity, log
-from ..paths import (
-    digest_path,
-    get_cache_dir,
-    get_wg_file_cache_dir,
-    remove_stale_digest,
-)
+from ..paths import get_cache_dir, get_wg_file_cache_dir
 from ..text import _parse_date
+from .digest import _format_affiliations, write_people_digest
 from .linking import (
     reconcile_mail_via_datatracker,
     resolve_github_user_names,
     resolve_github_via_datatracker,
 )
+from .meetings import ingest_meeting_participation
+
+# `write_people_digest` (and the `_format_affiliations` helper some tests
+# reach for) moved to `.digest`; re-exported here so `ietf_llm.people.<name>`
+# keeps working. Listed in `__all__` so the re-export doesn't read as unused.
+__all__ = [
+    "Person",
+    "Registry",
+    "build_registry",
+    "write_people_digest",
+    "ingest_meeting_participation",
+    "_format_affiliations",
+]
 
 # --- Person model ----------------------------------------------------------
 
@@ -108,6 +116,15 @@ class Person:
     # affiliations); surfaced only on explicit request as a fallback
     # signal, not an attribution.
     email_domains: Set[str] = field(default_factory=set)
+    # Meeting participation, attached link-only by the meetings pass (see
+    # `people/meetings.py`): these signals only ever land on a person already
+    # known from mail / drafts / GitHub / roles — a meeting never mints a new
+    # actor. `attended_sessions` is id-linked (Datatracker `attended` API,
+    # collision-free); `spoke_at_meetings` is name-linked (transcript speaker
+    # labels, exact canonical-name match). Both hold meeting codes (`ietf125`,
+    # `interim20260401`).
+    attended_sessions: Set[str] = field(default_factory=set)
+    spoke_at_meetings: Set[str] = field(default_factory=set)
     message_count: int = 0
     issue_count: int = 0
     first_seen: Optional[datetime] = None
@@ -402,6 +419,8 @@ class Registry:
         keep.authored_documents |= drop.authored_documents
         keep.edited_documents |= drop.edited_documents
         keep.email_domains |= drop.email_domains
+        keep.attended_sessions |= drop.attended_sessions
+        keep.spoke_at_meetings |= drop.spoke_at_meetings
         # Affiliations: keep wins on key clashes; drop fills gaps.
         for source, org in drop.affiliations.items():
             keep.affiliations.setdefault(source, org)
@@ -522,6 +541,14 @@ class Registry:
         if not canonical_name:
             return None
         return self._by_name.get(canonical_name.lower())
+
+    def person_for_email(self, address: str) -> Optional[Person]:
+        """Look up a Person by an (already-normalised) email address. Used by
+        the attendance pass to resolve a Datatracker person id back to the
+        registry via that person's known addresses."""
+        if not address:
+            return None
+        return self._by_email.get(address.strip().lower())
 
     def affiliation_tag(self, canonical_name: str) -> Optional[str]:
         """Compact affiliation rendering for inline use (participants
@@ -653,6 +680,10 @@ def build_registry(
     if with_datatracker_roles:
         _ingest_datatracker_roles(wg, registry, verbose)
     _ingest_draft_authors(wg, registry, verbose)
+    # Meeting participation — attendance (id-linked) and transcript speaking
+    # (name-linked). Runs LAST so it matches against the fully-assembled
+    # registry, and link-only so it never adds a meeting-only actor.
+    ingest_meeting_participation(registry, wg, verbose)
     log(
         f"Identity registry: {len(registry.persons)} distinct actors "
         f"({sum(1 for p in registry.persons if p.roles)} with formal roles, "
@@ -765,236 +796,3 @@ def _maybe_iso(value: Any) -> Optional[datetime]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
-
-
-# --- _people.md digest -----------------------------------------------------
-
-
-def write_people_digest(
-    wg: str,
-    cache_dir: str,
-    registry: Registry,
-    verbose: Verbosity = Verbosity.STATUS,
-) -> Optional[str]:
-    """Emit `<wg>-_people.md` describing every distinct actor.
-
-    Three sections:
-      - linked: appear on both the mailing list AND GitHub
-      - mail-only: have at least one mail message, no GitHub link
-      - github-only: GitHub login but no email signal
-    """
-    persons = registry.all_persons()
-    if not persons:
-        remove_stale_digest(cache_dir, "people")
-        return None
-
-    linked, mail_only, gh_only = _bucket_persons(persons)
-
-    out_path = digest_path(cache_dir, "people")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    leaders = registry.leadership()
-    with atomic_open(out_path) as fh:
-        fh.write(f"# {wg}: participants\n\n")
-        fh.write(
-            f"_{len(persons)} distinct actors. Multiple surface forms "
-            "(addresses, DMARC-rewritten variants, GitHub logins) for the "
-            "same person are consolidated — `Top senders` columns and "
-            "issue authors elsewhere in the corpus use these canonical "
-            "names._\n\n"
-        )
-        fh.write(
-            "_**Affiliation** is gathered from two sources, with "
-            "provenance shown in each cell: `(draft)` = the "
-            "**Authors' Addresses** block of a draft the person has "
-            "authored — the most authoritative source. `(github)` = "
-            "their self-reported GitHub `company` field — weaker, "
-            "but a useful corroborating signal when both sources name "
-            "the same org (`Cloudflare (draft, github)`).\n\n"
-            "Affiliation is implementer signal — load-bearing for "
-            "'rough consensus and running code'. It is NOT a license "
-            "to claim someone speaks for the organisation: people "
-            "participate as individuals. Aggregate, don't attribute.\n\n"
-            "Blank = no documented signal from either source. Do NOT "
-            "infer affiliation from email domain — participants often "
-            "use personal email, and some hold multiple affiliations, "
-            "representing some or none of those interests in a given "
-            "discussion._\n\n"
-        )
-
-        # Formal WG leadership comes from Datatracker. Surfaced first
-        # because "who runs this WG" is usually what the reader wants
-        # to know before scrolling through 100+ participants.
-        if leaders:
-            fh.write(f"## Working Group leadership ({len(leaders)})\n\n")
-            fh.write("| Role | Name | Affiliation | Email |\n|---|---|---|---|\n")
-            for person in leaders:
-                roles_text = ", ".join(sorted(person.roles))
-                primary_email = next(iter(sorted(person.emails)), "")
-                aff = _format_affiliations(person)
-                fh.write(
-                    f"| {roles_text} | {person.canonical_name} | "
-                    f"{aff} | {primary_email} |\n"
-                )
-            fh.write("\n")
-
-        # Document authors — surfaced next because "who wrote this
-        # draft" is the second question after "who runs the WG".
-        authors = [p for p in persons if p.authored_documents or p.edited_documents]
-        if authors:
-            fh.write(f"## Document authors / editors ({len(authors)})\n\n")
-            fh.write("| Name | Documents | Affiliation | Email |\n|---|---|---|---|\n")
-            authors.sort(key=lambda p: p.canonical_name.lower())
-            for person in authors:
-                primary_email = next(iter(sorted(person.emails)), "")
-                parts = sorted(person.authored_documents) + [
-                    f"{d} (ed.)" for d in sorted(person.edited_documents)
-                ]
-                docs = ", ".join(parts)
-                aff = _format_affiliations(person)
-                fh.write(
-                    f"| {person.canonical_name} | {docs} | "
-                    f"{aff} | {primary_email} |\n"
-                )
-            fh.write("\n")
-
-        if linked:
-            fh.write(f"## Active on both mailing list and GitHub ({len(linked)})\n\n")
-            _write_actor_table(
-                fh,
-                linked,
-                columns=(
-                    "Name",
-                    "Roles",
-                    "Affiliation",
-                    "Emails",
-                    "GitHub",
-                    "Msgs",
-                    "Issues",
-                ),
-            )
-        if mail_only:
-            fh.write(f"## Mailing list only ({len(mail_only)})\n\n")
-            _write_actor_table(
-                fh,
-                mail_only,
-                columns=(
-                    "Name",
-                    "Roles",
-                    "Affiliation",
-                    "Emails",
-                    "Msgs",
-                    "First",
-                    "Last",
-                ),
-            )
-        if gh_only:
-            fh.write(f"## GitHub only ({len(gh_only)})\n\n")
-            _write_actor_table(
-                fh,
-                gh_only,
-                columns=("Name", "GitHub", "Issues"),
-            )
-
-    log(
-        f"Wrote people digest: {len(linked)} linked, "
-        f"{len(mail_only)} mail-only, {len(gh_only)} github-only",
-        verbose,
-        level=LogLevel.STATUS,
-    )
-    return out_path
-
-
-def _format_affiliations(person: Person) -> str:
-    """Render a Person's affiliations for a digest table cell, with
-    source provenance.
-
-    Each distinct organisation value renders as `Org (sources)` where
-    `sources` is a "/"-joined list of source kinds — `draft`, `github`,
-    etc. — sorted with `draft` first (most authoritative). When the
-    same org is corroborated by multiple sources, the cell shows that
-    explicitly: `Cloudflare (draft, github)` is stronger signal than
-    `Cloudflare (github)` alone, and the renderer surfaces it.
-
-    Returns "" (empty cell, not "—") when no source has produced an
-    affiliation — honest blank beats a default.
-    """
-    if not person.affiliations:
-        return ""
-    # Aggregate distinct orgs → set of source kinds. Source kinds
-    # come from the part of the key before the first ":" — so every
-    # "draft:..." key collapses to "draft", every "github" stays.
-    org_sources: Dict[str, Set[str]] = {}
-    for source_key, org in person.affiliations.items():
-        if not org:
-            continue
-        kind = source_key.split(":", 1)[0]
-        org_sources.setdefault(org, set()).add(kind)
-    # Order: most-sourced first (signal), then alphabetical.
-    source_order = {"draft": 0, "datatracker": 1, "github": 2, "signature": 3}
-    ranked = sorted(
-        org_sources.items(),
-        key=lambda kv: (-len(kv[1]), kv[0]),
-    )
-    bits: List[str] = []
-    for org, sources in ranked:
-        ordered_sources = sorted(sources, key=lambda s: (source_order.get(s, 99), s))
-        bits.append(f"{org} ({', '.join(ordered_sources)})")
-    return "; ".join(bits).replace("|", "\\|")
-
-
-def _bucket_persons(
-    persons: Iterable[Person],
-) -> "tuple[List[Person], List[Person], List[Person]]":
-    linked: List[Person] = []
-    mail_only: List[Person] = []
-    gh_only: List[Person] = []
-    for person in persons:
-        has_mail = bool(person.emails) or person.message_count > 0
-        has_github = bool(person.github_logins)
-        if has_mail and has_github:
-            linked.append(person)
-        elif has_mail:
-            mail_only.append(person)
-        elif has_github:
-            gh_only.append(person)
-    # Sort by activity: most active first within each bucket.
-    linked.sort(key=lambda p: -(p.message_count + p.issue_count))
-    mail_only.sort(key=lambda p: -p.message_count)
-    gh_only.sort(key=lambda p: -p.issue_count)
-    return linked, mail_only, gh_only
-
-
-def _write_actor_table(fh: Any, persons: List[Person], columns: Iterable[str]) -> None:
-    columns = list(columns)
-    fh.write("| " + " | ".join(columns) + " |\n")
-    fh.write("|" + "|".join("---" for _ in columns) + "|\n")
-    for person in persons:
-        row = [_format_cell(person, col) for col in columns]
-        fh.write("| " + " | ".join(row) + " |\n")
-    fh.write("\n")
-
-
-def _format_cell(  # pylint: disable=too-many-return-statements
-    person: Person, column: str
-) -> str:
-    if column == "Name":
-        return person.canonical_name.replace("|", "\\|")
-    if column == "Emails":
-        return ", ".join(sorted(person.emails)).replace("|", "\\|")
-    if column == "GitHub":
-        return ", ".join(sorted(person.github_logins)).replace("|", "\\|")
-    if column == "Msgs":
-        return str(person.message_count)
-    if column == "Issues":
-        return str(person.issue_count)
-    if column == "First":
-        return person.first_seen.strftime("%Y-%m-%d") if person.first_seen else ""
-    if column == "Last":
-        return person.last_seen.strftime("%Y-%m-%d") if person.last_seen else ""
-    if column == "Roles":
-        return ", ".join(sorted(person.roles)).replace("|", "\\|")
-    if column == "Affiliation":
-        return _format_affiliations(person)
-    if column == "Email domain":
-        return ", ".join(sorted(person.email_domains)).replace("|", "\\|")
-    return ""
