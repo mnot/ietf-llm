@@ -706,10 +706,16 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         locking. Progress is reported by the caller (byte-weighted, via
         `_embed_progress`); this only writes and commits."""
         nonlocal total_new, files_done, chunks_since_flush, changed
+        # A planned file reaching here means its content changed; mark the index
+        # changed before writing, so the topic-map recompute still fires even if
+        # the write returns 0 after mutating (the IntegrityError path DELETEs the
+        # file's old chunks first). Conservative: the rare no-mutation skip (a
+        # vector/chunk count mismatch, checked before any DELETE) also flips it,
+        # which only over-recomputes — the safe direction.
+        changed = True
         written = _write_file(cur, plan, vectors, verbose)
         if not written:
             return
-        changed = True
         total_new += written
         files_done += 1
         chunks_since_flush += written
