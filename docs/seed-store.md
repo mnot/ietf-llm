@@ -8,7 +8,7 @@ paying the full embed + download cost from scratch. Issue
 [docs index](README.md).
 
 **Status:** implemented and **on by default** — a covered corpus seeds from
-`https://ietf-llm-seeds.mnot.net/` unless disabled (`--no-seed`,
+`https://seed-store.mnot.net/` unless disabled (`--no-seed`,
 `IETF_LLM_SEED_URL=off`). Until that host is actually serving a store, clients
 soft-fail to a cold gather, so it is harmless before the mirror is stood up. This
 is for **local** users, not the cloud `CorpusStore` backend (which has its own

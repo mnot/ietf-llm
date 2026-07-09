@@ -67,7 +67,7 @@ SEED_URL: Tuple[str, str] = ("IETF_LLM_SEED_URL", "seed_url")
 #: hosting can move to a CDN or bucket by repointing DNS without breaking the
 #: baked-in default. The host must be serving before a release ships this default;
 #: until it is, clients soft-fail to a cold gather. See docs/seed-store.md (#182).
-_DEFAULT_SEED_URL: Optional[str] = "https://ietf-llm-seeds.mnot.net/"
+_DEFAULT_SEED_URL: Optional[str] = "https://seed-store.mnot.net/"
 
 #: Values that explicitly disable seeding (opt-out), case-insensitive.
 _SEED_DISABLED = ("", "off", "none")
