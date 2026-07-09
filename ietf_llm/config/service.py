@@ -18,6 +18,13 @@ authoritative. See `docs/storage.md`.
 | resolve TTL (s) | IETF_LLM_RESOLVE_TTL       | resolve_ttl        | no     |
 | gather max inflight | IETF_LLM_GATHER_MAX_INFLIGHT | gather_max_inflight | no |
 | retain versions | IETF_LLM_RETAIN_VERSIONS   | retain_versions    | no     |
+| seed store URL  | IETF_LLM_SEED_URL          | seed_url           | no     |
+
+The **seed store** URL is the consumer knob (issue #182): a static mirror a local
+gather seeds a corpus from before freshening. It is unrelated to the cloud
+`store_url` above. Seeding is opt-out, so an empty / `off` / `none` value
+*disables* it explicitly (unlike the other knobs, where empty falls through to the
+default) — `seed_url()` implements that rather than `_resolve`.
 
 The S3 endpoint for a non-AWS service (R2, MinIO) is `IETF_LLM_STORE_ENDPOINT_URL`
 (env only), read by `store.s3`.
@@ -52,6 +59,16 @@ GATHER_MAX_INFLIGHT: Tuple[str, str] = (
     "gather_max_inflight",
 )
 RETAIN_VERSIONS: Tuple[str, str] = ("IETF_LLM_RETAIN_VERSIONS", "retain_versions")
+SEED_URL: Tuple[str, str] = ("IETF_LLM_SEED_URL", "seed_url")
+
+#: The baked-in default seed-store mirror. Opt-out seeding needs a default here so
+#: a client seeds with no configuration — but it commits the project to a stable
+#: public URL, so it stays None until hosting is chosen (issue #182). While None,
+#: seeding is effectively off unless the operator sets IETF_LLM_SEED_URL.
+_DEFAULT_SEED_URL: Optional[str] = None
+
+#: Values that explicitly disable seeding (opt-out), case-insensitive.
+_SEED_DISABLED = ("", "off", "none")
 
 #: Default seconds to cache a current-version lookup on the cloud backend.
 _DEFAULT_RESOLVE_TTL = 10.0
@@ -97,6 +114,31 @@ def store_url() -> Optional[str]:
 def scratch_dir() -> Optional[str]:
     """Local directory where the cloud backend materialises versions."""
     return _resolve(SCRATCH_DIR, None)
+
+
+def seed_url() -> Optional[str]:
+    """The seed-store mirror a local gather seeds from, or None when seeding is
+    disabled (issue #182).
+
+    Resolves env > global config > baked default like the others, but with
+    **opt-out disable semantics** the generic `_resolve` cannot express: an
+    explicitly empty / `off` / `none` value at either the env or the config layer
+    turns seeding off (so a user can disable the baked default with
+    `IETF_LLM_SEED_URL=`), rather than falling through to the default."""
+    raw = os.environ.get(SEED_URL[0])
+    if raw is not None:
+        return _seed_value(raw)
+    value = fs.load_global().get(SEED_URL[1])
+    if isinstance(value, str):
+        return _seed_value(value)
+    return _DEFAULT_SEED_URL
+
+
+def _seed_value(raw: str) -> Optional[str]:
+    """Normalise a seed-URL string: strip it, and map the explicit-disable
+    tokens to None. A present-but-disabled value returns None (seeding off)."""
+    value = raw.strip()
+    return None if value.lower() in _SEED_DISABLED else value
 
 
 def resolve_ttl() -> float:
