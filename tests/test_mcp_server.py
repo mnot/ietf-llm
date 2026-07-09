@@ -92,9 +92,12 @@ def test_list_corpora_only_wgs_with_files_dir(isolated_home: Path) -> None:
     assert "stray" not in out
 
 
-def test_list_corpora_shows_available_to_seed(isolated_home: Path) -> None:
+def test_list_corpora_shows_available_to_seed(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from ietf_llm.seed import catalog
     from ietf_llm.seed import format as seedfmt
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")  # catalog shown only then
     write_cache_file(isolated_home, "httpbis", "x.txt")  # locally present
     catalog.cache_index(seedfmt.Index(
         generated="2026-07-01T00:00:00Z",
@@ -110,6 +113,21 @@ def test_list_corpora_shows_available_to_seed(isolated_home: Path) -> None:
     assert len(tail) == 2  # the section is present
     # Only the un-gathered catalog corpus is offered, not the local one.
     assert "aipref" in tail[1] and "httpbis" not in tail[1]
+
+
+def test_list_corpora_hides_catalog_when_gather_disabled(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm.seed import catalog
+    from ietf_llm.seed import format as seedfmt
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")  # can't gather here
+    write_cache_file(isolated_home, "httpbis", "x.txt")
+    catalog.cache_index(seedfmt.Index(
+        generated="g", compat=seedfmt.CompatTuple(8, "m", "2", 384),
+        corpora=[seedfmt.IndexEntry("aipref", "group", "", 12, "g", "v",
+                                    "aipref/manifest.json", 1)]))
+    out = mcp.corpus.tool_list_corpora()
+    assert "Available to fast-start" not in out
 
 
 def test_list_corpora_marks_seeded(isolated_home: Path) -> None:

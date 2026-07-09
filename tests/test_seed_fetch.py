@@ -169,6 +169,34 @@ def test_seed_catalog_roundtrip(isolated_home):
     assert back is not None and back.entry("aipref") is not None
 
 
+def test_list_corpora_cold_start_lists_catalog(isolated_home, tmp_path, monkeypatch):
+    import shutil as _sh
+    from ietf_llm.mcp import corpus as mcp_corpus
+    store = str(tmp_path / "store")
+    _gathered("httpbis")
+    publish.publish_store(store, add=["httpbis"], no_gather=True,
+                          gather=lambda n, m: None)
+    _sh.rmtree(os.path.join(get_cache_dir(), "httpbis"))  # cold client, nothing local
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    out = mcp_corpus.tool_list_corpora()
+    # The live refresh populated the mirror, so the catalog shows even cold.
+    assert "Available to fast-start" in out and "httpbis" in out
+
+
+def test_refresh_mirror_gated_off_when_gather_disabled(
+        isolated_home, tmp_path, monkeypatch):
+    from ietf_llm.seed import catalog
+    store = str(tmp_path / "store")
+    _gathered("httpbis")
+    publish.publish_store(store, add=["httpbis"], no_gather=True,
+                          gather=lambda n, m: None)
+    monkeypatch.setenv("IETF_LLM_SEED_URL", store)
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")  # gather off → no live fetch
+    catalog.refresh_mirror()
+    assert catalog.cached_index() is None
+
+
 def test_freshness_seed_source_roundtrip(isolated_home):
     assert freshness.seed_source("httpbis") is None
     freshness.record_seed_source(

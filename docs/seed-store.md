@@ -195,9 +195,12 @@ instructions say so. `gather_status` emits a note when a run seeded, and
 `list_corpora` marks a seeded corpus with a trailing `· seeded <date>`, so a
 client can tell a corpus was reconstituted from the mirror rather than gathered
 cold. `list_corpora` also lists the store's **un-gathered** corpora ("available to
-fast-start"), so a client knows what it can pull cheaply — read from a local
-mirror of the index (`_seed/index.json`, refreshed whenever a gather fetches it),
-never a live network call, so the read tools stay offline.
+fast-start"), so a cold-start client with nothing gathered still knows what it can
+pull cheaply. This is the one read-surface network touch, and it rides the same
+gather gate as the live Datatracker lookups: a local stdio server (where you can
+`start_gather`) refreshes the catalog with a bounded, throttled fetch cached to
+`_seed/index.json`; the read-only HTTP replica never fetches and omits the section
+(you can't gather there anyway).
 
 ## Non-goals
 

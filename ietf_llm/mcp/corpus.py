@@ -76,12 +76,18 @@ def _available_to_seed(local: List[str]) -> str:
     """A one-line 'available to fast-start' hint listing seed-store corpora not
     yet gathered locally, or '' when none / no cache.
 
-    Reads the seed index **offline** from the local mirror (`seed.catalog`,
-    refreshed on the gather path) — never the network, so the read-only boundary
-    holds. Empty on a deployment that has never fetched a seed index."""
+    Only shown where in-session gather is available (`gather_enabled`) — a
+    read-only HTTP replica can't act on it, so it neither lists nor fetches. There
+    it uses the sanctioned networked-read exception: `refresh_mirror` fetches the
+    index live (bounded + throttled), so a cold-start client with nothing gathered
+    still sees the catalog. Empty when seeding is disabled or the store is
+    unreachable."""
+    if not gather_enabled():
+        return ""
     # pylint: disable-next=import-outside-toplevel
     from ..seed import catalog as seed_catalog
 
+    seed_catalog.refresh_mirror()
     index = seed_catalog.cached_index()
     if index is None:
         return ""
@@ -89,13 +95,11 @@ def _available_to_seed(local: List[str]) -> str:
     names = sorted(e.name for e in index.corpora if e.name not in known)
     if not names:
         return ""
-    base = (
+    return (
         "\n\nAvailable to fast-start from the public seed store (not yet "
         f"gathered): {', '.join(names)}. Each pulls a prebuilt snapshot, so "
-        "gathering one is quick."
+        f"gathering one is quick — {gather_suggestion('<name>')}."
     )
-    hint = gather_suggestion("<name>")
-    return f"{base} {hint}" if hint else base
 
 
 def tool_list_corpora() -> str:
