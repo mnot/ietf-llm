@@ -28,6 +28,7 @@ import os
 import sqlite3
 import tarfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 #: Bumped only on an incompatible change to the JSON schema below. A consumer
@@ -133,6 +134,19 @@ def manifest_relpath(name: str) -> str:
 def bundle_relpath(name: str, version: str) -> str:
     """Store-relative path of a corpus's bundle for `version`."""
     return f"{name}/{name}-{version}.tar.gz"
+
+
+#: strftime pattern for a version token — a compact, lexically-sortable UTC
+#: stamp of the gather it was built from.
+_VERSION_STAMP = "%Y%m%dT%H%M%SZ"
+
+
+def version_stamp(gathered: datetime) -> str:
+    """The version token for a bundle built from a gather at `gathered` — a
+    compact UTC stamp (`20260701T000000Z`). Used both as the `version` field and
+    in the bundle filename. Naive datetimes are assumed UTC."""
+    when = gathered if gathered.tzinfo else gathered.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).strftime(_VERSION_STAMP)
 
 
 # --------------------------------------------------------------------------- #
