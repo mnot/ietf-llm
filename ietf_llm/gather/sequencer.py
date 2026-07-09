@@ -422,6 +422,7 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
         return
     # Lazy: the seed consumer is gather-path only.
     # pylint: disable=import-outside-toplevel
+    from ..seed import catalog as seed_catalog
     from ..seed import fetch as seed_fetch
     from ..seed import format as seed_fmt
 
@@ -429,6 +430,9 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
     index = seed_fetch.load_index(seed_url)
     if index is None:
         return
+    # Mirror the whole index locally so list_corpora can show the catalog offline,
+    # even for corpora other than this one (best-effort).
+    seed_catalog.cache_index(index)
     entry = index.entry(args.wg)
     if entry is None:
         return  # not covered — stay quiet and gather cold

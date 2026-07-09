@@ -101,6 +101,15 @@ def get_index_dir() -> str:
     return index_dir
 
 
+def seed_index_cache_path() -> str:
+    """Local mirror of the seed store's `index.json` (a cross-corpus singleton,
+    `<cache>/_seed/index.json`). Written on the gather path when a seed index is
+    fetched, and read offline by `list_corpora` so it can show what is available
+    to fast-start without touching the network. The leading underscore keeps it
+    out of the corpus enumerations (like `_rfc/` and `_catalog/`)."""
+    return os.path.join(get_cache_dir(), "_seed", "index.json")
+
+
 def get_wg_file_cache_dir(wg_name: str) -> str:
     """Get the local file cache directory for a Working Group."""
     cache_dir = os.path.join(get_cache_dir(), wg_name, "files")

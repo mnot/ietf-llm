@@ -194,7 +194,10 @@ rather than a minutes-long cold fetch — the `start_gather` reply and routing
 instructions say so. `gather_status` emits a note when a run seeded, and
 `list_corpora` marks a seeded corpus with a trailing `· seeded <date>`, so a
 client can tell a corpus was reconstituted from the mirror rather than gathered
-cold.
+cold. `list_corpora` also lists the store's **un-gathered** corpora ("available to
+fast-start"), so a client knows what it can pull cheaply — read from a local
+mirror of the index (`_seed/index.json`, refreshed whenever a gather fetches it),
+never a live network call, so the read tools stay offline.
 
 ## Non-goals
 

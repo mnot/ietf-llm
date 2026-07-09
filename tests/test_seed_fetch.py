@@ -155,6 +155,20 @@ def test_swap_dir_restores_prior_corpus_on_failure(isolated_home, tmp_path, monk
     assert not os.path.exists(os.path.join(dest, "NEW"))
 
 
+def test_seed_catalog_roundtrip(isolated_home):
+    from ietf_llm.seed import catalog
+    assert catalog.cached_index() is None
+    idx = fmt.Index(
+        generated="2026-07-01T00:00:00Z",
+        compat=fmt.CompatTuple(8, "m", "2", 384),
+        corpora=[fmt.IndexEntry("aipref", "group", "AIPREF", 12,
+                                "2026-07-01T00:00:00Z", "v",
+                                "aipref/manifest.json", 1)])
+    catalog.cache_index(idx)
+    back = catalog.cached_index()
+    assert back is not None and back.entry("aipref") is not None
+
+
 def test_freshness_seed_source_roundtrip(isolated_home):
     assert freshness.seed_source("httpbis") is None
     freshness.record_seed_source(

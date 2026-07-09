@@ -72,10 +72,37 @@ def _seed_marker(wg: str) -> str:
     return f"seeded {date}" if date else "seeded"
 
 
+def _available_to_seed(local: List[str]) -> str:
+    """A one-line 'available to fast-start' hint listing seed-store corpora not
+    yet gathered locally, or '' when none / no cache.
+
+    Reads the seed index **offline** from the local mirror (`seed.catalog`,
+    refreshed on the gather path) — never the network, so the read-only boundary
+    holds. Empty on a deployment that has never fetched a seed index."""
+    # pylint: disable-next=import-outside-toplevel
+    from ..seed import catalog as seed_catalog
+
+    index = seed_catalog.cached_index()
+    if index is None:
+        return ""
+    known = set(local)
+    names = sorted(e.name for e in index.corpora if e.name not in known)
+    if not names:
+        return ""
+    base = (
+        "\n\nAvailable to fast-start from the public seed store (not yet "
+        f"gathered): {', '.join(names)}. Each pulls a prebuilt snapshot, so "
+        "gathering one is quick."
+    )
+    hint = gather_suggestion("<name>")
+    return f"{base} {hint}" if hint else base
+
+
 def tool_list_corpora() -> str:
     wgs = _list_wgs()
+    available = _available_to_seed(wgs)
     if not wgs:
-        return f"(no corpora gathered yet — {gather_suggestion('<name>')})"
+        return f"(no corpora gathered yet — {gather_suggestion('<name>')}){available}"
     rows = []
     for wg in wgs:
         kind, status = kind_status(wg)
@@ -112,6 +139,7 @@ def tool_list_corpora() -> str:
         "store (a prebuilt snapshot) and then freshened locally. Call "
         "`overview` for the gather window and the exact repos.\n\n"
         + "\n".join(lines)
+        + available
         + _NEXT_TOOLS_HINT
         + _session_facts_line()
     )
