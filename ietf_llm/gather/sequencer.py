@@ -13,6 +13,7 @@ import argparse
 import os
 import shutil
 import sys
+from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .. import config, paths
@@ -23,7 +24,7 @@ from ..datatracker_api import fetch_group_object
 from ..digest import generate_digests
 from ..digest.timeline import write_timeline_digest
 from ..embeddings import DEFAULT_EMBED_MODEL, build_index, generate_topics
-from ..freshness import record_gather
+from ..freshness import last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
@@ -297,6 +298,161 @@ def _validate_new_sources(
     setattr(args, key, [v for v in current if v in known or v in ok] or None)
 
 
+def _client_compat(args: argparse.Namespace) -> Any:
+    """The vector-compatibility tuple this client would build, for the seed gate:
+    the configured embedding model plus this build's schema/chunker versions.
+    vector_dim is left unknown (not known until embedding; the gate treats unknown
+    as compatible)."""
+    # pylint: disable=import-outside-toplevel
+    from ..embeddings.chunking import CHUNKER_VERSION
+    from ..embeddings.storage import _SCHEMA_VERSION
+    from ..seed.format import CompatTuple
+
+    return CompatTuple(
+        schema_version=_SCHEMA_VERSION,
+        embedding_model=args.embed_model or DEFAULT_EMBED_MODEL,
+        chunker_version=CHUNKER_VERSION,
+        vector_dim=None,
+    )
+
+
+#: A stale local corpus is re-seeded (jumped forward to a fresher snapshot) only
+#: when it is behind by MORE than this many days — a snapshot-period-ish margin, so
+#: a client merely one period stale gathers incrementally instead of re-downloading
+#: a whole bundle to save a delta it would embed for free (issue #187). Snapshots
+#: refresh ~monthly, so ~60 days keeps a monthly gatherer on the incremental path.
+#: Override via IETF_LLM_SEED_STALE_DAYS.
+_SEED_STALE_JUMP_DAYS = 60.0
+
+
+def _seed_stale_jump_margin() -> timedelta:
+    """The minimum local-vs-snapshot age gap that justifies a re-seed. Reads
+    IETF_LLM_SEED_STALE_DAYS (a non-negative number of days); falls back to the
+    default on an unset or invalid value."""
+    days = _SEED_STALE_JUMP_DAYS
+    raw = os.environ.get("IETF_LLM_SEED_STALE_DAYS")
+    if raw:
+        try:
+            parsed = float(raw)
+            if parsed >= 0:
+                days = parsed
+        except ValueError:
+            pass
+    return timedelta(days=days)
+
+
+def _seed_covers_config(args: argparse.Namespace, entry: Any) -> bool:
+    """True when the snapshot is a full stand-in for this corpus's config, so a
+    stale-jump is cheaper than an incremental: the window must not narrow, and the
+    corpus must not carry extra sources the group snapshot omits (generative
+    drafts, extra --draft / --mailing-list). Auto-discovered group github is in
+    the snapshot, so it does not disqualify."""
+    if (
+        not args.months
+        or entry.window_months is None
+        or entry.window_months < args.months
+    ):
+        return False
+    if args.new_drafts or args.author or args.add_mentioned_drafts:
+        return False
+    return not (args.draft or args.mailing_list)
+
+
+def _seed_decision(
+    args: argparse.Namespace, entry: Any, prior: Optional[Any]
+) -> Optional[str]:
+    """Which base to use: 'cold' (no local copy), 'refresh' (--refresh-base),
+    'stale' (local older than a compatible snapshot), or None (keep local and
+    gather incrementally)."""
+    if prior is None:
+        return "cold"
+    if args.refresh_base:
+        return "refresh"
+    seed_time = parse_iso(entry.gathered)
+    if seed_time is None or seed_time <= prior:
+        return None  # local is at least as fresh as the snapshot
+    if seed_time - prior <= _seed_stale_jump_margin():
+        # Only a snapshot-period behind: gathering incrementally re-embeds the
+        # same small delta a re-seed would freshen anyway, so re-downloading the
+        # whole bundle would be pure waste. Only jump when *well* behind, where
+        # the re-seed saves re-embedding many periods at once (issue #187).
+        return None
+    if not _seed_covers_config(args, entry):
+        return None
+    return "stale"
+
+
+def _log_seeded(
+    wg: str,
+    url: str,
+    entry: Any,
+    prior: Optional[Any],
+    reason: str,
+    verbosity: Verbosity,
+) -> None:
+    if reason == "cold":
+        msg = f"{wg}: seeding from {url} (snapshot {entry.gathered})"
+    else:
+        prev = prior.isoformat() if prior is not None else "unknown"
+        msg = (
+            f"{wg}: re-seeding from {url} (snapshot {entry.gathered}, "
+            f"replacing base gathered {prev})"
+        )
+    log(msg, verbosity, level=LogLevel.STATUS)
+
+
+def _maybe_seed(  # pylint: disable=too-many-return-statements
+    args: argparse.Namespace, on_cloud: bool, verbosity: Verbosity
+) -> None:
+    """Seed `args.wg` from the public seed store before the gather stages run,
+    when the store offers a fresher, compatible base than what is local
+    (issue #182).
+
+    Opt-out and best-effort: a no-op unless a seed store is configured
+    (IETF_LLM_SEED_URL) and enabled (not --no-seed, not --clear-cache, not the
+    cloud backend, which has its own seeding). Any failure logs and falls through
+    to a normal gather, so the seed store only ever accelerates."""
+    if on_cloud or args.no_seed or args.clear_cache:
+        return
+    seed_url = service_config.seed_url()
+    if not seed_url:
+        return
+    # Lazy: the seed consumer is gather-path only.
+    # pylint: disable=import-outside-toplevel
+    from ..seed import fetch as seed_fetch
+    from ..seed import format as seed_fmt
+
+    # pylint: enable=import-outside-toplevel
+    index = seed_fetch.load_index(seed_url)
+    if index is None:
+        return
+    entry = index.entry(args.wg)
+    if entry is None:
+        return  # not covered — stay quiet and gather cold
+    if not index.compat.matches(_client_compat(args)):
+        log(
+            f"{args.wg}: seed store uses a different embedding model or version; "
+            "gathering without a seed.",
+            verbosity,
+            level=LogLevel.STATUS,
+        )
+        return
+    prior = last_gathered(args.wg)
+    reason = _seed_decision(args, entry, prior)
+    if reason is None:
+        return
+    try:
+        seed_fetch.install(seed_url, entry)
+    except (seed_fetch.SeedFetchError, seed_fmt.SeedFormatError) as err:
+        log(
+            f"{args.wg}: seed failed ({err}); gathering without a seed.",
+            verbosity,
+            level=LogLevel.STATUS,
+        )
+        return
+    _log_seeded(args.wg, seed_url, entry, prior, reason, verbosity)
+
+
 def run_gather(
     argv: List[str],
     verbosity: Verbosity = Verbosity.STATUS,
@@ -416,6 +572,11 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         if os.path.exists(wg_cache_dir):
             shutil.rmtree(wg_cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
+
+    # Seed from the public seed store before the stages run, if it offers a
+    # fresher, compatible base than what is local (issue #182). Best-effort and
+    # opt-out; a no-op unless IETF_LLM_SEED_URL is configured.
+    _maybe_seed(args, on_cloud, verbosity)
 
     # `synth` (x-) and `group_backed` were resolved above. A corpus
     # that's neither is "custom" (list/draft/github sources only).

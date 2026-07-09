@@ -236,6 +236,23 @@ def build_parser() -> argparse.ArgumentParser:
         "Auto-enabled for MCP gathers and the cloud backend; local keeps them.",
     )
     parser.add_argument(
+        "--no-seed",
+        action="store_true",
+        help="Don't seed this corpus from the public seed store before "
+        "gathering (issue #182). Seeding is on by default when a seed store is "
+        "configured (IETF_LLM_SEED_URL): a covered corpus is pulled as a fast "
+        "start, then freshened. This flag forces a cold gather.",
+    )
+    parser.add_argument(
+        "--refresh-base",
+        action="store_true",
+        help="Re-pull the seed base even when a local copy exists and is not "
+        "stale, replacing it before freshening. Normally seeding only jumps a "
+        "cold or stale-relative-to-the-snapshot corpus forward. This is an "
+        "explicit override that pulls the snapshot as-is; if your window is "
+        "wider or you carry extra sources, freshen re-fetches the difference.",
+    )
+    parser.add_argument(
         "--rfcs",
         action="store_true",
         help="Also download the WG's published RFC bodies into drafts/ and "

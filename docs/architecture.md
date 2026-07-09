@@ -375,6 +375,10 @@ ietf_llm/
 │   ├── blobs_s3.py         # S3-compatible blob backend (AWS S3 / R2 / MinIO; [s3])
 │   ├── s3.py               # shared S3Bucket: one boto3 client for blob + control planes
 │   └── cloud.py            # CloudCorpusStore: composes control + blob; publish + read + seed
+├── seed/                   # public seed store (local fast-start; see docs/seed-store.md, #182)
+│   ├── format.py           # index/manifest JSON schema, compat tuple, bundle assembly + hashing
+│   ├── fetch.py            # consumer: load index, download + verify + install a bundle (gather-path)
+│   └── publish.py          # producer: build/refresh a static store from the cache (scripts/publish_seeds.py)
 ├── live_lookup/            # live Datatracker reads (meeting_schedule / draft_status /
 │   │                       # overview reconciliation); gather-gated, the one networked read path
 │   ├── cache.py            # TTL-cached fetch seam (_fetch_json) + in-proc/on-disk cache; age_stamp
