@@ -141,6 +141,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │   ├── meetings/<code>/
 │   │   │   ├── minutes.md
 │   │   │   ├── agenda.md
+│   │   │   ├── attendance.md / attendance.json   # roster + person-id sidecar
 │   │   │   ├── slides/<slug>.pdf(.txt)
 │   │   │   ├── transcripts/<YYYYMMDDHHmm>.md
 │   │   │   └── polls/<YYYYMMDDHHmm>.md
@@ -200,6 +201,15 @@ Key invariants:
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
+  - **Meeting participation is attached link-only** (`people.meetings`, run
+    last so it matches the complete registry): the Datatracker `attended`
+    record links to a `Person` by **person id** (`attended_sessions`,
+    collision-free) and transcript `**Name:**` speaker labels link by **exact
+    canonical name** (`spoke_at_meetings`). A meeting never mints a new actor —
+    attendees who never otherwise participated stay in the per-meeting
+    `attendance.md` roster, not the registry. Attendance is presence, not a
+    position. The write side is `gather.sources.meetings.process_attendance`
+    (rosters) + the sidecar the registry reads back.
 - **`digests/*.md` are deterministic, regenerated every gather.**
   `index`, `issues`, `threads`, `people`, `timeline`, `citations`,
   `message_citations`. Read them via the MCP `read_digest` / `overview`
@@ -375,6 +385,8 @@ ietf_llm/
 ├── people/                 # actor/identity registry + position extraction
 │   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)
 │   ├── linking.py          # attach GitHub logins to identities (Datatracker, then name)
+│   ├── meetings.py         # link-only meeting participation (attendance id / speaker name)
+│   ├── digest.py           # render the _people.md digest
 │   └── positions.py        # heuristic position / poll / chair-statement extraction
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
@@ -414,7 +426,7 @@ ietf_llm/
 │       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
 │       ├── author.py               # --author: a person's authored drafts
-│       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering
+│       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
 │       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
