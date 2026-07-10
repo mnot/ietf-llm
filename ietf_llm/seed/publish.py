@@ -165,8 +165,10 @@ def _write_member(
         bundle_bytes=size,
     )
     manifest_abs = os.path.join(store_dir, fmt.manifest_relpath(corpus))
-    with open(manifest_abs, "w", encoding="utf-8") as handle:
+    manifest_tmp = manifest_abs + ".tmp"
+    with open(manifest_tmp, "w", encoding="utf-8") as handle:
         handle.write(fmt.manifest_to_json(manifest))
+    os.replace(manifest_tmp, manifest_abs)
     return fmt.IndexEntry(
         name=corpus,
         kind=identity.kind_status(corpus)[0],

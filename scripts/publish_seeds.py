@@ -108,6 +108,12 @@ def main(argv: list[str] | None = None) -> int:
     except PublishError as err:
         print(f"error: {err}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        # The gather subprocess already printed its own "Interrupted." and was
+        # reaped by subprocess.run; without this the parent would dump a raw
+        # traceback on Ctrl-C. Newline first because Ctrl-C lands mid-line.
+        print("\nInterrupted.", file=sys.stderr)
+        return 130
     _print_report(report, args.dry_run)
     return 0
 
