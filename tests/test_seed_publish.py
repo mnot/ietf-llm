@@ -28,7 +28,8 @@ from ietf_llm.seed import format as fmt
 from ietf_llm.seed import publish
 
 
-def _gathered(name, *, model="sentence-transformers/BAAI/bge-small-en-v1.5"):
+def _gathered(name, *, model="sentence-transformers/BAAI/bge-small-en-v1.5",
+              schema=_SCHEMA_VERSION):
     """Materialise a minimal gathered corpus in the isolated cache."""
     corpus_dir = os.path.join(get_cache_dir(), name)
     files = os.path.join(corpus_dir, "files")
@@ -40,7 +41,7 @@ def _gathered(name, *, model="sentence-transformers/BAAI/bge-small-en-v1.5"):
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.executemany("INSERT INTO meta VALUES (?, ?)", [
-        ("model", model), ("schema_version", str(_SCHEMA_VERSION)),
+        ("model", model), ("schema_version", str(schema)),
         ("chunker_version", "2"), ("embed_dim", "384")])
     conn.commit()
     conn.close()
@@ -96,6 +97,21 @@ def test_model_mismatch_refused(isolated_home, tmp_path):
     assert any(n == "zzz" for n, _ in report.skipped)
     idx = fmt.Index.from_json(open(os.path.join(store, "index.json")).read())
     assert idx.entry("zzz") is None
+
+
+def test_schema_mismatch_names_field(isolated_home, tmp_path):
+    # A corpus at a different *index schema* (same model) is refused, and the
+    # skip names schema_version. Regression: the old message printed only the
+    # model, so a schema bump read as "X but this store is X" — nonsensical.
+    store = str(tmp_path / "store")
+    _gathered("aaa")  # sets the store tuple at the current schema
+    _gathered("zzz", schema=_SCHEMA_VERSION + 1)
+    report = publish.publish_store(
+        store, add=["aaa", "zzz"], no_gather=True, gather=_no_gather)
+    assert [n for n, _, _ in report.published] == ["aaa"]
+    reason = dict(report.skipped)["zzz"]
+    assert "schema_version" in reason and str(_SCHEMA_VERSION) in reason
+    assert "bge-small-en-v1.5" not in reason  # model agrees; not the culprit
 
 
 def test_prune_drops_non_members(isolated_home, tmp_path):
