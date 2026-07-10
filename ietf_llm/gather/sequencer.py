@@ -445,9 +445,11 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
     entry = index.entry(args.wg)
     if entry is None:
         return  # not covered — stay quiet and gather cold
-    if not index.compat.matches(_client_compat(args)):
+    client_compat = _client_compat(args)
+    if not index.compat.matches(client_compat):
         log(
-            f"{args.wg}: seed store uses a different embedding model or version; "
+            f"{args.wg}: seed store is a different embedding generation "
+            f"({index.compat.describe_mismatch(client_compat)}); "
             "gathering without a seed.",
             verbosity,
             level=LogLevel.STATUS,

@@ -83,6 +83,32 @@ class CompatTuple:
             return True
         return self.vector_dim == other.vector_dim
 
+    def describe_mismatch(self, other: "CompatTuple") -> str:
+        """Human summary of which field(s) make `other` incompatible with this
+        tuple — `field a vs b` per differing field, joined by commas. Uses the
+        same fields (and the same `None`-dim leniency) as `matches`, so the
+        summary is empty exactly when `matches` is True. Lets a skip/log message
+        name the real culprit (usually `schema_version`) instead of printing a
+        field that happens to agree."""
+        diffs = []
+        if self.schema_version != other.schema_version:
+            diffs.append(
+                f"schema_version {self.schema_version} vs {other.schema_version}"
+            )
+        if self.embedding_model != other.embedding_model:
+            diffs.append(f"model {self.embedding_model} vs {other.embedding_model}")
+        if self.chunker_version != other.chunker_version:
+            diffs.append(
+                f"chunker_version {self.chunker_version} vs {other.chunker_version}"
+            )
+        if (
+            self.vector_dim is not None
+            and other.vector_dim is not None
+            and self.vector_dim != other.vector_dim
+        ):
+            diffs.append(f"vector_dim {self.vector_dim} vs {other.vector_dim}")
+        return ", ".join(diffs)
+
 
 def read_compat_tuple(db_path: str) -> CompatTuple:
     """Read the compatibility tuple from an `embeddings.db` at `db_path`.

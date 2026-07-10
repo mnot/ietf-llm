@@ -332,12 +332,14 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
     except fmt.SeedFormatError as err:
         report.skipped.append((corpus, str(err)))
         return None
-    if store_compat is not None and compat != store_compat:
+    if store_compat is not None and not store_compat.matches(compat):
         report.skipped.append(
             (
                 corpus,
-                f"embedded with {compat.embedding_model} but this store is "
-                f"{store_compat.embedding_model}; use a separate store dir",
+                f"index compat differs from this store "
+                f"({store_compat.describe_mismatch(compat)}) — a store holds one "
+                "embedding generation; rebuild it (remove index.json) or publish "
+                "to a separate store dir",
             )
         )
         return None
