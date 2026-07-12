@@ -6,7 +6,7 @@
 # update the commit SHA in VENDORED.md to the printed value, and commit.
 set -euo pipefail
 
-VENDOR_REF="v0.2.0"
+VENDOR_REF="v0.2.1"
 REPO="mnot/ietf-skill"
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
