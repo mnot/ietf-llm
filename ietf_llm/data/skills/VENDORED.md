@@ -12,6 +12,9 @@ The MCP server serves their bodies via `read_ietf_participation_norms` /
 point at them.
 
 Do **not** edit these two files here — edit them upstream and re-vendor with
-`scripts/vendor-norms.sh`, which pins the tag above (bump it deliberately when
-the norm text changes). Only the norms are vendored; routing lives in the MCP
-server's own instructions, not a skill.
+`scripts/vendor-norms.sh`. Run with no argument to track the newest upstream
+tag, or pass one to pin a specific version (`scripts/vendor-norms.sh v0.2.2`);
+either way the script rewrites the tag+commit line above for you — review the
+diff and commit. `scripts/vendor-norms.sh --check` verifies the on-disk files
+match that pin. Only the norms are vendored; routing lives in the MCP server's
+own instructions, not a skill.
