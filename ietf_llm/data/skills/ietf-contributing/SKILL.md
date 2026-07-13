@@ -14,6 +14,8 @@ First and foremost: the audience is expert and time-poor. Lead with the point. C
 
 Prefer one or two short, concrete examples over exposition. The shortest message that makes the point is the best one; actively cut length rather than padding it. (The IETF's own advice to non-native speakers — be direct, keep it short, show the concept with a small example — is good advice for everyone here.)
 
+Brevity is not a licence to write badly. Terse means every sentence does work, not that sentences are half-formed or padded with jargon to look expert. Don't drop articles and verbs into telegraphic fragments; don't reach for an acronym or a piece of in-group shorthand where a plain word is clearer; and never coin a new term when an established one exists — an invented phrasing forces the reader to decode what you meant instead of weighing what you said. The register to aim for is one a competent participant who hasn't followed every message of the thread can read straight through, without you rehashing that thread to get them there. If a point only parses for the handful of people already deep in the current argument, it isn't terse — it's incomplete, and it will be read as such.
+
 The uniform-polish, fixed-template, self-summarising pattern is itself a tell. Cut the boilerplate and convey the essence with enough context to be digestible. Examples are encouraged, as are concrete proposals.
 
 ## You draft; the human sends
