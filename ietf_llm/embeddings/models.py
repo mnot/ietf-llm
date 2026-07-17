@@ -197,9 +197,15 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         st_model: Any = None
         try:
             st_model = _construct_sentence_transformer(bare, device, local_only=True)
-        except Exception:  # pylint: disable=broad-except
-            # Nothing usable in the cache (or it is partial). Fall back to a
-            # networked load below, which reports the real error if it fails.
+        except OSError:
+            # A miss, and *only* a miss: the hub raises LocalEntryNotFoundError
+            # (a FileNotFoundError, so an OSError) when the cache lacks the
+            # model. Deliberately narrow -- a failure after the weights load
+            # fine, e.g. torch rejecting an IETF_LLM_EMBED_DEVICE override like
+            # `cuda:3`, must propagate to the outer handler and report itself.
+            # Catching Exception here would misreport that as a cache miss, then
+            # make the user sit through a pointless networked reload before
+            # showing the real error. Fall back to the network below.
             pass
         if st_model is None:
             # Emit on stderr so it clusters with HuggingFace's tqdm bars
