@@ -11,7 +11,9 @@ once per `ietf-llm` invocation (see `cli.main.main`), invisibly. It is
 cheap to call:
 
   - **TTL guard.** If the local copy is younger than `RFC_TTL_SECONDS`
-    we don't touch the network at all.
+    (defined with the reader, in `singletons.rfcs`, which uses the same
+    threshold to decide when a miss is too old to trust) we don't touch
+    the network at all.
   - **Conditional GET.** Past the TTL we revalidate with `If-None-Match`
     from a `.etag` sidecar; an unchanged file comes back 304 with no
     body, and we just touch the local file's mtime to restart the TTL.
@@ -37,15 +39,10 @@ import requests
 
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
-from ...singletons.rfcs import RFC_FILES, rfc_index_dir
+from ...singletons.rfcs import RFC_FILES, RFC_TTL_SECONDS, rfc_index_dir
 from . import _mirror
 
 RFC_DATA_BASE = "https://rfc.fyi/var"
-
-#: Revalidate at most once per day. The series changes slowly and the
-#: 304 path is cheap, so this is just to avoid a needless request on
-#: back-to-back gathers (notably `ietf-llm --all`).
-RFC_TTL_SECONDS = 24 * 60 * 60
 
 _TIMEOUT = 30
 

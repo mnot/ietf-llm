@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -231,6 +232,59 @@ def test_render_rfc_unknown_number(isolated_home: Path) -> None:
 
 def test_render_rfc_not_gathered_message(isolated_home: Path) -> None:
     assert "has not been gathered" in rfcs.render_rfc("100")
+
+
+def _age_mirror(rfc_dir: Path, seconds: float) -> None:
+    """Backdate the mirror's mtime — the reader's staleness signal."""
+    path = rfc_dir / "rfcs.json"
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+def test_miss_on_fresh_index_is_a_bare_negative(isolated_home: Path) -> None:
+    # A just-written mirror can't be hiding a recent RFC, so the miss is
+    # authoritative and must not be hedged with a staleness caveat.
+    _seed(isolated_home)
+    out = rfcs.render_rfc("99999")
+    assert "No such RFC" in out
+    assert "last refreshed" not in out
+
+
+def test_miss_on_stale_index_admits_it_may_be_stale(isolated_home: Path) -> None:
+    # The RFC9846 case: past the TTL a miss is indistinguishable from
+    # "published since we mirrored", so it must say so rather than assert
+    # a negative the caller would read as authoritative.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, rfcs.RFC_TTL_SECONDS + 60)
+    out = rfcs.render_rfc("99999")
+    assert "No such RFC" in out
+    assert "last refreshed" in out
+
+
+def test_stale_miss_reports_the_age_in_days(isolated_home: Path) -> None:
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    assert "8 days ago" in rfcs.render_rfc("99999")
+
+
+def test_stale_miss_reports_hours_under_a_day(isolated_home: Path) -> None:
+    # Just past a 24h TTL there are no whole days to report; the message
+    # must not read "0 days ago".
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, rfcs.RFC_TTL_SECONDS + 3600)
+    out = rfcs.render_rfc("99999")
+    assert "25 hours ago" in out or "1 day ago" in out
+    assert "0 days" not in out
+
+
+def test_hit_on_stale_index_is_unaffected(isolated_home: Path) -> None:
+    # Staleness only clouds a *miss*. A hit is a hit — no caveat, and the
+    # reader must not go looking for one.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 30 * 86400)
+    out = rfcs.render_rfc("200")
+    assert "RFC200 — Quantum" in out
+    assert "last refreshed" not in out
 
 
 # --- Writer: ensure_rfc_index ---------------------------------------------
