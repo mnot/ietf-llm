@@ -34,38 +34,57 @@ DEFAULT_HEADERS = {
 }
 
 _SESSION: Optional[requests.Session] = None
+_NO_RETRY_SESSION: Optional[requests.Session] = None
 _SESSION_LOCK = threading.Lock()
 
 
-def http_session() -> requests.Session:
-    """Return the process-wide pooled, retrying `requests.Session`.
+def _build_session(retry: Any) -> requests.Session:
+    session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def http_session(*, retrying: bool = True) -> requests.Session:
+    """Return a process-wide pooled `requests.Session`.
 
     Lazily built under a lock (the MCP runner can gather two corpora in
     separate threads); urllib3's underlying pool is thread-safe for the
-    concurrent GETs the pipeline issues."""
-    global _SESSION  # pylint: disable=global-statement
-    if _SESSION is None:
+    concurrent GETs the pipeline issues.
+
+    `retrying=True` (the default, and what every gather fetch wants) mounts
+    the retrying adapter: a gather is a background job, so riding out a blip
+    beats failing a stage. `retrying=False` returns a separate session whose
+    adapter never retries — for a caller who is *waiting* on the result and
+    has a correct answer to fall back on. See `governed_get`.
+    """
+    global _SESSION, _NO_RETRY_SESSION  # pylint: disable=global-statement
+    if retrying:
+        if _SESSION is None:
+            with _SESSION_LOCK:
+                if _SESSION is None:
+                    _SESSION = _build_session(
+                        Retry(
+                            total=3,
+                            backoff_factor=0.5,
+                            status_forcelist=(429, 500, 502, 503, 504),
+                            allowed_methods=frozenset({"GET", "HEAD"}),
+                            respect_retry_after_header=True,
+                            raise_on_status=False,
+                        )
+                    )
+        return _SESSION
+    if _NO_RETRY_SESSION is None:
         with _SESSION_LOCK:
-            if _SESSION is None:
-                session = requests.Session()
-                retry = Retry(
-                    total=3,
-                    backoff_factor=0.5,
-                    status_forcelist=(429, 500, 502, 503, 504),
-                    allowed_methods=frozenset({"GET", "HEAD"}),
-                    respect_retry_after_header=True,
-                    raise_on_status=False,
-                )
-                adapter = HTTPAdapter(
-                    pool_connections=8, pool_maxsize=8, max_retries=retry
-                )
-                session.mount("https://", adapter)
-                session.mount("http://", adapter)
-                _SESSION = session
-    return _SESSION
+            if _NO_RETRY_SESSION is None:
+                _NO_RETRY_SESSION = _build_session(0)
+    return _NO_RETRY_SESSION
 
 
-def governed_get(url: str, **kwargs: Any) -> requests.Response:
+def governed_get(
+    url: str, *, retrying: bool = True, **kwargs: Any
+) -> requests.Response:
     """GET `url` through the shared session while holding a per-host
     concurrency slot (see `http_governor`).
 
@@ -74,10 +93,21 @@ def governed_get(url: str, **kwargs: Any) -> requests.Response:
     fan-out or several concurrent gathers can never exceed the per-host budget,
     datatracker especially. The GET is non-streaming, so the slot is held for
     the whole request including the body transfer — which is what bounds
-    concurrency through large draft / RFC downloads. Callers handle status,
-    retries (via the adapter), and metrics exactly as for a bare session GET."""
+    concurrency through large draft / RFC downloads. Callers handle status and
+    metrics exactly as for a bare session GET.
+
+    **`timeout` is not a deadline.** requests applies it per connect and per
+    read, and the default adapter retries (`total=3`, `respect_retry_after_
+    header=True`), so a host answering `429 Retry-After: 30` makes a
+    `timeout=5` call take ~90s of server-dictated sleep. That is fine for a
+    gather and wrong for a read with someone waiting on it, which is what
+    `retrying=False` is for: it selects the non-retrying session, so the call
+    is bounded by the connect + read timeouts (plus any wait for the per-host
+    slot). Pass it when a failed fetch has a correct fallback and latency
+    matters more than riding out a blip.
+    """
     with host_slot(url):
-        return http_session().get(url, **kwargs)
+        return http_session(retrying=retrying).get(url, **kwargs)
 
 
 def fetch_resource(

@@ -268,14 +268,24 @@ def test_stale_miss_reports_the_age_in_days(isolated_home: Path) -> None:
     assert "8 days ago" in rfcs.render_rfc("99999")
 
 
-def test_stale_miss_reports_hours_under_a_day(isolated_home: Path) -> None:
-    # Just past a 24h TTL there are no whole days to report; the message
-    # must not read "0 days ago".
-    rfc_dir = _seed(isolated_home)
-    _age_mirror(rfc_dir, rfcs.RFC_TTL_SECONDS + 3600)
-    out = rfcs.render_rfc("99999")
-    assert "25 hours ago" in out or "1 day ago" in out
-    assert "0 days" not in out
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (8 * 86400, "8 days"),
+        (86400, "1 day"),  # singular, not "1 days"
+        (86400 + 3600, "1 day"),  # whole days only; no "1 day 1 hour"
+        (3600, "1 hour"),  # sub-day: must not render "0 days"
+        (2 * 3600, "2 hours"),
+        (60, "1 hour"),  # never "0 hours"
+    ],
+)
+def test_format_age(seconds: int, expected: str) -> None:
+    # Unit-tested directly, not through render_rfc: `no_such_rfc` only calls
+    # this past the TTL, so with today's 24h TTL the sub-day cases are
+    # unreachable from there and a render-level test would pass on the days
+    # branch without ever exercising them. The sub-day branch guards a TTL
+    # lowered below a day, which would otherwise render "0 days ago".
+    assert rfcs._format_age(seconds) == expected
 
 
 def test_hit_on_stale_index_is_unaffected(isolated_home: Path) -> None:
@@ -450,6 +460,45 @@ def test_no_revalidation_without_a_mirror(
     assert calls == []
 
 
+def test_revalidation_does_not_retry(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # The read path must ask for the non-retrying session. `timeout` is not a
+    # deadline: the retrying adapter honours Retry-After, so a 429/503 from
+    # rfc.fyi would sleep ~90s past a 5s timeout with a caller waiting on it.
+    # A failed fetch has a correct fallback (the honest stale miss), so one
+    # attempt then bail is the right trade.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    seen: List[Any] = []
+
+    def fake_get(url: str, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("retrying"))
+        return _FakeResponse(503)
+
+    monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)
+    out = mcp_rfcs._render_rfc_live("400")
+    assert seen == [False]
+    # ...and a 503 still lands on the honest message, not a bare negative.
+    assert "No such RFC" in out and "last refreshed" in out
+
+
+def test_gather_still_retries(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The trade above is read-path only. A gather is a background job with
+    # nobody waiting, so riding out a blip still beats failing the stage.
+    seen: List[Any] = []
+
+    def fake_get(url: str, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("retrying"))
+        return _FakeResponse(200, _body_for(url))
+
+    monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)
+    gather_rfcs.ensure_rfc_index(force=True)
+    assert seen and all(r is True for r in seen)
+
+
 def test_revalidate_never_materialises_the_mirror(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
 ) -> None:
@@ -498,9 +547,19 @@ def _install_stub(
     calls: List[Dict[str, Any]] = []
 
     def fake_get(
-        url: str, headers: Optional[Dict[str, str]] = None, timeout: Any = None
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Any = None,
+        **kwargs: Any,
     ):  # noqa: ANN202,ARG001
-        calls.append({"url": url, "headers": headers or {}})
+        calls.append(
+            {
+                "url": url,
+                "headers": headers or {},
+                "timeout": timeout,
+                "retrying": kwargs.get("retrying"),
+            }
+        )
         return handler(url, headers or {})
 
     monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)

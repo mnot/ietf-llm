@@ -56,8 +56,11 @@ RFC_DATA_BASE = "https://rfc.fyi/var"
 
 _TIMEOUT = 30
 
-#: The read path's bounded revalidation (see `revalidate_index`). Short: a
-#: caller is waiting on it, unlike a gather.
+#: Per-attempt connect/read timeout for the read path's revalidation (see
+#: `revalidate_index`). Short, and paired with `retrying=False` in
+#: `_refresh_one`: a caller is waiting on this, unlike a gather, and a
+#: `timeout` alone is not a deadline — with the retrying session a host
+#: answering `429 Retry-After: 30` would sleep ~90s past it.
 _REVALIDATE_TIMEOUT = 5
 
 #: Back off this long after a revalidation *attempt*, so a burst of misses
@@ -104,8 +107,15 @@ def revalidate_index() -> None:
     stale catalog is still a useful catalog, but here staleness is exactly
     what makes the answer wrong, so revalidating in the background would
     leave this very call answering "no such RFC" and only fix the retry.
-    The caller pays a bounded wait instead. Cheap because only a *stale
-    miss* gets here: a hit, or any miss inside the TTL, never calls it.
+    The caller waits instead. Cheap because only a *stale miss* gets here:
+    a hit, or any miss inside the TTL, never calls it.
+
+    That wait is kept short by fetching with `retrying=False` — a `timeout`
+    alone is not a deadline, and the retrying session would sleep through a
+    `Retry-After` far past it. Not retrying is the right trade here anyway:
+    we have a correct answer to fall back on (the honest stale miss), so a
+    caller is better served by it now than by a slow success. Bounded by the
+    connect + read timeouts, plus any wait for the per-host slot.
 
     Fetches only `rfcs.json` (existence); the reference graph stays on the
     gather path. Throttled and single-flighted — when a revalidation is
@@ -132,7 +142,7 @@ def revalidate_index() -> None:
             _EXISTENCE_FILE,
             Verbosity.QUIET,
             force=True,
-            timeout=_REVALIDATE_TIMEOUT,
+            live=True,
         )
     finally:
         _end_attempt()
@@ -194,8 +204,10 @@ def _refresh_one(
     name: str,
     verbosity: Verbosity,
     force: bool,
-    timeout: int = _TIMEOUT,
+    live: bool = False,
 ) -> None:
+    """Refresh one mirrored file. `live` marks the read path — someone is
+    waiting, so use the short timeout and don't retry (see `governed_get`)."""
     body_path = os.path.join(target_dir, name)
     etag_path = body_path + ".etag"
     if not force and _mirror.is_fresh(body_path, RFC_TTL_SECONDS):
@@ -206,7 +218,12 @@ def _refresh_one(
         headers["If-None-Match"] = etag
     url = f"{RFC_DATA_BASE}/{name}"
     try:
-        response = governed_get(url, headers=headers, timeout=timeout)
+        response = governed_get(
+            url,
+            headers=headers,
+            timeout=_REVALIDATE_TIMEOUT if live else _TIMEOUT,
+            retrying=not live,
+        )
     except requests.RequestException as err:
         log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
         return

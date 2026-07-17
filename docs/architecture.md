@@ -973,11 +973,11 @@ doesn't look like staleness, either, because RFCs don't publish in number
 order: a stale mirror has *scattered holes*, so 9845 and 9847 can both be
 present while 9846 is missing.
 
-So a **stale miss** — and only a stale miss — spends a bounded live
-revalidation of `rfcs.json` before answering (`gather.sources.rfcs.
-revalidate_index`, called from `mcp/rfcs.py`). A hit, and any miss inside the
-TTL, is answered offline, so the common path never touches the network; a miss
-is rare, which is what keeps this cheap. Deliberately **not**
+So a **stale miss** — and only a stale miss — spends a live revalidation of
+`rfcs.json` before answering (`gather.sources.rfcs.revalidate_index`, called
+from `mcp/rfcs.py`). A hit, and any miss inside the TTL, is answered offline,
+so the common path never touches the network; a miss is rare, which is what
+keeps this cheap. Deliberately **not**
 stale-while-revalidate like the seed catalog: a stale catalog is still a useful
 catalog, but here staleness is exactly what makes the answer wrong, so
 revalidating in the background would leave *this* call still saying "no such
@@ -986,7 +986,17 @@ RFC" and only fix the retry.
 Same gate (`freshness.gather_enabled`), so the HTTP replica keeps its offline
 boundary. It fetches only `rfcs.json` (existence); the reference graph stays on
 the gather path and may briefly lag a brand-new RFC. Throttled and
-single-flighted, so a burst of misses or a down host can't hammer rfc.fyi. Note
+single-flighted, so a burst of misses or a down host can't hammer rfc.fyi.
+
+It also fetches with `retrying=False`, which matters more than it sounds: a
+`timeout` is **not** a deadline — requests applies it per connect and per read,
+and the shared session's adapter retries with `respect_retry_after_header=True`,
+so a host answering `429 Retry-After: 30` sleeps ~90s past a 5s timeout. That is
+fine for a gather (a background job, where riding out a blip beats failing a
+stage) and wrong for a read with a caller waiting. Not retrying is the right
+trade here for a second reason: this path *has* a correct answer to fall back on
+— the honest stale miss — so the caller is better served by it now than by a
+slow success. See `governed_get`. Note
 the split that keeps the reader honest: `singletons/rfcs.py` stays purely
 offline and merely *classifies* the miss (`is_stale_miss`); the network lives in
 the gather-side mirror module, and `mcp/rfcs.py` composes the two. When the gate
