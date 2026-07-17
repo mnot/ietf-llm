@@ -23,7 +23,9 @@ Everything lands in `~/.cache/ietf-llm/<name>/`.
 
 Gathering also builds a **semantic-search index**. By default it uses
 [`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5) on-device, which needs
-the `local-embeddings` extra (~130 MB, downloaded once and cached).
+the `local-embeddings` extra (~130 MB, downloaded once and cached). The download is the only
+time HuggingFace is contacted: once the weights are in `~/.cache/huggingface/` they are loaded
+from there alone, so searching a gathered corpus works offline.
 
 Prefer not to run a model locally? Omit `[local-embeddings]` and point at a remote
 OpenAI-compatible endpoint instead — see the [remote embedding backend](models.md). Or pass

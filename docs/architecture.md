@@ -847,6 +847,18 @@ point; `IETF_LLM_EMBED_DEVICE` overrides (`cpu` / `mps` / `cuda`). This is a
 workaround for the upstream PyTorch MPS memory bug (pytorch/pytorch#77753,
 #164299) — **revisit and drop back to MPS if that is fixed.**
 
+**Weights load from the cache alone.** `_load_sentence_transformer` constructs
+the model with `local_files_only=True` first, and only falls back to a
+networked load (announcing it on stderr) when that misses. Left to itself the
+hub client revalidates every file's ETag against huggingface.co on *each* load
+even when the model is fully cached — ~4.7s of round-trips per process for
+bge-small, and worse on a machine that is offline rather than merely slow,
+since it falls back to the cache only once those requests time out. The read
+path is meant to work offline, so a cache hit must not touch the network. The
+fallback keeps a first run working. A side benefit: cached weights are
+effectively revision-pinned, and a silent upstream model update would not match
+the vectors already in the index.
+
 **Embedding pass.** The on-device build streams chunks through a bounded
 length-sort buffer (`_stream_embed`) rather than embedding file by file:
 chunks are pooled across files up to `_EMBED_BUFFER`, embedded in one call so

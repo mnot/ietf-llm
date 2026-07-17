@@ -126,6 +126,21 @@ def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
     return "cuda" if _cuda_available() else "cpu"
 
 
+def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool) -> Any:
+    """Build the underlying SentenceTransformer. Isolated for testing."""
+    # pylint: disable=import-outside-toplevel,import-error,line-too-long
+    from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
+        SentenceTransformer,
+    )
+
+    return SentenceTransformer(
+        bare,
+        device=device,
+        trust_remote_code=False,
+        local_files_only=local_only,
+    )
+
+
 def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
     """Construct (and persist registration of) a sentence-transformers model.
 
@@ -160,36 +175,46 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
         return None
     try:
         models = read_models()
-        first_use = not any(m.get("name") == bare for m in models)
-        if first_use:
-            # Emit on stderr so it clusters with HuggingFace's tqdm bars
-            # and survives stdout redirection. Always shown (even with
-            # --quiet) because a multi-minute network operation deserves
-            # a heads-up.
-            print(
-                f"\nFirst use of '{bare}': downloading model weights from "
-                f"HuggingFace (typically 100-500 MB; one-time, then cached "
-                f"in ~/.cache/huggingface/).\n",
-                file=sys.stderr,
-                flush=True,
-            )
+        if not any(m.get("name") == bare for m in models):
             models.append({"name": bare, "trust_remote_code": False})
             write_models(models)
         # The plugin lazily builds its underlying SentenceTransformer with no
         # device argument (auto-selecting MPS on Apple Silicon), which we must
         # not do — see `_embed_device`. Construct the wrapper (cheap) and
-        # pre-seed its `_model` on the chosen device; the HF download triggers
-        # here on first use.
+        # pre-seed its `_model` on the chosen device.
         model = SentenceTransformerModel(f"{_ST_PREFIX}{bare}", bare, False)
         device = _embed_device(verbose)
-        # pylint: disable=import-outside-toplevel,import-error,line-too-long
-        from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
-            SentenceTransformer,
-        )
-
-        model._model = SentenceTransformer(  # pylint: disable=protected-access
-            bare, device=device, trust_remote_code=False
-        )
+        # Load from the HuggingFace cache alone first. Left to itself the hub
+        # client revalidates every file's ETag against huggingface.co on each
+        # load, even when the model is fully cached: ~4.7s of round-trips per
+        # process for bge-small, and worse on a machine that is offline rather
+        # than merely slow (it falls back to the cache only once the requests
+        # time out). Reading a search index is meant to work offline, so a hit
+        # here must not touch the network. A miss raises, and only then do we
+        # fall through and let the hub download. Weights are revision-pinned
+        # once cached, which we want anyway: a silent upstream model update
+        # would not match the vectors already in the index.
+        st_model: Any = None
+        try:
+            st_model = _construct_sentence_transformer(bare, device, local_only=True)
+        except Exception:  # pylint: disable=broad-except
+            # Nothing usable in the cache (or it is partial). Fall back to a
+            # networked load below, which reports the real error if it fails.
+            pass
+        if st_model is None:
+            # Emit on stderr so it clusters with HuggingFace's tqdm bars
+            # and survives stdout redirection. Always shown (even with
+            # --quiet) because a multi-minute network operation deserves
+            # a heads-up.
+            print(
+                f"\nFetching '{bare}' from HuggingFace: it is not in the local "
+                f"cache (typically 100-500 MB; one-time, then cached in "
+                f"~/.cache/huggingface/ and loaded offline thereafter).\n",
+                file=sys.stderr,
+                flush=True,
+            )
+            st_model = _construct_sentence_transformer(bare, device, local_only=False)
+        model._model = st_model  # pylint: disable=protected-access
         log(f"Loaded {bare} on device={device}.", verbose, level=LogLevel.PROGRESS)
         return model
     except Exception as err:  # pylint: disable=broad-except
