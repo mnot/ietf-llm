@@ -246,6 +246,24 @@ def _format_age(seconds: float) -> str:
     return f"{hours} hour{'s' if hours != 1 else ''}"
 
 
+def is_stale_miss(number: str) -> bool:
+    """True when `number` is absent from the mirror *and* the mirror is past
+    its TTL — i.e. the only case where the miss might be staleness rather
+    than truth, and so the only case worth spending a live revalidation on.
+
+    False for a hit, for a miss inside the TTL (authoritative), and when
+    there's no mirror at all (nothing to revalidate — that's a gather).
+    """
+    data = _load()
+    if data is None:
+        return False
+    match = re.search(r"\d+", str(number))
+    if not match or data.has(rfc_num_to_name(match.group(0))):
+        return False
+    age = _index_age()
+    return age is not None and age >= RFC_TTL_SECONDS
+
+
 def no_such_rfc(number: str) -> str:
     """Render a miss.
 

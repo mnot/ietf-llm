@@ -114,10 +114,19 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   the only writer. Keep that boundary. (`get_wg_file_cache_dir` *creates*
   the dir — use a read-only existence check at the tool boundary so a
   mistyped corpus name doesn't materialise a junk cache.)
-  - **The one exception:** the gather tools (`start_gather` /
-    `gather_status`) let MCP initiate a gather, so they *do* write and reach
-    the network. They are the only sanctioned write/network path on the
-    server — everything else stays read-only and offline. They default **on**
+  - **The exceptions, all behind one gate.** `freshness.gather_enabled` is
+    the project's sanctioned networked-read gate: a networked *read* belongs
+    on the same side of the line as the networked *writer*, so both default on
+    for stdio and off for the HTTP replica, which keeps that deployment
+    read-only. Behind it today: the **gather tools** (`start_gather` /
+    `gather_status`), which let MCP initiate a gather, so they write *and*
+    reach the network; the **live Datatracker lookups** (`meeting_schedule`,
+    `draft_status`, `overview(live=True)`); the **seed catalog** refresh in
+    `list_corpora`; and **`get_rfc`**, which revalidates the `_rfc/` mirror on
+    a stale miss (`docs/architecture.md`, "The networked read exception").
+    Adding a *new* one is a real design decision — argue it against that
+    section — but it is a sanctioned pattern, not a boundary breach.
+    Everything else stays read-only and offline. The gather tools default **on**
     for a local stdio server (that user can already run `ietf-llm` against the
     same cache) and **off** for the shared HTTP deployment (keeping it
     read-only); `IETF_LLM_ENABLE_GATHER` overrides either way, and an

@@ -6,9 +6,16 @@ RFC series (`rfcs.json`, `refs.json`, `tags.json`), rebuilt from
 re-run that pipeline we mirror its output into
 `~/.cache/ietf-llm/_rfc/`, where `rfcs.RfcData` reads it network-free.
 
-This is a singleton, not a per-corpus artifact: `ensure_rfc_index` runs
-once per `ietf-llm` invocation (see `cli.main.main`), invisibly. It is
-cheap to call:
+Two entry points write that mirror:
+
+  - `ensure_rfc_index` — the gather path. A singleton, not a per-corpus
+    artifact: it runs once per `ietf-llm` invocation (see `cli.main.main`),
+    invisibly, and refreshes all three files.
+  - `revalidate_index` — the read path, for a `get_rfc` miss against a
+    mirror too old to trust. Gated on `gather_enabled`, throttled, bounded,
+    and `rfcs.json` only. See its docstring.
+
+`ensure_rfc_index` is cheap to call:
 
   - **TTL guard.** If the local copy is younger than `RFC_TTL_SECONDS`
     (defined with the reader, in `singletons.rfcs`, which uses the same
@@ -34,6 +41,9 @@ the reader degrades to a "not gathered yet" message.
 from __future__ import annotations
 
 import os
+import threading
+import time
+from typing import Optional
 
 import requests
 
@@ -45,6 +55,23 @@ from . import _mirror
 RFC_DATA_BASE = "https://rfc.fyi/var"
 
 _TIMEOUT = 30
+
+#: The read path's bounded revalidation (see `revalidate_index`). Short: a
+#: caller is waiting on it, unlike a gather.
+_REVALIDATE_TIMEOUT = 5
+
+#: Back off this long after a revalidation *attempt*, so a burst of misses
+#: (or a down host) can't hammer rfc.fyi. Success and 304 both restart the
+#: mirror's own TTL, so in practice this only governs the failure path.
+_REVALIDATE_BACKOFF = 3600.0
+
+#: Existence lives in rfcs.json alone; refs/tags are the reference graph,
+#: which a miss doesn't need and which lags upstream anyway.
+_EXISTENCE_FILE = "rfcs.json"
+
+_lock = threading.Lock()
+_LAST_ATTEMPT: Optional[float] = None
+_IN_FLIGHT = False
 
 
 def ensure_rfc_index(
@@ -65,7 +92,110 @@ def ensure_rfc_index(
         _refresh_one(target_dir, name, verbosity, force)
 
 
-def _refresh_one(target_dir: str, name: str, verbosity: Verbosity, force: bool) -> None:
+def revalidate_index() -> None:
+    """Bring `rfcs.json` up to date now, for a read that would otherwise
+    answer from a mirror too old to trust. Never raises.
+
+    This is the sanctioned networked-read exception (`gather_enabled` —
+    as with the seed catalog and the live Datatracker lookups), so a
+    read-only HTTP replica never fetches and keeps its offline boundary.
+
+    Deliberately *not* stale-while-revalidate, unlike the seed catalog: a
+    stale catalog is still a useful catalog, but here staleness is exactly
+    what makes the answer wrong, so revalidating in the background would
+    leave this very call answering "no such RFC" and only fix the retry.
+    The caller pays a bounded wait instead. Cheap because only a *stale
+    miss* gets here: a hit, or any miss inside the TTL, never calls it.
+
+    Fetches only `rfcs.json` (existence); the reference graph stays on the
+    gather path. Throttled and single-flighted — when a revalidation is
+    already running or one was attempted recently, we return without
+    fetching and the caller falls back to the stale answer, which
+    `singletons.rfcs.no_such_rfc` reports honestly.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from ...freshness import gather_enabled
+
+    if not gather_enabled():
+        return
+    target_dir = rfc_index_dir()
+    # Before claiming an attempt: marking one would makedirs the mirror into
+    # existence, and a read must never materialise cache. Nothing mirrored
+    # yet is a gather, not a revalidation.
+    if not os.path.isdir(target_dir):
+        return
+    if not _begin_attempt():
+        return
+    try:
+        _refresh_one(
+            target_dir,
+            _EXISTENCE_FILE,
+            Verbosity.QUIET,
+            force=True,
+            timeout=_REVALIDATE_TIMEOUT,
+        )
+    finally:
+        _end_attempt()
+
+
+def reset_state() -> None:
+    """Clear the in-process throttle / single-flight state. For tests, which
+    reuse one process across many isolated caches (the disk marker resets with
+    the cache dir, but these module globals would leak)."""
+    global _LAST_ATTEMPT, _IN_FLIGHT  # pylint: disable=global-statement
+    with _lock:
+        _LAST_ATTEMPT = None
+        _IN_FLIGHT = False
+
+
+def _attempt_marker() -> str:
+    return os.path.join(rfc_index_dir(), f".{_EXISTENCE_FILE}.revalidated")
+
+
+def _begin_attempt() -> bool:
+    """Claim the right to revalidate: single-flight, and at most one attempt
+    per backoff window. Throttled in-process (which survives a cache dir we
+    cannot write the marker into) and on disk (which holds across processes,
+    and across a fetch that failed without touching the mirror)."""
+    global _LAST_ATTEMPT, _IN_FLIGHT  # pylint: disable=global-statement
+    now = time.monotonic()
+    with _lock:
+        if _IN_FLIGHT:
+            return False
+        if _LAST_ATTEMPT is not None and now - _LAST_ATTEMPT < _REVALIDATE_BACKOFF:
+            return False
+        if _mirror.is_fresh(_attempt_marker(), _REVALIDATE_BACKOFF):
+            _LAST_ATTEMPT = now  # memoise so we don't stat the disk every miss
+            return False
+        _LAST_ATTEMPT = now
+        _IN_FLIGHT = True
+    _mark_attempt()
+    return True
+
+
+def _end_attempt() -> None:
+    global _IN_FLIGHT  # pylint: disable=global-statement
+    with _lock:
+        _IN_FLIGHT = False
+
+
+def _mark_attempt() -> None:
+    path = _attempt_marker()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("")
+    except OSError:
+        pass
+
+
+def _refresh_one(
+    target_dir: str,
+    name: str,
+    verbosity: Verbosity,
+    force: bool,
+    timeout: int = _TIMEOUT,
+) -> None:
     body_path = os.path.join(target_dir, name)
     etag_path = body_path + ".etag"
     if not force and _mirror.is_fresh(body_path, RFC_TTL_SECONDS):
@@ -76,7 +206,7 @@ def _refresh_one(target_dir: str, name: str, verbosity: Verbosity, force: bool) 
         headers["If-None-Match"] = etag
     url = f"{RFC_DATA_BASE}/{name}"
     try:
-        response = governed_get(url, headers=headers, timeout=_TIMEOUT)
+        response = governed_get(url, headers=headers, timeout=timeout)
     except requests.RequestException as err:
         log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
         return
