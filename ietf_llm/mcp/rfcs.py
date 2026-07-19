@@ -4,11 +4,29 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from ..singletons.rfcs import render_rfc, render_search
+from ..singletons.rfcs import is_stale_miss, render_rfc, render_search
 from .common import _offload
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
+
+
+def _render_rfc_live(number: str) -> str:
+    """`render_rfc`, but don't report a miss the mirror is merely too old to
+    know about (the RFC9846 case: published after the last gather).
+
+    A hit — and a miss inside the TTL — is answered offline, so the common
+    path never touches the network. Only a stale miss spends a bounded live
+    revalidation, under the gather gate: on a read-only replica, or when the
+    fetch is throttled or fails, `render_rfc` still reports the stale miss
+    honestly rather than as a bare negative.
+    """
+    if is_stale_miss(number):
+        # pylint: disable-next=import-outside-toplevel
+        from ..gather.sources.rfcs import revalidate_index
+
+        revalidate_index()
+    return render_rfc(number)
 
 
 def register(server: "FastMCP") -> None:
@@ -55,5 +73,9 @@ def register(server: "FastMCP") -> None:
         `number` is an RFC number or name ("9110" or "RFC9110"). This is
         catalogue metadata, not the document body — to read the prose,
         follow the text link in the output.
+
+        Reads a local mirror of the RFC series. If the number is missing
+        and that mirror is stale, it is refreshed live before answering,
+        so a just-published RFC still resolves.
         """
-        return await _offload(render_rfc, number)
+        return await _offload(_render_rfc_live, number)

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..paths import get_cache_dir
@@ -36,6 +37,14 @@ RFC_DIR = "_rfc"
 
 #: The three artifacts mirrored from rfc.fyi.
 RFC_FILES = ("rfcs.json", "refs.json", "tags.json")
+
+#: How long a mirrored copy is considered current. The series changes
+#: slowly, so a day is plenty. This lives here, with the reader, because
+#: both sides need the same notion of "too old to trust": the writer
+#: (`gather.sources.rfcs`) imports it as the refresh TTL, and the reader
+#: uses it to tell a confident "no such RFC" from a miss the mirror is
+#: merely too old to know about.
+RFC_TTL_SECONDS = 24 * 60 * 60
 
 #: A term must be at least this long to match (mirrors rfc.fyi).
 PREFIX_LEN = 3
@@ -221,6 +230,62 @@ _NOT_GATHERED = (
 )
 
 
+def _index_age() -> Optional[float]:
+    """Seconds since the mirror was last written, or None if it's absent."""
+    try:
+        return time.time() - os.path.getmtime(_rfc_file("rfcs.json"))
+    except OSError:
+        return None
+
+
+def _format_age(seconds: float) -> str:
+    days = int(seconds // 86400)
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''}"
+    hours = max(1, int(seconds // 3600))
+    return f"{hours} hour{'s' if hours != 1 else ''}"
+
+
+def is_stale_miss(number: str) -> bool:
+    """True when `number` is absent from the mirror *and* the mirror is past
+    its TTL — i.e. the only case where the miss might be staleness rather
+    than truth, and so the only case worth spending a live revalidation on.
+
+    False for a hit, for a miss inside the TTL (authoritative), and when
+    there's no mirror at all (nothing to revalidate — that's a gather).
+    """
+    data = _load()
+    if data is None:
+        return False
+    match = re.search(r"\d+", str(number))
+    if not match or data.has(rfc_num_to_name(match.group(0))):
+        return False
+    age = _index_age()
+    return age is not None and age >= RFC_TTL_SECONDS
+
+
+def no_such_rfc(number: str) -> str:
+    """Render a miss.
+
+    A miss has two indistinguishable causes: the number really isn't in the
+    series, or it was published since we last mirrored the index. Past the
+    TTL we can't tell, so say so rather than assert a bare negative the
+    caller would read as authoritative — RFCs don't publish in number order,
+    so a stale mirror has *scattered* holes, not a missing tail, and "9845
+    and 9847 are here" is no evidence that 9846 isn't real.
+    """
+    message = f"No such RFC: `{number}`"
+    age = _index_age()
+    if age is None or age < RFC_TTL_SECONDS:
+        return message
+    return (
+        f"{message} — but the local RFC index was last refreshed "
+        f"{_format_age(age)} ago, so an RFC published since then would be "
+        "missing from it. Re-gather (`ietf-llm <corpus>`, any corpus) to "
+        "refresh the index and retry before concluding it doesn't exist."
+    )
+
+
 # --- Filtering + rendering ------------------------------------------------
 
 
@@ -299,7 +364,7 @@ def render_rfc(number: str) -> str:
     match = re.search(r"\d+", str(number))
     name = rfc_num_to_name(match.group(0)) if match else ""
     if not name or not data.has(name):
-        return f"No such RFC: `{number}`"
+        return no_such_rfc(number)
     rfc = data.rfcs[name]
     num = rfc_name_to_num(name)
     inbound = data.inbound_refs(name)

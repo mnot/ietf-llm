@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +26,7 @@ import pytest
 
 from ietf_llm.singletons import rfcs
 from ietf_llm.gather.sources import rfcs as gather_rfcs
+from ietf_llm.mcp import rfcs as mcp_rfcs
 
 # --- Synthetic dataset -----------------------------------------------------
 
@@ -233,6 +235,284 @@ def test_render_rfc_not_gathered_message(isolated_home: Path) -> None:
     assert "has not been gathered" in rfcs.render_rfc("100")
 
 
+def _age_mirror(rfc_dir: Path, seconds: float) -> None:
+    """Backdate the mirror's mtime — the reader's staleness signal."""
+    path = rfc_dir / "rfcs.json"
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+def test_miss_on_fresh_index_is_a_bare_negative(isolated_home: Path) -> None:
+    # A just-written mirror can't be hiding a recent RFC, so the miss is
+    # authoritative and must not be hedged with a staleness caveat.
+    _seed(isolated_home)
+    out = rfcs.render_rfc("99999")
+    assert "No such RFC" in out
+    assert "last refreshed" not in out
+
+
+def test_miss_on_stale_index_admits_it_may_be_stale(isolated_home: Path) -> None:
+    # The RFC9846 case: past the TTL a miss is indistinguishable from
+    # "published since we mirrored", so it must say so rather than assert
+    # a negative the caller would read as authoritative.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, rfcs.RFC_TTL_SECONDS + 60)
+    out = rfcs.render_rfc("99999")
+    assert "No such RFC" in out
+    assert "last refreshed" in out
+
+
+def test_stale_miss_reports_the_age_in_days(isolated_home: Path) -> None:
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    assert "8 days ago" in rfcs.render_rfc("99999")
+
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (8 * 86400, "8 days"),
+        (86400, "1 day"),  # singular, not "1 days"
+        (86400 + 3600, "1 day"),  # whole days only; no "1 day 1 hour"
+        (3600, "1 hour"),  # sub-day: must not render "0 days"
+        (2 * 3600, "2 hours"),
+        (60, "1 hour"),  # never "0 hours"
+    ],
+)
+def test_format_age(seconds: int, expected: str) -> None:
+    # Unit-tested directly, not through render_rfc: `no_such_rfc` only calls
+    # this past the TTL, so with today's 24h TTL the sub-day cases are
+    # unreachable from there and a render-level test would pass on the days
+    # branch without ever exercising them. The sub-day branch guards a TTL
+    # lowered below a day, which would otherwise render "0 days ago".
+    assert rfcs._format_age(seconds) == expected
+
+
+def test_hit_on_stale_index_is_unaffected(isolated_home: Path) -> None:
+    # Staleness only clouds a *miss*. A hit is a hit — no caveat, and the
+    # reader must not go looking for one.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 30 * 86400)
+    out = rfcs.render_rfc("200")
+    assert "RFC200 — Quantum" in out
+    assert "last refreshed" not in out
+
+
+# --- Read-path revalidation (get_rfc on a stale miss) ----------------------
+
+# A newcomer, absent from the seeded mirror: the RFC9846 shape — published
+# after the last gather, so only a live revalidation can resolve it.
+_RFC400 = {
+    "title": "Recently Published Protocol",
+    "status": "current",
+    "stream": "ietf",
+    "level": "std",
+    "wg": "new",
+    "area": "art",
+    "keywords": [],
+    "obsoletes": [],
+}
+
+
+def _grown_body(url: str) -> bytes:
+    """Upstream as it looks once RFC400 has been published."""
+    if url.endswith("rfcs.json"):
+        return json.dumps({**_RFCS, "RFC400": _RFC400}).encode("utf-8")
+    return _body_for(url)
+
+
+@pytest.fixture(autouse=True)
+def _reset_revalidate_state() -> Any:
+    """The revalidation throttle lives in module globals; reset it around
+    every test so one test's attempt can't throttle the next."""
+    gather_rfcs.reset_state()
+    yield
+    gather_rfcs.reset_state()
+
+
+@pytest.fixture(name="gather_on")
+def _gather_on(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Enable the gather gate — the sanctioned networked-read exception."""
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+
+
+def test_stale_miss_revalidates_and_resolves(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # The whole point: a number published since the last gather resolves
+    # rather than coming back as "No such RFC".
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, _grown_body(url)))
+    out = mcp_rfcs._render_rfc_live("400")
+    assert "RFC400 — Recently Published Protocol" in out
+    assert "No such RFC" not in out
+
+
+def test_stale_miss_fetches_only_the_existence_file(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # refs/tags are the reference graph — not needed to answer existence,
+    # and they lag upstream anyway. Don't pull ~1.6MB to say yes or no.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    calls = _install_stub(
+        monkeypatch, lambda url, hdrs: _FakeResponse(200, _grown_body(url))
+    )
+    mcp_rfcs._render_rfc_live("400")
+    assert calls and all(c["url"].endswith("rfcs.json") for c in calls)
+
+
+def test_hit_never_touches_the_network(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # The common path stays offline even when the mirror is ancient.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 30 * 86400)
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
+    assert "RFC200 — Quantum" in mcp_rfcs._render_rfc_live("200")
+    assert calls == []
+
+
+def test_fresh_miss_never_touches_the_network(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # Inside the TTL a miss is authoritative; fetching would be pointless.
+    _seed(isolated_home)
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
+    assert "No such RFC" in mcp_rfcs._render_rfc_live("99999")
+    assert calls == []
+
+
+def test_revalidation_is_gated_off_without_gather(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A read-only HTTP replica keeps its offline boundary: no fetch, and the
+    # stale miss is still reported honestly rather than as a bare negative.
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
+    out = mcp_rfcs._render_rfc_live("400")
+    assert calls == []
+    assert "No such RFC" in out and "last refreshed" in out
+
+
+def test_failed_revalidation_falls_back_to_the_honest_miss(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # rfc.fyi down: never raise into the tool, and don't let the failure
+    # turn the stale miss back into a confident negative.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+
+    def _boom(url: str, hdrs: Dict[str, str]) -> Any:
+        import requests  # pylint: disable=import-outside-toplevel
+
+        raise requests.ConnectionError("rfc.fyi unreachable")
+
+    _install_stub(monkeypatch, _boom)
+    out = mcp_rfcs._render_rfc_live("400")
+    assert "No such RFC" in out and "last refreshed" in out
+
+
+def test_revalidation_is_throttled_across_misses(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # A burst of misses against a down host must not hammer rfc.fyi: one
+    # attempt per backoff window, the rest fall back to the stale answer.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+
+    def _boom(url: str, hdrs: Dict[str, str]) -> Any:
+        import requests  # pylint: disable=import-outside-toplevel
+
+        raise requests.ConnectionError("rfc.fyi unreachable")
+
+    calls = _install_stub(monkeypatch, _boom)
+    for _ in range(5):
+        mcp_rfcs._render_rfc_live("400")
+    assert len(calls) == 1
+
+
+def test_revalidation_sends_the_stored_etag(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # A 304 is the common case (the series changes slowly), and it both
+    # costs no body and restarts the TTL — so the next miss is authoritative
+    # and doesn't re-fetch.
+    rfc_dir = _seed(isolated_home)
+    (rfc_dir / "rfcs.json.etag").write_text('W/"v1"', encoding="utf-8")
+    _age_mirror(rfc_dir, 8 * 86400)
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(304))
+    out = mcp_rfcs._render_rfc_live("99999")
+    assert calls and calls[0]["headers"].get("If-None-Match") == 'W/"v1"'
+    # 304 touched the mirror, so the miss is now inside the TTL: no caveat.
+    assert "No such RFC" in out and "last refreshed" not in out
+
+
+def test_no_revalidation_without_a_mirror(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # Nothing mirrored yet is a gather, not a revalidation; the tool says so.
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
+    assert "has not been gathered" in mcp_rfcs._render_rfc_live("400")
+    assert calls == []
+
+
+def test_revalidation_does_not_retry(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # The read path must ask for the non-retrying session. `timeout` is not a
+    # deadline: the retrying adapter honours Retry-After, so a 429/503 from
+    # rfc.fyi would sleep ~90s past a 5s timeout with a caller waiting on it.
+    # A failed fetch has a correct fallback (the honest stale miss), so one
+    # attempt then bail is the right trade.
+    rfc_dir = _seed(isolated_home)
+    _age_mirror(rfc_dir, 8 * 86400)
+    seen: List[Any] = []
+
+    def fake_get(url: str, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("retrying"))
+        return _FakeResponse(503)
+
+    monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)
+    out = mcp_rfcs._render_rfc_live("400")
+    assert seen == [False]
+    # ...and a 503 still lands on the honest message, not a bare negative.
+    assert "No such RFC" in out and "last refreshed" in out
+
+
+def test_gather_still_retries(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The trade above is read-path only. A gather is a background job with
+    # nobody waiting, so riding out a blip still beats failing the stage.
+    seen: List[Any] = []
+
+    def fake_get(url: str, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("retrying"))
+        return _FakeResponse(200, _body_for(url))
+
+    monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)
+    gather_rfcs.ensure_rfc_index(force=True)
+    assert seen and all(r is True for r in seen)
+
+
+def test_revalidate_never_materialises_the_mirror(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # Called with nothing mirrored, revalidation must decline *before*
+    # claiming an attempt: marking one writes a throttle marker, and that
+    # would makedirs `_rfc/` into existence. Reads never materialise cache.
+    # (`_render_rfc_live` can't reach this — `is_stale_miss` is False with no
+    # mirror — so guard the entry point directly.)
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
+    gather_rfcs.revalidate_index()
+    assert calls == []
+    assert not (isolated_home / ".cache" / "ietf-llm" / rfcs.RFC_DIR).exists()
+
+
 # --- Writer: ensure_rfc_index ---------------------------------------------
 
 
@@ -267,9 +547,19 @@ def _install_stub(
     calls: List[Dict[str, Any]] = []
 
     def fake_get(
-        url: str, headers: Optional[Dict[str, str]] = None, timeout: Any = None
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Any = None,
+        **kwargs: Any,
     ):  # noqa: ANN202,ARG001
-        calls.append({"url": url, "headers": headers or {}})
+        calls.append(
+            {
+                "url": url,
+                "headers": headers or {},
+                "timeout": timeout,
+                "retrying": kwargs.get("retrying"),
+            }
+        )
         return handler(url, headers or {})
 
     monkeypatch.setattr(gather_rfcs, "governed_get", fake_get)

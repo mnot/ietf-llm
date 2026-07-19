@@ -29,7 +29,7 @@ decisions that aren't obvious from the code.
   - [`--summarize` requires explicit setup; embedding doesn't](#--summarize-requires-explicit-setup-embedding-doesnt)
   - [The MCP server reads exclusively from the cache, off a daemon prewarm](#the-mcp-server-reads-exclusively-from-the-cache-off-a-daemon-prewarm)
   - [The one writer exception: in-session gather](#the-one-writer-exception-in-session-gather)
-  - [The networked read exception: live Datatracker lookups](#the-networked-read-exception-live-datatracker-lookups)
+  - [The networked read exception: live Datatracker lookups and get_rfc](#the-networked-read-exception-live-datatracker-lookups-and-get_rfc)
   - [IMAP cache lives outside the per-WG directory](#imap-cache-lives-outside-the-per-wg-directory)
   - [Cross-corpus singletons: the RFC series and the effort catalog](#cross-corpus-singletons-the-rfc-series-and-the-effort-catalog)
   - [Other normalisation invariants](#other-normalisation-invariants)
@@ -279,7 +279,9 @@ Key invariants:
 - **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
   whole published RFC series from rfc.fyi (three JSON blobs), refreshed
   once per gather run after the per-corpus work, TTL-guarded and
-  best-effort (`gather/sources/rfcs.py`). The leading underscore keeps it out of
+  best-effort (`gather/sources/rfcs.py`), and additionally revalidated by
+  `get_rfc` on a stale miss (see the networked read exception below). The
+  leading underscore keeps it out of
   `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
   `search_rfcs` / `get_rfc` tools read it; it is not embedded.
 - **`_catalog/` is the matching singleton for active efforts.** It
@@ -947,7 +949,7 @@ DB (seeded from the live index, so it stays incremental) and `os.replace`s it
 into place as a standalone (DELETE-journal) file, so a reader never sees a
 half-populated index — see "Writers are write-if-changed and atomic".
 
-### The networked read exception: live Datatracker lookups
+### The networked read exception: live Datatracker lookups and get_rfc
 
 A narrower break from the no-network contract: `meeting_schedule`,
 `draft_status`, and `overview(corpus, live=True)` read **live** from Datatracker
@@ -962,6 +964,45 @@ default on for stdio and off for the HTTP replica. Imported lazily (so the
 default read path pulls in neither it nor `requests`), torch-free, and always
 via the Datatracker REST API, never a scraped page. Its offline cousin
 `draft_authors` needs no network and is always registered.
+
+`get_rfc` takes the same exception, for a different reason and in a different
+shape. The `_rfc/` mirror is only refreshed by a gather, so between gathers it
+goes stale — and a miss against a stale mirror has two indistinguishable
+causes: the number isn't in the series, or it was published since. The failure
+doesn't look like staleness, either, because RFCs don't publish in number
+order: a stale mirror has *scattered holes*, so 9845 and 9847 can both be
+present while 9846 is missing.
+
+So a **stale miss** — and only a stale miss — spends a live revalidation of
+`rfcs.json` before answering (`gather.sources.rfcs.revalidate_index`, called
+from `mcp/rfcs.py`). A hit, and any miss inside the TTL, is answered offline,
+so the common path never touches the network; a miss is rare, which is what
+keeps this cheap. Deliberately **not**
+stale-while-revalidate like the seed catalog: a stale catalog is still a useful
+catalog, but here staleness is exactly what makes the answer wrong, so
+revalidating in the background would leave *this* call still saying "no such
+RFC" and only fix the retry.
+
+Same gate (`freshness.gather_enabled`), so the HTTP replica keeps its offline
+boundary. It fetches only `rfcs.json` (existence); the reference graph stays on
+the gather path and may briefly lag a brand-new RFC. Throttled and
+single-flighted, so a burst of misses or a down host can't hammer rfc.fyi.
+
+It also fetches with `retrying=False`, which matters more than it sounds: a
+`timeout` is **not** a deadline — requests applies it per connect and per read,
+and the shared session's adapter retries with `respect_retry_after_header=True`,
+so a host answering `429 Retry-After: 30` sleeps ~90s past a 5s timeout. That is
+fine for a gather (a background job, where riding out a blip beats failing a
+stage) and wrong for a read with a caller waiting. Not retrying is the right
+trade here for a second reason: this path *has* a correct answer to fall back on
+— the honest stale miss — so the caller is better served by it now than by a
+slow success. See `governed_get`. Note
+the split that keeps the reader honest: `singletons/rfcs.py` stays purely
+offline and merely *classifies* the miss (`is_stale_miss`); the network lives in
+the gather-side mirror module, and `mcp/rfcs.py` composes the two. When the gate
+is off, or the fetch is throttled or fails, the reader still reports the stale
+miss as stale rather than as a bare negative — the message is the backstop the
+live path can't replace.
 
 ### IMAP cache lives outside the per-WG directory
 
@@ -983,7 +1024,11 @@ fail a corpus gather). The read sides (`rfcs.py`, `catalog.py`) are read-only,
 offline, markdown-out — the same boundary as every other tool — and query the
 JSON directly rather than through the vector store. The catalog's reader blob
 is *derived* (raw slices kept for revalidation, projected to a slim record
-list); the RFC mirror is used as-is. v1 catalog covers active groups only;
+list); the RFC mirror is used as-is. The one qualification to "offline" is
+`get_rfc`, which revalidates the RFC mirror on a stale miss under the gather
+gate — the reader module itself stays offline; the tool layer composes it with
+the mirror writer (see the networked read exception above). v1 catalog covers
+active groups only;
 concluded efforts surface through `search_rfcs`, already-cached ones through
 `list_corpora`.
 

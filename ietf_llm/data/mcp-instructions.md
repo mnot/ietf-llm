@@ -72,7 +72,10 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `draft_authors`, `get_draft` (verbatim text).
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
-- **RFCs:** `search_rfcs`, `get_rfc`.  **By URL:** `get_by_url`.
+- **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:
+  it refreshes its index before reporting one missing). Never conclude an RFC
+  is unpublished from a `search_rfcs` miss alone — that reads a mirror that
+  may predate it; confirm with `get_rfc`.  **By URL:** `get_by_url`.
 - **Norms (mandatory before acting — see the gate above):**
   `read_ietf_participation_norms`, `read_ietf_interpretation_norms`.
 
