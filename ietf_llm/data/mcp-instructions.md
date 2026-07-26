@@ -54,6 +54,20 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   to the user between polls, and read once it's `done`. Don't tight-loop, and
   don't wait via a long `bash sleep` (a tool call left outstanding much beyond
   ~10s can wedge some clients).
+- **A `done` gather doesn't mean every source produced data.** Read the notes
+  `gather_status` prints under the status line: they carry per-source outcomes,
+  including one line per mailing list saying how many messages landed or why
+  none did. The IETF IMAP feed a gather reads can lag a list's Web archive badly
+  — a list with years of archived mail may contribute nothing to this window —
+  so check the notes before telling a user a group has no list discussion, and
+  don't re-run the gather to "fix" it (a re-run reads the same feed).
+- **`overview` coverage that omits a source you expected is a question, not an
+  answer.** A WG whose coverage line lists no mailing list has *no gathered
+  list traffic*, which is not the same as the WG having no list. When a gather
+  recorded here can explain it, the coverage line itself points you at
+  `gather_status`; follow that pointer before characterising the group. Either
+  way, say "no list traffic was gathered" rather than "this group doesn't
+  discuss things on its list".
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
 

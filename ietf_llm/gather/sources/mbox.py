@@ -270,16 +270,23 @@ class _FolderFreshness(NamedTuple):
     newest: Optional[datetime]
 
 
-def _folder_freshness(mail: imaplib.IMAP4_SSL) -> _FolderFreshness:
+def _folder_freshness(mail: imaplib.IMAP4_SSL) -> Optional[_FolderFreshness]:
     """Total message count and newest message date for the selected folder.
 
-    Probed only when a windowed search returned nothing, to explain why. Uses
-    the highest UID (append order tracks arrival) for the newest date. Best
-    effort: any protocol hiccup yields `(0, None)` rather than derailing the
-    sync — this is diagnostic, not load-bearing."""
+    Probed only when a search returned nothing, to explain why. Uses the highest
+    UID (append order tracks arrival) for the newest date. Best effort: any
+    protocol hiccup yields `None` rather than derailing the sync — this is
+    diagnostic, not load-bearing.
+
+    `None` means *we could not tell*, and is deliberately distinct from
+    `_FolderFreshness(0, None)` — a folder we successfully probed and found
+    empty. Collapsing the two would let a hiccup on this throwaway probe render
+    as a confident "the folder is empty, check the list name" to the user."""
     try:
         status, data = mail.uid("search", "ALL")
-        if status != "OK" or not data or not data[0]:
+        if status != "OK":
+            return None
+        if not data or not data[0]:
             return _FolderFreshness(0, None)
         uids = data[0].split()
         status, fetched = mail.uid("fetch", uids[-1], "(INTERNALDATE)")
@@ -294,7 +301,7 @@ def _folder_freshness(mail: imaplib.IMAP4_SSL) -> _FolderFreshness:
                 return _FolderFreshness(len(uids), datetime(*parsed[:6]))
         return _FolderFreshness(len(uids), None)
     except (imaplib.IMAP4.error, OSError):
-        return _FolderFreshness(0, None)
+        return None
 
 
 def _imap_sync_attempt(
@@ -306,9 +313,10 @@ def _imap_sync_attempt(
 ) -> tuple[List[str], int, Optional[_FolderFreshness]]:
     """One IMAP connect -> select -> search -> download pass for a single list.
 
-    Returns `(uids-in-window, newly-downloaded-count, freshness)` where
-    `freshness` is populated only when the window came back empty (else None).
-    Raises
+    Returns `(uids-in-window, newly-downloaded-count, freshness)`. `freshness`
+    is probed only when the search came back empty — and is `None` either
+    because there was nothing to explain or because the probe itself failed;
+    the caller treats an unprobeable folder as unknown, not as empty. Raises
     `_FolderSelectError` when the folder can't be selected (not retryable) and
     `imaplib.IMAP4.error` / `OSError` on a connection-level fault the caller may
     retry."""
@@ -350,7 +358,11 @@ def _imap_sync_attempt(
             new_count = _download_batches(
                 mail, missing_uids, cache_dir, verbose, on_progress
             )
-        freshness = _folder_freshness(mail) if not uids and months else None
+        # Probe whenever the search came up empty, windowed or not: on an
+        # all-history search the probe is a second no-op SEARCH ALL, and its
+        # success is what distinguishes a folder we know is empty from one we
+        # could not read.
+        freshness = _folder_freshness(mail) if not uids else None
         return [u.decode() for u in uids], new_count, freshness
     finally:
         try:
@@ -359,52 +371,37 @@ def _imap_sync_attempt(
             pass
 
 
-# A folder whose newest message predates the window by more than this reads as
-# a stalled archive mirror, not a list that just went quiet at the window edge
-# — worth naming the likely cause rather than pointing the user at their config.
-_STALE_MIRROR_GRACE = timedelta(days=90)
+def _empty_window_message(
+    list_name: str, window: str, freshness: Optional[_FolderFreshness]
+) -> str:
+    """One line explaining an empty windowed sync.
 
+    Reports how much mail the folder holds overall and how recent it is, and
+    leaves the interpretation to the reader: nothing anywhere reads as a wrong
+    list name, while plenty of mail whose newest is years old reads as a stalled
+    IMAP feed (the Web archive keeps receiving mail the IMAP mirror never gets).
+    We deliberately don't guess which — the counts say it, and a guess keyed off
+    a grace period gets it wrong for lists that are simply quiet.
 
-def _warn_empty_window(
-    list_name: str,
-    window: str,
-    months: Optional[int],
-    freshness: Optional[_FolderFreshness],
-    verbose: Verbosity,
-) -> None:
-    """Explain an empty windowed sync. An empty folder points at the list name;
-    a folder that holds mail but whose newest message predates the window by a
-    wide margin points at a stale IMAP mirror (the archive kept receiving mail
-    the IMAP feed never got) — a distinction the user can't otherwise see."""
-    total = freshness.total if freshness else 0
-    newest = freshness.newest if freshness else None
-    if total == 0:
-        log(
-            f"No messages for '{list_name}' in {window}: the folder exists but "
-            "is empty. Check the list name if you expected traffic.",
-            verbose,
-            level=LogLevel.WARN,
+    A `freshness` of None means the probe couldn't tell us, so the line claims
+    nothing beyond the empty window. This message reaches an MCP client, which
+    can't see the stderr context a CLI user has — an overconfident "the folder
+    is empty, check the list name" off a failed probe would be acted on.
+    """
+    if freshness is None:
+        # The probe failed, so we know only that this window was empty. Say
+        # exactly that rather than guessing at a cause.
+        return f"Mailing list '{list_name}': no messages in {window}."
+    if not freshness.total:
+        return (
+            f"Mailing list '{list_name}': no messages in {window}; the archive "
+            "folder is empty. Check the list name if you expected traffic."
         )
-        return
+    newest = freshness.newest
     newest_str = newest.strftime("%Y-%m-%d") if newest else "unknown"
-    window_start = datetime.now() - timedelta(days=30 * (months or 0))
-    if newest is not None and newest < window_start - _STALE_MIRROR_GRACE:
-        log(
-            f"No messages for '{list_name}' in {window}, but the folder holds "
-            f"{total} message(s), newest dated {newest_str} — well before this "
-            "window. If you expected recent traffic, the IETF IMAP mirror for "
-            "this list is likely stale: mail visible at mailarchive.ietf.org "
-            "can be missing from the IMAP feed. Otherwise widen --months.",
-            verbose,
-            level=LogLevel.WARN,
-        )
-        return
-    log(
-        f"No messages for '{list_name}' in {window}: the folder holds {total} "
-        f"message(s) but the newest ({newest_str}) falls outside the window. "
-        "Widen --months, or check the list name if you expected traffic.",
-        verbose,
-        level=LogLevel.WARN,
+    return (
+        f"Mailing list '{list_name}': no messages in {window}; the archive "
+        f"folder holds {freshness.total} message(s), newest {newest_str}."
     )
 
 
@@ -414,6 +411,7 @@ def _sync_one_list(
     months: Optional[int],
     verbose: Verbosity,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> List[str]:
     """IMAP-sync a single list. Returns the UIDs (as strings) that fall within
     the search window for downstream processing. Per-list cache lives at
@@ -421,14 +419,24 @@ def _sync_one_list(
 
     A connection-level failure is retried once (`IMAP_RETRIES`) — these are
     usually a momentary server hiccup, not a permanent fault. A folder that
-    won't select is not retried. Either way the per-list outcome — how many
-    messages, or why there were none — is reported at STATUS / WARN, so a
-    silently-empty sync can't be mistaken for a successful one."""
+    won't select is not retried.
+
+    Either way the per-list outcome — how many messages, or why there were none
+    — goes to the log *and*, when `note_fn` is given, to the caller's note sink.
+    An empty sync is never fatal (a quiet list is a normal thing, and the rest of
+    the gather succeeded), so the note is the only way a caller who isn't reading
+    stderr — an MCP client polling `gather_status` — can tell what happened."""
     log(
         f"Syncing list '{list_name}' for WG {wg_name} via IMAP...",
         verbose,
         level=LogLevel.STATUS,
     )
+
+    def report(message: str, level: LogLevel) -> None:
+        log(message, verbose, level=level)
+        if note_fn is not None:
+            note_fn(message)
+
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
     window = f"the last {months} month(s)" if months else "all history"
@@ -438,12 +446,11 @@ def _sync_one_list(
                 list_name, months, cache_dir, verbose, on_progress
             )
         except _FolderSelectError:
-            log(
-                f"Could not select the IMAP folder for '{list_name}' — the "
-                "list name must match its archive at mailarchive.ietf.org. No "
-                f"mail gathered for '{list_name}'.",
-                verbose,
-                level=LogLevel.ERROR,
+            report(
+                f"Mailing list '{list_name}': no such folder on the IETF IMAP "
+                "server, which mirrors the archives at mailarchive.ietf.org "
+                "under the list's own name. No mail gathered.",
+                LogLevel.ERROR,
             )
             return []
         except (imaplib.IMAP4.error, OSError) as err:
@@ -454,22 +461,20 @@ def _sync_one_list(
                     level=LogLevel.WARN,
                 )
                 continue
-            log(
-                f"IMAP sync of '{list_name}' failed after {IMAP_RETRIES + 1} "
-                f"attempts: {err}. This is usually transient — re-run to try "
-                f"again. No mail gathered for '{list_name}' this run.",
-                verbose,
-                level=LogLevel.ERROR,
+            report(
+                f"Mailing list '{list_name}': IMAP sync failed after "
+                f"{IMAP_RETRIES + 1} attempts ({err}); no mail gathered "
+                "this run.",
+                LogLevel.ERROR,
             )
             return []
         if not uids:
-            _warn_empty_window(list_name, window, months, freshness, verbose)
+            report(_empty_window_message(list_name, window, freshness), LogLevel.WARN)
         else:
-            log(
-                f"Synced '{list_name}': {len(uids)} message(s) in {window} "
-                f"({new_count} new).",
-                verbose,
-                level=LogLevel.STATUS,
+            report(
+                f"Mailing list '{list_name}': {len(uids)} message(s) in "
+                f"{window} ({new_count} new).",
+                LogLevel.STATUS,
             )
         return uids
     return []  # unreachable: the loop always returns; satisfies the type checker
@@ -484,6 +489,7 @@ def sync_mailing_list(
     verbose: Verbosity = Verbosity.STATUS,
     on_progress: Optional[Callable[[str, int, int], None]] = None,
     suppress_raw: bool = False,
+    note_fn: Optional[Callable[[str], None]] = None,
 ) -> List[str]:
     """Sync the WG's mailing list(s) via IMAP and cache messages.
 
@@ -504,6 +510,12 @@ def sync_mailing_list(
     `.eml` cache, which is the real efficiency token and the source the
     thread reconstruction reads, is always written); returns []
     accordingly.
+
+    `note_fn`, when given, receives one line per list describing that list's
+    outcome (see `_sync_one_list`), plus one for the case where no list is
+    configured at all. The gather's own logs already carry these; the notes are
+    what makes them visible to a caller reading `gather_status` rather than
+    stderr.
     """
     list_names: List[str] = []
     seen: set[str] = set()
@@ -518,12 +530,25 @@ def sync_mailing_list(
             list_names.append(norm)
             seen.add(norm)
     if not list_names:
-        log(
+        if not auto_discover:
+            # A synthetic / custom corpus that named no list: there was never a
+            # mailing-list source to succeed or fail at, so this is not an
+            # outcome to report. Note it anyway and every drafts-only corpus
+            # hands its client a phantom failure to relay.
+            log(
+                f"No mailing list for {wg_name} (none specified, and this "
+                "corpus has no group to discover one from); skipping mail sync.",
+                verbose,
+                level=LogLevel.STATUS,
+            )
+            return []
+        message = (
             f"No mailing list configured for {wg_name} (auto-discovery "
-            "failed and no --mailing-list specified); skipping mail sync.",
-            verbose,
-            level=LogLevel.STATUS,
+            "failed and no --mailing-list specified); skipping mail sync."
         )
+        log(message, verbose, level=LogLevel.STATUS)
+        if note_fn is not None:
+            note_fn(message)
         return []
 
     # Per-list IMAP sync + UID collection.
@@ -545,6 +570,7 @@ def sync_mailing_list(
             months,
             verbose,
             per_list_cb,
+            note_fn=note_fn,
         )
 
     # Per-list year archives, then merge across lists into one file

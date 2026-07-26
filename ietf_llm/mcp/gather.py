@@ -579,6 +579,17 @@ def register(server: "FastMCP") -> None:
         cloud backend nothing is visible at all before the final
         atomic publish.)
 
+        **`done` doesn't promise every source produced data.** Notes under
+        the status line carry per-source outcomes — one per mailing list
+        saying how many messages landed, or why none did. A list can hold
+        years of archived mail yet contribute nothing to this window: the
+        IETF IMAP feed a gather reads sometimes lags a list's Web archive
+        by a long way, and the note reports the folder's total and newest
+        date so you can tell that from a genuinely quiet list or a wrong
+        list name. Read the notes before telling a user a group has no
+        mailing-list discussion — and don't re-run the gather to "fix" it,
+        since a re-run reads the same feed.
+
         Args:
             corpus: The corpus to report on. Omit to list all.
             wait: Seconds to block for a still-running gather to finish

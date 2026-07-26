@@ -676,6 +676,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         verbose=verbosity,
         on_progress=_mail_progress,
         suppress_raw=suppress_raw,
+        note_fn=note_fn,
     )
 
     if group_backed:
