@@ -61,6 +61,13 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   — a list with years of archived mail may contribute nothing to this window —
   so check the notes before telling a user a group has no list discussion, and
   don't re-run the gather to "fix" it (a re-run reads the same feed).
+- **`overview` coverage that omits a source you expected is a question, not an
+  answer.** A WG whose coverage line lists no mailing list has *no gathered
+  list traffic*, which is not the same as the WG having no list. Call
+  `gather_status(corpus)` — if a gather was recorded here, its notes say which
+  source came up empty and why. Say "no list traffic was gathered, and here is
+  what the gather reported" rather than "this group doesn't discuss things on
+  its list".
 - A corpus existing here implies nothing about IETF standing: a `list` /
   `custom` / `x-` corpus is not a chartered effort. `list_corpora` tags each.
 

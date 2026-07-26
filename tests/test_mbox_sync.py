@@ -40,9 +40,9 @@ def test_success_reports_count(monkeypatch, capsys):
 
 
 def test_empty_folder_points_at_the_list_name(monkeypatch, capsys):
-    # No freshness (folder truly empty) → nothing anywhere, so the list name is
+    # Probed successfully and the folder holds nothing at all → the list name is
     # the thing worth checking.
-    uids, notes = _run(monkeypatch, lambda *a: ([], 0, None))
+    uids, notes = _run(monkeypatch, lambda *a: ([], 0, mbox._FolderFreshness(0, None)))
     assert uids == []
     err = capsys.readouterr().err
     assert "[WARN]" in err
@@ -67,6 +67,38 @@ def test_empty_window_reports_holdings_and_newest(monkeypatch, capsys):
     )
     assert expected in err
     assert notes == [expected]
+
+
+def test_unprobeable_folder_claims_nothing(monkeypatch, capsys):
+    # The freshness probe failed (freshness=None), so we know only that the
+    # window was empty. Must NOT render as "the folder is empty, check the list
+    # name" — an MCP client can't see the stderr context and would act on it.
+    uids, notes = _run(monkeypatch, lambda *a: ([], 0, None))
+    assert uids == []
+    expected = "Mailing list 'netconf': no messages in the last 12 month(s)."
+    assert expected in capsys.readouterr().err
+    assert notes == [expected]
+    assert "folder is empty" not in notes[0]
+    assert "list name" not in notes[0]
+
+
+def test_folder_freshness_distinguishes_empty_from_unreadable():
+    # (0, None) means "probed it, genuinely empty"; None means "could not tell".
+    # Collapsing the two is what made a probe hiccup read as a confident claim.
+    class _Mail:
+        def __init__(self, outcome):
+            self._outcome = outcome
+
+        def uid(self, *_args):
+            if self._outcome == "raise":
+                raise imaplib.IMAP4.error("connection reset")
+            if self._outcome == "notok":
+                return ("NO", [b""])
+            return ("OK", [b""])
+
+    assert mbox._folder_freshness(_Mail("raise")) is None
+    assert mbox._folder_freshness(_Mail("notok")) is None
+    assert mbox._folder_freshness(_Mail("empty")) == mbox._FolderFreshness(0, None)
 
 
 def test_empty_window_just_past_the_edge_reads_the_same(monkeypatch, capsys):
@@ -96,6 +128,9 @@ def test_folder_select_error_not_retried(monkeypatch, capsys):
     assert "[ERROR]" in err
     assert "Mailing list 'netconf': no such folder on the IETF IMAP server" in err
     assert len(notes) == 1 and "no such folder" in notes[0]
+    # For a group-backed corpus the name came from Datatracker, not from a user
+    # typing it — don't tell the client to go check their spelling.
+    assert "check the list name" not in notes[0].lower()
 
 
 def test_transient_error_retried_then_succeeds(monkeypatch, capsys):
@@ -134,12 +169,26 @@ def test_transient_error_exhausts_retries(monkeypatch, capsys):
 
 
 def test_no_list_configured_is_noted(monkeypatch, tmp_path):
-    # Auto-discovery found nothing and no --mailing-list was given: the caller
-    # should still learn that mail was skipped rather than infer it from absence.
+    # Auto-discovery ran for a group-backed corpus and found nothing, and no
+    # --mailing-list was given: a real outcome the caller should learn about
+    # rather than infer from absence.
     monkeypatch.setattr(mbox, "get_mailing_list_name", lambda _wg: None)
     notes: list[str] = []
-    assert (
-        mbox.sync_mailing_list("netconf", str(tmp_path), note_fn=notes.append) == []
-    )
+    assert mbox.sync_mailing_list("netconf", str(tmp_path), note_fn=notes.append) == []
     assert len(notes) == 1
     assert "No mailing list configured for netconf" in notes[0]
+
+
+def test_synthetic_corpus_with_no_list_is_not_noted(tmp_path):
+    # auto_discover=False is a synthetic / custom / drafts-only corpus: there was
+    # never a mailing-list source to succeed or fail at. Noting "auto-discovery
+    # failed" here hands every such corpus a phantom failure to relay, and the
+    # routing brain tells clients to act on these notes.
+    notes: list[str] = []
+    assert (
+        mbox.sync_mailing_list(
+            "x-quic-perf", str(tmp_path), auto_discover=False, note_fn=notes.append
+        )
+        == []
+    )
+    assert notes == []

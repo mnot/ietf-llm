@@ -219,13 +219,26 @@ def tool_overview(wg: str, live: bool = False) -> str:
             if gather_enabled()
             else f"`ietf-llm {wg} --months N`"
         )
+        # A source absent from the inventory gathered nothing — which is not the
+        # same as the effort not having one. The gather records *why* per source
+        # (an upstream feed that lags its archive is the common cause), so point
+        # at that rather than let a reader conclude the WG doesn't use its list.
+        # Only when gather is enabled: the read-only HTTP replica doesn't
+        # register `gather_status`.
+        missing = (
+            " A source **not** listed gathered nothing — which isn't the same "
+            "as the effort not having one; "
+            f'`gather_status(corpus="{wg}")` notes say which and why.'
+            if gather_enabled()
+            else ""
+        )
         body += (
             "\n\n## Coverage\n\n"
             f"**Sources:** {inventory}.\n\n"
             "_GitHub issues and drafts are the full set, not limited by the "
             "gather window. For activity older than the window above, "
             f"re-gather deeper with {deeper} — don't read absence as proof it "
-            "didn't happen._"
+            f"didn't happen.{missing}_"
         )
     body += _overview_live_reconciliation(wg, live)
     return _with_freshness(wg, body, sources=src)
