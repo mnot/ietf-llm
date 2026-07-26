@@ -968,6 +968,57 @@ def test_list_labels_handles_no_vocabulary(isolated_home: Path) -> None:
 # --- GitHub URL surfacing on search hits ---------------------------------
 
 
+# --- Coverage line: the "missing source" pointer -------------------------
+
+
+def _seed_for_coverage(home: Path, wg: str = "wg") -> None:
+    """Enough of a cache that `coverage.sources_line` is non-empty, so the
+    Coverage block (which carries the pointer) renders at all."""
+    write_cache_file(home, wg, "digests/index.md", f"# {wg}\n")
+    write_cache_file(home, wg, "threads/2026-01-01-hello.md", "# hello\n")
+
+
+def _write_gather_status(home: Path, wg: str = "wg") -> None:
+    (home / ".cache" / "ietf-llm" / wg / "gather-status.json").write_text(
+        '{"corpus": "wg", "state": "done", "notes": ["Mailing list: none."]}'
+    )
+
+
+def test_coverage_points_at_gather_status_when_a_record_exists(
+    isolated_home: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    _seed_for_coverage(isolated_home)
+    _write_gather_status(isolated_home)
+    out = mcp.corpus.tool_overview("wg")
+    assert 'gather_status(corpus="wg")' in out
+    assert "gathered nothing" in out
+
+
+def test_coverage_omits_pointer_without_a_gather_record(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # A CLI-gathered corpus writes no status record, so `gather_status` would
+    # answer "no gather has been recorded" and invite a re-gather — a dead end,
+    # and the wrong advice for the stalled-upstream case the pointer explains.
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    _seed_for_coverage(isolated_home)
+    out = mcp.corpus.tool_overview("wg")
+    assert "## Coverage" in out  # the block still renders
+    assert "gather_status(" not in out
+
+
+def test_coverage_omits_pointer_when_gather_disabled(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # The read-only HTTP replica doesn't register `gather_status`; don't cite it.
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    _seed_for_coverage(isolated_home)
+    _write_gather_status(isolated_home)
+    out = mcp.corpus.tool_overview("wg")
+    assert "gather_status(" not in out
+
+
 def test_no_banner_when_sentinel_absent(isolated_home: Path) -> None:
     # Cache exists but freshness sentinel doesn't (legacy / pre-feature).
     # Per design we stay silent, not nag.

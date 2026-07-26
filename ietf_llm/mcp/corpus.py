@@ -205,6 +205,28 @@ def _overview_live_reconciliation(wg: str, live: bool) -> str:
     return "\n".join(lines)
 
 
+def _gather_notes_available(wg: str) -> bool:
+    """Whether pointing an `overview` reader at `gather_status` would tell them
+    anything for this corpus.
+
+    Two conditions, both required. The tool has to exist — the read-only HTTP
+    replica doesn't register it — and a gather has to have left a record. A
+    corpus gathered by the `ietf-llm` CLI has neither, and `gather_status` would
+    answer "no gather has been recorded", which reads as an invitation to start
+    one; for the case the pointer exists to explain (a stalled upstream feed) a
+    re-gather reads the same feed and changes nothing.
+
+    `has_local_status` is the network-free check — see its docstring for why not
+    `read_status` — so this stays inside the read path's offline contract.
+    """
+    if not gather_enabled():
+        return False
+    # pylint: disable-next=import-outside-toplevel
+    from ..gather import runner as gather_runner
+
+    return gather_runner.has_local_status(wg)
+
+
 @_requires_corpus
 def tool_overview(wg: str, live: bool = False) -> str:
     files_dir = _files_dir(wg)
@@ -223,13 +245,11 @@ def tool_overview(wg: str, live: bool = False) -> str:
         # same as the effort not having one. The gather records *why* per source
         # (an upstream feed that lags its archive is the common cause), so point
         # at that rather than let a reader conclude the WG doesn't use its list.
-        # Only when gather is enabled: the read-only HTTP replica doesn't
-        # register `gather_status`.
         missing = (
             " A source **not** listed gathered nothing — which isn't the same "
             "as the effort not having one; "
             f'`gather_status(corpus="{wg}")` notes say which and why.'
-            if gather_enabled()
+            if _gather_notes_available(wg)
             else ""
         )
         body += (

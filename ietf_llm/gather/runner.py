@@ -889,6 +889,27 @@ def local_inflight(corpus: str) -> Optional[Dict[str, Any]]:
     return result
 
 
+def has_local_status(corpus: str) -> bool:
+    """Cheap, network-free check: did a gather run through *this* runner leave a
+    status record for `corpus` on local disk?
+
+    For the read path, which wants to know whether pointing a reader at
+    `gather_status` will actually tell them anything. A corpus gathered by the
+    `ietf-llm` CLI has no record — the CLI writes none — and `gather_status`
+    would answer "no gather has been recorded", suggesting the reader start one.
+    That is a dead end, and for the case this exists to explain (an upstream feed
+    that lags its archive) the suggested re-gather reads the same feed.
+
+    Deliberately *not* `read_status`: that consults the cloud control plane
+    first, so calling it per response would put an S3 round-trip on a read tool
+    that is meant to stay offline. The cost of only seeing local records is a
+    false negative on the cloud backend — a fleet record written by another
+    replica — which merely omits the pointer. Omitting it is the safe direction;
+    a dead-end pointer is not.
+    """
+    return valid_corpus_name(corpus) and os.path.exists(_status_path(corpus))
+
+
 def all_statuses() -> List[Dict[str, Any]]:
     """Every recorded gather status, newest activity first.
 
