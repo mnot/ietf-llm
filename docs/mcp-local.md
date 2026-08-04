@@ -35,19 +35,6 @@ pipx uninstall ietf-llm
 pipx install 'ietf-llm[local-embeddings,certs]'
 ```
 
-**If `ietf-llm-mcp` exits saying the installed `mcp` SDK does not provide
-`mcp.server.fastmcp`**, the venv has an MCP SDK outside the range ietf-llm supports.
-The server is built on the FastMCP bundled *inside* the SDK, which ships only in
-`mcp>=1.2,<2` — version 2.0 removed it. Reinstalling picks up the pin:
-
-```bash
-pipx install --force ietf-llm
-```
-
-Do **not** install the separate `fastmcp` package to work around this. It is a different
-project and does not provide `mcp.server.fastmcp`; it only appears to help because it
-pins `mcp<2` and so drags the SDK back into range.
-
 
 ## 2. Register the server with your client
 

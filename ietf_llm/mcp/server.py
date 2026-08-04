@@ -218,21 +218,51 @@ def _installed_mcp_version() -> Optional[str]:
         return None
 
 
+#: Extras, keyed by a distribution only that extra installs. `--force` drops
+#: extras, so a hint omitting them downgrades the install it means to repair.
+#: Only unambiguous markers: `google-auth` / `boto3` (notebooklm, s3) are
+#: common transitive deps, so their presence would not imply the extra.
+_EXTRA_MARKERS = (
+    ("local-embeddings", "llm-sentence-transformers"),
+    ("certs", "pip-system-certs"),
+)
+
+
+def _reinstall_command() -> str:
+    """A `pipx install --force` line preserving the extras already present.
+
+    Best-effort: never raise from inside an error handler."""
+    from importlib import metadata  # pylint: disable=import-outside-toplevel
+
+    try:
+        present = [
+            extra
+            for extra, dist in _EXTRA_MARKERS
+            if _distribution_present(metadata, dist)
+        ]
+    except Exception:  # pylint: disable=broad-except
+        present = []
+    if not present:
+        return "  pipx install --force ietf-llm"
+    return f"  pipx install --force 'ietf-llm[{','.join(present)}]'"
+
+
+def _distribution_present(metadata: Any, dist: str) -> bool:
+    try:
+        metadata.distribution(dist)
+        return True
+    except metadata.PackageNotFoundError:
+        return False
+
+
 def _fastmcp_import_error(exc: ImportError) -> str:
-    """Explain a failed `mcp.server.fastmcp` import in terms the reader can act on.
+    """Explain a failed `mcp.server.fastmcp` import.
 
-    The interesting case is *not* "mcp is missing". `mcp/stdio.py` imports
-    `mcp.types` at module scope, so a genuinely absent SDK never reaches here —
-    it dies earlier with a traceback. Reaching this point means the SDK is
-    installed and only the bundled FastMCP is unavailable, i.e. a version
-    outside the 1.2.0–2.0 window. Say that, name the version and the
-    interpreter, and quote the real ImportError.
-
-    The message must also steer away from `pipx inject ietf-llm fastmcp`:
-    that PyPI package is a different project which does not provide
-    `mcp.server.fastmcp`. It only appears to fix this because it pins
-    `mcp<2` and so drags the SDK back into the window.
-    """
+    Not "mcp is missing": `stdio.py` imports `mcp.types` at module scope, so an
+    absent SDK dies earlier with a traceback. Getting here means the SDK is
+    installed and outside the 1.2–2.0 window that bundles FastMCP. Steer away
+    from the separate `fastmcp` distribution, which does not provide the module
+    and only appears to help by pinning `mcp<2`."""
     version = _installed_mcp_version()
     lines = []
     if version is None:
@@ -251,7 +281,7 @@ def _fastmcp_import_error(exc: ImportError) -> str:
         f"  import error: {exc}",
         "",
         "Reinstall to pick up ietf-llm's version pin:",
-        "  pipx install --force ietf-llm",
+        _reinstall_command(),
         "",
         "Do not install the separate `fastmcp` package — it is a different "
         "project and does not provide this module.",
