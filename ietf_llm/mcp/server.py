@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import sys
@@ -64,6 +65,38 @@ def _prewarm_one(model_name: str) -> None:
         list(model.embed("warmup"))
 
 
+def _quiet_embedding_stack_output() -> None:
+    """Keep the embedding stack's INFO logs and progress bars off stderr.
+
+    Constructing FastMCP calls its `configure_logging()`, which installs a
+    rich handler at INFO on the root logger. sentence-transformers keys
+    *both* its INFO records and its `Batches` progress bar off the effective
+    level, so merely building the server turned a successful background
+    prewarm into three artifacts in the client's log on every launch:
+
+        INFO  Loading SentenceTransformer model from BAAI/bge-small-en-v1.5.
+        Loading weights: 100%|##########| 199/199
+        Batches: 100%|##########| 1/1
+
+    The weight-loading bar comes from huggingface_hub and is independent of
+    the log level, so it needs disabling separately. Applied once for the
+    server process rather than around the prewarm alone: a lazy load on the
+    first search would otherwise reproduce all three. Best-effort — the
+    on-device stack is an optional extra, and the serve path must import
+    neither it nor torch.
+    """
+    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+    try:
+        # pylint: disable=import-outside-toplevel,import-error,line-too-long
+        from huggingface_hub.utils import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
+            disable_progress_bars,
+        )
+
+        disable_progress_bars()
+    except ImportError:
+        pass
+
+
 def _prewarm_embedding_model_async() -> None:
     """Kick off embedding-model pre-warming in a background daemon
     thread. Returns immediately so the MCP server can register and
@@ -76,6 +109,9 @@ def _prewarm_embedding_model_async() -> None:
     The `_MODEL_LOAD_LOCK` in models.py serialises the two paths so
     we don't load twice.
     """
+    # Before the index scan, so the muzzle is in place even when there is
+    # nothing to prewarm and the first search does the load instead.
+    _quiet_embedding_stack_output()
     # Scan the index dir (defaults to the cache root) for a model to warm.
     root = get_index_dir()
     if not os.path.isdir(root):

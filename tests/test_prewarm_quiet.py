@@ -157,3 +157,25 @@ def test_unknown_device_override_is_a_warning_not_an_error(
     monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "gpu")
     assert models._embed_device(Verbosity.QUIET) in ("cpu", "cuda")
     assert [level for _msg, level in logged] == [LogLevel.WARN]
+
+
+def test_quiet_embedding_stack_silences_sentence_transformers_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # FastMCP's configure_logging() puts the root logger at INFO, which turns
+    # on both the INFO record and the `Batches` bar in sentence-transformers.
+    import logging
+
+    logger = logging.getLogger("sentence_transformers")
+    monkeypatch.setattr(logger, "level", logging.INFO)
+    mcp_server._quiet_embedding_stack_output()
+    assert logger.level == logging.WARNING
+
+
+def test_quiet_embedding_stack_tolerates_a_torch_free_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # huggingface_hub ships with the local-embeddings extra; the serve path
+    # must not require it.
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils", None)
+    mcp_server._quiet_embedding_stack_output()  # must not raise
