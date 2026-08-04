@@ -87,13 +87,16 @@ def _quiet_embedding_stack_output() -> None:
     """
     logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
     try:
-        # pylint: disable=import-outside-toplevel,import-error,line-too-long
-        from huggingface_hub.utils import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
-            disable_progress_bars,
-        )
+        # Imported dynamically, not with `from ... import`: huggingface_hub is
+        # absent on a torch-free install and present on a local-embeddings one,
+        # and a static import needs a *different* type: ignore in each case
+        # (import-not-found when absent, attr-defined when present, since
+        # `utils` does not re-export the name). `import_module` returns
+        # ModuleType, so neither arises.
+        from importlib import import_module  # pylint: disable=import-outside-toplevel
 
-        disable_progress_bars()
-    except ImportError:
+        import_module("huggingface_hub.utils").disable_progress_bars()
+    except (ImportError, AttributeError):
         pass
 
 
