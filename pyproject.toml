@@ -33,7 +33,17 @@ dependencies = [
     # serve / index against a remote OpenAI-compatible endpoint instead.
     "llm",
     "numpy",
-    "mcp",
+    # The MCP server is built on the FastMCP bundled *inside* the SDK
+    # (`mcp.server.fastmcp`) — not the separate `fastmcp` PyPI distribution,
+    # which is a different project and does not provide that module. The
+    # bundled copy exists only in a window: 1.2.0 first shipped it and 2.0.0
+    # removed it again. Floor 1.10.0 is the oldest release with the
+    # `transport_security` kwarg `mcp/serve.py` passes unconditionally; the
+    # `<2` ceiling is load-bearing, because an unpinned resolve silently
+    # picks 2.0 and `ietf-llm-mcp` then fails at startup with no
+    # `mcp.server.fastmcp`. Lifting the ceiling means porting off the
+    # bundled FastMCP (issue #202), not bumping this line.
+    "mcp>=1.10,<2",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
 ]

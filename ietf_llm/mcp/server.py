@@ -208,18 +208,65 @@ def _startup_gather_default() -> bool:
     return _resolve_transport() == "stdio" and not _index_immutable_enabled()
 
 
+def _installed_mcp_version() -> Optional[str]:
+    """The installed `mcp` distribution's version, or None if absent."""
+    from importlib import metadata  # pylint: disable=import-outside-toplevel
+
+    try:
+        return metadata.version("mcp")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _fastmcp_import_error(exc: ImportError) -> str:
+    """Explain a failed `mcp.server.fastmcp` import in terms the reader can act on.
+
+    The interesting case is *not* "mcp is missing". `mcp/stdio.py` imports
+    `mcp.types` at module scope, so a genuinely absent SDK never reaches here —
+    it dies earlier with a traceback. Reaching this point means the SDK is
+    installed and only the bundled FastMCP is unavailable, i.e. a version
+    outside the 1.2.0–2.0 window. Say that, name the version and the
+    interpreter, and quote the real ImportError.
+
+    The message must also steer away from `pipx inject ietf-llm fastmcp`:
+    that PyPI package is a different project which does not provide
+    `mcp.server.fastmcp`. It only appears to fix this because it pins
+    `mcp<2` and so drags the SDK back into the window.
+    """
+    version = _installed_mcp_version()
+    lines = []
+    if version is None:
+        lines.append(
+            "The `mcp` package is not installed — it should ship with ietf-llm."
+        )
+    else:
+        lines += [
+            f"The installed `mcp` SDK ({version}) does not provide "
+            "`mcp.server.fastmcp`.",
+            "ietf-llm's server is built on the FastMCP bundled in the SDK, which "
+            "exists only in mcp >=1.2,<2 (2.0 removed it).",
+        ]
+    lines += [
+        f"  interpreter:  {sys.executable}",
+        f"  import error: {exc}",
+        "",
+        "Reinstall to pick up ietf-llm's version pin:",
+        "  pipx install --force ietf-llm",
+        "",
+        "Do not install the separate `fastmcp` package — it is a different "
+        "project and does not provide this module.",
+    ]
+    return "\n".join(lines)
+
+
 @graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-locals
     try:
         from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
             FastMCP,
         )
-    except ImportError:
-        print(
-            "The `mcp` package is missing — this should ship with "
-            "ietf-llm. Try reinstalling: pipx install --force ietf-llm",
-            file=sys.stderr,
-        )
+    except ImportError as exc:
+        print(_fastmcp_import_error(exc), file=sys.stderr)
         sys.exit(1)
 
     # Diagnostic facility for investigating client-side stalls/timeouts.
