@@ -208,18 +208,95 @@ def _startup_gather_default() -> bool:
     return _resolve_transport() == "stdio" and not _index_immutable_enabled()
 
 
+def _installed_mcp_version() -> Optional[str]:
+    """The installed `mcp` distribution's version, or None if absent."""
+    from importlib import metadata  # pylint: disable=import-outside-toplevel
+
+    try:
+        return metadata.version("mcp")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+#: Extras, keyed by a distribution only that extra installs. `--force` drops
+#: extras, so a hint omitting them downgrades the install it means to repair.
+#: Only unambiguous markers: `google-auth` / `boto3` (notebooklm, s3) are
+#: common transitive deps, so their presence would not imply the extra.
+_EXTRA_MARKERS = (
+    ("local-embeddings", "llm-sentence-transformers"),
+    ("certs", "pip-system-certs"),
+)
+
+
+def _reinstall_command() -> str:
+    """A `pipx install --force` line preserving the extras already present.
+
+    Best-effort: never raise from inside an error handler."""
+    from importlib import metadata  # pylint: disable=import-outside-toplevel
+
+    try:
+        present = [
+            extra
+            for extra, dist in _EXTRA_MARKERS
+            if _distribution_present(metadata, dist)
+        ]
+    except Exception:  # pylint: disable=broad-except
+        present = []
+    if not present:
+        return "  pipx install --force ietf-llm"
+    return f"  pipx install --force 'ietf-llm[{','.join(present)}]'"
+
+
+def _distribution_present(metadata: Any, dist: str) -> bool:
+    try:
+        metadata.distribution(dist)
+        return True
+    except metadata.PackageNotFoundError:
+        return False
+
+
+def _fastmcp_import_error(exc: ImportError) -> str:
+    """Explain a failed `mcp.server.fastmcp` import.
+
+    Not "mcp is missing": `stdio.py` imports `mcp.types` at module scope, so an
+    absent SDK dies earlier with a traceback. Getting here means the SDK is
+    installed and outside the 1.2–2.0 window that bundles FastMCP. Steer away
+    from the separate `fastmcp` distribution, which does not provide the module
+    and only appears to help by pinning `mcp<2`."""
+    version = _installed_mcp_version()
+    lines = []
+    if version is None:
+        lines.append(
+            "The `mcp` package is not installed — it should ship with ietf-llm."
+        )
+    else:
+        lines += [
+            f"The installed `mcp` SDK ({version}) does not provide "
+            "`mcp.server.fastmcp`.",
+            "ietf-llm's server is built on the FastMCP bundled in the SDK, which "
+            "exists only in mcp >=1.2,<2 (2.0 removed it).",
+        ]
+    lines += [
+        f"  interpreter:  {sys.executable}",
+        f"  import error: {exc}",
+        "",
+        "Reinstall to pick up ietf-llm's version pin:",
+        _reinstall_command(),
+        "",
+        "Do not install the separate `fastmcp` package — it is a different "
+        "project and does not provide this module.",
+    ]
+    return "\n".join(lines)
+
+
 @graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-locals
     try:
         from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
             FastMCP,
         )
-    except ImportError:
-        print(
-            "The `mcp` package is missing — this should ship with "
-            "ietf-llm. Try reinstalling: pipx install --force ietf-llm",
-            file=sys.stderr,
-        )
+    except ImportError as exc:
+        print(_fastmcp_import_error(exc), file=sys.stderr)
         sys.exit(1)
 
     # Diagnostic facility for investigating client-side stalls/timeouts.
