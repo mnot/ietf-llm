@@ -131,7 +131,7 @@ def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
             f"Ignoring unknown IETF_LLM_EMBED_DEVICE={override!r} "
             "(expected cpu, mps, or cuda); using the default.",
             verbose,
-            level=LogLevel.ERROR,
+            level=LogLevel.WARN,
         )
     return "cuda" if _cuda_available() else "cpu"
 
@@ -154,7 +154,8 @@ def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool)
 def _load_sentence_transformer(
     model_name: str,
     verbose: Verbosity,
-    on_error_level: LogLevel = LogLevel.ERROR,
+    *,
+    background: bool = False,
 ) -> Any:
     """Construct (and persist registration of) a sentence-transformers model.
 
@@ -165,6 +166,15 @@ def _load_sentence_transformer(
     instance (the plugin's `register_embedding_models` hook only runs at
     llm startup, so we can't make it visible to `get_embedding_model` in
     the current process).
+
+    `background` marks the MCP prewarm, which nobody asked for and which
+    falls back to a lazy load on the first search. It must put *nothing* on
+    stderr: not the fetch notice, and not a load failure at ERROR (which
+    would bypass `Verbosity.QUIET` in `log()`). `IETF_LLM_DEBUG_LOG` lifts
+    the failure back to ERROR, because a suppressed diagnostic is no
+    diagnostic — see issue #205, which this traceback exists to catch.
+    A missing extra stays loud either way: that is a broken install, not a
+    transient miss, and it never resolves on its own.
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
@@ -184,7 +194,7 @@ def _load_sentence_transformer(
             "(IETF_LLM_EMBED_BASE_URL) and use an 'openai-embed/<model>' id, "
             "which needs no torch.",
             verbose,
-            level=on_error_level,
+            level=LogLevel.ERROR,
         )
         return None
     try:
@@ -225,14 +235,17 @@ def _load_sentence_transformer(
             # Emit on stderr so it clusters with HuggingFace's tqdm bars
             # and survives stdout redirection. Always shown (even with
             # --quiet) because a multi-minute network operation deserves
-            # a heads-up.
-            print(
-                f"\nFetching '{bare}' from HuggingFace: it is not in the local "
-                f"cache (typically 100-500 MB; one-time, then cached in "
-                f"~/.cache/huggingface/ and loaded offline thereafter).\n",
-                file=sys.stderr,
-                flush=True,
-            )
+            # a heads-up -- except on the background prewarm, which nobody
+            # asked for and which must not narrate itself into a client's
+            # logs. The download still happens; it just does so silently.
+            if not background:
+                print(
+                    f"\nFetching '{bare}' from HuggingFace: it is not in the local "
+                    f"cache (typically 100-500 MB; one-time, then cached in "
+                    f"~/.cache/huggingface/ and loaded offline thereafter).\n",
+                    file=sys.stderr,
+                    flush=True,
+                )
             st_model = _construct_sentence_transformer(bare, device, local_only=False)
         model._model = st_model  # pylint: disable=protected-access
         log(f"Loaded {bare} on device={device}.", verbose, level=LogLevel.PROGRESS)
@@ -243,14 +256,20 @@ def _load_sentence_transformer(
         # catch broadly but include the type name for debuggability. The
         # type name alone proved too thin to diagnose a report of a
         # filename-less FileNotFoundError, hence the debug traceback.
-        detail = f"\n{traceback.format_exc()}" if _debug_logging() else ""
+        debug = _debug_logging()
+        detail = f"\n{traceback.format_exc()}" if debug else ""
+        # WARN only for a silent background prewarm with debug logging off.
+        # `_prewarm_one` passes QUIET, which suppresses WARN — so gating the
+        # traceback on the level alone would compute it and throw it away,
+        # leaving #205 unreachable on the very path it was reported from.
+        level = LogLevel.WARN if (background and not debug) else LogLevel.ERROR
         log(
             f"Could not load sentence-transformers model '{bare}': "
             f"{type(err).__name__}: {err}. "
             f"Try manually: llm sentence-transformers register {bare}"
             f"{detail}",
             verbose,
-            level=on_error_level,
+            level=level,
         )
         return None
 
@@ -361,11 +380,7 @@ class _OpenAICompatEmbeddingModel:
         return result
 
 
-def _load_openai_compat(
-    model_name: str,
-    verbose: Verbosity,
-    on_error_level: LogLevel = LogLevel.ERROR,
-) -> Any:
+def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
     """Build the OpenAI-compatible remote embedding backend from the env.
 
     The model id is the part of ``model_name`` after the prefix; the
@@ -381,7 +396,7 @@ def _load_openai_compat(
             "is not set. Set the embeddings endpoint base URL (e.g. "
             "https://host/v1) in the environment.",
             verbose,
-            level=on_error_level,
+            level=LogLevel.ERROR,
         )
         return None
     headers = oai_compat.build_headers(
@@ -407,14 +422,18 @@ def _get_embed_model(
     model_name: str,
     verbose: Verbosity,
     *,
-    on_error_level: LogLevel = LogLevel.ERROR,
+    background: bool = False,
 ) -> Any:
     """Load (and cache) an embedding model.
 
-    `on_error_level` downgrades load-failure logging for best-effort callers:
-    the MCP prewarm runs in a background thread and falls back to a lazy load
-    on the next search, so its failures must not surface as ERROR. ERROR
-    bypasses `Verbosity.QUIET` in `log()`, so the level is the only lever.
+    `background` marks the MCP prewarm: unsolicited, best-effort, and
+    superseded by a lazy load on the next search, so it must stay off stderr.
+    Only the sentence-transformers *load failure* is quieted by it. A missing
+    `llm`, a missing `local-embeddings` extra, and an unset
+    `IETF_LLM_EMBED_BASE_URL` stay at ERROR whoever asks: those are broken
+    installs and deployment misconfigurations, which never resolve on their
+    own and which an operator needs to see at boot rather than on the first
+    user-facing search.
     """
     # Double-checked locking: the unlocked fast-path returns
     # immediately on warm-cache hits (the common case after first
@@ -431,11 +450,13 @@ def _get_embed_model(
         # Local sentence-transformers path: construct directly, skip
         # llm's registry (see _load_sentence_transformer docstring).
         if model_name.startswith(_ST_PREFIX):
-            model = _load_sentence_transformer(model_name, verbose, on_error_level)
+            model = _load_sentence_transformer(
+                model_name, verbose, background=background
+            )
         # Remote OpenAI-compatible path: no torch, no llm registry --
         # just an HTTP endpoint configured from the environment.
         elif model_name.startswith(_OPENAI_EMBED_PREFIX):
-            model = _load_openai_compat(model_name, verbose, on_error_level)
+            model = _load_openai_compat(model_name, verbose)
         else:
             try:
                 import llm  # pylint: disable=import-outside-toplevel,import-error
@@ -444,7 +465,7 @@ def _get_embed_model(
                     "`llm` package is missing — this should ship with "
                     "ietf-llm. Try reinstalling: pipx install --force ietf-llm",
                     verbose,
-                    level=on_error_level,
+                    level=LogLevel.ERROR,
                 )
                 return None
             try:
@@ -458,7 +479,7 @@ def _get_embed_model(
                     f"Could not load embedding model '{model_name}': "
                     f"{type(err).__name__}: {err}",
                     verbose,
-                    level=on_error_level,
+                    level=LogLevel.ERROR,
                 )
                 return None
 

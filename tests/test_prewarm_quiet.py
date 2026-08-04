@@ -1,13 +1,18 @@
-"""A failed background prewarm must not shout.
+"""The background prewarm must be silent, and diagnosable on demand.
 
-The prewarm is best-effort: it runs in a daemon thread and falls back to a
-lazy load on the first search. But `log()` makes ERROR bypass
-`Verbosity.QUIET`, so a transient first-run model-load miss printed an
-[ERROR] line to stderr and into the client's logs for something that then
-worked fine on retry. Reported by a user whose server was in fact healthy.
+The prewarm is unsolicited and best-effort: it runs in a daemon thread and
+the first search does a lazy load if it fails. It was not silent. `log()`
+makes ERROR bypass `Verbosity.QUIET`, so a transient first-run miss printed
+[ERROR] to stderr and into the client's logs for something that then worked
+fine on retry -- reported by a user whose server was in fact healthy.
 
-The suite is torch-free, so `llm_sentence_transformers` is stubbed — without
-it these would silently exercise the missing-extra branch instead of the
+The durable guard is `test_prewarm_emits_nothing_on_stderr`: it drives the
+real `_prewarm_one` and asserts on the stream, not on `log()` calls. An
+earlier fix satisfied a log-level assertion while still printing a
+HuggingFace fetch notice from the same path.
+
+The suite is torch-free, so `llm_sentence_transformers` is stubbed -- without
+it these silently exercise the missing-extra branch instead of the
 load-failure branch they are about.
 """
 
@@ -15,7 +20,7 @@ from __future__ import annotations
 
 import sys
 import types
-from typing import Any, List
+from typing import Any, List, Tuple
 
 import pytest
 
@@ -27,13 +32,14 @@ _BARE = models.DEFAULT_EMBED_MODEL.split("/", 1)[1]
 
 
 def _boom(*_a: Any, **_k: Any) -> Any:
+    # An OSError, so the loader treats it as a cache miss, emits the fetch
+    # notice, retries over the network, and lands in the outer handler --
+    # exactly the sequence the reporter hit.
     raise FileNotFoundError(2, "No such file or directory")
 
 
-@pytest.fixture(name="failing_load")
-def _failing_load(monkeypatch: pytest.MonkeyPatch) -> List[Any]:
-    """Reach the load-failure path with the on-device stack absent, and
-    capture every `log()` call as (message, level)."""
+@pytest.fixture(name="stub_plugin")
+def _stub_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
     plugin = types.ModuleType("llm_sentence_transformers")
     plugin.SentenceTransformerModel = (  # type: ignore[attr-defined]
         lambda *a, **k: types.SimpleNamespace(_model=None)
@@ -44,7 +50,10 @@ def _failing_load(monkeypatch: pytest.MonkeyPatch) -> List[Any]:
     monkeypatch.setattr(models, "_MODEL_CACHE", {})
     monkeypatch.setattr(models, "_construct_sentence_transformer", _boom)
 
-    calls: List[Any] = []
+
+@pytest.fixture(name="logged")
+def _logged(monkeypatch: pytest.MonkeyPatch) -> List[Tuple[str, Any]]:
+    calls: List[Tuple[str, Any]] = []
 
     def fake_log(
         message: Any, _verbose: Any = None, level: Any = LogLevel.PROGRESS, **_kw: Any
@@ -55,53 +64,96 @@ def _failing_load(monkeypatch: pytest.MonkeyPatch) -> List[Any]:
     return calls
 
 
-def test_prewarm_load_failure_does_not_log_at_error(failing_load: List[Any]) -> None:
+@pytest.mark.usefixtures("stub_plugin")
+def test_prewarm_emits_nothing_on_stderr(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("IETF_LLM_DEBUG_LOG", raising=False)
+    mcp_server._prewarm_one(models.DEFAULT_EMBED_MODEL)
+    captured = capsys.readouterr()
+    assert captured.err == "", f"prewarm wrote to stderr: {captured.err!r}"
+    assert captured.out == ""
+
+
+@pytest.mark.usefixtures("stub_plugin")
+def test_foreground_load_still_announces_the_download(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The notice is wanted when a user is waiting on the load: it is a
+    # multi-minute, 100-500 MB operation.
+    models._load_sentence_transformer(models.DEFAULT_EMBED_MODEL, Verbosity.QUIET)
+    assert "Fetching" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("stub_plugin")
+def test_background_load_failure_does_not_log_at_error(
+    logged: List[Tuple[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("IETF_LLM_DEBUG_LOG", raising=False)
     models._get_embed_model(
-        models.DEFAULT_EMBED_MODEL, Verbosity.QUIET, on_error_level=LogLevel.WARN
+        models.DEFAULT_EMBED_MODEL, Verbosity.QUIET, background=True
     )
-    levels = [level for _msg, level in failing_load]
+    levels = [level for _msg, level in logged]
     assert levels, "the failure should still be logged, just not at ERROR"
     assert LogLevel.ERROR not in levels
     # Guard the trap this test already fell into once: without the plugin
     # stub it would pass by way of the missing-extra branch instead.
-    assert any("Could not load sentence-transformers" in m for m, _l in failing_load)
+    assert any("Could not load sentence-transformers" in m for m, _l in logged)
 
 
-def test_search_path_load_failure_still_logs_at_error(failing_load: List[Any]) -> None:
-    # The default must stay loud: on the search path a load failure blocks
-    # the call the user is waiting on.
+@pytest.mark.usefixtures("stub_plugin")
+def test_search_path_load_failure_still_logs_at_error(
+    logged: List[Tuple[str, Any]],
+) -> None:
+    # On the search path a load failure blocks a call someone is waiting on.
     models._get_embed_model(models.DEFAULT_EMBED_MODEL, Verbosity.QUIET)
-    assert LogLevel.ERROR in [level for _msg, level in failing_load]
+    assert LogLevel.ERROR in [level for _msg, level in logged]
 
 
-def test_debug_logging_adds_a_traceback(
-    failing_load: List[Any], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.usefixtures("stub_plugin")
+def test_debug_logging_reaches_the_background_path(
+    logged: List[Tuple[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The whole point of the traceback is #205, which was reported from the
+    # prewarm. WARN is invisible there (QUIET), so debug logging must lift
+    # the failure back to ERROR or the diagnostic is unreachable.
     monkeypatch.setenv("IETF_LLM_DEBUG_LOG", "1")
-    models._load_sentence_transformer(models.DEFAULT_EMBED_MODEL, Verbosity.QUIET)
-    assert any("Traceback (most recent call last)" in msg for msg, _l in failing_load)
-
-
-def test_traceback_is_absent_without_the_debug_flag(
-    failing_load: List[Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("IETF_LLM_DEBUG_LOG", raising=False)
-    models._load_sentence_transformer(models.DEFAULT_EMBED_MODEL, Verbosity.QUIET)
-    assert failing_load
-    assert not any(
-        "Traceback (most recent call last)" in msg for msg, _l in failing_load
+    models._get_embed_model(
+        models.DEFAULT_EMBED_MODEL, Verbosity.QUIET, background=True
+    )
+    assert any(
+        "Traceback (most recent call last)" in msg and level is LogLevel.ERROR
+        for msg, level in logged
     )
 
 
-def test_prewarm_passes_the_downgraded_level(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {}
+@pytest.mark.usefixtures("stub_plugin")
+def test_traceback_is_absent_without_the_debug_flag(
+    logged: List[Tuple[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("IETF_LLM_DEBUG_LOG", raising=False)
+    models._load_sentence_transformer(models.DEFAULT_EMBED_MODEL, Verbosity.QUIET)
+    assert logged
+    assert not any("Traceback (most recent call last)" in msg for msg, _l in logged)
 
-    def fake_get(
-        _model_name: str, _verbose: Any, *, on_error_level: Any = LogLevel.ERROR
-    ) -> Any:
-        captured["level"] = on_error_level
-        return None
 
-    monkeypatch.setattr(mcp_server, "_get_embed_model", fake_get)
-    mcp_server._prewarm_one(models.DEFAULT_EMBED_MODEL)
-    assert captured["level"] is LogLevel.WARN
+def test_missing_extra_stays_loud_even_in_background(
+    logged: List[Tuple[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A broken install never resolves on its own, so quieting it would just
+    # defer the report to the first search. No plugin stub here.
+    monkeypatch.setitem(sys.modules, "llm_sentence_transformers", None)
+    monkeypatch.setattr(models, "_MODEL_CACHE", {})
+    models._get_embed_model(
+        models.DEFAULT_EMBED_MODEL, Verbosity.QUIET, background=True
+    )
+    assert LogLevel.ERROR in [level for _msg, level in logged]
+
+
+def test_unknown_device_override_is_a_warning_not_an_error(
+    logged: List[Tuple[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # It fired at ERROR from the prewarm even when the load then succeeded.
+    monkeypatch.setenv("IETF_LLM_EMBED_DEVICE", "gpu")
+    assert models._embed_device(Verbosity.QUIET) in ("cpu", "cuda")
+    assert [level for _msg, level in logged] == [LogLevel.WARN]
