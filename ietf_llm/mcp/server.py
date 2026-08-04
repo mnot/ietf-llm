@@ -14,7 +14,7 @@ import anyio
 from .. import __version__
 from ..embeddings import _get_embed_model, is_remote_embed_model
 from ..freshness import set_deployment_mode, set_gather_default
-from ..log import Verbosity, graceful_keyboard_interrupt
+from ..log import LogLevel, Verbosity, graceful_keyboard_interrupt
 from ..paths import get_index_dir
 from . import (
     chunks,
@@ -52,8 +52,13 @@ def _prewarm_one(model_name: str) -> None:
     A remote OpenAI-compatible backend has no weights to warm; constructing
     the client is enough, and we must NOT make a network round-trip on the
     prewarm path (R10: readiness must not depend on an upstream call).
+
+    Load failures log at WARN, not ERROR: this is best-effort and falls back
+    to a lazy load on the first search, but ERROR bypasses `Verbosity.QUIET`,
+    so a transient first-run miss otherwise printed an alarming line into the
+    terminal and the client's logs for something that then worked fine.
     """
-    model = _get_embed_model(model_name, Verbosity.QUIET)
+    model = _get_embed_model(model_name, Verbosity.QUIET, on_error_level=LogLevel.WARN)
     if model is not None and not is_remote_embed_model(model_name):
         list(model.embed("warmup"))
 

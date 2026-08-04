@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from typing import Any, Iterable, Sequence
 
 import requests
@@ -84,6 +85,15 @@ _MODEL_CACHE: dict[str, Any] = {}
 _MODEL_LOAD_LOCK = threading.Lock()
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _debug_logging() -> bool:
+    """Whether `IETF_LLM_DEBUG_LOG` is on. Mirrors `mcp.debug_log`; duplicated
+    so the embeddings layer stays independent of the MCP layer."""
+    return os.environ.get("IETF_LLM_DEBUG_LOG", "").strip().lower() in _TRUTHY
+
+
 def _cuda_available() -> bool:
     """True if a CUDA device is usable. Isolated so the device default can be
     tested without importing torch (CI stays torch-free)."""
@@ -141,7 +151,11 @@ def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool)
     )
 
 
-def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
+def _load_sentence_transformer(
+    model_name: str,
+    verbose: Verbosity,
+    on_error_level: LogLevel = LogLevel.ERROR,
+) -> Any:
     """Construct (and persist registration of) a sentence-transformers model.
 
     `llm-sentence-transformers` expects HF model names to be added to its
@@ -170,7 +184,7 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
             "(IETF_LLM_EMBED_BASE_URL) and use an 'openai-embed/<model>' id, "
             "which needs no torch.",
             verbose,
-            level=LogLevel.ERROR,
+            level=on_error_level,
         )
         return None
     try:
@@ -226,13 +240,17 @@ def _load_sentence_transformer(model_name: str, verbose: Verbosity) -> Any:
     except Exception as err:  # pylint: disable=broad-except
         # The underlying stack (huggingface_hub, sentence-transformers,
         # torch) doesn't expose a stable exception hierarchy, so we
-        # catch broadly but include the type name for debuggability.
+        # catch broadly but include the type name for debuggability. The
+        # type name alone proved too thin to diagnose a report of a
+        # filename-less FileNotFoundError, hence the debug traceback.
+        detail = f"\n{traceback.format_exc()}" if _debug_logging() else ""
         log(
             f"Could not load sentence-transformers model '{bare}': "
             f"{type(err).__name__}: {err}. "
-            f"Try manually: llm sentence-transformers register {bare}",
+            f"Try manually: llm sentence-transformers register {bare}"
+            f"{detail}",
             verbose,
-            level=LogLevel.ERROR,
+            level=on_error_level,
         )
         return None
 
@@ -343,7 +361,11 @@ class _OpenAICompatEmbeddingModel:
         return result
 
 
-def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
+def _load_openai_compat(
+    model_name: str,
+    verbose: Verbosity,
+    on_error_level: LogLevel = LogLevel.ERROR,
+) -> Any:
     """Build the OpenAI-compatible remote embedding backend from the env.
 
     The model id is the part of ``model_name`` after the prefix; the
@@ -359,7 +381,7 @@ def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
             "is not set. Set the embeddings endpoint base URL (e.g. "
             "https://host/v1) in the environment.",
             verbose,
-            level=LogLevel.ERROR,
+            level=on_error_level,
         )
         return None
     headers = oai_compat.build_headers(
@@ -381,7 +403,19 @@ def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
     )
 
 
-def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
+def _get_embed_model(
+    model_name: str,
+    verbose: Verbosity,
+    *,
+    on_error_level: LogLevel = LogLevel.ERROR,
+) -> Any:
+    """Load (and cache) an embedding model.
+
+    `on_error_level` downgrades load-failure logging for best-effort callers:
+    the MCP prewarm runs in a background thread and falls back to a lazy load
+    on the next search, so its failures must not surface as ERROR. ERROR
+    bypasses `Verbosity.QUIET` in `log()`, so the level is the only lever.
+    """
     # Double-checked locking: the unlocked fast-path returns
     # immediately on warm-cache hits (the common case after first
     # load). The lock-then-re-check serialises concurrent loaders so
@@ -397,11 +431,11 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
         # Local sentence-transformers path: construct directly, skip
         # llm's registry (see _load_sentence_transformer docstring).
         if model_name.startswith(_ST_PREFIX):
-            model = _load_sentence_transformer(model_name, verbose)
+            model = _load_sentence_transformer(model_name, verbose, on_error_level)
         # Remote OpenAI-compatible path: no torch, no llm registry --
         # just an HTTP endpoint configured from the environment.
         elif model_name.startswith(_OPENAI_EMBED_PREFIX):
-            model = _load_openai_compat(model_name, verbose)
+            model = _load_openai_compat(model_name, verbose, on_error_level)
         else:
             try:
                 import llm  # pylint: disable=import-outside-toplevel,import-error
@@ -410,7 +444,7 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
                     "`llm` package is missing — this should ship with "
                     "ietf-llm. Try reinstalling: pipx install --force ietf-llm",
                     verbose,
-                    level=LogLevel.ERROR,
+                    level=on_error_level,
                 )
                 return None
             try:
@@ -424,7 +458,7 @@ def _get_embed_model(model_name: str, verbose: Verbosity) -> Any:
                     f"Could not load embedding model '{model_name}': "
                     f"{type(err).__name__}: {err}",
                     verbose,
-                    level=LogLevel.ERROR,
+                    level=on_error_level,
                 )
                 return None
 
