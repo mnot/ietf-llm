@@ -892,6 +892,14 @@ constructing the client — there are no weights to load, and it makes no
 upstream call, so readiness never waits on the network. `read_file_section`
 is hard-capped (default 400 lines, max 5000) as context hygiene.
 
+The prewarm is **silent**: nobody asked for it, and the first `search_corpus`
+does a lazy load if it fails, so it writes nothing to stderr — not a failure,
+not the HuggingFace fetch notice. Set `IETF_LLM_DEBUG_LOG` to get the failure
+back, with a traceback. Broken installs and misconfiguration (missing `llm`,
+missing the `local-embeddings` extra, an unset `IETF_LLM_EMBED_BASE_URL`)
+stay at ERROR regardless: those never resolve on their own, and an operator
+needs them at boot rather than on the first user-facing search.
+
 The default transport is the custom threaded-writer **stdio** path (see
 `mcp/stdio.py`, which sidesteps an upstream loop-blocking write).
 Setting `IETF_LLM_MCP_TRANSPORT=http` serves standard MCP **Streamable
