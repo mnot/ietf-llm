@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Annotated, Optional, Tuple
+
+from pydantic import Field
 
 from ..freshness import gather_suggestion
 from ..gather.sources.citations import normalize_draft_name
 from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import drafts_dir, issue_path, issues_dir
 from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_freshness
+from .params import Corpus, DraftName, StartLine
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -306,7 +309,7 @@ def tool_draft_status(name: str) -> str:
 
 def register(server: "FastMCP") -> None:
     @server.tool()
-    async def draft_authors(name: str) -> str:
+    async def draft_authors(name: DraftName) -> str:
         """The authors/editors of a draft, with contact emails — for a
         call-for-presenters or to reach a draft's owners.
 
@@ -316,15 +319,22 @@ def register(server: "FastMCP") -> None:
         email the draft itself lists. The owning corpus (the draft's WG) must
         be gathered. These are draft-stated addresses — a chair may have a
         better working address from mail and can override.
-
-        Args:
-            name: The draft name (`draft-ietf-httpbis-resumable-upload`); the
-                version suffix is optional (the newest cached revision is used).
         """
         return await _offload(tool_draft_authors, name)
 
     @server.tool()
-    async def list_drafts(corpus: str, state: str = "") -> str:
+    async def list_drafts(
+        corpus: Corpus,
+        state: Annotated[
+            str,
+            Field(
+                description=(
+                    "Lifecycle slug to filter to: `active`, `expired`, `rfc`, "
+                    "`replaced`, `withdrawn`."
+                )
+            ),
+        ] = "",
+    ) -> str:
         """List a corpus's drafts with their lifecycle state, offline from the
         cache: which are active, expired, became RFCs, were replaced, or
         withdrawn, with expiry dates. Optionally filter to one `state` slug.
@@ -338,7 +348,13 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_list_drafts, corpus, state)
 
     @server.tool()
-    async def get_draft(name: str, start_line: int = 1, max_lines: int = 2000) -> str:
+    async def get_draft(
+        name: DraftName,
+        start_line: StartLine = 1,
+        max_lines: Annotated[
+            int, Field(description="Lines to return.", ge=1, le=_DRAFT_MAX_LINES)
+        ] = _DRAFT_MAX_LINES,
+    ) -> str:
         """Verbatim text of a cached Internet-Draft by name (newest cached
         revision, across all gathered corpora), as a bounded line window.
 
@@ -351,19 +367,28 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def get_issue(
-        corpus: str,
-        number: str,
-        repo: str = "",
-        start_line: int = 1,
-        max_lines: int = 3000,
+        corpus: Corpus,
+        number: Annotated[str, Field(description="Issue number.")],
+        repo: Annotated[
+            str,
+            Field(
+                description=(
+                    "`owner/repo`, to disambiguate when the corpus tracks "
+                    "several and the number is ambiguous."
+                )
+            ),
+        ] = "",
+        start_line: StartLine = 1,
+        max_lines: Annotated[
+            int, Field(description="Lines to return.", ge=1, le=_ISSUE_MAX_LINES)
+        ] = _ISSUE_MAX_LINES,
     ) -> str:
         """Verbatim text of one GitHub issue — opening description and comment
         thread — from a corpus, by issue number, as a bounded line window.
 
         Use this to quote an issue's ACTUAL text for a citation rather than a
-        search snippet. Pass `repo` (owner/repo) to disambiguate when the
-        corpus tracks several repos and the number is ambiguous. Page a long
-        issue with `start_line` (the truncation footer says where to resume).
+        search snippet. Page a long issue with `start_line`; the truncation
+        footer says where to resume.
         """
         return await _offload(
             tool_get_issue, corpus, number, repo, start_line, max_lines
@@ -372,7 +397,7 @@ def register(server: "FastMCP") -> None:
 
 def register_live(server: "FastMCP") -> None:
     @server.tool()
-    async def draft_status(name: str) -> str:
+    async def draft_status(name: DraftName) -> str:
         """**First call for where an IETF draft actually stands** — prefer
         it to web search for any "what state is draft-… in / how far along is
         it / is it in WGLC, IESG, or published" question. One draft's current
@@ -390,9 +415,5 @@ def register_live(server: "FastMCP") -> None:
 
         Live (short TTL + freshness stamp; it reaches the network); see the
         SKILL "Live Datatracker facts" section.
-
-        Args:
-            name: The draft name (`draft-ietf-httpbis-resumable-upload`);
-                the version suffix is optional.
         """
         return await _offload(tool_draft_status, name)

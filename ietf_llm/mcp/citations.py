@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Tuple
+
+from pydantic import Field
 
 from ..freshness import gather_suggestion
 from ..gather.sources.citations import normalize_draft_name
 from ..paths import digest_path
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
+from .params import Corpus, DraftName, ThreadFile
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -232,7 +235,7 @@ def tool_find_message_citations(
 
 def register(server: "FastMCP") -> None:
     @server.tool()
-    async def find_citations(corpus: str, draft_name: str) -> str:
+    async def find_citations(corpus: Corpus, draft_name: DraftName) -> str:
         """Find every mailing-list thread or GitHub issue in an IETF/IRTF
         effort that cites a given Internet-Draft.
 
@@ -251,14 +254,17 @@ def register(server: "FastMCP") -> None:
             from a count alone (overview's Documents section shows the
             count inline; this tool drills into the locations).
 
-        `draft_name` accepts any of `draft-foo-bar`, `draft-foo-bar-07`,
-        `draft-foo-bar.txt` — version suffix stripped before lookup.
         """
         return await _offload(tool_find_citations, corpus, draft_name)
 
     @server.tool()
     async def find_message_citations(
-        corpus: str, file: str, chunk_idx: Optional[int] = None
+        corpus: Corpus,
+        file: ThreadFile,
+        chunk_idx: Annotated[
+            Optional[int],
+            Field(description="Scope to a single message.", ge=0),
+        ] = None,
     ) -> str:
         """Walk the message reference graph for a thread / issue file —
         which messages cite it, and which archive links it cites.
@@ -281,9 +287,7 @@ def register(server: "FastMCP") -> None:
           - Tracing a dispute / appeal / split thread back to its origin.
           - Asking "who else referenced this message or decision?".
 
-        `file` is corpus-relative (`threads/<file>.md`, `issues/<repo>/<n>.md`);
-        pass `chunk_idx` to scope to a single message. Within-scheme
-        resolution only (a `mailarchive` token is not bridged to a
+        Within-scheme resolution only (a `mailarchive` token is not bridged to a
         `w3.org/mid` Message-ID), so real targets can show as external on
         a list that stamps the opposite scheme from what bodies cite.
         """

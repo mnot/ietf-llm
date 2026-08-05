@@ -17,6 +17,20 @@ the hard way.
   and it isn't enforced there.
 - Do **not** edit managed files: `.pylintrc`, `Makefile`,
   `Makefile.venv`, `Makefile.pyproject`.
+- **The MCP surface budget** (`tests/test_mcp_surface_budget.py`) ratchets the
+  bytes every client pays before asking anything: the `instructions` field plus
+  the serialized tool list, for both the stdio and read-only-HTTP shapes.
+  Ceilings live in `tests/mcp_surface_baseline.json`; growth fails until you
+  regenerate them in the same commit, so the diff shows what a docstring cost.
+  Shrink freely — but tighten the ratchet after a real trim (the test asks).
+  Regenerate with:
+  `IETF_LLM_UPDATE_MCP_BASELINE=1 .venv/bin/python -m pytest tests/test_mcp_surface_budget.py`
+  To decide *what* to cut (none of these are gates):
+  `scripts/mcp_surface_report.py` (weight per tool in tokens, repeated
+  phrasing), `scripts/lint-prose.sh` (vale over the instructions + extracted
+  docstrings), `scripts/mcp_tool_similarity.py` (which descriptions a model
+  can't tell apart; needs the embedding model, so not in CI). All three read
+  `ietf_llm/mcp/surface.py`, which is also what the gate measures.
 
 ## Commit conventions
 

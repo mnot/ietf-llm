@@ -30,6 +30,12 @@ from ..people.positions import file_supports_tally
 from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from . import debug_log
 
+#: Upper bound on `k` for the semantic-search tools, so a huge value can't
+#: return thousands of chunks and blow the context window. Lives here, not in
+#: `search`, because `params.Limit` states it as a schema bound and `search`
+#: enforces it — a literal in each would let the two drift.
+MAX_SEARCH_K = 100
+
 MAX_LINES_DEFAULT = 400
 
 

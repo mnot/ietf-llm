@@ -3,7 +3,9 @@ get_by_url, read_file_section."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from ..embeddings import chunk_counts, find_chunks_by_url, get_chunk
 from ..freshness import gather_enabled
@@ -20,6 +22,7 @@ from .common import (
     _safe_path,
     _with_freshness,
 )
+from .params import ChunkIdx, Corpus, CorpusFile
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -319,22 +322,26 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
 def register(server: "FastMCP") -> None:
     @server.tool()
     async def get_chunk_text(
-        corpus: str,
-        file: str,
-        chunk_idx: int,
-        end_chunk_idx: Optional[int] = None,
+        corpus: Corpus,
+        file: CorpusFile,
+        chunk_idx: ChunkIdx,
+        end_chunk_idx: Annotated[
+            Optional[int],
+            Field(
+                description=(
+                    "Last index of a consecutive range, inclusive; at most 20 "
+                    "chunks per call."
+                ),
+                ge=0,
+            ),
+        ] = None,
     ) -> str:
-        """Get full text of a chunk (or a consecutive range) from a
-        corpus — typically a single
-        mailing list message, an issue comment, or a draft section,
+        """Get the full text of a chunk, or a consecutive range of them —
+        typically one mailing-list message, issue comment, or draft section,
         as returned by `search_corpus`.
 
-        Pass `end_chunk_idx` to fetch a consecutive range in one call
-        (e.g. an entire short thread). Range size is capped at
-        20 chunks per call.
-
-        Note: per-corpus digests (`digests/*.md`) are not chunked — use
-        `read_digest` for those.
+        Per-corpus digests (`digests/*.md`) are not chunked; use `read_digest`
+        for those.
         """
         return await _offload(
             tool_get_chunk, corpus, file, chunk_idx, end_chunk_idx=end_chunk_idx
@@ -342,57 +349,62 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def get_chunks_batch(
-        corpus: str,
-        requests: List[Dict[str, Any]],
+        corpus: Corpus,
+        requests: Annotated[
+            List[Dict[str, Any]],
+            Field(
+                description=(
+                    "One dict per chunk or range: `file` (str), `chunk_idx` "
+                    "(int), optional `end_chunk_idx` (int, inclusive). 20 "
+                    "chunks total across all requests."
+                )
+            ),
+        ],
     ) -> str:
-        """Fetch multiple chunks from a corpus in one call.
-        `requests` is a list of dicts, each with:
-          - `file` (str): chunk's source file
-          - `chunk_idx` (int): first chunk index
-          - `end_chunk_idx` (int, optional): last chunk index (inclusive)
-            for a range from this file
-
-        Use when search_corpus returned hits across multiple files and
-        you want all of them in one round-trip rather than N calls.
-        Total chunks across all requests are capped at 20.
+        """Fetch chunks from several files in one round-trip, for when
+        `search_corpus` returned hits across multiple files and you want them
+        all without N calls.
         """
         return await _offload(tool_get_chunks_batch, corpus, requests)
 
     @server.tool()
-    async def get_by_url(corpus: str, url: str) -> str:
-        """Resolve a citation URL to its cached chunk in a corpus.
-        Accepts the URL forms that actually appear in the corpus:
+    async def get_by_url(
+        corpus: Corpus,
+        url: Annotated[
+            str,
+            Field(
+                description=(
+                    "A `https://www.w3.org/mid/<message-id>` list permalink (the "
+                    "`Archived-At:` URL, not a mailarchive.ietf.org one) or a "
+                    "GitHub issue URL, exactly as it appears in the data."
+                )
+            ),
+        ],
+    ) -> str:
+        """Resolve a citation URL to its cached chunk, returning the same
+        shape as `get_chunk_text`. Reach for it when the user pastes such a
+        URL, or a chunk cites one.
 
-        - Mailing-list message permalinks of the form
-          `https://www.w3.org/mid/<message-id>` — this is the
-          `Archived-At:` URL shown on every thread message (NOT
-          `mailarchive.ietf.org/arch/msg/...`, which is not what the
-          archive stamps into the messages).
-        - GitHub issue URLs (e.g.
-          `https://github.com/<owner>/<repo>/issues/<N>`).
-
-        Matches exactly against the URL stamped at index time, so pass
-        the URL as it appears in the data (a `w3.org/mid` link straight
-        from a message header resolves; a hand-built archive URL will
-        not). Returns the chunk text — same shape as `get_chunk_text`.
-        Use it when the user pastes, or a chunk cites, such a URL.
+        Matching is exact against the URL stamped at index time: a link taken
+        straight from a message header resolves, a hand-built archive URL will
+        not.
         """
         return await _offload(tool_get_by_url, corpus, url)
 
     @server.tool()
     async def read_file_section(
-        corpus: str,
-        file: str,
-        start_line: int = 1,
-        max_lines: int = MAX_LINES_DEFAULT,
+        corpus: Corpus,
+        file: CorpusFile,
+        start_line: Annotated[int, Field(description="First line, 1-based.", ge=1)] = 1,
+        max_lines: Annotated[
+            int, Field(description="Lines to return.", ge=1, le=MAX_LINES_HARD_CAP)
+        ] = MAX_LINES_DEFAULT,
     ) -> str:
-        """Read a bounded section of any file in a corpus's
-        ietf-llm cache (per-thread files, per-issue files, drafts,
-        slides, transcripts, minutes; RFC bodies only when gathered with
-        `--rfcs` — otherwise use `get_rfc`). Default 400 lines per call; the
-        caller can raise `max_lines` up to a hard cap of 5000 so the
-        context window can't be blown by accident. Prefer
-        `search_corpus` / `get_chunk_text` for very large files.
+        """Read a bounded section of any file in a corpus — thread and issue
+        files, drafts, slides, transcripts, minutes. RFC bodies are here only
+        when gathered with `--rfcs`; otherwise use `get_rfc`.
+
+        Prefer `search_corpus` / `get_chunk_text` for very large files.
         """
         return await _offload(
             tool_read_file_section, corpus, file, start_line, max_lines

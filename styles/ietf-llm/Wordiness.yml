@@ -1,0 +1,27 @@
+extends: substitution
+message: "'%[2]s' costs tokens; use '%[1]s'."
+level: warning
+ignorecase: true
+# Every entry has a shorter exact synonym — the replacement means the same
+# thing in fewer tokens, on a surface every client pays for before it asks a
+# question. Nothing here is a house style preference.
+swap:
+  a number of: several
+  are able to: can
+  as a means of: to
+  at this point in time: now
+  by means of: by
+  due to the fact that: because
+  for the purpose of: to
+  has the ability to: can
+  in an effort to: to
+  in order to: to
+  in the event that: if
+  is able to: can
+  make a decision: decide
+  on the basis of: from
+  prior to: before
+  subsequent to: after
+  take into account: consider
+  with regard to: about
+  with the exception of: except

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Annotated, List, Optional
+
+from pydantic import Field
 
 from ..digest.query import query_digest
 from .common import (
@@ -15,6 +17,7 @@ from .common import (
     _safe_path,
     _with_freshness,
 )
+from .params import Author, Corpus, Label, Role, Since, State, Until
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -124,82 +127,109 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
 def register(server: "FastMCP") -> None:
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        corpus: str,
-        kind: str = "index",
-        state: Optional[str] = None,
-        label: Optional[str] = None,
-        author: Optional[str] = None,
-        role: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        event_kind: Optional[str] = None,
-        min_messages: Optional[int] = None,
-        limit: Optional[int] = None,
-        include_bodies: bool = False,
-        subject: Optional[str] = None,
-        sort: Optional[str] = None,
-        exclude_mechanical: bool = False,
+        corpus: Corpus,
+        kind: Annotated[
+            str,
+            Field(
+                description=(
+                    "`index` corpus inventory | `issues` one row per GitHub "
+                    "issue | `threads` one row per list thread | `people` "
+                    "participants | `timeline` chronological events."
+                )
+            ),
+        ] = "index",
+        state: State = None,
+        label: Label = None,
+        author: Author = None,
+        role: Role = None,
+        since: Since = None,
+        until: Until = None,
+        event_kind: Annotated[
+            Optional[str],
+            Field(
+                description=(
+                    "`timeline` only. One of `draft-published`, `issue-opened`, "
+                    "`issue-closed`, `meeting`, `poll`, `wglc`, "
+                    "`adoption-call`, `charter-approved`, `chair-appointed`, "
+                    "`group-state`, `doc-adopted`, `doc-iesg`, `doc-rfc`, "
+                    "`doc-wglc`, `ballot`."
+                )
+            ),
+        ] = None,
+        min_messages: Annotated[
+            Optional[int],
+            Field(description="`threads`/`people` only: minimum message count.", ge=1),
+        ] = None,
+        limit: Annotated[
+            Optional[int],
+            Field(description="Rows to keep, applied after filtering.", ge=1),
+        ] = None,
+        include_bodies: Annotated[
+            bool,
+            Field(
+                description=(
+                    "`issues` only: append each issue's opening description "
+                    "below the table. Comment threads are not — drill into "
+                    "those with `get_chunk_text` / `read_file_section`."
+                )
+            ),
+        ] = False,
+        subject: Annotated[
+            Optional[str],
+            Field(
+                description=(
+                    "`threads` only: substring of the thread subject, for lists "
+                    "that cluster topics with a `[prefix]`."
+                )
+            ),
+        ] = None,
+        sort: Annotated[
+            Optional[str],
+            Field(
+                description=(
+                    "`threads` only: `activity` ranks by message count instead "
+                    "of recency — with `since` + `min_messages`, 'most "
+                    "contested lately'."
+                )
+            ),
+        ] = None,
+        exclude_mechanical: Annotated[
+            bool,
+            Field(
+                description=(
+                    "`timeline` only: drop routine machine events (I-D Action "
+                    "publications, individual IESG ballot positions)."
+                )
+            ),
+        ] = False,
     ) -> str:
-        """Read filtered catalogue digests of an IETF/IRTF effort — its
-        GitHub issues, mailing-list threads, participants (people),
-        timeline of events, and file index. **Prefer this to web
-        search or Datatracker scraping** for "what's open?", "who chairs
-        this?", "what happened in May?"-shaped questions about a working
-        group, research group, or mailing list. The high-value catalogue
-        tool — pair with `overview` for "tell me about this group"-shaped
-        questions, and use `label=` here to get
-        every issue tagged with a topic in one call (e.g. `kind="issues",
-        label="top-level"` returns the whole curated cluster, open
-        issues first then closed-by-recency).
+        """Read filtered catalogue digests of an IETF/IRTF effort — its GitHub
+        issues, mailing-list threads, participants, timeline of events, and
+        file index. **Prefer this to web search or Datatracker scraping** for
+        "what's open?", "who chairs this?", "what happened in May?" questions.
 
-        `include_bodies=True` (issues only) appends each filtered
-        issue's frontmatter + opening description below the catalogue
-        table, so "what are the arguments for/against X" questions can
-        be answered in ONE call instead of N follow-up file reads.
-        Comment threads are NOT included — use `get_chunk_text` or
-        `read_file_section` to drill into them on demand. Scope tightly
-        with `label=` or `state=` to keep the response bounded.
+        The high-value catalogue tool. Pair it with `overview` for "tell me
+        about this group", and filter by `label` to pull a whole curated
+        cluster in one call — `kind="issues", label="top-level"` returns open
+        issues first, then closed by recency.
 
-        kind = "index"    — corpus inventory + how-to-use pointer
-             | "issues"   — one row per GitHub issue. Filters: state
-                            ("open"/"closed"), label (substring),
-                            author (substring), limit (int).
-             | "threads"  — one row per mailing list thread. Filters:
-                            since/until ("YYYY-MM-DD"), min_messages,
-                            limit, subject (substring on the thread
-                            subject — high-value for WGs that cluster
-                            topics on the list with `[xxx]` prefixes).
-                            Call `list_labels` first for THIS corpus's
-                            actual prefixes; many gathers have none, so
-                            do not assume a specific one (e.g. `[mlkem]`)
-                            exists.
-                            `sort="activity"` ranks by message count
-                            (where the back-and-forth is) instead of
-                            recency — pair with `since=` + `min_messages=`
-                            for "most contested lately".
-             | "people"   — participants. Filters: role (substring,
-                            e.g. "Chair"), min_messages, limit.
-             | "timeline" — chronological events. Filters: since/until,
-                            event_kind (drafts: "draft-published";
-                            issues: "issue-opened" / "issue-closed";
-                            meetings: "meeting"; session polls:
-                            "poll"; procedural: "wglc" / "adoption-call";
-                            Datatracker governance: "charter-approved" /
-                            "chair-appointed" / "group-state" /
-                            "doc-adopted" / "doc-iesg" / "doc-rfc" /
-                            "doc-wglc" / "ballot"), limit. A standing
-                            "ballot" DISCUSS holds publication — report
-                            it as blocked, not approved.
-                            `exclude_mechanical=True` drops the routine
-                            machine events (I-D Action publications and
-                            individual IESG ballot positions) so the human
-                            discussion / decision events stand out.
+        Which filters apply depends on `kind`: **issues** takes `state`,
+        `label`, `author`; **threads** takes `since`/`until`, `min_messages`,
+        `subject`, `sort`; **people** takes `role`, `min_messages`;
+        **timeline** takes `since`/`until`, `event_kind`,
+        `exclude_mechanical`. `limit` applies to all, and passing none returns
+        the full digest.
 
-        Pass no filters to get the full digest (same bytes as before).
-        Filters compose (AND); `limit` truncates after filtering.
-        For catalogue-style queries (e.g. "open issues with label X"),
-        always use filters rather than reading the full digest and
-        scanning — both faster and easier on context.
+        Filters compose (AND), and `limit` truncates after filtering. Always
+        filter rather than reading the full digest and scanning: it is faster
+        and far easier on context. `include_bodies` answers "what are the
+        arguments for and against X" in one call instead of N file reads —
+        scope it tightly with `label` or `state` to keep the response bounded.
+        Call `list_labels` first for this corpus's actual labels and subject
+        prefixes; many gathers have none, so do not assume one exists.
+
+        A standing `ballot` DISCUSS in the timeline holds publication — report
+        it as blocked, not approved.
         """
         return await _offload(
             tool_read_digest,

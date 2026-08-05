@@ -32,10 +32,10 @@ from typing import Dict, List
 
 import numpy as np
 
-from ietf_llm import routing
+from ietf_llm.corpus import routing
 from ietf_llm.embeddings.storage import decode_centroid
 from ietf_llm.embeddings.topics import build_topics
-from ietf_llm.utils import Verbosity
+from ietf_llm.log import Verbosity
 
 # --- EDIT ME -------------------------------------------------------------- #
 
@@ -75,7 +75,7 @@ FLOORS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 … 0.90
 
 
 def _build_table() -> Dict[str, routing.RoutingEntry]:
-    from ietf_llm.utils import cached_wg_names  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import cached_wg_names  # pylint: disable=import-outside-toplevel
 
     names = CORPORA or cached_wg_names()
     table: Dict[str, routing.RoutingEntry] = {}

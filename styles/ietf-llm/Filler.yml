@@ -1,0 +1,15 @@
+extends: existence
+message: "'%s' adds no information — cut the phrase, keep the sentence."
+level: warning
+ignorecase: true
+# Pure lead-in. Each of these announces that a fact is coming instead of
+# stating it, and a tool description has no room for the announcement.
+tokens:
+  - be aware that
+  - it is important to note that
+  - it is worth noting that
+  - it should be noted that
+  - keep in mind that
+  - note that
+  - please note that
+  - the fact that

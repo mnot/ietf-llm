@@ -39,5 +39,20 @@ The best way to submit a change is through a pull request. A few things to keep 
 * Check your code with `make typecheck` and address any issues found.
 * Every new field and every new `Note` should have a test covering it.
 
+### If you changed the MCP surface
+
+The server `instructions` and the tool descriptions are context every client
+pays for before it asks anything — currently around 19k tokens. `make test`
+holds a ceiling on that (`tests/test_mcp_surface_budget.py`); if you widened a
+docstring, it fails and tells you how to regenerate the baseline in the same
+commit, so the cost shows up in review. Three tools help you decide what to cut:
+
+* `.venv/bin/python scripts/mcp_surface_report.py` — where the weight is, per
+  tool, in tokens; plus which phrasing is repeated across descriptions.
+* `scripts/lint-prose.sh` — [vale](https://vale.sh) over the instructions and
+  the extracted docstrings (`brew install vale`). Advisory, not part of the gate.
+* `.venv/bin/python scripts/mcp_tool_similarity.py` — which descriptions a model
+  can't tell apart. Needs the embedding model, so it doesn't run in CI.
+
 If you're not sure how to dig in, feel free to ask for help, or sketch out an idea in an issue first.
 

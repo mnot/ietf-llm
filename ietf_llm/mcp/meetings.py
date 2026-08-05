@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Annotated, List
+
+from pydantic import Field
 
 from ..paths import (
     agenda_path,
@@ -17,6 +19,7 @@ from ..paths import (
     transcripts_dir,
 )
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
+from .params import Corpus
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -283,7 +286,7 @@ def _render_meeting_sessions(corpus: str, meeting: str) -> str:
 
 def register(server: "FastMCP") -> None:
     @server.tool()
-    async def list_meetings(corpus: str) -> str:
+    async def list_meetings(corpus: Corpus) -> str:
         """List a corpus's gathered meetings — each meeting code with its date
         and which artifacts are present (minutes, agenda, transcripts, polls).
         Offline, from the cache. Use it to find the `meeting` code to pass to
@@ -292,24 +295,44 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_list_meetings, corpus)
 
     @server.tool()
-    async def read_minutes(corpus: str, meeting: str = "") -> str:
+    async def read_minutes(
+        corpus: Corpus,
+        meeting: Annotated[
+            str,
+            Field(
+                description=(
+                    "Meeting code (`ietf125`, `interim20260401`); "
+                    "`list_meetings` names them."
+                )
+            ),
+        ] = "",
+    ) -> str:
         """Read the gathered minutes for one meeting, plus any recorded poll
         tallies. Offline, from the cache; the authoritative record of what a
         meeting discussed and decided.
 
-        Requires the `meeting` code (e.g. `ietf125`, `interim20260401`) — call
-        `list_meetings` first to find it. The appended polls are raw
-        sense-of-the-room tallies, NOT decisions — the chair declares consensus
-        (see `read_ietf_interpretation_norms`). When an attendance record
-        exists, a count and a pointer to the full roster are appended;
-        attendance is presence, not a position.
+        The appended polls are raw sense-of-the-room tallies, NOT decisions —
+        the chair declares consensus (see `read_ietf_interpretation_norms`).
+        When an attendance record exists, a count and a pointer to the full
+        roster are appended; attendance is presence, not a position.
         """
         return await _offload(tool_read_minutes, corpus, meeting)
 
 
 def register_live(server: "FastMCP") -> None:
     @server.tool()
-    async def meeting_schedule(corpus: str, meeting: str = "") -> str:
+    async def meeting_schedule(
+        corpus: Corpus,
+        meeting: Annotated[
+            str,
+            Field(
+                description=(
+                    "A numbered meeting (`126`) or interim id "
+                    "(`interim-2026-aipref-05`); omit to list upcoming ones."
+                )
+            ),
+        ] = "",
+    ) -> str:
         """A group's **live** meeting schedule from Datatracker — its session
         logistics at an IETF meeting (building an agenda is the obvious
         case). The live counterpart to the offline gathered record
@@ -330,10 +353,5 @@ def register_live(server: "FastMCP") -> None:
 
         Live (short TTL + freshness stamp; it reaches the network). Times
         are venue-local — never quote the UTC start as the local time.
-
-        Args:
-            corpus: The Working Group shortname (e.g. `httpbis`).
-            meeting: A numbered meeting (`126`) or interim id
-                (`interim-2026-aipref-05`); omit to list upcoming meetings.
         """
         return await _offload(tool_meeting_schedule, corpus, meeting)
