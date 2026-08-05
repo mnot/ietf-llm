@@ -99,7 +99,8 @@ rejected as a likely typo rather than producing an empty corpus.
 
 **Generative source flags** (`--new-drafts`, `--author`) populate a
 custom corpus dynamically — a rolling `-00` window from the submission
-API, or a person's authored drafts from the documentauthor table.
+API, or a person's authored drafts from the documentauthor table plus
+the directorate / Last Call reviews they *wrote* (`reviews.py`).
 They short-circuit shape inference to `custom` (the name is a label, no
 group lookup) and persist, so a bare re-run re-evaluates the source.
 Explicit sources (`--draft` / `--mailing-list` / `--github`) compose
@@ -149,6 +150,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │   ├── threads/<date>-<slug>.md       # one reconstructed thread each
 │   │   ├── issues/<repo-slug>/<N>.md      # one GitHub issue each
 │   │   ├── ballots/<draft-name>.md        # IESG ballot positions per draft
+│   │   ├── reviews/<review-doc-name>.md   # reviews written by the --author person
 │   │   ├── github/<repo-slug>.json        # raw archive (internal; not exported)
 │   │   └── raw/                           # NOT indexed; grep / NotebookLM only
 │   │       ├── mail-archive-<YYYY>.txt
@@ -440,6 +442,7 @@ ietf_llm/
 │       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
 │       ├── author.py               # --author: a person's authored drafts
+│       ├── reviews.py              # --author: the reviews that person wrote
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
@@ -700,6 +703,16 @@ Concretely, the gather layer reads from the API for:
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
   `datatracker_history.py`).
+- **Reviews** — the `review/reviewassignment` and `review/reviewrequest`
+  endpoints (`reviews.py`). The assignment API filters by *reviewer
+  email*, so the person's full address set (`person/email/?person=`) is
+  expanded first: a review filed under a former employer address would
+  otherwise be invisible. Review **text** is the exception to the
+  API-first rule below: review documents have no `.txt` mirror and no
+  API text field, so the body comes from the doc page's
+  `<pre class="pasted">` block (tags stripped before unescaping; the
+  requester's comment renders in an identical block and is filtered out
+  by comparison).
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary

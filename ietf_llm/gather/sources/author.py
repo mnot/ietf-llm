@@ -5,10 +5,14 @@ then pull every draft they're an author of (via the documentauthor
 through-table — the document endpoint's `authors__person` filter is
 silently ignored).
 
-Drafts only: capturing all of a person's mailing-list traffic isn't
-feasible (mailarchive has no cross-list by-sender export), so an author
-corpus is their authored documents. Add `--mailing-list <list>` to also
-follow specific lists.
+This module resolves the person and lists their drafts; the reviews
+they *wrote* are gathered alongside by `sources.reviews`, driven from
+the same resolved person id.
+
+Not covered: their mailing-list traffic in general. The archive has no
+cross-list by-sender search (IMAP `SEARCH FROM` is per-folder), so
+there is no way to discover which lists to look at from the sender
+alone. Add `--mailing-list <list>` to follow specific ones.
 """
 
 from __future__ import annotations

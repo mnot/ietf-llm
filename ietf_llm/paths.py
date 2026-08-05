@@ -32,6 +32,8 @@ WG's cache directory.
       <repo-slug>.json             (raw archive)
     ballots/
       <draft-name>.md              (IESG ballot positions per draft)
+    reviews/
+      <review-doc-name>.md         (reviews written by a --author person)
     raw/                           (NOT indexed; grep / NotebookLM only)
       mail-archive-<YYYY>.txt      (was <wg>-mail-archive-<YYYY>.txt)
       github-<repo-slug>.txt       (was <wg>-github-<repo-slug>.txt)
@@ -166,6 +168,7 @@ DIR_ISSUES = "issues"
 DIR_GITHUB = "github"
 DIR_RAW = "raw"
 DIR_BALLOTS = "ballots"
+DIR_REVIEWS = "reviews"
 
 # Per-meeting subdirs.
 SUBDIR_SLIDES = "slides"
@@ -316,6 +319,18 @@ def ballot_path(cache_dir: str, doc_name: str) -> str:
     """Per-draft IESG ballot file. `doc_name` is the canonical draft
     basename without revision suffix (e.g. `draft-ietf-tls-rfc8446bis`)."""
     return os.path.join(cache_dir, DIR_BALLOTS, f"{doc_name}.md")
+
+
+def reviews_dir(cache_dir: str) -> str:
+    return os.path.join(cache_dir, DIR_REVIEWS)
+
+
+def review_path(cache_dir: str, doc_name: str) -> str:
+    """Per-review file. `doc_name` is the Datatracker review document
+    name (e.g. `review-ietf-ppm-dap-09-httpdir-early-nottingham-2023-12-29`),
+    which already encodes draft, revision, team, type, reviewer, and
+    date — so it is unique and sorts usefully."""
+    return os.path.join(cache_dir, DIR_REVIEWS, f"{doc_name}.md")
 
 
 def github_dir(cache_dir: str) -> str:

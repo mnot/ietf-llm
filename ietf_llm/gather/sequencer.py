@@ -37,6 +37,7 @@ from ..people import build_registry, write_people_digest
 from .cli import build_parser
 from .plan import _gather_plan_summary
 from .sources.author import fetch_author_draft_names, resolve_person
+from .sources.reviews import gather_reviews
 from .sources.charter import process_charter
 from .sources.citations import (
     citation_counts,
@@ -191,6 +192,10 @@ def _gather_dynamic_drafts(
             author_names = fetch_author_draft_names(resolved[0], verbose=verbosity)
             process_extra_drafts(author_names, cache_dir, verbose=verbosity)
             _persist_author_name(args.wg, resolved[1])
+            # Reviews they *wrote* — the other half of a person's record,
+            # and unlike their drafts it shows what they look for in
+            # someone else's document.
+            gather_reviews(cache_dir, resolved[0], resolved[1], verbose=verbosity)
 
     if args.new_drafts:
         new_names = fetch_new_draft_names(args.months, verbose=verbosity)

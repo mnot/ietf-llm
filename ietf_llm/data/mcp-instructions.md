@@ -84,6 +84,13 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   (`read_file_section`); attendance is presence, NOT a position.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state),
   `draft_authors`, `get_draft` (verbatim text).
+- **Reviews:** a corpus gathered with `--author` also holds every directorate /
+  Last Call review that person *wrote*, at `reviews/<review-doc-name>.md`
+  (`search_corpus` with `file_pattern="reviews/%"`, then `read_file_section`).
+  These are that person's judgements about someone else's document — the best
+  evidence for what they look for in a draft. They are individual opinions,
+  not the directorate's or their employer's, and a review's `Result` is the
+  reviewer's own verdict, not a WG or IESG outcome.
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:
