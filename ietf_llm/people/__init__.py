@@ -54,11 +54,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from ..gather.sources.datatracker import fetch_wg_roles
+from ..gather.sources.document_authors import fetch_document_authors
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
+from ..gather.sources.postal import (
+    locality_key,
+    names_an_organisation,
+    parse_document_year,
+)
 from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir, get_wg_file_cache_dir
 from ..text import _parse_date
+from .affiliation import INLINE_CAP, capped, group_affiliations, overflow_note
 from .digest import _format_affiliations, write_people_digest
 from .linking import (
     reconcile_mail_via_datatracker,
@@ -111,6 +118,18 @@ class Person:
     # *values* with their sources ("Cloudflare (draft, github)"), so
     # cross-source agreement is itself signal. Empty when undocumented.
     affiliations: Dict[str, str] = field(default_factory=dict)
+    # Publication year of the document behind each `affiliations` key,
+    # where we know it. Only used to order the affiliations by recency —
+    # the current employer is what a reader wants first — so a gap costs
+    # ordering, not correctness. GitHub's `company` field is undated and
+    # simply absent here.
+    affiliation_years: Dict[str, int] = field(default_factory=dict)
+    # Normalised place names seen *below* the organisation line in this
+    # person's author blocks (see `note_address_lines`). An author who
+    # states no organisation puts their city in the organisation's slot,
+    # which no per-line rule can tell from a one-word employer; matching
+    # against the same person's other documents can.
+    localities: Set[str] = field(default_factory=set)
     # Domains of every email seen. NOT the same as affiliation
     # (participants often use personal email, and some hold several
     # affiliations); surfaced only on explicit request as a fallback
@@ -421,9 +440,12 @@ class Registry:
         keep.email_domains |= drop.email_domains
         keep.attended_sessions |= drop.attended_sessions
         keep.spoke_at_meetings |= drop.spoke_at_meetings
+        keep.localities |= drop.localities
         # Affiliations: keep wins on key clashes; drop fills gaps.
         for source, org in drop.affiliations.items():
             keep.affiliations.setdefault(source, org)
+        for source, year in drop.affiliation_years.items():
+            keep.affiliation_years.setdefault(source, year)
         keep.message_count += drop.message_count
         keep.issue_count += drop.issue_count
         keep.touch_date(drop.first_seen)
@@ -445,6 +467,8 @@ class Registry:
         document: str,
         is_editor: bool = False,
         organization: Optional[str] = None,
+        year: Optional[int] = None,
+        address_lines: Optional[Iterable[str]] = None,
     ) -> Optional[Person]:
         """Record `name` as an author of `document` (a draft/RFC basename).
 
@@ -452,6 +476,11 @@ class Registry:
         way add_datatracker_role does. The document basename is stored
         without the version suffix (`draft-ietf-aipref-vocab` not
         `…-06`) so multiple versions don't multiply the role count.
+
+        `year` is the document's publication year, used only to order
+        affiliations by recency. `address_lines` are the block's postal
+        lines below the organisation slot — corroboration that lets a
+        later pass tell a city apart from a one-word employer.
         """
         if not name and not email_address:
             return None
@@ -481,6 +510,9 @@ class Registry:
             stripped = organization.strip()
             if stripped:
                 person.affiliations[f"draft:{document}"] = stripped
+                if year is not None:
+                    person.affiliation_years[f"draft:{document}"] = year
+        _note_localities(person, organization, address_lines)
         return person
 
     def add_datatracker_role(
@@ -555,30 +587,26 @@ class Registry:
         line). Returns None when no source has produced an affiliation
         — silence beats guessing.
 
-        Format: distinct organisation values, ordered by source-count
-        descending (Cloudflare-from-2-sources outranks Anthropic-from-
-        1-source); ties broken alphabetically. Source provenance is
-        NOT inlined in this compact rendering — that would make the
-        participants line unreadable. Use `_format_affiliations` for
-        the table rendering that shows sources.
+        Near-duplicate spellings collapse ("Akamai Technologies, Inc."
+        into "Akamai"), the survivors are ordered most-recent-first, and
+        at most `INLINE_CAP` render — a prolific author's whole career of
+        employers is real history but makes the line unreadable, so the
+        rest become a count. Source provenance is NOT inlined either;
+        `_format_affiliations` is the rendering that shows it.
 
         Cases:
           - No sources known → None
           - One distinct value → "Cloudflare"
-          - Multiple distinct values → "Cloudflare; Independent"
+          - A few → "Cloudflare; Fastly"
+          - Many → "Cloudflare; Fastly; Akamai (+4 earlier)"
         """
         person = self.person_for_name(canonical_name)
         if person is None or not person.affiliations:
             return None
-        counts: Dict[str, int] = {}
-        for org in person.affiliations.values():
-            if not org:
-                continue
-            counts[org] = counts.get(org, 0) + 1
-        if not counts:
+        shown, dropped = capped(group_affiliations(person), INLINE_CAP)
+        if not shown:
             return None
-        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        return "; ".join(org for org, _ in ranked)
+        return "; ".join(g.display for g in shown) + overflow_note(dropped)
 
     def role_tag(self, canonical_name: str) -> Optional[str]:
         """All relevant role tags for inline use, "/"-joined.
@@ -636,6 +664,40 @@ class Registry:
                 p.canonical_name,
             ),
         )
+
+
+def _note_localities(
+    person: Person,
+    organization: Optional[str],
+    address_lines: Optional[Iterable[str]],
+) -> None:
+    """Record the block's address lines as places this person writes.
+
+    Two kinds of line are deliberately *not* recorded, because a locality
+    suppresses the same string wherever else it appears as an
+    organisation — so a wrong entry here silently deletes a real
+    employer, the failure mode the whole screening exists to avoid:
+
+      - **the block's own organisation.** Authors often repeat it inside
+        their postal address ("University of Auckland" as both the
+        organisation and a line of the address beneath it). Left in, it
+        would suppress itself.
+      - **anything that names an organisation.** Institution and
+        department swap slots between drafts — "Department of Computer
+        Science" over "University of Auckland" in one, the university in
+        the organisation slot in the next — and whichever landed in the
+        address would erase the other.
+
+    A city that gets skipped by these is only a missed suppression: the
+    value still renders, which is visible and fixable. A wrongly recorded
+    locality is not.
+    """
+    org_place = locality_key(organization) if organization else ""
+    for line in address_lines or ():
+        key = locality_key(line)
+        if not key or key == org_place or names_an_organisation(line):
+            continue
+        person.localities.add(key)
 
 
 def _looks_like_email(name: str) -> bool:
@@ -750,37 +812,116 @@ def _ingest_datatracker_roles(wg: str, registry: Registry, verbose: Verbosity) -
 
 
 def _ingest_draft_authors(wg: str, registry: Registry, verbose: Verbosity) -> None:
-    """Parse the Authors' Addresses section of each draft / RFC in the cache.
+    """Record authorship and affiliation for each draft / RFC in the cache.
 
-    Stable name spellings (taken from the document front-matter that
-    the chairs review) override any earlier mailing-list-derived form.
+    Datatracker's `documentauthor` table is the authority on *affiliation*:
+    it holds the `<organization>` the author actually submitted, so a blank
+    there means "stated none" — the one thing the Authors' Addresses text
+    cannot express, since a block with no organisation is identical in
+    shape to one where the city sits in the organisation's place.
+
+    The draft text remains the authority on **editor status**, which
+    Datatracker does not record, and is the whole fallback whenever
+    Datatracker has nothing for a document or cannot be reached — an
+    offline gather takes this path for everything, so the text parser and
+    its locality corroboration still earn their keep.
     """
-    cache_dir = get_wg_file_cache_dir(wg)
-    count = 0
-    for path in latest_draft_paths(cache_dir):
-        basename = os.path.basename(path)
+    parsed: Dict[str, "tuple[Optional[int], List[Any]]"] = {}
+    for path in latest_draft_paths(get_wg_file_cache_dir(wg)):
         # Strip the version suffix so "draft-…-06.txt" and "…-05.txt"
         # collapse to the same logical document.
-        doc_id = re.sub(r"-\d+\.txt$|\.txt$", "", basename)
+        doc_id = re.sub(r"-\d+\.txt$|\.txt$", "", os.path.basename(path))
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError:
             continue
-        for author in parse_authors(text):
-            registry.add_document_author(
-                author.name,
-                author.email,
-                document=doc_id,
-                is_editor=author.is_editor,
-                organization=author.organization,
-            )
-            count += 1
+        parsed[doc_id] = (parse_document_year(text), parse_authors(text))
+
+    authoritative = fetch_document_authors(sorted(parsed), verbose=verbose)
+    count = from_datatracker = 0
+    for doc_id, (year, authors) in parsed.items():
+        rows = authoritative.get(doc_id)
+        if rows:
+            count += _ingest_authoritative(registry, doc_id, year, rows, authors)
+            from_datatracker += 1
+        else:
+            count += _ingest_from_text(registry, doc_id, year, authors)
     log(
-        f"  ingested {count} author records from drafts/RFCs",
+        f"  ingested {count} author records from {len(parsed)} drafts/RFCs "
+        f"({from_datatracker} with Datatracker affiliations)",
         verbose,
         level=LogLevel.PROGRESS,
     )
+
+
+def _editor_keys(authors: Iterable[Any]) -> Set[str]:
+    """Identify the editors in a parsed block list, by email and by name.
+
+    Datatracker records who authored a document but not who *edited* it,
+    and the `(ed.)` marker only exists in the text. Both keys are kept
+    because the two sources spell names differently often enough
+    ("Brian E. Carpenter" / "Brian Carpenter") that a name-only match
+    would silently demote editors to authors.
+    """
+    keys: Set[str] = set()
+    for author in authors:
+        if not author.is_editor:
+            continue
+        if author.email:
+            keys.add(author.email.strip().lower())
+        if author.name:
+            keys.add(author.name.strip().lower())
+    return keys
+
+
+def _ingest_authoritative(
+    registry: Registry,
+    doc_id: str,
+    year: Optional[int],
+    rows: List[Any],
+    parsed_authors: List[Any],
+) -> int:
+    """Feed one document's Datatracker authorship into the registry."""
+    editors = _editor_keys(parsed_authors)
+    for row in rows:
+        is_editor = bool(
+            (row.email and row.email.lower() in editors)
+            or (row.name and row.name.lower() in editors)
+        )
+        registry.add_document_author(
+            row.name,
+            row.email,
+            document=doc_id,
+            is_editor=is_editor,
+            # "" is Datatracker recording that the author stated no
+            # organisation. Passing None stores no affiliation, which is
+            # the correct rendering of that — and, critically, means the
+            # text parser's guess never gets a look in.
+            organization=row.affiliation or None,
+            year=year,
+        )
+    return len(rows)
+
+
+def _ingest_from_text(
+    registry: Registry,
+    doc_id: str,
+    year: Optional[int],
+    authors: List[Any],
+) -> int:
+    """Fallback: take authorship and affiliation from the draft text."""
+    for author in authors:
+        registry.add_document_author(
+            author.name,
+            author.email,
+            document=doc_id,
+            is_editor=author.is_editor,
+            organization=author.organization,
+            year=year,
+            address_lines=author.address_lines,
+        )
+    return len(authors)
 
 
 def _maybe_iso(value: Any) -> Optional[datetime]:

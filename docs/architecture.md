@@ -201,6 +201,36 @@ Key invariants:
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
+  - **Affiliation comes from Datatracker, not from the draft text**
+    (`gather.sources.document_authors`). The Authors' Addresses block has no
+    markup separating an author's organisation from their street address, so an
+    author who states no `<organization>` puts their *city* where the
+    organisation would be — which is how "Prahran" and "Burlingame, CA  94010"
+    once sat in the registry next to real employers. Datatracker's
+    `documentauthor` table holds the `<organization>` the author actually
+    submitted, so an **empty** affiliation there is data — "stated none" — and
+    overrides whatever the text would have offered. Batched by document name
+    (40 per request; a working group costs two or three calls plus a couple to
+    resolve person ids to names), best-effort, on the gather path.
+  - **The text parser is the fallback** (`gather.sources.postal`,
+    `gather.sources.draft_authors`) for documents Datatracker has nothing for —
+    and for *every* document when a gather runs offline, so it still matters.
+    `looks_like_postal_line` rejects the decidable cases (countries, house
+    numbers, postcodes, phone numbers, rendering debris); a bare city is not
+    decidable per-line, so the same person's *other* author blocks supply the
+    corroboration (`Person.localities` — a place seen below an organisation line
+    in one document suppresses it in another, with organisation names vetoed out
+    of that set by `names_an_organisation` so a department can't erase its own
+    university). Editor status also comes from the text in both paths: the
+    `(ed.)` marker is the only record of it.
+  - **What survives is collapsed, ranked, and capped** (`people.affiliation`).
+    `org_key` merges spellings ("Akamai Technologies, Inc." → "Akamai",
+    "Univ. of Auckland" → "University of Auckland", which is also the spelling
+    displayed); groups order newest-first on the document's publication year
+    (`postal.parse_document_year`, read from the front-matter header block); and
+    the renderer caps with a `(+N earlier)` count — a twenty-five-year career of
+    employers is real history, but it does not belong inline on a thread's
+    Participants line.
   - **Meeting participation is attached link-only** (`people.meetings`, run
     last so it matches the complete registry): the Datatracker `attended`
     record links to a `Person` by **person id** (`attended_sessions`,
@@ -398,6 +428,7 @@ ietf_llm/
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── people/                 # actor/identity registry + position extraction
 │   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)
+│   ├── affiliation.py      # collapse near-duplicate orgs, rank by recency, cap
 │   ├── linking.py          # attach GitHub logins to identities (Datatracker, then name)
 │   ├── meetings.py         # link-only meeting participation (attendance id / speaker name)
 │   ├── digest.py           # render the _people.md digest
@@ -459,7 +490,9 @@ ietf_llm/
 │       ├── datatracker_history.py  # governance / doc-lifecycle timeline events
 │       ├── datatracker_github.py   # github_username profile resources → person (by email)
 │       ├── datatracker_people.py   # mail address → person id (mail-side identity spine)
-│       ├── draft_authors.py        # parse Authors' Addresses (name + organization)
+│       ├── document_authors.py     # Datatracker documentauthor: authoritative affiliation
+│       ├── draft_authors.py        # parse Authors' Addresses (fallback; editor status)
+│       ├── postal.py               # organisation line vs address line; front-matter year
 │       ├── ballots.py              # IESG ballot positions (scoped to --months)
 │       ├── citations.py            # draft → citing thread/issue cross-reference
 │       ├── pdf_extract.py          # extract text from slide PDFs

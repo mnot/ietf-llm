@@ -100,6 +100,7 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
         datatracker_github,
         datatracker_history,
         datatracker_people,
+        document_authors,
         github_users,
     )
 
@@ -147,6 +148,17 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     # monkeypatch this attribute to supply canned ballot responses.
     monkeypatch.setattr(
         ballots, "_get_json",
+        lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
+    )
+    # Block the per-document authorship/affiliation lookups. This one has
+    # its own binding to patch: `document_authors` does `from .datatracker
+    # import _get_json`, so rebinding the attribute on `datatracker` above
+    # leaves its copy pointing at the real function. With it returning
+    # None every document falls back to the draft text, which is also what
+    # an offline gather does. Tests exercising the authoritative path stub
+    # this attribute with canned rows.
+    monkeypatch.setattr(
+        document_authors, "_get_json",
         lambda path_or_url, timeout=10.0: None,  # noqa: ARG005
     )
     # Block GitHub user lookups too — tests that want to exercise the

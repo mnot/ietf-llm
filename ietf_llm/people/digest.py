@@ -8,11 +8,12 @@ its table helpers drive `Registry` / `Person` through their public surface.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional
 
 from ..atomicio import atomic_open
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, remove_stale_digest
+from .affiliation import TABLE_CAP, capped, group_affiliations, overflow_note
 
 if TYPE_CHECKING:
     from . import Person, Registry
@@ -53,8 +54,11 @@ def write_people_digest(
         fh.write(
             "_**Affiliation** is gathered from two sources, with "
             "provenance shown in each cell: `(draft)` = the "
-            "**Authors' Addresses** block of a draft the person has "
-            "authored — the most authoritative source. `(github)` = "
+            "organisation the person stated on a draft they authored, "
+            "taken from Datatracker's record of the submission where "
+            "there is one and from the draft's **Authors' Addresses** "
+            "block otherwise — the most authoritative source. "
+            "`(github)` = "
             "their self-reported GitHub `company` field — weaker, "
             "but a useful corroborating signal when both sources name "
             "the same org (`Cloudflare (draft, github)`).\n\n"
@@ -67,6 +71,14 @@ def write_people_digest(
             "use personal email, and some hold multiple affiliations, "
             "representing some or none of those interests in a given "
             "discussion._\n\n"
+            "_Spellings of one organisation are collapsed (`Akamai "
+            "Technologies, Inc.` reads as `Akamai`) and the list runs "
+            "**most recent first**, by the publication year of the "
+            f"document each came from, capped at {TABLE_CAP} with a "
+            "`(+N earlier)` count. So the leading entry is the "
+            "best current guess and a long career is summarised, not "
+            "listed. A person's full affiliation history is in the "
+            "Authors' Addresses block of each draft they wrote._\n\n"
         )
         fh.write(
             "_**Meetings** counts this person's meeting participation, "
@@ -168,38 +180,34 @@ def _format_affiliations(person: "Person") -> str:
     """Render a Person's affiliations for a digest table cell, with
     source provenance.
 
-    Each distinct organisation value renders as `Org (sources)` where
-    `sources` is a "/"-joined list of source kinds — `draft`, `github`,
-    etc. — sorted with `draft` first (most authoritative). When the
-    same org is corroborated by multiple sources, the cell shows that
-    explicitly: `Cloudflare (draft, github)` is stronger signal than
-    `Cloudflare (github)` alone, and the renderer surfaces it.
+    Each distinct organisation renders as `Org (sources)` where `sources`
+    is a comma-joined list of source kinds — `draft`, `github`, etc. —
+    sorted with `draft` first (most authoritative). When the same org is
+    corroborated by multiple sources, the cell shows that explicitly:
+    `Cloudflare (draft, github)` is stronger signal than `Cloudflare
+    (github)` alone.
+
+    Spellings of the same organisation collapse to one entry, and the
+    entries run most-recent-first, capped at `TABLE_CAP` with a count of
+    what that left out — twenty-five years of employers do not fit in a
+    table cell (see `people/affiliation.py`).
 
     Returns "" (empty cell, not "—") when no source has produced an
     affiliation — honest blank beats a default.
     """
     if not person.affiliations:
         return ""
-    # Aggregate distinct orgs → set of source kinds. Source kinds
-    # come from the part of the key before the first ":" — so every
-    # "draft:..." key collapses to "draft", every "github" stays.
-    org_sources: Dict[str, Set[str]] = {}
-    for source_key, org in person.affiliations.items():
-        if not org:
-            continue
-        kind = source_key.split(":", 1)[0]
-        org_sources.setdefault(org, set()).add(kind)
-    # Order: most-sourced first (signal), then alphabetical.
     source_order = {"draft": 0, "datatracker": 1, "github": 2, "signature": 3}
-    ranked = sorted(
-        org_sources.items(),
-        key=lambda kv: (-len(kv[1]), kv[0]),
-    )
+    shown, dropped = capped(group_affiliations(person), TABLE_CAP)
     bits: List[str] = []
-    for org, sources in ranked:
-        ordered_sources = sorted(sources, key=lambda s: (source_order.get(s, 99), s))
-        bits.append(f"{org} ({', '.join(ordered_sources)})")
-    return "; ".join(bits).replace("|", "\\|")
+    for group in shown:
+        ordered_sources = sorted(
+            group.sources, key=lambda s: (source_order.get(s, 99), s)
+        )
+        bits.append(f"{group.display} ({', '.join(ordered_sources)})")
+    if not bits:
+        return ""
+    return ("; ".join(bits) + overflow_note(dropped)).replace("|", "\\|")
 
 
 def _bucket_persons(
