@@ -139,6 +139,11 @@ def _source_subject(cfg: Dict[str, Any]) -> str:
     parts: List[str] = []
     if cfg.get("author"):
         parts.append("author: " + str(cfg.get("author_name") or cfg["author"]))
+        # Their mail is searched across lists nobody named explicitly, so
+        # say how many — otherwise the subject line reads as drafts-only.
+        followed = cfg.get("author_lists") or []
+        if followed:
+            parts.append(f"mail on {len(followed)} list(s)")
     if cfg.get("new_drafts"):
         months = cfg.get("months") or DEFAULT_MONTHS
         parts.append(f"new Internet-Drafts (last {months} mo)")

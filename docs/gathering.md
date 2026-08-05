@@ -50,7 +50,7 @@ A corpus doesn't have to be a Working Group — the name is classified automatic
 | `ietf-llm httpbis` | a WG / RG / editorial WG / BoF: charter, drafts, meetings, ballots, list |
 | `ietf-llm last-call` | a standalone mailing list (any archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor) |
 | `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
-| `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored, and every review they wrote |
+| `ietf-llm mnot --author mnot@mnot.net` | a person: their drafts, the reviews they wrote, and their mail (in its threads) |
 
 For most groups, mailing lists and GitHub repositories are automatically discovered. If you need
 to add additional lists, use `--mailing-list`; if you need to add issues lists from other GitHub repos, use `--github`. The `--months` flag controls the timeframe of materials that is gathered; it defaults to 12 months. See the [reference](reference.md) for more information.

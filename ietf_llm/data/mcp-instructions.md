@@ -91,6 +91,12 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   evidence for what they look for in a draft. They are individual opinions,
   not the directorate's or their employer's, and a review's `Result` is the
   reviewer's own verdict, not a WG or IESG outcome.
+- **A person corpus is not a group corpus.** Its threads were selected because
+  *that person* posted in them, across whatever lists they're on — so it is
+  evidence about them, and says nothing about what any group discussed or
+  where consensus lies. Never read thread coverage here as a group's agenda,
+  and never infer a WG position from it: the corpus has one person's threads,
+  not the list. `list_corpora` shows which corpora are author-scoped.
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:

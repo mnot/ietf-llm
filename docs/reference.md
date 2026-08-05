@@ -47,9 +47,15 @@ A name that is none of these and has no configured sources is rejected as a like
   they *wrote* (`reviews/<review-doc-name>.md`, all of them — no `--months` window, since a review
   is never superseded). `PERSON` is an email (`mnot@mnot.net`, recommended), a Datatracker person
   id, or an exact full name; all of that person's registered addresses are searched, so reviews
-  filed under a former employer address are still found. Does **not** gather their general
-  mailing-list traffic — the archive has no cross-list by-sender search, so name the lists you
-  want with `--mailing-list`.
+  filed under a former employer address are still found.
+
+  Also follows **their mail**. The lists are discovered from the groups they hold a role in and
+  the groups owning their drafts, plus `last-call@` and `ietf@` always (that is where cross-area
+  review happens, and no per-person signal would surface them); the chosen set is persisted as
+  `author_lists` so `--list` shows what a re-run will cover. Only *their* messages are pulled —
+  plus the thread around each one, since a message is unreadable without what it answers.
+  A list they never posted to costs one search that finds nothing. Lists you name with
+  `--mailing-list` are gathered in full as usual and skipped here.
 - `--add-mentioned-drafts` — also pull drafts the corpus's threads/issues mention but don't already
   include. Sticky.
 

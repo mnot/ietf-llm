@@ -99,8 +99,10 @@ rejected as a likely typo rather than producing an empty corpus.
 
 **Generative source flags** (`--new-drafts`, `--author`) populate a
 custom corpus dynamically — a rolling `-00` window from the submission
-API, or a person's authored drafts from the documentauthor table plus
-the directorate / Last Call reviews they *wrote* (`reviews.py`).
+API, or a whole person: their authored drafts from the documentauthor
+table, the directorate / Last Call reviews they *wrote* (`reviews.py`),
+and their mail across the lists they're on (`author_lists.py` picks the
+lists, `author_mail.py` searches them by sender).
 They short-circuit shape inference to `custom` (the name is a label, no
 group lookup) and persist, so a bare re-run re-evaluates the source.
 Explicit sources (`--draft` / `--mailing-list` / `--github`) compose
@@ -443,6 +445,8 @@ ietf_llm/
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
 │       ├── author.py               # --author: a person's authored drafts
 │       ├── reviews.py              # --author: the reviews that person wrote
+│       ├── author_lists.py         # --author: which lists that person is on
+│       ├── author_mail.py          # --author: their mail, hydrated to whole threads
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
@@ -1042,6 +1046,23 @@ live path can't replace.
 `imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
 store is expensive to refetch and shouldn't be lost when a WG's
 exported `files/` are cleared. Thread reconstruction walks it directly.
+
+That last property is what lets an `--author` corpus reuse the whole
+mail pipeline. `author_mail.py` fetches by sender rather than by list —
+IMAP `SEARCH FROM` over the person's full Datatracker address set,
+since a whole-list pull of `last-call@` would bury the person in
+material that isn't theirs — but it writes into the same per-list
+`.eml` directory, so `mail_threads` reconstructs those messages with no
+knowledge that they arrived a different way. Sender-scoped fetching
+alone would yield decontextualised fragments (a review comment is
+mostly reactive and unreadable without the message it answers), so each
+of their messages is expanded to its thread by base-subject search
+before download. Two cases can't be hydrated and keep the person's own
+message without the surrounding thread, both counted and logged: a
+non-ASCII subject (`SEARCH SUBJECT` would need a `CHARSET` negotiation
+the anonymous archive server doesn't reliably support) and a subject
+too short to be a thread key (`SUBJECT` matches substrings, so
+hydrating "Agenda" would pull the whole list).
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 
