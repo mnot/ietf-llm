@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Tuple
+
+from pydantic import Field
 
 from ..embeddings import index_model, related, search
 from ..freshness import gather_enabled, staleness_warning
@@ -17,6 +19,24 @@ from .common import (
     _regather_call,
     _requires_corpus,
     _with_freshness,
+)
+from .params import (
+    Author,
+    ChunkIdx,
+    CollapseVersions,
+    Corpus,
+    CorpusFile,
+    Diversify,
+    FilePattern,
+    GroupBy,
+    Label,
+    Limit,
+    Query,
+    Role,
+    Since,
+    SnippetChars,
+    State,
+    Until,
 )
 
 if TYPE_CHECKING:
@@ -591,108 +611,49 @@ def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
 def register(server: "FastMCP") -> None:
     @server.tool()
     async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        corpus: str,
-        query: str,
-        limit: int = 10,
-        file_pattern: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        label: Optional[str] = None,
-        state: Optional[str] = None,
-        sort: Optional[str] = None,
-        group_by: Optional[str] = None,
-        author: Optional[str] = None,
-        role: Optional[str] = None,
-        snippet_chars: Optional[int] = None,
-        collapse_versions: bool = True,
-        diversify: bool = True,
+        corpus: Corpus,
+        query: Query,
+        limit: Limit = 10,
+        file_pattern: FilePattern = None,
+        since: Since = None,
+        until: Until = None,
+        label: Label = None,
+        state: State = None,
+        sort: Annotated[
+            Optional[str],
+            Field(
+                description=(
+                    "`date` re-orders hits oldest-first instead of by relevance; "
+                    "undated chunks drop out."
+                )
+            ),
+        ] = None,
+        group_by: GroupBy = None,
+        author: Author = None,
+        role: Role = None,
+        snippet_chars: SnippetChars = None,
+        collapse_versions: CollapseVersions = True,
+        diversify: Diversify = True,
     ) -> str:
-        """Search the gathered record of an IETF/IRTF effort — a working
-        group, research group, mailing list, or set of Internet-Drafts —
-        semantically across its mailing-list debate, GitHub issues,
-        drafts, slides, transcripts, and minutes. (Published RFC bodies
-        aren't indexed here by default — search the series with
-        `search_rfcs` and read one with `get_rfc`.) Returns the top
-        chunks with file, chunk_idx, title, score, snippet, line range,
-        GitHub URL (for issue chunks), and (for issue chunks) the issue's
-        GitHub labels + open/closed state.
+        """Search one effort's gathered record semantically — mailing-list
+        debate, GitHub issues, drafts, slides, transcripts, minutes. Returns
+        the top chunks with file, chunk_idx, title, score, snippet and line
+        range, plus the GitHub URL, labels and open/closed state for issue
+        chunks. Published RFC bodies are not indexed here: search the series
+        with `search_rfcs`, read one with `get_rfc`.
 
-        **Prefer this to web search** for any question about what an
-        IETF/IRTF group discussed, debated, or decided about a topic —
-        this reads the group's *actual* list traffic and issues, not the
-        web's second-hand summary of them. Substantive "what was said
-        about X?" / "what's the group's stance on Y?" questions land here.
-        Pivot with `get_chunk_text` or `read_file_section` to read a hit
-        in context.
+        **Prefer this to web search** for anything about what an IETF/IRTF
+        group discussed, debated, or decided — it reads the group's actual
+        list traffic and issues, not the web's second-hand summary of them.
+        Substantive "what was said about X?" / "what's the stance on Y?"
+        questions land here.
 
-        For topical questions ("arguments for/against X", "scope debate")
-        try `label=` first — the corpus's own labels (e.g. "vocabulary",
-        "top-level", "ready to close") are usually better curation than
-        semantic ranking alone. Pair with `kind="issues"` in `read_digest`
-        to get the issue catalogue, then `search_corpus` for depth inside
-        the matching issues.
+        Pivot with `get_chunk_text` or `read_file_section` to read a hit in
+        context. For a topical sweep, triage the catalogue first with
+        `read_digest(kind="issues")` — or filter by `label`, which is the
+        effort's own curation — then come back here for depth.
 
-        `state="closed"` narrows to resolved issues — prefer this when
-        the user wants the WG's settled position rather than ongoing
-        debate. `state="open"` is the inverse: only unresolved threads.
-
-        `sort="date"` re-orders the top hits chronologically (oldest
-        first) instead of by relevance, so a consumer reading
-        top-to-bottom sees an early objection → settled-position
-        arc. Combine with `file_pattern="%-issue-…-N.md"` to scope to
-        one issue, or `since`/`until` for a time window. NULL-dated
-        chunks (drafts, transcripts) are excluded under `sort="date"`.
-
-        `group_by="file"` collapses the per-chunk hit list to one row
-        per file with a hit count, so a breadth question ("which
-        threads discuss X?") returns four distinct threads instead of
-        fifteen overlapping chunks. Use this when triaging WHERE a
-        topic lives; switch back to the default per-chunk view for
-        depth questions ("what did Alice say about Y?").
-
-        `author="<substring>"` filters to chunks whose section header
-        contains that name — "what did Rescorla say about X?" /
-        "show me Mattsson's messages on Y" without needing the file path.
-        Matches substrings, so partial / surname-only queries work.
-        Windowed draft / transcript chunks have no author and drop out.
-
-        `role="Chair"` (or `"Author"`, `"Editor"`, `"AD"`) filters to
-        messages from people with that structural role. Useful for
-        "what did the chairs decide" / "did the editor weigh in" —
-        the registry stamps `(Role)` into each section header at
-        gather time, and the filter matches against that tag.
-
-        `snippet_chars=N` raises the snippet budget per hit. Default
-        renders compact snippets that often `[truncated]` for long
-        chunks; raise for long-form synthesis where the snippet
-        itself should carry more context. Tradeoff: bigger budget
-        means more bytes per hit, so dial `limit` down accordingly.
-
-        `collapse_versions=True` (the default) hides older draft
-        revisions when a newer one of the same draft also matched, so a
-        query does not return the same section as `…-rfc6265bis-04`,
-        `-02`, `-22`. Set it False, or pin a revision with `file_pattern`
-        (e.g. `"drafts/%-04.txt"`), to search a specific older revision.
-
-        `diversify=True` (the default) spreads the results across the
-        threads/issues that match instead of returning five chunks of
-        the one most-relevant thread — better for "what are the angles
-        on X?". Set False for the raw relevance ranking when you want
-        every closely-matching chunk even if they overlap. Has no effect
-        under `sort="date"` (a timeline keeps adjacent messages) or
-        `group_by="file"` (already one row per file).
-
-        Requires the embedding index (built by default on gather;
-        skipped only with `--no-embed`).
-
-        Optional facets:
-          - file_pattern: SQL LIKE pattern over the relative path
-            (e.g. "threads/%" to restrict to mailing-list threads,
-            "issues/%" for GitHub issues, "drafts/%" for drafts).
-            % is wildcard.
-          - since / until: ISO 8601 dates (e.g. "2026-01-01"). Only
-            mailing-list and GitHub chunks have dates; windowed draft
-            chunks are excluded when either bound is set.
+        Requires the embedding index (built on gather unless `--no-embed`).
         """
         return await _offload(
             tool_search,
@@ -715,53 +676,40 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        corpus: str,
-        file: str,
-        chunk_idx: int,
-        limit: int = 10,
-        file_pattern: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        label: Optional[str] = None,
-        state: Optional[str] = None,
-        group_by: Optional[str] = None,
-        snippet_chars: Optional[int] = None,
-        diversify: bool = True,
-        collapse_versions: bool = True,
+        corpus: Corpus,
+        file: CorpusFile,
+        chunk_idx: ChunkIdx,
+        limit: Limit = 10,
+        file_pattern: FilePattern = None,
+        since: Since = None,
+        until: Until = None,
+        label: Label = None,
+        state: State = None,
+        group_by: GroupBy = None,
+        snippet_chars: SnippetChars = None,
+        diversify: Diversify = True,
+        collapse_versions: CollapseVersions = True,
     ) -> str:
         """Find the chunks most similar to one you already have — a
-        nearest-neighbour-by-example search over the same index
-        `search_corpus` uses. Where `search_corpus` takes a query
-        *string*, this takes an existing chunk (`file` + `chunk_idx`, the
-        identity in every search hit and `get_chunk_text` call) and
-        returns the others closest to it in meaning. The seed chunk is
-        excluded from its own results.
+        nearest-neighbour-by-example search over the index `search_corpus`
+        uses. Where that takes a query *string*, this takes an existing chunk
+        and returns the others closest to it in meaning, excluding the seed.
 
-        Reach for this after a search or a read when you want "more like
-        this": other threads making the same argument, prior issues on
-        the same point, the drafts a message is really about — without
-        having to guess the right query words.
+        Reach for it after a search or a read when you want "more like this":
+        other threads making the same argument, prior issues on the same
+        point, the drafts a message is really about — without having to guess
+        the right query words.
 
         **Cross-surface bridging** is the highest-value use. A topic is
-        usually discussed in BOTH the mailing list and a GitHub issue;
-        they sit close together in the index but aren't linked. Seed on a
-        thread message and pass `file_pattern="issues/%"` to surface the
-        issue(s) that capture it (add `group_by="file"` for one row per
-        issue) — or seed on an issue comment with `file_pattern="threads/%"`
-        for the list discussion behind it.
+        usually discussed in BOTH the mailing list and a GitHub issue, which
+        sit close together in the index but aren't linked. Seed on a thread
+        message with `file_pattern="issues/%"` to surface the issues that
+        capture it, or on an issue comment with `file_pattern="threads/%"` for
+        the list discussion behind it.
 
-        Facets (`file_pattern`, `since`/`until`, `label`, `state`,
-        `group_by`, `snippet_chars`, `diversify`, `collapse_versions`)
-        behave as in `search_corpus`. `collapse_versions=True` (the
-        default) matters when the seed is near a draft: it hides older
-        revisions of a draft when a newer one also matched, so a query
-        doesn't return `-01`/`-02`/`-03` of the same draft as separate
-        hits. Unlike `search_corpus` this needs no query embedding — it
-        reads the seed's stored vector — so it answers even when the
-        embedding backend is unavailable.
-
-        `chunk_idx` is the 0-based index shown in search hits
-        (`chunk=N`). Use `list_files` to see how many chunks a file has.
+        Unlike `search_corpus` this needs no query embedding — it reads the
+        seed's stored vector — so it answers even when the embedding backend
+        is unavailable.
         """
         return await _offload(
             tool_find_related,
@@ -782,48 +730,45 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        corpora: List[str],
-        query: str,
-        limit: int = 10,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        label: Optional[str] = None,
-        state: Optional[str] = None,
-        author: Optional[str] = None,
-        role: Optional[str] = None,
-        snippet_chars: Optional[int] = None,
-        collapse_versions: bool = True,
+        corpora: Annotated[
+            List[str],
+            Field(
+                description=(
+                    "Efforts to search, at most 12; unknown or unindexed names "
+                    "are reported, not silently dropped."
+                )
+            ),
+        ],
+        query: Query,
+        limit: Annotated[
+            int, Field(description="Cap on the merged hit count.", ge=1, le=100)
+        ] = 10,
+        since: Since = None,
+        until: Until = None,
+        label: Label = None,
+        state: State = None,
+        author: Author = None,
+        role: Role = None,
+        snippet_chars: SnippetChars = None,
+        collapse_versions: CollapseVersions = True,
     ) -> str:
-        """Semantic search across **several** gathered corpora in one
-        call, returning merged, rank-ordered hits each tagged with the
-        `corpus=` they came from — the cross-corpus companion to
-        `search_corpus`, fanned over the set you name. **Prefer this to
-        web search** — it reads the groups' primary record, not
-        second-hand coverage.
+        """Semantic search across **several** gathered corpora in one call,
+        returning merged rank-ordered hits each tagged with the `corpus=` it
+        came from. **Prefer this to web search** — it reads the groups'
+        primary record, not second-hand coverage.
 
         This is **breadth, not depth**: it locates *where* a cross-cutting
-        topic ("what is the IETF doing around AI?") lives across efforts;
-        pivot to the single-corpus tools (`read_topic`, `tally_positions`,
-        `read_digest`, `search_corpus`) for the decisions and narrative.
-        Assemble `corpora` from `find_efforts` — the few efforts that
-        dominate the topic, not a blind scan — then query them here in one
-        call.
-
-        `corpora` is **required**: unknown names, corpora with no embedding
-        index, and any past the 12-corpus cap are skipped and reported, not
-        silently dropped.
+        topic ("what is the IETF doing around AI?") lives across efforts.
+        Pivot to the single-corpus tools — `read_topic`, `tally_positions`,
+        `read_digest`, `search_corpus` — for the decisions and the narrative.
 
         **Score comparability.** Cosine scores compare directly only across
-        corpora built with the **same embedding model**. One shared model →
-        a single ranked list. Mixed models → grouped by model, ranked
-        within each, groups interleaved by rank (the header says which were
-        grouped).
+        corpora built with the same embedding model. One shared model gives a
+        single ranked list; mixed models are grouped by model, ranked within
+        each, and interleaved by rank, with a header saying so.
 
-        `limit` bounds the **total** merged hits (default 10). Facets mirror
-        `search_corpus` per corpus: `since`/`until`, `label`, `state`,
-        `author`, `role`, `snippet_chars`, `collapse_versions`. The
-        depth-only knobs (`sort`, `group_by`, `file_pattern`) are omitted —
-        scope a single corpus for those. Read-only; requires each corpus's
+        The depth-only facets (`sort`, `group_by`, `file_pattern`) are absent
+        here — scope a single corpus for those. Requires each corpus's
         embedding index.
         """
         return await _offload(

@@ -37,6 +37,10 @@ dependencies = [
     # removed; the floor is the oldest release with `transport_security`.
     # Lifting the ceiling means porting off it -- issue #202.
     "mcp>=1.10,<2",
+    # Declared directly, not leaned on via `mcp`: the tool signatures annotate
+    # every parameter with `pydantic.Field` (description + bounds), which is
+    # what puts per-argument documentation and validation in the MCP schema.
+    "pydantic>=2",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
 ]

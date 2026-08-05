@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from ..months import months_request_caution, months_request_error
 from . import debug_log
@@ -391,19 +393,115 @@ def tool_suggest_github_repos(corpus: str) -> str:
 def register(server: "FastMCP") -> None:
     @server.tool()
     async def start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        corpus: str,
-        mailing_list: Optional[List[str]] = None,
-        draft: Optional[List[str]] = None,
-        github: Optional[List[str]] = None,
-        author: Optional[str] = None,
-        new_drafts: bool = False,
-        months: Optional[int] = None,
-        add_mentioned_drafts: bool = False,
-        include_related_drafts: bool = False,
-        github_label: Optional[List[str]] = None,
-        exclude_github_label: Optional[List[str]] = None,
-        force: bool = False,
-        wait: Optional[float] = None,
+        corpus: Annotated[
+            str,
+            Field(
+                description=(
+                    "Corpus name — a WG/RG/BoF shortname, a mailing-list name, "
+                    "or any label for a custom or synthetic corpus."
+                )
+            ),
+        ],
+        mailing_list: Annotated[
+            Optional[List[str]],
+            Field(
+                description=(
+                    "Extra lists to sync (bare name or full address). "
+                    "Accumulates across gathers."
+                )
+            ),
+        ] = None,
+        draft: Annotated[
+            Optional[List[str]],
+            Field(
+                description=(
+                    "Drafts to track (`draft-foo-bar`; version suffix ignored, "
+                    "all revisions gathered). Accumulates across gathers."
+                )
+            ),
+        ] = None,
+        github: Annotated[
+            Optional[List[str]],
+            Field(
+                description=(
+                    "Repos whose issues to gather (`owner/repo`). Accumulates "
+                    "across gathers."
+                )
+            ),
+        ] = None,
+        author: Annotated[
+            Optional[str],
+            Field(
+                description=(
+                    "Make this a follow-an-author corpus; email is the "
+                    "unambiguous form."
+                )
+            ),
+        ] = None,
+        new_drafts: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Make this a rolling 'new Internet-Drafts' subscription "
+                    "over the `months` window."
+                )
+            ),
+        ] = False,
+        months: Annotated[
+            Optional[int],
+            Field(
+                description=(
+                    "Months of mailing-list and meeting history (default 12). "
+                    "`0` means all history — unbounded and slow, so refused "
+                    "without `force`."
+                ),
+                ge=0,
+            ),
+        ] = None,
+        add_mentioned_drafts: Annotated[
+            bool,
+            Field(description="Also pull in drafts the corpus cites but lacks."),
+        ] = False,
+        include_related_drafts: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Also gather related un-adopted drafts the WG follows. Can "
+                    "be large."
+                )
+            ),
+        ] = False,
+        github_label: Annotated[
+            Optional[List[str]],
+            Field(description="Include only issues carrying these labels."),
+        ] = None,
+        exclude_github_label: Annotated[
+            Optional[List[str]],
+            Field(description="Exclude issues carrying these labels."),
+        ] = None,
+        force: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Re-gather inside the freshness window, and mint a "
+                    "near-duplicate custom corpus despite an overlap hint. "
+                    "Never starts a second concurrent gather. Use only on an "
+                    "explicit request for fresh data."
+                )
+            ),
+        ] = False,
+        wait: Annotated[
+            Optional[float],
+            Field(
+                description=(
+                    "Seconds to block before returning a progress line. Omit "
+                    "for the default cap, `0` to fire-and-forget. Clamped to "
+                    "`IETF_LLM_GATHER_MAX_WAIT`. Also waits when the corpus is "
+                    "already being gathered elsewhere."
+                ),
+                ge=0,
+            ),
+        ] = None,
     ) -> str:
         """Gather a new corpus into the local cache.
 
@@ -488,43 +586,6 @@ def register(server: "FastMCP") -> None:
         `IETF_LLM_SUMMARIZE_MODEL`) on the gather host, or run
         `ietf-llm <corpus> --summarize`.
 
-        Args:
-            corpus: Corpus name — a WG/RG/BoF shortname, a mailing-list
-                name, or any label for a custom/synthetic corpus.
-            mailing_list: Extra mailing lists to sync (bare name or
-                full address; domain optional). Accumulates across gathers.
-            draft: Internet-Drafts to track (`draft-foo-bar`; version
-                suffix ignored, all revisions gathered). Accumulates across
-                gathers — on a re-gather, pass only the new draft(s); they
-                add to (never replace) the corpus's tracked set.
-            github: GitHub repos whose issues to gather (`owner/repo`).
-                Accumulates across gathers.
-            author: Make this a follow-an-author corpus (drafts by this
-                person; email is the unambiguous form).
-            new_drafts: Make this a rolling 'new Internet-Drafts'
-                subscription over the `months` window.
-            months: Months of mailing-list / meeting history to fetch
-                (default 12). 0 means all history — an unbounded, slow
-                gather, so it is refused unless `force=True`.
-            add_mentioned_drafts: Also pull in drafts the corpus cites
-                but doesn't already have.
-            include_related_drafts: Also gather related (un-adopted)
-                drafts the WG follows. Can be large.
-            github_label: Include only issues with these labels.
-            exclude_github_label: Exclude issues with these labels.
-            force: Re-gather even if the corpus is within the freshness
-                window (and mint a near-duplicate custom corpus despite an
-                overlap hint). Overrides the freshness debounce only — it
-                never starts a second gather while one is running. Use only
-                on an explicit request for fresh data.
-            wait: Seconds to block waiting for the gather to finish before
-                returning a progress line to poll on. Omit to block for the
-                default (the `IETF_LLM_GATHER_MAX_WAIT` cap, ~10s); `0` returns
-                immediately (fire-and-forget). Clamped to that cap (which may be
-                `0`, disabling blocking) and to stay under the server's per-call
-                tool deadline.
-                Also waits when the corpus is already being gathered (by
-                another client or a CLI run).
         """
         return await _offload(
             tool_start_gather,
@@ -545,7 +606,21 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def gather_status(
-        corpus: Optional[str] = None, wait: Optional[float] = None
+        corpus: Annotated[
+            Optional[str],
+            Field(description="Corpus to report on; omit to list all."),
+        ] = None,
+        wait: Annotated[
+            Optional[float],
+            Field(
+                description=(
+                    "Seconds to block for a running gather to reach a terminal "
+                    "state. Omit or `0` reports immediately; clamped to "
+                    "`IETF_LLM_GATHER_MAX_WAIT`. Ignored for the list-all form."
+                ),
+                ge=0,
+            ),
+        ] = None,
     ) -> str:
         """Report the progress of background gathers started with
         `start_gather`.
@@ -589,18 +664,22 @@ def register(server: "FastMCP") -> None:
         list name. Read the notes before telling a user a group has no
         mailing-list discussion — and don't re-run the gather to "fix" it,
         since a re-run reads the same feed.
-
-        Args:
-            corpus: The corpus to report on. Omit to list all.
-            wait: Seconds to block for a still-running gather to finish
-                before reporting. Omit/`0` reports immediately; capped by
-                `IETF_LLM_GATHER_MAX_WAIT` (default ~10s; `0` disables blocking)
-                and under the server's per-call tool deadline.
         """
         return await _offload(tool_gather_status, corpus, wait)
 
     @server.tool()
-    async def stop_gather(corpus: str, token: str) -> str:
+    async def stop_gather(
+        corpus: Annotated[str, Field(description="Corpus whose gather to stop.")],
+        token: Annotated[
+            str,
+            Field(
+                description=(
+                    "The stop token `start_gather` returned — the only "
+                    "capability that can stop this gather."
+                )
+            ),
+        ],
+    ) -> str:
         """Stop an in-flight gather started with `start_gather`.
 
         Cooperative and best-effort: the gather ends at its next stage
@@ -609,23 +688,21 @@ def register(server: "FastMCP") -> None:
         `cancelled`. The partial download is discarded (not published), so a
         previously-gathered snapshot of the corpus is left intact.
 
-        Requires the `token` returned by the `start_gather` call that began
-        this gather: it is the only capability that can stop it, so one
-        client cannot cancel another client's gather. A wrong or missing
-        token is refused, as is a corpus with no gather in flight.
+        One client cannot cancel another's gather: a wrong or missing token
+        is refused, as is a corpus with no gather in flight.
 
         Use this when a gather is taking too long or was started by mistake
         (e.g. an over-wide `months` window on a busy list) and you want to
         free the slot rather than wait it out.
-
-        Args:
-            corpus: The corpus whose gather to stop.
-            token: The stop token returned by `start_gather`.
         """
         return await _offload(tool_stop_gather, corpus, token)
 
     @server.tool()
-    async def suggest_github_repos(corpus: str) -> str:
+    async def suggest_github_repos(
+        corpus: Annotated[
+            str, Field(description="Working Group shortname (`tls`, `httpbis`).")
+        ],
+    ) -> str:
         """Discover which GitHub repos a Working Group's gather should
         track, before calling `start_gather`.
 
@@ -644,9 +721,6 @@ def register(server: "FastMCP") -> None:
         Hits the GitHub API, so the server should have `GITHUB_TOKEN` set
         (strongly encouraged); without it the call can be rate-limited and
         the result will say so and may be incomplete.
-
-        Args:
-            corpus: The Working Group shortname (e.g. `tls`, `httpbis`).
         """
         return await _offload(tool_suggest_github_repos, corpus)
 

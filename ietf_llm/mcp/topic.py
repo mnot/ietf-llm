@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Tuple
+
+from pydantic import Field
 
 from ..embeddings import get_messages, search
 from ..freshness import gather_enabled
@@ -28,6 +30,15 @@ from .common import (
     _safe_path,
     _thread_sizes,
     _with_freshness,
+)
+from .params import (
+    ChunkIdx,
+    Corpus,
+    FilePattern,
+    Query,
+    Since,
+    ThreadFile,
+    Until,
 )
 
 if TYPE_CHECKING:
@@ -582,10 +593,13 @@ def tool_tally_positions(wg: str, file: str) -> str:
 def register(server: "FastMCP") -> None:
     @server.tool()
     async def find_replies(
-        corpus: str,
-        file: str,
-        chunk_idx: int,
-        max_messages: int = 20,
+        corpus: Corpus,
+        file: ThreadFile,
+        chunk_idx: ChunkIdx,
+        max_messages: Annotated[
+            int,
+            Field(description="Cap on descendants returned.", ge=1, le=200),
+        ] = 20,
     ) -> str:
         """Return every transitive reply to a specific mailing-list
         thread message in an ietf-llm corpus, in chronological order,
@@ -608,16 +622,15 @@ def register(server: "FastMCP") -> None:
         issue file `get_chunk_text(end_chunk_idx=...)` is the right
         call to read comments after a given index.
 
-        Bounded at 20 messages by default; raise `max_messages` for
-        deep sub-threads. Bodies over 4 KB are truncated with a
-        pointer to `get_chunk_text` for the full text.
+        Bodies over 4 KB are truncated, with a pointer to `get_chunk_text`
+        for the full text.
         """
         return await _offload(
             tool_find_replies, corpus, file, chunk_idx, max_messages=max_messages
         )
 
     @server.tool()
-    async def tally_positions(corpus: str, file: str) -> str:
+    async def tally_positions(corpus: Corpus, file: ThreadFile) -> str:
         """Surface the procedural backbone of ONE mailing-list thread or
         GitHub issue of an IETF/IRTF effort. Its high-value output is the
         **Chair statements** section at the top: any message from a chair
@@ -641,12 +654,6 @@ def register(server: "FastMCP") -> None:
         `search_corpus(role="Chair", state="closed")`), and call
         `read_ietf_interpretation_norms` first.
 
-        Pass `file` as a relative path under the corpus cache, e.g.
-        `threads/2026-04-12-wglc-mlkem.md` or
-        `issues/org-repo/155.md`. Files outside threads/ and issues/
-        don't have the per-message section structure this tool reads
-        and will be politely refused.
-
         Heuristic limitations:
           - Subtle, technical-only objections show as no-position
             (the heuristic looks for canonical phrasings, not
@@ -666,14 +673,36 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        corpus: str,
-        query: str,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        file_pattern: Optional[str] = None,
-        limit: int = 20,
-        include_replies: bool = False,
-        body_chars: Optional[int] = None,
+        corpus: Corpus,
+        query: Query,
+        since: Since = None,
+        until: Until = None,
+        file_pattern: FilePattern = None,
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "Top-relevance messages to anchor on; replies expand this "
+                    "further."
+                ),
+                ge=1,
+                le=60,
+            ),
+        ] = 20,
+        include_replies: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Also pull every transitive reply to a matched message, "
+                    "matching or not. Reconstructs sub-threads faithfully but "
+                    "drags in tangents; no-op on linear GitHub issue files."
+                )
+            ),
+        ] = False,
+        body_chars: Annotated[
+            Optional[int],
+            Field(description="Cap on each message body (default 4000).", ge=100),
+        ] = None,
     ) -> str:
         """Read an IETF/IRTF effort's debate as a chronological narrative
         across its mailing list threads and GitHub issues. Returns the
@@ -693,11 +722,6 @@ def register(server: "FastMCP") -> None:
         chunk: each matched thread message or issue comment appears in
         full, so you get "who said what when" without N follow-up
         `get_chunk_text` calls.
-
-        `body_chars` caps each message body (default 4000; min 100). Dial
-        it down for a synthesis task where the gist of each message is
-        enough — the slice costs far less context, and a truncated body
-        still points at `get_chunk_text` for the full text.
 
         Best fit for "how did the debate on X evolve?", "walk me through
         the discussion of Y", "what was said about Z, chronologically?"
@@ -727,23 +751,6 @@ def register(server: "FastMCP") -> None:
         `file_pattern=` to cut cross-topic noise, read a thread end-to-end
         with `read_file_section`, or enumerate a topic's threads with
         `read_digest(kind="threads", subject="[…]")`.
-
-        `include_replies=True` walks the reply graph in each matched
-        thread file and pulls every transitive reply descendant of a
-        matched message — even if those replies don't themselves match
-        the query. Faithfully reconstructs sub-threads, but can
-        drag in tangents; off by default. GitHub issue files are
-        linear (no reply-to nesting), so `include_replies` is a no-op
-        there.
-
-        Filters compose with the semantic match:
-          - `since` / `until` (ISO dates): time-window the candidates
-          - `file_pattern` (SQL LIKE on the relative path): scope to
-            one issue (`issues/org-repo/155.md`) or one thread cluster
-            (`threads/2026-04-%mlkem%`)
-          - `limit`: how many top-relevance messages to anchor on (default
-            20; replies expand this further). The fetch is widened
-            internally so the candidate pool is roomy.
 
         Requires the embedding index (built by default on gather;
         skipped only with `--no-embed`).

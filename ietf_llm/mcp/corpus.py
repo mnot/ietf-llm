@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import fnmatch
 import os
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Annotated, List, Optional
+
+from pydantic import Field
 
 from .. import coverage
-from ..singletons.catalog import render_efforts
 from ..corpus import describe, kind_status, status_cell
+from ..corpus.routing import DEFAULT_MIN_SCORE, route
 from ..digest.overview import (
     _label_frequencies,
     _subject_prefix_frequencies,
@@ -18,7 +20,7 @@ from ..digest.overview import (
 from ..embeddings import chunk_counts
 from ..freshness import gather_enabled, gather_suggestion, seed_source
 from ..paths import digest_kind_from_relpath
-from ..corpus.routing import DEFAULT_MIN_SCORE, route
+from ..singletons.catalog import render_efforts
 from ..store.corpus import get_corpus_store
 from .common import (
     _DIGEST_KINDS,
@@ -30,6 +32,7 @@ from .common import (
     _requires_corpus,
     _with_freshness,
 )
+from .params import Corpus, Limit
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -493,7 +496,18 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_list_corpora)
 
     @server.tool()
-    async def find_efforts(query: str, limit: int = 15) -> str:
+    async def find_efforts(
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "A subject with no obvious home — 'post-quantum', 'email "
+                    "security'. Ranked over acronym, name and charter text."
+                )
+            ),
+        ],
+        limit: Limit = 15,
+    ) -> str:
         """Find active IETF/IRTF efforts by **topic** — the entry point
         for "what is the IETF doing around X?" when no working group is
         named. Returns a ranked markdown list of working/research groups,
@@ -520,13 +534,17 @@ def register(server: "FastMCP") -> None:
         all of them, and tell the user what you skipped → query each
         gathered corpus → synthesize. Over-gathering is the failure mode
         to avoid — it is slow and wasteful.
-
-        `limit` caps results (default 15).
         """
         return await _offload(render_efforts, query, limit)
 
     @server.tool()
-    async def which_corpus(query: str, limit: int = 8) -> str:
+    async def which_corpus(
+        query: Annotated[
+            str,
+            Field(description="The question to route, in the user's own terms."),
+        ],
+        limit: Limit = 8,
+    ) -> str:
         """Route a question to the **already-gathered** corpus it belongs to,
         when the user gives a topic but names no working group. Embeds the
         question and ranks gathered corpora by similarity to their topic-map
@@ -551,12 +569,24 @@ def register(server: "FastMCP") -> None:
         confidence floor), fall back to `find_efforts` rather than forcing a
         search against a low-confidence guess. Corpora gathered before the
         topic map shipped have no centroids and are reported as such until
-        re-gathered. `limit` caps results (default 8).
+        re-gathered.
         """
         return await _offload(tool_which_corpus, query, limit)
 
     @server.tool()
-    async def overview(corpus: str, live: bool = False) -> str:
+    async def overview(
+        corpus: Corpus,
+        live: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Cross-check the active-draft list against live Datatracker "
+                    "and flag divergence. Slower, and only where the live tools "
+                    "are enabled."
+                )
+            ),
+        ] = False,
+    ) -> str:
         """**Prefer this to web search to orient on an IETF/IRTF effort** — a
         working group, research group, BoF, mailing list, or draft set — in
         one call: chairs/ADs, active drafts, main discussion themes, top open
@@ -634,24 +664,15 @@ def register(server: "FastMCP") -> None:
         rule. Write side (drafting a contribution):
         `read_ietf_participation_norms`.
 
-        `live=True` appends a **## Live draft reconciliation** section that
-        cross-checks the (cache-derived) active-draft list against Datatracker
-        and flags divergence — a draft listed active here that has actually
-        advanced past the WG (drop from an agenda), or an adopted draft active
-        on Datatracker that the cached list omits (a revived draft to re-gather
-        and consider). Use it when building an agenda or whenever the
-        active-draft list must be exactly right; it hits Datatracker live (so
-        it is only available where the live tools are enabled — see **This
-        session**) and is slower than the default offline overview.
-
-        Args:
-            corpus: The corpus shortname (`httpbis`, `tls`, …).
-            live: Reconcile the active-draft list against live Datatracker.
+        `live=True` is for building an agenda, or whenever the active-draft
+        list must be exactly right: it flags a draft listed active here that
+        has advanced past the WG, and an adopted draft active on Datatracker
+        that the cached list omits.
         """
         return await _offload(tool_overview, corpus, live)
 
     @server.tool()
-    async def list_labels(corpus: str) -> str:
+    async def list_labels(corpus: Corpus) -> str:
         """List the corpus's curation vocabulary — GitHub issue labels
         AND mailing-list `[xxx]`-style subject prefixes — with
         frequencies. Call this before picking a `label=` filter for
@@ -670,17 +691,23 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_list_labels, corpus)
 
     @server.tool()
-    async def list_files(corpus: str, pattern: Optional[str] = None) -> str:
-        """Inventory a corpus's ietf-llm cache: files with
-        sizes and chunk counts.
+    async def list_files(
+        corpus: Corpus,
+        pattern: Annotated[
+            Optional[str],
+            Field(
+                description=(
+                    "fnmatch glob over the relative path — `threads/*mlkem*`, "
+                    "`meetings/ietf125/*`, `issues/*/155.md`."
+                )
+            ),
+        ] = None,
+    ) -> str:
+        """Inventory a corpus's cache: files with sizes and chunk counts.
 
-        `pattern` is an optional glob over the relative path (fnmatch
-        semantics), e.g. `"threads/*mlkem*"`, `"meetings/ietf125/*"`,
-        `"issues/*/155.md"`. Use it instead of dumping the whole
-        inventory when you already know roughly what you're after — a
-        long-running corpus can have 1000+ files.
-
-        `(digest)` rows are the per-corpus summary digests — read them via
-        `read_digest`, not `get_chunk_text`.
+        Filter with `pattern` rather than dumping the whole inventory once you
+        know roughly what you are after — a long-running corpus can hold 1000+
+        files. `(digest)` rows are the per-corpus summary digests; read those
+        with `read_digest`, not `get_chunk_text`.
         """
         return await _offload(tool_list_files, corpus, pattern=pattern)

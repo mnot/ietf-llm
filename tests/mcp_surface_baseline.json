@@ -3,62 +3,62 @@
   "shapes": {
     "stdio": {
       "instructions_chars": 7653,
-      "total_chars": 68354,
+      "total_chars": 67833,
       "tools": {
         "draft_authors": {
-          "chars": 860,
+          "chars": 806,
           "params": 1
         },
         "draft_status": {
-          "chars": 1279,
+          "chars": 1262,
           "params": 1
         },
         "find_citations": {
-          "chars": 1198,
+          "chars": 1315,
           "params": 2
         },
         "find_efforts": {
-          "chars": 1752,
+          "chars": 1904,
           "params": 2
         },
         "find_message_citations": {
-          "chars": 1710,
+          "chars": 1923,
           "params": 3
         },
         "find_related": {
-          "chars": 2897,
+          "chars": 3388,
           "params": 13
         },
         "find_replies": {
-          "chars": 1485,
+          "chars": 1835,
           "params": 4
         },
         "gather_status": {
-          "chars": 2963,
+          "chars": 2887,
           "params": 2
         },
         "get_by_url": {
-          "chars": 1009,
+          "chars": 873,
           "params": 2
         },
         "get_chunk_text": {
-          "chars": 827,
+          "chars": 1061,
           "params": 4
         },
         "get_chunks_batch": {
-          "chars": 757,
+          "chars": 767,
           "params": 2
         },
         "get_draft": {
-          "chars": 657,
+          "chars": 866,
           "params": 3
         },
         "get_issue": {
-          "chars": 844,
+          "chars": 1130,
           "params": 5
         },
         "get_rfc": {
-          "chars": 763,
+          "chars": 768,
           "params": 1
         },
         "list_corpora": {
@@ -66,35 +66,35 @@
           "params": 0
         },
         "list_drafts": {
-          "chars": 799,
+          "chars": 1047,
           "params": 2
         },
         "list_files": {
-          "chars": 760,
+          "chars": 868,
           "params": 2
         },
         "list_labels": {
-          "chars": 851,
+          "chars": 1001,
           "params": 1
         },
         "list_meetings": {
-          "chars": 461,
+          "chars": 611,
           "params": 1
         },
         "meeting_schedule": {
-          "chars": 1532,
+          "chars": 1603,
           "params": 2
         },
         "overview": {
-          "chars": 5213,
+          "chars": 4980,
           "params": 2
         },
         "read_digest": {
-          "chars": 4943,
+          "chars": 4248,
           "params": 15
         },
         "read_file_section": {
-          "chars": 794,
+          "chars": 969,
           "params": 4
         },
         "read_ietf_interpretation_norms": {
@@ -106,97 +106,97 @@
           "params": 0
         },
         "read_minutes": {
-          "chars": 804,
+          "chars": 931,
           "params": 2
         },
         "read_topic": {
-          "chars": 4517,
+          "chars": 4345,
           "params": 8
         },
         "search_corpora": {
-          "chars": 2584,
+          "chars": 2981,
           "params": 11
         },
         "search_corpus": {
-          "chars": 5819,
+          "chars": 3803,
           "params": 15
         },
         "search_rfcs": {
-          "chars": 1530,
+          "chars": 1606,
           "params": 6
         },
         "start_gather": {
-          "chars": 8125,
+          "chars": 7431,
           "params": 13
         },
         "stop_gather": {
-          "chars": 1166,
+          "chars": 1073,
           "params": 2
         },
         "suggest_github_repos": {
-          "chars": 1209,
+          "chars": 1194,
           "params": 1
         },
         "tally_positions": {
-          "chars": 2477,
+          "chars": 2500,
           "params": 2
         },
         "which_corpus": {
-          "chars": 1748,
+          "chars": 1836,
           "params": 2
         }
       }
     },
     "http": {
       "instructions_chars": 6900,
-      "total_chars": 52080,
+      "total_chars": 52383,
       "tools": {
         "draft_authors": {
-          "chars": 860,
+          "chars": 806,
           "params": 1
         },
         "find_citations": {
-          "chars": 1198,
+          "chars": 1315,
           "params": 2
         },
         "find_efforts": {
-          "chars": 1752,
+          "chars": 1904,
           "params": 2
         },
         "find_message_citations": {
-          "chars": 1710,
+          "chars": 1923,
           "params": 3
         },
         "find_related": {
-          "chars": 2897,
+          "chars": 3388,
           "params": 13
         },
         "find_replies": {
-          "chars": 1485,
+          "chars": 1835,
           "params": 4
         },
         "get_by_url": {
-          "chars": 1009,
+          "chars": 873,
           "params": 2
         },
         "get_chunk_text": {
-          "chars": 827,
+          "chars": 1061,
           "params": 4
         },
         "get_chunks_batch": {
-          "chars": 757,
+          "chars": 767,
           "params": 2
         },
         "get_draft": {
-          "chars": 657,
+          "chars": 866,
           "params": 3
         },
         "get_issue": {
-          "chars": 844,
+          "chars": 1130,
           "params": 5
         },
         "get_rfc": {
-          "chars": 763,
+          "chars": 768,
           "params": 1
         },
         "list_corpora": {
@@ -204,31 +204,31 @@
           "params": 0
         },
         "list_drafts": {
-          "chars": 799,
+          "chars": 1047,
           "params": 2
         },
         "list_files": {
-          "chars": 760,
+          "chars": 868,
           "params": 2
         },
         "list_labels": {
-          "chars": 851,
+          "chars": 1001,
           "params": 1
         },
         "list_meetings": {
-          "chars": 461,
+          "chars": 611,
           "params": 1
         },
         "overview": {
-          "chars": 5213,
+          "chars": 4980,
           "params": 2
         },
         "read_digest": {
-          "chars": 4943,
+          "chars": 4248,
           "params": 15
         },
         "read_file_section": {
-          "chars": 794,
+          "chars": 969,
           "params": 4
         },
         "read_ietf_interpretation_norms": {
@@ -240,31 +240,31 @@
           "params": 0
         },
         "read_minutes": {
-          "chars": 804,
+          "chars": 931,
           "params": 2
         },
         "read_topic": {
-          "chars": 4517,
+          "chars": 4345,
           "params": 8
         },
         "search_corpora": {
-          "chars": 2584,
+          "chars": 2981,
           "params": 11
         },
         "search_corpus": {
-          "chars": 5819,
+          "chars": 3803,
           "params": 15
         },
         "search_rfcs": {
-          "chars": 1530,
+          "chars": 1606,
           "params": 6
         },
         "tally_positions": {
-          "chars": 2477,
+          "chars": 2500,
           "params": 2
         },
         "which_corpus": {
-          "chars": 1748,
+          "chars": 1836,
           "params": 2
         }
       }
