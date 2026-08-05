@@ -57,10 +57,15 @@ def print_completion_snippet(shell: str) -> int:
         )
         return 1
     commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
-    # argcomplete ships no type stubs; shellcode isn't in its __all__.
-    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
-        commands,
-        shell=shell,
-    )
+    # `shellcode` is public API but isn't re-exported in a way mypy's strict
+    # `no_implicit_reexport` accepts, so reaching it directly needs a
+    # `type: ignore` — and *which* codes it needs varies with the argcomplete
+    # version pip resolves for the running interpreter: 3.13 wants
+    # `attr-defined,no-untyped-call`, while 3.11 resolves one where the call is
+    # typed and `no-untyped-call` is then flagged as an unused ignore. A fixed
+    # code list is wrong on some version of the matrix either way, so go through
+    # `getattr`: it yields `Any` on every version and needs no ignore at all.
+    shellcode = getattr(argcomplete, "shellcode")
+    snippet = shellcode(commands, shell=shell)
     print(snippet)
     return 0
