@@ -37,7 +37,7 @@ import html
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
@@ -128,13 +128,22 @@ def fetch_person_emails(
     addresses from past jobs, a personal one). Querying only the address
     the corpus was seeded with would silently drop every review filed
     under an older affiliation, so we expand to the full set first.
+
+    Paged for the same reason: a truncated address set drops reviews
+    without ever saying so.
     """
-    body = _get_json(f"{_API_BASE}/person/email/?person={person_id}&limit=100")
-    addresses = [
-        str(obj["address"])
-        for obj in (body or {}).get("objects") or []
-        if obj.get("address")
-    ]
+    path: Optional[str] = f"{_API_BASE}/person/email/?person={person_id}&limit=100"
+    addresses: List[str] = []
+    while path:
+        body = _get_json(path)
+        if not body:
+            break
+        addresses.extend(
+            str(obj["address"])
+            for obj in body.get("objects") or []
+            if obj.get("address")
+        )
+        path = (body.get("meta") or {}).get("next") or None
     log(
         f"  {len(addresses)} known email address(es) for person {person_id}.",
         verbose,
@@ -298,11 +307,20 @@ def fetch_review_text(review: Review) -> Optional[str]:
 
 
 def fetch_review_bodies(
-    reviews: List[Review], verbose: Verbosity = Verbosity.STATUS
+    reviews: List[Review],
+    verbose: Verbosity = Verbosity.STATUS,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[Review]:
-    """Fill in `text` for each review; drop the ones we couldn't fetch."""
+    """Fill in `text` for each review; drop the ones we couldn't fetch.
+
+    One page fetch per review, so a long-serving directorate regular is
+    in the low hundreds of requests — minutes, not seconds. `on_progress`
+    receives `(done, total)` after each so a client polling
+    `gather_status` sees the stage moving instead of apparently hung.
+    """
     filled: List[Review] = []
-    for review in reviews:
+    total = len(reviews)
+    for done, review in enumerate(reviews, 1):
         text = fetch_review_text(review)
         if text is None:
             log(
@@ -310,9 +328,11 @@ def fetch_review_bodies(
                 verbose,
                 level=LogLevel.WARN,
             )
-            continue
-        review.text = text
-        filled.append(review)
+        else:
+            review.text = text
+            filled.append(review)
+        if on_progress is not None:
+            on_progress(done, total)
     return filled
 
 
@@ -330,8 +350,10 @@ def render_review(review: Review) -> str:
     if result:
         lines.append(f"**Result:** {result}  ")
     if review.completed_on:
-        # Date only — the time of day is noise, and the chunker's date
-        # re-parse wants a plain ISO date.
+        # Date only; the time of day is noise. The chunker reads this
+        # line back as the file's `chunk_date` (`_windowed_chunk_date`),
+        # so the format is load-bearing — a review is a dated act, and
+        # `since` / `until` / `sort="date"` drop NULL-dated chunks.
         lines.append(f"**Completed:** {review.completed_on[:10]}  ")
     lines.append(f"**URL:** {review.url}")
     lines.append("")
@@ -375,6 +397,7 @@ def gather_reviews(
     person_id: int,
     reviewer_name: str,
     verbose: Verbosity = Verbosity.STATUS,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[str]:
     """Fetch and write every completed review by `person_id`.
 
@@ -388,4 +411,5 @@ def gather_reviews(
     reviews = fetch_reviews(person_id, reviewer_name, verbose)
     if not reviews:
         return []
-    return write_review_files(cache_dir, fetch_review_bodies(reviews, verbose), verbose)
+    bodies = fetch_review_bodies(reviews, verbose, on_progress)
+    return write_review_files(cache_dir, bodies, verbose)

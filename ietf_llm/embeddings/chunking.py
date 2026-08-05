@@ -238,6 +238,11 @@ _THREAD_ARCHIVED_AT_RE = re.compile(r"^_Archived-At:_\s*(\S+)", re.MULTILINE)
 # Charter source line (gather.sources.charter writes it as the second line):
 #   "Source: https://www.ietf.org/charter/charter-ietf-<wg>-<rev>.txt"
 _CHARTER_SOURCE_RE = re.compile(r"^Source:\s*(\S+)", re.MULTILINE)
+#: `reviews/<name>.md` header lines written by `gather.sources.reviews`.
+_REVIEW_URL_RE = re.compile(r"^\*\*URL:\*\*\s*(\S+)", re.MULTILINE)
+_REVIEW_COMPLETED_RE = re.compile(
+    r"^\*\*Completed:\*\*\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE
+)
 
 
 def _extract_issue_labels(text: str) -> Optional[str]:
@@ -315,12 +320,17 @@ def _windowed_citation_url(relpath: str, text: str) -> Optional[str]:
       which is what a citation should point at).
     - `charter.txt` → the `Source:` URL gather already wrote into the
       file header.
+    - `reviews/<name>.md` → the `**URL:**` header line, the review's
+      own datatracker document page.
 
     Everything else returns None — RFC bodies (cite via `get_rfc`),
     minutes, transcripts, pdf extracts. NULL is deliberate there: a URL
     we cannot construct with confidence is worse stamped than absent.
     """
     lower = relpath.lower()
+    if lower.startswith("reviews/") and lower.endswith(".md"):
+        match = _REVIEW_URL_RE.search(text)
+        return match.group(1).strip() if match else None
     if lower.startswith("drafts/") and lower.endswith(".txt"):
         name = normalize_draft_name(os.path.basename(relpath))
         # RFC text files normalise to `rfcNNNN` (no `draft-` prefix);
@@ -333,6 +343,27 @@ def _windowed_citation_url(relpath: str, text: str) -> Optional[str]:
         if match:
             return match.group(1).strip()
     return None
+
+
+def _windowed_chunk_date(relpath: str, text: str) -> Optional[str]:
+    """File-level `chunk_date` for a windowed file, or None.
+
+    Only `reviews/<name>.md` has one — from its `**Completed:**` header.
+    A draft or transcript has no single date worth filtering on (a draft
+    spans revisions), and stamping a wrong one is worse than none: the
+    date facets treat it as fact.
+    """
+    lower = relpath.lower()
+    if not (lower.startswith("reviews/") and lower.endswith(".md")):
+        return None
+    match = _REVIEW_COMPLETED_RE.search(text)
+    if not match:
+        return None
+    # The header carries a bare date, which is not one of the three
+    # formats `_normalize_to_utc_iso` accepts — anchor it to midnight
+    # UTC here rather than widening that helper's contract for one
+    # caller. Day granularity is all a review has anyway.
+    return _normalize_to_utc_iso(f"{match.group(1)} 00:00")
 
 
 def _extract_issue_state(text: str) -> Optional[str]:
@@ -438,9 +469,14 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
     text = text.strip()
     if not text:
         return chunks
-    # File-level citation URL (drafts, charter) stamped on every window;
-    # None for windowed files without a confident canonical URL.
+    # File-level citation URL (drafts, charter, reviews) stamped on every
+    # window; None for windowed files without a confident canonical URL.
     file_url = _windowed_citation_url(filename, text)
+    # Likewise a file-level date. Only reviews have one: a review is a
+    # dated act, so `since`/`until` and `sort="date"` — which drop
+    # NULL-dated chunks entirely — have to reach them, or "their reviews
+    # from the last two years" silently returns nothing.
+    file_date = _windowed_chunk_date(filename, text)
     line_starts = _build_line_index(text)
     for idx, (body, start, end) in enumerate(
         _window_text(text, EMBED_CHAR_BUDGET, EMBED_CHAR_OVERLAP)
@@ -458,6 +494,7 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
                 start_line=_line_at(line_starts, start),
                 end_line=_line_at(line_starts, max(end - 1, start)),
                 url=file_url,
+                chunk_date=file_date,
             )
         )
     return chunks

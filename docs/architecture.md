@@ -446,7 +446,7 @@ ietf_llm/
 │       ├── author.py               # --author: a person's authored drafts
 │       ├── reviews.py              # --author: the reviews that person wrote
 │       ├── author_lists.py         # --author: which lists that person is on
-│       ├── author_mail.py          # --author: their mail, hydrated to whole threads
+│       ├── author_mail.py          # --author: their mail, by sender, quotes kept
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
@@ -1053,16 +1053,36 @@ IMAP `SEARCH FROM` over the person's full Datatracker address set,
 since a whole-list pull of `last-call@` would bury the person in
 material that isn't theirs — but it writes into the same per-list
 `.eml` directory, so `mail_threads` reconstructs those messages with no
-knowledge that they arrived a different way. Sender-scoped fetching
-alone would yield decontextualised fragments (a review comment is
-mostly reactive and unreadable without the message it answers), so each
-of their messages is expanded to its thread by base-subject search
-before download. Two cases can't be hydrated and keep the person's own
-message without the surrounding thread, both counted and logged: a
-non-ASCII subject (`SEARCH SUBJECT` would need a `CHARSET` negotiation
-the anonymous archive server doesn't reliably support) and a subject
-too short to be a thread key (`SUBJECT` matches substrings, so
-hydrating "Agenda" would pull the whole list).
+knowledge that they arrived a different way.
+
+The context comes from the **quotes**, not from fetching the rest of
+the thread. What a reply answers is already in the message, quoted, and
+quoted *selectively*: the sender trimmed it to the part they were
+responding to, which is better-targeted than the surrounding thread and
+its every ignored sub-branch. So `elide_quotes` is applied per message
+rather than always — see "Quote elision is conditional" below. What
+this does not capture is the *reaction*: replies to them are not
+gathered, so such a corpus is evidence of what a person raises, not of
+how it landed.
+
+### Quote elision is conditional
+
+`elide_quotes` cuts a top-posted quote trail on the grounds that those
+messages are in the same file as their own sections. That holds only
+when the surrounding thread was gathered, so the cut is now gated on
+`msg.parent_id is not None` — which is exactly the "is the parent in
+this corpus?" test, because `build_threads` sets `parent_id` only for a
+parent it actually found (`by_id`), and `_collect_subtree` pulls a
+whole subtree into one file. A **thread root therefore keeps its full
+quote trail**, in every corpus, not just author ones.
+
+The blast radius is wider than "author corpora" and narrower than it
+sounds: roots are 14–27% of messages in the gathered WGs, but most
+start a conversation and have nothing quoted, so only 2–4% of messages
+actually grow (+3–11% of body bytes; worst single message +34KB). The
+retained bytes are new content rather than duplication — a root's
+parent is by construction *not* in the corpus, so nothing else indexes
+what it quotes.
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 

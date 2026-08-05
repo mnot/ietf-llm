@@ -65,7 +65,13 @@ def _stub(
     return validated
 
 
-def _group(gid: int, acronym: str, list_email: str = "x@ietf.org") -> Dict[str, Any]:
+def _group(
+    gid: int, acronym: str, list_email: Optional[str] = None
+) -> Dict[str, Any]:
+    """A group object. `list_email` defaults to the usual `<acronym>@ietf.org`;
+    pass an off-IETF address to exercise the mirror-name lookup."""
+    if list_email is None:
+        list_email = f"{acronym}@ietf.org"
     return {"id": gid, "acronym": acronym, "list_email": list_email}
 
 
@@ -146,10 +152,18 @@ def test_group_list_matching_an_always_list_is_not_duplicated(
     assert result.count("ietf") == 1
 
 
-def test_archive_name_override_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A WG hosted off IETF infrastructure resolves to the IETF mirror
-    name the IMAP server exposes, not the acronym."""
-    _stub(monkeypatch, roles=["1"], doc_groups={}, groups=[_group(1, "httpbis")])
+def test_off_ietf_list_resolves_to_the_mirror_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A WG hosted off IETF infrastructure (httpbis runs at w3.org) is
+    mirrored under a different name, and only the group's Additional
+    Resources say which — so it pays for the extra lookup."""
+    _stub(
+        monkeypatch,
+        roles=["1"],
+        doc_groups={},
+        groups=[_group(1, "httpbis", list_email="ietf-http-wg@w3.org")],
+    )
     monkeypatch.setattr(
         author_lists,
         "get_mailing_list_name",
@@ -157,7 +171,21 @@ def test_archive_name_override_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     result = discover_author_lists(1, [], Q)
     assert "httpbisa" in result
-    assert "httpbis" not in result
+    assert "ietf-http-wg" not in result
+
+
+def test_ietf_hosted_list_needs_no_extra_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_fetch_groups` already returned `list_email`, so the common case
+    must not spend another Datatracker request per candidate group."""
+    _stub(monkeypatch, roles=["1"], doc_groups={}, groups=[_group(1, "dnsop")])
+
+    def boom(acronym: str) -> str:
+        raise AssertionError(f"redundant group lookup for {acronym!r}")
+
+    monkeypatch.setattr(author_lists, "get_mailing_list_name", boom)
+    assert "dnsop" in discover_author_lists(1, [], Q)
 
 
 def test_cap_truncates_and_keeps_always_lists(

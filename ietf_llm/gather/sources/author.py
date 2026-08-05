@@ -5,14 +5,16 @@ then pull every draft they're an author of (via the documentauthor
 through-table — the document endpoint's `authors__person` filter is
 silently ignored).
 
-This module resolves the person and lists their drafts; the reviews
-they *wrote* are gathered alongside by `sources.reviews`, driven from
-the same resolved person id.
+This module resolves the person and lists their drafts. Driven from the
+same resolved person id: the reviews they *wrote* (`sources.reviews`)
+and their own list mail (`sources.author_lists` picks the lists,
+`sources.author_mail` searches them by sender).
 
-Not covered: their mailing-list traffic in general. The archive has no
-cross-list by-sender search (IMAP `SEARCH FROM` is per-folder), so
-there is no way to discover which lists to look at from the sender
-alone. Add `--mailing-list <list>` to follow specific ones.
+The archive has no cross-list by-sender search — IMAP `SEARCH FROM` is
+per-folder — so the lists can't be discovered from the sender. They are
+discovered from Datatracker instead: the groups the person holds a role
+in and the groups owning their drafts. Add `--mailing-list <list>` for
+one that neither turns up (it is then gathered in full, not by sender).
 """
 
 from __future__ import annotations

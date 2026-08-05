@@ -41,7 +41,7 @@ def stage_plan(args: argparse.Namespace, group_backed: bool) -> List[str]:
     if do_drafts:
         plan.append("drafts")
     if args.author:
-        plan.append("author mail")
+        plan += ["reviews", "author mail"]
     plan.append("pdf text")
     if has_github:
         plan.append("github archives")

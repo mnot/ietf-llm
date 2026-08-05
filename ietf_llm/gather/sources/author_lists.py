@@ -59,13 +59,22 @@ _GROUP_ID = re.compile(r"/group/group/(\d+)/?$")
 
 
 def _group_ids_from_roles(person_id: int) -> List[str]:
-    """Group ids where the person holds any role, in API order."""
-    body = _get_json(f"{_API_BASE}/group/role/?person={person_id}&limit=200")
+    """Group ids where the person holds any role, in API order.
+
+    Paged: a silently truncated role list would read as "these are all
+    their groups", the same failure `MAX_DISCOVERED` is careful to log.
+    """
+    path: Optional[str] = f"{_API_BASE}/group/role/?person={person_id}&limit=200"
     out: List[str] = []
-    for obj in (body or {}).get("objects") or []:
-        match = _GROUP_ID.search(str(obj.get("group") or ""))
-        if match:
-            out.append(match.group(1))
+    while path:
+        body = _get_json(path)
+        if not body:
+            break
+        for obj in body.get("objects") or []:
+            match = _GROUP_ID.search(str(obj.get("group") or ""))
+            if match:
+                out.append(match.group(1))
+        path = (body.get("meta") or {}).get("next") or None
     return out
 
 
@@ -101,10 +110,27 @@ def _fetch_groups(group_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _acronyms_in_order(
+def _archive_name(acronym: str, list_email: str) -> str:
+    """The mailarchive / IMAP folder name for a group's list.
+
+    Normally the local part of `list_email`. A list hosted off IETF
+    infrastructure (httpbis runs at w3.org) is mirrored under a
+    different name, and only the group's Additional Resources say which
+    — so those, and only those, pay for `get_mailing_list_name`'s extra
+    lookups. `_fetch_groups` already gave us `list_email`, so the
+    `@ietf.org` / `@irtf.org` majority costs nothing further.
+    """
+    local, _, domain = list_email.partition("@")
+    if domain.lower() in ("ietf.org", "irtf.org") and local:
+        return local
+    return get_mailing_list_name(acronym)
+
+
+def _list_names_in_order(
     ordered_ids: List[str], groups: Dict[str, Dict[str, Any]]
 ) -> List[str]:
-    """Acronyms of the groups that have a mailing list, first-seen order.
+    """Archive names of the groups that have a mailing list, first-seen
+    order.
 
     An empty `list_email` is the filter that drops areas, IAB ASGs, and
     other groups that exist on Datatracker but have no list of their
@@ -114,12 +140,16 @@ def _acronyms_in_order(
     out: List[str] = []
     for gid in ordered_ids:
         group = groups.get(gid)
-        if not group or not (group.get("list_email") or "").strip():
+        if not group:
             continue
+        list_email = str(group.get("list_email") or "").strip()
         acronym = str(group.get("acronym") or "").strip()
-        if acronym and acronym not in seen:
-            seen.add(acronym)
-            out.append(acronym)
+        if not list_email or not acronym:
+            continue
+        name = normalize_list_name(_archive_name(acronym, list_email))
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
     return out
 
 
@@ -140,13 +170,12 @@ def discover_author_lists(
     # Roles first: a role is the stronger claim, and first-seen order is
     # what the cap truncates against.
     ordered_ids = role_ids + draft_ids
-    acronyms = _acronyms_in_order(ordered_ids, _fetch_groups(ordered_ids))
+    names = _list_names_in_order(ordered_ids, _fetch_groups(ordered_ids))
 
     discovered: List[str] = []
     seen: Set[str] = {normalize_list_name(name) for name in ALWAYS_LISTS}
-    for acronym in acronyms:
-        name = normalize_list_name(get_mailing_list_name(acronym))
-        if name and name not in seen:
+    for name in names:
+        if name not in seen:
             seen.add(name)
             discovered.append(name)
 

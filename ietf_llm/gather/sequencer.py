@@ -192,8 +192,8 @@ def _gather_dynamic_drafts(
     drafts) is retained.
 
     Returns `(person_id, name, authored-draft-names)` when `--author`
-    resolved, so the caller can drive the person's mail sync off the
-    same resolution — list discovery needs the draft names, and
+    resolved, so the caller can drive the person's reviews and mail off
+    the same resolution — list discovery needs the draft names, and
     re-resolving would cost another Datatracker round-trip.
     """
     author_names: List[str] = []
@@ -204,10 +204,6 @@ def _gather_dynamic_drafts(
             author_names = fetch_author_draft_names(resolved[0], verbose=verbosity)
             process_extra_drafts(author_names, cache_dir, verbose=verbosity)
             _persist_author_name(args.wg, resolved[1])
-            # Reviews they *wrote* — the other half of a person's record,
-            # and unlike their drafts it shows what they look for in
-            # someone else's document.
-            gather_reviews(cache_dir, resolved[0], resolved[1], verbose=verbosity)
             author = (resolved[0], resolved[1], author_names)
 
     if args.new_drafts:
@@ -785,12 +781,31 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
 
     author = _gather_dynamic_drafts(args, cache_dir, persisted, verbosity)
 
+    # Reviews the --author person *wrote* — the other half of their
+    # record, and unlike their drafts it shows what they look for in
+    # someone else's document. Its own stage: one page fetch per review
+    # puts a prolific reviewer into minutes, which under the drafts
+    # stage would look like a hang to anything polling gather_status.
+    #
+    # Both author stages are keyed on the flag, not on `author`, so the
+    # sequence matches `stage_plan` even when the person didn't resolve.
+    if args.author:
+        tracker.begin("reviews")
+        if author is not None:
+            gather_reviews(
+                cache_dir,
+                author[0],
+                author[1],
+                verbose=verbosity,
+                on_progress=lambda done, total: tracker.detail(
+                    f"{done}/{total} reviews fetched"
+                ),
+            )
+
     # The --author person's own mail, across the lists they're on.
     # Runs here rather than in the mailing-list stage above because list
     # discovery needs their authored drafts, and before the identity
     # registry below so these senders are consolidated like any other.
-    # Keyed on the flag, not on `author`, so the stage sequence matches
-    # `stage_plan` even when the person didn't resolve.
     if args.author:
         tracker.begin("author mail")
         _gather_author_mail(args, author, verbosity, note_fn=note_fn)

@@ -690,7 +690,6 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
     parts.append(_build_outline(thread, registry))
     parts.append("")
     parts.append("## Messages\n")
-    present_ids = {m.message_id for m in thread.members if m.message_id}
     for idx, msg in enumerate(thread.members, 1):
         when = _format_msg_date(msg)
         header = f"### [{idx}] {when} — {_name_with_role(msg.sender, registry)}"
@@ -701,11 +700,19 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
                     header += f" (reply to [{p_idx}])"
                     break
         # Eliding a quote trail is only safe when the messages it quotes
-        # are in this file as their own sections. A reply whose parent is
-        # absent — the thread predates the window, or this is an
-        # author-scoped corpus holding only one person's mail — has its
-        # quotes as the sole record of what it answers, so they stay.
-        parent_present = bool(msg.parent_id) and msg.parent_id in present_ids
+        # are in this file as their own sections. `parent_id` IS that
+        # test: build_threads sets it only for a parent it found in
+        # `by_id`, and _collect_subtree pulls a whole subtree into one
+        # thread — so a set-membership check here could never fail.
+        #
+        # The rule this yields is "a thread root keeps its full quote
+        # trail". A root's parent is by construction not in the corpus:
+        # either it genuinely starts the conversation (nothing quoted,
+        # so nothing changes) or it is a reply whose parent went
+        # ungathered — the window cut it off, or this is an
+        # author-scoped corpus holding one person's mail — and its
+        # quotes are the sole surviving record of what it answers.
+        parent_present = msg.parent_id is not None
         parts.append(header)
         parts.append("")
         parts.append(f"_Subject:_ {msg.subject}")
