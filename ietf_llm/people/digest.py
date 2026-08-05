@@ -68,7 +68,7 @@ def write_people_digest(
             "use personal email, and some hold multiple affiliations, "
             "representing some or none of those interests in a given "
             "discussion._\n\n"
-            f"_Spellings of one organisation are collapsed (`Akamai "
+            "_Spellings of one organisation are collapsed (`Akamai "
             "Technologies, Inc.` reads as `Akamai`) and the list runs "
             "**most recent first**, by the publication year of the "
             f"document each came from, capped at {TABLE_CAP} with a "

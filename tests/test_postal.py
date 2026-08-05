@@ -13,6 +13,7 @@ from ietf_llm.gather.sources.postal import (
     is_country_line,
     locality_key,
     looks_like_postal_line,
+    names_an_organisation,
     parse_document_year,
 )
 
@@ -86,10 +87,49 @@ def test_address_lines_are_not_organisations(line: str) -> None:
         "Thales Alenia Space (TAS)",
         "Alloc Init Labs - New York",
         "W3C/MIT",
+        # A leading number alone is not a street: these are companies,
+        # and both have drafts in the record.
+        "128 Technology",
+        "802 Secure",
     ],
 )
 def test_organisations_survive(line: str) -> None:
     assert looks_like_postal_line(line) is False
+
+
+def test_street_needs_more_than_a_leading_number() -> None:
+    # Three or more words, or a thoroughfare word, is what separates a
+    # street line from a numeric company name.
+    assert looks_like_postal_line("100 Sandpiper Close") is True
+    assert looks_like_postal_line("17/4 Krylatskaya st") is True
+    assert looks_like_postal_line("128 Technology") is False
+
+
+# --- names_an_organisation -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "University of Auckland",
+        "Department of Computer Science",
+        "School of Electronics and Computer Science",
+        "Vigil Security, LLC",
+        "Akamai Technologies",
+    ],
+)
+def test_institution_lines_are_not_places(line: str) -> None:
+    # These turn up *below* an organisation line in one draft and *in*
+    # the organisation slot in another. Recording them as localities
+    # would let one draft's address erase the other draft's employer.
+    assert names_an_organisation(line) is True
+
+
+@pytest.mark.parametrize(
+    "line", ["Prahran VIC", "Melbourne", "Australia", "Mountain View", "Reston, VA"]
+)
+def test_place_lines_are_still_places(line: str) -> None:
+    assert names_an_organisation(line) is False
 
 
 def test_blank_line_is_not_an_organisation() -> None:
@@ -155,3 +195,40 @@ def test_year_ignores_expires_sharing_a_line() -> None:
 
 def test_year_none_when_front_matter_has_no_date() -> None:
     assert parse_document_year("Some Working Group\nInternet-Draft\n") is None
+
+
+def test_year_ignores_dates_below_the_header_block() -> None:
+    # The IETF Trust boilerplate and the abstract both sit inside the
+    # first 30 lines and both carry dates that are not the document's.
+    # draft-rpc-errata-process-05 came out dated 2007 this way.
+    text = (
+        "RFC Series Working Group                                    J. Klensin\n"
+        "Internet-Draft                                           18 March 2026\n"
+        "Expires: 19 September 2026\n"
+        "\n"
+        "\n"
+        "                     Errata Processing for the RFC\n"
+        "\n"
+        "Abstract\n"
+        "\n"
+        "   This document revises the process described in November 2007.\n"
+    )
+    assert parse_document_year(text) == 2026
+
+
+def test_year_ignores_unlabelled_expiry_after_the_real_date() -> None:
+    # "Expiration Date" does not start with "expires"; and where a header
+    # carries two dates the document's own comes first.
+    text = (
+        "TLS Working Group                                            S. Moriai\n"
+        "Internet-Draft                                          October 2004\n"
+        "Expiration Date: March 2005\n"
+    )
+    assert parse_document_year(text) == 2004
+
+
+def test_year_survives_a_byte_order_mark_before_the_header() -> None:
+    # RFC text files open with a BOM on its own line; it must not read as
+    # the blank that terminates the header block.
+    text = "﻿\n\n\nInternet Engineering Task Force (IETF)     M. Nottingham\nISSN: 2070-1721                              September 2024\n"
+    assert parse_document_year(text) == 2024

@@ -267,3 +267,53 @@ def test_ingest_from_real_draft_text(isolated_home: Path) -> None:
         "draft:draft-ietf-wg-old": 2013,
         "draft:draft-ietf-wg-new": 2025,
     }
+
+
+def test_organisation_does_not_suppress_itself(isolated_home: Path) -> None:
+    # Authors routinely repeat their organisation inside their own postal
+    # address. Recorded as a locality it would delete the only
+    # affiliation the person has (observed: Peter Gutmann).
+    r = Registry()
+    r.add_document_author(
+        "Peter Gutmann", "pgut001@cs.auckland.ac.nz",
+        document="draft-a", organization="University of Auckland", year=2014,
+        address_lines=[
+            "Department of Computer Science",
+            "University of Auckland",
+            "New Zealand",
+        ],
+    )
+    person = r.persons[0]
+    assert "university of auckland" not in person.localities
+    assert r.affiliation_tag("Peter Gutmann") == "University of Auckland"
+
+
+def test_department_does_not_suppress_the_institution(isolated_home: Path) -> None:
+    # Institution and department swap slots between drafts. Whichever
+    # landed in the address must not erase the other (observed: Brian
+    # Carpenter, Tim Chown, Nagendra Modadugu).
+    r = Registry()
+    r.add_document_author(
+        "Brian Carpenter", "brian.e.carpenter@gmail.com",
+        document="draft-old", organization="Department of Computer Science",
+        year=2011, address_lines=["University of Auckland", "PB 92019",
+                                  "Auckland, 1142", "New Zealand"],
+    )
+    r.add_document_author(
+        "Brian Carpenter", "brian.e.carpenter@gmail.com",
+        document="draft-new", organization="The University of Auckland",
+        year=2025, address_lines=["School of Computer Science", "New Zealand"],
+    )
+    person = r.persons[0]
+    assert "university of auckland" not in person.localities
+    assert "school of computer science" not in person.localities
+    assert [g.display for g in group_affiliations(person)] == [
+        "The University of Auckland",
+        "Department of Computer Science",
+    ]
+
+
+def test_numeric_company_name_keys_as_itself() -> None:
+    # Stripping the descriptor must not reduce the name to a bare number.
+    assert org_key("128 Technology") == "128 technology"
+    assert org_key("128 Technology") != org_key("128 Systems")

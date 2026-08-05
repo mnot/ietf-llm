@@ -66,8 +66,9 @@ def org_key(org: str) -> str:
 
     "Akamai", "Akamai Technologies" and "Akamai Technologies, Inc." all
     reduce to `akamai`. Returns the fully-normalised string when stripping
-    would leave nothing, so an organisation actually named "Systems"
-    still gets a key of its own.
+    would leave nothing — or nothing but digits — so an organisation
+    actually named "Systems" still gets a key of its own, and
+    "128 Technology" keys as itself rather than as the bare number `128`.
     """
     flat = _WS_RE.sub(" ", _PUNCT_RE.sub(" ", org.lower())).strip()
     tokens = flat.split()
@@ -75,7 +76,10 @@ def org_key(org: str) -> str:
         tokens = tokens[1:]
     while len(tokens) > 1 and tokens[-1] in _TRAILING_NOISE:
         tokens.pop()
-    return " ".join(tokens) or flat
+    key = " ".join(tokens)
+    if not key or not any(ch.isalpha() for ch in key):
+        return flat
+    return key
 
 
 @dataclass

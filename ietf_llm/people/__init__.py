@@ -56,7 +56,11 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from ..gather.sources.datatracker import fetch_wg_roles
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
-from ..gather.sources.postal import locality_key, parse_document_year
+from ..gather.sources.postal import (
+    locality_key,
+    names_an_organisation,
+    parse_document_year,
+)
 from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir, get_wg_file_cache_dir
 from ..text import _parse_date
@@ -507,10 +511,7 @@ class Registry:
                 person.affiliations[f"draft:{document}"] = stripped
                 if year is not None:
                     person.affiliation_years[f"draft:{document}"] = year
-        for line in address_lines or ():
-            key = locality_key(line)
-            if key:
-                person.localities.add(key)
+        _note_localities(person, organization, address_lines)
         return person
 
     def add_datatracker_role(
@@ -662,6 +663,40 @@ class Registry:
                 p.canonical_name,
             ),
         )
+
+
+def _note_localities(
+    person: Person,
+    organization: Optional[str],
+    address_lines: Optional[Iterable[str]],
+) -> None:
+    """Record the block's address lines as places this person writes.
+
+    Two kinds of line are deliberately *not* recorded, because a locality
+    suppresses the same string wherever else it appears as an
+    organisation — so a wrong entry here silently deletes a real
+    employer, the failure mode the whole screening exists to avoid:
+
+      - **the block's own organisation.** Authors often repeat it inside
+        their postal address ("University of Auckland" as both the
+        organisation and a line of the address beneath it). Left in, it
+        would suppress itself.
+      - **anything that names an organisation.** Institution and
+        department swap slots between drafts — "Department of Computer
+        Science" over "University of Auckland" in one, the university in
+        the organisation slot in the next — and whichever landed in the
+        address would erase the other.
+
+    A city that gets skipped by these is only a missed suppression: the
+    value still renders, which is visible and fixable. A wrongly recorded
+    locality is not.
+    """
+    org_place = locality_key(organization) if organization else ""
+    for line in address_lines or ():
+        key = locality_key(line)
+        if not key or key == org_place or names_an_organisation(line):
+            continue
+        person.localities.add(key)
 
 
 def _looks_like_email(name: str) -> bool:
