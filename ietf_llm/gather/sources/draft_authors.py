@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from ...paths import drafts_dir
+from .postal import looks_like_postal_line
 
 
 @dataclass
@@ -36,8 +37,16 @@ class DraftAuthor:
     # so a person can ship different orgs across different drafts.
     # Often missing (line skipped entirely) when an author works as
     # an individual; surface as None in that case rather than forcing
-    # a placeholder.
+    # a placeholder — and note that the *same shape* then puts a city
+    # where the organisation would be, so the line is screened through
+    # `looks_like_postal_line` before it becomes an affiliation.
     organization: Optional[str] = None
+    # Every remaining non-metadata line of the block: street, city,
+    # region, country, plus the organisation slot when that turned out
+    # to be an address line. Callers use these as corroboration — a
+    # place name confirmed here in one document can suppress the same
+    # string misread as an organisation in another.
+    address_lines: List[str] = field(default_factory=list)
 
 
 # Match both "Author's Address" (singular possessive) and
@@ -132,18 +141,22 @@ def _commit_block(lines: List[str], out: List[DraftAuthor]) -> None:
 
         Mark Nottingham (editor)        ← name (optional editor suffix)
         Cloudflare                      ← organization (optional)
+        Prahran VIC                     ← address (optional, repeats)
+        Australia
         Email: mnot@mnot.net            ← contact line
         URI:   https://www.mnot.net/    ← skipped
 
-    The organisation is whatever non-metadata line appears between the
-    name and the first `Email:`. We only keep one organisation per
-    block — drafts sometimes wrap addresses across multiple lines but
-    we don't treat trailing address lines (street, city) as the org.
+    Only the first non-metadata line after the name can be the org, and
+    only if it doesn't read as address detail — an author who gives no
+    `<organization>` produces the same block with the city in that slot,
+    which is how "Prahran" and "Burlingame, CA  94010" used to land in
+    the registry as employers. Everything else in the block is kept as
+    `address_lines` so callers can corroborate across documents.
     """
     name: Optional[str] = None
-    organization: Optional[str] = None
     email: Optional[str] = None
     is_editor = False
+    rest: List[str] = []
     for line in lines:
         em_match = _EMAIL_LINE_RE.match(line)
         if em_match:
@@ -160,21 +173,23 @@ def _commit_block(lines: List[str], out: List[DraftAuthor]) -> None:
                 is_editor = True
             else:
                 name = line
-        elif organization is None:
-            # First non-metadata, non-name line is the org. Drafts
-            # vary: some authors include only an org, some include
-            # mailing address lines below that. Take the first; it's
-            # the one that matters for affiliation surfacing.
-            organization = line
-    if name:
-        out.append(
-            DraftAuthor(
-                name=name,
-                email=email,
-                is_editor=is_editor,
-                organization=organization,
-            )
+            continue
+        rest.append(line)
+    if not name:
+        return
+    organization: Optional[str] = None
+    if rest and not looks_like_postal_line(rest[0]):
+        organization = rest[0]
+        rest = rest[1:]
+    out.append(
+        DraftAuthor(
+            name=name,
+            email=email,
+            is_editor=is_editor,
+            organization=organization,
+            address_lines=rest,
         )
+    )
 
 
 # --- WG-cache walker -------------------------------------------------------

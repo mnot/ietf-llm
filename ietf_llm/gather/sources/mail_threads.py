@@ -655,7 +655,10 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
     #   `Name (Foo Inc, 12)`                 — affiliation only
     #   `Name (Chair · Foo Inc, 12)`         — both
     # Affiliation comes from drafts the person has authored, NOT from
-    # email domain — see Person.affiliations.
+    # email domain — see Person.affiliations. It is collapsed, ranked
+    # newest-first and capped by `affiliation_tag`, so a prolific author
+    # reads `Cloudflare; Fastly; Akamai (+4 earlier)` rather than a
+    # twenty-five-year list — see people/affiliation.py.
     msg_counts: Dict[str, int] = {}
     for msg in thread.members:
         msg_counts[msg.sender] = msg_counts.get(msg.sender, 0) + 1

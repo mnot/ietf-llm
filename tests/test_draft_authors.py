@@ -41,6 +41,76 @@ def test_organization_none_when_only_name_and_email() -> None:
     assert authors[0].organization is None
 
 
+def test_city_in_the_organisation_slot_is_not_an_organisation() -> None:
+    # An author who states no <organization> renders the *same* block
+    # shape with their address where the org would be. Reading it as an
+    # employer is what put "Burlingame, CA  94010" into the registry
+    # next to real employers.
+    text = """Author's Address
+
+   Mark Nottingham
+   Burlingame, CA  94010
+   United States of America
+   Email: mnot@mnot.net
+   URI:   https://www.mnot.net/
+"""
+    authors = parse_authors(text)
+    assert authors[0].organization is None
+    assert authors[0].address_lines == [
+        "Burlingame, CA  94010",
+        "United States of America",
+    ]
+    assert authors[0].email == "mnot@mnot.net"
+
+
+def test_bare_city_is_left_for_the_registry_to_suppress() -> None:
+    # A one-word city is lexically identical to a one-word employer, so
+    # the parser does not guess: it keeps the value and records the rest
+    # of the block. `people.Registry` resolves it by corroboration across
+    # the same person's other documents (see tests/test_affiliation.py).
+    text = """Author's Address
+
+   Mark Nottingham
+   Prahran
+   Australia
+   Email: mnot@mnot.net
+"""
+    authors = parse_authors(text)
+    assert authors[0].organization == "Prahran"
+    assert authors[0].address_lines == ["Australia"]
+
+
+def test_address_lines_recorded_below_the_organisation() -> None:
+    text = """Authors' Addresses
+
+   Mark Nottingham
+   Cloudflare
+   Prahran VIC
+   Australia
+   Email: mnot@mnot.net
+"""
+    authors = parse_authors(text)
+    assert authors[0].organization == "Cloudflare"
+    assert authors[0].address_lines == ["Prahran VIC", "Australia"]
+
+
+def test_postal_debris_never_becomes_an_organisation() -> None:
+    text = """Authors' Addresses
+
+   Alice Foo
+   6011 W Courtyard Dr.
+   Austin, TX 78730
+   United States of America
+   Email: alice@example.org
+
+   Bob Bar
+   made in
+   Email: bob@example.org
+"""
+    authors = parse_authors(text)
+    assert [a.organization for a in authors] == [None, None]
+
+
 def test_basic_two_author_layout() -> None:
     text = """Internet-Draft               aipref                       November 2025
 
