@@ -397,7 +397,7 @@ def register(server: "FastMCP") -> None:
         file: CorpusFile,
         start_line: Annotated[int, Field(description="First line, 1-based.", ge=1)] = 1,
         max_lines: Annotated[
-            int, Field(description="Lines to return.", ge=1, le=5000)
+            int, Field(description="Lines to return.", ge=1, le=MAX_LINES_HARD_CAP)
         ] = MAX_LINES_DEFAULT,
     ) -> str:
         """Read a bounded section of any file in a corpus — thread and issue

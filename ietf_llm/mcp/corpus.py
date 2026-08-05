@@ -32,7 +32,7 @@ from .common import (
     _requires_corpus,
     _with_freshness,
 )
-from .params import Corpus, Limit
+from .params import Corpus, RowLimit
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -506,7 +506,7 @@ def register(server: "FastMCP") -> None:
                 )
             ),
         ],
-        limit: Limit = 15,
+        limit: RowLimit = 15,
     ) -> str:
         """Find active IETF/IRTF efforts by **topic** — the entry point
         for "what is the IETF doing around X?" when no working group is
@@ -543,7 +543,7 @@ def register(server: "FastMCP") -> None:
             str,
             Field(description="The question to route, in the user's own terms."),
         ],
-        limit: Limit = 8,
+        limit: RowLimit = 8,
     ) -> str:
         """Route a question to the **already-gathered** corpus it belongs to,
         when the user gives a topic but names no working group. Embeds the

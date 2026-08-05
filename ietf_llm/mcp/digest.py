@@ -169,7 +169,8 @@ def register(server: "FastMCP") -> None:
             Field(
                 description=(
                     "`issues` only: append each issue's opening description "
-                    "below the table. Comment threads are not included."
+                    "below the table. Comment threads are not — drill into "
+                    "those with `get_chunk_text` / `read_file_section`."
                 )
             ),
         ] = False,
@@ -187,7 +188,8 @@ def register(server: "FastMCP") -> None:
             Field(
                 description=(
                     "`threads` only: `activity` ranks by message count instead "
-                    "of recency."
+                    "of recency — with `since` + `min_messages`, 'most "
+                    "contested lately'."
                 )
             ),
         ] = None,
@@ -210,6 +212,13 @@ def register(server: "FastMCP") -> None:
         about this group", and filter by `label` to pull a whole curated
         cluster in one call — `kind="issues", label="top-level"` returns open
         issues first, then closed by recency.
+
+        Which filters apply depends on `kind`: **issues** takes `state`,
+        `label`, `author`; **threads** takes `since`/`until`, `min_messages`,
+        `subject`, `sort`; **people** takes `role`, `min_messages`;
+        **timeline** takes `since`/`until`, `event_kind`,
+        `exclude_mechanical`. `limit` applies to all, and passing none returns
+        the full digest.
 
         Filters compose (AND), and `limit` truncates after filtering. Always
         filter rather than reading the full digest and scanning: it is faster

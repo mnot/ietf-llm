@@ -67,7 +67,7 @@ def register(server: "FastMCP") -> None:
         group: Annotated[
             Optional[str], Field(description="IETF working group acronym.")
         ] = None,
-        limit: Annotated[int, Field(description="Rows to return.", ge=1, le=200)] = 50,
+        limit: Annotated[int, Field(description="Rows to return.", ge=1)] = 50,
     ) -> str:
         """Search the **published RFC series** by words in titles and
         keywords, returning a compact markdown list. A bare RFC number

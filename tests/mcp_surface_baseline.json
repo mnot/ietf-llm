@@ -3,7 +3,7 @@
   "shapes": {
     "stdio": {
       "instructions_chars": 7653,
-      "total_chars": 67833,
+      "total_chars": 68410,
       "tools": {
         "draft_authors": {
           "chars": 806,
@@ -18,7 +18,7 @@
           "params": 2
         },
         "find_efforts": {
-          "chars": 1904,
+          "chars": 1890,
           "params": 2
         },
         "find_message_citations": {
@@ -26,11 +26,11 @@
           "params": 3
         },
         "find_related": {
-          "chars": 3388,
+          "chars": 3390,
           "params": 13
         },
         "find_replies": {
-          "chars": 1835,
+          "chars": 1852,
           "params": 4
         },
         "gather_status": {
@@ -90,7 +90,7 @@
           "params": 2
         },
         "read_digest": {
-          "chars": 4248,
+          "chars": 4710,
           "params": 15
         },
         "read_file_section": {
@@ -110,7 +110,7 @@
           "params": 2
         },
         "read_topic": {
-          "chars": 4345,
+          "chars": 4481,
           "params": 8
         },
         "search_corpora": {
@@ -118,11 +118,11 @@
           "params": 11
         },
         "search_corpus": {
-          "chars": 3803,
+          "chars": 3805,
           "params": 15
         },
         "search_rfcs": {
-          "chars": 1606,
+          "chars": 1592,
           "params": 6
         },
         "start_gather": {
@@ -142,14 +142,14 @@
           "params": 2
         },
         "which_corpus": {
-          "chars": 1836,
+          "chars": 1822,
           "params": 2
         }
       }
     },
     "http": {
       "instructions_chars": 6900,
-      "total_chars": 52383,
+      "total_chars": 52960,
       "tools": {
         "draft_authors": {
           "chars": 806,
@@ -160,7 +160,7 @@
           "params": 2
         },
         "find_efforts": {
-          "chars": 1904,
+          "chars": 1890,
           "params": 2
         },
         "find_message_citations": {
@@ -168,11 +168,11 @@
           "params": 3
         },
         "find_related": {
-          "chars": 3388,
+          "chars": 3390,
           "params": 13
         },
         "find_replies": {
-          "chars": 1835,
+          "chars": 1852,
           "params": 4
         },
         "get_by_url": {
@@ -224,7 +224,7 @@
           "params": 2
         },
         "read_digest": {
-          "chars": 4248,
+          "chars": 4710,
           "params": 15
         },
         "read_file_section": {
@@ -244,7 +244,7 @@
           "params": 2
         },
         "read_topic": {
-          "chars": 4345,
+          "chars": 4481,
           "params": 8
         },
         "search_corpora": {
@@ -252,11 +252,11 @@
           "params": 11
         },
         "search_corpus": {
-          "chars": 3803,
+          "chars": 3805,
           "params": 15
         },
         "search_rfcs": {
-          "chars": 1606,
+          "chars": 1592,
           "params": 6
         },
         "tally_positions": {
@@ -264,7 +264,7 @@
           "params": 2
         },
         "which_corpus": {
-          "chars": 1836,
+          "chars": 1822,
           "params": 2
         }
       }

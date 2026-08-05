@@ -352,8 +352,8 @@ def register(server: "FastMCP") -> None:
         name: DraftName,
         start_line: StartLine = 1,
         max_lines: Annotated[
-            int, Field(description="Lines to return.", ge=1, le=5000)
-        ] = 2000,
+            int, Field(description="Lines to return.", ge=1, le=_DRAFT_MAX_LINES)
+        ] = _DRAFT_MAX_LINES,
     ) -> str:
         """Verbatim text of a cached Internet-Draft by name (newest cached
         revision, across all gathered corpora), as a bounded line window.
@@ -380,8 +380,8 @@ def register(server: "FastMCP") -> None:
         ] = "",
         start_line: StartLine = 1,
         max_lines: Annotated[
-            int, Field(description="Lines to return.", ge=1, le=5000)
-        ] = 3000,
+            int, Field(description="Lines to return.", ge=1, le=_ISSUE_MAX_LINES)
+        ] = _ISSUE_MAX_LINES,
     ) -> str:
         """Verbatim text of one GitHub issue — opening description and comment
         thread — from a corpus, by issue number, as a bounded line window.

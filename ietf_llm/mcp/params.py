@@ -141,9 +141,15 @@ Query = Annotated[
     Field(description="What to look for, in natural language — this is semantic."),
 ]
 
-#: The common "how many rows" cap. Bounded so a huge value can't blow the
-#: caller's context window; tools needing other bounds annotate inline.
-Limit = Annotated[int, Field(description="Rows to return.", ge=1, le=100)]
+#: The chunk-count cap for the semantic-search tools. `le` mirrors
+#: `search._MAX_SEARCH_K`, which is where the implementation clamps — a bound
+#: in the schema must not promise something the code then silently overrides.
+Limit = Annotated[int, Field(description="Chunks to return.", ge=1, le=100)]
+
+#: An unbounded row cap, for the tools whose implementation does not clamp.
+#: Do not give this one an `le`: inventing a ceiling here would refuse calls
+#: that used to work.
+RowLimit = Annotated[int, Field(description="Rows to return.", ge=1)]
 
 #: A file restricted to the per-message surfaces — the tools that read the
 #: section structure refuse anything else.

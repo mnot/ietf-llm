@@ -598,7 +598,12 @@ def register(server: "FastMCP") -> None:
         chunk_idx: ChunkIdx,
         max_messages: Annotated[
             int,
-            Field(description="Cap on descendants returned.", ge=1, le=200),
+            Field(
+                description=(
+                    "Cap on descendants returned; raise it for deep sub-threads."
+                ),
+                ge=1,
+            ),
         ] = 20,
     ) -> str:
         """Return every transitive reply to a specific mailing-list
@@ -686,7 +691,7 @@ def register(server: "FastMCP") -> None:
                     "further."
                 ),
                 ge=1,
-                le=60,
+                le=_READ_TOPIC_MAX_MESSAGES,
             ),
         ] = 20,
         include_replies: Annotated[
@@ -701,7 +706,15 @@ def register(server: "FastMCP") -> None:
         ] = False,
         body_chars: Annotated[
             Optional[int],
-            Field(description="Cap on each message body (default 4000).", ge=100),
+            Field(
+                description=(
+                    "Cap on each message body (default 4000). Dial it down for "
+                    "synthesis, where the gist of each message is enough; a "
+                    "truncated body still points at `get_chunk_text`."
+                ),
+                ge=100,
+                le=_READ_TOPIC_MAX_BODY_CHARS,
+            ),
         ] = None,
     ) -> str:
         """Read an IETF/IRTF effort's debate as a chronological narrative
