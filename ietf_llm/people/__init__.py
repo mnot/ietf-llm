@@ -54,6 +54,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from ..gather.sources.datatracker import fetch_wg_roles
+from ..gather.sources.document_authors import fetch_document_authors
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
 from ..gather.sources.postal import (
@@ -811,40 +812,116 @@ def _ingest_datatracker_roles(wg: str, registry: Registry, verbose: Verbosity) -
 
 
 def _ingest_draft_authors(wg: str, registry: Registry, verbose: Verbosity) -> None:
-    """Parse the Authors' Addresses section of each draft / RFC in the cache.
+    """Record authorship and affiliation for each draft / RFC in the cache.
 
-    Stable name spellings (taken from the document front-matter that
-    the chairs review) override any earlier mailing-list-derived form.
+    Datatracker's `documentauthor` table is the authority on *affiliation*:
+    it holds the `<organization>` the author actually submitted, so a blank
+    there means "stated none" — the one thing the Authors' Addresses text
+    cannot express, since a block with no organisation is identical in
+    shape to one where the city sits in the organisation's place.
+
+    The draft text remains the authority on **editor status**, which
+    Datatracker does not record, and is the whole fallback whenever
+    Datatracker has nothing for a document or cannot be reached — an
+    offline gather takes this path for everything, so the text parser and
+    its locality corroboration still earn their keep.
     """
-    cache_dir = get_wg_file_cache_dir(wg)
-    count = 0
-    for path in latest_draft_paths(cache_dir):
-        basename = os.path.basename(path)
+    parsed: Dict[str, "tuple[Optional[int], List[Any]]"] = {}
+    for path in latest_draft_paths(get_wg_file_cache_dir(wg)):
         # Strip the version suffix so "draft-…-06.txt" and "…-05.txt"
         # collapse to the same logical document.
-        doc_id = re.sub(r"-\d+\.txt$|\.txt$", "", basename)
+        doc_id = re.sub(r"-\d+\.txt$|\.txt$", "", os.path.basename(path))
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError:
             continue
-        year = parse_document_year(text)
-        for author in parse_authors(text):
-            registry.add_document_author(
-                author.name,
-                author.email,
-                document=doc_id,
-                is_editor=author.is_editor,
-                organization=author.organization,
-                year=year,
-                address_lines=author.address_lines,
-            )
-            count += 1
+        parsed[doc_id] = (parse_document_year(text), parse_authors(text))
+
+    authoritative = fetch_document_authors(sorted(parsed), verbose=verbose)
+    count = from_datatracker = 0
+    for doc_id, (year, authors) in parsed.items():
+        rows = authoritative.get(doc_id)
+        if rows:
+            count += _ingest_authoritative(registry, doc_id, year, rows, authors)
+            from_datatracker += 1
+        else:
+            count += _ingest_from_text(registry, doc_id, year, authors)
     log(
-        f"  ingested {count} author records from drafts/RFCs",
+        f"  ingested {count} author records from {len(parsed)} drafts/RFCs "
+        f"({from_datatracker} with Datatracker affiliations)",
         verbose,
         level=LogLevel.PROGRESS,
     )
+
+
+def _editor_keys(authors: Iterable[Any]) -> Set[str]:
+    """Identify the editors in a parsed block list, by email and by name.
+
+    Datatracker records who authored a document but not who *edited* it,
+    and the `(ed.)` marker only exists in the text. Both keys are kept
+    because the two sources spell names differently often enough
+    ("Brian E. Carpenter" / "Brian Carpenter") that a name-only match
+    would silently demote editors to authors.
+    """
+    keys: Set[str] = set()
+    for author in authors:
+        if not author.is_editor:
+            continue
+        if author.email:
+            keys.add(author.email.strip().lower())
+        if author.name:
+            keys.add(author.name.strip().lower())
+    return keys
+
+
+def _ingest_authoritative(
+    registry: Registry,
+    doc_id: str,
+    year: Optional[int],
+    rows: List[Any],
+    parsed_authors: List[Any],
+) -> int:
+    """Feed one document's Datatracker authorship into the registry."""
+    editors = _editor_keys(parsed_authors)
+    for row in rows:
+        is_editor = bool(
+            (row.email and row.email.lower() in editors)
+            or (row.name and row.name.lower() in editors)
+        )
+        registry.add_document_author(
+            row.name,
+            row.email,
+            document=doc_id,
+            is_editor=is_editor,
+            # "" is Datatracker recording that the author stated no
+            # organisation. Passing None stores no affiliation, which is
+            # the correct rendering of that — and, critically, means the
+            # text parser's guess never gets a look in.
+            organization=row.affiliation or None,
+            year=year,
+        )
+    return len(rows)
+
+
+def _ingest_from_text(
+    registry: Registry,
+    doc_id: str,
+    year: Optional[int],
+    authors: List[Any],
+) -> int:
+    """Fallback: take authorship and affiliation from the draft text."""
+    for author in authors:
+        registry.add_document_author(
+            author.name,
+            author.email,
+            document=doc_id,
+            is_editor=author.is_editor,
+            organization=author.organization,
+            year=year,
+            address_lines=author.address_lines,
+        )
+    return len(authors)
 
 
 def _maybe_iso(value: Any) -> Optional[datetime]:

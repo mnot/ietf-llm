@@ -317,3 +317,28 @@ def test_numeric_company_name_keys_as_itself() -> None:
     # Stripping the descriptor must not reduce the name to a bare number.
     assert org_key("128 Technology") == "128 technology"
     assert org_key("128 Technology") != org_key("128 Systems")
+
+
+def test_abbreviated_institution_collapses_and_spells_itself_out() -> None:
+    # Authors mix "Univ. of Auckland" with "University of Auckland" in
+    # the same career; they must be one entry, shown unabbreviated.
+    assert org_key("Univ. of Auckland") == org_key("University of Auckland")
+
+
+def test_display_prefers_the_unabbreviated_spelling(isolated_home: Path) -> None:
+    # …even when the abbreviation is the commoner form, which it was for
+    # Brian Carpenter.
+    r = Registry()
+    for i in range(3):
+        r.add_document_author(
+            "Brian Carpenter", "brian@example.net",
+            document=f"draft-abbrev-{i}", organization="Univ. of Auckland",
+            year=2012,
+        )
+    r.add_document_author(
+        "Brian Carpenter", "brian@example.net",
+        document="draft-full", organization="University of Auckland", year=2013,
+    )
+    groups = group_affiliations(r.persons[0])
+    assert [g.display for g in groups] == ["University of Auckland"]
+    assert groups[0].documents == 4

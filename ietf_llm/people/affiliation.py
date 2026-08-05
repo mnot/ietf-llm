@@ -57,6 +57,22 @@ _TRAILING_NOISE = frozenset("""
     technologies technology systems
     """.split())
 
+# Abbreviations authors use interchangeably with the full word in the
+# same institution's name ("Univ. of Auckland" / "University of
+# Auckland"). Expanded before the key is built so the two collapse.
+_EXPANSIONS = {
+    "univ": "university",
+    "inst": "institute",
+    "dept": "department",
+    "lab": "laboratory",
+    "labs": "laboratory",
+    "laboratories": "laboratory",
+    "natl": "national",
+    "intl": "international",
+    "tech": "technology",
+    "sci": "science",
+}
+
 _PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
 _WS_RE = re.compile(r"\s+")
 
@@ -65,13 +81,14 @@ def org_key(org: str) -> str:
     """Collapse key for one organisation string.
 
     "Akamai", "Akamai Technologies" and "Akamai Technologies, Inc." all
-    reduce to `akamai`. Returns the fully-normalised string when stripping
-    would leave nothing — or nothing but digits — so an organisation
-    actually named "Systems" still gets a key of its own, and
-    "128 Technology" keys as itself rather than as the bare number `128`.
+    reduce to `akamai`, and "Univ. of Auckland" meets "University of
+    Auckland". Returns the fully-normalised string when stripping would
+    leave nothing — or nothing but digits — so an organisation actually
+    named "Systems" still gets a key of its own, and "128 Technology"
+    keys as itself rather than as the bare number `128`.
     """
     flat = _WS_RE.sub(" ", _PUNCT_RE.sub(" ", org.lower())).strip()
-    tokens = flat.split()
+    tokens = [_EXPANSIONS.get(token, token) for token in flat.split()]
     if tokens and tokens[0] == "the":
         tokens = tokens[1:]
     while len(tokens) > 1 and tokens[-1] in _TRAILING_NOISE:
@@ -80,6 +97,12 @@ def org_key(org: str) -> str:
     if not key or not any(ch.isalpha() for ch in key):
         return flat
     return key
+
+
+def _is_abbreviated(org: str) -> bool:
+    """True when a spelling uses an abbreviation `org_key` expands."""
+    flat = _WS_RE.sub(" ", _PUNCT_RE.sub(" ", org.lower())).strip()
+    return any(token in _EXPANSIONS for token in flat.split())
 
 
 @dataclass
@@ -120,10 +143,16 @@ def group_affiliations(person: "Person") -> List[AffiliationGroup]:
         counts = variants.setdefault(key, {})
         counts[org] = counts.get(org, 0) + 1
     for key, group in groups.items():
-        # Prefer the spelling used most, then the shortest — which is
-        # normally the bare company name rather than its legal form.
+        # Spell it out, then prefer the spelling used most, then the
+        # shortest. Expanding first matters because the abbreviation is
+        # often the *commoner* form — Brian Carpenter wrote "Univ. of
+        # Auckland" more often than "University of Auckland" — and the
+        # abbreviation is the worse thing to show. Among unabbreviated
+        # spellings the count rule then picks "Akamai" over "Akamai
+        # Technologies, Inc.".
         group.display = min(
-            variants[key].items(), key=lambda kv: (-kv[1], len(kv[0]), kv[0])
+            variants[key].items(),
+            key=lambda kv: (_is_abbreviated(kv[0]), -kv[1], len(kv[0]), kv[0]),
         )[0]
     return sorted(
         groups.values(),

@@ -54,8 +54,11 @@ def write_people_digest(
         fh.write(
             "_**Affiliation** is gathered from two sources, with "
             "provenance shown in each cell: `(draft)` = the "
-            "**Authors' Addresses** block of a draft the person has "
-            "authored — the most authoritative source. `(github)` = "
+            "organisation the person stated on a draft they authored, "
+            "taken from Datatracker's record of the submission where "
+            "there is one and from the draft's **Authors' Addresses** "
+            "block otherwise — the most authoritative source. "
+            "`(github)` = "
             "their self-reported GitHub `company` field — weaker, "
             "but a useful corroborating signal when both sources name "
             "the same org (`Cloudflare (draft, github)`).\n\n"
