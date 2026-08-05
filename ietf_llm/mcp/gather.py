@@ -447,8 +447,10 @@ def register(server: "FastMCP") -> None:
           (`last-call`); auto-detected when it isn't a known group.
         - **Custom set**: any label as `corpus` plus explicit
           `mailing_list` / `draft` / `github` sources.
-        - **Follow an author / new drafts**: `author` (email, person
-          id, or exact name) or `new_drafts=True` (rolling window).
+        - **Follow a person / new drafts**: `author` (email, person id,
+          or exact name) gathers that person's drafts, the reviews they
+          wrote, and their own list mail; `new_drafts=True` is a rolling
+          window of new I-Ds.
         - **Synthetic**: an `x-` `corpus` name with explicit sources.
 
         **Extending an existing corpus:** to add a draft (or list / repo)
@@ -499,8 +501,13 @@ def register(server: "FastMCP") -> None:
                 add to (never replace) the corpus's tracked set.
             github: GitHub repos whose issues to gather (`owner/repo`).
                 Accumulates across gathers.
-            author: Make this a follow-an-author corpus (drafts by this
-                person; email is the unambiguous form).
+            author: Make this a follow-a-person corpus: the drafts they
+                authored, every directorate / Last Call review they
+                wrote, and their own mailing-list messages (quotes kept,
+                so each carries what it was replying to). Email is the
+                unambiguous form; a person id or exact full name also
+                works. This is what to gather when the task is about a
+                *person* rather than an effort.
             new_drafts: Make this a rolling 'new Internet-Drafts'
                 subscription over the `months` window.
             months: Months of mailing-list / meeting history to fetch

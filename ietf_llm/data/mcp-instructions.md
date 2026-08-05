@@ -38,6 +38,17 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   "who's on X", "open issues"), and **`list_corpora`** to see what's gathered.
 - **No named corpus, just a topic?** `find_efforts(topic)` ranks active efforts
   and flags which are cached; `which_corpus(query)` routes to a cached one.
+- **Asked about a *person* rather than an effort?** "What does <name> care
+  about", "how would <name> review this", "build a persona for <name>" — the
+  unit is an **author corpus**, not a WG. Check `list_corpora` for one already
+  tracking them; otherwise (when gather is enabled)
+  `start_gather(corpus="<name>", author="<their-email>")`. Email is the
+  unambiguous spec — a bare name must match Datatracker exactly. It gathers
+  their drafts, every directorate / Last Call review they wrote, and their own
+  list mail. Expect minutes, not seconds, for a prolific participant; block on
+  `gather_status` rather than reading a partial cache. Then read
+  `reviews/` first — a review is the question "what does this person look for
+  in a document" already answered, against a document they did not write.
 - **Corpus missing?** How to add one is stated in **This session** above (it
   depends on this server's mode).
 - **Just started a gather? Wait for `done` before reading.** `overview`,
