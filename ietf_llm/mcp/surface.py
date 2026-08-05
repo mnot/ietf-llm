@@ -69,9 +69,13 @@ def session_shape(shape: str) -> Iterator[bool]:
     `instructions` text is composed from them (`common._session_section`), so
     measuring a shape means setting them — and restoring them, or the next
     caller measures the wrong server. Yields `gather_enabled`.
+
+    Restores `freshness.gather_default()`, not `gather_enabled()`: the latter
+    folds in the `IETF_LLM_ENABLE_GATHER` override, so putting *it* back would
+    write the override into the default and outlive this block.
     """
     gather, mode = SHAPES[shape]
-    before = (freshness.gather_enabled(), freshness.deployment_mode())
+    before = (freshness.gather_default(), freshness.deployment_mode())
     freshness.set_gather_default(gather)
     freshness.set_deployment_mode(mode)
     try:

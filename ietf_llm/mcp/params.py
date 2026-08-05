@@ -27,6 +27,8 @@ from typing import Annotated, Optional
 
 from pydantic import Field
 
+from .common import MAX_SEARCH_K
+
 #: The corpus every read tool is scoped to.
 Corpus = Annotated[
     str,
@@ -141,10 +143,10 @@ Query = Annotated[
     Field(description="What to look for, in natural language — this is semantic."),
 ]
 
-#: The chunk-count cap for the semantic-search tools. `le` mirrors
-#: `search._MAX_SEARCH_K`, which is where the implementation clamps — a bound
-#: in the schema must not promise something the code then silently overrides.
-Limit = Annotated[int, Field(description="Chunks to return.", ge=1, le=100)]
+#: The chunk-count cap for the semantic-search tools. The bound is the same
+#: constant the implementation clamps to — a bound in the schema must not
+#: promise something the code then silently overrides.
+Limit = Annotated[int, Field(description="Chunks to return.", ge=1, le=MAX_SEARCH_K)]
 
 #: An unbounded row cap, for the tools whose implementation does not clamp.
 #: Do not give this one an `le`: inventing a ceiling here would refuse calls

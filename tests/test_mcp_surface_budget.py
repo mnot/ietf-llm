@@ -20,10 +20,14 @@ Regenerate after a deliberate change:
 To see *where* the weight is (and what to trim), run
 `scripts/mcp_surface_report.py`.
 
-Not measured: `_capability_footer` (machine-generated, and a version bump would
-move it by a character), and per-parameter descriptions — today every parameter
-carries none at all, so there is nothing to weigh. That is a live source of the
-docstring bulk, not something this gate can ratchet.
+Parameter descriptions **are** measured: they live inside `inputSchema`, so
+`serialized()` weighs them like anything else. That makes editing a shared
+alias in `ietf_llm/mcp/params.py` the single most expensive change you can make
+here — one extra line there moves every tool taking that parameter, which is
+why that module's docstring asks for one-line descriptions.
+
+Not measured: `_capability_footer`, which is machine-generated and embeds
+`__version__`, so a version bump would move it by a character.
 """
 
 from __future__ import annotations
@@ -52,12 +56,31 @@ _REGEN_HINT = (
 )
 
 
+#: Set by conftest for the whole suite; clearing them here would change what
+#: the rest of the fixtures promise.
+_KEEP_ENV = {"IETF_LLM_GATHER_INPROCESS", "IETF_LLM_SEED_URL"}
+
+
 @pytest.fixture(autouse=True)
 def _neutral_mode(monkeypatch: pytest.MonkeyPatch) -> Iterable[None]:
     """Drive the session mode from the shape under test, not from the ambient
-    environment (`session_shape` restores the process globals itself)."""
-    monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
-    monkeypatch.delenv("IETF_LLM_DEBUG_LOG", raising=False)
+    environment (`session_shape` restores the process globals itself).
+
+    Clears the whole `IETF_LLM_*` namespace rather than a named list. The
+    instructions text is composed from the environment at read time, and not
+    only from the obvious switches: `IETF_LLM_GATHER_MAX_WAIT` is interpolated
+    into it twice, so a developer with it set to 120 fails the gate on an
+    unmodified tree, and one with it set to 0 regenerates a ceiling 17
+    characters too tight for everyone else. Enumerating the variables that
+    reach `_session_section` is a maintenance trap — the next one added there
+    would silently un-hermetic the gate.
+    """
+    for name in [
+        key
+        for key in os.environ
+        if key.startswith("IETF_LLM_") and key not in _KEEP_ENV
+    ]:
+        monkeypatch.delenv(name, raising=False)
     yield
 
 

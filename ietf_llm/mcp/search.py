@@ -11,6 +11,7 @@ from ..embeddings import index_model, related, search
 from ..freshness import gather_enabled, staleness_warning
 from ..log import Verbosity
 from .common import (
+    MAX_SEARCH_K,
     _corpus_exists,
     _grounding_frame,
     _index_rebuilding_note,
@@ -41,11 +42,6 @@ from .params import (
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
-
-
-#: Upper bound on `k` for search_corpus, so a huge value can't return
-#: thousands of chunks and blow the context window.
-_MAX_SEARCH_K = 100
 
 
 # --- Tool implementations (plain functions, also usable for unit tests) -----
@@ -226,7 +222,7 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     # Clamp k to a sane range so a huge value can't return thousands of
     # chunks (context bomb) and a negative one can't behave oddly.
     try:
-        k = max(1, min(int(k), _MAX_SEARCH_K))
+        k = max(1, min(int(k), MAX_SEARCH_K))
     except (TypeError, ValueError):
         k = 10
     # Over-fetch when we will thin the results — `group_by="file"`
@@ -312,7 +308,7 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
         if date_error:
             return date_error
     try:
-        k = max(1, min(int(k), _MAX_SEARCH_K))
+        k = max(1, min(int(k), MAX_SEARCH_K))
     except (TypeError, ValueError):
         k = 10
     try:
@@ -419,7 +415,7 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
     known = [c for c in requested if _corpus_exists(c)]
     # Clamp k to the same sane range as single-corpus search.
     try:
-        k = max(1, min(int(k), _MAX_SEARCH_K))
+        k = max(1, min(int(k), MAX_SEARCH_K))
     except (TypeError, ValueError):
         k = 10
     # Per corpus: read its embedding-model id (governs score comparability),
@@ -741,7 +737,8 @@ def register(server: "FastMCP") -> None:
         ],
         query: Query,
         limit: Annotated[
-            int, Field(description="Cap on the merged hit count.", ge=1, le=100)
+            int,
+            Field(description="Cap on the merged hit count.", ge=1, le=MAX_SEARCH_K),
         ] = 10,
         since: Since = None,
         until: Until = None,

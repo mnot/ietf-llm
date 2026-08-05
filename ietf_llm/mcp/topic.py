@@ -691,7 +691,7 @@ def register(server: "FastMCP") -> None:
                     "further."
                 ),
                 ge=1,
-                le=_READ_TOPIC_MAX_MESSAGES,
+                le=_READ_TOPIC_MAX_K,
             ),
         ] = 20,
         include_replies: Annotated[

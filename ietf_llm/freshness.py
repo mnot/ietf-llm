@@ -77,6 +77,19 @@ def set_gather_default(enabled: bool) -> None:
     _GATHER_DEFAULT = enabled
 
 
+def gather_default() -> bool:
+    """The fallback `gather_enabled()` uses when `IETF_LLM_ENABLE_GATHER` is
+    unset.
+
+    Exposed for callers that temporarily move the default and must put it back
+    — `mcp.surface.session_shape` does, to measure a deployment shape. Reading
+    `gather_enabled()` for that is wrong: with the env override set it returns
+    the *effective* value, so restoring it writes the override into the
+    default and the change outlives the caller.
+    """
+    return _GATHER_DEFAULT
+
+
 #: The MCP transport this server runs, set once at startup via
 #: `set_deployment_mode`: 'stdio' (local, single-user) or 'http' (possibly
 #: shared / hosted). Defaults to 'stdio' — the local single-user case, and the
