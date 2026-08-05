@@ -25,6 +25,12 @@ the hard way.
   Shrink freely — but tighten the ratchet after a real trim (the test asks).
   Regenerate with:
   `IETF_LLM_UPDATE_MCP_BASELINE=1 .venv/bin/python -m pytest tests/test_mcp_surface_budget.py`
+  To decide *what* to cut (none of these are gates):
+  `scripts/mcp_surface_report.py` (weight per tool in tokens, repeated
+  phrasing), `scripts/lint-prose.sh` (vale over the instructions + extracted
+  docstrings), `scripts/mcp_tool_similarity.py` (which descriptions a model
+  can't tell apart; needs the embedding model, so not in CI). All three read
+  `ietf_llm/mcp/surface.py`, which is also what the gate measures.
 
 ## Commit conventions
 

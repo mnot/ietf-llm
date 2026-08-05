@@ -5,8 +5,8 @@ asks a single question: the `instructions` field plus the serialized tool list
 Line and word counts miss this. The instructions file is under 10% of the
 surface; the tool docstrings are the rest, and they grow one reasonable-looking
 paragraph at a time. So the measurement here is the payload a client actually
-receives, built through `server.register_tools` (not a copy of the tool list,
-which would rot the moment a new module is registered).
+receives, built through `mcp.surface` (which goes through the production
+`server.register_tools`, so a new module is measured for free).
 
 The baseline in `mcp_surface_baseline.json` is a *ceiling*, ratchet-style:
 shrinking is always fine, growing fails until someone edits the baseline in the
@@ -17,8 +17,8 @@ Regenerate after a deliberate change:
     IETF_LLM_UPDATE_MCP_BASELINE=1 .venv/bin/python -m pytest \
         tests/test_mcp_surface_budget.py
 
-Two shapes are measured, because they are what we ship: `stdio` (local, gather
-+ live lookups registered) and `http` (the read-only shared replica).
+To see *where* the weight is (and what to trim), run
+`scripts/mcp_surface_report.py`.
 
 Not measured: `_capability_footer` (machine-generated, and a version bump would
 move it by a character), and per-parameter descriptions — today every parameter
@@ -31,14 +31,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable
 
-import anyio
 import pytest
-from mcp.server.fastmcp import FastMCP
 
-from ietf_llm import freshness
-from ietf_llm.mcp.server import _load_server_instructions, register_tools
+from ietf_llm.mcp.surface import SHAPES, build_surface, instructions_text
 
 BASELINE = Path(__file__).parent / "mcp_surface_baseline.json"
 
@@ -54,63 +51,27 @@ _REGEN_HINT = (
     f"    {_REGEN}=1 .venv/bin/python -m pytest tests/test_mcp_surface_budget.py"
 )
 
-#: The two deployment shapes, as (gather_enabled, deployment_mode).
-_SHAPES: Dict[str, Tuple[bool, str]] = {"stdio": (True, "stdio"), "http": (False, "http")}
-
 
 @pytest.fixture(autouse=True)
 def _neutral_mode(monkeypatch: pytest.MonkeyPatch) -> Iterable[None]:
-    """Drive the session mode from `_SHAPES`, not from the ambient environment,
-    and put the process-global back afterwards — both switches are module state
-    the whole suite shares."""
+    """Drive the session mode from the shape under test, not from the ambient
+    environment (`session_shape` restores the process globals itself)."""
     monkeypatch.delenv("IETF_LLM_ENABLE_GATHER", raising=False)
     monkeypatch.delenv("IETF_LLM_DEBUG_LOG", raising=False)
-    before = (freshness.gather_enabled(), freshness.deployment_mode())
     yield
-    freshness.set_gather_default(before[0])
-    freshness.set_deployment_mode(before[1])
 
 
 def _measure(shape: str) -> Dict[str, Any]:
-    """Build the advertised surface for one deployment shape and weigh it.
-
-    `session_log_enabled=False` matches the default both shapes ship with
-    (`get_session_log` needs IETF_LLM_DEBUG_LOG=1), so the ceiling covers what
-    users actually receive.
-    """
-    gather, mode = _SHAPES[shape]
-    freshness.set_gather_default(gather)
-    freshness.set_deployment_mode(mode)
-
-    server = FastMCP("ietf-llm")
-    register_tools(server, gather_enabled=gather, session_log_enabled=False)
-    tools = anyio.run(server.list_tools)
-
-    weighed: Dict[str, Dict[str, int]] = {}
-    for tool in tools:
-        # Serialized the way a client receives it, so the schema's own bulk is
-        # on the books and not just the prose.
-        blob = json.dumps(
-            {
-                "name": tool.name,
-                "description": tool.description or "",
-                "inputSchema": tool.inputSchema,
-            },
-            separators=(",", ":"),
-        )
-        weighed[tool.name] = {
-            "chars": len(blob),
-            "params": len(tool.inputSchema.get("properties") or {}),
-        }
+    tools = build_surface(shape)
+    weighed = {t.name: {"chars": t.chars, "params": len(t.params)} for t in tools}
     return {
-        "instructions_chars": len(_load_server_instructions()),
+        "instructions_chars": len(instructions_text(shape)),
         "total_chars": sum(t["chars"] for t in weighed.values()),
-        "tools": dict(sorted(weighed.items())),
+        "tools": weighed,
     }
 
 
 def _regenerate() -> None:
-    measured = {shape: _measure(shape) for shape in _SHAPES}
     BASELINE.write_text(
         json.dumps(
             {
@@ -120,7 +81,7 @@ def _regenerate() -> None:
                     "tests/test_mcp_surface_budget.py. Growth here is a review "
                     "signal, not a formality."
                 ),
-                "shapes": measured,
+                "shapes": {shape: _measure(shape) for shape in SHAPES},
             },
             indent=2,
             sort_keys=False,
@@ -142,7 +103,7 @@ def test_regenerate_baseline() -> None:
     _regenerate()
 
 
-@pytest.mark.parametrize("shape", sorted(_SHAPES))
+@pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_tool_set_is_declared(shape: str) -> None:
     """A new tool is the most expensive thing you can add — it must land in the
     baseline deliberately, not ride in under a total that happened to fit."""
@@ -156,7 +117,7 @@ def test_tool_set_is_declared(shape: str) -> None:
     )
 
 
-@pytest.mark.parametrize("shape", sorted(_SHAPES))
+@pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_per_tool_budget(shape: str) -> None:
     """Per-tool ceilings, so one docstring can't quietly absorb the headroom
     every other tool gave back."""
@@ -173,13 +134,13 @@ def test_per_tool_budget(shape: str) -> None:
                 f"  {name}: {got['chars']} chars (ceiling {want['chars']}, +{delta})"
             )
         if got["params"] > want["params"]:
-            over.append(
-                f"  {name}: {got['params']} params (ceiling {want['params']})"
-            )
-    assert not over, f"[{shape}] tools over budget:\n" + "\n".join(over) + f"\n{_REGEN_HINT}"
+            over.append(f"  {name}: {got['params']} params (ceiling {want['params']})")
+    assert not over, (
+        f"[{shape}] tools over budget:\n" + "\n".join(over) + f"\n{_REGEN_HINT}"
+    )
 
 
-@pytest.mark.parametrize("shape", sorted(_SHAPES))
+@pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_total_surface_budget(shape: str) -> None:
     """The whole preamble: instructions plus every tool. Roughly chars/4 tokens
     — reported both ways because the ceiling is set in chars (exact) but the
@@ -194,7 +155,7 @@ def test_total_surface_budget(shape: str) -> None:
         )
 
 
-@pytest.mark.parametrize("shape", sorted(_SHAPES))
+@pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_ratchet_is_current(shape: str) -> None:
     """Tighten the ceiling after a real trim, or the old number quietly
     re-authorises the bloat you just removed."""

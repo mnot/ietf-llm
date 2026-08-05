@@ -1,0 +1,6 @@
+extends: occurrence
+message: "Sentence runs %d words — split it or cut it."
+level: suggestion
+scope: sentence
+token: '\b\w+\b'
+max: 45
