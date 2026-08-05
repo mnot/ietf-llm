@@ -1,0 +1,273 @@
+{
+  "README": "Ceiling for the MCP surface a client receives. Regenerate with IETF_LLM_UPDATE_MCP_BASELINE=1; see tests/test_mcp_surface_budget.py. Growth here is a review signal, not a formality.",
+  "shapes": {
+    "stdio": {
+      "instructions_chars": 7653,
+      "total_chars": 68354,
+      "tools": {
+        "draft_authors": {
+          "chars": 860,
+          "params": 1
+        },
+        "draft_status": {
+          "chars": 1279,
+          "params": 1
+        },
+        "find_citations": {
+          "chars": 1198,
+          "params": 2
+        },
+        "find_efforts": {
+          "chars": 1752,
+          "params": 2
+        },
+        "find_message_citations": {
+          "chars": 1710,
+          "params": 3
+        },
+        "find_related": {
+          "chars": 2897,
+          "params": 13
+        },
+        "find_replies": {
+          "chars": 1485,
+          "params": 4
+        },
+        "gather_status": {
+          "chars": 2963,
+          "params": 2
+        },
+        "get_by_url": {
+          "chars": 1009,
+          "params": 2
+        },
+        "get_chunk_text": {
+          "chars": 827,
+          "params": 4
+        },
+        "get_chunks_batch": {
+          "chars": 757,
+          "params": 2
+        },
+        "get_draft": {
+          "chars": 657,
+          "params": 3
+        },
+        "get_issue": {
+          "chars": 844,
+          "params": 5
+        },
+        "get_rfc": {
+          "chars": 763,
+          "params": 1
+        },
+        "list_corpora": {
+          "chars": 1533,
+          "params": 0
+        },
+        "list_drafts": {
+          "chars": 799,
+          "params": 2
+        },
+        "list_files": {
+          "chars": 760,
+          "params": 2
+        },
+        "list_labels": {
+          "chars": 851,
+          "params": 1
+        },
+        "list_meetings": {
+          "chars": 461,
+          "params": 1
+        },
+        "meeting_schedule": {
+          "chars": 1532,
+          "params": 2
+        },
+        "overview": {
+          "chars": 5213,
+          "params": 2
+        },
+        "read_digest": {
+          "chars": 4943,
+          "params": 15
+        },
+        "read_file_section": {
+          "chars": 794,
+          "params": 4
+        },
+        "read_ietf_interpretation_norms": {
+          "chars": 1107,
+          "params": 0
+        },
+        "read_ietf_participation_norms": {
+          "chars": 1381,
+          "params": 0
+        },
+        "read_minutes": {
+          "chars": 804,
+          "params": 2
+        },
+        "read_topic": {
+          "chars": 4517,
+          "params": 8
+        },
+        "search_corpora": {
+          "chars": 2584,
+          "params": 11
+        },
+        "search_corpus": {
+          "chars": 5819,
+          "params": 15
+        },
+        "search_rfcs": {
+          "chars": 1530,
+          "params": 6
+        },
+        "start_gather": {
+          "chars": 8125,
+          "params": 13
+        },
+        "stop_gather": {
+          "chars": 1166,
+          "params": 2
+        },
+        "suggest_github_repos": {
+          "chars": 1209,
+          "params": 1
+        },
+        "tally_positions": {
+          "chars": 2477,
+          "params": 2
+        },
+        "which_corpus": {
+          "chars": 1748,
+          "params": 2
+        }
+      }
+    },
+    "http": {
+      "instructions_chars": 6900,
+      "total_chars": 52080,
+      "tools": {
+        "draft_authors": {
+          "chars": 860,
+          "params": 1
+        },
+        "find_citations": {
+          "chars": 1198,
+          "params": 2
+        },
+        "find_efforts": {
+          "chars": 1752,
+          "params": 2
+        },
+        "find_message_citations": {
+          "chars": 1710,
+          "params": 3
+        },
+        "find_related": {
+          "chars": 2897,
+          "params": 13
+        },
+        "find_replies": {
+          "chars": 1485,
+          "params": 4
+        },
+        "get_by_url": {
+          "chars": 1009,
+          "params": 2
+        },
+        "get_chunk_text": {
+          "chars": 827,
+          "params": 4
+        },
+        "get_chunks_batch": {
+          "chars": 757,
+          "params": 2
+        },
+        "get_draft": {
+          "chars": 657,
+          "params": 3
+        },
+        "get_issue": {
+          "chars": 844,
+          "params": 5
+        },
+        "get_rfc": {
+          "chars": 763,
+          "params": 1
+        },
+        "list_corpora": {
+          "chars": 1533,
+          "params": 0
+        },
+        "list_drafts": {
+          "chars": 799,
+          "params": 2
+        },
+        "list_files": {
+          "chars": 760,
+          "params": 2
+        },
+        "list_labels": {
+          "chars": 851,
+          "params": 1
+        },
+        "list_meetings": {
+          "chars": 461,
+          "params": 1
+        },
+        "overview": {
+          "chars": 5213,
+          "params": 2
+        },
+        "read_digest": {
+          "chars": 4943,
+          "params": 15
+        },
+        "read_file_section": {
+          "chars": 794,
+          "params": 4
+        },
+        "read_ietf_interpretation_norms": {
+          "chars": 1107,
+          "params": 0
+        },
+        "read_ietf_participation_norms": {
+          "chars": 1381,
+          "params": 0
+        },
+        "read_minutes": {
+          "chars": 804,
+          "params": 2
+        },
+        "read_topic": {
+          "chars": 4517,
+          "params": 8
+        },
+        "search_corpora": {
+          "chars": 2584,
+          "params": 11
+        },
+        "search_corpus": {
+          "chars": 5819,
+          "params": 15
+        },
+        "search_rfcs": {
+          "chars": 1530,
+          "params": 6
+        },
+        "tally_positions": {
+          "chars": 2477,
+          "params": 2
+        },
+        "which_corpus": {
+          "chars": 1748,
+          "params": 2
+        }
+      }
+    }
+  }
+}

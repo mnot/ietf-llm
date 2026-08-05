@@ -334,6 +334,47 @@ def _fastmcp_import_error(exc: ImportError) -> str:
     return "\n".join(lines)
 
 
+def register_tools(
+    server: Any, *, gather_enabled: bool, session_log_enabled: bool
+) -> None:
+    """Register every tool this server advertises, for the given session mode.
+
+    Factored out of `main` so the advertised surface can be built without
+    starting a server — `tests/test_mcp_surface_budget.py` measures the exact
+    tool list a client receives, and a copy of this list in the test would rot
+    the moment a new module is registered here.
+
+    `gather_enabled` gates the tools that write or reach the network
+    (`start_gather` / `gather_status`, plus the live Datatracker lookups
+    `meeting_schedule` / `draft_status`): on for local stdio, off for the
+    shared HTTP replica, so that deployment stays read-only. See
+    `common._gather_enabled`.
+
+    `session_log_enabled` gates `get_session_log` (IETF_LLM_DEBUG_LOG=1). With
+    telemetry off the tool has nothing useful to return, so we leave it out of
+    the advertised list entirely rather than ship a no-op tool.
+    """
+    # --- the read-only, always-on tools ---
+    corpus.register(server)
+    rfcs.register(server)
+    norms.register(server)
+    citations.register(server)
+    digest.register(server)
+    search.register(server)
+    topic.register(server)
+    chunks.register(server)
+    drafts.register(server)
+    meetings.register(server)
+
+    if session_log_enabled:
+        gather.register_session_log(server)
+
+    if gather_enabled:
+        gather.register(server)
+        meetings.register_live(server)
+        drafts.register_live(server)
+
+
 @graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-locals
     try:
@@ -386,35 +427,11 @@ def main() -> None:  # pylint: disable=too-many-locals
     # `_mcp_server` attribute the stdio transport already drives below.
     server._mcp_server.version = __version__  # pylint: disable=protected-access
 
-    # --- register the read-only, always-on tools ---
-    corpus.register(server)
-    rfcs.register(server)
-    norms.register(server)
-    citations.register(server)
-    digest.register(server)
-    search.register(server)
-    topic.register(server)
-    chunks.register(server)
-    drafts.register(server)
-    meetings.register(server)
-
-    # `get_session_log` is only registered when telemetry is enabled
-    # (IETF_LLM_DEBUG_LOG=1). With logging off the tool wouldn't have
-    # anything useful to return, so we leave it out of the advertised
-    # tool list entirely rather than ship a no-op tool.
-    if debug_log.is_enabled():
-        gather.register_session_log(server)
-
-    # `start_gather` / `gather_status` write to the cache and reach the
-    # network — the one break from this server's read-only / no-network
-    # contract — so they are registered only when gather is enabled. That
-    # defaults on for local stdio and off for the shared HTTP replica;
-    # IETF_LLM_ENABLE_GATHER overrides either way. `meeting_schedule` and
-    # `draft_status` reach Datatracker live, so they ride the same gate.
-    if _gather_enabled():
-        gather.register(server)
-        meetings.register_live(server)
-        drafts.register_live(server)
+    register_tools(
+        server,
+        gather_enabled=_gather_enabled(),
+        session_log_enabled=debug_log.is_enabled(),
+    )
 
     _prewarm_embedding_model_async()
     if transport == "http":
