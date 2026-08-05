@@ -354,9 +354,14 @@ ietf_llm/
 │   └── skill_install.py    # --install-skills (multi-harness) + pristine-only auto-update
 ├── export.py               # mirror / NotebookLM export logic (used by cli.export)
 ├── mcp/                    # `ietf-llm-mcp` server (`mcp:main`), one module per tool domain
-│   ├── server.py               # FastMCP construction + main() + tool registration
+│   ├── server.py               # FastMCP construction + main(); register_tools() is
+│   │                           # the one registration path (server + surface introspection)
 │   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
-│   │                           # freshness/grounding/nudge helpers)
+│   │                           # freshness/grounding/nudge helpers, the shared caps)
+│   ├── params.py               # Annotated parameter types: every tool argument's
+│   │                           # description + bounds, shared ones defined once
+│   ├── surface.py              # introspection of the advertised surface, for the
+│   │                           # budget gate and scripts/mcp_surface_*
 │   ├── serve.py                # HTTP transport, /health, /metrics, serve-config validation
 │   ├── stdio.py                # threaded-writer stdio transport (sidesteps upstream blocking write)
 │   ├── debug_log.py            # per-request telemetry ring buffer (IETF_LLM_DEBUG_LOG / get_session_log)
@@ -1104,13 +1109,35 @@ on every push/PR across Python 3.10–3.14.
 - **New MCP tool** → add a pure `tool_*` function and its thin
   `@server.tool()` wrapper to the matching `ietf_llm/mcp/<domain>.py` (put
   new-domain shared helpers in `mcp/common.py`), registering the wrapper in
-  that module's `register()`. Document the routing in
-  `data/mcp-instructions.md` (served as the `instructions` field).
-  A tool that writes or reaches the
-  network (like `start_gather`) must be registered behind the gather gate
-  (`_gather_enabled`, off for the shared HTTP replica) — via a `register_live()`
-  hook that `main()` only calls when the gate is open — run its work
-  off-thread, and be imported lazily so the read-only serve path stays clean.
+  that module's `register()`, which `server.register_tools()` calls. Document
+  the routing in `data/mcp-instructions.md` (served as the `instructions`
+  field). A tool that writes or reaches the network (like `start_gather`) must
+  be registered behind the gather gate (`_gather_enabled`, off for the shared
+  HTTP replica) — via a `register_live()` hook that `register_tools()` only
+  calls when the gate is open — run its work off-thread, and be imported
+  lazily so the read-only serve path stays clean.
+
+  **Every parameter carries a `description`**, as an `Annotated` type with a
+  `pydantic.Field` — that is where per-argument semantics belong, so the tool
+  description can say what the tool is rather than re-document its signature.
+  Reuse an alias from `mcp/params.py` when the argument means what it means
+  everywhere else, and keep new descriptions to one line: an alias is
+  serialized into every tool that takes it. State a bound (`ge` / `le`) only
+  where the implementation actually clamps, and name that constant rather than
+  repeating its value — a bound the code then silently overrides is a promise
+  the client cannot check.
+
+  **The surface is budgeted.** `instructions` plus the serialized tool list is
+  context every client pays for before it asks anything, so
+  `tests/test_mcp_surface_budget.py` holds a ceiling on it (per tool, per
+  parameter count, per deployment shape) against
+  `tests/mcp_surface_baseline.json`. A new tool, or a widened docstring, fails
+  `make test` until the baseline is regenerated in the same commit — which is
+  the point: it puts the cost in the diff. To decide what to trim,
+  `scripts/mcp_surface_report.py` ranks tools by token cost,
+  `scripts/lint-prose.sh` runs vale over the prose, and
+  `scripts/mcp_tool_similarity.py` flags descriptions a model cannot tell
+  apart. Only the gate runs in CI.
 - **New chunker** → add to `embeddings/chunking.py`, dispatch in
   `_chunk_file()`.
 - **New persisted flag** → add it to the right scope's `scalars` or
