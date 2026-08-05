@@ -1013,3 +1013,102 @@ def test_orphan_thread_file_removed(isolated_home: Path) -> None:
     # Re-gather: the orphan (not part of the current thread set) goes.
     write_thread_files("wg", cache, verbose=Verbosity.QUIET)
     assert not os.path.exists(orphan)
+
+
+# --- quote retention when the parent is absent -----------------------------
+
+
+def test_elide_false_keeps_quoted_lines() -> None:
+    """With no parent in the file the quotes are the only record of what
+    the message answers, so nothing is collapsed."""
+    text = "Reply.\n> q1\n> q2\n> q3\n> q4\n> q5\n"
+    result = elide_quotes(text, keep_threshold=2, elide=False)
+    assert "elided" not in result
+    for line in ("> q1", "> q3", "> q5"):
+        assert line in result
+
+
+def test_elide_false_keeps_top_posted_trail() -> None:
+    """The trail cut assumes the quoted messages are elsewhere in the
+    file. When they are not, it would delete the whole context."""
+    text = (
+        "My comment.\n\n"
+        "On Tue, Mark wrote:\n"
+        "The original text that is being responded to.\n"
+        "More original text.\n"
+    )
+    result = elide_quotes(text, elide=False)
+    assert "The original text that is being responded to." in result
+    assert "elided" not in result
+
+
+def test_elide_false_still_strips_pgp_and_signature() -> None:
+    """Armor and sig blocks are noise regardless of what else survives."""
+    text = (
+        "-----BEGIN PGP SIGNED MESSAGE-----\n"
+        "Hash: SHA512\n"
+        "\n"
+        "Point taken.\n"
+        "> the quoted point\n"
+        "-----BEGIN PGP SIGNATURE-----\n"
+        "\n"
+        "iQIzBAEBCgAdFiEEabc123...\n"
+        "-----END PGP SIGNATURE-----\n"
+        "--\n"
+        "Mark Nottingham   https://www.mnot.net/\n"
+    )
+    result = elide_quotes(text, elide=False)
+    assert "Point taken." in result
+    assert "> the quoted point" in result
+    assert "PGP" not in result
+    assert "https://www.mnot.net/" not in result
+
+
+def test_reply_without_its_parent_keeps_quotes(isolated_home: Path) -> None:
+    """An author-scoped corpus holds one person's messages, so almost
+    every reply's parent is missing — that is exactly when the quoted
+    material has to survive."""
+    quoted = "\n".join(f"> original line {n}" for n in range(1, 8))
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Re: a topic", sender="Them <them@example.com>",
+        date="Tue, 1 Jul 2025 10:00:00 +0000", message_id="<reply@x>",
+        in_reply_to="<absent-parent@x>",
+        body=f"I disagree, because:\n{quoted}\n",
+    )
+    write_thread_files("wg", str(get_wg_file_cache_dir("wg")), verbose=Verbosity.QUIET)
+    text = _read_threads(get_wg_file_cache_dir("wg"))
+    assert "> original line 1" in text
+    assert "> original line 7" in text
+    assert "quoted lines elided" not in text
+
+
+def test_reply_with_its_parent_still_elides(isolated_home: Path) -> None:
+    """When the parent IS in the file the quote is redundant, and
+    collapsing it is what keeps a long thread readable."""
+    quoted = "\n".join(f"> original line {n}" for n in range(1, 8))
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="a topic", sender="Them <them@example.com>",
+        date="Tue, 1 Jul 2025 09:00:00 +0000", message_id="<parent@x>",
+        body="original line 1\n",
+    )
+    _write_eml(
+        isolated_home, "wg", 2,
+        subject="Re: a topic", sender="Me <me@example.com>",
+        date="Tue, 1 Jul 2025 10:00:00 +0000", message_id="<reply@x>",
+        in_reply_to="<parent@x>",
+        body=f"I disagree, because:\n{quoted}\n",
+    )
+    write_thread_files("wg", str(get_wg_file_cache_dir("wg")), verbose=Verbosity.QUIET)
+    text = _read_threads(get_wg_file_cache_dir("wg"))
+    assert "quoted lines elided" in text
+    assert "> original line 7" not in text
+
+
+def _read_threads(cache_dir: str) -> str:
+    """Concatenated text of every written thread file."""
+    threads = Path(cache_dir) / "threads"
+    return "".join(
+        path.read_text(encoding="utf-8") for path in sorted(threads.iterdir())
+    )

@@ -91,12 +91,18 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   evidence for what they look for in a draft. They are individual opinions,
   not the directorate's or their employer's, and a review's `Result` is the
   reviewer's own verdict, not a WG or IESG outcome.
-- **A person corpus is not a group corpus.** Its threads were selected because
-  *that person* posted in them, across whatever lists they're on — so it is
-  evidence about them, and says nothing about what any group discussed or
-  where consensus lies. Never read thread coverage here as a group's agenda,
-  and never infer a WG position from it: the corpus has one person's threads,
-  not the list. `list_corpora` shows which corpora are author-scoped.
+- **A person corpus is not a group corpus.** It holds only that person's own
+  messages, across whatever lists they're on — so it is evidence about them,
+  and says nothing about what a group discussed or where consensus lies.
+  Never read thread coverage here as a group's agenda, never infer a WG
+  position from it, and note that a thread file's `Participants` line lists
+  only who is *in the corpus* (usually just them), not who was in the real
+  thread. `list_corpora` shows which corpora are author-scoped.
+  - **Quoted (`>`) text in these files is someone else's words**, kept
+    because it is the only record of what the person was replying to. Attribute
+    it to the person quoted — named in the `On … wrote:` line above it — never
+    to the corpus subject, and never treat it as their view. Their own words
+    are the unprefixed lines.
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:

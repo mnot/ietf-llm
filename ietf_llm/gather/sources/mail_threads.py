@@ -353,8 +353,14 @@ def _strip_pgp(lines: List[str]) -> List[str]:
     return out
 
 
-def elide_quotes(text: str, keep_threshold: int = 2) -> str:
+def elide_quotes(text: str, keep_threshold: int = 2, elide: bool = True) -> str:
     """Collapse quoted reply trails so a thread file is readable.
+
+    `elide=False` keeps every quoted line — for a message whose parent
+    is *not* in this file, the quotes are the only surviving record of
+    what it answers, and eliding them leaves a reply to nothing. PGP
+    armor and the signature block are still stripped either way; those
+    are noise regardless of what else the file holds.
 
     Two shapes are handled. `>`-prefixed quote runs longer than
     `keep_threshold` collapse to a single `> [N lines elided]` marker,
@@ -389,6 +395,9 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
         if line.rstrip() == "--":
             lines = lines[:idx]
             break
+
+    if not elide:
+        return "\n".join(lines)
 
     trail_marker: Optional[str] = None
     cut = _quoted_trail_start(lines)
@@ -681,6 +690,7 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
     parts.append(_build_outline(thread, registry))
     parts.append("")
     parts.append("## Messages\n")
+    present_ids = {m.message_id for m in thread.members if m.message_id}
     for idx, msg in enumerate(thread.members, 1):
         when = _format_msg_date(msg)
         header = f"### [{idx}] {when} — {_name_with_role(msg.sender, registry)}"
@@ -690,6 +700,12 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
                 if candidate.message_id == msg.parent_id:
                     header += f" (reply to [{p_idx}])"
                     break
+        # Eliding a quote trail is only safe when the messages it quotes
+        # are in this file as their own sections. A reply whose parent is
+        # absent — the thread predates the window, or this is an
+        # author-scoped corpus holding only one person's mail — has its
+        # quotes as the sole record of what it answers, so they stay.
+        parent_present = bool(msg.parent_id) and msg.parent_id in present_ids
         parts.append(header)
         parts.append("")
         parts.append(f"_Subject:_ {msg.subject}")
@@ -700,7 +716,7 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
             # form mirrors `_Subject:_` so the file stays human-readable.
             parts.append(f"_Archived-At:_ {msg.archived_at}")
         parts.append("")
-        body = elide_quotes(msg.body or "")
+        body = elide_quotes(msg.body or "", elide=parent_present)
         # Single trailing newline; the .splitlines() in elide_quotes
         # already strips the implicit one.
         parts.append(body)
