@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -103,3 +103,37 @@ def test_revision_tasks_latest_only_vs_full(tmp_path: Path) -> None:
 
     (tmp_path / "draft-ietf-wg-x-05.txt").write_text("cached")
     assert drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True) == []
+
+
+def test_process_extra_drafts_defaults_to_the_full_stack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--draft` names a specific document, where the revision history
+    may well be the point — so the default must stay full."""
+    seen: List[bool] = []
+    monkeypatch.setattr(drafts, "fetch_current_rev", lambda name, verbose: 3)
+    monkeypatch.setattr(
+        drafts,
+        "_download_all_revisions",
+        lambda name, rev, out, verbose, latest_only=False: seen.append(latest_only)
+        or [],
+    )
+    drafts.process_extra_drafts(["draft-ietf-wg-x"], str(tmp_path), Verbosity.QUIET)
+    assert seen == [False]
+
+
+def test_process_extra_drafts_honours_latest_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: List[bool] = []
+    monkeypatch.setattr(drafts, "fetch_current_rev", lambda name, verbose: 3)
+    monkeypatch.setattr(
+        drafts,
+        "_download_all_revisions",
+        lambda name, rev, out, verbose, latest_only=False: seen.append(latest_only)
+        or [],
+    )
+    drafts.process_extra_drafts(
+        ["draft-ietf-wg-x"], str(tmp_path), Verbosity.QUIET, latest_only=True
+    )
+    assert seen == [True]

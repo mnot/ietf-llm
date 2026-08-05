@@ -302,17 +302,21 @@ def _download_all_revisions(
     max_rev: int,
     out_dir: str,
     verbose: Verbosity,
+    latest_only: bool = False,
 ) -> List[str]:
-    """Pull every revision (00..max_rev) of one draft into out_dir.
+    """Pull one draft's revisions into out_dir — every revision
+    (00..max_rev), or just the current one under ``latest_only``.
     Returns the paths of newly-written files (skips revisions whose
     .txt is already cached)."""
+    scope = f"rev {max_rev:02d}" if latest_only else f"revs 00 to {max_rev:02d}"
     log(
-        f"Processing draft: {draft_name} (revs 00 to {max_rev:02d})",
+        f"Processing draft: {draft_name} ({scope})",
         verbose,
         level=LogLevel.STATUS,
     )
     return _download_files_parallel(
-        _revision_tasks(draft_name, max_rev, out_dir), verbose
+        _revision_tasks(draft_name, max_rev, out_dir, latest_only=latest_only),
+        verbose,
     )
 
 
@@ -320,8 +324,10 @@ def process_extra_drafts(
     draft_names: List[str],
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
+    latest_only: bool = False,
 ) -> List[str]:
-    """Download every revision of each given draft.
+    """Download each given draft — every revision, or just the current
+    one under `latest_only`.
 
     Use for drafts that aren't auto-discovered as WG documents on
     Datatracker — typically `--draft draft-<author>-<wg>-<topic>`
@@ -329,6 +335,15 @@ def process_extra_drafts(
     where the author hasn't yet asked for adoption). Each name is
     version-stripped first, so `draft-foo-bar`, `draft-foo-bar-07`,
     and `draft-foo-bar-07.txt` all yield the same result.
+
+    `latest_only` is for a caller adding drafts *in bulk*, where the
+    revision stack is the dominant cost and nobody asked for the
+    history: `--author` names every draft one person ever wrote (127
+    drafts × ~4.3 revisions for a long-serving participant), and the
+    embedding index skips the older revisions of anything already
+    published as an RFC anyway — so most of that download is written
+    and then never indexed. `--draft` names a specific document and
+    keeps the full stack: there, the history may well be the point.
 
     Resolves the current revision via Datatracker so we know how
     many to fetch. Skips silently for drafts the API can't find —
@@ -356,7 +371,11 @@ def process_extra_drafts(
                 level=LogLevel.STATUS,
             )
             continue
-        updated.extend(_download_all_revisions(name, max_rev, out_dir, verbose))
+        updated.extend(
+            _download_all_revisions(
+                name, max_rev, out_dir, verbose, latest_only=latest_only
+            )
+        )
     return updated
 
 

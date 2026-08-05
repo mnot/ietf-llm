@@ -40,17 +40,28 @@ def _args(**kw: Any) -> argparse.Namespace:
 
 def _patch_drafts(
     monkeypatch: pytest.MonkeyPatch, *, resolved: Optional[Tuple[int, str]]
-) -> None:
+) -> List[Dict[str, Any]]:
+    """Stub the draft seams; returns the recorded process_extra_drafts calls."""
+    calls: List[Dict[str, Any]] = []
+
     monkeypatch.setattr(
         sequencer, "resolve_person", lambda spec, verbose=None: resolved
     )
     monkeypatch.setattr(
         sequencer, "fetch_author_draft_names", lambda pid, verbose=None: ["draft-x-00"]
     )
-    monkeypatch.setattr(
-        sequencer, "process_extra_drafts", lambda names, cache, verbose=None: None
-    )
+
+    def fake_extra(
+        names: List[str],
+        cache: str,
+        verbose: Any = None,
+        latest_only: bool = False,
+    ) -> None:
+        calls.append({"names": list(names), "latest_only": latest_only})
+
+    monkeypatch.setattr(sequencer, "process_extra_drafts", fake_extra)
     monkeypatch.setattr(sequencer, "_persist_author_name", lambda wg, name: None)
+    return calls
 
 
 def test_resolved_author_is_returned_for_the_later_passes(
@@ -78,6 +89,19 @@ def test_unresolved_author_returns_none(monkeypatch: pytest.MonkeyPatch) -> None
 def test_no_author_flag_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_drafts(monkeypatch, resolved=(1, "Someone"))
     assert sequencer._gather_dynamic_drafts(_args(), "/c", {}, Q) is None
+
+
+def test_author_drafts_fetch_current_revision_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--author` names every draft one person ever wrote, and the
+    revision stack dominated the gather to fetch history the index
+    largely refuses to embed."""
+    calls = _patch_drafts(monkeypatch, resolved=(103881, "Mark Nottingham"))
+    sequencer._gather_dynamic_drafts(
+        _args(author="mnot@mnot.net"), "/cache/mnot", {}, Q
+    )
+    assert calls == [{"names": ["draft-x-00"], "latest_only": True}]
 
 
 # --- author mail ----------------------------------------------------------

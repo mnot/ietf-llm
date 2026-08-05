@@ -202,7 +202,14 @@ def _gather_dynamic_drafts(
         resolved = resolve_person(args.author, verbose=verbosity)
         if resolved is not None:
             author_names = fetch_author_draft_names(resolved[0], verbose=verbosity)
-            process_extra_drafts(author_names, cache_dir, verbose=verbosity)
+            # Current revision only. A prolific participant is ~130
+            # drafts averaging 4+ revisions, which dominated the whole
+            # gather (96% of bytes, 76% of requests) to fetch history
+            # the index largely refuses to embed. `--draft` still takes
+            # the full stack — see `process_extra_drafts`.
+            process_extra_drafts(
+                author_names, cache_dir, verbose=verbosity, latest_only=True
+            )
             _persist_author_name(args.wg, resolved[1])
             author = (resolved[0], resolved[1], author_names)
 

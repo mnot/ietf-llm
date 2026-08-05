@@ -102,7 +102,13 @@ custom corpus dynamically — a rolling `-00` window from the submission
 API, or a whole person: their authored drafts from the documentauthor
 table, the directorate / Last Call reviews they *wrote* (`reviews.py`),
 and their mail across the lists they're on (`author_lists.py` picks the
-lists, `author_mail.py` searches them by sender).
+lists, `author_mail.py` searches them by sender). Author drafts are
+fetched at their **current revision only** (`process_extra_drafts(…,
+latest_only=True)`): naming every draft one person ever wrote made the
+revision stack dominate the whole gather — 96% of bytes, 76% of
+requests — to fetch history the index largely refuses to embed. The
+explicit `--draft` path keeps the full stack, where the history may be
+the point.
 They short-circuit shape inference to `custom` (the name is a label, no
 group lookup) and persist, so a bare re-run re-evaluates the source.
 Explicit sources (`--draft` / `--mailing-list` / `--github`) compose

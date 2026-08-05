@@ -43,8 +43,10 @@ A name that is none of these and has no configured sources is rejected as a like
   or a full address; the domain is optional and ignored (`rswg`, `rswg@rfc-editor.org`).
 - `--new-drafts` — subscribe to *new* Internet-Drafts: every `-00` submitted within `--months`
   (rolling window; drafts age out).
-- `--author PERSON` — every draft `PERSON` authored, plus every directorate / Last Call review
-  they *wrote* (`reviews/<review-doc-name>.md`, all of them — no `--months` window, since a review
+- `--author PERSON` — every draft `PERSON` authored (**current revision only** — a prolific
+  participant is ~130 drafts averaging 4+ revisions, and the index skips the older revisions of
+  anything already published as an RFC; `--draft` still takes the full stack), plus every
+  directorate / Last Call review they *wrote* (`reviews/<review-doc-name>.md`, all of them — no `--months` window, since a review
   is never superseded). `PERSON` is an email (`mnot@mnot.net`, recommended), a Datatracker person
   id, or an exact full name; all of that person's registered addresses are searched, so reviews
   filed under a former employer address are still found.
