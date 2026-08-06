@@ -6,7 +6,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from ..paths import drafts_dir
+from ..paths import DIR_DRAFTS, drafts_dir
 from ..singletons.rfcs import is_stale_miss, render_rfc, render_search
 from .common import _files_dir, _list_wgs, _offload
 
@@ -26,13 +26,16 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
     match = re.search(r"\d+", str(number))
     if not match:
         return None
-    relpath = os.path.join("drafts", f"rfc{int(match.group(0))}.txt")
+    filename = f"rfc{int(match.group(0))}.txt"
+    # The relpath goes back to the model as a `read_file_section` argument,
+    # so it stays `/`-separated whatever the host separator is.
+    relpath = f"{DIR_DRAFTS}/{filename}"
     for wg in sorted(_list_wgs()):
         try:
             cache = _files_dir(wg)
         except FileNotFoundError:
             continue
-        if os.path.isfile(os.path.join(drafts_dir(cache), os.path.basename(relpath))):
+        if os.path.isfile(os.path.join(drafts_dir(cache), filename)):
             return wg, relpath
     return None
 

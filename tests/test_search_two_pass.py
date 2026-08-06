@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 from ietf_llm import embeddings
 from ietf_llm.embeddings.search import (
@@ -69,20 +69,29 @@ def _traced_search(monkeypatch, wg: str, **kwargs) -> List[str]:
     return [s for s in seen if "FROM chunks" in s]
 
 
-def test_scan_does_not_select_text(isolated_home, monkeypatch):
+def _the_scan(statements: List[str]) -> str:
+    """The ranking scan: the one statement that reads vectors in bulk.
+
+    Anchored on `embedding` without an `id IN` restriction rather than on
+    "every statement that isn't a re-fetch", so an unrelated future query
+    over `chunks` can't fail these for the wrong reason.
+    """
+    scans = [s for s in statements if "embedding" in s and " WHERE id IN " not in s]
+    assert len(scans) == 1, statements
+    return scans[0]
+
+
+def test_scan_does_not_select_text(isolated_home, monkeypatch) -> None:
     _seed_and_build(isolated_home)
-    statements = _traced_search(monkeypatch, "wg", k=3)
-    scans = [s for s in statements if " WHERE id IN " not in s]
-    assert scans, "expected a full scan over chunks"
-    for scan in scans:
-        columns = re.search(r"SELECT (.+?) FROM chunks", scan, re.S)
-        assert columns, scan
-        selected = {c.strip() for c in columns.group(1).split(",")}
-        # Ranking needs the vector and the collapse key, nothing wider.
-        assert selected == {"id", "file", "chunk_idx", "embedding"}, selected
+    scan = _the_scan(_traced_search(monkeypatch, "wg", k=3))
+    columns = re.search(r"SELECT (.+?) FROM chunks", scan, re.S)
+    assert columns, scan
+    selected = {c.strip() for c in columns.group(1).split(",")}
+    # Ranking needs the vector and the collapse key, nothing wider.
+    assert selected == {"id", "file", "chunk_idx", "embedding"}, selected
 
 
-def test_display_fetch_is_bounded_by_k(isolated_home, monkeypatch):
+def test_display_fetch_is_bounded_by_k(isolated_home, monkeypatch) -> None:
     _seed_and_build(isolated_home)
     statements = _traced_search(monkeypatch, "wg", k=3)
     fetches = [s for s in statements if " WHERE id IN " in s and "text" in s]
@@ -91,7 +100,7 @@ def test_display_fetch_is_bounded_by_k(isolated_home, monkeypatch):
     assert fetches[0].count("?") <= 3
 
 
-def test_vector_fetch_is_bounded_by_the_mmr_pool(isolated_home, monkeypatch):
+def test_vector_fetch_is_bounded_by_the_mmr_pool(isolated_home, monkeypatch) -> None:
     # Diversification needs embeddings back, but only for the pool it
     # actually compares -- not for every candidate it scored.
     _seed_and_build(isolated_home)
@@ -101,29 +110,35 @@ def test_vector_fetch_is_bounded_by_the_mmr_pool(isolated_home, monkeypatch):
     assert fetches[0].count("?") <= _MMR_POOL
 
 
-def test_scan_is_streamed_not_materialised():
+def _fake_scan_rows(count: int, dim: int, files: int = 4) -> List[Any]:
+    import numpy as np  # pylint: disable=import-outside-toplevel
+
+    vec = np.ones(dim, dtype=np.float32).tobytes()
+    # Each f-string builds a fresh str object even when the value repeats,
+    # which is how sqlite hands back a repeated file name.
+    return [(i, f"threads/t{i % files}.md", i, vec) for i in range(count)]
+
+
+def test_scan_is_streamed_not_materialised() -> None:
     # The scan must never pull the whole candidate set into memory: it
     # scores batch by batch and lets each batch go.
     import numpy as np  # pylint: disable=import-outside-toplevel
 
     dim = len(_VOCAB)
-    rows = [
-        (i, f"threads/t{i}.md", 0, np.ones(dim, dtype=np.float32).tobytes())
-        for i in range(_SCAN_BATCH * 2 + 7)
-    ]
+    rows = _fake_scan_rows(_SCAN_BATCH * 2 + 7, dim)
 
     class _Cursor:
-        def __init__(self):
+        def __init__(self) -> None:
             self.pos = 0
             self.batches = 0
 
-        def fetchmany(self, size):
+        def fetchmany(self, size: int) -> List[Any]:
             self.batches += 1
             out = rows[self.pos : self.pos + size]
             self.pos += len(out)
             return out
 
-        def fetchall(self):  # pragma: no cover - must never be reached
+        def fetchall(self) -> List[Any]:  # pragma: no cover - never reached
             raise AssertionError("scan must stream, not fetchall")
 
     cur = _Cursor()
@@ -133,3 +148,25 @@ def test_scan_is_streamed_not_materialised():
     assert cand.keys[0] == ("threads/t0.md", 0)
     # Three full batches plus the empty read that ends the loop.
     assert cur.batches == 4
+
+
+def test_scan_interns_file_names() -> None:
+    # File paths repeat once per chunk, so the key list must hold one
+    # string per file rather than one per row.
+    import numpy as np  # pylint: disable=import-outside-toplevel
+
+    dim = len(_VOCAB)
+    rows = _fake_scan_rows(500, dim, files=4)
+
+    class _Cursor:
+        def __init__(self) -> None:
+            self.pos = 0
+
+        def fetchmany(self, size: int) -> List[Any]:
+            out = rows[self.pos : self.pos + size]
+            self.pos += len(out)
+            return out
+
+    cand = _scan_candidates(_Cursor(), np.ones(dim, dtype=np.float32))
+    assert len(cand.keys) == 500
+    assert len({id(name) for name, _ in cand.keys}) == 4

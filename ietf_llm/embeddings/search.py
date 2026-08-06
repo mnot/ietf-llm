@@ -944,10 +944,9 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
     return conn
 
 
-def _mmr_select(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _mmr_select(
     order: List[int],
     scores: "np.ndarray[Any, np.dtype[np.float32]]",
-    pool: List[int],
     pool_vecs: "np.ndarray[Any, np.dtype[np.float32]]",
     k: int,
     lam: float = _MMR_LAMBDA,
@@ -958,14 +957,15 @@ def _mmr_select(  # pylint: disable=too-many-arguments,too-many-positional-argum
     returned set covers the query rather than clustering on its single
     most-relevant facet.
 
-    `pool` is `order[:_MMR_POOL]` and `pool_vecs[j]` is the vector for
-    `pool[j]`. Only the pool needs vectors — the scan scores each batch and
-    drops it (see `_scan_candidates`), so this is the one place ranking
-    reads embeddings back, and it reads `_MMR_POOL` of them rather than the
-    corpus. They are L2-normalised, so a dot product is cosine similarity.
-    If k runs past the pool the remainder is filled in plain relevance
-    order.
+    `pool_vecs[j]` is the vector for `order[:_MMR_POOL][j]` — the caller
+    takes the same slice to fetch them. Only the pool needs vectors: the
+    scan scores each batch and drops it (see `_scan_candidates`), so this is
+    the one place ranking reads embeddings back, and it reads `_MMR_POOL` of
+    them rather than the corpus. They are L2-normalised, so a dot product is
+    cosine similarity. If k runs past the pool the remainder is filled in
+    plain relevance order.
     """
+    pool = order[:_MMR_POOL]
     local = {row: j for j, row in enumerate(pool)}
     selected: List[int] = []
     remaining = list(pool)
@@ -991,12 +991,22 @@ def _mmr_select(  # pylint: disable=too-many-arguments,too-many-positional-argum
 
 #: Display columns for a hit — everything `Hit` needs that ranking does
 #: not. Fetched in a second pass for the selected rows only (see `_rank`).
-_HIT_COLUMNS = (
-    "title, text, start_line, end_line, labels, state, chunk_date, url, "
-    "duplicate_of, closing_rationale"
+_HIT_COLUMN_NAMES = (
+    "title",
+    "text",
+    "start_line",
+    "end_line",
+    "labels",
+    "state",
+    "chunk_date",
+    "url",
+    "duplicate_of",
+    "closing_rationale",
 )
-#: Position of `chunk_date` within a `_HIT_COLUMNS` row (prefixed by `id`).
-_HIT_CHUNK_DATE = 7
+_HIT_COLUMNS = ", ".join(_HIT_COLUMN_NAMES)
+#: Position of `chunk_date` in a fetched row, which `id` prefixes. Derived
+#: rather than counted, so reordering the columns cannot silently desync it.
+_HIT_CHUNK_DATE = 1 + _HIT_COLUMN_NAMES.index("chunk_date")
 
 #: Bind-variable batch for the second pass. SQLite's default
 #: SQLITE_MAX_VARIABLE_NUMBER is 999; a caller can ask for k up to
@@ -1037,13 +1047,18 @@ def _scan_candidates(
     ids: List[int] = []
     keys: List[Tuple[str, int]] = []
     blocks: List["np.ndarray[Any, np.dtype[np.float32]]"] = []
+    # sqlite hands back a fresh str per row, but a corpus has far fewer
+    # files than chunks (~50 chunks per file at RFC-series scale), so
+    # interning collapses the key list to one string per file.
+    seen_files: Dict[str, str] = {}
     while True:
         batch = cur.fetchmany(_SCAN_BATCH)
         if not batch:
             break
         for row in batch:
             ids.append(int(row[0]))
-            keys.append((row[1], int(row[2])))
+            name = seen_files.setdefault(row[1], row[1])
+            keys.append((name, int(row[2])))
         # cosine, since both sides are normalised
         blocks.append(_unpack_matrix([r[3] for r in batch]) @ q_vec)
     scores = np.concatenate(blocks) if blocks else np.zeros(0, dtype=np.float32)
@@ -1051,14 +1066,17 @@ def _scan_candidates(
 
 
 def _fetch_vectors(
-    conn: sqlite3.Connection, ids: List[int]
+    conn: sqlite3.Connection,
+    ids: List[int],
+    verbose: Verbosity = Verbosity.STATUS,
 ) -> Optional["np.ndarray[Any, np.dtype[np.float32]]"]:
     """Embeddings for `ids`, in that order, or None if any has gone.
 
     Only the MMR pool comes through here. None means a row vanished between
     the scan and this read, which the read-only query path cannot cause;
     the caller falls back to undiversified selection rather than failing a
-    query over it.
+    query over it. It is logged because a silent fallback would show up as
+    results that quietly stopped being diverse, with nothing to point at.
     """
     by_id: Dict[int, bytes] = {}
     for start in range(0, len(ids), _ROWID_BATCH):
@@ -1069,7 +1087,15 @@ def _fetch_vectors(
             batch,
         ):
             by_id[int(row[0])] = row[1]
-    if any(i not in by_id for i in ids):
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        log(
+            f"{len(missing)} of {len(ids)} ranked chunks vanished between the "
+            "scan and the vector read; returning results without "
+            "diversification.",
+            verbose,
+            level=LogLevel.WARN,
+        )
         return None
     return _unpack_matrix([by_id[i] for i in ids])
 
@@ -1108,6 +1134,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     snippet_chars: Optional[int] = None,
     exclude: Optional["set[Tuple[str, int]]"] = None,
     diversify: bool = True,
+    verbose: Verbosity = Verbosity.STATUS,
 ) -> List[Hit]:
     """Score every candidate chunk against `q_vec`, collapse a long
     message's sub_idx fragments to one logical hit, select k (diversified
@@ -1156,10 +1183,10 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     # early-objection → settled-position arc it exists to show.
     top = order[:k]
     if diversify and sort != "date" and len(order) > k:
-        pool = order[:_MMR_POOL]
-        pool_vecs = _fetch_vectors(conn, [cand.ids[i] for i in pool])
+        pool_ids = [cand.ids[i] for i in order[:_MMR_POOL]]
+        pool_vecs = _fetch_vectors(conn, pool_ids, verbose)
         if pool_vecs is not None:
-            top = _mmr_select(order, scores, pool, pool_vecs, k)
+            top = _mmr_select(order, scores, pool_vecs, k)
     # Final pass: the display columns, for the survivors only.
     detail = _fetch_hit_rows(conn, [cand.ids[i] for i in top])
     top = [i for i in top if cand.ids[i] in detail]
@@ -1322,6 +1349,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             sort=sort,
             snippet_chars=snippet_chars,
             diversify=diversify,
+            verbose=verbose,
         )
     finally:
         conn.close()
@@ -1395,6 +1423,7 @@ def related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
             snippet_chars=snippet_chars,
             exclude={(file, chunk_idx)},
             diversify=diversify,
+            verbose=verbose,
         )
     finally:
         conn.close()
