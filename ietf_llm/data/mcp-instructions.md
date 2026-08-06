@@ -39,7 +39,7 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 - **No named corpus, just a topic?** `find_efforts(topic)` ranks active efforts
   and flags which are cached; `which_corpus(query)` routes to a cached one.
 - **Asked about a *person* rather than an effort?** "What does <name> care
-  about", "how would <name> review this", "build a persona for <name>" — the
+  about", "how would <name> review this"  — the
   unit is an **author corpus**, not a WG. Check `list_corpora` for one already
   tracking them; otherwise (when gather is enabled)
   `start_gather(corpus="<name>", author="<their-email>")`. Email is the
