@@ -7,11 +7,23 @@ import re
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from ..paths import DIR_DRAFTS, drafts_dir
-from ..singletons.rfcs import is_stale_miss, render_rfc, render_search
-from .common import _files_dir, _list_wgs, _offload
+from ..store.corpus import VersionVanished
+from ..singletons.rfcs import (
+    is_stale_miss,
+    render_rfc,
+    render_search,
+    working_group,
+)
+from .common import _files_dir, _list_wgs, _materialised_files_dir, _offload
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
+
+
+def _has_body(cache: Optional[str], filename: str) -> bool:
+    return cache is not None and os.path.isfile(
+        os.path.join(drafts_dir(cache), filename)
+    )
 
 
 def _cached_body(number: str) -> Optional[Tuple[str, str]]:
@@ -19,9 +31,25 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
 
     RFC bodies are not part of the `_rfc/` mirror — that is metadata only.
     They land on disk only when a corpus that published the RFC was gathered
-    with `--rfcs`, as `drafts/rfcNNNN.txt`. Same read-only, offline scan
-    `_find_latest_draft_file` does for drafts; corpora are visited in a
-    stable order so the pointer doesn't move between calls.
+    with `--rfcs`, as `drafts/rfcNNNN.txt`.
+
+    Two lookups, because on the cloud backend resolving a corpus's files dir
+    *materialises* that version's blobs onto scratch:
+
+    1. The publishing WG's own corpus, resolved the forcing way. That is the
+       overwhelmingly likely holder and it is exactly one corpus, so it is
+       worth the one materialisation.
+    2. Every gathered corpus, resolved the *non*-forcing way — an RFC can be
+       cached under a corpus that did not publish it, and the WG is unknown
+       for the legacy and independent streams. Sweeping this with the forcing
+       resolver would download the whole fleet on a metadata lookup.
+
+    So on cloud a body in an unstaged corpus reads as absent. That is the
+    honest answer for a read path that must not fetch, and `_body_note` says
+    "not reachable from here" rather than claiming it does not exist.
+    Corpora are visited in a stable order so the pointer doesn't move between
+    calls; on the local backend both resolvers are the same directory and the
+    result is exactly as before.
     """
     match = re.search(r"\d+", str(number))
     if not match:
@@ -30,12 +58,19 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
     # The relpath goes back to the model as a `read_file_section` argument,
     # so it stays `/`-separated whatever the host separator is.
     relpath = f"{DIR_DRAFTS}/{filename}"
-    for wg in sorted(_list_wgs()):
+    corpora = sorted(_list_wgs())
+    owner = working_group(number)
+    if owner and owner in corpora:
         try:
-            cache = _files_dir(wg)
-        except FileNotFoundError:
-            continue
-        if os.path.isfile(os.path.join(drafts_dir(cache), filename)):
+            if _has_body(_files_dir(owner), filename):
+                return owner, relpath
+        # A version that vanished mid-request (VersionVanished) or resolves to
+        # nothing (FileNotFoundError) is a reason to fall through to the sweep,
+        # not to fail a metadata lookup outright.
+        except (FileNotFoundError, VersionVanished):
+            pass
+    for wg in corpora:
+        if wg != owner and _has_body(_materialised_files_dir(wg), filename):
             return wg, relpath
     return None
 
@@ -58,7 +93,7 @@ def _body_note(number: str) -> str:
             f'`read_file_section("{corpus}", "{relpath}")`'
         )
     return (
-        "- Body: **not available offline.** Everything above is catalogue "
+        "- Body: **not reachable from here.** Everything above is catalogue "
         "metadata, not the document text — do not characterise what this RFC "
         "says from it. Quote it from the Text link above, or gather a corpus "
         "that published it (`ietf-llm <wg> --rfcs`) and re-run."
@@ -135,9 +170,11 @@ def register(server: "FastMCP") -> None:
         **This is catalogue metadata, never the document body.** The last
         line of the output says which of two cases you are in: the body is
         cached in some corpus (it gives you the exact `read_file_section`
-        call), or it is not reachable offline at all. In the second case do
-        not characterise what the RFC says — you have its title and its
-        reference graph, not its text.
+        call), or this server cannot reach it. In the second case do not
+        characterise what the RFC says — you have its title and its
+        reference graph, not its text. Note the claim is about reach, not
+        existence: on a shared deployment the body may well be published
+        somewhere in the fleet without being readable from here.
 
         Reads a local mirror of the RFC series. If the number is missing
         and that mirror is stale, it is refreshed live before answering,

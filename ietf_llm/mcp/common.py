@@ -73,6 +73,21 @@ def _files_dir(wg: str) -> str:
     return cache
 
 
+def _materialised_files_dir(wg: str) -> Optional[str]:
+    """`wg`'s `files/` dir if it is already local, else None — never fetches.
+
+    The non-forcing counterpart to `_files_dir`: on the cloud backend that one
+    materialises a version's blobs onto scratch, so calling it across every
+    gathered corpus turns a cheap sweep into downloading the whole fleet. A
+    discovery path that visits many corpora uses this and degrades to "not
+    here" for anything unstaged. Identical to `_files_dir` on the local
+    backend, where there is nothing to materialise.
+    """
+    return serve_metrics.timed_store(
+        "materialised_cache_dir", lambda: get_corpus_store().materialised_cache_dir(wg)
+    )
+
+
 def _safe_path(wg: str, file: str) -> Optional[str]:
     """Resolve `file` inside the corpus's file cache; refuse path escapes."""
     cache = _files_dir(wg)

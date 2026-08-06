@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from ietf_llm.paths import get_cache_dir
 from ietf_llm.singletons import rfcs
 from ietf_llm.gather.sources import rfcs as gather_rfcs
 from ietf_llm.mcp import rfcs as mcp_rfcs
@@ -740,7 +741,7 @@ def test_round_trip_writer_to_reader(
 def test_rendered_entry_says_body_is_unavailable(isolated_home: Path) -> None:
     _seed(isolated_home)
     out = mcp_rfcs._render_rfc_live("200")
-    assert "not available offline" in out
+    assert "not reachable from here" in out
     assert "do not characterise what this RFC says" in out
 
 
@@ -751,7 +752,7 @@ def test_rendered_entry_points_at_a_cached_body(isolated_home: Path) -> None:
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
     out = mcp_rfcs._render_rfc_live("200")
     assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
-    assert "not available offline" not in out
+    assert "not reachable from here" not in out
 
 
 def test_body_note_is_per_rfc_not_per_corpus(isolated_home: Path) -> None:
@@ -760,7 +761,7 @@ def test_body_note_is_per_rfc_not_per_corpus(isolated_home: Path) -> None:
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
-    assert "not available offline" in mcp_rfcs._render_rfc_live("300")
+    assert "not reachable from here" in mcp_rfcs._render_rfc_live("300")
 
 
 def test_misses_get_no_body_note(isolated_home: Path) -> None:
@@ -781,3 +782,149 @@ def test_body_lookup_stays_offline(
     calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
     mcp_rfcs._render_rfc_live("200")
     assert calls == []
+
+
+# --- Body lookup must not materialise the fleet ----------------------------
+#
+# On the cloud backend, resolving a corpus's files dir *materialises* that
+# version's blobs onto scratch. `get_rfc` is a high-frequency metadata
+# lookup, so sweeping every gathered corpus through the forcing resolver
+# would download the whole fleet on one call. The sweep uses the
+# non-forcing resolver; only the publishing WG's own corpus -- one corpus,
+# the overwhelmingly likely holder -- is worth the materialisation.
+
+
+class _RecordingStore:
+    """Answers like the local backend, but records which corpora were
+    resolved through the *materialising* path (`local_cache_dir`)."""
+
+    def __init__(self, corpora: List[str]) -> None:
+        self._corpora = corpora
+        self.forced: List[str] = []
+
+    def _files(self, corpus: str) -> Optional[str]:
+        path = os.path.join(get_cache_dir(), corpus, "files")
+        return path if os.path.isdir(path) else None
+
+    def list_corpora(self) -> List[str]:
+        return list(self._corpora)
+
+    def local_cache_dir(self, corpus: str) -> Optional[str]:
+        self.forced.append(corpus)
+        return self._files(corpus)
+
+    def materialised_cache_dir(self, corpus: str) -> Optional[str]:
+        return self._files(corpus)
+
+
+def _install_store(
+    monkeypatch: pytest.MonkeyPatch, corpora: List[str]
+) -> _RecordingStore:
+    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
+
+    store = _RecordingStore(corpora)
+    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
+    return store
+
+
+def test_working_group_accessor(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    assert rfcs.working_group("200") == "phone"
+    assert rfcs.working_group("RFC200") == "phone"
+    # RFC300 carries an empty wg, as the legacy / independent streams do.
+    assert rfcs.working_group("300") is None
+    assert rfcs.working_group("99999") is None
+
+
+def test_sweep_never_forces_materialisation(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
+    store = _install_store(monkeypatch, ["other", "phone"])
+    # RFC300 has no wg, so this is a pure sweep -- and it still finds the body.
+    out = mcp_rfcs._render_rfc_live("300")
+    assert 'read_file_section("other", "drafts/rfc300.txt")' in out
+    assert store.forced == []
+
+
+def test_owner_corpus_is_the_one_worth_materialising(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "prose")
+    store = _install_store(monkeypatch, ["other", "phone"])
+    out = mcp_rfcs._render_rfc_live("200")
+    assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
+    # Exactly one -- the publishing WG -- not every gathered corpus.
+    assert store.forced == ["phone"]
+
+
+def test_a_miss_forces_only_the_owner(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The common case. A miss must not escalate into resolving the fleet.
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["other", "phone"])
+    assert "not reachable from here" in mcp_rfcs._render_rfc_live("200")
+    assert store.forced == ["phone"]
+
+
+class _UnstagedStore(_RecordingStore):
+    """A cloud replica with nothing staged: the non-forcing resolver finds
+    nothing even though the bodies are on disk."""
+
+    def materialised_cache_dir(self, corpus: str) -> Optional[str]:
+        return None
+
+
+def test_unstaged_corpus_reads_as_unreachable(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The behaviour change that will actually be hit on cloud. The body is
+    # published, this replica just can't see it without materialising, so the
+    # note claims unreachability rather than absence -- and still doesn't
+    # download the fleet to find out.
+    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
+    store = _UnstagedStore(["other", "phone"])
+    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
+
+    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
+
+    out = mcp_rfcs._render_rfc_live("300")
+    assert "not reachable from here" in out
+    assert store.forced == []
+
+
+def test_owner_not_gathered_skips_the_probe(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The majority case: only ~4% of the series has a wg that is also a
+    # gathered corpus, so usually there is no owner to probe at all.
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["other"])  # 'phone' not gathered
+    assert rfcs.working_group("200") == "phone"
+    assert "not reachable from here" in mcp_rfcs._render_rfc_live("200")
+    assert store.forced == []
+
+
+def test_owner_wins_when_several_corpora_hold_the_body(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Precedence: previously first-alphabetical, now the publishing WG --
+    # a better answer, since a body under an unrelated corpus is coincidence.
+    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "aaa", "drafts/rfc200.txt", "prose")
+    write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "prose")
+    _install_store(monkeypatch, ["aaa", "phone"])
+    out = mcp_rfcs._render_rfc_live("200")
+    assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
