@@ -58,7 +58,7 @@ def print_completion_snippet(shell: str) -> int:
         return 1
     commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
     # argcomplete ships no type stubs; shellcode isn't in its __all__.
-    snippet = argcomplete.shellcode(  # type: ignore[attr-defined,no-untyped-call]
+    snippet = argcomplete.shellcode(  # type: ignore[attr-defined]
         commands,
         shell=shell,
     )
