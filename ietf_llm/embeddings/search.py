@@ -981,6 +981,44 @@ def _mmr_select(
     return selected
 
 
+#: Display columns for a hit — everything `Hit` needs that ranking does
+#: not. Fetched in a second pass for the selected rows only (see `_rank`).
+_HIT_COLUMNS = (
+    "title, text, start_line, end_line, labels, state, chunk_date, url, "
+    "duplicate_of, closing_rationale"
+)
+#: Position of `chunk_date` within a `_HIT_COLUMNS` row (prefixed by `id`).
+_HIT_CHUNK_DATE = 7
+
+#: Bind-variable batch for the second pass. SQLite's default
+#: SQLITE_MAX_VARIABLE_NUMBER is 999; a caller can ask for k up to
+#: `_MAX_SEARCH_K` × the over-fetch factor, so batch rather than assume.
+_ROWID_BATCH = 400
+
+
+def _fetch_hit_rows(
+    conn: sqlite3.Connection, ids: List[int]
+) -> Dict[int, Tuple[Any, ...]]:
+    """Second pass: the display columns for `ids` only, keyed by row id.
+
+    `text` is by far the widest column in the table, so selecting it for
+    every candidate is what made ranking's memory scale with corpus size
+    rather than with k. Ranking needs only the vectors; this fetches the
+    rest once the survivors are known.
+    """
+    out: Dict[int, Tuple[Any, ...]] = {}
+    for start in range(0, len(ids), _ROWID_BATCH):
+        batch = ids[start : start + _ROWID_BATCH]
+        placeholders = ",".join("?" * len(batch))
+        cur = conn.execute(
+            f"SELECT id, {_HIT_COLUMNS} FROM chunks WHERE id IN ({placeholders})",
+            batch,
+        )
+        for row in cur.fetchall():
+            out[int(row[0])] = row
+    return out
+
+
 def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     conn: sqlite3.Connection,
     q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
@@ -997,6 +1035,13 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     message's sub_idx fragments to one logical hit, select k (diversified
     by default), and build the `Hit` list.
 
+    Two passes. The first reads only what ranking needs — id, the collapse
+    key, and the vector — so the scan's cost is the vectors alone. The
+    second fetches the display columns (`text` above all) for the ≤ k
+    survivors. Selecting `text` for every candidate made a query allocate
+    in proportion to the corpus rather than to k, which does not survive an
+    index of the whole RFC series.
+
     The query vector is the only thing that varies between callers:
     `search` embeds a query string, `related` reads an existing chunk's
     stored vector. `exclude` drops (file, chunk_idx) keys from the result
@@ -1005,17 +1050,14 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     cur = conn.cursor()
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
-        "SELECT file, chunk_idx, title, text, embedding, "
-        "start_line, end_line, labels, state, chunk_date, url, "
-        "duplicate_of, closing_rationale "
-        f"FROM chunks{where_sql}",
+        f"SELECT id, file, chunk_idx, embedding FROM chunks{where_sql}",
         where_args,
     )
     rows = cur.fetchall()
     if not rows:
         return []
 
-    embs = _unpack_matrix([r[4] for r in rows])
+    embs = _unpack_matrix([r[3] for r in rows])
     scores = embs @ q_vec  # cosine since both sides are normalized
     # Collapse a long message's sub_idx fragments to a single hit — its
     # best-scoring fragment — so search returns one row per logical
@@ -1024,7 +1066,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     # actually matched. Short, unsplit chunks are their own sole fragment.
     best_by_key: Dict[Tuple[str, int], int] = {}
     for i, row in enumerate(rows):
-        key = (row[0], row[1])
+        key = (row[1], row[2])
         if exclude and key in exclude:
             continue
         best = best_by_key.get(key)
@@ -1039,21 +1081,23 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
         top = _mmr_select(order, scores, embs, k)
     else:
         top = order[:k]
+    # Second pass: the display columns, for the survivors only.
+    detail = _fetch_hit_rows(conn, [int(rows[i][0]) for i in top])
+    top = [i for i in top if int(rows[i][0]) in detail]
     # Chronological mode: pick top-k by relevance (so the query still
     # filters what's "about" the topic), then re-order those survivors
     # by date so the consumer reads early-objection → settled-position
     # rather than most-salient-first. Hit.score is preserved either way
     # so the caller can tell the underlying ranking apart.
     if sort == "date":
-        top = sorted(top, key=lambda i: rows[i][9] or "")
+        top = sorted(top, key=lambda i: detail[int(rows[i][0])][_HIT_CHUNK_DATE] or "")
     hits: List[Hit] = []
     for i in top:
+        _id, file, chunk_idx, _emb = rows[i]
         (
-            file,
-            chunk_idx,
+            _,
             title,
             text,
-            _,
             start_line,
             end_line,
             labels,
@@ -1062,7 +1106,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
             url,
             duplicate_of,
             closing_rationale,
-        ) = rows[i]
+        ) = detail[int(_id)]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
         # `snippet_chars` lets the caller override the default budget
