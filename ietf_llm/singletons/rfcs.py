@@ -264,6 +264,26 @@ def is_stale_miss(number: str) -> bool:
     return age is not None and age >= RFC_TTL_SECONDS
 
 
+def working_group(number: str) -> Optional[str]:
+    """The WG acronym that published `number`, or None.
+
+    None for the ~36% of the series with no `wg` in the mirror — the legacy
+    and independent streams, and anything predating group attribution. A
+    caller looking for the RFC's body uses this to pick the one corpus worth
+    a bounded lookup; it is a hint, not a guarantee, since a WG may publish
+    an RFC that no corpus of that name was ever gathered for.
+    """
+    data = _load()
+    if data is None:
+        return None
+    match = re.search(r"\d+", str(number))
+    if not match:
+        return None
+    rfc = data.rfcs.get(rfc_num_to_name(match.group(0)))
+    wg = (rfc or {}).get("wg")
+    return str(wg) if wg else None
+
+
 def no_such_rfc(number: str) -> str:
     """Render a miss.
 
