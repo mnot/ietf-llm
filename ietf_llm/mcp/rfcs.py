@@ -2,18 +2,70 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+import os
+import re
+from typing import TYPE_CHECKING, Optional, Tuple
 
+from ..paths import drafts_dir
 from ..singletons.rfcs import is_stale_miss, render_rfc, render_search
-from .common import _offload
+from .common import _files_dir, _list_wgs, _offload
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
 
 
+def _cached_body(number: str) -> Optional[Tuple[str, str]]:
+    """`(corpus, relpath)` of a cached body for RFC `number`, or None.
+
+    RFC bodies are not part of the `_rfc/` mirror — that is metadata only.
+    They land on disk only when a corpus that published the RFC was gathered
+    with `--rfcs`, as `drafts/rfcNNNN.txt`. Same read-only, offline scan
+    `_find_latest_draft_file` does for drafts; corpora are visited in a
+    stable order so the pointer doesn't move between calls.
+    """
+    match = re.search(r"\d+", str(number))
+    if not match:
+        return None
+    relpath = os.path.join("drafts", f"rfc{int(match.group(0))}.txt")
+    for wg in sorted(_list_wgs()):
+        try:
+            cache = _files_dir(wg)
+        except FileNotFoundError:
+            continue
+        if os.path.isfile(os.path.join(drafts_dir(cache), os.path.basename(relpath))):
+            return wg, relpath
+    return None
+
+
+def _body_note(number: str) -> str:
+    """The body-availability line appended to a rendered RFC entry.
+
+    `get_rfc` answers from a catalogue of titles and references; it has never
+    returned the document text. Left unsaid, a well-formed metadata response
+    reads as "here is the RFC", and a caller that needed to quote a section
+    instead reasons from memory — which is how a review came to rule out a
+    finding on RFC 8820 by recalling the wrong part of it (issue #218). So
+    say which of the two cases this is, every time.
+    """
+    found = _cached_body(number)
+    if found is not None:
+        corpus, relpath = found
+        return (
+            f"- Body: cached in `{corpus}` — "
+            f'`read_file_section("{corpus}", "{relpath}")`'
+        )
+    return (
+        "- Body: **not available offline.** Everything above is catalogue "
+        "metadata, not the document text — do not characterise what this RFC "
+        "says from it. Quote it from the Text link above, or gather a corpus "
+        "that published it (`ietf-llm <wg> --rfcs`) and re-run."
+    )
+
+
 def _render_rfc_live(number: str) -> str:
     """`render_rfc`, but don't report a miss the mirror is merely too old to
-    know about (the RFC9846 case: published after the last gather).
+    know about (the RFC9846 case: published after the last gather), and stamp
+    whether the body text is actually reachable (see `_body_note`).
 
     A hit — and a miss inside the TTL — is answered offline, so the common
     path never touches the network. Only a stale miss spends a bounded live
@@ -26,7 +78,12 @@ def _render_rfc_live(number: str) -> str:
         from ..gather.sources.rfcs import revalidate_index
 
         revalidate_index()
-    return render_rfc(number)
+    rendered = render_rfc(number)
+    # Only a rendered entry gets the note; a miss / ungathered-index message
+    # is not a metadata response anyone could mistake for the document.
+    if not rendered.startswith("## "):
+        return rendered
+    return f"{rendered}\n{_body_note(number)}"
 
 
 def register(server: "FastMCP") -> None:
@@ -70,9 +127,14 @@ def register(server: "FastMCP") -> None:
         obsoletes / is obsoleted by, its normative + informative
         references, how many RFCs cite it, and links to the text.
 
-        `number` is an RFC number or name ("9110" or "RFC9110"). This is
-        catalogue metadata, not the document body — to read the prose,
-        follow the text link in the output.
+        `number` is an RFC number or name ("9110" or "RFC9110").
+
+        **This is catalogue metadata, never the document body.** The last
+        line of the output says which of two cases you are in: the body is
+        cached in some corpus (it gives you the exact `read_file_section`
+        call), or it is not reachable offline at all. In the second case do
+        not characterise what the RFC says — you have its title and its
+        reference graph, not its text.
 
         Reads a local mirror of the RFC series. If the number is missing
         and that mirror is stale, it is refreshed live before answering,

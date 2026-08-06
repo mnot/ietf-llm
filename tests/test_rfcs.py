@@ -725,3 +725,59 @@ def test_round_trip_writer_to_reader(
     detail = rfcs.render_rfc("100")
     assert "Obsoleted by: RFC200" in detail
     assert "Cited by: 1 normative, 1 informative" in detail
+
+
+# --- Body availability (issue #218) ---------------------------------------
+#
+# `get_rfc` has never returned document text -- the `_rfc/` mirror is three
+# JSON blobs of metadata. Left unsaid, its well-formed metadata response
+# reads as "here is the RFC", and a caller that needed to quote a section
+# reasons from memory instead. So every rendered entry ends with which of
+# the two cases it is: body on disk (with the call that reads it), or no
+# body reachable at all.
+
+
+def test_rendered_entry_says_body_is_unavailable(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    out = mcp_rfcs._render_rfc_live("200")
+    assert "not available offline" in out
+    assert "do not characterise what this RFC says" in out
+
+
+def test_rendered_entry_points_at_a_cached_body(isolated_home: Path) -> None:
+    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
+    out = mcp_rfcs._render_rfc_live("200")
+    assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
+    assert "not available offline" not in out
+
+
+def test_body_note_is_per_rfc_not_per_corpus(isolated_home: Path) -> None:
+    # A corpus holding rfc200's body says nothing about rfc300's.
+    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
+    assert "not available offline" in mcp_rfcs._render_rfc_live("300")
+
+
+def test_misses_get_no_body_note(isolated_home: Path) -> None:
+    # A miss is not a metadata response anyone could mistake for the
+    # document, so it stays as terse as it was.
+    _seed(isolated_home)
+    out = mcp_rfcs._render_rfc_live("99999")
+    assert "No such RFC" in out
+    assert "Body:" not in out
+    assert "has not been gathered" not in mcp_rfcs._render_rfc_live("200")
+
+
+def test_body_lookup_stays_offline(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, gather_on: Any
+) -> None:
+    # The scan is a read-only walk of gathered corpora -- never a fetch.
+    _seed(isolated_home)
+    calls = _install_stub(monkeypatch, lambda url, hdrs: _FakeResponse(200, b"{}"))
+    mcp_rfcs._render_rfc_live("200")
+    assert calls == []
