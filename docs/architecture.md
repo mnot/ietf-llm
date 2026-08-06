@@ -618,6 +618,28 @@ side** — `publish(corpus, workspace)` makes a gathered tree the new current
 version. `get_corpus_store()` picks the backend from service config
 (`IETF_LLM_STORE_BACKEND`, default `local`).
 
+A corpus is not only its `files/` tree: the gather workspace *is* the corpus
+root, so the machinery it writes beside `files/` — `documents.json` (draft
+lifecycle state), the `last-gathered` / `seed-source` sentinels — is published as
+part of the version too. `local_corpus_dir(corpus)` is the read-side accessor for
+that root (`local_cache_dir`'s parent, and the same `<cache>/<corpus>` as ever on
+the local backend). **Composing such a path from `get_cache_dir()` is a bug on
+any backend whose current version is not the live cache**: the cloud backend
+materialises into per-version scratch, so a `<cache>/<corpus>/x.json` read there
+finds nothing and the reader silently degrades to "not recorded" — exactly the
+failure mode the seam exists to prevent. Root artifacts that are *written* during
+a gather (`materials.json`, and `documents.json`'s embedding-skip reader) stay on
+the workspace path: they describe the tree being built, which is not yet
+published.
+
+Only `documents.json` reads through this accessor today. The `last-gathered` and
+`seed-source` sentinels are published the same way but their readers still
+compose from `get_cache_dir()`, so on a cloud replica they are silently absent —
+costing every tool response its freshness line, and mis-firing the first-gather
+read guard (issue #223). Under a split `IETF_LLM_INDEX_DIR`, seeding also moves
+this machinery out of the workspace, because it cannot tell root artifacts from
+index files (issue #224).
+
 Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config/store.py`,
 `get_config_store()`), chosen by the same `IETF_LLM_STORE_BACKEND` selector but
 kept separate from `CorpusStore` on purpose. Content is immutable, versioned, and

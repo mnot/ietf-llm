@@ -61,6 +61,30 @@ def test_local_cache_dir_absent_corpus(tmp_path: Path) -> None:
     assert store.resolve_current("ghost") is None
     assert store.corpus_exists("ghost") is False
     assert store.local_cache_dir("ghost") is None
+    assert store.local_corpus_dir("ghost") is None
+
+
+def test_local_corpus_dir_is_the_staged_version_root(tmp_path: Path) -> None:
+    """Root-level machinery (`documents.json`, the sentinels) lives beside
+    `files/` in the corpus root, so it is published as part of a version — but
+    materialised into per-version scratch, never back into `<cache>/<corpus>/`.
+    `local_corpus_dir` is how a reader reaches it."""
+    store, _ = _store(tmp_path)
+    ws = Path(_workspace(tmp_path, "ws", "hi"))
+    (ws / "documents.json").write_text('{"draft-ietf-tls-x": {"state": "active"}}')
+    store.publish("tls", str(ws), version="v1")
+
+    root = store.local_corpus_dir("tls")
+    assert root is not None
+    assert (Path(root) / "documents.json").exists()
+    assert (Path(root) / "last-gathered").exists()
+    # ...and it is the parent of the files dir, not a sibling of it. Pinning the
+    # relationship rather than the literal scratch layout, which is the store's
+    # business.
+    cache = store.local_cache_dir("tls")
+    assert cache is not None and str(Path(cache).parent) == root
+    # The index travels in the version root too, so the two accessors agree.
+    assert store.local_index_dir("tls") == root
 
 
 def test_second_publish_moves_pointer(tmp_path: Path) -> None:

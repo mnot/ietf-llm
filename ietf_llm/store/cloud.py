@@ -275,6 +275,17 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         files_dir = os.path.join(staged[1], "files")
         return files_dir if os.path.isdir(files_dir) else None
 
+    def local_corpus_dir(self, corpus: str) -> Optional[str]:
+        # The staged version root itself — `<scratch>/<corpus>/<version>/` — so a
+        # reader of a root-level artifact (`documents.json`) reads the *published
+        # version's* copy rather than a `<cache>/<corpus>/…` path that never
+        # exists on a reader replica. Resolved through the same stage-and-recover
+        # path as local_cache_dir, so it honours the request pin; unlike that
+        # method it does not require `files/`, since a root artifact is
+        # independent of it.
+        staged = self._stage_current(corpus)
+        return staged[1] if staged is not None else None
+
     def materialised_cache_dir(self, corpus: str) -> Optional[str]:
         # Read-only, non-fetching: return the version's files dir only if it is
         # already staged on this replica's scratch. Cheap discovery paths (the
@@ -288,10 +299,11 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         return files_dir if os.path.isdir(files_dir) else None
 
     def local_index_dir(self, corpus: str) -> Optional[str]:
-        # Same resolve-and-stage path as local_cache_dir (with vanished-version
-        # recovery); the version's `embeddings.db` sits directly under its root.
-        staged = self._stage_current(corpus)
-        return staged[1] if staged is not None else None
+        # The version's `embeddings.db` sits directly under the version root, so
+        # this is the corpus root — same answer, said once. (The two diverge on
+        # the local backend, where the index dir is relocatable via
+        # IETF_LLM_INDEX_DIR; here the index travels inside the version.)
+        return self.local_corpus_dir(corpus)
 
     def _fetch_version_to(self, corpus: str, version: str, tmp: str) -> None:
         """Materialise a version's content into `tmp` and verify every file the
@@ -360,9 +372,13 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         try:
             self._fetch_version_to(corpus, version, tmp)
             if split_index:
-                # The version tree is `files/` (a dir) plus the index file(s) at
-                # the top level; relocate the latter so only `files/` is swapped
-                # into the workspace.
+                # Relocate the version's top-level files so only `files/` is
+                # swapped into the workspace. BUG (issue #224): this moves
+                # *every* top-level file, but the version root is the corpus
+                # root — it carries `documents.json`, `materials.json` and the
+                # sentinels as well as the index, and at this point they are
+                # indistinguishable. So they are relocated out of the workspace
+                # too. The move needs filtering to the index files.
                 os.makedirs(index_dir, exist_ok=True)
                 for name in os.listdir(tmp):
                     src = os.path.join(tmp, name)
