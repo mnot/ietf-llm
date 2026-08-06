@@ -21,7 +21,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from ..embeddings import chunk_spans
 from .common import (
@@ -65,32 +65,53 @@ _SKIP_SUFFIXES = (".pdf", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".gz", ".db")
 _DERIVED_PREFIXES = ("raw/", "github/")
 
 
-class _Hit:
+class _Hit(NamedTuple):
     """One matching line: where it is and what it says."""
 
-    def __init__(self, file: str, lineno: int, text: str) -> None:
-        self.file = file
-        self.lineno = lineno
-        self.text = text
+    file: str
+    lineno: int
+    text: str
 
 
 def _compile(pattern: str, regex: bool, case_sensitive: bool) -> "re.Pattern[str]":
     """Compile the caller's pattern. A literal pattern is escaped rather than
     handled by a separate substring path, so matching, counting, and context
-    rendering all run through one code path."""
-    flags = 0 if case_sensitive else re.IGNORECASE
+    rendering all run through one code path.
+
+    `re.MULTILINE` is not optional. `_scan_file` prefilters by searching the
+    file's whole text before it looks at individual lines, so without it `^`
+    and `$` would anchor to the file rather than the line: `^From:` would fail
+    the prefilter, the file would be skipped entirely, and the tool would
+    report a confident zero — the exact unsound negative it exists to prevent.
+    It also makes regex mode agree with the documented "matches within one
+    line" contract.
+    """
+    flags = re.MULTILINE if case_sensitive else re.MULTILINE | re.IGNORECASE
     return re.compile(pattern if regex else re.escape(pattern), flags)
 
 
 def _scan_file(
-    path: str, relpath: str, matcher: "re.Pattern[str]", hits: List[_Hit]
+    path: str,
+    relpath: str,
+    matcher: "re.Pattern[str]",
+    hits: List[_Hit],
+    keep: int,
 ) -> int:
-    """Append every matching line in one file to `hits`; return the count.
+    """Count every matching line in one file; append the first `keep` of them
+    (across the whole scan) to `hits`. Returns the count, which is complete
+    whether or not the lines were retained.
 
     Reads the file whole and prefilters with a single search over the entire
     text: the overwhelmingly common case is a file with no match at all, and
     one C-level scan is far cheaper than splitting a 30 KB message thread into
     lines to check each one.
+
+    Counting past `keep` but not retaining is what lets the reported total stay
+    honest without holding a `_Hit` per match: a one-character pattern matches
+    over a million lines in a real corpus, and keeping them all would be a
+    memory-exhaustion lever on a shared server. Files are scanned in relpath
+    order, so the retained hits are exactly the ones the renderer would have
+    shown after sorting.
     """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -103,16 +124,30 @@ def _scan_file(
     for lineno, line in enumerate(text.splitlines(), 1):
         if matcher.search(line):
             found += 1
-            hits.append(_Hit(relpath, lineno, line))
+            if len(hits) < keep:
+                hits.append(_Hit(relpath, lineno, line))
     return found
 
 
-def _elide(line: str) -> str:
-    """Bound one rendered line."""
+def _elide(line: str, matcher: Optional["re.Pattern[str]"] = None) -> str:
+    """Bound one rendered line, keeping the match visible.
+
+    Truncating from the left would render a "hit" line with no match in it
+    whenever the match sits past the budget — which is precisely the case this
+    cap exists for (a pasted log line, a base64 blob). So when the line is over
+    budget we window around the first match instead, marking each elided side.
+    """
     stripped = line.rstrip()
-    if len(stripped) > _MAX_LINE_CHARS:
+    if len(stripped) <= _MAX_LINE_CHARS:
+        return stripped
+    match = matcher.search(stripped) if matcher is not None else None
+    if match is None or match.start() < _MAX_LINE_CHARS - 1:
         return stripped[: _MAX_LINE_CHARS - 1] + "…"
-    return stripped
+    # Centre the window on the match, clamped to the end of the line.
+    half = (_MAX_LINE_CHARS - 2) // 2
+    start = max(0, match.start() - half)
+    end = min(len(stripped), start + _MAX_LINE_CHARS - 2)
+    return "…" + stripped[start:end] + ("…" if end < len(stripped) else "")
 
 
 def _chunk_for_line(
@@ -183,6 +218,84 @@ def _scope_phrase(
     return out
 
 
+def _eligible(
+    cache: str, file_pattern: Optional[str]
+) -> Tuple[List[Tuple[str, str]], int, int]:
+    """The files this call will scan, as `(relpath, path)` sorted by relpath,
+    plus the counts excluded as binary and as derived duplicates.
+
+    Collected up front, and sorted, for two reasons: the scan can then stop
+    retaining hits at the render cap and still hold exactly the ones the
+    renderer would have shown, and the output is deterministic rather than
+    dependent on directory-walk order.
+    """
+    keep_derived = _wants_derived(file_pattern)
+    eligible: List[Tuple[str, str]] = []
+    skipped = 0
+    derived = 0
+    for dirpath, _dirnames, filenames in os.walk(cache):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            relpath = os.path.relpath(path, cache)
+            if file_pattern is not None and not fnmatch.fnmatch(relpath, file_pattern):
+                continue
+            if name.lower().endswith(_SKIP_SUFFIXES):
+                skipped += 1
+                continue
+            if not keep_derived and relpath.lower().startswith(_DERIVED_PREFIXES):
+                derived += 1
+                continue
+            eligible.append((relpath, path))
+    eligible.sort(key=lambda entry: entry[0])
+    return eligible, skipped, derived
+
+
+def _nothing_scanned_body(
+    wg: str, file_pattern: Optional[str], skipped: int, derived: int
+) -> str:
+    """Explain a scan with an empty denominator.
+
+    Distinct from `_no_match_body` on purpose: "I read 3448 files and the
+    string is not in them" and "I read nothing" are different findings, and
+    only the first supports a claim of absence. Reaching here means the glob
+    matched no file, or matched only files the scan excludes.
+    """
+    where = f"`{file_pattern}`" if file_pattern else "the gathered cache"
+    reasons: List[str] = []
+    if skipped:
+        reasons.append(f"{skipped} binary file(s)")
+    if derived:
+        reasons.append(f"{derived} duplicate file(s) under `raw/` / `github/`")
+    if reasons:
+        lines = [
+            f"(nothing was scanned: everything matching {where} was excluded "
+            f"— {', '.join(reasons)}.)",
+            "",
+            "_This is **not** evidence of absence — no file was read. "
+            + ("Binary files (slides, images) are never scanned. " if skipped else "")
+            + (
+                "The `raw/` and `github/` copies are skipped because they "
+                "duplicate `threads/` and `issues/`; pass a `file_pattern` "
+                "starting `raw/` or `github/` to scan them directly."
+                if derived
+                else ""
+            )
+            + "_",
+        ]
+        return "\n".join(lines)
+    return (
+        f"(no files match `{file_pattern}`, so nothing was scanned — this is "
+        "**not** evidence of absence. Try a broader glob, e.g. `threads/*` or "
+        f"`drafts/*`, or check `list_files('{wg}')`.)"
+        if file_pattern
+        else f"(no readable files in the {wg} cache, so nothing was scanned — "
+        "this is **not** evidence of absence. The corpus may have gathered no "
+        "content; check `list_files` and the gather notes.)"
+    )
+
+
 def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     wg: str,
     pattern: str,
@@ -221,11 +334,24 @@ def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-ar
     return "\n".join(lines)
 
 
+def _next_footer(wg: str) -> str:
+    """The pivot hint. Emitted by both renderers — a `files_only` caller has
+    just been handed a file list and is the *most* likely to want the next
+    hop, so omitting it there would be backwards."""
+    return (
+        f"\n_Next: read a hit in context with "
+        f'`read_file_section("{wg}", "<file>", start_line=<line>)`, or '
+        f'`get_chunk_text("{wg}", "<file>", <chunk>)` for the whole message '
+        "where a chunk is named. `search_corpus` for the semantic view._"
+    )
+
+
 def _render_files_only(
-    per_file: Dict[str, int], total: int, header: str, limit: int
+    wg: str, per_file: Dict[str, int], total: int, header: str, limit: int
 ) -> str:
     """One row per file with its match count — the breadth view, for "which
-    threads ever mention X" rather than "show me every line"."""
+    threads ever mention X" rather than "show me every line". Here `limit`
+    bounds rows, i.e. files, since no lines are rendered."""
     ranked = sorted(per_file.items(), key=lambda kv: (-kv[1], kv[0]))
     shown = ranked[:limit]
     out = [header, ""]
@@ -240,6 +366,7 @@ def _render_files_only(
         f"\n_{total} matching line(s) across {len(ranked)} file(s). "
         "Drop `files_only` to see the lines themselves._"
     )
+    out.append(_next_footer(wg))
     return "\n".join(out)
 
 
@@ -250,6 +377,7 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
     header: str,
     context: int,
     cache: str,
+    matcher: "re.Pattern[str]",
 ) -> str:
     """Render matching lines grouped by file, annotated with the chunk that
     contains each one where the index knows it."""
@@ -270,12 +398,12 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
             )
             for offset, line in enumerate(before, start=hit.lineno - len(before)):
                 out.append(f"  {offset:>6}- {line}")
-            out.append(f"  {hit.lineno:>6}: {_elide(hit.text)}{tag}")
+            out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
             for offset, line in enumerate(after, start=hit.lineno + 1):
                 out.append(f"  {offset:>6}- {line}")
             out.append("")
         else:
-            out.append(f"  {hit.lineno:>6}: {_elide(hit.text)}{tag}")
+            out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
     if total > len(hits):
         out.append(
             f"\n_Showing {len(hits)} of {total} matching line(s) — the count "
@@ -283,12 +411,7 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
             f"(max {_MAX_GREP_LIMIT}), narrow with `file_pattern`, or pass "
             "`files_only=True` for one row per file._"
         )
-    out.append(
-        f"\n_Next: read a hit in context with "
-        f'`read_file_section("{wg}", "<file>", start_line=<line>)`, or '
-        f'`get_chunk_text("{wg}", "<file>", <chunk>)` for the whole message '
-        "where a chunk is named. `search_corpus` for the semantic view._"
-    )
+    out.append(_next_footer(wg))
     return "\n".join(out)
 
 
@@ -328,57 +451,47 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     if not os.path.isdir(cache):
         return f"No cache for {wg}."
 
+    eligible, skipped, derived = _eligible(cache, file_pattern)
+    # `files_only` never renders a line, so it retains none: the per-file
+    # counts are all it needs, and a broad pattern over a large corpus would
+    # otherwise hold a hit per match for nothing.
+    keep = 0 if files_only else limit
     hits: List[_Hit] = []
     per_file: Dict[str, int] = {}
-    scanned = 0
-    skipped = 0
-    derived = 0
     total = 0
-    keep_derived = _wants_derived(file_pattern)
-    for dirpath, _dirnames, filenames in os.walk(cache):
-        for name in sorted(filenames):
-            path = os.path.join(dirpath, name)
-            if not os.path.isfile(path):
-                continue
-            relpath = os.path.relpath(path, cache)
-            if file_pattern is not None and not fnmatch.fnmatch(relpath, file_pattern):
-                continue
-            if name.lower().endswith(_SKIP_SUFFIXES):
-                skipped += 1
-                continue
-            if not keep_derived and relpath.lower().startswith(_DERIVED_PREFIXES):
-                derived += 1
-                continue
-            scanned += 1
-            found = _scan_file(path, relpath, matcher, hits)
-            if found:
-                per_file[relpath] = found
-                total += found
+    for relpath, path in eligible:
+        found = _scan_file(path, relpath, matcher, hits, keep)
+        if found:
+            per_file[relpath] = found
+            total += found
+    scanned = len(eligible)
 
     mode = _mode_phrase(regex, case_sensitive)
-    if file_pattern is not None and scanned == 0 and skipped == 0 and derived == 0:
+    # Nothing scanned means there is no denominator, so the evidence-of-absence
+    # body below would be a claim resting on zero files. Say what happened
+    # instead — the glob matched nothing, or matched only files the scan
+    # excludes — and how to reach them.
+    if scanned == 0:
         return _with_freshness(
-            wg,
-            f"(no files match `{file_pattern}`, so nothing was scanned. "
-            "Try a broader glob, e.g. `threads/*` or `drafts/*`, or check "
-            f"`list_files('{wg}')`.)",
+            wg, _nothing_scanned_body(wg, file_pattern, skipped, derived)
         )
-    if not hits:
+    if not hits and not per_file:
         return _with_freshness(
             wg,
             _no_match_body(wg, pattern, file_pattern, mode, scanned, skipped, derived),
         )
 
-    hits.sort(key=lambda hit: (hit.file, hit.lineno))
+    # `eligible` is relpath-sorted and retention stopped at `keep`, so `hits`
+    # is already the first `limit` in (file, line) order — no sort needed.
     header = (
         f"_grep `{pattern}` in {wg} ({mode}): {total} matching line(s) in "
         f"{len(per_file)} file(s); "
         f"{_scope_phrase(file_pattern, scanned, skipped, derived)}._"
     )
     if files_only:
-        body = _render_files_only(per_file, total, header, limit)
+        body = _render_files_only(wg, per_file, total, header, limit)
     else:
-        body = _render_hits(wg, hits[:limit], total, header, context, cache)
+        body = _render_hits(wg, hits, total, header, context, cache, matcher)
     return _append_participation_nudge(list(per_file.keys()), _with_freshness(wg, body))
 
 
@@ -432,8 +545,9 @@ def register(server: "FastMCP") -> None:
           - `regex=True`: treat `pattern` as a Python regex instead of a
             literal string. An invalid pattern is reported, not raised.
           - `case_sensitive=True`: default is case-insensitive.
-          - `limit`: cap on rendered lines (default 50, max 200). The scan and
-            the reported total are always complete; only the listing is cut.
+          - `limit`: cap on rendered rows — matching lines normally, files
+            under `files_only` (default 50, max 200). The scan and the
+            reported totals are always complete; only the listing is cut.
           - `context=N`: N lines either side of each hit (max 5).
           - `files_only=True`: one row per file with its match count — the
             breadth view for "which threads mention X at all".

@@ -181,7 +181,8 @@ Key invariants:
   search CLI, or the exporter can see lives there. Everything else in
   the cache is intermediate state owned by the gather pipeline.
 - **The mailing list is materialised in two shapes.** `raw/mail-archive-YYYY.txt`
-  is a flat year-dump (kept for grep / NotebookLM, excluded from the index).
+  is a flat year-dump (kept for NotebookLM, excluded from the index, and
+  skipped by `grep_corpus` unless asked for — the threads hold the same text).
   `threads/<date>-<slug>.md` is one file per reconstructed thread — built from
   RFC 5322 In-Reply-To / References headers with a normalised-subject safety
   net, quoted runs collapsed, and per-message headers in **UTC** (so the

@@ -15,6 +15,7 @@ from typing import Iterable, List
 from ietf_llm import embeddings
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.log import Verbosity
+from ietf_llm.mcp import grep
 from ietf_llm.mcp.grep import _MAX_GREP_LIMIT, tool_grep_corpus
 from ietf_llm.paths import get_wg_file_cache_dir
 
@@ -87,6 +88,21 @@ def test_regex_mode(isolated_home: Path) -> None:
     assert "no matches" in tool_grep_corpus("wg", r"RFC ?8890")
 
 
+def test_anchored_regex_matches_per_line_not_per_file(isolated_home: Path) -> None:
+    """`_scan_file` prefilters over the file's whole text, so without
+    re.MULTILINE a `^`-anchored pattern would fail the prefilter, skip the file
+    entirely, and report a confidently-worded zero — the unsound negative this
+    tool exists to prevent."""
+    _seed(isolated_home)
+    out = tool_grep_corpus("wg", "^_Subject:", regex=True)
+    assert "no matches" not in out
+    assert "2 matching line(s)" in out
+    # `$` anchors per line too.
+    assert "no matches" not in tool_grep_corpus("wg", r"per RFC 8890\.$", regex=True)
+    # And an anchor that genuinely cannot match still reports absence.
+    assert "no matches" in tool_grep_corpus("wg", "^zzznope", regex=True)
+
+
 def test_invalid_regex_is_reported_not_raised(isolated_home: Path) -> None:
     _seed(isolated_home)
     out = tool_grep_corpus("wg", "fail (closed", regex=True)
@@ -132,6 +148,40 @@ def test_glob_matching_nothing_is_distinguished_from_no_match(
     # Nothing was scanned at all — a different finding from "scanned, absent".
     assert "no files match" in out
     assert "nothing was scanned" in out
+    assert "**not** evidence of absence" in out
+
+
+def test_zero_denominator_never_claims_evidence_of_absence(
+    isolated_home: Path,
+) -> None:
+    """A scan that read no file cannot support a claim of absence, however it
+    came to read none. Each exclusion route must say so rather than fall
+    through to the evidence-of-absence body."""
+    _seed(isolated_home)
+    write_cache_file(
+        isolated_home, "wg", "meetings/ietf125/slides/deck.pdf", "fail closed\n"
+    )
+    write_cache_file(
+        isolated_home, "wg", "raw/mail-archive-2026.txt", "fail closed\n"
+    )
+    # Only binaries matched; only derived duplicates matched; nothing matched.
+    for glob in ("*.pdf", "*mail-archive*", "minutes/*"):
+        out = tool_grep_corpus("wg", "fail closed", file_pattern=glob)
+        assert "real evidence of absence" not in out, glob
+        assert "nothing was scanned" in out, glob
+        assert "**not** evidence of absence" in out, glob
+
+
+def test_only_derived_matched_explains_how_to_reach_them(
+    isolated_home: Path,
+) -> None:
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "wg", "raw/mail-archive-2026.txt", "fail closed\n")
+    # A glob that reaches a derived file without naming the directory: the
+    # default exclusion still applies, so the caller is told how to override it.
+    out = tool_grep_corpus("wg", "fail closed", file_pattern="*mail-archive*")
+    assert "duplicate file(s)" in out
+    assert "starting `raw/`" in out
 
 
 # --- discoverability the index does not have ---------------------------------
@@ -244,6 +294,53 @@ def test_long_lines_are_elided(isolated_home: Path) -> None:
     out = tool_grep_corpus("wg", "needle")
     assert "…" in out
     assert len(max(out.splitlines(), key=len)) < 1000
+
+
+def test_elision_keeps_the_match_visible(isolated_home: Path) -> None:
+    """Truncating from the left would render a hit line with no match in it —
+    exactly the case the cap exists for (a pasted log line, a base64 blob)."""
+    write_cache_file(
+        isolated_home, "wg", "threads/long.md", ("x" * 3000) + " needle here\n"
+    )
+    out = tool_grep_corpus("wg", "needle")
+    assert "1 matching line(s)" in out
+    hit_line = next(line for line in out.splitlines() if line.strip().startswith("1:"))
+    assert "needle" in hit_line
+    assert len(hit_line) < 1000
+
+
+def test_retained_hits_are_bounded_by_limit(isolated_home: Path) -> None:
+    """The count must stay complete without holding a hit per match — on a real
+    corpus a one-character pattern matches over a million lines, which on the
+    shared HTTP deployment would be a memory-exhaustion lever."""
+    write_cache_file(isolated_home, "wg", "threads/many.md", "needle\n" * 5000)
+    captured: list[int] = []
+    real_render = grep._render_hits
+
+    def _spy(wg, hits, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(len(hits))
+        return real_render(wg, hits, *args, **kwargs)
+
+    grep._render_hits = _spy  # type: ignore[assignment]
+    try:
+        out = tool_grep_corpus("wg", "needle", limit=10)
+    finally:
+        grep._render_hits = real_render  # type: ignore[assignment]
+    assert captured == [10]
+    assert "5000 matching line(s)" in out
+
+
+def test_files_only_retains_no_hits(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "threads/many.md", "needle\n" * 5000)
+    out = tool_grep_corpus("wg", "needle", files_only=True)
+    assert "5000 match(es)  threads/many.md" in out
+    assert "5000 matching line(s) across 1 file(s)" in out
+
+
+def test_files_only_keeps_the_pivot_footer(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    out = tool_grep_corpus("wg", "fail closed", files_only=True)
+    assert "read_file_section" in out
 
 
 # --- safety ------------------------------------------------------------------

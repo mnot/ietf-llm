@@ -662,7 +662,9 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:
     Walks the WG cache recursively. Skips:
       - `digests/` (those are the catalogue surface, not indexed)
       - `github/` (raw archive JSON)
-      - `raw/` (legacy text dumps kept for grep / NotebookLM)
+      - `raw/` (legacy text dumps kept for NotebookLM; `grep_corpus` skips
+        them too by default, since `threads/` holds the same messages —
+        see `mcp/grep.py`)
       - `meetings/<code>/slides/*.pdf` (binaries — we index the
         sibling `.pdf.txt` extracts instead)
       - `drafts/draft-…-NN.txt` revisions of a draft whose Datatracker
