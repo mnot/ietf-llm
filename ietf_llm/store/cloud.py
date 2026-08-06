@@ -275,6 +275,17 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         files_dir = os.path.join(staged[1], "files")
         return files_dir if os.path.isdir(files_dir) else None
 
+    def local_corpus_dir(self, corpus: str) -> Optional[str]:
+        # The staged version root itself — `<scratch>/<corpus>/<version>/` — so a
+        # reader of a root-level artifact (`documents.json`) reads the *published
+        # version's* copy rather than a `<cache>/<corpus>/…` path that never
+        # exists on a reader replica. Resolved through the same stage-and-recover
+        # path as local_cache_dir, so it honours the request pin; unlike that
+        # method it does not require `files/`, since a root artifact is
+        # independent of it.
+        staged = self._stage_current(corpus)
+        return staged[1] if staged is not None else None
+
     def materialised_cache_dir(self, corpus: str) -> Optional[str]:
         # Read-only, non-fetching: return the version's files dir only if it is
         # already staged on this replica's scratch. Cheap discovery paths (the

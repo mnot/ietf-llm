@@ -156,6 +156,27 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         cloud backend materialises the version's blobs here first.
         """
 
+    def local_corpus_dir(self, corpus: str) -> Optional[str]:
+        """Local filesystem path to the corpus *root* for the current version of
+        `corpus` — the directory that holds `files/` plus the root-level
+        machinery a gather writes beside it (`documents.json`, …) — or None if
+        the corpus is not present.
+
+        `local_cache_dir` answers "where is the corpus text"; this answers "where
+        is the version's tree", which is what a reader of a root-level artifact
+        needs. Composing such a path from `get_cache_dir()` is wrong on any
+        backend whose current version is not the live cache: the cloud backend
+        materialises into per-version scratch, so a `<cache>/<corpus>/x.json`
+        read there silently finds nothing.
+
+        Read-only — never creates the directory. The default derives the root
+        from `local_cache_dir`, correct for any backend that keeps `files/`
+        inside the version tree; backends override where they can answer more
+        directly.
+        """
+        files = self.local_cache_dir(corpus)
+        return os.path.dirname(files) if files else None
+
     @abstractmethod
     def local_index_dir(self, corpus: str) -> Optional[str]:
         """Local filesystem directory holding the current version's
@@ -374,6 +395,15 @@ class LocalCorpusStore(CorpusStore):
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         files = _local_files_dir(corpus)
         return files if os.path.isdir(files) else None
+
+    def local_corpus_dir(self, corpus: str) -> Optional[str]:
+        # `<cache>/<corpus>` — pure path composition, no existence check and no
+        # mkdir, exactly where the root-level artifacts have always been read
+        # from. Deliberately *not* gated on `files/` the way `local_cache_dir`
+        # is: a root artifact is read straight off disk, so an absent corpus
+        # simply reads as an absent file (which is what the callers expect) and
+        # a gather can read what it has already written before `files/` exists.
+        return os.path.join(get_cache_dir(), corpus)
 
     def local_index_dir(self, corpus: str) -> Optional[str]:
         # The live index dir — `<index_root>/<corpus>` — exactly where

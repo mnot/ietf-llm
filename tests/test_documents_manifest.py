@@ -71,6 +71,34 @@ def test_skip_embed_draft_names(isolated_home: Path) -> None:
     assert skip_embed_draft_names("nonexistent-wg") == set()
 
 
+def test_embedding_skip_reads_the_workspace_not_the_published_version(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`skip_embed_draft_names` runs mid-gather, over the tree the gather has
+    just written and not yet published — so it must read the local workspace.
+    Reading the store's current version would gate embedding on the *previous*
+    gather's states."""
+    from ietf_llm.gather.sources import documents_manifest as dm
+
+    save_documents_manifest(  # what this gather just wrote
+        "httpbis", {"draft-ietf-httpbis-new": {"expires": "", "state": "rfc"}}
+    )
+    published = isolated_home / "published"
+    published.mkdir()
+    (published / "documents.json").write_text(
+        '{"draft-ietf-httpbis-old": {"expires": "", "state": "rfc"}}'
+    )
+
+    class _Store:
+        def local_corpus_dir(self, corpus: str) -> str:
+            return str(published)
+
+    monkeypatch.setattr(dm, "get_corpus_store", lambda: _Store())
+    assert dm.skip_embed_draft_names("httpbis") == {"draft-ietf-httpbis-new"}
+    # ...while the reader-side loader serves the published version.
+    assert set(dm.load_documents_manifest("httpbis")) == {"draft-ietf-httpbis-old"}
+
+
 def test_manifest_corrupt_returns_empty(isolated_home: Path) -> None:
     from ietf_llm.paths import get_cache_dir
 

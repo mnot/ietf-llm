@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from ietf_llm.gather.sources import documents_manifest
 from ietf_llm.store.blobs import FileBlobStore
 from ietf_llm.store.cloud import CloudCorpusStore, _clear_resolve_cache
 from ietf_llm.store.control import KvControlPlane
@@ -46,6 +47,38 @@ def test_read_tools_serve_cloud_backend(
     out = mcp.corpus.tool_list_files("tls")
     assert "digests/index.md" in out
     assert "threads/2026-06-01-hello.md" in out
+
+
+def test_list_drafts_reads_the_published_documents_manifest(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`documents.json` sits in the corpus *root*, so it rides along in a
+    published version — but it materialises into per-version scratch, not into
+    `<cache>/<corpus>/`. Composing its path from the cache root made every
+    lifecycle reader on the cloud backend report "nothing recorded" for a corpus
+    that had a perfectly good manifest."""
+    root = isolated_home / "cloud"
+    store = _cloud_store(root)
+    ws = root / "ws"
+    (ws / "files" / "digests").mkdir(parents=True)
+    (ws / "files" / "digests" / "index.md").write_text("# Overview\n")
+    (ws / "documents.json").write_text(
+        '{"draft-ietf-tls-esni": {"expires": "2099-01-01T00:00:00Z",'
+        ' "state": "active"},'
+        ' "draft-ietf-tls-rfc8446bis": {"expires": "", "state": "rfc"}}'
+    )
+    store.publish("tls", str(ws), version="v1")
+    monkeypatch.setattr(mcp.common, "get_corpus_store", lambda: store)
+    monkeypatch.setattr(documents_manifest, "get_corpus_store", lambda: store)
+
+    out = mcp.drafts.tool_list_drafts("tls")
+    assert "No draft lifecycle state recorded" not in out
+    assert "draft-ietf-tls-esni" in out and "active I-D" in out
+    assert "draft-ietf-tls-rfc8446bis" in out and "published RFC" in out
+    # The state filter reads the same manifest.
+    filtered = mcp.drafts.tool_list_drafts("tls", state="rfc")
+    assert "draft-ietf-tls-rfc8446bis" in filtered
+    assert "draft-ietf-tls-esni" not in filtered
 
 
 def _publish_version(store: CloudCorpusStore, root: Path, version: str, body: str) -> None:
