@@ -553,7 +553,13 @@ which tool for which question, with worked examples — lives in
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`, `get_by_url`,
   `read_file_section`.
 - **RFC series (cross-corpus):** `search_rfcs(query)` / `get_rfc(number)` over
-  the whole published series — the `_rfc/` singleton, not a corpus.
+  the whole published series — the `_rfc/` singleton, not a corpus. Metadata
+  only: the singleton mirrors titles and the reference graph, never document
+  text. A body is on disk only where a corpus that published the RFC was
+  gathered with `--rfcs`, so `get_rfc` ends every entry by saying whether this
+  one is (with the `read_file_section` call) or is not reachable — a
+  well-formed metadata response otherwise reads as the document itself
+  (issue #218).
 - **Live chair-workflow facts (gated, networked):** `meeting_schedule`,
   `draft_status`, and `overview(corpus, live=True)` read *live* from
   Datatracker, so they share the gather gate (see "The networked read

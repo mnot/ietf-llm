@@ -100,3 +100,11 @@ Quote the **actual text**, not a search snippet: `get_draft(name)` for a draft,
 user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare.
+
+**RFC text is the exception: `get_rfc` does not return it.** It is catalogue
+metadata — title, status, reference graph. An RFC body is on disk only when a
+corpus that published it was gathered with `--rfcs`; `get_rfc`'s last line says
+whether this one is, and gives the `read_file_section` call if so. When it says
+the body is not available, you cannot quote or characterise that RFC — say so
+rather than reconstructing it from memory, which is exactly where confident
+wrong readings come from.
