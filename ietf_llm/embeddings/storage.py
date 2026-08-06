@@ -460,6 +460,53 @@ def chunk_counts(wg: str) -> Dict[str, int]:
         conn.close()
 
 
+def chunk_spans(
+    wg: str, files: Iterable[str]
+) -> Dict[str, List[Tuple[int, int, int, str]]]:
+    """Return {file: [(chunk_idx, start_line, end_line, title), ...]} for the
+    named files, sorted by start_line.
+
+    Lets a line-oriented reader (grep_corpus) map a matching line number back
+    to the chunk that contains it, so a literal hit is citable — with the
+    message title and a `chunk_idx` for `get_chunk_text` — without a second
+    round-trip. Empty dict when no index exists; files with no indexed chunks,
+    and chunks indexed before line tracking (schema v1, NULL spans), are simply
+    absent, so callers must treat attribution as best-effort.
+    """
+    names = list(dict.fromkeys(files))
+    if not names:
+        return {}
+    if not os.path.exists(_db_path_ro(wg)):
+        return {}
+    conn = _connect_ro(wg)
+    try:
+        out: Dict[str, List[Tuple[int, int, int, str]]] = {}
+        # Chunked IN-list: a grep hit set can name more files than SQLite's
+        # default 999-variable limit allows in one statement.
+        for i in range(0, len(names), 500):
+            batch = names[i : i + 500]
+            placeholders = ",".join("?" * len(batch))
+            cur = conn.execute(
+                "SELECT file, chunk_idx, start_line, end_line, title FROM chunks "
+                f"WHERE sub_idx=0 AND start_line IS NOT NULL AND file IN ({placeholders})",
+                batch,
+            )
+            for row in cur.fetchall():
+                out.setdefault(str(row[0]), []).append(
+                    (
+                        int(row[1]),
+                        int(row[2]),
+                        int(row[3]) if row[3] is not None else int(row[2]),
+                        _clean_title(str(row[4])),
+                    )
+                )
+        for spans in out.values():
+            spans.sort(key=lambda span: span[1])
+        return out
+    finally:
+        conn.close()
+
+
 def _citation_url_variants(url: str) -> List[str]:
     """Equivalent spellings of a citation URL, for tolerant matching.
 

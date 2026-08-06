@@ -75,7 +75,8 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 
 - **Orient:** `overview`, `list_corpora`, `find_efforts`, `which_corpus`.
 - **Search:** `search_corpus` (one corpus), `search_corpora` (several),
-  `read_topic` (chronological narrative), `find_related` (by example).
+  `read_topic` (chronological narrative), `find_related` (by example),
+  `grep_corpus` (exact string / regex).
 - **Catalogue:** `read_digest` (filtered issue / thread / people / timeline
   tables), `list_labels`, `list_files`.
 - **Meetings:** `list_meetings` (gathered), `read_minutes` (minutes + poll
@@ -108,3 +109,25 @@ whether this one is, and gives the `read_file_section` call if so. When it says
 the body is not available, you cannot quote or characterise that RFC — say so
 rather than reconstructing it from memory, which is exactly where confident
 wrong readings come from.
+
+## Saying something was **never** said
+
+`search_corpus` ranks by meaning, so a miss there is **not** evidence of
+absence — an empty semantic result is as consistent with "the embedding didn't
+surface it" as with "nobody said it". Never write "no mention of X", "X was
+never proposed", or "nobody cited X" on the strength of a `search_corpus` miss.
+
+Use **`grep_corpus`** for those: it scans every gathered file line by line and
+reports how many it scanned, so a zero is a finding you can state — bounded by
+the gather window, the corpus, and the glob if you pass one (its output spells
+out each). Route on the shape of the question:
+
+- "what was said about X", "arguments for Y", "where does this live" →
+  `search_corpus` / `search_corpora` / `read_topic`.
+- "was X *ever* said / cited / proposed", "does this corpus mention `X.509`",
+  "which revision first used this term" → `grep_corpus`.
+
+It matches **within one line**, so search the most distinctive single token
+(`8890`, not `RFC 8890`) — a phrase can be broken by a mail wrap. It also reads
+files the index does not hold (superseded draft revisions are not embedded), so
+it is the only way to find wording that was removed before publication.

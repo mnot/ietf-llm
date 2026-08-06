@@ -25,6 +25,7 @@ from . import (
     digest,
     drafts,
     gather,
+    grep,
     meetings,
     norms,
     rfcs,
@@ -393,6 +394,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     citations.register(server)
     digest.register(server)
     search.register(server)
+    grep.register(server)
     topic.register(server)
     chunks.register(server)
     drafts.register(server)
