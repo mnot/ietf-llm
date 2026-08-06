@@ -106,9 +106,12 @@ room, not a decision — consensus is the chair's to declare.
 metadata — title, status, reference graph. An RFC body is on disk only when a
 corpus that published it was gathered with `--rfcs`; `get_rfc`'s last line says
 whether this one is, and gives the `read_file_section` call if so. When it says
-the body is not available, you cannot quote or characterise that RFC — say so
-rather than reconstructing it from memory, which is exactly where confident
-wrong readings come from.
+the body is **not reachable from here**, you cannot quote or characterise that
+RFC — say so rather than reconstructing it from memory, which is exactly where
+confident wrong readings come from. That answer is about what this server can
+reach, not about what exists: on the shared HTTP deployment a body can be
+published in the fleet and still be unreachable, so report it as "I can't read
+it", never as "it isn't available".
 
 ## Saying something was **never** said
 

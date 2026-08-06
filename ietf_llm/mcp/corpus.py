@@ -19,12 +19,12 @@ from ..embeddings import chunk_counts
 from ..freshness import gather_enabled, gather_suggestion, seed_source
 from ..paths import digest_kind_from_relpath
 from ..corpus.routing import DEFAULT_MIN_SCORE, route
-from ..store.corpus import get_corpus_store
 from .common import (
     _DIGEST_KINDS,
     _deployment_phrase,
     _files_dir,
     _gather_brief,
+    _materialised_files_dir,
     _list_wgs,
     _offload,
     _requires_corpus,
@@ -56,7 +56,7 @@ def _corpus_sources(wg: str) -> str:
     """Compact source inventory for `wg` in `list_corpora`, read-only — resolves
     an already-materialised files dir (never forces a cloud download) and
     degrades to empty when the corpus isn't staged locally."""
-    cache = get_corpus_store().materialised_cache_dir(wg)
+    cache = _materialised_files_dir(wg)
     if cache is None:
         return ""
     return coverage.compact_sources_line(cache)

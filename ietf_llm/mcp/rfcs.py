@@ -7,6 +7,7 @@ import re
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from ..paths import DIR_DRAFTS, drafts_dir
+from ..store.corpus import VersionVanished
 from ..singletons.rfcs import (
     is_stale_miss,
     render_rfc,
@@ -63,7 +64,10 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
         try:
             if _has_body(_files_dir(owner), filename):
                 return owner, relpath
-        except FileNotFoundError:
+        # A version that vanished mid-request (VersionVanished) or resolves to
+        # nothing (FileNotFoundError) is a reason to fall through to the sweep,
+        # not to fail a metadata lookup outright.
+        except (FileNotFoundError, VersionVanished):
             pass
     for wg in corpora:
         if wg != owner and _has_body(_materialised_files_dir(wg), filename):
@@ -166,9 +170,11 @@ def register(server: "FastMCP") -> None:
         **This is catalogue metadata, never the document body.** The last
         line of the output says which of two cases you are in: the body is
         cached in some corpus (it gives you the exact `read_file_section`
-        call), or it is not reachable offline at all. In the second case do
-        not characterise what the RFC says — you have its title and its
-        reference graph, not its text.
+        call), or this server cannot reach it. In the second case do not
+        characterise what the RFC says — you have its title and its
+        reference graph, not its text. Note the claim is about reach, not
+        existence: on a shared deployment the body may well be published
+        somewhere in the fleet without being readable from here.
 
         Reads a local mirror of the RFC series. If the number is missing
         and that mirror is stale, it is refreshed live before answering,

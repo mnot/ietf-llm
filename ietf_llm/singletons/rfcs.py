@@ -246,6 +246,14 @@ def _format_age(seconds: float) -> str:
     return f"{hours} hour{'s' if hours != 1 else ''}"
 
 
+def _canonical_name(number: str) -> Optional[str]:
+    """`RFC<n>` for any accepted spelling of `number` ("9110", "RFC9110",
+    zero-padded), or None when it holds no digits. The one place the
+    caller-input normalisation lives, so the lookups below cannot drift."""
+    match = re.search(r"\d+", str(number))
+    return rfc_num_to_name(match.group(0)) if match else None
+
+
 def is_stale_miss(number: str) -> bool:
     """True when `number` is absent from the mirror *and* the mirror is past
     its TTL — i.e. the only case where the miss might be staleness rather
@@ -257,8 +265,8 @@ def is_stale_miss(number: str) -> bool:
     data = _load()
     if data is None:
         return False
-    match = re.search(r"\d+", str(number))
-    if not match or data.has(rfc_num_to_name(match.group(0))):
+    name = _canonical_name(number)
+    if not name or data.has(name):
         return False
     age = _index_age()
     return age is not None and age >= RFC_TTL_SECONDS
@@ -274,13 +282,10 @@ def working_group(number: str) -> Optional[str]:
     an RFC that no corpus of that name was ever gathered for.
     """
     data = _load()
-    if data is None:
+    name = _canonical_name(number) if data is not None else None
+    if data is None or not name:
         return None
-    match = re.search(r"\d+", str(number))
-    if not match:
-        return None
-    rfc = data.rfcs.get(rfc_num_to_name(match.group(0)))
-    wg = (rfc or {}).get("wg")
+    wg = data.rfcs.get(name, {}).get("wg")
     return str(wg) if wg else None
 
 
