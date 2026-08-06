@@ -58,7 +58,8 @@ A name that is none of these and has no configured sources is rejected as a like
 - `--summarize` / `--summarize-model MODEL` — add LLM-generated one-liners to digests via the `llm`
   package.
 - `--no-embed` — skip the semantic search index (it backs `ietf-llm-search` and the MCP
-  `search_corpus` tool). On by default, incremental.
+  `search_corpus` tool). On by default, incremental. The MCP `grep_corpus` tool reads the gathered
+  files rather than the index, so exact-string search still works without it.
 - `--embed-model MODEL` — embedding model id (default: a small local model; or an `openai-embed/...`
   id for a remote endpoint).
 - `--rebuild-embeddings` — drop and re-embed everything instead of the incremental update.

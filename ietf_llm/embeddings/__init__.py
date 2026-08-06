@@ -36,6 +36,7 @@ from .search import Hit, build_index, index_model, related, search
 from .storage import (
     any_indexed_wg,
     chunk_counts,
+    chunk_spans,
     find_chunks_by_url,
     get_chunk,
     get_messages,
@@ -53,6 +54,7 @@ __all__ = [
     "build_index",
     "build_topics",
     "chunk_counts",
+    "chunk_spans",
     "find_chunks_by_url",
     "generate_topics",
     "has_topics",

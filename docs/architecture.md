@@ -181,7 +181,8 @@ Key invariants:
   search CLI, or the exporter can see lives there. Everything else in
   the cache is intermediate state owned by the gather pipeline.
 - **The mailing list is materialised in two shapes.** `raw/mail-archive-YYYY.txt`
-  is a flat year-dump (kept for grep / NotebookLM, excluded from the index).
+  is a flat year-dump (kept for NotebookLM, excluded from the index, and
+  skipped by `grep_corpus` unless asked for — the threads hold the same text).
   `threads/<date>-<slug>.md` is one file per reconstructed thread — built from
   RFC 5322 In-Reply-To / References headers with a normalised-subject safety
   net, quoted runs collapsed, and per-message headers in **UTC** (so the
@@ -548,6 +549,18 @@ which tool for which question, with worked examples — lives in
   across backends), and `find_related(file, chunk_idx)` (nearest-neighbour by a
   chunk's *stored* vector, so it needs no embedding backend; headline use is
   bridging a topic between the mailing list and a GitHub issue).
+- **Lexical search:** `grep_corpus(pattern, …)` scans `files/` line by line —
+  literal or regex, no index involved. It exists because semantic search cannot
+  answer *"was X ever said"*: non-retrieval by embedding similarity is weak
+  evidence of absence, so a negative claim needs a complete scan with a stated
+  denominator (issues #108, #215). It is also the only path to content the
+  index deliberately omits — chiefly the skipped revision stack of a concluded
+  draft. Matching is per line, so a phrase split by a mail wrap misses; the
+  tool says so on every empty result. `raw/` and `github/` are skipped by
+  default (they duplicate `threads/` and `issues/`) unless the caller's glob
+  names them, and the skip is reported so the denominator stays honest. Hits
+  are annotated with the containing chunk via `embeddings.chunk_spans` where
+  the index knows it — best-effort, absent for unindexed files.
 - **Narrative:** `read_topic`, `find_replies`, `tally_positions`,
   `find_citations`, `find_message_citations`.
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`, `get_by_url`,
