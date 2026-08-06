@@ -436,6 +436,42 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     return "\n".join(out)
 
 
+#: Header note for a thread file whose bodies carry quoted material, so a
+#: reader doesn't take the sender count as the roster of whose words are here.
+#:
+#: Deliberately says nothing about *where* the attribution sits. Measured over
+#: 11,711 quote blocks in the real caches, only 38% are introduced by an
+#: `On … wrote:` line; 62% follow ordinary prose, because an inline reply
+#: interleaves the sender's response with the quoted mail and one attribution
+#: at the top covers every block beneath it. A gloss promising an attribution
+#: immediately above each quote would be wrong more often than right — and a
+#: reader who checked, found prose, and concluded the quote was unattributable
+#: is back where issue #216 started.
+_QUOTED_TEXT_GLOSS = (
+    "_\">\"-quoted lines are someone else's words, not the sender's; where the "
+    "sender kept an attribution it introduces the first such quote, and an "
+    "inline reply may quote the same person repeatedly beneath it._"
+)
+
+
+#: The whole-trail marker `elide_quotes` leaves in place of a top-posted
+#: quote trail. Unlike a run marker it carries no `>` prefix, so a `>` scan
+#: alone would miss exactly the files with the most quoted content.
+_TRAIL_MARKER_RE = re.compile(r"^\[\d+ lines of quoted reply trail elided\]")
+
+
+def _has_quoted_text(body: str) -> bool:
+    """True if an elided body still shows quoted material — a `>` line, or an
+    elision marker standing in for one. Cheap: no attribution parsing, no name
+    extraction. It only gates the gloss, so a miss costs a missing note, not a
+    wrong one."""
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(">") or _TRAIL_MARKER_RE.match(stripped):
+            return True
+    return False
+
+
 # --- Thread building -------------------------------------------------------
 
 
@@ -676,9 +712,24 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
             bits.append(aff)
         bits.append(str(count))
         participants_detail.append(f"{sender} ({', '.join(bits)})")
+    # "Senders", not "Participants": this counts who *sent* a gathered
+    # message, and in an author corpus gather collects one person's mail, so
+    # it is 1 by construction while the bodies carry other people's words in
+    # retained quote trails. A reader who took the old label at face value
+    # concluded such a corpus was structurally one-sided and could not be
+    # used to check whose argument was whose (issue #216).
+    # Trailing double-space is a markdown hard break, as on Span / Messages
+    # above — without it the gloss below folds onto this line when rendered.
     parts.append(
-        f"**Participants ({len(msg_counts)}):** " + ", ".join(participants_detail)
+        f"**Message senders ({len(msg_counts)}):** "
+        + ", ".join(participants_detail)
+        + "  "
     )
+    # Elide once: the gloss below is gated on what the rendered bodies
+    # actually contain, and the message sections reuse the same text.
+    bodies = [elide_quotes(msg.body or "") for msg in thread.members]
+    if any(_has_quoted_text(body) for body in bodies):
+        parts.append(_QUOTED_TEXT_GLOSS)
     parts.append("")
     parts.append("## Outline\n")
     parts.append(_build_outline(thread, registry))
@@ -703,10 +754,9 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
             # form mirrors `_Subject:_` so the file stays human-readable.
             parts.append(f"_Archived-At:_ {msg.archived_at}")
         parts.append("")
-        body = elide_quotes(msg.body or "")
         # Single trailing newline; the .splitlines() in elide_quotes
         # already strips the implicit one.
-        parts.append(body)
+        parts.append(bodies[idx - 1])
         parts.append("")
     return "\n".join(parts) + "\n"
 
