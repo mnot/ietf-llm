@@ -156,6 +156,7 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         cloud backend materialises the version's blobs here first.
         """
 
+    @abstractmethod
     def local_corpus_dir(self, corpus: str) -> Optional[str]:
         """Local filesystem path to the corpus *root* for the current version of
         `corpus` — the directory that holds `files/` plus the root-level
@@ -169,13 +170,12 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         materialises into per-version scratch, so a `<cache>/<corpus>/x.json`
         read there silently finds nothing.
 
-        Read-only — never creates the directory. The default derives the root
-        from `local_cache_dir`, correct for any backend that keeps `files/`
-        inside the version tree; backends override where they can answer more
-        directly.
+        Read-only — never creates the directory. Abstract rather than derived
+        from `local_cache_dir`: that derivation happens to hold for both backends
+        today, but it is the exact assumption ("the root is wherever files/ is")
+        that produced the bug this method exists to prevent, so a new backend
+        should answer it deliberately.
         """
-        files = self.local_cache_dir(corpus)
-        return os.path.dirname(files) if files else None
 
     @abstractmethod
     def local_index_dir(self, corpus: str) -> Optional[str]:

@@ -119,6 +119,12 @@ def load_documents_manifest(wg: str) -> Dict[str, DocumentRecord]:
     Normalises the legacy flat shape (string value = bare expiry) into the
     record shape so a stale on-disk manifest keeps working before its next
     gather. Unreadable / non-dict files yield {}.
+
+    Not total, unlike the pre-seam version: resolving the version can raise
+    `VersionVanished` on the cloud backend (a concurrent publish reaped the
+    pinned version). Every caller sits under `_requires_corpus`, which re-runs
+    the whole tool call once on a fresh pin — so a caller outside that guard has
+    to handle it.
     """
     return _load(_read_path(wg))
 
