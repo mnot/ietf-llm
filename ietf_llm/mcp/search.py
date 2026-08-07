@@ -655,6 +655,11 @@ def register(server: "FastMCP") -> None:
         "show me Mattsson's messages on Y" without needing the file path.
         Matches substrings, so partial / surname-only queries work.
         Windowed draft / transcript chunks have no author and drop out.
+        It matches who **sent** the message, so someone quoted at length in
+        another person's reply will not surface — their words are in the
+        corpus, under the sender's name. An `author=` miss is therefore not
+        evidence that a person said nothing; `grep_corpus` searches the text
+        regardless of who sent it.
 
         `role="Chair"` (or `"Author"`, `"Editor"`, `"AD"`) filters to
         messages from people with that structural role. Useful for

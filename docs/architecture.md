@@ -189,7 +189,13 @@ Key invariants:
   chunker's date re-parse sorts). `<date>` is the thread's *first* message, so
   it can lag the last-activity date; the overview surfaces the actual `File`
   path to bridge that. The thread files are what an LLM reads; the year files
-  are for humans / external tools.
+  are for humans / external tools. The header counts **message senders**, not
+  everyone whose words appear: retained quote trails carry other people's
+  text, and in an author corpus (one person's mail) the count is 1 while the
+  bodies are full of others. A file with quoted material says so in a header
+  gloss, because a reader who read the old `Participants` count as the roster
+  concluded such a corpus was one-sided and unusable for attribution
+  (issue #216).
 - **Per-issue files mirror per-thread files.** `issues/<repo>/<N>.md`
   is one GitHub issue with full comment history, same shape as a
   thread file (frontmatter carries duplicate-of and closing-rationale).
@@ -231,7 +237,7 @@ Key invariants:
     (`postal.parse_document_year`, read from the front-matter header block); and
     the renderer caps with a `(+N earlier)` count — a twenty-five-year career of
     employers is real history, but it does not belong inline on a thread's
-    Participants line.
+    Message-senders line.
   - **Meeting participation is attached link-only** (`people.meetings`, run
     last so it matches the complete registry): the Datatracker `attended`
     record links to a `Person` by **person id** (`attended_sessions`,

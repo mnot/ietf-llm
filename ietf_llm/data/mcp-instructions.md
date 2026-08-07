@@ -134,3 +134,21 @@ It matches **within one line**, so search the most distinctive single token
 (`8890`, not `RFC 8890`) — a phrase can be broken by a mail wrap. It also reads
 files the index does not hold (superseded draft revisions are not embedded), so
 it is the only way to find wording that was removed before publication.
+
+## Whose words are in a thread file
+
+A thread file's header counts **message senders** — who sent a gathered
+message — not everyone whose words appear. Replies retain quote trails, so
+`>`-prefixed lines are someone else's text carried inside a sender's message.
+This matters most in an author corpus, where gather collects one person's mail:
+the sender count is 1 by construction while the bodies carry many voices. Do
+not read a low sender count as "this record is one-sided" or as grounds for
+refusing to check whose argument is whose.
+
+Attribution is not uniform — roughly a third of quote blocks are introduced by
+an `On … wrote:` line; most follow the sender's own prose, because an inline
+reply interleaves response and quotation under one attribution higher up. So
+look upward for the attribution rather than only at the line above the quote,
+and where none survives, attribute the quote to no one rather than to the
+sender. `search_corpus(author=)` matches the **sender**, so a person quoted at
+length will not surface there; use `grep_corpus` to find their words.

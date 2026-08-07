@@ -1013,3 +1013,87 @@ def test_orphan_thread_file_removed(isolated_home: Path) -> None:
     # Re-gather: the orphan (not part of the current thread set) goes.
     write_thread_files("wg", cache, verbose=Verbosity.QUIET)
     assert not os.path.exists(orphan)
+
+
+# --- Thread header: whose words are in the file (issue #216) ----------------
+#
+# The header counts who *sent* a gathered message. In an author corpus that
+# is 1 by construction while the bodies carry other people's words in
+# retained quote trails. A reader took the old `Participants` label as the
+# roster of voices, concluded the corpus was structurally one-sided, and
+# dropped a thread rather than check whose argument was whose. The label now
+# says what it counts, and a file with quoted material says so.
+
+
+def _thread_of(*bodies: str) -> "Thread":
+    from ietf_llm.gather.sources.mail_threads import Message, Thread
+
+    members = [
+        Message(
+            message_id=f"<m{i}@x>",
+            subject="Topic",
+            sender="Eric Rescorla",
+            date=None,
+            body=body,
+        )
+        for i, body in enumerate(bodies)
+    ]
+    return Thread(root=members[0], members=members)
+
+
+def _render(*bodies: str) -> str:
+    from ietf_llm.gather.sources.mail_threads import _render_thread
+
+    return _render_thread(_thread_of(*bodies))
+
+
+def test_header_counts_senders_not_everyone_quoted() -> None:
+    out = _render("My reply.\n\nOn Mon, Bob <b@x> wrote:\n\n> Bob's point.\n")
+    assert "**Message senders (1):**" in out
+    # The old label is what misled a reader into "one-sided".
+    assert "**Participants" not in out
+
+
+def test_quoted_material_gets_the_gloss() -> None:
+    out = _render("My reply.\n\nOn Mon, Bob <b@x> wrote:\n\n> Bob's point.\n")
+    assert '">"-quoted lines are someone else\'s words' in out
+    # It must not promise an attribution directly above each quote: most
+    # quote blocks in the real caches follow the sender's own prose.
+    assert "the line above" not in out
+
+
+def test_no_quoted_material_no_gloss() -> None:
+    out = _render("Just my own words, nothing quoted.\n")
+    assert '">"-quoted' not in out
+    assert "**Message senders (1):**" in out
+
+
+def test_gloss_fires_on_an_elided_trail_marker() -> None:
+    # A top-posted trail is replaced wholesale by a marker carrying no `>`,
+    # so the predicate has to recognise it or the note goes missing on
+    # exactly the files with the most quoted content.
+    from ietf_llm.gather.sources.mail_threads import _has_quoted_text, elide_quotes
+
+    body = "Short reply.\n\nOn Mon, Bob <b@x> wrote:\n\n" + "\n".join(
+        f"prior line {i}" for i in range(40)
+    )
+    elided = elide_quotes(body)
+    assert "lines of quoted reply trail elided" in elided
+    assert ">" not in elided
+    assert _has_quoted_text(elided)
+
+
+def test_bodies_are_elided_once_and_reused() -> None:
+    # The gloss is gated on the rendered bodies, so the rendered sections
+    # must be the same text the gate inspected -- not a second elision.
+    out = _render("Reply.\n\nOn Mon, Bob <b@x> wrote:\n\n> a\n> b\n> c\n> d\n")
+    assert "[4 quoted lines elided]" in out
+    assert out.count("[4 quoted lines elided]") == 1
+
+
+def test_sender_line_keeps_its_markdown_hard_break() -> None:
+    # The gloss sits directly beneath the sender line, so without the trailing
+    # double-space markdown folds the two into one rendered line.
+    out = _render("Reply.\n\nOn Mon, Bob <b@x> wrote:\n\n> a\n> b\n> c\n> d\n")
+    line = next(l for l in out.splitlines() if l.startswith("**Message senders"))
+    assert line.endswith("  ")
