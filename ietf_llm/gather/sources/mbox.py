@@ -39,7 +39,9 @@ IMAP_RETRIES = 1
 
 
 def validate_list_names(
-    names: List[str], verbose: Verbosity = Verbosity.STATUS
+    names: List[str],
+    verbose: Verbosity = Verbosity.STATUS,
+    source: str = "--mailing-list",
 ) -> List[str]:
     """Return the subset of `names` that resolve on mailarchive.ietf.org.
 
@@ -50,13 +52,18 @@ def validate_list_names(
     Names normalised (`foo@ietf.org` → `foo`) for the probe; the
     returned list keeps the user's original form so the persisted
     value matches what they typed.
+
+    `source` labels the log lines with where the name came from. It
+    defaults to the CLI flag, but a name the user never typed — one
+    `--author` discovery proposed, say — must not be reported as if
+    they had.
     """
     valid: List[str] = []
     for raw in names:
         norm = normalize_list_name(raw)
         if not norm:
             log(
-                f"--mailing-list {raw!r}: empty name; not persisting.",
+                f"{source} {raw!r}: empty name; not persisting.",
                 verbose,
                 level=LogLevel.STATUS,
             )
@@ -68,7 +75,7 @@ def validate_list_names(
             status = None
         if status == 404:
             log(
-                f"--mailing-list {raw}: not found on "
+                f"{source} {raw}: not found on "
                 "mailarchive.ietf.org; not persisting.",
                 verbose,
                 level=LogLevel.STATUS,
@@ -79,7 +86,7 @@ def validate_list_names(
             # explicitly asked for — only a definitive 404 does. Keep it and let
             # the gather surface any real problem later.
             log(
-                f"--mailing-list {raw}: could not verify "
+                f"{source} {raw}: could not verify "
                 f"(status {status}); keeping it anyway.",
                 verbose,
                 level=LogLevel.STATUS,

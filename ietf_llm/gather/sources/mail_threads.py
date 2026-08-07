@@ -353,8 +353,14 @@ def _strip_pgp(lines: List[str]) -> List[str]:
     return out
 
 
-def elide_quotes(text: str, keep_threshold: int = 2) -> str:
+def elide_quotes(text: str, keep_threshold: int = 2, elide: bool = True) -> str:
     """Collapse quoted reply trails so a thread file is readable.
+
+    `elide=False` keeps every quoted line — for a message whose parent
+    is *not* in this file, the quotes are the only surviving record of
+    what it answers, and eliding them leaves a reply to nothing. PGP
+    armor and the signature block are still stripped either way; those
+    are noise regardless of what else the file holds.
 
     Two shapes are handled. `>`-prefixed quote runs longer than
     `keep_threshold` collapse to a single `> [N lines elided]` marker,
@@ -389,6 +395,9 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
         if line.rstrip() == "--":
             lines = lines[:idx]
             break
+
+    if not elide:
+        return "\n".join(lines)
 
     trail_marker: Optional[str] = None
     cut = _quoted_trail_start(lines)
@@ -693,6 +702,20 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
                 if candidate.message_id == msg.parent_id:
                     header += f" (reply to [{p_idx}])"
                     break
+        # Eliding a quote trail is only safe when the messages it quotes
+        # are in this file as their own sections. `parent_id` IS that
+        # test: build_threads sets it only for a parent it found in
+        # `by_id`, and _collect_subtree pulls a whole subtree into one
+        # thread — so a set-membership check here could never fail.
+        #
+        # The rule this yields is "a thread root keeps its full quote
+        # trail". A root's parent is by construction not in the corpus:
+        # either it genuinely starts the conversation (nothing quoted,
+        # so nothing changes) or it is a reply whose parent went
+        # ungathered — the window cut it off, or this is an
+        # author-scoped corpus holding one person's mail — and its
+        # quotes are the sole surviving record of what it answers.
+        parent_present = msg.parent_id is not None
         parts.append(header)
         parts.append("")
         parts.append(f"_Subject:_ {msg.subject}")
@@ -703,7 +726,7 @@ def _render_thread(thread: Thread, registry: Optional["Registry"] = None) -> str
             # form mirrors `_Subject:_` so the file stays human-readable.
             parts.append(f"_Archived-At:_ {msg.archived_at}")
         parts.append("")
-        body = elide_quotes(msg.body or "")
+        body = elide_quotes(msg.body or "", elide=parent_present)
         # Single trailing newline; the .splitlines() in elide_quotes
         # already strips the implicit one.
         parts.append(body)

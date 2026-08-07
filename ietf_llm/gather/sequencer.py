@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 from datetime import timedelta
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .. import config, paths
 from ..net import http_metrics
@@ -37,6 +37,9 @@ from ..people import build_registry, write_people_digest
 from .cli import build_parser
 from .plan import _gather_plan_summary
 from .sources.author import fetch_author_draft_names, resolve_person
+from .sources.author_lists import discover_author_lists
+from .sources.author_mail import sync_author_mail
+from .sources.reviews import fetch_person_emails, gather_reviews
 from .sources.charter import process_charter
 from .sources.citations import (
     citation_counts,
@@ -57,7 +60,11 @@ from .sources.github import (
 from .sources.group_info import write_group_info
 from .sources.issue_files import write_issue_files
 from .sources.mail_threads import write_thread_files
-from .sources.mbox import sync_mailing_list, validate_list_names
+from .sources.mbox import (
+    normalize_list_name,
+    sync_mailing_list,
+    validate_list_names,
+)
 from .sources.meetings import process_attendance, process_meetings
 from .sources.message_citations import build_message_citations
 from .sources.pdf_extract import extract_all_pdfs
@@ -176,21 +183,35 @@ def _gather_dynamic_drafts(
     cache_dir: str,
     persisted: Dict[str, Any],
     verbosity: Verbosity,
-) -> None:
+) -> Optional[Tuple[int, str, List[str]]]:
     """Materialise the generative draft sources (--author, --new-drafts).
 
     `--author` is additive; `--new-drafts` is a rolling window — drafts
     aging out are pruned, but everything else we intend to keep
     (explicit --draft, authored drafts, and previously-added mentioned
     drafts) is retained.
+
+    Returns `(person_id, name, authored-draft-names)` when `--author`
+    resolved, so the caller can drive the person's reviews and mail off
+    the same resolution — list discovery needs the draft names, and
+    re-resolving would cost another Datatracker round-trip.
     """
     author_names: List[str] = []
+    author: Optional[Tuple[int, str, List[str]]] = None
     if args.author:
         resolved = resolve_person(args.author, verbose=verbosity)
         if resolved is not None:
             author_names = fetch_author_draft_names(resolved[0], verbose=verbosity)
-            process_extra_drafts(author_names, cache_dir, verbose=verbosity)
+            # Current revision only. A prolific participant is ~130
+            # drafts averaging 4+ revisions, which dominated the whole
+            # gather (96% of bytes, 76% of requests) to fetch history
+            # the index largely refuses to embed. `--draft` still takes
+            # the full stack — see `process_extra_drafts`.
+            process_extra_drafts(
+                author_names, cache_dir, verbose=verbosity, latest_only=True
+            )
             _persist_author_name(args.wg, resolved[1])
+            author = (resolved[0], resolved[1], author_names)
 
     if args.new_drafts:
         new_names = fetch_new_draft_names(args.months, verbose=verbosity)
@@ -202,6 +223,58 @@ def _gather_dynamic_drafts(
             + list(persisted.get("mentioned_drafts") or [])
         )
         prune_drafts(cache_dir, keep, verbose=verbosity)
+
+    return author
+
+
+def _gather_author_mail(
+    args: argparse.Namespace,
+    author: Optional[Tuple[int, str, List[str]]],
+    verbosity: Verbosity,
+    note_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Follow the `--author` person's mail across the lists they're on.
+
+    Discovery proposes the lists (their roles, their drafts' groups, and
+    always the Last Call lists); the sync then keeps only *their*
+    messages plus the threads around them. Messages land in the same
+    per-list `.eml` cache a whole-list sync uses, so this must run
+    before the identity registry is built — otherwise these senders
+    aren't in it and the thread files miss their canonical names.
+
+    Additive to `--mailing-list`: an explicitly named list is still
+    gathered in full by `sync_mailing_list`. This only adds sender-scoped
+    material from lists nobody named.
+    """
+    if author is None:
+        return
+    person_id, _name, draft_names = author
+    addresses = fetch_person_emails(person_id, verbosity)
+    if not addresses:
+        return
+    lists = discover_author_lists(person_id, draft_names, verbosity)
+    # Don't re-search a list the user named explicitly — that one is
+    # already being gathered whole, which is a superset.
+    explicit = {normalize_list_name(name) for name in (args.mailing_list or [])}
+    lists = [name for name in lists if normalize_list_name(name) not in explicit]
+    sync_author_mail(
+        args.wg,
+        lists,
+        addresses,
+        months=args.months,
+        verbose=verbosity,
+        note_fn=note_fn,
+    )
+    _persist_author_lists(args.wg, lists)
+
+
+def _persist_author_lists(wg: str, lists: List[str]) -> None:
+    """Record which lists the person's mail was searched on, so `--list`
+    and the gather config show what a re-run will cover."""
+    cfg = config.load(wg, SCOPE)
+    if cfg.get("author_lists") != lists:
+        cfg["author_lists"] = lists
+        config.save(wg, SCOPE, cfg)
 
 
 def _persist_author_name(wg: str, name: str) -> None:
@@ -713,7 +786,36 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     if args.draft:
         process_extra_drafts(args.draft, cache_dir, verbose=verbosity)
 
-    _gather_dynamic_drafts(args, cache_dir, persisted, verbosity)
+    author = _gather_dynamic_drafts(args, cache_dir, persisted, verbosity)
+
+    # Reviews the --author person *wrote* — the other half of their
+    # record, and unlike their drafts it shows what they look for in
+    # someone else's document. Its own stage: one page fetch per review
+    # puts a prolific reviewer into minutes, which under the drafts
+    # stage would look like a hang to anything polling gather_status.
+    #
+    # Both author stages are keyed on the flag, not on `author`, so the
+    # sequence matches `stage_plan` even when the person didn't resolve.
+    if args.author:
+        tracker.begin("reviews")
+        if author is not None:
+            gather_reviews(
+                cache_dir,
+                author[0],
+                author[1],
+                verbose=verbosity,
+                on_progress=lambda done, total: tracker.detail(
+                    f"{done}/{total} reviews fetched"
+                ),
+            )
+
+    # The --author person's own mail, across the lists they're on.
+    # Runs here rather than in the mailing-list stage above because list
+    # discovery needs their authored drafts, and before the identity
+    # registry below so these senders are consolidated like any other.
+    if args.author:
+        tracker.begin("author mail")
+        _gather_author_mail(args, author, verbosity, note_fn=note_fn)
 
     # Extract text from any PDFs in the cache (slide decks, whiteboards,
     # etc.). Writes a sibling .pdf.txt for each so the chunker picks

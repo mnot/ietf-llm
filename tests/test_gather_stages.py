@@ -116,3 +116,19 @@ def test_stage_tracker_raises_on_drift() -> None:
     tracker = StageTracker(["a", "b"], None)
     with pytest.raises(RuntimeError, match="stage drift"):
         tracker.begin("b")  # expected "a" first
+
+
+def test_stage_plan_author_adds_reviews_and_mail() -> None:
+    """Both author passes are their own stages: each is minutes of
+    network work that would otherwise look like a hung 'drafts'."""
+    plan = stage_plan(_args(author="mnot@mnot.net"), group_backed=False)
+    assert plan.index("drafts") < plan.index("reviews") < plan.index("author mail")
+    # Author mail writes .eml the registry consolidates, so it must land
+    # before the registry is built.
+    assert plan.index("author mail") < plan.index("identity registry")
+
+
+def test_stage_plan_without_author_has_neither() -> None:
+    plan = stage_plan(_args(), group_backed=False)
+    assert "reviews" not in plan
+    assert "author mail" not in plan

@@ -432,3 +432,72 @@ def test_sub_fragment_line_ranges_are_contiguous_and_correct() -> None:
     for c in frags[1:]:
         assert c.start_line >= frags[0].start_line  # type: ignore[operator]
         assert c.end_line <= frags[0].end_line  # type: ignore[operator]
+
+
+# --- review files: dated and citeable --------------------------------------
+
+
+def _rendered_review(**kw: object) -> str:
+    """A review file as `gather.sources.reviews` actually writes one.
+
+    Driven through the real writer rather than hand-built: a synthetic
+    fixture that drifts from the writer is how a rendering bug survives
+    its own test.
+    """
+    from ietf_llm.gather.sources.reviews import Review, render_review
+
+    fields: dict = dict(
+        doc_name="review-ietf-ppm-dap-09-httpdir-early-nottingham-2023-12-29",
+        reviewer="Mark Nottingham",
+        reviewed_doc="draft-ietf-ppm-dap",
+        reviewed_rev="09",
+        team="httpdir",
+        review_type="early",
+        result="ready-issues",
+        assigned_on="2023-12-18T06:48:46Z",
+        completed_on="2023-12-29T08:57:44Z",
+        request_comment="",
+    )
+    fields.update(kw)
+    review = Review(**fields)  # type: ignore[arg-type]
+    review.text = "The review body."
+    return render_review(review)
+
+
+_REVIEW_PATH = (
+    "reviews/review-ietf-ppm-dap-09-httpdir-early-nottingham-2023-12-29.md"
+)
+
+
+def test_review_chunks_carry_the_completed_date() -> None:
+    """A review is a dated act. `since`/`until` and `sort="date"` drop
+    NULL-dated chunks, so without this "their reviews from the last two
+    years" silently returns nothing."""
+    chunks = _chunk_windowed(_rendered_review(), _REVIEW_PATH)
+    assert chunks
+    assert all(c.chunk_date == "2023-12-29T00:00:00Z" for c in chunks)
+
+
+def test_review_chunks_carry_the_datatracker_url() -> None:
+    chunks = _chunk_windowed(_rendered_review(), _REVIEW_PATH)
+    assert all(
+        c.url == (
+            "https://datatracker.ietf.org/doc/"
+            "review-ietf-ppm-dap-09-httpdir-early-nottingham-2023-12-29/"
+        )
+        for c in chunks
+    )
+
+
+def test_review_without_a_completed_date_is_undated() -> None:
+    """No date beats a wrong one — the facets treat it as fact."""
+    chunks = _chunk_windowed(_rendered_review(completed_on=""), _REVIEW_PATH)
+    assert chunks
+    assert all(c.chunk_date is None for c in chunks)
+
+
+def test_non_review_windowed_files_stay_undated() -> None:
+    """A draft spans revisions and has no single date worth filtering on."""
+    text = "**Completed:** 2023-12-29\n\nSome draft body.\n"
+    chunks = _chunk_windowed(text, "drafts/draft-ietf-x-00.txt")
+    assert all(c.chunk_date is None for c in chunks)

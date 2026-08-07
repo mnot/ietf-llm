@@ -99,7 +99,16 @@ rejected as a likely typo rather than producing an empty corpus.
 
 **Generative source flags** (`--new-drafts`, `--author`) populate a
 custom corpus dynamically — a rolling `-00` window from the submission
-API, or a person's authored drafts from the documentauthor table.
+API, or a whole person: their authored drafts from the documentauthor
+table, the directorate / Last Call reviews they *wrote* (`reviews.py`),
+and their mail across the lists they're on (`author_lists.py` picks the
+lists, `author_mail.py` searches them by sender). Author drafts are
+fetched at their **current revision only** (`process_extra_drafts(…,
+latest_only=True)`): naming every draft one person ever wrote made the
+revision stack dominate the whole gather — 96% of bytes, 76% of
+requests — to fetch history the index largely refuses to embed. The
+explicit `--draft` path keeps the full stack, where the history may be
+the point.
 They short-circuit shape inference to `custom` (the name is a label, no
 group lookup) and persist, so a bare re-run re-evaluates the source.
 Explicit sources (`--draft` / `--mailing-list` / `--github`) compose
@@ -149,6 +158,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │   ├── threads/<date>-<slug>.md       # one reconstructed thread each
 │   │   ├── issues/<repo-slug>/<N>.md      # one GitHub issue each
 │   │   ├── ballots/<draft-name>.md        # IESG ballot positions per draft
+│   │   ├── reviews/<review-doc-name>.md   # reviews written by the --author person
 │   │   ├── github/<repo-slug>.json        # raw archive (internal; not exported)
 │   │   └── raw/                           # NOT indexed; grep / NotebookLM only
 │   │       ├── mail-archive-<YYYY>.txt
@@ -472,6 +482,9 @@ ietf_llm/
 │       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
 │       ├── author.py               # --author: a person's authored drafts
+│       ├── reviews.py              # --author: the reviews that person wrote
+│       ├── author_lists.py         # --author: which lists that person is on
+│       ├── author_mail.py          # --author: their mail, by sender, quotes kept
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
@@ -774,6 +787,16 @@ Concretely, the gather layer reads from the API for:
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
   `datatracker_history.py`).
+- **Reviews** — the `review/reviewassignment` and `review/reviewrequest`
+  endpoints (`reviews.py`). The assignment API filters by *reviewer
+  email*, so the person's full address set (`person/email/?person=`) is
+  expanded first: a review filed under a former employer address would
+  otherwise be invisible. Review **text** is the exception to the
+  API-first rule below: review documents have no `.txt` mirror and no
+  API text field, so the body comes from the doc page's
+  `<pre class="pasted">` block (tags stripped before unescaping; the
+  requester's comment renders in an identical block and is filtered out
+  by comparison).
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
@@ -1103,6 +1126,43 @@ live path can't replace.
 `imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
 store is expensive to refetch and shouldn't be lost when a WG's
 exported `files/` are cleared. Thread reconstruction walks it directly.
+
+That last property is what lets an `--author` corpus reuse the whole
+mail pipeline. `author_mail.py` fetches by sender rather than by list —
+IMAP `SEARCH FROM` over the person's full Datatracker address set,
+since a whole-list pull of `last-call@` would bury the person in
+material that isn't theirs — but it writes into the same per-list
+`.eml` directory, so `mail_threads` reconstructs those messages with no
+knowledge that they arrived a different way.
+
+The context comes from the **quotes**, not from fetching the rest of
+the thread. What a reply answers is already in the message, quoted, and
+quoted *selectively*: the sender trimmed it to the part they were
+responding to, which is better-targeted than the surrounding thread and
+its every ignored sub-branch. So `elide_quotes` is applied per message
+rather than always — see "Quote elision is conditional" below. What
+this does not capture is the *reaction*: replies to them are not
+gathered, so such a corpus is evidence of what a person raises, not of
+how it landed.
+
+### Quote elision is conditional
+
+`elide_quotes` cuts a top-posted quote trail on the grounds that those
+messages are in the same file as their own sections. That holds only
+when the surrounding thread was gathered, so the cut is now gated on
+`msg.parent_id is not None` — which is exactly the "is the parent in
+this corpus?" test, because `build_threads` sets `parent_id` only for a
+parent it actually found (`by_id`), and `_collect_subtree` pulls a
+whole subtree into one file. A **thread root therefore keeps its full
+quote trail**, in every corpus, not just author ones.
+
+The blast radius is wider than "author corpora" and narrower than it
+sounds: roots are 14–27% of messages in the gathered WGs, but most
+start a conversation and have nothing quoted, so only 2–4% of messages
+actually grow (+3–11% of body bytes; worst single message +34KB). The
+retained bytes are new content rather than duplication — a root's
+parent is by construction *not* in the corpus, so nothing else indexes
+what it quotes.
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 

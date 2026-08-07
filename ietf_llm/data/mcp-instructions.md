@@ -38,6 +38,17 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   "who's on X", "open issues"), and **`list_corpora`** to see what's gathered.
 - **No named corpus, just a topic?** `find_efforts(topic)` ranks active efforts
   and flags which are cached; `which_corpus(query)` routes to a cached one.
+- **Asked about a *person* rather than an effort?** "What does <name> care
+  about", "how would <name> review this"  — the
+  unit is an **author corpus**, not a WG. Check `list_corpora` for one already
+  tracking them; otherwise (when gather is enabled)
+  `start_gather(corpus="<name>", author="<their-email>")`. Email is the
+  unambiguous spec — a bare name must match Datatracker exactly. It gathers
+  their drafts, every directorate / Last Call review they wrote, and their own
+  list mail. Expect minutes, not seconds, for a prolific participant; block on
+  `gather_status` rather than reading a partial cache. Then read
+  `reviews/` first — a review is the question "what does this person look for
+  in a document" already answered, against a document they did not write.
 - **Corpus missing?** How to add one is stated in **This session** above (it
   depends on this server's mode).
 - **Just started a gather? Wait for `done` before reading.** `overview`,
@@ -85,6 +96,25 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   (`read_file_section`); attendance is presence, NOT a position.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state),
   `draft_authors`, `get_draft` (verbatim text).
+- **Reviews:** a corpus gathered with `--author` also holds every directorate /
+  Last Call review that person *wrote*, at `reviews/<review-doc-name>.md`
+  (`search_corpus` with `file_pattern="reviews/%"`, then `read_file_section`).
+  These are that person's judgements about someone else's document — the best
+  evidence for what they look for in a draft. They are individual opinions,
+  not the directorate's or their employer's, and a review's `Result` is the
+  reviewer's own verdict, not a WG or IESG outcome.
+- **A person corpus is not a group corpus.** It holds only that person's own
+  messages, across whatever lists they're on — so it is evidence about them,
+  and says nothing about what a group discussed or where consensus lies.
+  Never read thread coverage here as a group's agenda, never infer a WG
+  position from it, and note that a thread file's `Participants` line lists
+  only who is *in the corpus* (usually just them), not who was in the real
+  thread. `list_corpora` shows which corpora are author-scoped.
+  - **Quoted (`>`) text in these files is someone else's words**, kept
+    because it is the only record of what the person was replying to. Attribute
+    it to the person quoted — named in the `On … wrote:` line above it — never
+    to the corpus subject, and never treat it as their view. Their own words
+    are the unprefixed lines.
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:

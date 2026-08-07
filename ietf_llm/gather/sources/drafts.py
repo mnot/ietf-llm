@@ -8,7 +8,8 @@ from ...datatracker_api import get_group_type
 from ...log import LogLevel, Verbosity, log
 from ...net import fetch_resource
 from ...paths import drafts_dir
-from .datatracker import (
+from .datatracker import (  # pylint: disable=protected-access
+    _get_json,
     draft_state_slugs,
     iter_active_drafts_by_name,
     iter_group_documents,
@@ -181,6 +182,47 @@ def fetch_current_rev(
         return None
 
 
+def fetch_current_revs(
+    draft_names: List[str], verbose: Verbosity = Verbosity.STATUS
+) -> Dict[str, int]:
+    """Resolve many drafts' current revisions in one (or a few) requests.
+
+    Tastypie honours `name__in`, so N drafts cost ceil(N/100) list
+    queries instead of N `fetch_current_rev` round-trips. That matters
+    for a bulk caller: `--author` on a long-serving participant is ~130
+    sequential lookups, which dominated the stage once the revision
+    stacks themselves stopped being downloaded.
+
+    Names must already be normalised. A draft the API doesn't know is
+    simply absent from the result — the caller skips it, exactly as it
+    would on a `fetch_current_rev` miss.
+    """
+    out: Dict[str, int] = {}
+    names = sorted({n for n in draft_names if n})
+    for start in range(0, len(names), 100):
+        batch = ",".join(names[start : start + 100])
+        path: Optional[str] = (
+            f"https://datatracker.ietf.org/api/v1/doc/document/"
+            f"?name__in={batch}&limit=100"
+        )
+        while path:
+            body = _get_json(path)
+            if not body:
+                break
+            for obj in body.get("objects") or []:
+                name = obj.get("name")
+                rev = obj.get("rev")
+                if isinstance(name, str) and isinstance(rev, str) and rev.isdigit():
+                    out[name] = int(rev)
+            path = (body.get("meta") or {}).get("next") or None
+    log(
+        f"  resolved {len(out)} of {len(names)} draft revision(s).",
+        verbose,
+        level=LogLevel.PROGRESS,
+    )
+    return out
+
+
 def validate_draft_names(
     names: List[str], verbose: Verbosity = Verbosity.STATUS
 ) -> List[str]:
@@ -297,31 +339,14 @@ def _revision_tasks(
     return tasks
 
 
-def _download_all_revisions(
-    draft_name: str,
-    max_rev: int,
-    out_dir: str,
-    verbose: Verbosity,
-) -> List[str]:
-    """Pull every revision (00..max_rev) of one draft into out_dir.
-    Returns the paths of newly-written files (skips revisions whose
-    .txt is already cached)."""
-    log(
-        f"Processing draft: {draft_name} (revs 00 to {max_rev:02d})",
-        verbose,
-        level=LogLevel.STATUS,
-    )
-    return _download_files_parallel(
-        _revision_tasks(draft_name, max_rev, out_dir), verbose
-    )
-
-
 def process_extra_drafts(
     draft_names: List[str],
     destination: str,
     verbose: Verbosity = Verbosity.STATUS,
+    latest_only: bool = False,
 ) -> List[str]:
-    """Download every revision of each given draft.
+    """Download each given draft — every revision, or just the current
+    one under `latest_only`.
 
     Use for drafts that aren't auto-discovered as WG documents on
     Datatracker — typically `--draft draft-<author>-<wg>-<topic>`
@@ -330,15 +355,25 @@ def process_extra_drafts(
     version-stripped first, so `draft-foo-bar`, `draft-foo-bar-07`,
     and `draft-foo-bar-07.txt` all yield the same result.
 
+    `latest_only` is for a caller adding drafts *in bulk*, where the
+    revision stack is the dominant cost and nobody asked for the
+    history: `--author` names every draft one person ever wrote (127
+    drafts × ~4.3 revisions for a long-serving participant), and the
+    embedding index skips the older revisions of anything already
+    published as an RFC anyway — so most of that download is written
+    and then never indexed. `--draft` names a specific document and
+    keeps the full stack: there, the history may well be the point.
+
     Resolves the current revision via Datatracker so we know how
     many to fetch. Skips silently for drafts the API can't find —
     a typoed name shouldn't kill the whole gather.
     """
     if not draft_names:
         return []
-    updated: List[str] = []
     out_dir = drafts_dir(destination)
     os.makedirs(out_dir, exist_ok=True)
+
+    names: List[str] = []
     for raw in draft_names:
         name = normalize_draft_name(raw)
         if not name.startswith("draft-"):
@@ -348,16 +383,34 @@ def process_extra_drafts(
                 level=LogLevel.STATUS,
             )
             continue
-        max_rev = fetch_current_rev(name, verbose)
+        names.append(name)
+    if not names:
+        return []
+
+    # Resolve every revision in one batched query, then fetch every file
+    # in one parallel pass — the same shape as `process_documents`. Done
+    # per draft, both are sequential round-trips, which is what made a
+    # 130-draft `--author` corpus slow even after the revision stacks
+    # stopped being downloaded.
+    revs = fetch_current_revs(names, verbose)
+    tasks: List[Tuple[str, str]] = []
+    for name in names:
+        max_rev = revs.get(name)
         if max_rev is None:
             log(
-                f"--draft {name}: Datatracker doesn't know this draft; " "skipping.",
+                f"--draft {name}: Datatracker doesn't know this draft; skipping.",
                 verbose,
                 level=LogLevel.STATUS,
             )
             continue
-        updated.extend(_download_all_revisions(name, max_rev, out_dir, verbose))
-    return updated
+        scope = f"rev {max_rev:02d}" if latest_only else f"revs 00 to {max_rev:02d}"
+        log(
+            f"Processing draft: {name} ({scope})",
+            verbose,
+            level=LogLevel.PROGRESS,
+        )
+        tasks.extend(_revision_tasks(name, max_rev, out_dir, latest_only=latest_only))
+    return _download_files_parallel(tasks, verbose)
 
 
 def process_documents(

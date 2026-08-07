@@ -43,8 +43,25 @@ A name that is none of these and has no configured sources is rejected as a like
   or a full address; the domain is optional and ignored (`rswg`, `rswg@rfc-editor.org`).
 - `--new-drafts` — subscribe to *new* Internet-Drafts: every `-00` submitted within `--months`
   (rolling window; drafts age out).
-- `--author PERSON` — every draft `PERSON` authored. `PERSON` is an email (`mnot@mnot.net`,
-  recommended), a Datatracker person id, or an exact full name. Drafts only.
+- `--author PERSON` — every draft `PERSON` authored (**current revision only** — a prolific
+  participant is ~130 drafts averaging 4+ revisions, and the index skips the older revisions of
+  anything already published as an RFC; `--draft` still takes the full stack), plus every
+  directorate / Last Call review they *wrote* (`reviews/<review-doc-name>.md`, all of them — no `--months` window, since a review
+  is never superseded). `PERSON` is an email (`mnot@mnot.net`, recommended), a Datatracker person
+  id, or an exact full name; all of that person's registered addresses are searched, so reviews
+  filed under a former employer address are still found.
+
+  Also follows **their mail**. The lists are discovered from the groups they hold a role in and
+  the groups owning their drafts, plus `last-call@` and `ietf@` always (that is where cross-area
+  review happens, and no per-person signal would surface them); the chosen set is persisted as
+  `author_lists` so `--list` shows what a re-run will cover. A list they never posted to costs
+  one search that finds nothing. Lists you name with `--mailing-list` are gathered in full as
+  usual and skipped here.
+
+  Only *their* messages are pulled, with **quoted material kept intact** — the quote is what
+  they were replying to, already trimmed by them to the part they cared about, which is
+  better-targeted context than the surrounding thread. The corpus is therefore evidence of what
+  they raise, not of how it landed: replies *to* them are not gathered.
 - `--add-mentioned-drafts` — also pull drafts the corpus's threads/issues mention but don't already
   include. Sticky.
 
