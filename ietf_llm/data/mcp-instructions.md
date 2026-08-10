@@ -83,8 +83,9 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   tallies + attendance count for one), `meeting_schedule` (live schedule).
   A meeting's full attendance roster is in `meetings/<code>/attendance.md`
   (`read_file_section`); attendance is presence, NOT a position.
-- **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state),
-  `draft_authors`, `get_draft` (verbatim text).
+- **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state —
+  the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
+  on the IESG side), `draft_authors`, `get_draft` (verbatim text).
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:

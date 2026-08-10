@@ -1053,7 +1053,7 @@ half-populated index — see "Writers are write-if-changed and atomic".
 
 A narrower break from the no-network contract: `meeting_schedule`,
 `draft_status`, and `overview(corpus, live=True)` read **live** from Datatracker
-(`live_lookup/`) because meeting schedules and IESG states change daily, so an
+(`live_lookup/`) because meeting schedules and draft states change daily, so an
 agenda built on the (often days-stale) gather cache is wrong at the edges. A
 small TTL cache (`IETF_LLM_LIVE_TTL`, default 300s) is in-process plus a
 best-effort `.live-cache.json` on disk — the *only* thing this path writes,

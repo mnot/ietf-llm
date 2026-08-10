@@ -119,20 +119,44 @@ _DOC_ACTIVE = {
 }
 
 _STATES = {
-    "/api/v1/doc/state/1/": {"name": "Active", "type": "/api/v1/doc/statetype/draft/"},
+    "/api/v1/doc/state/1/": {
+        "name": "Active",
+        "slug": "active",
+        "type": "/api/v1/doc/statetype/draft/",
+    },
     "/api/v1/doc/state/2/": {
         "name": "I-D Exists",
+        "slug": "idexists",
         "type": "/api/v1/doc/statetype/draft-iesg/",
     },
     "/api/v1/doc/state/3/": {
         "name": "RFC Ed Queue",
+        "slug": "rfcqueue",
         "type": "/api/v1/doc/statetype/draft-iesg/",
+    },
+    # The per-stream states — the WG's own process, which a draft in WGLC
+    # carries while its IESG state is still "I-D Exists".
+    "/api/v1/doc/state/41/": {
+        "name": "In WG Last Call",
+        "slug": "wg-lc",
+        "type": "/api/v1/doc/statetype/draft-stream-ietf/",
+    },
+    "/api/v1/doc/state/42/": {
+        "name": "Submitted to IESG for Publication",
+        "slug": "sub-pub",
+        "type": "/api/v1/doc/statetype/draft-stream-ietf/",
+    },
+    "/api/v1/doc/state/43/": {
+        "name": "Dead WG Document",
+        "slug": "dead",
+        "type": "/api/v1/doc/statetype/draft-stream-ietf/",
     },
 }
 
 _STATE_TYPES = {
     "/api/v1/doc/statetype/draft/": {"slug": "draft"},
     "/api/v1/doc/statetype/draft-iesg/": {"slug": "draft-iesg"},
+    "/api/v1/doc/statetype/draft-stream-ietf/": {"slug": "draft-stream-ietf"},
 }
 
 _INTENDED = {"/api/v1/name/intendedstdlevelname/ps/": {"name": "Proposed Standard"}}
@@ -328,6 +352,101 @@ def test_draft_status_empty_states_corroborated_dead(monkeypatch):
     status, _ = live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     assert status.eligibility == "dead"
     assert status.note and "no states" in status.note.lower()
+
+
+def _stub_doc(monkeypatch, **overrides):
+    """Serve `_DOC_ACTIVE` with overrides for the doc fetch; canned elsewhere."""
+    doc = dict(_DOC_ACTIVE, **overrides)
+    monkeypatch.setattr(
+        live_lookup.cache,
+        "_fetch_json",
+        lambda url, timeout=10.0: doc if "/doc/document/" in url else _canned(url),
+    )
+    live_lookup._reset_cache()
+
+
+def test_draft_status_reports_wg_last_call(monkeypatch):
+    # The regression: a draft in WGLC carries a draft-stream-ietf state of
+    # "In WG Last Call" while its IESG state is still "I-D Exists". Reading
+    # only the draft/draft-iesg states loses the WGLC entirely.
+    _stub_doc(
+        monkeypatch,
+        states=[
+            "/api/v1/doc/state/1/",
+            "/api/v1/doc/state/2/",
+            "/api/v1/doc/state/41/",
+        ],
+    )
+    status, _ = live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
+    assert status.stream == "ietf"
+    assert status.stream_state == "In WG Last Call"
+    assert status.stream_state_slug == "wg-lc"
+    assert status.iesg_state == "I-D Exists"
+    assert status.eligibility == "in-wg"  # WGLC is still the WG's document
+
+
+def test_draft_status_renders_wg_state(monkeypatch):
+    _stub_doc(
+        monkeypatch,
+        states=[
+            "/api/v1/doc/state/1/",
+            "/api/v1/doc/state/2/",
+            "/api/v1/doc/state/41/",
+        ],
+    )
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert "WG state:** In WG Last Call" in out
+    assert "IESG state:** I-D Exists" in out
+
+
+def test_draft_status_submitted_to_iesg_is_in_iesg(monkeypatch):
+    # Handed to the IESG but not yet picked up: the IESG state is still
+    # "I-D Exists", so only the stream state says it has left the WG.
+    _stub_doc(
+        monkeypatch,
+        states=[
+            "/api/v1/doc/state/1/",
+            "/api/v1/doc/state/2/",
+            "/api/v1/doc/state/42/",
+        ],
+    )
+    status, _ = live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
+    assert status.stream_state == "Submitted to IESG for Publication"
+    assert status.eligibility == "in-iesg"
+
+
+def test_draft_status_dead_wg_document_is_dead(monkeypatch):
+    _stub_doc(
+        monkeypatch,
+        states=[
+            "/api/v1/doc/state/1/",
+            "/api/v1/doc/state/2/",
+            "/api/v1/doc/state/43/",
+        ],
+    )
+    status, _ = live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
+    assert status.eligibility == "dead"
+
+
+def test_draft_status_non_ietf_stream_labelled_generically(monkeypatch):
+    # An IRTF/IAB/ISE doc's stream state is not a "WG state"; the renderer
+    # must not call it one.
+    monkeypatch.setitem(
+        _STATE_TYPES, "/api/v1/doc/statetype/draft-stream-irtf/", {"slug": "draft-stream-irtf"}
+    )
+    monkeypatch.setitem(
+        _STATES,
+        "/api/v1/doc/state/44/",
+        {
+            "name": "In RG Last Call",
+            "slug": "rg-lc",
+            "type": "/api/v1/doc/statetype/draft-stream-irtf/",
+        },
+    )
+    _stub_doc(monkeypatch, states=["/api/v1/doc/state/1/", "/api/v1/doc/state/44/"])
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert "RG state:** In RG Last Call" in out
+    assert "WG state" not in out
 
 
 def test_eligibility_iesg_dead_maps_to_dead():
