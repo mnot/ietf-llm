@@ -223,7 +223,7 @@ def _resolve_issue_file(
     matches: List[Tuple[str, str]] = []
     roots = [issues_dir(cache), pulls_dir(cache)]
     if not any(os.path.isdir(root) for root in roots):
-        return None, "This corpus has no gathered GitHub issues."
+        return None, "This corpus has no gathered GitHub issues or pull requests."
     for root in roots:
         if not os.path.isdir(root):
             continue

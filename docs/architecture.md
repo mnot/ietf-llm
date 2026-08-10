@@ -215,6 +215,19 @@ Key invariants:
   are summarised in the header rather than given a section each. Archives
   without a `pulls` key (the REST fallback shape, used when a repo publishes no
   gh-pages `archive.json`) simply produce no PR tree.
+- **PR files are written but not embedded.** `pulls/` is skipped by
+  `embeddings.chunking._eligible_files`, alongside `raw/` and `github/`.
+  Measured on `httpwg/http-extensions`, indexing them costs +31% chunks (29,062
+  → 38,215; ~131 MB → ~172 MB), and no content filter separates that cost from
+  the value: restricting to PRs that declare `closes #N` drops 71% of them, and
+  what it drops is whatever nobody bothered to annotate — bookkeeping
+  discipline, which runs opposite to substance. The two reasons to have PRs at
+  all — the blame walk and the argument written in a PR body — are served by
+  `digests/pulls.md`, `get_issue`, `read_digest(kind="pulls",
+  include_bodies=True)` and `grep_corpus`, none of which touch the index. So
+  `search_corpus` / `read_topic` / `find_related` do not see PR text, and
+  `get_by_url` resolves a `…/pull/N` link off the filesystem instead of through
+  the stamped-URL column.
 - **Identities are consolidated up front.** `people.Registry` merges the
   surface forms of one actor — DMARC-rewritten variants, relay addresses,
   multiple emails, GitHub logins — into one canonical `Person`, resolving

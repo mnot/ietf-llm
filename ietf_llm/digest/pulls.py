@@ -84,6 +84,11 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
     total_open = 0
     total_merged = 0
     total_closed = 0
+    # A state we don't recognise (or a record with none at all) is counted
+    # apart rather than swept into "closed without merging" — the totals
+    # line is read as a summary of outcomes, and quietly filing an unknown
+    # under the most consequential-looking bucket misreports it.
+    total_unknown = 0
 
     with atomic_open(out_path) as fh:
         fh.write(f"# {wg}: GitHub pull requests digest\n\n")
@@ -151,10 +156,12 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
                     total_open += 1
                 elif state == "MERGED":
                     total_merged += 1
-                else:
+                elif state == "CLOSED":
                     total_closed += 1
+                else:
+                    total_unknown += 1
 
-                closes = ", ".join(f"#{n}" for n in _closes(pull))
+                closes = ", ".join(f"#{n}" for n in _closes(pull, repo))
                 relpath = os.path.relpath(pull_path(cache_dir, repo, number), cache_dir)
                 row = (
                     f"| {number} | {state} | {title} | {labels} | {n_comments} | "
@@ -173,15 +180,13 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
                 fh.write(row + "\n")
             fh.write("\n")
 
-        fh.write(
-            f"\n_Totals: {total_open} open, {total_merged} merged, "
-            f"{total_closed} closed without merging_\n"
+        totals = (
+            f"{total_open} open, {total_merged} merged, "
+            f"{total_closed} closed without merging"
         )
+        if total_unknown:
+            totals += f", {total_unknown} of unrecognised state"
+        fh.write(f"\n_Totals: {totals}_\n")
 
-    log(
-        f"Wrote pulls digest: {total_open} open, {total_merged} merged, "
-        f"{total_closed} closed unmerged",
-        verbose,
-        level=LogLevel.STATUS,
-    )
+    log(f"Wrote pulls digest: {totals}", verbose, level=LogLevel.STATUS)
     return out_path

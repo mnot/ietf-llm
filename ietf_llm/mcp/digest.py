@@ -114,14 +114,16 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
             continue
         # Cut at the discussion section — the comment / review history is
         # the bulky part and the consumer can drill into it on demand.
-        # Issue files call it "## Comments", PR files "## Discussion".
-        cutoffs = [
-            pos
-            for pos in (text.find("\n## Comments"), text.find("\n## Discussion"))
-            if pos != -1
-        ]
-        if cutoffs:
-            text = text[: min(cutoffs)].rstrip() + "\n"
+        # The marker depends on which writer produced the file, and must
+        # be chosen by the file's tree, NOT by whichever marker appears
+        # first: issue bodies contain arbitrary markdown, and a "##
+        # Discussion" heading inside one is common enough that taking the
+        # earlier of the two truncated real issues down to nothing
+        # (httpwg/http-extensions 1315 and 1632 both do this).
+        marker = "\n## Discussion" if name.startswith("pulls/") else "\n## Comments"
+        cutoff = text.find(marker)
+        if cutoff != -1:
+            text = text[:cutoff].rstrip() + "\n"
         chunks.append("\n---\n")
         chunks.append(text)
     return "".join(chunks)

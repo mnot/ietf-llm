@@ -222,12 +222,14 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         )
         return _with_freshness(wg, f"(no results for {query!r} — {no_index})")
 
-    # Keep only chunks from thread/issue/PR files that have a date — those
+    # Keep only chunks from thread/issue files that have a date — those
     # are the only chunks that represent a "message" in a debate.
     # Windowed draft / transcript chunks may match a query but they
     # aren't messages, so the chronological view skips them.
+    # (Per-PR files have the same shape but are never indexed — see the
+    # `pulls/` skip in `embeddings.chunking._eligible_files`.)
     thread_issue_hits = [
-        h for h in hits if h.file.lower().startswith(("threads/", "issues/", "pulls/"))
+        h for h in hits if h.file.lower().startswith(("threads/", "issues/"))
     ]
     matched = thread_issue_hits[:k]
     # For the completeness signal: how many more matched than we show, and
@@ -618,8 +620,8 @@ def register(server: "FastMCP") -> None:
 
     @server.tool()
     async def tally_positions(corpus: str, file: str) -> str:
-        """Surface the procedural backbone of ONE mailing-list thread or
-        GitHub issue of an IETF/IRTF effort. Its high-value output is the
+        """Surface the procedural backbone of ONE mailing-list thread,
+        GitHub issue or pull request of an IETF/IRTF effort. Its high-value output is the
         **Chair statements** section at the top: any message from a chair
         containing procedural language (`rough consensus`, `consensus
         call`, `WGLC`, `adopting`, `closing this thread`, …) rendered
@@ -642,10 +644,14 @@ def register(server: "FastMCP") -> None:
         `read_ietf_interpretation_norms` first.
 
         Pass `file` as a relative path under the corpus cache, e.g.
-        `threads/2026-04-12-wglc-mlkem.md` or
-        `issues/org-repo/155.md`. Files outside threads/ and issues/
+        `threads/2026-04-12-wglc-mlkem.md`, `issues/org-repo/155.md` or
+        `pulls/org-repo/34.md`. Files outside threads/, issues/ and pulls/
         don't have the per-message section structure this tool reads
-        and will be politely refused.
+        and will be politely refused. On a PR, a review's APPROVED /
+        CHANGES_REQUESTED verdict is NOT counted as a position — the
+        heuristic reads message text, so a bare approval registers as
+        no-position and drags coverage down. Read the file's **Review
+        verdicts:** header line for those.
 
         Heuristic limitations:
           - Subtle, technical-only objections show as no-position

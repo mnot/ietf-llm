@@ -58,7 +58,7 @@ ietf-llm-search [OPTIONS] <name> "<query>"
 |---|---|
 | `-k`, `--top N` | Number of hits to return (default: 10). |
 | `--format FMT` | Output format: `text` (default, human-readable) or `tsv` — one tab-separated row per hit (score, file, chunk index, line range, title, snippet), for piping into other tools. |
-| `--file LIKE` | Restrict to chunks whose file path matches a SQL `LIKE` pattern (`%` is the wildcard). E.g. `'%threads/%'` (mailing-list threads), `'%issues/%'` (GitHub issues), `'%pulls/%'` (pull requests), `'%drafts/%'`. |
+| `--file LIKE` | Restrict to chunks whose file path matches a SQL `LIKE` pattern (`%` is the wildcard). E.g. `'%threads/%'` (mailing-list threads), `'%issues/%'` (GitHub issues), `'%drafts/%'`. |
 | `--since ISO_DATE` | Only chunks dated on or after `ISO_DATE` (e.g. `2026-01-01`). Applies to mailing-list and issue chunks; undated draft / transcript chunks are excluded. |
 | `--until ISO_DATE` | Only chunks dated on or before `ISO_DATE`. |
 | `-q`, `--quiet` | Suppress status logging. |

@@ -217,20 +217,6 @@ def test_chunk_file_dispatches_by_relpath(isolated_home: Path) -> None:
     chunks_i = _chunk_file(str(issue), "issues/org-repo/1.md")
     assert any("Bob" in c.title for c in chunks_i)
 
-    # PR files share the issue format and get the same treatment: the
-    # sectioned chunker, plus the file-level state / URL stamping.
-    (files_dir / "pulls" / "org-repo").mkdir(parents=True)
-    pull = files_dir / "pulls" / "org-repo" / "2.md"
-    pull.write_text(
-        "# Pull request #2\n\n"
-        "**URL:** https://github.com/org/repo/pull/2  \n"
-        "**State:** CLOSED  \n\n## Description\n\n"
-        "### [1] 2026-01-01 10:00 — Carol _(opened pull request)_\n\nbody\n"
-    )
-    chunks_p = _chunk_file(str(pull), "pulls/org-repo/2.md")
-    assert any("Carol" in c.title for c in chunks_p)
-    assert all(c.state == "closed" for c in chunks_p)
-    assert all(c.url == "https://github.com/org/repo/pull/2" for c in chunks_p)
 
     draft = files_dir / "drafts" / "draft-foo-00.txt"
     draft.parent.mkdir(parents=True)
@@ -279,6 +265,23 @@ def test_eligible_files_excludes_digests_json_pdf_and_raw(
     eligible = _eligible_files(str(files_dir), "wg")
     relpaths = sorted(os.path.relpath(p, str(files_dir)) for p in eligible)
     assert relpaths == ["charter.txt"]
+
+
+def test_eligible_files_excludes_pulls_but_not_issues(
+    isolated_home: Path,
+) -> None:
+    # Per-PR files are written, catalogued and readable — but never
+    # embedded. Measured on httpbis, indexing them costs +31% chunks for
+    # record digests/pulls.md already carries, and no content filter
+    # separates that cost from the value. Issues stay indexed.
+    files_dir = isolated_home / ".cache" / "ietf-llm" / "wg" / "files"
+    (files_dir / "issues" / "org-repo").mkdir(parents=True)
+    (files_dir / "issues" / "org-repo" / "1.md").write_text("# Issue #1\n")
+    (files_dir / "pulls" / "org-repo").mkdir(parents=True)
+    (files_dir / "pulls" / "org-repo" / "2.md").write_text("# Pull request #2\n")
+    eligible = _eligible_files(str(files_dir), "wg")
+    relpaths = sorted(os.path.relpath(p, str(files_dir)) for p in eligible)
+    assert relpaths == ["issues/org-repo/1.md"]
 
 
 def test_eligible_files_skips_rfc_and_replaced_draft_revisions(

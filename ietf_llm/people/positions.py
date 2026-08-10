@@ -303,16 +303,24 @@ class ChairStatement:
 # Thread message section header (mirrors chunking.py's _THREAD_MSG_RE,
 # but rewritten here to capture the bits this module cares about: the
 # message number and the sender. Date isn't needed — we sort by file
-# order, which is already chronological.) The optional trailing
-# `_(opened issue)_` annotation an issue file appends to its opener must be
-# consumed here, or it leaks into the sender name and splits the opener's
-# identity from their commenter identity in the tally.
+# order, which is already chronological.) The optional trailing italic
+# annotation a GitHub file appends to a section header must be consumed
+# here, or it leaks into the sender name and splits one person's
+# identity across the tally. Three forms exist:
+#   `_(opened issue)_`         — issue_files, on the opener
+#   `_(opened pull request)_`  — pull_files, on the opener
+#   `_(review: APPROVED)_`     — pull_files, on each rendered review
+# The review form is the one that bites hardest: a reviewer who also
+# comments would otherwise appear as two people, and one who reviews
+# twice with different verdicts as three. `_SENDER_ROLE_SUFFIX` does not
+# save us — these end in `_`, not `)`.
 # The date group is optional: a message whose timestamp rendered empty leaves
 # `### [N]  — Sender`, and a required date token would drop that message from
 # the tally (and the coverage denominator) entirely.
 _THREAD_MSG_RE = re.compile(
     r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?)? — (.+?)"
-    r"(?:\s+_\(opened issue\)_)?(?: \(reply to \[\d+\]\))?$",
+    r"(?:\s+_\((?:opened issue|opened pull request|review: [A-Z_]+)\)_)?"
+    r"(?: \(reply to \[\d+\]\))?$",
     re.MULTILINE,
 )
 # Sender display includes a role tag in parens — e.g. "Alice (Chair)".

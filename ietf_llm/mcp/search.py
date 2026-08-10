@@ -693,8 +693,7 @@ def register(server: "FastMCP") -> None:
         Optional facets:
           - file_pattern: SQL LIKE pattern over the relative path
             (e.g. "threads/%" to restrict to mailing-list threads,
-            "issues/%" for GitHub issues, "pulls/%" for pull
-            requests, "drafts/%" for drafts).
+            "issues/%" for GitHub issues, "drafts/%" for drafts).
             % is wildcard.
           - since / until: ISO 8601 dates (e.g. "2026-01-01"). Only
             mailing-list and GitHub chunks have dates; windowed draft

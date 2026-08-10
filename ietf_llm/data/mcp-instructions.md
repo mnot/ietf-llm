@@ -97,6 +97,12 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   including each PR's merge commit, so a `git blame` line traces to the PR that
   wrote it and from there to the issue behind it. A question about *reasoning*
   that stops at the issues has usually stopped one step short.
+  **PR text is not in the search index** (deliberately — it would cost ~31% more
+  chunks for record the catalogue already carries), so `search_corpus` will
+  never surface it and its silence about PRs means nothing. Reach them through
+  `read_digest(kind="pulls", …)` — with `include_bodies=True` to get the
+  descriptions in the same call — then `get_issue(corpus, number)` for one in
+  full, or `grep_corpus` for an exact string across them.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:
   it refreshes its index before reporting one missing). Never conclude an RFC
   is unpublished from a `search_rfcs` miss alone — that reads a mirror that

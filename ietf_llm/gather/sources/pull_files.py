@@ -19,9 +19,21 @@ because a PR is a different kind of record: it has a merge disposition, a
 head/base branch, and reviews, and none of that belongs in the issue schema.
 
 The file format deliberately matches `issue_files._render_issue` — metadata
-header, outline, `### [N] DATE — Author` sections — because that shape is
-what the chunker (`embeddings.chunking._chunk_thread_file`) cuts on, and
-what `get_chunk_text` / `find_replies` speak.
+header, outline, `### [N] DATE — Author` sections — because that is the shape
+every reader in the tree already speaks: `tally_positions` parses those
+section headers, the citation scanners walk the bodies, and a human reading
+one file after the other shouldn't have to re-learn the layout.
+
+**These files are not embedded.** `embeddings.chunking._eligible_files` skips
+`pulls/` — the measured cost is +31% chunks on httpbis for record the
+catalogue already carries, and the reasons to have PRs at all (the blame walk,
+and the argument in a PR body) are served by `digests/pulls.md`, `get_issue`
+and `grep_corpus`, none of which touch the index. One consequence shows up
+here: the `**Closing note:**` block deliberately does NOT use the issue files'
+`**Closing rationale:**` wording, and nothing stamps it as file-level chunk
+metadata the way `_extract_issue_rationale` does for issues, because there are
+no chunks to stamp. If PRs are ever indexed, that extractor needs teaching
+about this heading.
 
 Two places where the PR shape forces a different decision from issues:
 
@@ -61,11 +73,22 @@ from .issue_files import (
     _normalise_html,
 )
 
-# GitHub's closing keywords, as accepted in a PR title or body. Anchored to
-# `#N` so a bare "fixes the parser" doesn't match. GitHub itself accepts
-# these in any case and with an optional colon after the keyword.
+# GitHub's closing keywords, as accepted in a PR title or body. GitHub
+# itself accepts these in any case and with an optional colon after the
+# keyword, and honours three reference forms: bare `#N`, cross-repo
+# `owner/repo#N`, and the full issue URL. All three appear in the real
+# corpora — 73 of 3684 PRs declare their closure *only* as a URL and
+# would otherwise render a blank Closes column, which matters because the
+# blame walk is the whole point of the column. Anchored to a number so a
+# bare "fixes the parser" doesn't match.
 _CLOSES_RE = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b",
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+    r"(?:"
+    r"(?:https?://)?(?:www\.)?github\.com/(?P<url_repo>[^/\s]+/[^/\s]+)"
+    r"/(?:issues|pulls?)/(?P<url_number>\d+)"
+    r"|(?P<ref_repo>[\w.-]+/[\w.-]+)#(?P<ref_number>\d+)"
+    r"|#(?P<number>\d+)"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -82,18 +105,34 @@ _VERDICT_LABEL = {
 }
 
 
-def _closes(pull: Dict[str, Any]) -> List[int]:
+def _closes(pull: Dict[str, Any], repo: str = "") -> List[int]:
     """Issue numbers this PR declares it closes, from title + body.
 
     Deduped, in first-seen order. Self-references are dropped: a PR
     claiming to close its own number is a typo, not a link.
+
+    A cross-repo reference (`owner/repo#N` or a full issue URL) counts
+    only when it names **this** repo — pass `repo` as `owner/repo` to
+    enable that. A genuine cross-repo closure is a different repo's
+    issue, which this corpus may not have gathered and whose number
+    means something else here, so rendering it as a bare `#N` would
+    point the reader at the wrong record.
     """
     own = pull.get("number")
     found: List[int] = []
     for text in (pull.get("title") or "", pull.get("body") or ""):
         for match in _CLOSES_RE.finditer(str(text)):
+            named_repo = match.group("url_repo") or match.group("ref_repo")
+            if named_repo is not None:
+                if not repo or named_repo.lower() != repo.lower():
+                    continue
+            raw = (
+                match.group("number")
+                or match.group("url_number")
+                or match.group("ref_number")
+            )
             try:
-                number = int(match.group(1))
+                number = int(raw)
             except (TypeError, ValueError):
                 continue
             if number == own or number in found:
@@ -174,10 +213,14 @@ def _substantive_reviews(pull: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _review_summary(pull: Dict[str, Any], registry: Optional[Registry]) -> str:
     """`changes requested by A · approved by B, C` — the verdict tally.
 
-    One entry per reviewer per verdict, deduped: a reviewer who approves
-    twice is named once. Reviewers who only ever left a COMMENTED review
-    are folded in last, since "commented" is the default GitHub gives a
-    review with no explicit verdict.
+    Each reviewer is named **once**, under their strongest verdict, in
+    `_REVIEW_VERDICTS` order (objections before approvals, COMMENTED
+    last). Reviewing is iterative — a reviewer typically leaves several
+    COMMENTED reviews and then an APPROVED — so naming them under every
+    verdict they ever used produces a tally like "approved by B ·
+    commented on by B, C" that reads as more reviewers than there were.
+    COMMENTED sorts last because it is what GitHub gives a review with no
+    explicit verdict, so it carries the least information.
     """
     by_verdict: Dict[str, List[str]] = {}
     for review in pull.get("reviews") or []:
@@ -191,9 +234,11 @@ def _review_summary(pull: Dict[str, Any], registry: Optional[Registry]) -> str:
         if name not in names:
             names.append(name)
     parts: List[str] = []
+    claimed: set[str] = set()
     for verdict in _REVIEW_VERDICTS:
-        verdict_names = by_verdict.get(verdict)
+        verdict_names = [n for n in by_verdict.get(verdict, []) if n not in claimed]
         if verdict_names:
+            claimed.update(verdict_names)
             parts.append(f"{_VERDICT_LABEL[verdict]} {', '.join(verdict_names)}")
     return "  ·  ".join(parts)
 
@@ -202,7 +247,11 @@ def _participants(pull: Dict[str, Any], registry: Optional[Registry]) -> List[st
     """Canonical names of everyone who touched the PR: author, commenters,
     reviewers, and whoever merged it."""
     logins: List[str] = [str(pull.get("author") or "")]
-    logins += [str(c.get("author") or "") for c in (pull.get("comments") or [])]
+    logins += [
+        str(c.get("author") or "")
+        for c in (pull.get("comments") or [])
+        if isinstance(c, dict)
+    ]
     logins += [
         str(r.get("author") or "")
         for r in (pull.get("reviews") or [])
@@ -300,7 +349,7 @@ def _render_pull(  # pylint: disable=too-many-locals,too-many-branches,too-many-
         f"**Comments:** {len(comments)}  ·  **Reviews:** {len(reviews)}  ·  "
         f"**Participants ({len(participants)}):** " + ", ".join(participants)
     )
-    closes = _closes(pull)
+    closes = _closes(pull, repo)
     if closes:
         out.append("**Closes:** " + ", ".join(f"#{n}" for n in closes))
     disposition = _disposition(pull, registry)
