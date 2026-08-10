@@ -248,6 +248,9 @@ def tool_get_issue(
     )
 
 
+#: What to call the per-stream state line, keyed by the doc's stream.
+_STREAM_STATE_LABELS = {"ietf": "WG state", "irtf": "RG state"}
+
 #: Human label per agenda-eligibility signal (`live_lookup.DraftStatus`).
 _ELIGIBILITY_LABELS = {
     "in-wg": "in the WG — agenda-eligible",
@@ -262,8 +265,9 @@ def tool_draft_status(name: str) -> str:
     """Render one draft's live Datatracker status + agenda-eligibility signal.
 
     Live read-path tool (lazy `live_lookup` import, gather-gated). Reports the
-    draft state, the resolved IESG state, expiry, RFC number, and the derived
-    in-wg / in-iesg / published / dead signal an agenda decision turns on.
+    draft state, the WG/stream state (where WGLC lives), the resolved IESG
+    state, expiry, RFC number, and the derived in-wg / in-iesg / published /
+    dead signal an agenda decision turns on.
     """
     from .. import live_lookup  # pylint: disable=import-outside-toplevel
 
@@ -288,6 +292,9 @@ def tool_draft_status(name: str) -> str:
         lines.append(f"- **Revision:** -{status.rev}")
     if status.draft_state:
         lines.append(f"- **Draft state:** {status.draft_state}")
+    if status.stream_state:
+        stream_label = _STREAM_STATE_LABELS.get(status.stream or "", "Stream state")
+        lines.append(f"- **{stream_label}:** {status.stream_state}")
     if status.iesg_state:
         lines.append(f"- **IESG state:** {status.iesg_state}")
     if status.rfc_number:
@@ -379,17 +386,20 @@ def register_live(server: "FastMCP") -> None:
         status, **live** from Datatracker, with a derived eligibility signal.
 
         Returns the revision, the draft state (Active / Expired / Replaced /
-        RFC), the IESG state (`I-D Exists`, `AD Evaluation`, `IESG
-        Evaluation`, `RFC Ed Queue`, …), the expiry date, the intended
-        status, and the RFC number if published — plus a derived signal:
-        **in-wg** (still in WG hands), **in-iesg** (past the WG, in IESG
-        processing), **published**, or **dead** (expired or replaced). The
-        gather cache's curated active-draft list can lag the real IESG state
-        by days, so reach here when the *current* standing matters (deciding
-        an agenda is the obvious case).
+        RFC), the **WG state** — the stream state the WG itself drives (`WG
+        Document`, `In WG Last Call`, `WG Consensus: Waiting for Write-Up`,
+        `Submitted to IESG for Publication`, …), which is where WGLC shows up
+        — the IESG state (`I-D Exists`, `AD Evaluation`, `IESG Evaluation`,
+        `RFC Ed Queue`, …), the expiry date, the intended status, and the RFC
+        number if published — plus a derived signal: **in-wg** (still in WG
+        hands), **in-iesg** (past the WG, in IESG processing), **published**,
+        or **dead** (expired or replaced). A draft in WGLC is still `I-D
+        Exists` on the IESG side, so read the WG state line for where it sits
+        in the WG's own process. The gather cache's curated active-draft list
+        can lag the real state by days, so reach here when the *current*
+        standing matters (deciding an agenda is the obvious case).
 
-        Live (short TTL + freshness stamp; it reaches the network); see the
-        SKILL "Live Datatracker facts" section.
+        Live (short TTL + freshness stamp; it reaches the network).
 
         Args:
             name: The draft name (`draft-ietf-httpbis-resumable-upload`);
