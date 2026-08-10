@@ -311,9 +311,11 @@ def _meeting_label(filename: str) -> str:
 def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
     """Opened / closed events from the GitHub archive JSON files.
 
-    Closure date is taken from `updatedAt` when state is closed (the
-    archive doesn't record closedAt explicitly). Approximate but
-    consistent.
+    Closure date comes from `closedAt`, falling back to `updatedAt` for
+    the older archive shape that predates it. The fallback is genuinely
+    approximate — an issue closed and then edited (or relabelled) months
+    later reports the edit as its closure — so prefer the real field
+    wherever the archive carries it.
     """
     out: List[Event] = []
     archives_dir = github_dir(cache_dir)
@@ -335,7 +337,7 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
                     )
                 )
             if (issue.get("state") or "").lower() == "closed":
-                closed = _parse_iso(issue.get("updatedAt"))
+                closed = _parse_iso(issue.get("closedAt") or issue.get("updatedAt"))
                 if closed:
                     out.append(
                         Event(
