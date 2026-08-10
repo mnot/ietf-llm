@@ -35,7 +35,7 @@ A name that is none of these and has no configured sources is rejected as a like
 
 **Sources**:
 
-- `--github OWNER/REPO` — a GitHub repo whose issues to include. _Working Groups usually
+- `--github OWNER/REPO` — a GitHub repo whose issues and pull requests to include. _Working Groups usually
   don't need this_: the first gather auto-discovers the group's active draft repos based upon Datatracker. Use `--github` to override or extend that set.
 - `--draft DRAFT-NAME` — an extra Internet-Draft to track, beyond a WG's own documents. Version
   suffix stripped; every revision gathered.

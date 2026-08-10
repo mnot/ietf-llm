@@ -217,6 +217,21 @@ def test_chunk_file_dispatches_by_relpath(isolated_home: Path) -> None:
     chunks_i = _chunk_file(str(issue), "issues/org-repo/1.md")
     assert any("Bob" in c.title for c in chunks_i)
 
+    # PR files share the issue format and get the same treatment: the
+    # sectioned chunker, plus the file-level state / URL stamping.
+    (files_dir / "pulls" / "org-repo").mkdir(parents=True)
+    pull = files_dir / "pulls" / "org-repo" / "2.md"
+    pull.write_text(
+        "# Pull request #2\n\n"
+        "**URL:** https://github.com/org/repo/pull/2  \n"
+        "**State:** CLOSED  \n\n## Description\n\n"
+        "### [1] 2026-01-01 10:00 — Carol _(opened pull request)_\n\nbody\n"
+    )
+    chunks_p = _chunk_file(str(pull), "pulls/org-repo/2.md")
+    assert any("Carol" in c.title for c in chunks_p)
+    assert all(c.state == "closed" for c in chunks_p)
+    assert all(c.url == "https://github.com/org/repo/pull/2" for c in chunks_p)
+
     draft = files_dir / "drafts" / "draft-foo-00.txt"
     draft.parent.mkdir(parents=True)
     draft.write_text("Some draft content.\n" + ("x " * 100))

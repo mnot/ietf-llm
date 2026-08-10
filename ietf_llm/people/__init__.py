@@ -786,10 +786,18 @@ def _ingest_mail(wg: str, registry: Registry, verbose: Verbosity) -> None:
 
 
 def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
-    """Read each `github/<repo-slug>.json` archive and feed issue authors."""
+    """Read each `github/<repo-slug>.json` archive and feed issue and pull
+    request authors.
+
+    PRs matter here beyond symmetry: reviewing is a distinct mode of
+    participation, and someone who reviews steadily without ever filing an
+    issue was invisible to the registry while this walked `issues` alone.
+    Reviewers and whoever merged a PR both count as participants.
+    """
     cache_dir = os.path.join(get_cache_dir(), wg, "files")
     archives_dir = os.path.join(cache_dir, "github")
-    count = 0
+    issue_count = 0
+    pull_count = 0
     for data in iter_issue_archives(archives_dir):
         for issue in data.get("issues") or []:
             registry.add_github_author(
@@ -801,8 +809,36 @@ def _ingest_github(wg: str, registry: Registry, verbose: Verbosity) -> None:
                     comment.get("author") or "",
                     _maybe_iso(comment.get("createdAt")),
                 )
-            count += 1
-    log(f"  ingested authors from {count} issues", verbose, level=LogLevel.PROGRESS)
+            issue_count += 1
+        for pull in data.get("pulls") or []:
+            if not isinstance(pull, dict):
+                continue
+            registry.add_github_author(
+                pull.get("author") or "",
+                _maybe_iso(pull.get("createdAt") or pull.get("updatedAt")),
+            )
+            for comment in pull.get("comments") or []:
+                registry.add_github_author(
+                    comment.get("author") or "",
+                    _maybe_iso(comment.get("createdAt")),
+                )
+            for review in pull.get("reviews") or []:
+                if not isinstance(review, dict):
+                    continue
+                registry.add_github_author(
+                    review.get("author") or "",
+                    _maybe_iso(review.get("createdAt")),
+                )
+            registry.add_github_author(
+                pull.get("mergedBy") or "",
+                _maybe_iso(pull.get("mergedAt")),
+            )
+            pull_count += 1
+    log(
+        f"  ingested authors from {issue_count} issues, {pull_count} PRs",
+        verbose,
+        level=LogLevel.PROGRESS,
+    )
 
 
 def _ingest_datatracker_roles(wg: str, registry: Registry, verbose: Verbosity) -> None:

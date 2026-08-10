@@ -844,15 +844,16 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
 
 def file_supports_tally(relpath: str) -> bool:
-    """True for thread / issue files (the ones with `### [N] DATE — …`
+    """True for thread / issue / PR files (the ones with `### [N] DATE — …`
     section headers). Used by the MCP tool to refuse gracefully on
     drafts, transcripts, digests, etc. — those don't have a tallyable
     structure.
+
+    PR files qualify on the same terms as issues, and a PR review thread
+    is often exactly where positions get stated.
     """
     lower = relpath.lower()
-    return (
-        lower.startswith("threads/") or lower.startswith("issues/")
-    ) and lower.endswith(".md")
+    return lower.startswith(("threads/", "issues/", "pulls/")) and lower.endswith(".md")
 
 
 def load_people_context(

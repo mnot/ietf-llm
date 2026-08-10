@@ -99,7 +99,7 @@ def _safe_path(wg: str, file: str) -> Optional[str]:
     return candidate
 
 
-_DIGEST_KINDS = ("index", "issues", "threads", "people", "timeline")
+_DIGEST_KINDS = ("index", "issues", "pulls", "threads", "people", "timeline")
 
 
 def _digest_path(wg: str, kind: str) -> Optional[str]:
@@ -132,16 +132,25 @@ def _missing_digest_message(wg: str, kind: str) -> str:
             f"{gather_suggestion(wg, purpose='to generate them')}."
         )
     hint = ""
-    if kind == "issues":
+    if kind in ("issues", "pulls"):
         add_repos = (
             f'`start_gather(corpus="{wg}", github=["owner/repo"])`'
             if gather_enabled()
             else f"`ietf-llm {wg} --github owner/repo`"
         )
+        noun = "Issues" if kind == "issues" else "Pull requests"
         hint = (
-            " (Issues come from GitHub; none were gathered for this corpus — "
+            f" ({noun} come from GitHub; none were gathered for this corpus — "
             f"add repos with {add_repos}.)"
         )
+        if kind == "pulls":
+            # A repo with no gh-pages archive.json falls back to the REST
+            # API, which we deliberately don't ask for PRs — so "no pulls
+            # digest" can also mean "this repo publishes no archive".
+            hint += (
+                " PRs are read from the repo's published `archive.json`; a "
+                "repo without one has issues but no PR record here."
+            )
     return (
         f"{wg} has no '{kind}' digest. "
         f"This corpus has: {', '.join(available)}.{hint}"
@@ -540,11 +549,11 @@ def _participation_nudge(files: "str | List[str]") -> str:
     *write-side* gate right here, at the point of material acquisition — not
     only in the server instructions a model has already scrolled past.
 
-    Fires only when the material is `threads/` or `issues/` content (what
-    gets quoted into a reply), never for drafts / RFCs / digests. A nudge,
-    not enforcement. Empty when no such file is in view."""
+    Fires only when the material is `threads/`, `issues/` or `pulls/`
+    content (what gets quoted into a reply), never for drafts / RFCs /
+    digests. A nudge, not enforcement. Empty when no such file is in view."""
     paths = [files] if isinstance(files, str) else files
-    if not any(p.lower().startswith(("threads/", "issues/")) for p in paths):
+    if not any(p.lower().startswith(("threads/", "issues/", "pulls/")) for p in paths):
         return ""
     return (
         "> ✍ **About to draft a contribution from this?** Before you write "

@@ -28,6 +28,11 @@ WG's cache directory.
     issues/
       <repo-slug>/
         <N>.md                     (was <wg>-issue-<repo-slug>-<N>.md)
+    pulls/
+      <repo-slug>/
+        <N>.md                     (pull requests; GitHub numbers issues
+                                    and PRs in one sequence, so a given N
+                                    appears under exactly one of the two)
     github/
       <repo-slug>.json             (raw archive)
     ballots/
@@ -163,6 +168,7 @@ DIR_DRAFTS = "drafts"
 DIR_MEETINGS = "meetings"
 DIR_THREADS = "threads"
 DIR_ISSUES = "issues"
+DIR_PULLS = "pulls"
 DIR_GITHUB = "github"
 DIR_RAW = "raw"
 DIR_BALLOTS = "ballots"
@@ -238,12 +244,26 @@ def issue_path(cache_dir: str, repo: str, number: Any) -> str:
     return os.path.join(issue_repo_dir(cache_dir, repo), f"{number}.md")
 
 
+def pulls_dir(cache_dir: str) -> str:
+    return os.path.join(cache_dir, DIR_PULLS)
+
+
+def pull_repo_dir(cache_dir: str, repo: str) -> str:
+    """Per-PR files for a repo live under pulls/<repo-slug>/."""
+    return os.path.join(cache_dir, DIR_PULLS, _repo_slug(repo))
+
+
+def pull_path(cache_dir: str, repo: str, number: Any) -> str:
+    return os.path.join(pull_repo_dir(cache_dir, repo), f"{number}.md")
+
+
 def iter_thread_issue_md_files(cache_dir: str) -> Iterator[Tuple[str, str]]:
-    """Yield `(abs_path, relpath)` for every `.md` under `threads/` and
-    `issues/`, in stable (sorted) order. The shared walk behind the
+    """Yield `(abs_path, relpath)` for every `.md` under `threads/`,
+    `issues/` and `pulls/`, in stable (sorted) order. The shared walk behind the
     body-scanning passes (`gather.sources.citations`, `gather.sources.message_citations`)
     so they don't each reimplement it."""
-    for root_dir in (threads_dir(cache_dir), issues_dir(cache_dir)):
+    roots = (threads_dir(cache_dir), issues_dir(cache_dir), pulls_dir(cache_dir))
+    for root_dir in roots:
         if not os.path.isdir(root_dir):
             continue
         for dirpath, _dirnames, filenames in os.walk(root_dir):

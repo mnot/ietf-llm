@@ -4,6 +4,7 @@ Content-aware chunking, dispatched by filename:
 
   *-thread-*.md             → one chunk per message section
   *-issue-*.md              → one chunk per comment section
+  pulls/*.md                → one chunk per comment / review section
   everything else (.txt/.md) → fixed-size character windows with overlap
 
 The legacy `<wg>-mail-archive-YYYY.txt` and `<wg>-github-<repo>.txt`
@@ -558,12 +559,15 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         # fall back to windowed chunking so something is still indexed.
         return _chunk_windowed(text, filename)
 
-    # Issue files have `**Labels:**` and `**State:**` header lines;
+    # Issue and PR files have `**Labels:**` and `**State:**` header lines;
     # thread files don't. Stamping the file-level values onto every
     # chunk lets search-time filters (label="top-level", state="closed")
     # shortlist by curation + resolution before semantic ranking.
-    # Post-reorg, issue files live under `issues/<repo>/<N>.md`.
-    is_issue = filename.lower().startswith("issues/")
+    # Post-reorg, issue files live under `issues/<repo>/<N>.md` and pull
+    # requests under `pulls/<repo>/<N>.md`. PR files normalise their state
+    # line to OPEN / CLOSED (a merged PR is a closed one) precisely so this
+    # facet keeps one meaning across both trees.
+    is_issue = filename.lower().startswith(("issues/", "pulls/"))
     labels = _extract_issue_labels(text) if is_issue else None
     state = _extract_issue_state(text) if is_issue else None
     # Citation URL: for issue files the URL is file-level (every chunk
@@ -650,8 +654,8 @@ def _chunk_file(path: str, relpath: str) -> List[Chunk]:
     # Per-thread reconstructions are the LLM-legible mailing-list form.
     if lower.startswith("threads/") and lower.endswith(".md"):
         return _chunk_thread_file(text, relpath)
-    # Per-issue reconstructions share the thread file format.
-    if lower.startswith("issues/") and lower.endswith(".md"):
+    # Per-issue and per-PR reconstructions share the thread file format.
+    if lower.startswith(("issues/", "pulls/")) and lower.endswith(".md"):
         return _chunk_thread_file(text, relpath)
     return _chunk_windowed(text, relpath)
 

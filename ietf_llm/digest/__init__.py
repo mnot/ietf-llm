@@ -7,6 +7,7 @@ produced:
 
   {wg}-_index.md    -- landing page: what's here, file inventory, usage hints
   {wg}-_issues.md   -- one row per GitHub issue (state, title, labels, etc.)
+  {wg}-_pulls.md    -- one row per GitHub PR (state, merge commit, closes)
   {wg}-_threads.md  -- one row per mailing list thread (subject, n_msgs, span)
 
 Digests are built deterministically from structured data already present
@@ -19,6 +20,7 @@ Implementation is split across cohesive submodules:
   helpers.py     — subject normalisation, date parsing, state case-folding
   summarizer.py  — the optional LLM-backed one-liner wrapper
   issues.py      — GitHub issues digest builder
+  pulls.py       — GitHub pull requests digest builder
   threads.py     — mailing list threads digest builder
   index.py       — top-level index + file categorisation
 
@@ -42,6 +44,7 @@ from .helpers import (
 )
 from .index import _build_index, _inventory
 from .issues import _build_issues_digest
+from .pulls import _build_pulls_digest
 from .summarizer import _llm_setup_help, _Summarizer
 from .threads import _build_threads_digest
 
@@ -56,6 +59,7 @@ __all__ = [
     "_inventory",
     "_build_index",
     "_build_issues_digest",
+    "_build_pulls_digest",
     "_build_threads_digest",
     "_Summarizer",
     "_llm_setup_help",
@@ -91,6 +95,12 @@ def generate_digests(
     if issues_path:
         generated.append(issues_path)
 
+    pulls_path = _build_pulls_digest(
+        cache_dir, wg, summarizer, verbose, registry=registry  # type: ignore[arg-type]
+    )
+    if pulls_path:
+        generated.append(pulls_path)
+
     threads_path = _build_threads_digest(
         wg, cache_dir, summarizer, verbose, registry=registry  # type: ignore[arg-type]
     )
@@ -108,6 +118,7 @@ def generate_digests(
         cache_dir,
         has_issues_digest=issues_path is not None,
         has_threads_digest=threads_path is not None,
+        has_pulls_digest=pulls_path is not None,
         verbose=verbose,
         has_people_digest=has_people,
         has_timeline_digest=has_timeline,

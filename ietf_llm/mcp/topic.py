@@ -222,12 +222,12 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         )
         return _with_freshness(wg, f"(no results for {query!r} — {no_index})")
 
-    # Keep only chunks from thread/issue files that have a date — those
+    # Keep only chunks from thread/issue/PR files that have a date — those
     # are the only chunks that represent a "message" in a debate.
     # Windowed draft / transcript chunks may match a query but they
     # aren't messages, so the chronological view skips them.
     thread_issue_hits = [
-        h for h in hits if h.file.lower().startswith(("threads/", "issues/"))
+        h for h in hits if h.file.lower().startswith(("threads/", "issues/", "pulls/"))
     ]
     matched = thread_issue_hits[:k]
     # For the completeness signal: how many more matched than we show, and

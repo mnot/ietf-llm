@@ -47,7 +47,7 @@ def stage_plan(args: argparse.Namespace, group_backed: bool) -> List[str]:
     if has_github:
         plan.append("github issues")
     plan += [
-        "issue files",
+        "issue + PR files",
         "thread files",
         "citations",
         "message citations",

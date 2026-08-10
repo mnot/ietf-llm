@@ -316,6 +316,11 @@ def _issue_events(cache_dir: str, wg: str, registry: Registry) -> List[Event]:
     approximate — an issue closed and then edited (or relabelled) months
     later reports the edit as its closure — so prefer the real field
     wherever the archive carries it.
+
+    Pull requests are deliberately excluded. On a busy repo they outnumber
+    issues (httpwg/http-extensions: 1751 PRs to 1701 issues, 1558 of them
+    merged), and a timeline where every merge is an entry is one nobody
+    reads. `digests/pulls.md` is the catalogue for those.
     """
     out: List[Event] = []
     archives_dir = github_dir(cache_dir)
