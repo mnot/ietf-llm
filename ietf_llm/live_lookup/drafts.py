@@ -48,6 +48,18 @@ def _resolve_name_uri(uri: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
+def _uri_slug(uri: Any) -> Optional[str]:
+    """The trailing slug of a Datatracker name URI, without fetching it.
+
+    `/api/v1/name/streamname/ise/` → `ise`. Datatracker's name URIs end in the
+    slug itself, so the stream can be read off the doc with no extra request.
+    """
+    if not isinstance(uri, str) or not uri:
+        return None
+    parts = [part for part in uri.split("/") if part]
+    return parts[-1] if parts else None
+
+
 def _state_parts(state_uri: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve a doc `states[]` URI to `(type_slug, state_slug, state_name)`.
 
@@ -142,9 +154,15 @@ def _classify_states(doc: Dict[str, Any]) -> DocStates:
     Call`, `WG Consensus: Waiting for Write-Up`. A draft in WGLC still sits at
     `I-D Exists` on the IESG side, so ignoring the stream state loses exactly
     the transitions a WG participant tracks.
+
+    A document can carry states for *two* streams — `draft-eastlake-fnv` holds
+    both a `draft-stream-ietf` and a `draft-stream-ise` state — so the doc's
+    own `stream` field picks the authoritative one; `states[]` order is not a
+    contract, and last-one-wins would report the abandoned stream's state.
     """
     states = [uri for uri in (doc.get("states") or []) if isinstance(uri, str)]
     out = DocStates(raw=states)
+    by_stream: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
     for uri in states:
         type_slug, state_slug, state_name = _state_parts(uri)
         if type_slug == "draft":
@@ -152,9 +170,12 @@ def _classify_states(doc: Dict[str, Any]) -> DocStates:
         elif type_slug == "draft-iesg":
             out.iesg = state_name
         elif type_slug and type_slug.startswith("draft-stream-"):
-            out.stream = type_slug[len("draft-stream-") :]
-            out.stream_state = state_name
-            out.stream_state_slug = state_slug
+            by_stream[type_slug[len("draft-stream-") :]] = (state_slug, state_name)
+    if by_stream:
+        doc_stream = _uri_slug(doc.get("stream"))
+        chosen = doc_stream if doc_stream in by_stream else list(by_stream)[-1]
+        out.stream = chosen
+        out.stream_state_slug, out.stream_state = by_stream[chosen]
     return out
 
 
@@ -210,6 +231,31 @@ def fetch_draft_status(name: str) -> Tuple[Optional[DraftStatus], datetime.datet
         ),
         fetched,
     )
+
+
+#: Draft states that *explain* an eligibility verdict rather than restate it —
+#: the half a process state alone leaves out ("WG Document" + why it is dead).
+_EXPLANATORY_DRAFT_STATES = ("Expired", "Replaced")
+
+
+def _advanced_label(states: DocStates, eligibility: str) -> str:
+    """Label a draft that has moved past the WG, for the reconcile report.
+
+    Pairs the process state the group drove it to with the draft state that
+    accounts for the verdict, because either alone misleads: `I-D Exists`
+    says nothing, and a bare `WG Document (dead)` reads as a contradiction
+    when `Replaced` is the part that made it dead. `Active` is dropped (it
+    explains nothing) and so is a draft state the verdict already carries.
+    """
+    process = states.iesg if (states.iesg or "").lower() != "i-d exists" else None
+    process = process or states.stream_state
+    draft = states.draft
+    if draft in ("Active", None) or (
+        process and draft not in _EXPLANATORY_DRAFT_STATES
+    ):
+        draft = None
+    label = " / ".join(part for part in (process, draft) if part) or eligibility
+    return f"{label} ({eligibility})"
 
 
 @dataclass
@@ -290,12 +336,7 @@ def reconcile_active_drafts(
         )
         if name in active_set:
             if eligibility in ("in-iesg", "published", "dead"):
-                # Prefer the most-advanced meaningful label: a real IESG state
-                # beats the stream state that got it there (`sub-pub`), which
-                # in turn beats the bare draft state.
-                iesg_label = states.iesg if states.iesg != "I-D Exists" else None
-                label = iesg_label or states.stream_state or states.draft or eligibility
-                advanced.append((name, f"{label} ({eligibility})"))
+                advanced.append((name, f"{_advanced_label(states, eligibility)}"))
         elif eligibility == "in-wg":
             expires = obj.get("expires")
             when = expires[:10] if isinstance(expires, str) else "?"

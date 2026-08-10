@@ -399,8 +399,7 @@ def register_live(server: "FastMCP") -> None:
         can lag the real state by days, so reach here when the *current*
         standing matters (deciding an agenda is the obvious case).
 
-        Live (short TTL + freshness stamp; it reaches the network); see the
-        SKILL "Live Datatracker facts" section.
+        Live (short TTL + freshness stamp; it reaches the network).
 
         Args:
             name: The draft name (`draft-ietf-httpbis-resumable-upload`);
