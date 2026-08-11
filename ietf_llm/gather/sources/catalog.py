@@ -37,7 +37,7 @@ import requests
 
 from ...singletons.catalog import CATALOG_FILE, catalog_index_dir
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, governed_get
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from . import _mirror
 
 _API = "https://datatracker.ietf.org/api/v1/group/group/"
@@ -102,14 +102,22 @@ def _refresh_source(target_dir: str, name: str, url: str, verbosity: Verbosity) 
     try:
         response = governed_get(url, headers=headers, timeout=_TIMEOUT)
     except requests.RequestException as err:
-        log(f"Catalog: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
+        log(
+            f"Catalog: fetch {name} failed: {http_error_detail(err)}",
+            verbosity,
+            LogLevel.PROGRESS,
+        )
         return False
     if response.status_code == 304:
         return False
     try:
         response.raise_for_status()
     except requests.RequestException as err:
-        log(f"Catalog: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
+        log(
+            f"Catalog: fetch {name} failed: {http_error_detail(err)}",
+            verbosity,
+            LogLevel.PROGRESS,
+        )
         return False
     if not _mirror.write_body(body_path, response.content, verbosity, "Catalog"):
         return False
