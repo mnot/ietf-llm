@@ -29,6 +29,7 @@ from ..corpus import identity
 from ..months import DEFAULT_MONTHS
 from ..paths import get_cache_dir, get_index_dir
 from . import format as fmt
+from . import generation as seed_generation
 
 #: Operator-side membership file at the store root (not consumed by clients).
 MEMBERS_NAME = "members.json"
@@ -433,6 +434,32 @@ def _refresh_external(
         report.skipped.append((corpus, "no RFC index published upstream yet"))
         return None
     return built.release.build
+
+
+def generation_dir(base_dir: str) -> str:
+    """The subdirectory of `base_dir` this build's stores belong in.
+
+    A store holds one compatibility tuple, so a schema bump makes every
+    bundle in it unusable to the new code. Publishing each generation into
+    its own subdirectory lets both be served at once — the consumer reads
+    `<base>/<generation>/` (`seed.generation.store_url`), so an old
+    client keeps reading the store built for it while a new one reads
+    the store built for it.
+
+    It also means the operator's rsync is unchanged: the whole base tree is
+    still one managed directory, so `--delete` stays safe and the previous
+    generation keeps being served from where it already is.
+
+    Membership is inherited from the base on first use — a new generation
+    covers the same corpora as the one before it, and asking an operator to
+    re-add two dozen members after a schema bump is a way to lose one.
+    """
+    target = os.path.join(base_dir, seed_generation.generation())
+    os.makedirs(target, exist_ok=True)
+    inherited = _members_path(base_dir)
+    if not os.path.isfile(_members_path(target)) and os.path.isfile(inherited):
+        shutil.copyfile(inherited, _members_path(target))
+    return target
 
 
 def _published_corpus_dirs(store_dir: str) -> List[str]:

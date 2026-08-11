@@ -142,7 +142,11 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     """Install or refresh the RFC full-text corpus, best-effort."""
     if not service_config.seeding_enabled():
         return
-    seed_url = service_config.seed_url()
+    # Lazy for the same reason as the block below.
+    # pylint: disable-next=import-outside-toplevel
+    from ...seed import generation as seed_generation
+
+    seed_url = seed_generation.store_url()
     if not seed_url:
         return
     if _checked_recently(interval):

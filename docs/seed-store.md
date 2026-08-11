@@ -31,8 +31,26 @@ has no `files/` tree, because its text is in the index.
 
 ## Format
 
-A directory servable by any static host; a client needs only HTTPS GET. Root
-**`index.json`** is the entry point and compatibility gate:
+A directory servable by any static host; a client needs only HTTPS GET.
+
+Stores are published **per generation**, under a path segment derived from the
+schema version — `https://host/seed/v11/`. A store carries exactly one
+compatibility tuple, so a schema bump makes every bundle in it unusable to the
+new code and every bundle the new code writes unusable to the old; without
+separate paths, one side or the other cold-gathers until a republish lands.
+With them, both keep seeding across the changeover and the older generation is
+deleted whenever it stops being worth serving.
+
+`IETF_LLM_SEED_URL` (and the baked default) is the **base** — the host, not one
+generation's contents. Clients append the segment themselves
+(`seed.generation.store_url`), so a private mirror gets the same layout without
+its operator tracking schema numbers, and `publish_seeds.py` writes into the
+matching subdirectory of the store directory you give it. Stores published
+before this existed sit at the base URL; they are earlier generations and are
+simply no longer pointed at.
+
+Root **`index.json`** — of a generation directory — is the entry point and
+compatibility gate:
 
 ```json
 {
@@ -90,7 +108,9 @@ python scripts/publish_seeds.py ~/seed-store --add httpbis --add tls --add quic
 ```
 
 `--add <corpus> [--months N]` records each member's window; `--remove <corpus>`
-drops one.
+drops one. Give the **base** directory: publishing lands in its
+`v<schema>` subdirectory, and a new generation inherits the previous one's
+membership, so a schema bump does not mean re-adding every member by hand.
 
 To carry the full text of the RFC series, add `rfcs` like any other member:
 
@@ -165,6 +185,8 @@ The store is just static files served over HTTPS — `index.json`, each
 the directory to any static host and note its public base URL:
 
 - **Web server** — `rsync -a ~/seed-store/ host:/var/www/seed/` → `https://host/seed/`
+  (sync the **base**, so every generation goes with it — `--delete` stays safe
+  because the whole tree is the one managed directory)
 - **S3 + CDN** — `aws s3 sync ~/seed-store/ s3://bucket/seed/` (front with a CDN)
 - **Cloudflare R2** — `aws s3 sync` against the R2 endpoint, or `wrangler r2`
 - **GitHub Pages** — commit the directory to a Pages repo (fine for small stores)

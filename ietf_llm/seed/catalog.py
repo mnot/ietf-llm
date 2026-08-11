@@ -109,9 +109,11 @@ def _seed_url_if_enabled() -> Optional[str]:
     from ..config import service
     from ..freshness import gather_enabled
 
+    from . import generation
+
     if not gather_enabled() or not service.seeding_enabled():
         return None
-    return service.seed_url()
+    return generation.store_url()
 
 
 def _fetch_and_cache(seed_url: str, timeout: float) -> None:
