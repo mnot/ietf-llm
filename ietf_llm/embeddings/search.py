@@ -38,6 +38,7 @@ from .models import (
     _get_embed_model,
     embed_concurrency,
     is_remote_embed_model,
+    query_prefix,
 )
 from .snippet import make_snippet
 from .storage import (
@@ -1324,7 +1325,11 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             return []
 
         try:
-            q_vec = np.asarray(list(model.embed(query)), dtype=np.float32)
+            # bge retrieval models want their instruction on the query side
+            # only; keyed on the *index's* model, since that is the one being
+            # used here. Empty string for models that take no instruction.
+            q_text = query_prefix(indexed_model) + query
+            q_vec = np.asarray(list(model.embed(q_text)), dtype=np.float32)
         except Exception as err:  # pylint: disable=broad-except
             # Same provider-variability story as build_index().
             log(

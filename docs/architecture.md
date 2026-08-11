@@ -908,6 +908,20 @@ environment (`is_remote_embed_model` is the predicate); anything else
 falls through to `llm`. The remote backend pulls no torch, so a serving
 container can stay lean.
 
+**bge takes a query-side instruction.** BAAI's English bge retrieval models
+are trained with `"Represent this sentence for searching relevant
+passages: "` prepended to the *query* and not to the passage, so `search`
+adds it (`models.query_prefix`, keyed on the id the index was built with)
+and `build_index` never does. Being query-side, it changes no stored vector
+and needs no re-embed. Measured on rfc.fyi's 87-query labelled set over
+457,156 RFC chunks (issue #230): recall@10 0.543 without, 0.657 with.
+`IETF_LLM_QUERY_PREFIX=off` disables it.
+
+`corpus.routing` deliberately does **not** use it: its confidence floor is an
+absolute calibrated threshold, and a prefixed query moves the distribution
+that calibration was fitted to. Adopting it there means re-running
+`scripts/calibrate_routing.py` first.
+
 Whichever backend built an index, its id is recorded in the DB's `meta`
 (alongside the chunker version and the vector *dimension*, recorded as
 provenance), and `search` reads the id back to resolve the same backend.
