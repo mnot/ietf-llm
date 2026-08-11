@@ -293,3 +293,32 @@ def test_rows_never_split_a_source_line(tmp_path: Any) -> None:
         )
     # And the diagram row survives whole rather than as two fragments.
     assert "+--------+     DHCPACK/       |          |" in joined
+
+
+def test_ranges_tile_at_line_boundaries(tmp_path: Any) -> None:
+    """The structural guarantee behind the figure fix, asserted directly.
+
+    Spot-checking cannot establish it by matching returned lines back to the
+    source: older RFCs repeat lines, so one match elsewhere stretches the
+    apparent extent across the document. Here it is exact — consecutive
+    ranges meet, never overlap, and every boundary is a line start.
+    """
+    from ietf_llm.rfcindex.build import _trimmed_ranges
+    from ietf_llm.rfcindex.format import ChunkMeta
+
+    raw = b"alpha line one\nbeta line two\ngamma line three\ndelta line four\n"
+    chunks = [
+        ChunkMeta(rfc="1", off=0, length=20, section="1", title="T"),
+        ChunkMeta(rfc="1", off=10, length=25, section="1", title="T"),
+        ChunkMeta(rfc="1", off=30, length=30, section="1", title="T"),
+    ]
+    ranges = _trimmed_ranges(chunks, raw)
+    previous_end = None
+    for _meta, start, end in ranges:
+        if previous_end is not None:
+            assert start == previous_end, "ranges must meet exactly, not overlap or gap"
+        assert start == 0 or raw[start - 1 : start] == b"\n", "start is mid-line"
+        assert end == len(raw) or raw[end - 1 : end] == b"\n", "end is mid-line"
+        previous_end = end
+    # Together they cover the span without duplicating a byte.
+    assert ranges[0][1] == 0 and ranges[-1][2] == len(raw)
