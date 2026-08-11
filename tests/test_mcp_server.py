@@ -955,6 +955,30 @@ def test_list_labels_returns_frequencies(isolated_home: Path) -> None:
     assert "(2 distinct)" in out
 
 
+def test_list_labels_shows_the_repos_own_label_descriptions(
+    isolated_home: Path,
+) -> None:
+    # Reader-side: the meanings come from the archive already on disk, so
+    # an existing cache gains them without a re-gather.
+    from conftest import write_github_archive
+
+    write_cache_file(
+        isolated_home, "wg", "digests/issues.md",
+        (
+            "# wg: issues\n\n## org/repo\n\n"
+            "| # | State | Title | Labels | Comments | Updated | Author |\n"
+            "|---|-------|-------|--------|----------|---------|--------|\n"
+            "| 1 | OPEN | A | blocking | 1 | 2026-05-14 | Alice |\n"
+        ),
+    )
+    write_github_archive(
+        isolated_home, "wg", "org/repo", [],
+        labels=[{"name": "blocking", "description": "Must land before WGLC"}],
+    )
+    out = mcp.corpus.tool_list_labels("wg")
+    assert "| `blocking` | 1 | Must land before WGLC |" in out
+
+
 def test_list_labels_handles_no_vocabulary(isolated_home: Path) -> None:
     # No issues digest AND no threads dir → friendly empty response,
     # not a crash. (The "no vocabulary" wording replaced the older

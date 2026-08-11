@@ -31,6 +31,35 @@ def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
             continue
 
 
+def label_descriptions(archives_dir: str) -> Dict[str, str]:
+    """Map every defined GitHub label name to its description.
+
+    The i-d-template archive carries a repo-level `labels` array
+    (`{name, description, color}`) alongside `issues` and `pulls`. Issues
+    and PRs record only the bare label *names*, so this is the only place
+    the meaning of a tag like `ready to close` is written down. Colours
+    are dropped — nothing here renders them.
+
+    Labels with no description are included with an empty string, so a
+    caller can distinguish "defined but undescribed" from "not defined
+    here" (a label deleted from the repo after being applied still shows
+    up on old issues). Later archives win on a name collision across
+    repos; the descriptions are conventional enough across a WG's repos
+    that picking one is better than rendering both.
+    """
+    out: Dict[str, str] = {}
+    for data in iter_issue_archives(archives_dir):
+        for label in data.get("labels") or []:
+            if not isinstance(label, dict):
+                continue
+            name = label.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            description = label.get("description")
+            out[name] = description.strip() if isinstance(description, str) else ""
+    return out
+
+
 def format_date(iso_date: Optional[str]) -> str:
     """Convert ISO date to a more readable format."""
     if not iso_date:
@@ -326,10 +355,10 @@ def download_github_archives(
     dump is not, so those entries drop from the returned list — and any
     such dump an earlier non-suppressed gather left behind is swept.
 
-    Finally, any archive / raw dump / per-issue dir belonging to a repo
-    *not* in `repos` is pruned, so a corpus that drops a repo (or inherited
-    files an older / leaked gather wrote for one it never tracked) heals on
-    the next gather — symmetric with the thread and ballot stages.
+    Finally, any archive / raw dump / per-issue / per-PR dir belonging to a
+    repo *not* in `repos` is pruned, so a corpus that drops a repo (or
+    inherited files an older / leaked gather wrote for one it never tracked)
+    heals on the next gather — symmetric with the thread and ballot stages.
     """
     pending: List[tuple[str, str]] = []
     normalized = [_normalize_repo(r) for r in repos or []]
@@ -370,8 +399,8 @@ def _remove_quietly(path: str) -> None:
 def _prune_github_orphans(
     repos: "List[str]", cache_dir: str, verbose: Verbosity
 ) -> None:
-    """Remove archive JSONs, raw dumps, and per-issue dirs for repos this
-    corpus no longer tracks. Keyed off the tracked `repos` set (already
+    """Remove archive JSONs, raw dumps, and per-issue / per-PR dirs for repos
+    this corpus no longer tracks. Keyed off the tracked `repos` set (already
     URL-normalised). An empty `repos` is a valid "track nothing": persisted
     repos survive config.merge and a throttled discovery never clears them,
     so an empty set means genuinely none (see autotrack_github), not an
@@ -386,6 +415,7 @@ def _prune_github_orphans(
     keep_issue_dir = {
         os.path.basename(paths.issue_repo_dir(cache_dir, r)) for r in repos
     }
+    keep_pull_dir = {os.path.basename(paths.pull_repo_dir(cache_dir, r)) for r in repos}
     removed = 0
     gh_dir = paths.github_dir(cache_dir)
     if os.path.isdir(gh_dir):
@@ -403,11 +433,15 @@ def _prune_github_orphans(
             ):
                 _remove_quietly(os.path.join(raw, name))
                 removed += 1
-    iss_dir = paths.issues_dir(cache_dir)
-    if os.path.isdir(iss_dir):
-        for name in os.listdir(iss_dir):
-            sub = os.path.join(iss_dir, name)
-            if os.path.isdir(sub) and name not in keep_issue_dir:
+    for root, keep_dirs in (
+        (paths.issues_dir(cache_dir), keep_issue_dir),
+        (paths.pulls_dir(cache_dir), keep_pull_dir),
+    ):
+        if not os.path.isdir(root):
+            continue
+        for name in os.listdir(root):
+            sub = os.path.join(root, name)
+            if os.path.isdir(sub) and name not in keep_dirs:
                 shutil.rmtree(sub, ignore_errors=True)
                 removed += 1
     if removed:

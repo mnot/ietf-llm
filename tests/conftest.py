@@ -209,10 +209,16 @@ def write_github_archive(
     wg: str,
     repo: str,
     issues: Iterable[dict[str, Any]],
+    pulls: Iterable[dict[str, Any]] | None = None,
+    labels: Iterable[dict[str, Any]] | None = None,
 ) -> Path:
     """Create a GitHub archive JSON in the post-reorg cache layout:
 
         <cache_root>/.cache/ietf-llm/<wg>/files/github/<slug>.json
+
+    `pulls` / `labels` are omitted from the JSON entirely when not given,
+    matching the REST-fallback archive shape (which has neither) — so a
+    test that passes only issues exercises the degraded-archive path.
     """
     archives_dir = (
         cache_root / ".cache" / "ietf-llm" / wg / "files" / "github"
@@ -220,16 +226,71 @@ def write_github_archive(
     archives_dir.mkdir(parents=True, exist_ok=True)
     slug = repo.replace("/", "-").lower()
     path = archives_dir / f"{slug}.json"
-    path.write_text(
-        json.dumps(
-            {
-                "repo": repo,
-                "timestamp": "2026-05-26T00:00:00Z",
-                "issues": list(issues),
-            }
-        )
-    )
+    payload: dict[str, Any] = {
+        "repo": repo,
+        "timestamp": "2026-05-26T00:00:00Z",
+        "issues": list(issues),
+    }
+    if pulls is not None:
+        payload["pulls"] = list(pulls)
+    if labels is not None:
+        payload["labels"] = list(labels)
+    path.write_text(json.dumps(payload))
     return path
+
+
+def make_pull(
+    number: int,
+    title: str,
+    state: str = "MERGED",
+    labels: list[str] | None = None,
+    author: str = "alice",
+    updated_at: str = "2026-05-01T00:00:00Z",
+    body: str = "pull body",
+    comments: list[dict[str, Any]] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
+    merged_by: str | None = "bob",
+    merge_oid: str | None = "0123456789abcdef0123456789abcdef01234567",
+) -> dict[str, Any]:
+    """Build a pull-request dict matching the archive.json schema."""
+    merged = state.upper() == "MERGED"
+    return {
+        "number": number,
+        "title": title,
+        "state": state,
+        "author": author,
+        "createdAt": updated_at,
+        "updatedAt": updated_at,
+        "closedAt": updated_at if state.upper() != "OPEN" else None,
+        "mergedAt": updated_at if merged else None,
+        "mergedBy": merged_by if merged else None,
+        "mergeCommit": {"oid": merge_oid} if merged and merge_oid else None,
+        "baseRefName": "main",
+        "headRefName": f"branch-{number}",
+        "labels": labels or [],
+        "body": body,
+        "comments": comments or [],
+        "reviews": reviews or [],
+    }
+
+
+def make_review(
+    author: str = "bob",
+    state: str = "APPROVED",
+    body: str = "",
+    created_at: str = "2026-05-02T00:00:00Z",
+    comments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a PR review dict. Inline comments carry no author of their
+    own in the real archive — only position, body and timestamps."""
+    return {
+        "author": author,
+        "state": state,
+        "body": body,
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "comments": comments or [],
+    }
 
 
 def write_cache_file(

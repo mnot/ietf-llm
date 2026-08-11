@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from ..freshness import gather_suggestion
 from ..gather.sources.citations import normalize_draft_name
 from ..gather.sources.documents_manifest import load_documents_manifest
-from ..paths import drafts_dir, issue_path, issues_dir
+from ..paths import drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
 from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_freshness
 
 if TYPE_CHECKING:
@@ -205,28 +205,39 @@ def tool_get_draft(
 def _resolve_issue_file(
     cache: str, number: str, repo: str
 ) -> Tuple[Optional[str], str]:
-    """Resolve a per-issue file by number, within `repo` if given else searched
-    across every gathered repo. Returns (path, note); path is None with an
-    actionable note on a miss or an ambiguous number."""
+    """Resolve a per-issue *or* per-PR file by number, within `repo` if given
+    else searched across every gathered repo. Returns (path, note); path is
+    None with an actionable note on a miss or an ambiguous number.
+
+    Both trees are searched because GitHub numbers issues and pull requests
+    in one sequence: a caller citing "#34" has no way to know which it is,
+    and within a repo only one of the two can exist. Ambiguity is still
+    possible ACROSS repos, and is reported the same way as before."""
     if repo:
-        path = issue_path(cache, repo, number)
-        if os.path.isfile(path):
-            return path, ""
-        return None, f"No gathered issue #{number} for repo '{repo}' in this corpus."
-    directory = issues_dir(cache)
-    if not os.path.isdir(directory):
-        return None, "This corpus has no gathered GitHub issues."
-    matches = [
-        (slug, os.path.join(directory, slug, f"{number}.md"))
-        for slug in sorted(os.listdir(directory))
-        if os.path.isfile(os.path.join(directory, slug, f"{number}.md"))
-    ]
+        for path in (issue_path(cache, repo, number), pull_path(cache, repo, number)):
+            if os.path.isfile(path):
+                return path, ""
+        return None, (
+            f"No gathered issue or PR #{number} for repo '{repo}' in this corpus."
+        )
+    matches: List[Tuple[str, str]] = []
+    roots = [issues_dir(cache), pulls_dir(cache)]
+    if not any(os.path.isdir(root) for root in roots):
+        return None, "This corpus has no gathered GitHub issues or pull requests."
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        matches += [
+            (slug, os.path.join(root, slug, f"{number}.md"))
+            for slug in sorted(os.listdir(root))
+            if os.path.isfile(os.path.join(root, slug, f"{number}.md"))
+        ]
     if not matches:
-        return None, f"No gathered issue #{number} in any repo of this corpus."
+        return None, f"No gathered issue or PR #{number} in any repo of this corpus."
     if len(matches) > 1:
         repos = ", ".join(slug for slug, _ in matches)
         return None, (
-            f"Issue #{number} exists in several gathered repos ({repos}); "
+            f"#{number} exists in several gathered repos ({repos}); "
             "pass `repo` (owner/repo) to choose one."
         )
     return matches[0][1], ""
@@ -364,13 +375,19 @@ def register(server: "FastMCP") -> None:
         start_line: int = 1,
         max_lines: int = 3000,
     ) -> str:
-        """Verbatim text of one GitHub issue — opening description and comment
-        thread — from a corpus, by issue number, as a bounded line window.
+        """Verbatim text of one GitHub issue OR pull request — opening
+        description and comment / review thread — from a corpus, by number,
+        as a bounded line window.
 
-        Use this to quote an issue's ACTUAL text for a citation rather than a
+        GitHub numbers issues and PRs in one sequence, so pass the number you
+        have and this resolves whichever it is; a PR additionally carries its
+        merge disposition (merged by whom, into which commit), the issues it
+        closes, and its review verdicts.
+
+        Use this to quote the ACTUAL text for a citation rather than a
         search snippet. Pass `repo` (owner/repo) to disambiguate when the
         corpus tracks several repos and the number is ambiguous. Page a long
-        issue with `start_line` (the truncation footer says where to resume).
+        record with `start_line` (the truncation footer says where to resume).
         """
         return await _offload(
             tool_get_issue, corpus, number, repo, start_line, max_lines

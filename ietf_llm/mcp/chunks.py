@@ -3,6 +3,8 @@ get_by_url, read_file_section."""
 
 from __future__ import annotations
 
+import os
+import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..embeddings import chunk_counts, find_chunks_by_url, get_chunk
@@ -14,12 +16,14 @@ from .common import (
     MAX_LINES_DEFAULT,
     MAX_LINES_HARD_CAP,
     _append_participation_nudge,
+    _files_dir,
     _offload,
     _regather_call,
     _requires_corpus,
     _safe_path,
     _with_freshness,
 )
+from .drafts import _resolve_issue_file
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -37,6 +41,47 @@ def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
     if kind is not None and kind in _DIGEST_KINDS:
         return kind
     return None
+
+
+# `https://github.com/<owner>/<repo>/issues|pull/<N>`, tolerant of the
+# incidental spellings get_by_url already accepts elsewhere (scheme,
+# `www.`, trailing slash, `#fragment`). `/pull/` is GitHub's own web
+# form; `/pulls/` is accepted too since people mistype it.
+_GITHUB_RECORD_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?github\.com/"
+    r"(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?:issues|pulls?)/(?P<number>\d+)",
+    re.IGNORECASE,
+)
+
+
+def _github_url_from_file(wg: str, url: str) -> Optional[str]:
+    """Resolve a GitHub issue / PR URL straight to its cached file.
+
+    The index-backed path in `tool_get_by_url` cannot see per-PR files —
+    they are deliberately not embedded — so without this a `…/pull/N`
+    link would report "not in the corpus" for a record sitting on disk.
+    Returns the rendered file, or None if the URL isn't a GitHub record
+    URL or the record isn't gathered here.
+    """
+    match = _GITHUB_RECORD_URL_RE.match(url.strip().strip("<>"))
+    if match is None:
+        return None
+    repo = f"{match.group('owner')}/{match.group('repo')}"
+    path, _note = _resolve_issue_file(_files_dir(wg), match.group("number"), repo)
+    if path is None:
+        # The corpus may track the repo under a different owner spelling
+        # (or not at all); fall back to a number-only search across every
+        # gathered repo before giving up.
+        path, _note = _resolve_issue_file(_files_dir(wg), match.group("number"), "")
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    relpath = os.path.relpath(path, _files_dir(wg))
+    return f"# {url}\n_file:_ `{relpath}`  ·  _(read from disk; not indexed)_\n\n{text}"
 
 
 @_requires_corpus
@@ -123,10 +168,12 @@ def tool_get_by_url(wg: str, url: str) -> str:
       `https://mailarchive.ietf.org/arch/msg/<list>/<token>`, while some
       (e.g. httpbis) use `https://www.w3.org/mid/<message-id>`. Both
       resolve; paste whichever form you have.
-    - **GitHub issue URL** → matches every chunk in the per-issue file
-      (file-level URL). Returned as the file's concatenated content,
-      since the consumer almost certainly wants the issue, not just
-      its frontmatter header.
+    - **GitHub issue or pull-request URL** (`…/issues/N`, `…/pull/N`) →
+      the whole per-issue / per-PR file, since the consumer almost
+      certainly wants the record, not just its frontmatter header. Issue
+      URLs resolve through the index (file-level URL, every chunk);
+      PR URLs are read straight off disk, because per-PR files are
+      deliberately not embedded.
     - **Draft / charter URL** (file-level) → a draft's
       `https://datatracker.ietf.org/doc/<name>/` page or a charter's
       `Source:` URL. Returned as the file's concatenated content.
@@ -138,6 +185,15 @@ def tool_get_by_url(wg: str, url: str) -> str:
     """
     matches = find_chunks_by_url(wg, url)
     if not matches:
+        # Per-PR files are not embedded, so a `…/pull/N` link can never
+        # match a stamped chunk URL. Resolve it off the filesystem
+        # instead — losing PR links from get_by_url would be a silent
+        # side effect of the indexing decision, not a chosen one. Same
+        # path also rescues an issue URL in a corpus whose index is
+        # missing or stale.
+        from_file = _github_url_from_file(wg, url)
+        if from_file is not None:
+            return _with_freshness(wg, from_file)
         reindex = (
             f"re-gather it with {_regather_call(wg)}"
             if gather_enabled()
@@ -148,7 +204,8 @@ def tool_get_by_url(wg: str, url: str) -> str:
             "stamped in the corpus: mailing-list `Archived-At:` permalinks "
             "(either `https://mailarchive.ietf.org/arch/msg/<list>/<token>` "
             "or `https://www.w3.org/mid/<message-id>`, depending on the list), "
-            "GitHub issue URLs, and draft `datatracker.ietf.org/doc/<name>/` / "
+            "GitHub issue / pull-request URLs, and draft "
+            "`datatracker.ietf.org/doc/<name>/` / "
             "charter `Source:` URLs. Matching tolerates trailing-slash, "
             "scheme, and `www.` differences. Two reasons a well-formed "
             "permalink still misses: the message lives in a different corpus "
@@ -242,6 +299,19 @@ def _chunk_not_found_hint(wg: str, file: str, chunk_idx: int) -> str:
     """Compose a 'not found' message that tells the caller what's
     actually available, so they don't have to blind-probe.
     """
+    if file.lower().startswith("pulls/"):
+        # Per-PR files exist on disk but are deliberately not embedded
+        # (see `embeddings.chunking._eligible_files`), so a chunk fetch
+        # will never succeed here. Say so, and name what does work,
+        # rather than leaving the caller to read this as a gather bug.
+        return (
+            f"`{file}` is a per-PR file: it exists in the corpus but is not "
+            "in the embedding index by design (indexing pull requests costs "
+            "~31% more chunks for record the catalogue already carries). "
+            f"Read it with `get_issue(wg='{wg}', number=…)` or "
+            f"`read_file_section(wg='{wg}', file='{file}')`, and use "
+            f"`read_digest(wg='{wg}', kind='pulls')` for the catalogue."
+        )
     counts = chunk_counts(wg)
     available = counts.get(file)
     if available is None:

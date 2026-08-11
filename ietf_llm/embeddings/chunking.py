@@ -562,7 +562,9 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     # thread files don't. Stamping the file-level values onto every
     # chunk lets search-time filters (label="top-level", state="closed")
     # shortlist by curation + resolution before semantic ranking.
-    # Post-reorg, issue files live under `issues/<repo>/<N>.md`.
+    # Post-reorg, issue files live under `issues/<repo>/<N>.md`. Per-PR
+    # files share this format but are not indexed at all — see the
+    # `pulls/` skip in `_eligible_files` for why.
     is_issue = filename.lower().startswith("issues/")
     labels = _extract_issue_labels(text) if is_issue else None
     state = _extract_issue_state(text) if is_issue else None
@@ -650,7 +652,8 @@ def _chunk_file(path: str, relpath: str) -> List[Chunk]:
     # Per-thread reconstructions are the LLM-legible mailing-list form.
     if lower.startswith("threads/") and lower.endswith(".md"):
         return _chunk_thread_file(text, relpath)
-    # Per-issue reconstructions share the thread file format.
+    # Per-issue reconstructions share the thread file format. (Per-PR
+    # files do too, but never reach here — `_eligible_files` skips them.)
     if lower.startswith("issues/") and lower.endswith(".md"):
         return _chunk_thread_file(text, relpath)
     return _chunk_windowed(text, relpath)
@@ -665,6 +668,19 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:
       - `raw/` (legacy text dumps kept for NotebookLM; `grep_corpus` skips
         them too by default, since `threads/` holds the same messages —
         see `mcp/grep.py`)
+      - `pulls/` (per-PR files). Written, catalogued in `digests/pulls.md`,
+        readable, greppable, exported — but not embedded. Measured on
+        httpwg/http-extensions, indexing them costs +31% chunks (29,062 →
+        38,215, ~131 MB → ~172 MB) and no content filter separates that
+        cost from the value: filtering to PRs that declare `closes #N`
+        drops 71% of them, and the ones it drops are the ones where nobody
+        typed "Fixes #N" — bookkeeping discipline, which runs opposite to
+        substance. The reason to have PRs at all is the blame walk
+        (`git blame` → merge commit → PR → the issue it closed) and the
+        reasoning in a PR body, and both are served by `digests/pulls.md`
+        + `get_issue`, neither of which touches the index. Reversing this
+        means dropping the skip AND restoring the `pulls/` branches in
+        `_chunk_file` / `_chunk_thread_file` and in `mcp/topic.py`.
       - `meetings/<code>/slides/*.pdf` (binaries — we index the
         sibling `.pdf.txt` extracts instead)
       - `drafts/draft-…-NN.txt` revisions of a draft whose Datatracker
@@ -688,6 +704,8 @@ def _eligible_files(cache_dir: str, wg: str) -> List[str]:
             if relpath_lower.startswith("github/"):
                 continue
             if relpath_lower.startswith("raw/"):
+                continue
+            if relpath_lower.startswith("pulls/"):
                 continue
             if name.endswith(".pdf") or name.endswith(".json"):
                 continue

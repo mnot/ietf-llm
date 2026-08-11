@@ -142,6 +142,69 @@ def test_multi_repo_archives_both_appear(isolated_home: Path) -> None:
 # --- Dup-of column (consumer feedback) ------------------------------------
 
 
+def test_label_glossary_rendered_with_descriptions_and_counts(
+    isolated_home: Path,
+) -> None:
+    # The archive's repo-level `labels` array is the only place a label's
+    # MEANING is written down — issues carry bare names. A reader meeting
+    # "Blocking Last Call" for the first time shouldn't have to infer it.
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "org/repo",
+        [
+            make_issue(1, "One", labels=["blocking"]),
+            make_issue(2, "Two", labels=["blocking"]),
+        ],
+        labels=[
+            {"name": "blocking", "description": "Must land before WGLC", "color": "f00"},
+            {"name": "editorial", "description": None, "color": "0f0"},
+            {"name": "stale", "description": "", "color": "00f"},
+        ],
+    )
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    text = _digest_text("wg")
+    assert "**Label vocabulary** (3 defined):" in text
+    assert "- `blocking` — Must land before WGLC (2 issues)" in text
+    # Defined but never applied is still worth stating: it says how the
+    # repo means to organise itself.
+    assert "- `editorial` (unused)" in text
+    assert "- `stale` (unused)" in text
+
+
+def test_label_glossary_absent_when_archive_has_no_labels_key(
+    isolated_home: Path,
+) -> None:
+    write_github_archive(isolated_home, "wg", "org/repo", [make_issue(1, "One")])
+    generate_digests("wg", get_wg_file_cache_dir("wg"), summarize_model=None)
+    assert "Label vocabulary" not in _digest_text("wg")
+
+
+def test_label_glossary_survives_unfiltered_read_and_drops_when_filtered(
+    isolated_home: Path,
+) -> None:
+    # It's a bullet list, not a table, precisely so `read_digest`'s table
+    # filters can't half-eat it: unfiltered reads keep it, filtered views
+    # drop it cleanly rather than emitting an emptied glossary table.
+    from ietf_llm.digest.query import query_digest
+    from ietf_llm.paths import digest_path
+
+    write_github_archive(
+        isolated_home,
+        "wg",
+        "org/repo",
+        [make_issue(1, "One", state="OPEN", labels=["blocking"])],
+        labels=[{"name": "blocking", "description": "Must land", "color": "f00"}],
+    )
+    cache = get_wg_file_cache_dir("wg")
+    generate_digests("wg", cache, summarize_model=None)
+    path = digest_path(cache, "issues")
+    assert "Label vocabulary" in query_digest(path, "issues")
+    filtered = query_digest(path, "issues", state="open")
+    assert "Label vocabulary" not in filtered
+    assert "| 1 | OPEN | One |" in filtered
+
+
 def test_dup_of_column_present_and_populated(isolated_home: Path) -> None:
     # The digest table grows a new "Dup-of" column. Populated when a
     # comment calls out a duplicate, empty otherwise. Surfacing this

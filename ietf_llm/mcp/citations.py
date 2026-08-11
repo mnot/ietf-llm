@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
 @_requires_corpus
 def tool_find_citations(wg: str, draft_name: str) -> str:
-    """Return every thread / issue file that cites the given draft.
+    """Return every thread / issue / PR file that cites the given draft.
 
-    A "citation" is one distinct source (thread or issue) that references
+    A "citation" is one distinct source (thread, issue or PR) that references
     the draft, de-duplicated per source — a thread mentioning it three
     times counts once. So the `cited in N` figure in `overview` is the
     cumulative count of such sources across the gathered corpus; it is not
@@ -142,7 +142,7 @@ def _parse_message_citations(
 def tool_find_message_citations(
     wg: str, file: str, chunk_idx: Optional[int] = None
 ) -> str:
-    """Walk the message reference graph for a thread / issue file.
+    """Walk the message reference graph for a thread / issue / PR file.
 
     Mailing-list messages routinely cite *other messages* by archive
     permalink — an appeal links the message being appealed, a split thread
@@ -161,7 +161,8 @@ def tool_find_message_citations(
         here — often another list; gather it and retry).
 
     `file` is a corpus-relative path like `threads/<file>.md` or
-    `issues/<org-repo>/<n>.md`. Pass `chunk_idx` to scope to one message.
+    `issues/<org-repo>/<n>.md`, `pulls/<org-repo>/<n>.md`. Pass `chunk_idx`
+    to scope to one message.
 
     Within-scheme resolution only: a `mailarchive.ietf.org` token is not
     bridged to a stored `www.w3.org/mid` Message-ID, so on a list that
@@ -233,11 +234,11 @@ def tool_find_message_citations(
 def register(server: "FastMCP") -> None:
     @server.tool()
     async def find_citations(corpus: str, draft_name: str) -> str:
-        """Find every mailing-list thread or GitHub issue in an IETF/IRTF
-        effort that cites a given Internet-Draft.
+        """Find every mailing-list thread, GitHub issue or pull request in
+        an IETF/IRTF effort that cites a given Internet-Draft.
 
-        The gather step scans per-thread and per-issue markdown files
-        for `draft-...` references and records them in
+        The gather step scans per-thread, per-issue and per-PR markdown
+        files for `draft-...` references and records them in
         `digests/citations.md`. This tool reads that digest for the
         given draft name and returns each citing file plus the
         chunk_idx and a short context excerpt.
@@ -260,7 +261,7 @@ def register(server: "FastMCP") -> None:
     async def find_message_citations(
         corpus: str, file: str, chunk_idx: Optional[int] = None
     ) -> str:
-        """Walk the message reference graph for a thread / issue file —
+        """Walk the message reference graph for a thread / issue / PR file —
         which messages cite it, and which archive links it cites.
 
         Messages cite *other messages* by archive permalink constantly:
@@ -281,8 +282,8 @@ def register(server: "FastMCP") -> None:
           - Tracing a dispute / appeal / split thread back to its origin.
           - Asking "who else referenced this message or decision?".
 
-        `file` is corpus-relative (`threads/<file>.md`, `issues/<repo>/<n>.md`);
-        pass `chunk_idx` to scope to a single message. Within-scheme
+        `file` is corpus-relative (`threads/<file>.md`, `issues/<repo>/<n>.md`,
+        `pulls/<repo>/<n>.md`); pass `chunk_idx` to scope to a single message. Within-scheme
         resolution only (a `mailarchive` token is not bridged to a
         `w3.org/mid` Message-ID), so real targets can show as external on
         a list that stamps the opposite scheme from what bodies cite.

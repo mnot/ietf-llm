@@ -190,9 +190,35 @@ def test_issue_open_close_events(isolated_home: Path) -> None:
     # 2 issues × (opened + closed for closed-one + opened-only for open-one)
     assert "issue-opened" in kinds
     assert "issue-closed" in kinds
-    # Closed event uses updatedAt as the proxy date.
+    # No closedAt in this fixture, so updatedAt stands in as the proxy.
     closed = [e for e in events if e.kind == "issue-closed"][0]
     assert closed.when.strftime("%Y-%m-%d") == "2026-04-19"
+
+
+def test_issue_closed_prefers_closedat_over_updatedat(isolated_home: Path) -> None:
+    # An issue closed and then edited (or relabelled) months later would
+    # otherwise report the edit as its closure. The current archive shape
+    # records closedAt; use it.
+    issue = make_issue(
+        1, "Closed then edited", state="closed", updated_at="2026-09-01T00:00:00Z"
+    )
+    issue["closedAt"] = "2026-04-19T00:00:00Z"
+    write_github_archive(isolated_home, "wg", "org/repo", [issue])
+    closed = [e for e in _build() if e.kind == "issue-closed"][0]
+    assert closed.when.strftime("%Y-%m-%d") == "2026-04-19"
+
+
+def test_pull_requests_are_not_timeline_events(isolated_home: Path) -> None:
+    # On a busy repo PRs outnumber issues, and a timeline where every
+    # merge is an entry is one nobody reads. digests/pulls.md has them.
+    from conftest import make_pull
+
+    write_github_archive(
+        isolated_home, "wg", "org/repo",
+        [make_issue(1, "An issue", state="open")],
+        pulls=[make_pull(2, "A merged PR")],
+    )
+    assert not any("A merged PR" in e.title for e in _build())
 
 
 # --- Source: WGLC / adoption-call heuristics ------------------------------

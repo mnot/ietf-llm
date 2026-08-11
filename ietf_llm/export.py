@@ -93,13 +93,18 @@ def _exportable_files(
             if bundle and kind == "threads":
                 thread_files.append(path)
                 continue
-            if bundle and kind == "issues":
-                # The repo slug is the directory level under issues/.
-                # `issues/<repo>/<N>.md` → repo = the path component.
+            if bundle and kind in ("issues", "pulls"):
+                # The repo slug is the directory level under issues/ /
+                # pulls/. `issues/<repo>/<N>.md` → repo = the path
+                # component. Issues and PRs bundle separately (keyed by
+                # `<kind>-<repo>`) even though their numbers can't collide:
+                # one NotebookLM source per record kind per repo reads
+                # better than a single interleaved dump.
                 parts = relpath.split("/")
                 if len(parts) >= 3:
-                    repo_slug = parts[1]
-                    issue_files_by_repo.setdefault(repo_slug, []).append(path)
+                    issue_files_by_repo.setdefault(f"{kind}-{parts[1]}", []).append(
+                        path
+                    )
                 continue
             # Passthrough: read the file's content for direct copy /
             # upload. Each one becomes its own source.
@@ -118,15 +123,16 @@ def _exportable_files(
             out.append((content, f"threads-{year}.md", "thread-bundle"))
 
     if bundle and issue_files_by_repo:
-        for repo_slug, paths in issue_files_by_repo.items():
-            content = _bundle_issues(paths)
-            out.append((content, f"issues-{repo_slug}.md", "issue-bundle"))
+        for bundle_key, paths in issue_files_by_repo.items():
+            kind = "pulls" if bundle_key.startswith("pulls-") else "issues"
+            content = _bundle_issues(paths, kind)
+            out.append((content, f"{bundle_key}.md", f"{kind[:-1]}-bundle"))
 
     out.sort(key=lambda kv: kv[1])
     return out
 
 
-_RELPATH_KINDS = ("threads", "issues", "drafts", "meetings", "digests", "raw")
+_RELPATH_KINDS = ("threads", "issues", "pulls", "drafts", "meetings", "digests", "raw")
 
 
 def _classify_relpath(relpath: str) -> str:
@@ -168,14 +174,15 @@ def _bundle_threads(paths: List[str]) -> Dict[str, str]:
     return bundles
 
 
-def _bundle_issues(paths: List[str]) -> str:
-    """Concatenate per-issue files into one repo bundle.
+def _bundle_issues(paths: List[str], kind: str = "issues") -> str:
+    """Concatenate per-issue (or per-PR) files into one repo bundle.
 
-    Issues are sorted by their numeric identifier (read from the
+    Records are sorted by their numeric identifier (read from the
     filename's `<N>.md` stem), so the bundle reads in issue-number
     order rather than alphabetic-string order (which would put #100
     before #2).
     """
+    noun = "pull requests" if kind == "pulls" else "issues"
 
     def _num(path: str) -> int:
         stem = os.path.splitext(os.path.basename(path))[0]
@@ -186,8 +193,9 @@ def _bundle_issues(paths: List[str]) -> str:
 
     sorted_paths = sorted(paths, key=_num)
     parts: List[str] = [
-        f"# GitHub issues ({len(sorted_paths)} issues)\n\n",
-        "_One section per issue, separated by `---`. Sorted by issue number._\n",
+        f"# GitHub {noun} ({len(sorted_paths)})\n\n",
+        f"_One section per record, separated by `---`. Sorted by {noun[:-1]} "
+        "number._\n",
     ]
     for issue_path in sorted_paths:
         try:

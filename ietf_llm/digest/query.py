@@ -14,6 +14,8 @@ Per-kind filter semantics:
 
   issues   state="open"|"closed"   limit=N   label="<substr>"
                                   author="<substr>"
+  pulls    state="open"|"closed"   limit=N   label="<substr>"
+           |"merged"                        author="<substr>"
   threads  since="YYYY-MM-DD"      limit=N   min_messages=N
            until="YYYY-MM-DD"
   people   role="<substr>"         limit=N   min_messages=N
@@ -160,7 +162,7 @@ def is_mechanical_timeline_event(rest: str) -> bool:
 
 
 #: Which column carries the per-row "activity" count, by digest kind.
-_ACTIVITY_COLUMN = {"threads": "msgs", "issues": "comments"}
+_ACTIVITY_COLUMN = {"threads": "msgs", "issues": "comments", "pulls": "comments"}
 
 
 def _activity_count(row: List[str], columns: List[str], kind: str) -> int:
@@ -198,11 +200,20 @@ def filter_rows(section: Section, kind: str, filters: Dict[str, Any]) -> Section
 def _row_matches(  # pylint: disable=too-many-return-statements
     row: List[str], columns: List[str], kind: str, filters: Dict[str, Any]
 ) -> bool:
-    if kind == "issues":
+    if kind in ("issues", "pulls"):
         state = filters.get("state")
         if state:
             cell = _row_field(row, columns, "state").lower()
-            if cell != state.lower():
+            # The pulls digest records the verbatim GitHub state, which
+            # for a PR is OPEN / CLOSED / MERGED. `state="closed"` has to
+            # mean "resolved" there — otherwise the overwhelmingly common
+            # outcome (merged) is invisible to the obvious filter. Ask for
+            # `state="merged"` to separate the two.
+            wanted = state.lower()
+            if kind == "pulls" and wanted == "closed":
+                if cell not in ("closed", "merged"):
+                    return False
+            elif cell != wanted:
                 return False
         label = filters.get("label")
         if label and label not in _row_field(row, columns, "labels").lower():

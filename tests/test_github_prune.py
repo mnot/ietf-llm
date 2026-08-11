@@ -1,7 +1,7 @@
 """Tests for orphan pruning in the GitHub gather stage.
 
 `gather/sources/github.py:_prune_github_orphans` sweeps archive JSONs, raw dumps,
-and per-issue dirs for repos a corpus no longer tracks — the guard that
+and per-issue / per-PR dirs for repos a corpus no longer tracks — the guard that
 keeps a dropped (or leaked) repo's issues from lingering in the cache and
 surfacing as if still tracked. Symmetric with the thread / ballot stages.
 """
@@ -24,6 +24,9 @@ def _seed_repo(cache: Path, repo: str) -> None:
     issdir = cache / "issues" / slug
     issdir.mkdir(parents=True, exist_ok=True)
     (issdir / "1.md").write_text("# issue 1\n")
+    pulldir = cache / "pulls" / slug
+    pulldir.mkdir(parents=True, exist_ok=True)
+    (pulldir / "2.md").write_text("# pull request 2\n")
     raw = cache / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     (raw / f"github-{slug}.txt").write_text("dump\n")
@@ -34,6 +37,7 @@ def _exists(cache: Path, repo: str) -> bool:
     return (
         (cache / "github" / f"{slug}.json").exists()
         or (cache / "issues" / slug).exists()
+        or (cache / "pulls" / slug).exists()
         or (cache / "raw" / f"github-{slug}.txt").exists()
     )
 

@@ -61,6 +61,7 @@ from .sources.mbox import sync_mailing_list, validate_list_names
 from .sources.meetings import process_attendance, process_meetings
 from .sources.message_citations import build_message_citations
 from .sources.pdf_extract import extract_all_pdfs
+from .sources.pull_files import write_pull_files
 from .sources.recent_drafts import fetch_new_draft_names, prune_drafts
 from .sources.repo_discovery import autotrack_github
 from .sources.transcript_context import enrich_transcripts
@@ -753,11 +754,13 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             registry=registry,
         )
 
-    # Per-issue .md files — symmetric with per-thread mail files; gives
-    # each GitHub issue a structured reading view with full comment
-    # history attributed to canonical names.
-    tracker.begin("issue files")
+    # Per-issue and per-PR .md files — symmetric with per-thread mail
+    # files; gives each GitHub issue and pull request a structured reading
+    # view with full comment history attributed to canonical names. Both
+    # read the same `github/<repo>.json` archives, so they share a stage.
+    tracker.begin("issue + PR files")
     write_issue_files(args.wg, cache_dir, registry=registry, verbose=verbosity)
+    write_pull_files(cache_dir, registry=registry, verbose=verbosity)
 
     # Per-thread reconstructions (depends on the registry so sender
     # names are already canonical when threads are written).

@@ -2,7 +2,8 @@
 
 These tools read the **gathered public record** of an IETF/IRTF effort — a
 Working Group / Research Group, a mailing list, or a set of Internet-Drafts
-(charter, drafts, RFCs, minutes, mailing-list messages, GitHub issues), exposed as
+(charter, drafts, RFCs, minutes, mailing-list messages, GitHub issues and pull
+requests), exposed as
 `mcp__ietf-llm__*` tools. **Prefer them to web search** for any question about
 what a group is doing, discussing, or has decided: they read the group's actual
 primary record, not second-hand coverage. `<corpus>` is usually a WG/RG
@@ -77,8 +78,9 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 - **Search:** `search_corpus` (one corpus), `search_corpora` (several),
   `read_topic` (chronological narrative), `find_related` (by example),
   `grep_corpus` (exact string / regex).
-- **Catalogue:** `read_digest` (filtered issue / thread / people / timeline
-  tables), `list_labels`, `list_files`.
+- **Catalogue:** `read_digest` (filtered issue / pull-request / thread / people /
+  timeline tables), `list_labels` (label names WITH the repo's own description
+  of each), `list_files`.
 - **Meetings:** `list_meetings` (gathered), `read_minutes` (minutes + poll
   tallies + attendance count for one), `meeting_schedule` (live schedule).
   A meeting's full attendance roster is in `meetings/<code>/attendance.md`
@@ -86,8 +88,21 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state —
   the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
   on the IESG side), `draft_authors`, `get_draft` (verbatim text).
-- **Issues / threads:** `get_issue` (verbatim), `find_replies`,
+- **Issues / PRs / threads:** `get_issue` (verbatim — takes an issue OR a pull
+  request number; GitHub numbers them in one sequence), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
+- **"Why does the text say this?"** The issue records the complaint; the **pull
+  request** records the change made in response, the review it drew, and the
+  issue it closed. `read_digest(corpus, kind="pulls")` is the catalogue —
+  including each PR's merge commit, so a `git blame` line traces to the PR that
+  wrote it and from there to the issue behind it. A question about *reasoning*
+  that stops at the issues has usually stopped one step short.
+  **PR text is not in the search index** (deliberately — it would cost ~31% more
+  chunks for record the catalogue already carries), so `search_corpus` will
+  never surface it and its silence about PRs means nothing. Reach them through
+  `read_digest(kind="pulls", …)` — with `include_bodies=True` to get the
+  descriptions in the same call — then `get_issue(corpus, number)` for one in
+  full, or `grep_corpus` for an exact string across them.
 - **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:
   it refreshes its index before reporting one missing). Never conclude an RFC
   is unpublished from a `search_rfcs` miss alone — that reads a mirror that
@@ -98,7 +113,7 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
 ## Grounding a claim or citation
 
 Quote the **actual text**, not a search snippet: `get_draft(name)` for a draft,
-`get_issue(corpus, number)` for an issue, `get_by_url(corpus, url)` when the
+`get_issue(corpus, number)` for an issue or PR, `get_by_url(corpus, url)` when the
 user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare.

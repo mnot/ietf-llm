@@ -25,13 +25,11 @@ all render as "Mark Nottingham" — same as in threads.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any, Dict, List, Optional
 
-from ...atomicio import write_if_changed
-from ...log import LogLevel, Verbosity, log
+from ...log import Verbosity
 from ...paths import (
     github_dir,
     issue_path,
@@ -39,6 +37,7 @@ from ...paths import (
     issues_dir,
 )
 from ...people import Registry
+from .github_records import last_comment_quote, write_record_files
 
 # Lightweight HTML→Markdown normalisation for issue bodies and comments.
 # GitHub renders HTML inline (especially in tables, where Markdown lists
@@ -157,21 +156,11 @@ def _closing_rationale(
     state = (issue.get("state") or "").upper()
     if state != "CLOSED":
         return None
-    comments = issue.get("comments") or []
-    if not comments:
-        return None
-    last = comments[-1]
-    body = (last.get("body") or "").strip()
-    if not body:
-        return None
-    when = _format_iso_to_minute(last.get("createdAt"))
-    author = _canon_with_role(registry, last.get("author") or "")
-    # Truncate aggressively — the rationale is metadata, not the
-    # primary content. A consuming LLM that wants the full comment
-    # reads the file (the section is still there in full).
-    snippet = body if len(body) <= 400 else body[:397] + "..."
-    quoted = "\n".join(f"> {line}" for line in snippet.splitlines())
-    return f"_by {author} on {when}:_\n\n{quoted}"
+    return last_comment_quote(
+        issue.get("comments") or [],
+        _format_iso_to_minute,
+        lambda login: _canon_with_role(registry, login),
+    )
 
 
 def _format_iso_to_minute(value: Any) -> str:
@@ -286,8 +275,8 @@ def write_issue_files(
     """For each cached `github/<repo-slug>.json`, write per-issue .md files
     under `issues/<repo-slug>/<NNN>.md`.
 
-    The whole `issues/` subtree is wiped before writing so a re-gather
-    cleanly reflects the current archive (no stale issues lying around).
+    Write-if-changed with an orphan sweep — see `github_records
+    .write_record_files`, which `pull_files` shares.
     """
     if not os.path.isdir(cache_dir):
         return []
@@ -296,68 +285,13 @@ def write_issue_files(
     if not os.path.isdir(archives_dir):
         return []
 
-    # Write-if-changed (NOT wipe-and-rewrite): a byte-identical
-    # re-render leaves the file untouched, avoiding needless I/O and
-    # mtime churn (the embedder keys its skip on content hash anyway).
-    # `expected` (relative path under issues/) drives orphan cleanup.
-    out_root = issues_dir(cache_dir)
-    all_paths: List[str] = []
-    changed: List[str] = []
-    expected: set[str] = set()
-    for name in sorted(os.listdir(archives_dir)):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(
-                os.path.join(archives_dir, name),
-                "r",
-                encoding="utf-8",
-            ) as fh:
-                data = json.load(fh)
-        except (OSError, json.JSONDecodeError) as err:
-            log(
-                f"Skipping {name}: {type(err).__name__}: {err}",
-                verbose,
-                level=LogLevel.ERROR,
-            )
-            continue
-
-        repo = data.get("repo", "")
-        # Ensure the per-repo subdirectory exists before writing.
-        os.makedirs(issue_repo_dir(cache_dir, repo), exist_ok=True)
-        for issue in data.get("issues") or []:
-            number = issue.get("number")
-            if number is None:
-                continue
-            path = issue_path(cache_dir, repo, number)
-            expected.add(os.path.relpath(path, out_root))
-            all_paths.append(path)
-            if write_if_changed(path, _render_issue(repo, issue, registry)):
-                changed.append(path)
-
-    # Remove orphan per-issue files (issues no longer in any archive).
-    removed = 0
-    if os.path.isdir(out_root):
-        for repo_subdir in os.listdir(out_root):
-            sub_path = os.path.join(out_root, repo_subdir)
-            if not os.path.isdir(sub_path):
-                continue
-            for name in os.listdir(sub_path):
-                if not name.endswith(".md"):
-                    continue
-                rel = os.path.join(repo_subdir, name)
-                if rel not in expected:
-                    try:
-                        os.remove(os.path.join(sub_path, name))
-                        removed += 1
-                    except OSError:
-                        pass
-
-    if all_paths or removed:
-        log(
-            f"Per-issue files: {len(all_paths)} current "
-            f"({len(changed)} written / changed, {removed} removed)",
-            verbose,
-            level=LogLevel.STATUS,
-        )
-    return all_paths
+    return write_record_files(
+        archives_dir,
+        issues_dir(cache_dir),
+        "issues",
+        lambda repo: issue_repo_dir(cache_dir, repo),
+        lambda repo, number: issue_path(cache_dir, repo, number),
+        lambda repo, issue: _render_issue(repo, issue, registry),
+        "issue",
+        verbose,
+    )

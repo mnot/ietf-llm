@@ -90,7 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--github",
         action="append",
         metavar="OWNER/REPO",
-        help="GitHub repo whose issues should be gathered (repeat for multiple).",
+        help="GitHub repo whose issues and pull requests should be gathered "
+        "(repeat for multiple).",
     )
     parser.add_argument(
         "--draft",
