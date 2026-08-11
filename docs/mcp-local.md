@@ -161,6 +161,20 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or `.cursor/mcp.json
 
 ## 3. Gather
 
+**The RFC tools are the exception, and come first.** `search_rfc_index`,
+`search_rfc_text`, `get_rfc_info` and `get_rfc_section` cover every published
+RFC and belong to no corpus, so gathering does not bring them:
+
+```
+ietf-llm --init
+```
+
+That installs the RFC metadata mirror, the effort catalog and ~285 MB of RFC
+full text from the seed store, then exits without gathering. A gather does the
+same work afterwards as housekeeping, so this is only strictly needed if you
+want the RFC tools before choosing a corpus — or on a machine that will never
+gather at all.
+
 Many of the tools require gather a corpus of materials from IETF servers. This can be done on the command line with `ietf-llm` (see [details](gathering.md)), or you can just ask the
 LLM to do it.
 

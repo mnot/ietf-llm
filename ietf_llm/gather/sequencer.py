@@ -431,7 +431,12 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
     gather, so the seed store only ever accelerates."""
     if on_cloud or not service_config.seeding_enabled() or args.clear_cache:
         return
-    seed_url = service_config.seed_url()
+    # Lazy for the same reason as the block below: the seed consumer is
+    # gather-path only.
+    # pylint: disable-next=import-outside-toplevel
+    from ..seed import generation as seed_generation
+
+    seed_url = seed_generation.store_url()
     if not seed_url:
         return
     # Lazy: the seed consumer is gather-path only.

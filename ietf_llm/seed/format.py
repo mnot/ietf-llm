@@ -393,6 +393,24 @@ def iter_bundle_members(corpus_dir: str, index_dir: str) -> List[Tuple[str, str]
     return sorted(members.items())
 
 
+def iter_index_members(index_dir: str) -> List[Tuple[str, str]]:
+    """`(arcname, absolute path)` for an index-only bundle — no `files/` tree.
+
+    For a member assembled from an upstream artifact rather than gathered
+    (issue #230): there is no corpus directory to walk, because the text lives
+    in the index itself. `docs/seed-store.md` lists embeddings-only
+    distribution as a non-goal, on the grounds that the per-file gather skip
+    makes the saving unreliable; that reasoning is about gathering, and this
+    member is never gathered.
+    """
+    members: Dict[str, str] = {}
+    for name in INDEX_FILES:
+        abs_path = os.path.join(index_dir, name)
+        if os.path.isfile(abs_path):
+            members[name] = abs_path
+    return sorted(members.items())
+
+
 def _excluded_from_bundle(arc: str) -> bool:
     if arc.startswith("files/raw/") or arc == "files/raw":
         return True

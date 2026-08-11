@@ -103,10 +103,26 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `read_digest(kind="pulls", …)` — with `include_bodies=True` to get the
   descriptions in the same call — then `get_issue(corpus, number)` for one in
   full, or `grep_corpus` for an exact string across them.
-- **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:
-  it refreshes its index before reporting one missing). Never conclude an RFC
-  is unpublished from a `search_rfcs` miss alone — that reads a mirror that
-  may predate it; confirm with `get_rfc`.  **By URL:** `get_by_url`.
+- **RFCs — four tools, and picking the wrong one is the common mistake:**
+  - `search_rfc_index` — titles and keywords. Use it to find *which*
+    document something is ("which RFC is HTTP caching") and to filter by
+    status / stream / level / group. Always available.
+  - `search_rfc_text` — what the documents **say**, semantically, over the
+    full text of every RFC. Use it when the question is about content
+    ("when must a cache not store a response"). Needs the RFC text corpus;
+    says so if it is not installed.
+  - `get_rfc_section` — you already have a citation: read that section, in
+    full, offline. No argument but the number returns the outline, which is
+    also what a miss returns.
+  - `get_rfc_info` — catalogue metadata and the reference graph: status,
+    stream, what it obsoletes, its normative and informative references,
+    how many RFCs cite it. **Never the document text** — that is
+    `get_rfc_section`. It is also the authority on whether an RFC
+    exists, since it revalidates its mirror before reporting a miss.
+  Authority: `get_rfc_info` refreshes its index before reporting one missing, so
+  never conclude an RFC is unpublished from a `search_rfc_index` miss alone.
+  **Obsoleted RFCs are in the text corpus and are marked** — check the
+  marker before citing anything as current. **By URL:** `get_by_url`.
 - **Norms (mandatory before acting — see the gate above):**
   `read_ietf_participation_norms`, `read_ietf_interpretation_norms`.
 
@@ -118,9 +134,9 @@ user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare.
 
-**RFC text is the exception: `get_rfc` does not return it.** It is catalogue
+**RFC text is the exception: `get_rfc_info` does not return it.** It is catalogue
 metadata — title, status, reference graph. An RFC body is on disk only when a
-corpus that published it was gathered with `--rfcs`; `get_rfc`'s last line says
+corpus that published it was gathered with `--rfcs`; `get_rfc_info`'s last line says
 whether this one is, and gives the `read_file_section` call if so. When it says
 the body is **not reachable from here**, you cannot quote or characterise that
 RFC — say so rather than reconstructing it from memory, which is exactly where

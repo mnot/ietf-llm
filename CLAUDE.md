@@ -103,6 +103,16 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
 - `_build_with_stub(wg, isolated_home)` (two args) builds an embedding
   index for a seeded cache. The stub model scores every chunk equally
   (search returns all of them — use `k`/limits to shape output).
+- **`tests/test_rfc_corpus_spotcheck.py` reads the real cache**, which every
+  other test is forbidden to do. It samples the installed RFC corpus against
+  the RFC Editor's own text — a property no fixture can stand in for — and
+  skips when the corpus or the `_rfc/text` mirror is absent, so CI never
+  sees it. `IETF_LLM_RFC_SPOTCHECK=0` skips it anyway. Keep its checks ones
+  that cannot fail spuriously: "every returned line exists in the source"
+  holds regardless of where a section is thought to begin, whereas anything
+  that reconstructs section extents by matching text will not — older RFCs
+  repeat lines, and three attempts at that reported failures that were the
+  metric.
 
 ## Conventions that are load-bearing
 

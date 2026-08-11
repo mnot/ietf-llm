@@ -22,12 +22,71 @@ from ..gather.cli import build_parser
 from ..gather.sequencer import _gather_one
 from ..gather.sources.catalog import ensure_catalog_index
 from ..gather.sources.repo_discovery import print_discovery
+from ..gather.sources.rfc_corpus import ensure_rfc_corpus
 from ..gather.sources.rfcs import ensure_rfc_index
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..months import months_request_error
 from . import list as cli_list
 from .completion import maybe_autocomplete, print_completion_snippet
 from .skill_install import install_skills, sync_if_pristine
+
+
+def _init_report() -> None:
+    """Say what state `--init` left the machine in.
+
+    The housekeeping steps log only when they *change* something, which is
+    right after a gather — noise nobody asked for — and wrong for a command
+    whose entire job is setting a machine up. A successful `--init` on an
+    already-current machine otherwise prints nothing but unrelated skill
+    warnings, and the user cannot tell it from a silent failure.
+    """
+    # pylint: disable=import-outside-toplevel
+    from ..gather.sources.rfc_corpus import local_build
+    from ..singletons import catalog as catalog_reader
+    from ..singletons.rfcs import _load as load_rfcs
+
+    # pylint: enable=import-outside-toplevel
+
+    rfcs = load_rfcs()
+    print(
+        f"RFC metadata:  {len(rfcs.all_rfcs):,} RFCs"
+        if rfcs
+        else "RFC metadata:  not available"
+    )
+    build = local_build()
+    if build:
+        print(f"RFC full text: installed, build {build}")
+    else:
+        print(
+            "RFC full text: NOT installed — search_rfc_text and "
+            "get_rfc_section will be unavailable.\n"
+            "               Check the seed store is reachable "
+            "(IETF_LLM_SEED_URL) and that the cache is writable."
+        )
+    efforts = catalog_reader._load()  # pylint: disable=protected-access
+    print(
+        f"Efforts:       {len(efforts):,} in the catalog"
+        if efforts
+        else "Efforts:       catalog not available"
+    )
+
+
+def _housekeeping(verbosity: Verbosity, forced: bool = False) -> None:
+    """Refresh the mirrors and skills a gather keeps current.
+
+    Best-effort, never blocks exit. Runs after every gather — and on its own
+    for `--init`, because the automatic pull rides this path and a deployment
+    that only ever reads never reaches it, leaving the RFC tools unavailable
+    with nothing obvious to do about it. `forced` skips the RFC corpus's
+    once-an-hour throttle, since asking explicitly is the point.
+    """
+    ensure_rfc_index(verbosity)
+    if forced:
+        ensure_rfc_corpus(verbosity, interval=0.0)
+    else:
+        ensure_rfc_corpus(verbosity)
+    ensure_catalog_index(verbosity)
+    sync_if_pristine(verbosity)
 
 
 @graceful_keyboard_interrupt
@@ -57,9 +116,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             "--clear-config is refused with --all (too easy to nuke "
             "every corpus's config by accident); clear one corpus at a time"
         )
-    if not args.all and not args.wg:
+    if not args.all and not args.wg and not args.init_machine:
         parser.error(
-            "a corpus name is required (unless using --install-skills or --all)"
+            "a corpus name is required (unless using --init, --install-skills "
+            "or --all)"
         )
 
     verbosity = Verbosity.STATUS
@@ -71,6 +131,14 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     months_error = months_request_error(args.months, args.force)
     if months_error:
         parser.error(months_error)
+
+    if args.init_machine:
+        # After verbosity is resolved, before the gather-argument validation
+        # below: --init takes no corpus, so those checks do not apply to it.
+        _housekeeping(verbosity, forced=True)
+        if verbosity is not Verbosity.QUIET:
+            _init_report()
+        sys.exit(0)
 
     if args.used_within is not None:
         if not args.all:
@@ -119,10 +187,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     else:
         _gather_one(args, verbosity)
 
-    # Tail housekeeping (best-effort, never blocks exit): refresh mirrors, sync skill.
-    ensure_rfc_index(verbosity)
-    ensure_catalog_index(verbosity)
-    sync_if_pristine(verbosity)
+    _housekeeping(verbosity)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -68,6 +68,16 @@ The MCP endpoint is served at `/mcp`; `GET /health` is the readiness probe.
 - **Gather is separate.** Corpora are gathered on the write side (`ietf-llm <name>`, where
   `IETF_LLM_CACHE_DIR` is writable); the server only reads — unless the
   [in-session gather](#in-session-gather) tools are enabled.
+- **Run `ietf-llm --init` on the write side**, or the RFC tools are dead here.
+  `search_rfc_index`, `search_rfc_text`, `get_rfc_info` and `get_rfc_section`
+  cover the whole published series and belong to no corpus, so gathering
+  corpora does not bring them. Their data — the metadata mirror, the effort
+  catalog, and ~285 MB of RFC full text from the seed store — normally arrives
+  as gather housekeeping; a deployment that gathers nothing never reaches it.
+  `--init` does that housekeeping and exits, writing into the same
+  `IETF_LLM_CACHE_DIR` the server reads. It needs a **writable** cache: on a
+  read-only mount or an immutable index it will decline, so run it before the
+  mount is sealed, or against the cache you then publish/sync.
 
 ## Deployment contract
 
@@ -237,7 +247,7 @@ the only ones that fail if the remote `/v1/embeddings` endpoint is unreachable:
 - **Fail:** `search_corpus` and `read_topic`.
 - **Keep working:** every deterministic tool — `overview`, `read_digest`, `list_corpora`,
   `list_files`, `list_labels`, `grep_corpus`, `find_citations`, `find_replies`, `tally_positions`,
-  `search_rfcs` / `get_rfc`, `read_file_section`, `get_chunk_text` / `get_chunks_batch`, and
+  `search_rfc_index` / `get_rfc_info`, `read_file_section`, `get_chunk_text` / `get_chunks_batch`, and
   `get_by_url` (which fetches a URL rather than embedding — independent of the embedding backend,
   but not of network egress). `grep_corpus` is the useful fallback here: it reads the files, not the
   index, so exact-string search survives an embedding outage entirely.

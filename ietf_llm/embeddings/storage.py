@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """SQLite layer for the per-WG embedding index.
 
 One DB per WG at <index-dir>/<wg>/embeddings.db (the index dir defaults to
@@ -32,6 +33,7 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from .. import serve_metrics
+from ..atomicio import file_lock
 from ..paths import get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
@@ -39,7 +41,7 @@ from ..paths import get_index_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 11
 
 #: Trailing "(part k/n)" hint the chunker appends to the title of a split
 #: message's fragments (for search-hit legibility). Stripped when a read
@@ -261,7 +263,15 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
             duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
             chunk_hash TEXT,               -- SHA-256 of the embedded text; per-chunk incremental reuse
+            section    TEXT,               -- document section label ('7.2', 'A.1'); RFC corpus only
+            cluster_id INTEGER,             -- IVF partition, when the index has one
             UNIQUE (file, chunk_idx, sub_idx)
+        )
+        """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS centroids (
+            id     INTEGER PRIMARY KEY,
+            vector BLOB NOT NULL
         )
         """)
     conn.execute("""
@@ -271,6 +281,10 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
         )
         """)
     _migrate(conn)
+    # After the migration, not before: on an existing database `cluster_id` is
+    # added by `_migrate`, so indexing it any earlier fails on the column not
+    # existing yet — which locked every pre-v11 index out of being opened.
+    conn.execute("CREATE INDEX IF NOT EXISTS chunks_cluster ON chunks(cluster_id)")
     return conn
 
 
@@ -372,6 +386,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN chunk_hash TEXT")
         _backfill_chunk_hash(conn)
 
+    # v9 → v10: the document section label a chunk belongs to ("7.2", "A.1").
+    # Only the imported RFC corpus populates it — a mailing list has no such
+    # structure — and it is what `get_rfc_section` looks up. NULL for every
+    # chunk a gather writes, now and before, so nothing needs backfilling.
+    if "section" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN section TEXT")
+
+    # v10 → v11: the IVF partition an imported index arrives already carrying.
+    # NULL for a gathered corpus, which has no partition and is scanned whole —
+    # so this costs an existing index one ALTER and nothing else.
+    if "cluster_id" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN cluster_id INTEGER")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS centroids (
+            id     INTEGER PRIMARY KEY,
+            vector BLOB NOT NULL
+        )
+        """)
+
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
         (str(_SCHEMA_VERSION),),
@@ -412,6 +445,94 @@ def _backfill_chunk_hash(conn: sqlite3.Connection) -> None:
     conn.executemany("UPDATE chunks SET chunk_hash=? WHERE id=?", updates)
 
 
+#: How the `chunks.embedding` blob is encoded. `float32` is what a gather
+#: writes and what every existing index holds; `int8` exists so an index
+#: *imported* from vectors that are already quantised can keep them that way
+#: (issue #230: rfc.fyi publishes the RFC series at 384 int8 dimensions, and
+#: dequantising on import would inflate 167 MiB to 670 MiB to no benefit —
+#: the precision is already gone).
+ENCODING_FLOAT32 = "float32"
+ENCODING_INT8 = "int8"
+
+#: Meta keys recording the encoding. Absent means `float32`, which is what
+#: every index written before this existed holds — so no migration, and no
+#: schema bump: `meta` is key-value, and an older reader simply never asks.
+_META_ENCODING = "vector_encoding"
+_META_SCALE = "vector_scale"
+
+#: Provenance for a corpus imported from an upstream artifact rather than
+#: gathered: which build it came from, and the commit that produced it.
+#: Written by `rfcindex.build`, read by the RFC tools to stamp their output.
+#: They live here, with the `meta` table they describe, so the read path can
+#: name them without importing the publisher-side package (which reaches the
+#: network and must stay off the serve path).
+META_SOURCE_MODEL = "vector_source_model"
+META_SOURCE_BUILD = "rfc_index_build"
+META_SOURCE_COMMIT = "rfc_index_commit"
+
+
+@dataclass(frozen=True)
+class VectorCodec:
+    """How to read one index's vectors back into float32."""
+
+    encoding: str = ENCODING_FLOAT32
+    #: Only meaningful for int8: `float = int8 * scale`.
+    scale: float = 1.0
+
+    @property
+    def itemsize(self) -> int:
+        return 1 if self.encoding == ENCODING_INT8 else 4
+
+
+#: The default, so a caller that hasn't looked at `meta` behaves exactly as
+#: before this existed.
+FLOAT32_CODEC = VectorCodec()
+
+
+def read_codec(conn: sqlite3.Connection) -> VectorCodec:
+    """The vector codec recorded in an index's `meta`, defaulting to float32."""
+    # Via a cursor, not `conn.execute`: `search` reaches its connection through
+    # a proxy that forwards `cursor` and `close` and nothing else, and keeping
+    # that surface at two methods is worth more than the one saved line.
+    try:
+        rows = dict(
+            conn.cursor()
+            .execute(
+                "SELECT key, value FROM meta WHERE key IN (?, ?)",
+                (_META_ENCODING, _META_SCALE),
+            )
+            .fetchall()
+        )
+    except sqlite3.Error:
+        return FLOAT32_CODEC
+    encoding = str(rows.get(_META_ENCODING) or ENCODING_FLOAT32)
+    if encoding != ENCODING_INT8:
+        return FLOAT32_CODEC
+    try:
+        scale = float(rows.get(_META_SCALE) or 0.0)
+    except (TypeError, ValueError):
+        scale = 0.0
+    if scale <= 0:
+        # An int8 index without a usable scale cannot be read at all; saying
+        # so beats returning vectors scaled by a silent 1.0, which would look
+        # like a catastrophic quality regression rather than a broken index.
+        raise ValueError(
+            "index declares int8 vectors but no positive vector_scale in meta"
+        )
+    return VectorCodec(encoding=ENCODING_INT8, scale=scale)
+
+
+def write_codec(conn: sqlite3.Connection, codec: VectorCodec) -> None:
+    """Record `codec` in `meta`. A float32 index writes nothing, so its meta
+    stays byte-identical to one written before this existed."""
+    if codec.encoding == ENCODING_FLOAT32:
+        return
+    conn.executemany(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+        [(_META_ENCODING, codec.encoding), (_META_SCALE, repr(codec.scale))],
+    )
+
+
 def _pack(vec: Iterable[float]) -> bytes:
     """Pack and L2-normalise a vector for storage."""
     arr = np.asarray(list(vec), dtype=np.float32)
@@ -421,10 +542,38 @@ def _pack(vec: Iterable[float]) -> bytes:
     return arr.tobytes()
 
 
+def pack_vector(vec: Iterable[float], codec: VectorCodec) -> bytes:
+    """Pack one vector under `codec`.
+
+    The int8 path is here for symmetry and for tests: the one importer that
+    writes int8 today copies vectors that are *already* quantised, byte for
+    byte, which is the whole point of reusing them.
+    """
+    if codec.encoding != ENCODING_INT8:
+        return _pack(vec)
+    arr = np.asarray(list(vec), dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    if norm:
+        arr = arr / norm
+    quantised = np.rint(arr / np.float32(codec.scale)).clip(-127, 127)
+    # `bytes(...)` rather than a bare `.tobytes()`: on Python 3.11's older
+    # numpy stubs the latter infers as Any, which strict mypy rejects for a
+    # function declared to return bytes. The runtime value is identical.
+    return bytes(quantised.astype(np.int8).tobytes())
+
+
 def _unpack_matrix(
     rows: List[bytes],
+    codec: VectorCodec = FLOAT32_CODEC,
 ) -> "np.ndarray[Any, np.dtype[np.float32]]":
-    """Reshape a list of packed vectors into a single (n, dim) matrix.
+    """Reshape a list of packed vectors into a single (n, dim) float32 matrix.
+
+    int8 rows are dequantised but deliberately **not** re-normalised. The
+    index that ships them was built that way, the quantisation error is
+    reported by its own manifest as a mean cosine of 0.9998, and the
+    retrieval numbers this was measured against were taken without
+    re-normalising — so doing it here would make our scores disagree with
+    the measurement for no accuracy that matters.
 
     Return type is annotated with full generic parameters because
     NumPy's stub on Python 3.10 (with newer numpy) treats bare
@@ -434,8 +583,170 @@ def _unpack_matrix(
     """
     if not rows:
         return np.zeros((0, 0), dtype=np.float32)
-    dim = len(rows[0]) // 4
+    dim = len(rows[0]) // codec.itemsize
+    if codec.encoding == ENCODING_INT8:
+        raw = np.frombuffer(b"".join(rows), dtype=np.int8).reshape(len(rows), dim)
+        return np.asarray(raw, dtype=np.float32) * np.float32(codec.scale)
     return np.frombuffer(b"".join(rows), dtype=np.float32).reshape(len(rows), dim)
+
+
+#: Clusters probed per query when an index carries an IVF partition. The
+#: value upstream measured and publishes; 10→20 fixed four queries in 87,
+#: 20→40 fixed one more for twice the bytes.
+DEFAULT_NPROBE = 20
+
+#: `meta` key overriding `DEFAULT_NPROBE` for one index.
+META_NPROBE = "ivf_nprobe"
+
+
+def load_centroids(
+    conn: sqlite3.Connection, codec: VectorCodec
+) -> "Optional[Tuple[np.ndarray[Any, np.dtype[np.float32]], List[int]]]":
+    """The IVF centroids as `(matrix, ids)`, or None when the index has none.
+
+    A gathered corpus has no partition — it is scanned whole, which is the
+    right thing at a few tens of thousands of chunks — so absence is the
+    ordinary case and not an error.
+    """
+    try:
+        rows = (
+            conn.cursor()
+            .execute("SELECT id, vector FROM centroids ORDER BY id")
+            .fetchall()
+        )
+    except sqlite3.Error:
+        return None
+    if not rows:
+        return None
+    ids = [int(r[0]) for r in rows]
+    return _unpack_matrix([bytes(r[1]) for r in rows], codec), ids
+
+
+#: Oldest on-disk schema a *read* will upgrade in place, rather than telling
+#: the user to gather.
+#:
+#: From v9 upward every step is `ALTER TABLE ADD COLUMN` (plus one index) —
+#: milliseconds, no data rewritten, no re-embedding. Below it the work is
+#: real: v7 → v8 recreates the chunks table to widen a UNIQUE constraint, and
+#: v8 → v9 hashes every row's text to backfill `chunk_hash`. Those belong to
+#: an explicit gather, where the user is expecting to wait.
+#:
+#: Raise this in step with any future migration that does more than add a
+#: nullable column.
+_AUTO_UPGRADE_FROM = 9
+
+
+def try_upgrade_schema(wg: str, current: int) -> bool:
+    """Bring `wg`'s index up to the current schema for a *reader*.
+
+    A schema bump would otherwise take `search_corpus` away from anyone who
+    does not gather — the read path cannot migrate, so an index one release
+    old is refused until its owner happens to run a gather, which a
+    read-only MCP user may never do. That is a poor trade for two `ALTER
+    TABLE`s.
+
+    This is a narrow exception to "gather is the only writer", and stays
+    narrow: it adds columns to a local index, never fetches, never changes a
+    single chunk of content, and refuses to run at all when the step would be
+    expensive (`_AUTO_UPGRADE_FROM`) or the index is not ours to write
+    (`_index_immutable` — a published replica upgrades by being republished,
+    not by a reader mutating a materialised copy).
+
+    Returns True when the index is now current. Best-effort: any failure
+    returns False and the caller falls back to telling the user to gather.
+    """
+    if current < _AUTO_UPGRADE_FROM or _index_immutable():
+        return False
+    path = _db_path_ro(wg)
+    if not os.access(os.path.dirname(path) or ".", os.W_OK):
+        return False
+    try:
+        # The same lock a build takes, so a reader upgrading and a gather
+        # starting cannot both migrate at once.
+        with file_lock(path + ".lock"):
+            conn = _open_db(wg, path=path)
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return False
+    return True
+
+
+def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
+    """Selected `meta` values for a corpus, omitting any that are absent.
+
+    Read-only and never migrates, so a reader can ask an index about itself
+    without taking a write lock on it.
+    """
+    wanted = list(keys)
+    if not wanted or not os.path.exists(_db_path_ro(wg)):
+        return {}
+    conn = _connect_ro(wg)
+    try:
+        placeholders = ",".join("?" * len(wanted))
+        cur = conn.execute(
+            f"SELECT key, value FROM meta WHERE key IN ({placeholders})", wanted
+        )
+        return {str(k): str(v) for k, v in cur.fetchall()}
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
+def section_rows(wg: str, file: str, section: Optional[str]) -> List[Tuple[int, str]]:
+    """`(chunk_idx, text)` for one section of one file, in document order.
+
+    Rows store text with the chunker's carried-forward overlap trimmed off,
+    so joining them reproduces the section as published. That is why a
+    caller wanting a section reads this rather than one chunk: an individual
+    row can begin mid-sentence (23% of trimmed rows do), and only the whole
+    run is faithful.
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return []
+    conn = _connect_ro(wg)
+    try:
+        if section is None:
+            cur = conn.execute(
+                "SELECT chunk_idx, text FROM chunks "
+                "WHERE file = ? AND section IS NULL ORDER BY chunk_idx",
+                (file,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT chunk_idx, text FROM chunks "
+                "WHERE file = ? AND section = ? ORDER BY chunk_idx",
+                (file, section),
+            )
+        return [(int(r[0]), str(r[1])) for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def section_outline(wg: str, file: str) -> List[Tuple[str, str, int]]:
+    """`(section, title, characters)` per labelled section of `file`.
+
+    Ordered by first appearance, which is document order, so the result
+    reads as a table of contents rather than a lexical sort ("10" before
+    "2").
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return []
+    conn = _connect_ro(wg)
+    try:
+        cur = conn.execute(
+            "SELECT section, title, sum(length(text)), min(chunk_idx) "
+            "FROM chunks WHERE file = ? AND section IS NOT NULL "
+            "GROUP BY section ORDER BY min(chunk_idx)",
+            (file,),
+        )
+        return [(str(r[0]), str(r[1]), int(r[2] or 0)) for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def chunk_counts(wg: str) -> Dict[str, int]:
@@ -765,6 +1076,7 @@ def load_documents(wg: str) -> List[Document]:
         return []
     conn = _connect_ro(wg)
     try:
+        codec = read_codec(conn)
         cur = conn.execute(
             "SELECT file, chunk_idx, sub_idx, title, text, embedding, chunk_date "
             "FROM chunks ORDER BY file, chunk_idx, sub_idx"
@@ -785,7 +1097,7 @@ def load_documents(wg: str) -> List[Document]:
 
     docs: List[Document] = []
     for file, frows in by_file.items():
-        vecs = _unpack_matrix([r[5] for r in frows])
+        vecs = _unpack_matrix([r[5] for r in frows], codec)
         pooled = vecs.mean(axis=0)
         norm = float(np.linalg.norm(pooled))
         if norm:

@@ -434,7 +434,7 @@ def register(server: "FastMCP") -> None:
           shortname (`tls`, `cfrg`). The charter, drafts, meetings,
           mailing list, and GitHub issues are auto-discovered (the WG's
           published RFCs are listed in the overview but their bodies stay
-          in the global series — `search_rfcs` / `get_rfc`)
+          in the global series — `search_rfc_index` / `get_rfc_info`)
           — including *which* repos to track: the first gather finds the
           group's active draft repos and follows them automatically
           (`gather_status` reports which were added). To preview or

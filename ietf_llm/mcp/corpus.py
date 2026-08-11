@@ -524,7 +524,7 @@ def register(server: "FastMCP") -> None:
         the web. It ranks over the official Datatracker group list
         (acronym + name + charter description), mirrored locally; it covers
         **active** and **BoF** groups only, so a concluded effort or
-        published work won't surface here — use `search_rfcs` for the RFC
+        published work won't surface here — use `search_rfc_index` for the RFC
         series, and `list_corpora` to see what is already cached.
 
         The playbook: `find_efforts(topic)` → present the candidates

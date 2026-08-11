@@ -27,7 +27,12 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ietf_llm.seed.publish import PublishError, PublishReport, publish_store
+from ietf_llm.seed.publish import (
+    PublishError,
+    PublishReport,
+    generation_dir,
+    publish_store,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -93,9 +98,14 @@ def _print_report(report: PublishReport, dry_run: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # Published under a per-generation subdirectory so a schema bump does not
+    # strand clients: see `seed.publish.generation_dir`.
+    store = generation_dir(args.store, dry_run=args.dry_run)
+    if store != args.store:
+        print(f"publishing into {store}", file=sys.stderr)
     try:
         report = publish_store(
-            args.store,
+            store,
             process=args.corpora or None,
             add=args.add or None,
             remove=args.remove or None,

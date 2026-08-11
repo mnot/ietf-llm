@@ -1,4 +1,4 @@
-"""RFC-series tools (search_rfcs, get_rfc) — thin wrappers over ietf_llm.rfcs."""
+"""RFC-series tools (search_rfc_index, get_rfc_info) — thin wrappers over ietf_llm.rfcs."""
 
 from __future__ import annotations
 
@@ -78,13 +78,25 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
 def _body_note(number: str) -> str:
     """The body-availability line appended to a rendered RFC entry.
 
-    `get_rfc` answers from a catalogue of titles and references; it has never
+    `get_rfc_info` answers from a catalogue of titles and references; it has never
     returned the document text. Left unsaid, a well-formed metadata response
     reads as "here is the RFC", and a caller that needed to quote a section
     instead reasons from memory — which is how a review came to rule out a
     finding on RFC 8820 by recalling the wrong part of it (issue #218). So
-    say which of the two cases this is, every time.
+    say which of the three cases this is, every time.
+
+    Since #230 there is usually a good answer: the RFC full-text corpus holds
+    every published RFC, so the note points at `get_rfc_section` rather than
+    apologising. The older cases remain — a corpus that gathered the body
+    with `--rfcs`, and nothing at all — because neither the text corpus nor a
+    given corpus is guaranteed to be installed.
     """
+    if _rfc_text_available(number):
+        return (
+            f'- Body: **`get_rfc_section("{number}")`** for the outline, or '
+            f'`get_rfc_section("{number}", "<section>")` to read one. '
+            "Everything above is catalogue metadata, not the document text."
+        )
     found = _cached_body(number)
     if found is not None:
         corpus, relpath = found
@@ -95,9 +107,25 @@ def _body_note(number: str) -> str:
     return (
         "- Body: **not reachable from here.** Everything above is catalogue "
         "metadata, not the document text — do not characterise what this RFC "
-        "says from it. Quote it from the Text link above, or gather a corpus "
-        "that published it (`ietf-llm <wg> --rfcs`) and re-run."
+        "says from it. Quote it from the Text link above, or install the RFC "
+        "full-text corpus (any `ietf-llm <corpus>` run pulls it) and re-run."
     )
+
+
+def _rfc_text_available(number: str) -> bool:
+    """Whether the RFC full-text corpus holds this RFC.
+
+    A cheap existence probe, not a read: the note only needs to know which
+    call to recommend.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from ..embeddings.storage import section_outline
+
+    # pylint: disable-next=import-outside-toplevel
+    from .rfc_text import RFC_CORPUS, _rfc_file
+
+    file = _rfc_file(number)
+    return bool(file) and bool(section_outline(RFC_CORPUS, str(file)))
 
 
 def _render_rfc_live(number: str) -> str:
@@ -126,7 +154,7 @@ def _render_rfc_live(number: str) -> str:
 
 def register(server: "FastMCP") -> None:
     @server.tool()
-    async def search_rfcs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfc_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         query: str,
         status: Optional[str] = None,
         stream: Optional[str] = None,
@@ -153,14 +181,18 @@ def register(server: "FastMCP") -> None:
           - `group`: an IETF working group acronym.
           - `limit`: max results (default 50).
 
-        Follow a hit with `get_rfc(number)` for full metadata and its
+        Follow a hit with `get_rfc_info(number)` for full metadata and its
         reference graph.
         """
         return await _offload(render_search, query, status, stream, level, group, limit)
 
     @server.tool()
-    async def get_rfc(number: str) -> str:
-        """Full metadata for one RFC from the published series: title,
+    async def get_rfc_info(number: str) -> str:
+        """Catalogue metadata and the reference graph for one RFC — **not
+        the document text**, which is what the name says and what
+        `get_rfc_section` is for.
+
+        Full metadata for one RFC from the published series: title,
         status, stream, level, working group, keywords, what it
         obsoletes / is obsoleted by, its normative + informative
         references, how many RFCs cite it, and links to the text.

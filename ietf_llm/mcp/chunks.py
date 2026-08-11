@@ -459,7 +459,7 @@ def register(server: "FastMCP") -> None:
         """Read a bounded section of any file in a corpus's
         ietf-llm cache (per-thread files, per-issue files, drafts,
         slides, transcripts, minutes; RFC bodies only when gathered with
-        `--rfcs` — otherwise use `get_rfc`). Default 400 lines per call; the
+        `--rfcs` — otherwise use `get_rfc_info`). Default 400 lines per call; the
         caller can raise `max_lines` up to a hard cap of 5000 so the
         context window can't be blown by accident. Prefer
         `search_corpus` / `get_chunk_text` for very large files.

@@ -182,7 +182,7 @@ def test_windowed_charter_chunks_carry_source_url() -> None:
 
 
 def test_windowed_rfc_and_minutes_have_no_url() -> None:
-    # NULL is deliberate: RFC bodies are cited via get_rfc, and minutes /
+    # NULL is deliberate: RFC bodies are cited via get_rfc_info, and minutes /
     # transcript URLs aren't yet reliably constructible.
     text = "\n".join(f"line {i}" for i in range(1, 200)) + "\n"
     assert all(c.url is None for c in _chunk_windowed(text, "drafts/rfc9110.txt"))

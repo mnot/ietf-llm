@@ -29,7 +29,7 @@ decisions that aren't obvious from the code.
   - [`--summarize` requires explicit setup; embedding doesn't](#--summarize-requires-explicit-setup-embedding-doesnt)
   - [The MCP server reads exclusively from the cache, off a daemon prewarm](#the-mcp-server-reads-exclusively-from-the-cache-off-a-daemon-prewarm)
   - [The one writer exception: in-session gather](#the-one-writer-exception-in-session-gather)
-  - [The networked read exception: live Datatracker lookups and get_rfc](#the-networked-read-exception-live-datatracker-lookups-and-get_rfc)
+  - [The networked read exception: live Datatracker lookups and get_rfc_info](#the-networked-read-exception-live-datatracker-lookups-and-get_rfc_info)
   - [IMAP cache lives outside the per-WG directory](#imap-cache-lives-outside-the-per-wg-directory)
   - [Cross-corpus singletons: the RFC series and the effort catalog](#cross-corpus-singletons-the-rfc-series-and-the-effort-catalog)
   - [Other normalisation invariants](#other-normalisation-invariants)
@@ -346,10 +346,10 @@ Key invariants:
   whole published RFC series from rfc.fyi (three JSON blobs), refreshed
   once per gather run after the per-corpus work, TTL-guarded and
   best-effort (`gather/sources/rfcs.py`), and additionally revalidated by
-  `get_rfc` on a stale miss (see the networked read exception below). The
+  `get_rfc_info` on a stale miss (see the networked read exception below). The
   leading underscore keeps it out of
   `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
-  `search_rfcs` / `get_rfc` tools read it; it is not embedded.
+  `search_rfc_index` / `get_rfc_info` tools read it; it is not embedded.
 - **`_catalog/` is the matching singleton for active efforts.** It
   mirrors the active (and BoF) slice of the Datatracker group list,
   refreshed beside `_rfc/` in tail housekeeping with the same TTL / ETag
@@ -485,7 +485,7 @@ ietf_llm/
 │                           # (fetch_group_object + get_group_* + get_wg_title)
 ├── singletons/             # cross-corpus singleton readers (fleet-wide indexes, offline read side;
 │   │                       # each the read twin of a gather/sources/ writer that mirrors into it)
-│   ├── rfcs.py             # RFC-series reader (search_rfcs / get_rfc); reads _rfc/ (mirrored from rfc.fyi)
+│   ├── rfcs.py             # RFC-series reader (search_rfc_index / get_rfc_info); reads _rfc/ (mirrored from rfc.fyi)
 │   └── catalog.py          # active-effort reader (find_efforts); ranks _catalog/ by topic, tags cached
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
@@ -600,11 +600,11 @@ which tool for which question, with worked examples — lives in
   `find_citations`, `find_message_citations`.
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`, `get_by_url`,
   `read_file_section`.
-- **RFC series (cross-corpus):** `search_rfcs(query)` / `get_rfc(number)` over
+- **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(number)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
   text. A body is on disk only where a corpus that published the RFC was
-  gathered with `--rfcs`, so `get_rfc` ends every entry by saying whether this
+  gathered with `--rfcs`, so `get_rfc_info` ends every entry by saying whether this
   one is (with the `read_file_section` call) or is not reachable — a
   well-formed metadata response otherwise reads as the document itself
   (issue #218).
@@ -937,6 +937,33 @@ environment (`is_remote_embed_model` is the predicate); anything else
 falls through to `llm`. The remote backend pulls no torch, so a serving
 container can stay lean.
 
+**bge takes a query-side instruction.** BAAI's English bge retrieval models
+are trained with `"Represent this sentence for searching relevant
+passages: "` prepended to the *query* and not to the passage, so `search`
+adds it (`models.query_prefix`, keyed on the id the index was built with)
+and `build_index` never does. Being query-side, it changes no stored vector
+and needs no re-embed. Measured on rfc.fyi's 87-query labelled set over
+457,156 RFC chunks (issue #230): recall@10 0.543 without, 0.657 with.
+`IETF_LLM_QUERY_PREFIX=off` disables it.
+
+**A read may upgrade an index's schema in place.** A bump would otherwise
+take `search_corpus` away from anyone who does not gather: the read path
+cannot migrate, so an index one release old is refused until its owner
+happens to run a gather — which a read-only MCP user may never do. So
+`try_upgrade_schema` runs the migration on a fresh write connection and the
+query carries on. It stays a narrow exception to "gather is the only
+writer": it adds columns to a local index, never fetches, never changes a
+chunk of content, and declines outright when the step is expensive
+(`_AUTO_UPGRADE_FROM` — below it a migration rebuilds the table or hashes
+every row) or the index is not ours to write (`_index_immutable`; a
+published replica upgrades by being republished). Any failure falls back to
+the previous behaviour, which is to tell the user to gather.
+
+`corpus.routing` deliberately does **not** use it: its confidence floor is an
+absolute calibrated threshold, and a prefixed query moves the distribution
+that calibration was fitted to. Adopting it there means re-running
+`scripts/calibrate_routing.py` first.
+
 Whichever backend built an index, its id is recorded in the DB's `meta`
 (alongside the chunker version and the vector *dimension*, recorded as
 provenance), and `search` reads the id back to resolve the same backend.
@@ -1078,7 +1105,7 @@ DB (seeded from the live index, so it stays incremental) and `os.replace`s it
 into place as a standalone (DELETE-journal) file, so a reader never sees a
 half-populated index — see "Writers are write-if-changed and atomic".
 
-### The networked read exception: live Datatracker lookups and get_rfc
+### The networked read exception: live Datatracker lookups and get_rfc_info
 
 A narrower break from the no-network contract: `meeting_schedule`,
 `draft_status`, and `overview(corpus, live=True)` read **live** from Datatracker
@@ -1094,7 +1121,7 @@ default read path pulls in neither it nor `requests`), torch-free, and always
 via the Datatracker REST API, never a scraped page. Its offline cousin
 `draft_authors` needs no network and is always registered.
 
-`get_rfc` takes the same exception, for a different reason and in a different
+`get_rfc_info` takes the same exception, for a different reason and in a different
 shape. The `_rfc/` mirror is only refreshed by a gather, so between gathers it
 goes stale — and a miss against a stale mirror has two indistinguishable
 causes: the number isn't in the series, or it was published since. The failure
@@ -1144,7 +1171,7 @@ exported `files/` are cleared. Thread reconstruction walks it directly.
 Two questions no single gathered corpus can answer — "find/status of any RFC"
 and "what is the IETF doing around X?" — are served by **singleton mirrors**
 rather than folded into every corpus. `_rfc/` (mirrored from rfc.fyi's
-canonical JSON; read by `search_rfcs` / `get_rfc`) and `_catalog/` (the active
+canonical JSON; read by `search_rfc_index` / `get_rfc_info`) and `_catalog/` (the active
 + BoF slice of the Datatracker group collection; read by `find_efforts`) both
 live once at the cache root, refreshed in the same tail housekeeping as each
 gather run and sharing one mirror plumbing (`gather/sources/_mirror.py`: TTL guard,
@@ -1154,11 +1181,11 @@ offline, markdown-out — the same boundary as every other tool — and query th
 JSON directly rather than through the vector store. The catalog's reader blob
 is *derived* (raw slices kept for revalidation, projected to a slim record
 list); the RFC mirror is used as-is. The one qualification to "offline" is
-`get_rfc`, which revalidates the RFC mirror on a stale miss under the gather
+`get_rfc_info`, which revalidates the RFC mirror on a stale miss under the gather
 gate — the reader module itself stays offline; the tool layer composes it with
 the mirror writer (see the networked read exception above). v1 catalog covers
 active groups only;
-concluded efforts surface through `search_rfcs`, already-cached ones through
+concluded efforts surface through `search_rfc_index`, already-cached ones through
 `list_corpora`.
 
 ### Other normalisation invariants

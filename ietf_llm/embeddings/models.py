@@ -15,6 +15,7 @@ on first embed()) and the agent would appear to hang.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import time
@@ -42,6 +43,43 @@ _ST_PREFIX = "sentence-transformers/"
 #: "openai-embed/@cf/baai/bge-small-en-v1.5". Provider-neutral: Cloudflare
 #: Workers AI, OpenAI, a self-hosted vLLM / TEI, etc. are all just config.
 _OPENAI_EMBED_PREFIX = "openai-embed/"
+
+#: The instruction BAAI's English bge retrieval models are trained with. It
+#: goes on the **query** side only: applying it to passages costs recall, and
+#: omitting it from queries costs more. Because it is query-side, adopting it
+#: changes no stored vector and needs no re-index.
+#:
+#: Measured on rfc.fyi's 87-query labelled set against 457,156 published RFC
+#: chunks (issue #230): recall@10 0.543 without it, 0.657 with. That is a
+#: larger effect than the difference between the torch and ONNX runtimes of
+#: the same model, which is why it is worth having as its own change.
+_BGE_EN_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+#: Which model ids take that instruction. Deliberately narrow: BAAI's English
+#: bge v1-family retrieval models, however they are reached — directly via
+#: sentence-transformers ("…/BAAI/bge-small-en-v1.5") or through an
+#: OpenAI-compatible endpoint ("openai-embed/@cf/baai/bge-small-en-v1.5").
+#: The Chinese models take a *different* instruction and other families take
+#: none, so an unrecognised id gets no prefix rather than a guessed one.
+_BGE_EN_RE = re.compile(r"bge-(?:small|base|large)-en", re.IGNORECASE)
+
+
+def query_prefix(model_name: str) -> str:
+    """The retrieval instruction to prepend to a **query** for `model_name`,
+    or "" when the model doesn't take one.
+
+    Set `IETF_LLM_QUERY_PREFIX=off` to disable — an escape hatch for a
+    deployment whose own measurements disagree, and the switch to flip first
+    if search quality regresses after this landed.
+
+    Not applied by `corpus.routing`: its confidence floor is an *absolute*
+    calibrated threshold ("Swap the embedder → recalibrate"), and a prefixed
+    query moves the score distribution that calibration was fitted to. Making
+    routing use this means re-running `scripts/calibrate_routing.py` first.
+    """
+    if os.environ.get("IETF_LLM_QUERY_PREFIX", "").strip().lower() == "off":
+        return ""
+    return _BGE_EN_QUERY_PREFIX if _BGE_EN_RE.search(model_name) else ""
 
 
 def is_remote_embed_model(model_name: str) -> bool:

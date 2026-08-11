@@ -38,9 +38,12 @@ from .models import (
     _get_embed_model,
     embed_concurrency,
     is_remote_embed_model,
+    query_prefix,
 )
 from .snippet import make_snippet
 from .storage import (
+    FLOAT32_CODEC,
+    VectorCodec,
     _SCHEMA_VERSION,
     _connect_ro,
     _db_path,
@@ -51,7 +54,12 @@ from .storage import (
     chunk_hash,
     discard_build_db,
     promote_build_db,
+    DEFAULT_NPROBE,
+    META_NPROBE,
+    load_centroids,
+    read_codec,
     seed_build_db,
+    try_upgrade_schema,
 )
 
 #: Emit an embed-progress update (STATUS log + gather_status detail) at most
@@ -148,6 +156,10 @@ class Hit:
     # comment on a closed issue, useful as a one-line "why" indicator.
     duplicate_of: Optional[int] = None
     closing_rationale: Optional[str] = None
+    # Document section label ("7.2", "A.1") for chunks from a corpus that
+    # has one — today only the imported RFC series. None for everything a
+    # gather writes, which has no such structure.
+    section: Optional[str] = None
 
 
 def _file_hash(path: str) -> Optional[str]:
@@ -926,13 +938,26 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
         )
         return None
     conn = _connect_ro(wg)
-    # We cannot migrate read-only, so if the on-disk schema predates this
-    # version the faceted columns this query selects may be absent -- bail
-    # with guidance rather than erroring on a missing column.
+    # An index predating this version may lack columns the query selects. We
+    # cannot migrate on a read-only connection -- but for the cheap, additive
+    # steps we can do it on a fresh write connection first and carry on, so a
+    # schema bump does not take search away from someone who never gathers.
+    # See `try_upgrade_schema` for what it will and will not do.
     cur = conn.cursor()
     cur.execute("SELECT value FROM meta WHERE key='schema_version'")
     sv_row = cur.fetchone()
-    if (int(sv_row[0]) if sv_row else 1) < _SCHEMA_VERSION:
+    current = int(sv_row[0]) if sv_row else 1
+    if current < _SCHEMA_VERSION:
+        conn.close()
+        if try_upgrade_schema(wg, current):
+            log(
+                f"Upgraded {wg}'s embeddings index from schema {current} to "
+                f"{_SCHEMA_VERSION}.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            return _connect_ro(wg)
+        conn = _connect_ro(wg)
         log(
             f"Embeddings index for {wg} is an older schema; re-run "
             f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
@@ -1002,6 +1027,7 @@ _HIT_COLUMN_NAMES = (
     "url",
     "duplicate_of",
     "closing_rationale",
+    "section",
 )
 _HIT_COLUMNS = ", ".join(_HIT_COLUMN_NAMES)
 #: Position of `chunk_date` in a fetched row, which `id` prefixes. Derived
@@ -1033,7 +1059,9 @@ class _Candidates:
 
 
 def _scan_candidates(
-    cur: sqlite3.Cursor, q_vec: "np.ndarray[Any, np.dtype[np.float32]]"
+    cur: sqlite3.Cursor,
+    q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
+    codec: VectorCodec = FLOAT32_CODEC,
 ) -> _Candidates:
     """Score an open scan cursor batch by batch, keeping no vectors.
 
@@ -1060,7 +1088,7 @@ def _scan_candidates(
             name = seen_files.setdefault(row[1], row[1])
             keys.append((name, int(row[2])))
         # cosine, since both sides are normalised
-        blocks.append(_unpack_matrix([r[3] for r in batch]) @ q_vec)
+        blocks.append(_unpack_matrix([r[3] for r in batch], codec) @ q_vec)
     scores = np.concatenate(blocks) if blocks else np.zeros(0, dtype=np.float32)
     return _Candidates(ids=ids, keys=keys, scores=scores)
 
@@ -1097,7 +1125,7 @@ def _fetch_vectors(
             level=LogLevel.WARN,
         )
         return None
-    return _unpack_matrix([by_id[i] for i in ids])
+    return _unpack_matrix([by_id[i] for i in ids], read_codec(conn))
 
 
 def _fetch_hit_rows(
@@ -1121,6 +1149,59 @@ def _fetch_hit_rows(
         for row in cur.fetchall():
             out[int(row[0])] = row
     return out
+
+
+def _probe_count(conn: sqlite3.Connection) -> int:
+    try:
+        row = (
+            conn.cursor()
+            .execute("SELECT value FROM meta WHERE key=?", (META_NPROBE,))
+            .fetchone()
+        )
+        return max(1, int(row[0])) if row else DEFAULT_NPROBE
+    except (sqlite3.Error, TypeError, ValueError):
+        return DEFAULT_NPROBE
+
+
+def _restrict_to_probed_clusters(
+    conn: sqlite3.Connection,
+    q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
+    codec: VectorCodec,
+    where_clauses: List[str],
+    where_args: List[str],
+) -> Tuple[List[str], List[str]]:
+    """Narrow the scan to the clusters a query actually needs, when the index
+    has an IVF partition.
+
+    An index of the whole RFC series is ~457k vectors; scanning all of them
+    reads 167 MiB per query. The partition that came with it says which ~2,300
+    are worth looking at, for the cost of scoring 4,337 centroids first.
+
+    Left alone in two cases. An index with no partition (every gathered
+    corpus) is scanned whole, which is right at its size. And a query that
+    *already* has a restriction — searching within one RFC, say — keeps the
+    exhaustive scan: the existing filter is far more selective than the
+    partition, and probing on top of it would drop matching chunks that
+    happen to live in unprobed clusters, trading exactness for a saving the
+    filter has already made.
+    """
+    if where_clauses:
+        return where_clauses, where_args
+    loaded = load_centroids(conn, codec)
+    if loaded is None:
+        return where_clauses, where_args
+    centroids, ids = loaded
+    if centroids.shape[1] != q_vec.shape[0]:
+        return where_clauses, where_args  # mismatched index; scan it all
+    nprobe = min(_probe_count(conn), len(ids))
+    scores = centroids @ q_vec
+    top = np.argpartition(-scores, nprobe - 1)[:nprobe] if nprobe < len(ids) else None
+    chosen = [ids[i] for i in top] if top is not None else ids
+    placeholders = ",".join("?" * len(chosen))
+    return (
+        where_clauses + [f"cluster_id IN ({placeholders})"],
+        where_args + [str(c) for c in chosen],
+    )
 
 
 def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -1155,12 +1236,18 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     (used to keep a `related` seed from being its own top hit).
     """
     cur = conn.cursor()
+    # Read once, outside the scan: the codec is per-index, and asking per
+    # batch would put a meta query in the hot loop.
+    codec = read_codec(conn)
+    where_clauses, where_args = _restrict_to_probed_clusters(
+        conn, q_vec, codec, where_clauses, where_args
+    )
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         f"SELECT id, file, chunk_idx, embedding FROM chunks{where_sql}",
         where_args,
     )
-    cand = _scan_candidates(cur, q_vec)
+    cand = _scan_candidates(cur, q_vec, codec)
     if not cand.ids:
         return []
     scores = cand.scores
@@ -1212,6 +1299,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
             url,
             duplicate_of,
             closing_rationale,
+            section,
         ) = detail[cand.ids[i]]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
@@ -1233,6 +1321,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
                 url=url if url else None,
                 duplicate_of=(int(duplicate_of) if duplicate_of is not None else None),
                 closing_rationale=closing_rationale if closing_rationale else None,
+                section=section if section else None,
             )
         )
     return hits
@@ -1324,7 +1413,11 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             return []
 
         try:
-            q_vec = np.asarray(list(model.embed(query)), dtype=np.float32)
+            # bge retrieval models want their instruction on the query side
+            # only; keyed on the *index's* model, since that is the one being
+            # used here. Empty string for models that take no instruction.
+            q_text = query_prefix(indexed_model) + query
+            q_vec = np.asarray(list(model.embed(q_text)), dtype=np.float32)
         except Exception as err:  # pylint: disable=broad-except
             # Same provider-variability story as build_index().
             log(
@@ -1406,7 +1499,7 @@ def related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         # A split message owns several fragment vectors; average them into
         # one representative of the whole message, then renormalise so the
         # dot product against the (normalised) corpus stays a cosine.
-        seed = _unpack_matrix(vecs).mean(axis=0)
+        seed = _unpack_matrix(vecs, read_codec(conn)).mean(axis=0)
         seed_norm = float(np.linalg.norm(seed))
         if seed_norm:
             seed = seed / seed_norm

@@ -129,10 +129,19 @@ def _gathered(name, *, model="sentence-transformers/BAAI/bge-small-en-v1.5"):
 
 
 def _store(tmp_path, name="httpbis", **kw):
-    store = str(tmp_path / "store")
+    """A published store, and the *base* a client is pointed at.
+
+    Publishing goes into the generation subdirectory, exactly as the operator
+    script does, so the tests exercise the same base-plus-generation
+    resolution a real client performs rather than a flattened stand-in.
+    """
+    base = str(tmp_path / "store")
     _gathered(name, **kw)
-    publish.publish_store(store, add=[name], no_gather=True, gather=lambda n, m: None)
-    return store
+    publish.publish_store(
+        publish.generation_dir(base), add=[name], no_gather=True,
+        gather=lambda n, m: None,
+    )
+    return base
 
 
 def _seed_args(wg, **over):
@@ -220,9 +229,12 @@ def test_maybe_seed_soft_fails_on_bad_bundle(isolated_home, tmp_path, monkeypatc
     # it swallows the error, logs, and leaves no partial corpus behind.
     store = _store(tmp_path)
     shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
+    # `_store` returns the base a client is pointed at; the bundles live under
+    # the generation segment.
+    published = os.path.join(publish.generation_dir(store), "httpbis")
     bundle = next(
-        os.path.join(store, "httpbis", f)
-        for f in os.listdir(os.path.join(store, "httpbis"))
+        os.path.join(published, f)
+        for f in os.listdir(published)
         if f.endswith(".tar.gz")
     )
     with open(bundle, "ab") as fh:

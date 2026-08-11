@@ -28,6 +28,7 @@ from . import (
     grep,
     meetings,
     norms,
+    rfc_text,
     rfcs,
     search,
     stdio,
@@ -390,6 +391,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     # --- register the read-only, always-on tools ---
     corpus.register(server)
     rfcs.register(server)
+    rfc_text.register(server)
     norms.register(server)
     citations.register(server)
     digest.register(server)

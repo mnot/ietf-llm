@@ -270,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also download the WG's published RFC bodies into drafts/ and "
         "index them. Off by default: RFC metadata and full text are always "
-        "available globally via search_rfcs / get_rfc, so mirroring them into "
+        "available globally via search_rfc_index / get_rfc_info, so mirroring them into "
         "every corpus is wasted gather and embed time. The WG's RFC list "
         "still appears in the overview regardless.",
     )
@@ -291,6 +291,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Clear the persisted configuration for this corpus "
         "(both gather and export scopes).",
+    )
+    parser.add_argument(
+        "--init",
+        action="store_true",
+        dest="init_machine",
+        help="Set this machine up without gathering anything: refresh the "
+        "RFC-series metadata mirror and the effort catalog, install the full "
+        "text of the RFC series from the seed store (about 285 MB, so "
+        "`search_rfc_text` and `get_rfc_section` work), and sync the norms "
+        "skills. Every gather does all of this afterwards as housekeeping; "
+        "this is for the machine that never gathers -- a read-only MCP "
+        "deployment, or a first run before you have chosen a corpus. Then "
+        "exits. Does not gather.",
     )
     parser.add_argument(
         "--install-skills",

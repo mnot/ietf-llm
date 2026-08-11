@@ -176,8 +176,10 @@ def test_list_corpora_cold_start_lists_catalog(isolated_home, tmp_path, monkeypa
     from ietf_llm.mcp import corpus as mcp_corpus
     store = str(tmp_path / "store")
     _gathered("httpbis")
-    publish.publish_store(store, add=["httpbis"], no_gather=True,
-                          gather=lambda n, m: None)
+    # Published under the generation segment, and the client is pointed at the
+    # base — the resolution a real consumer does.
+    publish.publish_store(publish.generation_dir(store), add=["httpbis"],
+                          no_gather=True, gather=lambda n, m: None)
     _sh.rmtree(os.path.join(get_cache_dir(), "httpbis"))  # cold client, nothing local
     monkeypatch.setenv("IETF_LLM_SEED_URL", store)
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
@@ -205,8 +207,8 @@ def test_refresh_mirror_swr_revalidates_when_stale(
     from ietf_llm.seed import catalog
     store = str(tmp_path / "store")
     _gathered("httpbis")
-    publish.publish_store(store, add=["httpbis"], no_gather=True,
-                          gather=lambda n, m: None)
+    publish.publish_store(publish.generation_dir(store), add=["httpbis"],
+                          no_gather=True, gather=lambda n, m: None)
     monkeypatch.setenv("IETF_LLM_SEED_URL", store)
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
     # A stale mirror listing a different, old corpus.
