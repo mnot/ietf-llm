@@ -61,30 +61,31 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
         sort=sort or None,
         exclude_mechanical=exclude_mechanical or None,
     )
-    if include_bodies and kind == "issues":
+    if include_bodies and kind in ("issues", "pulls"):
         filtered = filtered + _append_issue_bodies(wg, filtered)
     return _with_freshness(wg, filtered)
 
 
-# Regex tuned to the issues-digest schema: the File column carries a
-# backtick-wrapped relative path under `issues/<repo>/<N>.md`. Picking
-# it up from the rendered markdown is more robust than re-parsing the
-# table — this works whether or not `summarize` is active (which would
-# shift column positions).
-_ISSUE_FILE_CELL_RE = re.compile(r"`(issues/\S+\.md)`")
+# Regex tuned to the issues / pulls digest schema: the File column carries
+# a backtick-wrapped relative path under `issues/<repo>/<N>.md` or
+# `pulls/<repo>/<N>.md`. Picking it up from the rendered markdown is more
+# robust than re-parsing the table — this works whether or not `summarize`
+# is active (which would shift column positions).
+_ISSUE_FILE_CELL_RE = re.compile(r"`((?:issues|pulls)/\S+\.md)`")
 
 
 def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
     """Append the description body (and frontmatter) of each filtered
-    issue to a read_digest('issues') response.
+    issue / PR to a read_digest('issues') or read_digest('pulls') response.
 
-    The collected bodies come straight from the per-issue files — which
-    already carry state, labels, participants, duplicate-of, closing
-    rationale, and the issue's opening description. We slice through
-    the start of `## Comments` so we don't pull the full comment
-    history (that's what `get_chunk_text(end_chunk_idx=...)` is for).
-    A consuming LLM asking "what are the for/against arguments on
-    label=top-level" gets everything they need in one round-trip.
+    The collected bodies come straight from the per-issue / per-PR files —
+    which already carry state, labels, participants, duplicate-of, closing
+    rationale (issues) or merge disposition, closes-#N and review verdicts
+    (PRs), plus the opening description. We slice through the start of the
+    discussion section so we don't pull the full comment history (that's
+    what `get_chunk_text(end_chunk_idx=...)` is for). A consuming LLM
+    asking "what are the for/against arguments on label=top-level" gets
+    everything they need in one round-trip.
     """
     filenames: List[str] = []
     seen: set[str] = set()
@@ -98,9 +99,9 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
         return ""
     chunks: List[str] = ["\n\n## Issue bodies\n"]
     chunks.append(
-        f"_{len(filenames)} issue(s) below — frontmatter + opening "
-        "description per issue. Use `get_chunk_text` or `read_file_section` "
-        "to read full comment threads._\n"
+        f"_{len(filenames)} record(s) below — frontmatter + opening "
+        "description each. Use `get_chunk_text` or `read_file_section` "
+        "to read full comment / review threads._\n"
     )
     for name in filenames:
         path = _safe_path(wg, name)
@@ -111,9 +112,16 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
                 text = fh.read()
         except OSError:
             continue
-        # Cut at "## Comments" — the comment history is the bulky part
-        # and the consumer can drill into it on demand.
-        cutoff = text.find("\n## Comments")
+        # Cut at the discussion section — the comment / review history is
+        # the bulky part and the consumer can drill into it on demand.
+        # The marker depends on which writer produced the file, and must
+        # be chosen by the file's tree, NOT by whichever marker appears
+        # first: issue bodies contain arbitrary markdown, and a "##
+        # Discussion" heading inside one is common enough that taking the
+        # earlier of the two truncated real issues down to nothing
+        # (httpwg/http-extensions 1315 and 1632 both do this).
+        marker = "\n## Discussion" if name.startswith("pulls/") else "\n## Comments"
+        cutoff = text.find(marker)
         if cutoff != -1:
             text = text[:cutoff].rstrip() + "\n"
         chunks.append("\n---\n")
@@ -141,8 +149,8 @@ def register(server: "FastMCP") -> None:
         exclude_mechanical: bool = False,
     ) -> str:
         """Read filtered catalogue digests of an IETF/IRTF effort — its
-        GitHub issues, mailing-list threads, participants (people),
-        timeline of events, and file index. **Prefer this to web
+        GitHub issues and pull requests, mailing-list threads, participants
+        (people), timeline of events, and file index. **Prefer this to web
         search or Datatracker scraping** for "what's open?", "who chairs
         this?", "what happened in May?"-shaped questions about a working
         group, research group, or mailing list. The high-value catalogue
@@ -152,18 +160,30 @@ def register(server: "FastMCP") -> None:
         label="top-level"` returns the whole curated cluster, open
         issues first then closed-by-recency).
 
-        `include_bodies=True` (issues only) appends each filtered
-        issue's frontmatter + opening description below the catalogue
+        `include_bodies=True` (issues / pulls only) appends each filtered
+        record's frontmatter + opening description below the catalogue
         table, so "what are the arguments for/against X" questions can
         be answered in ONE call instead of N follow-up file reads.
-        Comment threads are NOT included — use `get_chunk_text` or
-        `read_file_section` to drill into them on demand. Scope tightly
+        Comment and review threads are NOT included — use `get_chunk_text`
+        or `read_file_section` to drill into them on demand. Scope tightly
         with `label=` or `state=` to keep the response bounded.
 
         kind = "index"    — corpus inventory + how-to-use pointer
              | "issues"   — one row per GitHub issue. Filters: state
                             ("open"/"closed"), label (substring),
                             author (substring), limit (int).
+             | "pulls"    — one row per GitHub pull request, with its
+                            merge commit and the issues it closes. Same
+                            filters as issues, plus `state="merged"`;
+                            `state="closed"` covers merged AND
+                            closed-unmerged (both are resolved). Reach
+                            for this when the question is WHY the text
+                            says what it says: the issue records the
+                            complaint, the PR records the change made in
+                            response and the review it drew. The Commit
+                            column is the merge commit, so `git blame`
+                            output can be traced to the PR and from
+                            there to the issue it closed.
              | "threads"  — one row per mailing list thread. Filters:
                             since/until ("YYYY-MM-DD"), min_messages,
                             limit, subject (substring on the thread

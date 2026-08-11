@@ -159,6 +159,25 @@ def test_bundled_export_collapses_issues_by_repo(
     assert pos1 < pos2 < pos100
 
 
+def test_bundled_export_keeps_pulls_separate_from_issues(
+    isolated_home: Path, tmp_path: Path,
+) -> None:
+    # Issue and PR numbers can't collide, but they still bundle apart:
+    # one NotebookLM source per record kind per repo reads better than an
+    # interleaved dump.
+    write_cache_file(
+        isolated_home, "wg", "issues/org-repo/1.md", "# Issue #1\n\nbody\n",
+    )
+    write_cache_file(
+        isolated_home, "wg", "pulls/org-repo/2.md", "# Pull request #2\n\nbody\n",
+    )
+    dest = tmp_path / "dest"
+    export.directory("wg", str(dest), verbose=Verbosity.QUIET)
+    names = sorted(p.name for p in dest.iterdir())
+    assert names == ["issues-org-repo.md", "pulls-org-repo.md"]
+    assert "GitHub pull requests (1)" in (dest / "pulls-org-repo.md").read_text()
+
+
 def test_bundled_export_keeps_meetings_and_drafts_per_file(
     isolated_home: Path, tmp_path: Path,
 ) -> None:

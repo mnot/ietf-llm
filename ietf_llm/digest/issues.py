@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional, TextIO
 
 from ..atomicio import atomic_open
 from ..gather.sources.issue_files import _detect_duplicate_of, _participants
@@ -23,6 +23,42 @@ _ISSUE_PROMPT = (
     "(max 25 words). Focus on the substantive question or proposal, not "
     "process. No preamble.\n\nTitle: {title}\n\n{body}"
 )
+
+
+def _write_label_glossary(fh: TextIO, data: Dict[str, Any], issues: List[Any]) -> None:
+    """Write the repo's label vocabulary, with descriptions and use counts.
+
+    The archive's repo-level `labels` array is the only place a label's
+    *meaning* is recorded — issues carry bare names. Without this, a reader
+    meeting `ready to close` or `has-consensus` for the first time has to
+    infer it from the issues that carry it.
+
+    Deliberately a bullet list, not a table: `read_digest` parses this file
+    into tables and applies the issue filters to every one it finds, so a
+    glossary table would be silently emptied by `state="open"` and would
+    have to be special-cased in the query layer. Labels defined but never
+    used are still listed — an unused label is a statement about how the
+    repo means to organise itself.
+    """
+    labels = [lbl for lbl in (data.get("labels") or []) if isinstance(lbl, dict)]
+    if not labels:
+        return
+    counts: Dict[str, int] = {}
+    for issue in issues:
+        for name in issue.get("labels") or []:
+            if isinstance(name, str):
+                counts[name] = counts.get(name, 0) + 1
+    fh.write(f"**Label vocabulary** ({len(labels)} defined):\n\n")
+    for label in sorted(labels, key=lambda l: str(l.get("name") or "")):
+        name = label.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        description = label.get("description")
+        gloss = description.strip() if isinstance(description, str) else ""
+        used = counts.get(name, 0)
+        suffix = f" ({used} issue{'' if used == 1 else 's'})" if used else " (unused)"
+        fh.write(f"- `{name}`{' — ' + gloss if gloss else ''}{suffix}\n")
+    fh.write("\n")
 
 
 def _build_issues_digest(  # pylint: disable=too-many-locals
@@ -72,6 +108,7 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
                 f"_Per-issue files: `issues/{repo_slug}/*.md` "
                 f"({len(issues)} issues)_\n\n"
             )
+            _write_label_glossary(fh, data, issues)
 
             if summarizer.active():
                 fh.write(

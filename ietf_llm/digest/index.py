@@ -19,6 +19,7 @@ from ..paths import (
     DIR_GITHUB,
     DIR_ISSUES,
     DIR_MEETINGS,
+    DIR_PULLS,
     DIR_RAW,
     DIR_THREADS,
     SUBDIR_POLLS,
@@ -41,6 +42,7 @@ def _inventory(cache_dir: str) -> Dict[str, List[Tuple[str, int]]]:
         "polls": [],
         "threads": [],
         "issues": [],
+        "pulls": [],
         "raw": [],
         "other": [],
     }
@@ -81,6 +83,8 @@ def _inventory(cache_dir: str) -> Dict[str, List[Tuple[str, int]]]:
                 buckets["threads"].append(entry)
             elif relpath.startswith(f"{DIR_ISSUES}/"):
                 buckets["issues"].append(entry)
+            elif relpath.startswith(f"{DIR_PULLS}/"):
+                buckets["pulls"].append(entry)
             elif relpath.startswith(f"{DIR_RAW}/"):
                 buckets["raw"].append(entry)
             else:
@@ -98,6 +102,7 @@ def _build_index(
     verbose: Verbosity,
     has_people_digest: bool = False,
     has_timeline_digest: bool = False,
+    has_pulls_digest: bool = False,
 ) -> str:
     """Write the corpus landing page at `digests/index.md`."""
     out_path = digest_path(cache_dir, "index")
@@ -113,15 +118,23 @@ def _build_index(
         fh.write(
             "This directory contains the public record for the IETF "
             f"**{wg}** working group: charter, drafts, meeting materials, "
-            "transcripts, mailing list, and GitHub issues. Files are "
+            "transcripts, mailing list, and GitHub issues and pull "
+            "requests. Files are "
             "organised by kind (`drafts/`, `meetings/`, `threads/`, "
-            "`issues/`); the `digests/` directory holds the markdown "
+            "`issues/`, `pulls/`); the `digests/` directory holds the markdown "
             "tables you should reach for first.\n\n"
             "The corpus is large. Prefer the digests over reading raw "
             "files end-to-end:\n\n"
         )
         if has_issues_digest:
             fh.write("- `digests/issues.md` — every GitHub issue, one row each.\n")
+        if has_pulls_digest:
+            fh.write(
+                "- `digests/pulls.md` — every GitHub pull request, one row "
+                "each, with its merge commit. The PR is where the reasoning "
+                "behind a change lives; the merge commit lets you trace a "
+                "line of text back to the PR that wrote it.\n"
+            )
         if has_threads_digest:
             fh.write(
                 "- `digests/threads.md` — every mailing list thread, "
@@ -156,6 +169,7 @@ def _build_index(
             ("Session polls", "polls"),
             ("Mailing list threads", "threads"),
             ("GitHub issues", "issues"),
+            ("GitHub pull requests", "pulls"),
             ("Raw artefacts (not indexed)", "raw"),
             ("Other", "other"),
         ]

@@ -497,7 +497,7 @@ def register(server: "FastMCP") -> None:
                 suffix ignored, all revisions gathered). Accumulates across
                 gathers — on a re-gather, pass only the new draft(s); they
                 add to (never replace) the corpus's tracked set.
-            github: GitHub repos whose issues to gather (`owner/repo`).
+            github: GitHub repos whose issues and PRs to gather (`owner/repo`).
                 Accumulates across gathers.
             author: Make this a follow-an-author corpus (drafts by this
                 person; email is the unambiguous form).

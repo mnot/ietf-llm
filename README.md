@@ -3,7 +3,7 @@
 Maintain a local, queryable corpus of an [IETF](https://www.ietf.org/) effort's public record — a
 Working Group, an [IRTF](https://irtf.org/) Research Group, a mailing list, or a set of drafts. It
 pulls together charter, drafts, RFCs, meeting agendas, minutes, slides, transcripts, attendance,
-mailing list archives, and GitHub issues for use with LLM-based tools.
+mailing list archives, and GitHub issues and pull requests for use with LLM-based tools.
 
 ## What it's for
 

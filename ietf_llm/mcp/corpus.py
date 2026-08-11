@@ -17,7 +17,8 @@ from ..digest.overview import (
 )
 from ..embeddings import chunk_counts
 from ..freshness import gather_enabled, gather_suggestion, seed_source
-from ..paths import digest_kind_from_relpath
+from ..gather.sources.github import label_descriptions
+from ..paths import digest_kind_from_relpath, github_dir
 from ..corpus.routing import DEFAULT_MIN_SCORE, route
 from .common import (
     _DIGEST_KINDS,
@@ -267,7 +268,8 @@ def tool_overview(wg: str, live: bool = False) -> str:
 @_requires_corpus
 def tool_list_labels(wg: str) -> str:
     """The corpus's curation vocabulary — GitHub issue labels AND mailing-
-    list subject-prefix clusters — with their frequencies, sorted by
+    list subject-prefix clusters — with their frequencies and, for labels,
+    the repo's own description of what the label means, sorted by
     count descending.
 
     Two sources because two WG-management styles exist: issue-driven
@@ -287,11 +289,22 @@ def tool_list_labels(wg: str) -> str:
         )
     lines: List[str] = [f"# {wg}: curation vocabulary\n"]
     if labels:
+        # The repo's own descriptions for its labels, straight from the
+        # archive. Without them a label like `ready to close` has to be
+        # inferred from the issues carrying it — which is exactly the kind
+        # of guess that turns into a wrong claim about what a WG decided.
+        descriptions = label_descriptions(github_dir(cache))
         lines.append(f"## GitHub issue labels ({len(labels)} distinct)\n")
-        lines.append("| Label | Issues |")
-        lines.append("|-------|--------|")
+        lines.append("| Label | Issues | Meaning |")
+        lines.append("|-------|--------|---------|")
         for label, count in labels:
-            lines.append(f"| `{label}` | {count} |")
+            gloss = descriptions.get(label, "").replace("|", "\\|")
+            lines.append(f"| `{label}` | {count} | {gloss} |")
+        lines.append("")
+        lines.append(
+            "_Meanings are the repo's own label descriptions; blank means "
+            "the repo defined the label without one._"
+        )
         lines.append("")
         lines.append(
             f'_Use with `read_digest("{wg}", kind="issues", '
