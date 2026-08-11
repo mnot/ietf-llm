@@ -93,3 +93,13 @@ def test_the_previous_generation_is_left_alone(tmp_path: Any) -> None:
     generation_dir(base)
     with open(os.path.join(base, "index.json"), encoding="utf-8") as fh:
         assert '"schema_version": 9' in fh.read()
+
+
+def test_a_dry_run_creates_nothing(tmp_path: Any) -> None:
+    """`--dry-run` prints the plan and writes nothing — creating the
+    generation directory and copying membership into it are both writes."""
+    base = str(tmp_path / "store")
+    os.makedirs(base, exist_ok=True)
+    save_members(base, {"httpbis": MemberSpec()})
+    target = generation_dir(base, dry_run=True)
+    assert not os.path.exists(target)

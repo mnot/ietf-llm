@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     # Published under a per-generation subdirectory so a schema bump does not
     # strand clients: see `seed.publish.generation_dir`.
-    store = generation_dir(args.store)
+    store = generation_dir(args.store, dry_run=args.dry_run)
     if store != args.store:
         print(f"publishing into {store}", file=sys.stderr)
     try:

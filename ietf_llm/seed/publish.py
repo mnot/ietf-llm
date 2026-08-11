@@ -444,7 +444,7 @@ def _refresh_external(
     return built.release.build
 
 
-def generation_dir(base_dir: str) -> str:
+def generation_dir(base_dir: str, dry_run: bool = False) -> str:
     """The subdirectory of `base_dir` this build's stores belong in.
 
     A store holds one compatibility tuple, so a schema bump makes every
@@ -463,6 +463,10 @@ def generation_dir(base_dir: str) -> str:
     re-add two dozen members after a schema bump is a way to lose one.
     """
     target = os.path.join(base_dir, seed_generation.generation())
+    if dry_run:
+        # `--dry-run` prints the plan and writes nothing; creating the
+        # directory and copying membership into it are writes.
+        return target
     os.makedirs(target, exist_ok=True)
     inherited = _members_path(base_dir)
     if not os.path.isfile(_members_path(target)) and os.path.isfile(inherited):
