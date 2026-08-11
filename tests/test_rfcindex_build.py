@@ -265,3 +265,31 @@ def test_a_matching_digest_reports_nothing_skipped(tmp_path: Any) -> None:
     )
     assert stats.skipped_rfcs == []
     assert "skipped" not in stats.summary()
+
+
+def test_rows_never_split_a_source_line(tmp_path: Any) -> None:
+    """Chunk boundaries land mid-line, and rows are joined with newlines when
+    a section is reassembled — so a boundary inside a line splits it. Found in
+    RFC 1531's DHCP state machine, which came back with `    |` on one line
+    and `+--------+  DHCPACK/ …` on the next, breaking the figure.
+    """
+    body = (
+        b"HEADER\n"
+        b"    |   +--------+     DHCPACK/       |          |\n"
+        b"    |              Record lease, set  |          |\n"
+        b"    |                timers T1, T2    |          |\n"
+    )
+    # Two chunks whose boundary falls in the middle of the second line.
+    rows = [
+        {"rfc": "1531", "off": 7, "len": 20, "sec": "4", "title": "Art"},
+        {"rfc": "1531", "off": 20, "len": 90, "sec": "4", "title": "Art"},
+    ]
+    out = _rows(_build(tmp_path, rows, rfc="1531", body=body))
+    joined = "\n".join(r[3] for r in out)
+    source_lines = [l.strip() for l in body.decode().split("\n") if l.strip()][1:]
+    for line in source_lines:
+        assert line in " ".join(joined.split("\n")) or line in joined, (
+            f"{line!r} was split across rows"
+        )
+    # And the diagram row survives whole rather than as two fragments.
+    assert "+--------+     DHCPACK/       |          |" in joined

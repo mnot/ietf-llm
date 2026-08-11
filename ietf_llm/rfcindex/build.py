@@ -127,18 +127,48 @@ class BuildStats:
         return "; ".join(parts)
 
 
-def _trimmed_ranges(chunks: List[ChunkMeta]) -> List[Tuple[ChunkMeta, int, int]]:
+def _line_start(raw: bytes, pos: int) -> int:
+    """`pos` rounded back to the start of the line containing it."""
+    nl = raw.rfind(b"\n", 0, pos)
+    return 0 if nl < 0 else nl + 1
+
+
+def _line_end(raw: bytes, pos: int) -> int:
+    """`pos` rounded forward past the end of the line containing it."""
+    nl = raw.find(b"\n", pos)
+    return len(raw) if nl < 0 else nl + 1
+
+
+def _trimmed_ranges(
+    chunks: List[ChunkMeta], raw: bytes
+) -> List[Tuple[ChunkMeta, int, int]]:
     """Order a section's chunks and clip each to the part not already covered.
 
     The chunker's carried-forward paragraph is what makes this necessary; see
     the module docstring. A chunk an earlier one fully covers yields an empty
     range and is dropped by the caller.
+
+    **Trim points snap to line starts.** A chunk boundary lands wherever the
+    packer put it, which is routinely mid-line — harmless for prose, which
+    just begins mid-sentence, but rows are joined with newlines when a
+    section is reassembled, so a boundary inside a line *splits* it. In a
+    diagram that is visible corruption: RFC 1531's DHCP state machine came
+    back with `    |` on one line and `+--------+  DHCPACK/ …` on the next,
+    breaking the figure. Rounding back to the line start keeps every row
+    whole; `covered` advances to the same boundary, so nothing is duplicated.
     """
     out: List[Tuple[ChunkMeta, int, int]] = []
     covered = 0
     for chunk in sorted(chunks, key=lambda c: (c.off, c.length)):
+        # The boundary moves one way only. Extending each range forward to the
+        # end of its last line makes `covered` a line start, so the next
+        # range begins on one too and the two tile exactly. Rounding the
+        # *start* back instead would re-include the partial line its
+        # predecessor already holds, duplicating it.
         start = max(chunk.off, covered)
-        end = chunk.off + chunk.length
+        if start <= chunk.off:
+            start = _line_start(raw, chunk.off)
+        end = _line_end(raw, chunk.off + chunk.length)
         covered = max(covered, end)
         out.append((chunk, start, end))
     return out
@@ -165,7 +195,7 @@ def _rows_for_rfc(
     prepared: List[Tuple[int, Tuple[Any, ...]]] = []
     empties = 0
     for section, members in by_section.items():
-        for meta, start, end in _trimmed_ranges(members):
+        for meta, start, end in _trimmed_ranges(members, raw):
             text = (
                 clean_section_text(raw[start:end].decode("utf-8", errors="replace"))
                 if start < end
