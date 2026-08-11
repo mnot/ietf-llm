@@ -14,6 +14,7 @@ publisher can turn rfc.fyi's artifact into one.
 from __future__ import annotations
 
 from .fetch import IndexRelease, download_index, latest_release
+from .mirror import Reconciliation, digest_file, reconcile, sync_mirror, text_path
 from .format import (
     Cluster,
     ChunkMeta,
@@ -34,11 +35,16 @@ __all__ = [
     "IndexRelease",
     "RfcIndexError",
     "dequantise",
+    "Reconciliation",
+    "digest_file",
     "download_index",
     "iter_clusters",
     "latest_release",
     "read_centroids",
     "read_manifest",
     "read_sources",
+    "reconcile",
+    "sync_mirror",
+    "text_path",
     "verify",
 ]
