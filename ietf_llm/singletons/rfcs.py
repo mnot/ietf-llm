@@ -73,14 +73,31 @@ def clean_string(value: str) -> str:
     return _CLEAN_RE.sub("", str(value).lower())
 
 
+#: A reference as the mirrored data carries it: a bare number, occasionally
+#: an already-formed name. Both appear upstream — RFC 9786's normative refs
+#: list `"RFC9785"` where every other entry in 9,798 is `"9785"` — and a
+#: single one of those used to abort the whole index load, taking every RFC
+#: tool with it. One malformed field in someone else's data is not a reason
+#: to have no RFC metadata at all.
+_REF_RE = re.compile(r"^\s*(?:rfc[\s-]*)?(\d+)\s*$", re.IGNORECASE)
+
+
 def rfc_num_to_name(num: str) -> str:
-    # rfc.fyi keys (and rfc-editor.org URLs) use the bare number, not a
-    # zero-padded form: RFC1, RFC100, RFC9110.
-    return f"RFC{int(num)}"
+    """Canonical `RFCnnnn` for a reference, or "" if it is not one.
+
+    rfc.fyi keys (and rfc-editor.org URLs) use the bare number, not a
+    zero-padded form: RFC1, RFC100, RFC9110. Returns "" rather than raising
+    so one unparseable entry costs that entry and nothing else; callers drop
+    an empty name.
+    """
+    match = _REF_RE.match(str(num))
+    return f"RFC{int(match.group(1))}" if match else ""
 
 
 def rfc_name_to_num(name: str) -> str:
-    return str(int(name[3:]))
+    """Bare number for an `RFCnnnn` name, or "" if it is not one."""
+    match = _REF_RE.match(str(name))
+    return str(int(match.group(1))) if match else ""
 
 
 class RfcData:
@@ -122,6 +139,8 @@ class RfcData:
             self.in_refs[name] = []
         for num, rfc_refs in self.refs.items():
             citing = rfc_num_to_name(num)
+            if not citing:
+                continue
             for ref in rfc_refs.get("normative", []):
                 target = rfc_num_to_name(ref)
                 if target in self.in_refs:
@@ -182,8 +201,14 @@ class RfcData:
     def outbound_refs(self, name: str) -> Dict[str, List[str]]:
         raw = self.refs.get(rfc_name_to_num(name), {})
         return {
-            "normative": [rfc_num_to_name(r) for r in raw.get("normative", [])],
-            "informative": [rfc_num_to_name(r) for r in raw.get("informative", [])],
+            # Empties are dropped: an unparseable reference is one lost edge,
+            # not a blank entry in someone's reference list.
+            "normative": [
+                n for n in map(rfc_num_to_name, raw.get("normative", [])) if n
+            ],
+            "informative": [
+                n for n in map(rfc_num_to_name, raw.get("informative", [])) if n
+            ],
         }
 
 
