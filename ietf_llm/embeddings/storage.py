@@ -39,7 +39,7 @@ from ..paths import get_index_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 #: Trailing "(part k/n)" hint the chunker appends to the title of a split
 #: message's fragments (for search-hit legibility). Stripped when a read
@@ -261,6 +261,7 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
             duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
             chunk_hash TEXT,               -- SHA-256 of the embedded text; per-chunk incremental reuse
+            section    TEXT,               -- document section label ('7.2', 'A.1'); RFC corpus only
             UNIQUE (file, chunk_idx, sub_idx)
         )
         """)
@@ -371,6 +372,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "chunk_hash" not in have:
         conn.execute("ALTER TABLE chunks ADD COLUMN chunk_hash TEXT")
         _backfill_chunk_hash(conn)
+
+    # v9 → v10: the document section label a chunk belongs to ("7.2", "A.1").
+    # Only the imported RFC corpus populates it — a mailing list has no such
+    # structure — and it is what `get_rfc_section` looks up. NULL for every
+    # chunk a gather writes, now and before, so nothing needs backfilling.
+    if "section" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN section TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",

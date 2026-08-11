@@ -16,7 +16,12 @@ from pathlib import Path
 
 import numpy as np
 
-from ietf_llm.embeddings.storage import _db_path, _open_db, _pack
+from ietf_llm.embeddings.storage import (
+    _SCHEMA_VERSION,
+    _db_path,
+    _open_db,
+    _pack,
+)
 
 # The exact v7 chunks-table DDL (pre-sub_idx, narrow UNIQUE constraint).
 _V7_DDL = """
@@ -86,11 +91,13 @@ def test_v7_to_v8_preserves_rows_and_widens_unique(isolated_home: Path) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
         assert "sub_idx" in cols
 
-        # schema_version bumped.
+        # schema_version bumped. Tracks the constant rather than a literal:
+        # the claim is that migration stamps the current version, not that
+        # the current version happens to be any particular number.
         row = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()
-        assert row[0] == "9"
+        assert row[0] == str(_SCHEMA_VERSION)
 
         # The existing row survived, carried forward as sub_idx 0 with all
         # its metadata intact.
@@ -113,5 +120,28 @@ def test_v7_to_v8_preserves_rows_and_widens_unique(isolated_home: Path) -> None:
             "SELECT COUNT(*) FROM chunks WHERE file='threads/t.md' AND chunk_idx=1"
         ).fetchone()[0]
         assert n == 2
+    finally:
+        conn.close()
+
+
+def test_v9_to_v10_adds_the_section_column(isolated_home: Path) -> None:
+    """The RFC corpus needs a section label per chunk; a gather leaves it NULL,
+    so an existing index migrates without re-embedding anything."""
+    _make_v7_db("wg")
+    conn = _open_db("wg")
+    try:
+        conn.execute("UPDATE meta SET value='9' WHERE key='schema_version'")
+        conn.execute("ALTER TABLE chunks DROP COLUMN section")
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = _open_db("wg")  # runs _migrate again, v9 -> v10
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
+        assert "section" in cols
+        # Rows survive, and a gather-written chunk has no section.
+        sections = [r[0] for r in conn.execute("SELECT section FROM chunks")]
+        assert sections and all(s is None for s in sections)
     finally:
         conn.close()

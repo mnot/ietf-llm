@@ -13,6 +13,7 @@ publisher can turn rfc.fyi's artifact into one.
 
 from __future__ import annotations
 
+from .build import BuildStats, build_rfc_index
 from .fetch import IndexRelease, download_index, latest_release
 from .mirror import Reconciliation, digest_file, reconcile, sync_mirror, text_path
 from .text import SectionSpan, clean_section_text, read_section, section_spans
@@ -30,6 +31,7 @@ from .format import (
 )
 
 __all__ = [
+    "BuildStats",
     "ChunkMeta",
     "Cluster",
     "IndexManifest",
@@ -38,6 +40,7 @@ __all__ = [
     "SectionSpan",
     "dequantise",
     "Reconciliation",
+    "build_rfc_index",
     "clean_section_text",
     "digest_file",
     "download_index",
