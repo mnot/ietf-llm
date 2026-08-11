@@ -231,9 +231,10 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
     if not hits:
         return (
             f"No hits for {query!r} in the RFC series text.\n\n"
-            "If this corpus has not been installed, semantic search over RFC "
-            "text is unavailable here; `search_rfc_index` still searches "
-            "titles and keywords."
+            "If the RFC full-text corpus is not installed on this server, "
+            "semantic search over RFC text is unavailable here — run "
+            "`ietf-llm --init` to install it. `search_rfc_index` searches "
+            "titles and keywords either way."
         )
 
     ranked = rank_documents(
@@ -286,8 +287,9 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
     if not rows:
         return (
             f"No indexed text for RFC {number}. Either the RFC-series text "
-            "corpus is not installed here, or that RFC is not in it "
-            "(a very old RFC may carry no section headings at all)."
+            "corpus is not installed on this server — `ietf-llm --init` "
+            "installs it — or that RFC is not in it (a very old RFC may "
+            "carry no section headings at all)."
         )
     if not section:
         return _render_outline(number, rows)

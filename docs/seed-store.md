@@ -248,6 +248,11 @@ what is local:
 - **Otherwise** (local as fresh or fresher, or the seed would narrow it) → skip;
   gather incrementally.
 
+On a machine that never gathers — a read-only MCP deployment, or a first run
+before you have picked a corpus — `ietf-llm --init` does this housekeeping on
+its own and exits, which is the only way that machine gets the RFC corpus at
+all.
+
 **The `rfcs` member arrives differently**, and the difference matters if you are
 wondering why it appeared without being asked for. The rule above is keyed to
 the corpus being gathered, which would never reach a corpus nobody gathers — so

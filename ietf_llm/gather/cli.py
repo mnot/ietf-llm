@@ -293,6 +293,19 @@ def build_parser() -> argparse.ArgumentParser:
         "(both gather and export scopes).",
     )
     parser.add_argument(
+        "--init",
+        action="store_true",
+        dest="init_machine",
+        help="Set this machine up without gathering anything: refresh the "
+        "RFC-series metadata mirror and the effort catalog, install the full "
+        "text of the RFC series from the seed store (about 285 MB, so "
+        "`search_rfc_text` and `get_rfc_section` work), and sync the norms "
+        "skills. Every gather does all of this afterwards as housekeeping; "
+        "this is for the machine that never gathers -- a read-only MCP "
+        "deployment, or a first run before you have chosen a corpus. Then "
+        "exits. Does not gather.",
+    )
+    parser.add_argument(
         "--install-skills",
         action="store_true",
         help="Install the norms skills (ietf-interpreting + ietf-contributing) "

@@ -43,6 +43,22 @@ See the workflow documentation linked above for installation and use instruction
 
 All three read a corpus you first **gather** with `ietf-llm <corpus>`.
 
+The RFC series is the exception: `search_rfc_index`, `search_rfc_text`,
+`get_rfc_info` and `get_rfc_section` cover **every published RFC** and are not
+tied to a corpus. Their data arrives on its own — a gather pulls it as
+housekeeping — but a machine that only ever *reads*, such as a hosted MCP
+deployment, never runs a gather and so never gets it. Set that machine up in
+one step:
+
+```
+ietf-llm --init
+```
+
+That refreshes the RFC metadata mirror and the effort catalog, installs the
+full text of the series from the seed store (about 285 MB, which is what makes
+`search_rfc_text` and `get_rfc_section` work), and syncs the norms skills. It
+gathers nothing, and it is safe to re-run.
+
 > **Heads up — gathering reaches the network by default.** To make a first gather fast, `ietf-llm`
 > pulls a prebuilt snapshot of covered corpora from the public
 > [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at

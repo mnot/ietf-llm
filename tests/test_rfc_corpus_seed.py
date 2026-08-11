@@ -166,3 +166,24 @@ def test_the_store_index_is_not_fetched_on_every_invocation(
     # A zero interval is the escape hatch the tests and a forced check use.
     rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
     assert len(fetched) == 2
+
+
+def test_init_runs_the_housekeeping_without_a_corpus_name(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--init` is the only route to the RFC corpus for a machine that never
+    gathers, so it must not require the corpus name a gather does."""
+    import sys as _sys
+
+    from ietf_llm.cli import main as cli_main
+
+    ran: List[bool] = []
+    monkeypatch.setattr(
+        cli_main, "_housekeeping", lambda v, forced=False: ran.append(forced)
+    )
+    monkeypatch.setattr(_sys, "argv", ["ietf-llm", "--init"])
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main()
+    assert exc.value.code == 0
+    # Forced: asking explicitly should not be silently throttled away.
+    assert ran == [True]

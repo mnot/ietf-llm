@@ -31,6 +31,24 @@ from .completion import maybe_autocomplete, print_completion_snippet
 from .skill_install import install_skills, sync_if_pristine
 
 
+def _housekeeping(verbosity: Verbosity, forced: bool = False) -> None:
+    """Refresh the mirrors and skills a gather keeps current.
+
+    Best-effort, never blocks exit. Runs after every gather — and on its own
+    for `--init`, because the automatic pull rides this path and a deployment
+    that only ever reads never reaches it, leaving the RFC tools unavailable
+    with nothing obvious to do about it. `forced` skips the RFC corpus's
+    once-an-hour throttle, since asking explicitly is the point.
+    """
+    ensure_rfc_index(verbosity)
+    if forced:
+        ensure_rfc_corpus(verbosity, interval=0.0)
+    else:
+        ensure_rfc_corpus(verbosity)
+    ensure_catalog_index(verbosity)
+    sync_if_pristine(verbosity)
+
+
 @graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     parser = build_parser()
@@ -58,9 +76,10 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             "--clear-config is refused with --all (too easy to nuke "
             "every corpus's config by accident); clear one corpus at a time"
         )
-    if not args.all and not args.wg:
+    if not args.all and not args.wg and not args.init_machine:
         parser.error(
-            "a corpus name is required (unless using --install-skills or --all)"
+            "a corpus name is required (unless using --init, --install-skills "
+            "or --all)"
         )
 
     verbosity = Verbosity.STATUS
@@ -72,6 +91,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     months_error = months_request_error(args.months, args.force)
     if months_error:
         parser.error(months_error)
+
+    if args.init_machine:
+        # After verbosity is resolved, before the gather-argument validation
+        # below: --init takes no corpus, so those checks do not apply to it.
+        _housekeeping(verbosity, forced=True)
+        sys.exit(0)
 
     if args.used_within is not None:
         if not args.all:
@@ -120,11 +145,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     else:
         _gather_one(args, verbosity)
 
-    # Tail housekeeping (best-effort, never blocks exit): refresh mirrors, sync skill.
-    ensure_rfc_index(verbosity)
-    ensure_rfc_corpus(verbosity)
-    ensure_catalog_index(verbosity)
-    sync_if_pristine(verbosity)
+    _housekeeping(verbosity)
 
 
 if __name__ == "__main__":  # pragma: no cover
