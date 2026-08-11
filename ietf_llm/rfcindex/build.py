@@ -50,7 +50,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..embeddings.storage import (
+    DEFAULT_NPROBE,
     ENCODING_INT8,
+    META_NPROBE,
     META_SOURCE_BUILD,
     META_SOURCE_COMMIT,
     META_SOURCE_MODEL,
@@ -137,7 +139,7 @@ def _trimmed_ranges(chunks: List[ChunkMeta]) -> List[Tuple[ChunkMeta, int, int]]
 
 def _rows_for_rfc(
     rfc: str,
-    chunks: List[Tuple[ChunkMeta, bytes]],
+    chunks: List[Tuple[ChunkMeta, bytes, int]],
     mirror_dir: str,
 ) -> Tuple[List[Tuple[Any, ...]], int, int]:
     """Build the insert rows for one RFC. Returns `(rows, sections, empties)`."""
@@ -145,9 +147,10 @@ def _rows_for_rfc(
     with open(path, "rb") as handle:
         raw = handle.read()
 
-    vectors = {id(meta): blob for meta, blob in chunks}
+    vectors = {id(meta): blob for meta, blob, _cid in chunks}
+    clusters = {id(meta): cid for meta, _blob, cid in chunks}
     by_section: Dict[Optional[str], List[ChunkMeta]] = defaultdict(list)
-    for meta, _blob in chunks:
+    for meta, _blob, _cid in chunks:
         by_section[meta.section].append(meta)
 
     file = f"rfc{rfc}.txt"
@@ -176,6 +179,7 @@ def _rows_for_rfc(
                         vectors[id(meta)],
                         url,
                         section,
+                        clusters[id(meta)],
                     ),
                 )
             )
@@ -185,7 +189,7 @@ def _rows_for_rfc(
     # after grouping rather than per section.
     prepared.sort(key=lambda item: item[0])
     rows = [
-        (row[0], idx, row[2], row[3], row[4], row[5], row[6], row[7])
+        (row[0], idx, row[2], row[3], row[4], row[5], row[6], row[7], row[8])
         for idx, (_off, row) in enumerate(prepared)
     ]
     return rows, len([s for s in by_section if s is not None]), empties
@@ -210,13 +214,15 @@ def build_rfc_index(  # pylint: disable=too-many-locals
     # pylint: disable-next=import-outside-toplevel
     from .format import iter_clusters
 
-    grouped: Dict[str, List[Tuple[ChunkMeta, bytes]]] = defaultdict(list)
+    grouped: Dict[str, List[Tuple[ChunkMeta, bytes, int]]] = defaultdict(list)
     skipped: List[str] = []
     for cluster in iter_clusters(index_dir, manifest):
         for row, meta in enumerate(cluster.chunks):
             if usable is not None and meta.rfc not in usable:
                 continue
-            grouped[meta.rfc].append((meta, cluster.vectors[row].tobytes()))
+            grouped[meta.rfc].append(
+                (meta, cluster.vectors[row].tobytes(), cluster.ident)
+            )
     if usable is not None:
         skipped = sorted(usable.symmetric_difference(grouped) - set(grouped))
 
@@ -224,8 +230,10 @@ def build_rfc_index(  # pylint: disable=too-many-locals
     conn = _open_db("", path=db_path)
     try:
         conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM centroids")
         write_codec(conn, VectorCodec(ENCODING_INT8, manifest.scale))
         _write_meta(conn, manifest)
+        _write_centroids(conn, index_dir, manifest)
         batch: List[Tuple[Any, ...]] = []
         for rfc in sorted(grouped, key=_rfc_sort_key):
             if not os.path.isfile(text_path(mirror_dir, rfc)):
@@ -273,12 +281,33 @@ def _compact(db_path: str) -> None:
         conn.close()
 
 
+def _write_centroids(
+    conn: sqlite3.Connection, index_dir: str, manifest: IndexManifest
+) -> None:
+    """Copy the IVF partition's centroids into the corpus.
+
+    A table rather than a file beside the database: it then travels wherever
+    the index does — the seed bundle already ships `embeddings.db` and nothing
+    else — with no new path to resolve and no way for the two to arrive out of
+    step. 4,337 rows at 384 int8 dimensions is 1.6 MiB, against the ~160 ms a
+    query saves by not reading the other 455,000 vectors.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from .format import read_centroids
+
+    matrix = read_centroids(index_dir, manifest)
+    conn.executemany(
+        "INSERT INTO centroids(id, vector) VALUES(?, ?)",
+        [(i, matrix[i].tobytes()) for i in range(matrix.shape[0])],
+    )
+
+
 def _flush(conn: sqlite3.Connection, batch: List[Tuple[Any, ...]]) -> None:
     if not batch:
         return
     conn.executemany(
         "INSERT INTO chunks(file, chunk_idx, sub_idx, title, text, embedding, "
-        "url, section) VALUES(?,?,?,?,?,?,?,?)",
+        "url, section, cluster_id) VALUES(?,?,?,?,?,?,?,?,?)",
         batch,
     )
 
@@ -310,5 +339,6 @@ def _write_meta(conn: sqlite3.Connection, manifest: IndexManifest) -> None:
             (META_SOURCE_MODEL, manifest.model_id),
             (META_SOURCE_BUILD, manifest.build),
             (META_SOURCE_COMMIT, manifest.source_commit),
+            (META_NPROBE, str(manifest.nprobe or DEFAULT_NPROBE)),
         ],
     )

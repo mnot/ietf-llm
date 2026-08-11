@@ -54,6 +54,9 @@ from .storage import (
     chunk_hash,
     discard_build_db,
     promote_build_db,
+    DEFAULT_NPROBE,
+    META_NPROBE,
+    load_centroids,
     read_codec,
     seed_build_db,
 )
@@ -1134,6 +1137,59 @@ def _fetch_hit_rows(
     return out
 
 
+def _probe_count(conn: sqlite3.Connection) -> int:
+    try:
+        row = (
+            conn.cursor()
+            .execute("SELECT value FROM meta WHERE key=?", (META_NPROBE,))
+            .fetchone()
+        )
+        return max(1, int(row[0])) if row else DEFAULT_NPROBE
+    except (sqlite3.Error, TypeError, ValueError):
+        return DEFAULT_NPROBE
+
+
+def _restrict_to_probed_clusters(
+    conn: sqlite3.Connection,
+    q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
+    codec: VectorCodec,
+    where_clauses: List[str],
+    where_args: List[str],
+) -> Tuple[List[str], List[str]]:
+    """Narrow the scan to the clusters a query actually needs, when the index
+    has an IVF partition.
+
+    An index of the whole RFC series is ~457k vectors; scanning all of them
+    reads 167 MiB per query. The partition that came with it says which ~2,300
+    are worth looking at, for the cost of scoring 4,337 centroids first.
+
+    Left alone in two cases. An index with no partition (every gathered
+    corpus) is scanned whole, which is right at its size. And a query that
+    *already* has a restriction — searching within one RFC, say — keeps the
+    exhaustive scan: the existing filter is far more selective than the
+    partition, and probing on top of it would drop matching chunks that
+    happen to live in unprobed clusters, trading exactness for a saving the
+    filter has already made.
+    """
+    if where_clauses:
+        return where_clauses, where_args
+    loaded = load_centroids(conn, codec)
+    if loaded is None:
+        return where_clauses, where_args
+    centroids, ids = loaded
+    if centroids.shape[1] != q_vec.shape[0]:
+        return where_clauses, where_args  # mismatched index; scan it all
+    nprobe = min(_probe_count(conn), len(ids))
+    scores = centroids @ q_vec
+    top = np.argpartition(-scores, nprobe - 1)[:nprobe] if nprobe < len(ids) else None
+    chosen = [ids[i] for i in top] if top is not None else ids
+    placeholders = ",".join("?" * len(chosen))
+    return (
+        where_clauses + [f"cluster_id IN ({placeholders})"],
+        where_args + [str(c) for c in chosen],
+    )
+
+
 def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     conn: sqlite3.Connection,
     q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
@@ -1166,10 +1222,13 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     (used to keep a `related` seed from being its own top hit).
     """
     cur = conn.cursor()
-    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     # Read once, outside the scan: the codec is per-index, and asking per
     # batch would put a meta query in the hot loop.
     codec = read_codec(conn)
+    where_clauses, where_args = _restrict_to_probed_clusters(
+        conn, q_vec, codec, where_clauses, where_args
+    )
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     cur.execute(
         f"SELECT id, file, chunk_idx, embedding FROM chunks{where_sql}",
         where_args,

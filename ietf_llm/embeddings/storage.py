@@ -40,7 +40,7 @@ from ..paths import get_index_dir
 #: but newly-indexed chunks will get the richer metadata; rows from the
 #: pre-migration era will have NULL in the new columns until the user
 #: runs `--rebuild-embeddings`.
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 
 #: Trailing "(part k/n)" hint the chunker appends to the title of a split
 #: message's fragments (for search-hit legibility). Stripped when a read
@@ -263,7 +263,14 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
             chunk_hash TEXT,               -- SHA-256 of the embedded text; per-chunk incremental reuse
             section    TEXT,               -- document section label ('7.2', 'A.1'); RFC corpus only
+            cluster_id INTEGER,             -- IVF partition, when the index has one
             UNIQUE (file, chunk_idx, sub_idx)
+        )
+        """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS centroids (
+            id     INTEGER PRIMARY KEY,
+            vector BLOB NOT NULL
         )
         """)
     conn.execute("""
@@ -273,6 +280,10 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
         )
         """)
     _migrate(conn)
+    # After the migration, not before: on an existing database `cluster_id` is
+    # added by `_migrate`, so indexing it any earlier fails on the column not
+    # existing yet — which locked every pre-v11 index out of being opened.
+    conn.execute("CREATE INDEX IF NOT EXISTS chunks_cluster ON chunks(cluster_id)")
     return conn
 
 
@@ -380,6 +391,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # chunk a gather writes, now and before, so nothing needs backfilling.
     if "section" not in have:
         conn.execute("ALTER TABLE chunks ADD COLUMN section TEXT")
+
+    # v10 → v11: the IVF partition an imported index arrives already carrying.
+    # NULL for a gathered corpus, which has no partition and is scanned whole —
+    # so this costs an existing index one ALTER and nothing else.
+    if "cluster_id" not in have:
+        conn.execute("ALTER TABLE chunks ADD COLUMN cluster_id INTEGER")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS centroids (
+            id     INTEGER PRIMARY KEY,
+            vector BLOB NOT NULL
+        )
+        """)
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
@@ -561,6 +584,38 @@ def _unpack_matrix(
         raw = np.frombuffer(b"".join(rows), dtype=np.int8).reshape(len(rows), dim)
         return np.asarray(raw, dtype=np.float32) * np.float32(codec.scale)
     return np.frombuffer(b"".join(rows), dtype=np.float32).reshape(len(rows), dim)
+
+
+#: Clusters probed per query when an index carries an IVF partition. The
+#: value upstream measured and publishes; 10→20 fixed four queries in 87,
+#: 20→40 fixed one more for twice the bytes.
+DEFAULT_NPROBE = 20
+
+#: `meta` key overriding `DEFAULT_NPROBE` for one index.
+META_NPROBE = "ivf_nprobe"
+
+
+def load_centroids(
+    conn: sqlite3.Connection, codec: VectorCodec
+) -> "Optional[Tuple[np.ndarray[Any, np.dtype[np.float32]], List[int]]]":
+    """The IVF centroids as `(matrix, ids)`, or None when the index has none.
+
+    A gathered corpus has no partition — it is scanned whole, which is the
+    right thing at a few tens of thousands of chunks — so absence is the
+    ordinary case and not an error.
+    """
+    try:
+        rows = (
+            conn.cursor()
+            .execute("SELECT id, vector FROM centroids ORDER BY id")
+            .fetchall()
+        )
+    except sqlite3.Error:
+        return None
+    if not rows:
+        return None
+    ids = [int(r[0]) for r in rows]
+    return _unpack_matrix([bytes(r[1]) for r in rows], codec), ids
 
 
 def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
