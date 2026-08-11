@@ -23,6 +23,14 @@ boundary gets rejoined in the second case and not the first. Measured on
 2,942 multi-chunk sections, 2,938 agree and 4 differ by at most 92
 characters. Worth knowing; not worth a second copy of the corpus to fix.
 
+**`chunk_hash` is left NULL.** It exists so a re-gather can reuse the vector
+for an unchanged chunk. This corpus is never gathered — it is re-seeded
+wholesale when upstream rebuilds — so the column would never be read, and at
+64 hex characters of high-entropy text per row it costs 28 MiB on disk and
+34 MiB in the bundle, which is the single largest saving available here.
+NULL is an already-supported state for it (windowed chunks have always been
+written that way).
+
 **`model` records the model to embed *queries* with, not the one that
 produced the vectors.** `search` uses that field to construct an embedder,
 so it has to name something our loader can build. The producing id is kept
@@ -48,7 +56,6 @@ from ..embeddings.storage import (
     META_SOURCE_MODEL,
     VectorCodec,
     _open_db,
-    chunk_hash,
     write_codec,
 )
 from ..log import LogLevel, Verbosity, log
@@ -73,6 +80,14 @@ _TEXT_BASE = "https://www.rfc-editor.org/rfc"
 #: Rows per executemany. Large enough that the write is not per-row overhead,
 #: small enough that peak memory stays flat over 457k chunks.
 _WRITE_BATCH = 2000
+
+#: Page size for the finished corpus. A row here averages ~1,422 bytes of
+#: payload against SQLite's ~1,000-byte max-local limit on the default 4 KiB
+#: page, so almost every row spills to an overflow page and the table packs
+#: 2.2 rows per page. At 16 KiB the payload fits inline: 805 MiB becomes 683
+#: MiB on disk. It barely moves the *bundle* (304 MiB gzipped becomes 297,
+#: since page slack compresses away) — this is a disk win, not a download one.
+_PAGE_SIZE = 16384
 
 
 @dataclass
@@ -161,7 +176,6 @@ def _rows_for_rfc(
                         vectors[id(meta)],
                         url,
                         section,
-                        chunk_hash(text),
                     ),
                 )
             )
@@ -171,7 +185,7 @@ def _rows_for_rfc(
     # after grouping rather than per section.
     prepared.sort(key=lambda item: item[0])
     rows = [
-        (row[0], idx, row[2], row[3], row[4], row[5], row[6], row[7], row[8])
+        (row[0], idx, row[2], row[3], row[4], row[5], row[6], row[7])
         for idx, (_off, row) in enumerate(prepared)
     ]
     return rows, len([s for s in by_section if s is not None]), empties
@@ -231,8 +245,32 @@ def build_rfc_index(  # pylint: disable=too-many-locals
         conn.commit()
     finally:
         conn.close()
+    _compact(db_path)
     log(f"rfc index: {stats.summary()}", verbosity, LogLevel.STATUS)
     return stats
+
+
+def _compact(db_path: str) -> None:
+    """Rewrite the finished corpus at `_PAGE_SIZE`.
+
+    Done at the end rather than at creation because the page size only takes
+    effect on an empty database, and VACUUM is the supported way to change it
+    afterwards. A second or two, and it leaves no free pages behind.
+
+    Journal mode goes to DELETE first: SQLite silently ignores a page-size
+    change while a database is in WAL, so without this the VACUUM runs and
+    achieves nothing. Leaving DELETE is also what a finished index wants —
+    it is a single file with no `-wal`/`-shm` sidecars, which is the same
+    reason `promote_build_db` relies on for its atomic swap, and the only
+    form that can be bundled.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute(f"PRAGMA page_size={_PAGE_SIZE}")
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
 
 
 def _flush(conn: sqlite3.Connection, batch: List[Tuple[Any, ...]]) -> None:
@@ -240,7 +278,7 @@ def _flush(conn: sqlite3.Connection, batch: List[Tuple[Any, ...]]) -> None:
         return
     conn.executemany(
         "INSERT INTO chunks(file, chunk_idx, sub_idx, title, text, embedding, "
-        "url, section, chunk_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+        "url, section) VALUES(?,?,?,?,?,?,?,?)",
         batch,
     )
 
