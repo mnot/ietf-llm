@@ -223,3 +223,27 @@ def test_rfc_filenames_keep_a_lettered_suffix(asked: str, expected: str) -> None
 @pytest.mark.parametrize("asked", ["nonsense", "", "rfc", "9110.5"])
 def test_a_non_rfc_number_has_no_file(asked: str) -> None:
     assert rfc_text._rfc_file(asked) is None
+
+
+class _StubModel:
+    def embed(self, _text: str) -> Any:
+        return [1.0, 0.0, 0.0, 0.0]
+
+    def embed_multi(self, texts: List[str]) -> Any:
+        return [list(self.embed(t)) for t in texts]
+
+
+def test_a_missing_title_leaves_no_dangling_dash(corpus: Path) -> None:
+    """Titles come from the `_rfc/` metadata mirror, which is a separate
+    singleton — a corpus installed before it is mirrored renders headings
+    without one, and `## RFC 9111 — ` reads as a bug.
+
+    Observed for real: a corpus installed from the seed store on a machine
+    whose metadata mirror was empty rendered `## RFC 9111 — `.
+    """
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    out = rfc_text.tool_search_rfc_text("caching", limit=1)
+    assert "— \n" not in out and not out.rstrip().endswith("—")
+    assert "## RFC 9111" in out

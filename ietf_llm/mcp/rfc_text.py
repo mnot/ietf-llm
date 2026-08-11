@@ -249,7 +249,12 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
     for entry in ranked[:limit]:
         number = entry.doc
         title = _title_of(number)
-        out.append(f"## RFC {number} — {title}{_status_note(number)}")
+        # The title comes from the `_rfc/` metadata mirror, a separate
+        # singleton — on a machine that has the text corpus but has not
+        # mirrored the metadata yet, it is empty, and a dangling em-dash is
+        # worse than no title at all.
+        heading = f"## RFC {number} — {title}" if title else f"## RFC {number}"
+        out.append(f"{heading}{_status_note(number)}")
         seen: Dict[Optional[str], Any] = {}
         for hit in entry.hits:
             if hit.section not in seen:
