@@ -31,6 +31,46 @@ from .completion import maybe_autocomplete, print_completion_snippet
 from .skill_install import install_skills, sync_if_pristine
 
 
+def _init_report() -> None:
+    """Say what state `--init` left the machine in.
+
+    The housekeeping steps log only when they *change* something, which is
+    right after a gather — noise nobody asked for — and wrong for a command
+    whose entire job is setting a machine up. A successful `--init` on an
+    already-current machine otherwise prints nothing but unrelated skill
+    warnings, and the user cannot tell it from a silent failure.
+    """
+    # pylint: disable=import-outside-toplevel
+    from ..gather.sources.rfc_corpus import local_build
+    from ..singletons import catalog as catalog_reader
+    from ..singletons.rfcs import _load as load_rfcs
+
+    # pylint: enable=import-outside-toplevel
+
+    rfcs = load_rfcs()
+    print(
+        f"RFC metadata:  {len(rfcs.all_rfcs):,} RFCs"
+        if rfcs
+        else "RFC metadata:  not available"
+    )
+    build = local_build()
+    if build:
+        print(f"RFC full text: installed, build {build}")
+    else:
+        print(
+            "RFC full text: NOT installed — search_rfc_text and "
+            "get_rfc_section will be unavailable.\n"
+            "               Check the seed store is reachable "
+            "(IETF_LLM_SEED_URL) and that the cache is writable."
+        )
+    efforts = catalog_reader._load()  # pylint: disable=protected-access
+    print(
+        f"Efforts:       {len(efforts):,} in the catalog"
+        if efforts
+        else "Efforts:       catalog not available"
+    )
+
+
 def _housekeeping(verbosity: Verbosity, forced: bool = False) -> None:
     """Refresh the mirrors and skills a gather keeps current.
 
@@ -96,6 +136,8 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         # After verbosity is resolved, before the gather-argument validation
         # below: --init takes no corpus, so those checks do not apply to it.
         _housekeeping(verbosity, forced=True)
+        if verbosity is not Verbosity.QUIET:
+            _init_report()
         sys.exit(0)
 
     if args.used_within is not None:

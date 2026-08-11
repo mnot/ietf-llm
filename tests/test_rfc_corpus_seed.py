@@ -187,3 +187,40 @@ def test_init_runs_the_housekeeping_without_a_corpus_name(
     assert exc.value.code == 0
     # Forced: asking explicitly should not be silently throttled away.
     assert ran == [True]
+
+
+def test_init_reports_the_state_it_leaves(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A setup command that prints nothing on success is indistinguishable
+    from one that silently failed — which is what `--init` did when the
+    machine was already current, since the housekeeping only logs changes."""
+    import sys as _sys
+
+    from ietf_llm.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "_housekeeping", lambda v, forced=False: None)
+    monkeypatch.setattr(_sys, "argv", ["ietf-llm", "--init"])
+    _install_local("20260811T003915Z+2")
+    with pytest.raises(SystemExit):
+        cli_main.main()
+    out = capsys.readouterr().out
+    assert "20260811T003915Z+2" in out
+
+
+def test_init_says_so_when_the_corpus_is_missing(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The case worth being loud about: the RFC tools will not work, and the
+    two reasons are the ones a user can act on."""
+    import sys as _sys
+
+    from ietf_llm.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "_housekeeping", lambda v, forced=False: None)
+    monkeypatch.setattr(_sys, "argv", ["ietf-llm", "--init"])
+    with pytest.raises(SystemExit):
+        cli_main.main()
+    out = capsys.readouterr().out
+    assert "NOT installed" in out
+    assert "IETF_LLM_SEED_URL" in out and "writable" in out
