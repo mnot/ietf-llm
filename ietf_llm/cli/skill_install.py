@@ -36,7 +36,7 @@ import sys
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .. import __version__
 from ..log import LogLevel, Verbosity, log
@@ -300,20 +300,22 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
 def _report_diverged(diverged: List[Path], verbosity: Verbosity) -> None:
     """One line for however many edited copies there are.
 
-    This runs after every gather, so it has to stay small. Naming each skill
-    once and each harness once says as much as a paragraph per copy did.
+    This runs after every gather, so it has to stay small: each skill and each
+    harness is named once, not once per combination.
+
+    Phrased as a label and a list rather than a sentence, so it reads the same
+    for one copy as for six — a sentence needs its verb and pronoun to agree
+    with a count, and the single-copy case is the common one.
     """
     if not diverged:
         return
-    home = str(Path.home())
+    home = str(_home())
     skills = sorted({d.name for d in diverged})
     places = sorted({str(d.parent.parent).replace(home, "~") for d in diverged})
     log(
-        f"{len(diverged)} installed skill "
-        f"cop{'y' if len(diverged) == 1 else 'ies'} "
-        f"({', '.join(skills)} in {', '.join(places)}) "
-        "differ from the bundled version — `ietf-llm --install-skills` "
-        "updates them, overwriting local edits.",
+        f"Edited since install, so not updated: {', '.join(skills)} "
+        f"in {', '.join(places)}. "
+        "Run `ietf-llm --install-skills` to overwrite local edits.",
         verbosity,
         level=LogLevel.STATUS,
     )
@@ -364,15 +366,13 @@ def _sync_one(
     dest: Path,
     manifest: Dict[str, Any],
     verbosity: Verbosity,
-    diverged: Optional[List[Path]] = None,
+    diverged: List[Path],
 ) -> bool:
     """Sync one installed skill against its bundled source. Mutates `manifest`
     in place; returns True if the manifest changed (so the caller persists).
 
     A copy the user has edited is appended to `diverged` rather than reported
-    here: the caller summarises them in one line. Reporting per copy meant two
-    skills across three harnesses printed six near-identical paragraphs, each
-    repeating the same remedy — a wall of text after every gather."""
+    here; the caller summarises them in one line."""
     bundled = _tree_hash(src)
     installed = _tree_hash(dest)
     if installed == bundled:
@@ -387,8 +387,7 @@ def _sync_one(
     entry = manifest.get(str(dest))
     pristine = entry is not None and entry.get("sha256") == installed
     if not pristine:
-        if diverged is not None:
-            diverged.append(dest)
+        diverged.append(dest)
         return False
 
     # Pristine but out of date: copy into a temp sibling and swap atomically
