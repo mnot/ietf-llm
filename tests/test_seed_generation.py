@@ -103,3 +103,39 @@ def test_a_dry_run_creates_nothing(tmp_path: Any) -> None:
     save_members(base, {"httpbis": MemberSpec()})
     target = generation_dir(base, dry_run=True)
     assert not os.path.exists(target)
+
+
+def test_the_rfc_corpus_gets_its_own_store() -> None:
+    """A store carries one compatibility tuple. This corpus's chunks come from
+    rfc.fyi's chunker while every gathered corpus carries ours, so a shared
+    store always refuses one of them — as observed: 24 members skipped with
+    "chunker_version rfcfyi-1 vs 2". It is a different embedding generation
+    and gets a different store.
+    """
+    import os as _os
+
+    _os.environ["IETF_LLM_SEED_URL"] = "https://example.invalid/seed/"
+    try:
+        assert generation.store_url() == (
+            f"https://example.invalid/seed/v{_SCHEMA_VERSION}/"
+        )
+        assert generation.rfc_store_url() == (
+            f"https://example.invalid/seed/rfcs/v{_SCHEMA_VERSION}/"
+        )
+        # Siblings, not nested: neither is a prefix of the other's contents.
+        assert generation.store_url() not in generation.rfc_store_url()
+    finally:
+        del _os.environ["IETF_LLM_SEED_URL"]
+
+
+def test_both_stores_move_together_on_a_bump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "https://example.invalid/seed/")
+    assert generation.generation() in generation.store_url()
+    assert generation.generation() in generation.rfc_store_url()
+
+
+def test_no_rfc_store_when_seeding_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IETF_LLM_SEED_URL", "off")
+    assert generation.rfc_store_url() is None

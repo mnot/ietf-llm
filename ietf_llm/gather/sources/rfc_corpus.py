@@ -14,6 +14,10 @@ bundle on a first gather without being asked, so an automatic pull here is a
 difference of degree. It is opt-out on the same switch as everything else:
 `--no-seed` / `IETF_LLM_SEED_ENABLED=off` covers it.
 
+**It has its own store**, a sibling of the gathered one rather than a member
+of it — see `seed.generation.RFC_SEGMENT`. A store carries one compatibility
+tuple and this corpus's chunker is not ours, so the two can never share.
+
 **Refresh keys on the upstream build, not on time gathered.** This corpus has
 no gather time; what distinguishes one snapshot from another is which
 upstream artifact it was assembled from, which both the local index and the
@@ -146,7 +150,7 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     # pylint: disable-next=import-outside-toplevel
     from ...seed import generation as seed_generation
 
-    seed_url = seed_generation.store_url()
+    seed_url = seed_generation.rfc_store_url()
     if not seed_url:
         return
     if _checked_recently(interval):

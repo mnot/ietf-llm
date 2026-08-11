@@ -39,6 +39,17 @@ def generation() -> str:
     return f"v{_SCHEMA_VERSION}"
 
 
+#: The RFC full-text corpus publishes to its own store under this segment.
+#:
+#: Not a member of the shared store, and it cannot be one: a store carries a
+#: single compatibility tuple, and this corpus's chunks come from rfc.fyi's
+#: chunker (`rfcfyi-1`) while every gathered corpus carries ours (`2`). Those
+#: can never match, so putting them in one store means one of them is always
+#: refused — which is exactly what the tuple is for. It is a different
+#: embedding generation, so it gets a different store.
+RFC_SEGMENT = "rfcs"
+
+
 def store_url() -> Optional[str]:
     """The store a client should read: the configured base plus the generation.
 
@@ -50,3 +61,16 @@ def store_url() -> Optional[str]:
     if not base:
         return None
     return f"{base.rstrip('/')}/{generation()}/"
+
+
+def rfc_store_url() -> Optional[str]:
+    """The store holding the RFC full-text corpus.
+
+    A sibling of the gathered store rather than a path inside it, for the
+    reason `RFC_SEGMENT` gives. Versioned the same way, so a schema bump moves
+    both together.
+    """
+    base = service_config.seed_url()
+    if not base:
+        return None
+    return f"{base.rstrip('/')}/{RFC_SEGMENT}/{generation()}/"

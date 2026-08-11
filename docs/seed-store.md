@@ -112,16 +112,16 @@ drops one. Give the **base** directory: publishing lands in its
 `v<schema>` subdirectory, and a new generation inherits the previous one's
 membership, so a schema bump does not mean re-adding every member by hand.
 
-To carry the full text of the RFC series, add `rfcs` like any other member:
+The full text of the RFC series is **not** a member of this store — it is
+built from public artifacts rather than gathered, and its chunker is not
+ours, so it cannot share a compatibility tuple with anything here. It is
+published separately, into its own store:
 
 ```
-python scripts/publish_seeds.py ~/seed-store --add rfcs
+python scripts/publish_seeds.py ~/seed-store/rfcs --add rfcs
 ```
 
-It is built from public artifacts rather than gathered, and needs no further
-configuration — `--months` does not apply to it. See
-[Externally-sourced members](#externally-sourced-members) for what that
-changes.
+See [Externally-sourced members](#externally-sourced-members).
 
 ### 2. Publish
 
@@ -185,8 +185,9 @@ The store is just static files served over HTTPS — `index.json`, each
 the directory to any static host and note its public base URL:
 
 - **Web server** — `rsync -a ~/seed-store/ host:/var/www/seed/` → `https://host/seed/`
-  (sync the **base**, so every generation goes with it — `--delete` stays safe
-  because the whole tree is the one managed directory)
+  (sync the **base**, so every generation *and* the sibling `rfcs/` store go
+  with it — `--delete` stays safe because the whole tree is one managed
+  directory)
 - **S3 + CDN** — `aws s3 sync ~/seed-store/ s3://bucket/seed/` (front with a CDN)
 - **Cloudflare R2** — `aws s3 sync` against the R2 endpoint, or `wrangler r2`
 - **GitHub Pages** — commit the directory to a Pages repo (fine for small stores)
@@ -314,10 +315,23 @@ the RFC series, built from the semantic index
 - **The client never freshens it.** There is no local pipeline that could,
   so a follow-on gather would be a no-op at best.
 
-The publisher needs no extra configuration: both inputs are public, and the
+**It gets its own store**, a sibling of the gathered one at `<base>/rfcs/<generation>/`.
+Not a preference: a store carries a single compatibility tuple, and this
+corpus's chunks come from rfc.fyi's chunker (`rfcfyi-1`) while every gathered
+corpus carries ours (`2`). In one store those can never match, so whichever
+member did not set the tuple is refused — which is what the tuple is for. It
+is a different embedding generation, so it gets a different store.
+
+So it is published with its own invocation, against its own directory:
+
+```
+python scripts/publish_seeds.py ~/seed-store/rfcs --add rfcs
+```
+
+The publisher needs no other configuration: both inputs are public, and the
 ~530 MB text mirror defaults under the cache (`IETF_LLM_RFC_MIRROR` moves
-it). Membership is added like any other — `--add rfcs` — and the source is
-implied by the name.
+it). One `rsync` of the base still carries both stores, since they are
+siblings under it.
 
 ## Non-goals
 
