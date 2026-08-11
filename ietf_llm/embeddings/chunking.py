@@ -316,7 +316,7 @@ def _windowed_citation_url(relpath: str, text: str) -> Optional[str]:
     - `charter.txt` → the `Source:` URL gather already wrote into the
       file header.
 
-    Everything else returns None — RFC bodies (cite via `get_rfc`),
+    Everything else returns None — RFC bodies (cite via `get_rfc_info`),
     minutes, transcripts, pdf extracts. NULL is deliberate there: a URL
     we cannot construct with confidence is worse stamped than absent.
     """
@@ -324,7 +324,7 @@ def _windowed_citation_url(relpath: str, text: str) -> Optional[str]:
     if lower.startswith("drafts/") and lower.endswith(".txt"):
         name = normalize_draft_name(os.path.basename(relpath))
         # RFC text files normalise to `rfcNNNN` (no `draft-` prefix);
-        # leave those to get_rfc rather than minting a /doc/ URL here.
+        # leave those to get_rfc_info rather than minting a /doc/ URL here.
         if name.startswith("draft-"):
             return f"https://datatracker.ietf.org/doc/{name}/"
         return None

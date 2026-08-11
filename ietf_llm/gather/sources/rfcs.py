@@ -11,7 +11,7 @@ Two entry points write that mirror:
   - `ensure_rfc_index` — the gather path. A singleton, not a per-corpus
     artifact: it runs once per `ietf-llm` invocation (see `cli.main.main`),
     invisibly, and refreshes all three files.
-  - `revalidate_index` — the read path, for a `get_rfc` miss against a
+  - `revalidate_index` — the read path, for a `get_rfc_info` miss against a
     mirror too old to trust. Gated on `gather_enabled`, throttled, bounded,
     and `rfcs.json` only. See its docstring.
 

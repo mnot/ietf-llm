@@ -612,7 +612,7 @@ def register(server: "FastMCP") -> None:
         semantically across its mailing-list debate, GitHub issues,
         drafts, slides, transcripts, and minutes. (Published RFC bodies
         aren't indexed here by default — search the series with
-        `search_rfc_index` and read one with `get_rfc`.) Returns the top
+        `search_rfc_index` and read one with `get_rfc_info`.) Returns the top
         chunks with file, chunk_idx, title, score, snippet, line range,
         GitHub URL (for issue chunks), and (for issue chunks) the issue's
         GitHub labels + open/closed state.

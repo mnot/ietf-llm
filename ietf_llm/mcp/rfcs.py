@@ -1,4 +1,4 @@
-"""RFC-series tools (search_rfc_index, get_rfc) — thin wrappers over ietf_llm.rfcs."""
+"""RFC-series tools (search_rfc_index, get_rfc_info) — thin wrappers over ietf_llm.rfcs."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
 def _body_note(number: str) -> str:
     """The body-availability line appended to a rendered RFC entry.
 
-    `get_rfc` answers from a catalogue of titles and references; it has never
+    `get_rfc_info` answers from a catalogue of titles and references; it has never
     returned the document text. Left unsaid, a well-formed metadata response
     reads as "here is the RFC", and a caller that needed to quote a section
     instead reasons from memory — which is how a review came to rule out a
@@ -181,14 +181,18 @@ def register(server: "FastMCP") -> None:
           - `group`: an IETF working group acronym.
           - `limit`: max results (default 50).
 
-        Follow a hit with `get_rfc(number)` for full metadata and its
+        Follow a hit with `get_rfc_info(number)` for full metadata and its
         reference graph.
         """
         return await _offload(render_search, query, status, stream, level, group, limit)
 
     @server.tool()
-    async def get_rfc(number: str) -> str:
-        """Full metadata for one RFC from the published series: title,
+    async def get_rfc_info(number: str) -> str:
+        """Catalogue metadata and the reference graph for one RFC — **not
+        the document text**, which is what the name says and what
+        `get_rfc_section` is for.
+
+        Full metadata for one RFC from the published series: title,
         status, stream, level, working group, keywords, what it
         obsoletes / is obsoleted by, its normative + informative
         references, how many RFCs cite it, and links to the text.

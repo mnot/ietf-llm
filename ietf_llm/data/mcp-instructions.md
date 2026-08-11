@@ -99,9 +99,12 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   - `get_rfc_section` — you already have a citation: read that section, in
     full, offline. No argument but the number returns the outline, which is
     also what a miss returns.
-  - `get_rfc` — catalogue metadata and the reference graph. **Never the
-    document text**; do not characterise what an RFC says from it.
-  Authority: `get_rfc` refreshes its index before reporting one missing, so
+  - `get_rfc_info` — catalogue metadata and the reference graph: status,
+    stream, what it obsoletes, its normative and informative references,
+    how many RFCs cite it. **Never the document text** — that is
+    `get_rfc_section`. It is also the authority on whether an RFC
+    exists, since it revalidates its mirror before reporting a miss.
+  Authority: `get_rfc_info` refreshes its index before reporting one missing, so
   never conclude an RFC is unpublished from a `search_rfc_index` miss alone.
   **Obsoleted RFCs are in the text corpus and are marked** — check the
   marker before citing anything as current. **By URL:** `get_by_url`.
@@ -116,9 +119,9 @@ user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare.
 
-**RFC text is the exception: `get_rfc` does not return it.** It is catalogue
+**RFC text is the exception: `get_rfc_info` does not return it.** It is catalogue
 metadata — title, status, reference graph. An RFC body is on disk only when a
-corpus that published it was gathered with `--rfcs`; `get_rfc`'s last line says
+corpus that published it was gathered with `--rfcs`; `get_rfc_info`'s last line says
 whether this one is, and gives the `read_file_section` call if so. When it says
 the body is **not reachable from here**, you cannot quote or characterise that
 RFC — say so rather than reconstructing it from memory, which is exactly where

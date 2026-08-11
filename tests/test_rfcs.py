@@ -180,7 +180,7 @@ def test_search_not_gathered_message(isolated_home: Path) -> None:
     assert "has not been gathered" in rfcs.render_search("anything")
 
 
-# --- Reader: get_rfc -------------------------------------------------------
+# --- Reader: get_rfc_info -------------------------------------------------------
 
 
 def test_render_rfc_core_metadata(isolated_home: Path) -> None:
@@ -299,7 +299,7 @@ def test_hit_on_stale_index_is_unaffected(isolated_home: Path) -> None:
     assert "last refreshed" not in out
 
 
-# --- Read-path revalidation (get_rfc on a stale miss) ----------------------
+# --- Read-path revalidation (get_rfc_info on a stale miss) ----------------------
 
 # A newcomer, absent from the seeded mirror: the RFC9846 shape — published
 # after the last gather, so only a live revalidation can resolve it.
@@ -730,7 +730,7 @@ def test_round_trip_writer_to_reader(
 
 # --- Body availability (issue #218) ---------------------------------------
 #
-# `get_rfc` has never returned document text -- the `_rfc/` mirror is three
+# `get_rfc_info` has never returned document text -- the `_rfc/` mirror is three
 # JSON blobs of metadata. Left unsaid, its well-formed metadata response
 # reads as "here is the RFC", and a caller that needed to quote a section
 # reasons from memory instead. So every rendered entry ends with which of
@@ -787,7 +787,7 @@ def test_body_lookup_stays_offline(
 # --- Body lookup must not materialise the fleet ----------------------------
 #
 # On the cloud backend, resolving a corpus's files dir *materialises* that
-# version's blobs onto scratch. `get_rfc` is a high-frequency metadata
+# version's blobs onto scratch. `get_rfc_info` is a high-frequency metadata
 # lookup, so sweeping every gathered corpus through the forcing resolver
 # would download the whole fleet on one call. The sweep uses the
 # non-forcing resolver; only the publishing WG's own corpus -- one corpus,

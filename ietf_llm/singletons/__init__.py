@@ -5,7 +5,7 @@ each mirrored to a leading-underscore dir under the cache root (kept out of
 `list_corpora` / `ietf-llm --list`) and read here on the offline read path:
 
   catalog.py  — the active-effort catalog (`_catalog/`), behind `find_efforts`
-  rfcs.py     — the RFC-series index (`_rfc/`), behind `search_rfc_index` / `get_rfc`
+  rfcs.py     — the RFC-series index (`_rfc/`), behind `search_rfc_index` / `get_rfc_info`
 
 Each is the read side of a `gather/sources/` writer twin (`sources/catalog.py`,
 `sources/rfcs.py`) and owns the on-disk location its writer mirrors into — so

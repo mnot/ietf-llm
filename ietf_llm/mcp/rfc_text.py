@@ -146,7 +146,7 @@ def _provenance() -> str:
     return (
         f"Text from the RFC-series snapshot built {stamp} "
         f"(`index-{build}`{tail}). An RFC published since then is not in it — "
-        "`get_rfc` is the authority on whether one exists."
+        "`get_rfc_info` is the authority on whether one exists."
     )
 
 
@@ -358,7 +358,7 @@ def register(server: "FastMCP") -> None:
         excluded, so a gap in the numbering means "exists but not
         searchable", not "does not exist".
 
-        This is the document text, so it *is* quotable — unlike `get_rfc`,
+        This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
         return await _offload(tool_get_rfc_section, number, section)

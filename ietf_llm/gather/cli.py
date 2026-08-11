@@ -269,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also download the WG's published RFC bodies into drafts/ and "
         "index them. Off by default: RFC metadata and full text are always "
-        "available globally via search_rfc_index / get_rfc, so mirroring them into "
+        "available globally via search_rfc_index / get_rfc_info, so mirroring them into "
         "every corpus is wasted gather and embed time. The WG's RFC list "
         "still appears in the overview regardless.",
     )
