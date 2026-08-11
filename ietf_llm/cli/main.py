@@ -22,6 +22,7 @@ from ..gather.cli import build_parser
 from ..gather.sequencer import _gather_one
 from ..gather.sources.catalog import ensure_catalog_index
 from ..gather.sources.repo_discovery import print_discovery
+from ..gather.sources.rfc_corpus import ensure_rfc_corpus
 from ..gather.sources.rfcs import ensure_rfc_index
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..months import months_request_error
@@ -121,6 +122,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
 
     # Tail housekeeping (best-effort, never blocks exit): refresh mirrors, sync skill.
     ensure_rfc_index(verbosity)
+    ensure_rfc_corpus(verbosity)
     ensure_catalog_index(verbosity)
     sync_if_pristine(verbosity)
 

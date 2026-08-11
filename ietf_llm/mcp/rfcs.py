@@ -83,8 +83,20 @@ def _body_note(number: str) -> str:
     reads as "here is the RFC", and a caller that needed to quote a section
     instead reasons from memory — which is how a review came to rule out a
     finding on RFC 8820 by recalling the wrong part of it (issue #218). So
-    say which of the two cases this is, every time.
+    say which of the three cases this is, every time.
+
+    Since #230 there is usually a good answer: the RFC full-text corpus holds
+    every published RFC, so the note points at `get_rfc_section` rather than
+    apologising. The older cases remain — a corpus that gathered the body
+    with `--rfcs`, and nothing at all — because neither the text corpus nor a
+    given corpus is guaranteed to be installed.
     """
+    if _rfc_text_available(number):
+        return (
+            f'- Body: **`get_rfc_section("{number}")`** for the outline, or '
+            f'`get_rfc_section("{number}", "<section>")` to read one. '
+            "Everything above is catalogue metadata, not the document text."
+        )
     found = _cached_body(number)
     if found is not None:
         corpus, relpath = found
@@ -95,9 +107,25 @@ def _body_note(number: str) -> str:
     return (
         "- Body: **not reachable from here.** Everything above is catalogue "
         "metadata, not the document text — do not characterise what this RFC "
-        "says from it. Quote it from the Text link above, or gather a corpus "
-        "that published it (`ietf-llm <wg> --rfcs`) and re-run."
+        "says from it. Quote it from the Text link above, or install the RFC "
+        "full-text corpus (any `ietf-llm <corpus>` run pulls it) and re-run."
     )
+
+
+def _rfc_text_available(number: str) -> bool:
+    """Whether the RFC full-text corpus holds this RFC.
+
+    A cheap existence probe, not a read: the note only needs to know which
+    call to recommend.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from ..embeddings.storage import section_outline
+
+    # pylint: disable-next=import-outside-toplevel
+    from .rfc_text import RFC_CORPUS, _rfc_file
+
+    file = _rfc_file(number)
+    return bool(file) and bool(section_outline(RFC_CORPUS, str(file)))
 
 
 def _render_rfc_live(number: str) -> str:
