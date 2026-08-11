@@ -22,6 +22,7 @@ from .transport import (
     clean_html,
     fetch_resource,
     governed_get,
+    http_error_detail,
     http_session,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "clean_html",
     "fetch_resource",
     "governed_get",
+    "http_error_detail",
     "http_session",
 ]

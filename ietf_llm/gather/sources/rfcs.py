@@ -48,7 +48,7 @@ from typing import Optional
 import requests
 
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, governed_get
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...singletons.rfcs import RFC_FILES, RFC_TTL_SECONDS, rfc_index_dir
 from . import _mirror
 
@@ -225,7 +225,11 @@ def _refresh_one(
             retrying=not live,
         )
     except requests.RequestException as err:
-        log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
+        log(
+            f"RFC index: fetch {name} failed: {http_error_detail(err)}",
+            verbosity,
+            LogLevel.PROGRESS,
+        )
         return
     if response.status_code == 304:
         _mirror.touch(body_path)
@@ -233,7 +237,11 @@ def _refresh_one(
     try:
         response.raise_for_status()
     except requests.RequestException as err:
-        log(f"RFC index: fetch {name} failed: {err}", verbosity, LogLevel.PROGRESS)
+        log(
+            f"RFC index: fetch {name} failed: {http_error_detail(err)}",
+            verbosity,
+            LogLevel.PROGRESS,
+        )
         return
     if not _mirror.write_body(body_path, response.content, verbosity, "RFC index"):
         return

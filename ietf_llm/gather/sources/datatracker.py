@@ -26,7 +26,7 @@ import requests
 
 from ...net import http_metrics
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, governed_get
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...paths import get_cache_dir
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
@@ -261,8 +261,12 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
 
     try:
         response = governed_get(url, headers=headers, timeout=timeout)
-    except requests.RequestException:
+    except requests.RequestException as err:
         http_metrics.record(url, 0, 0, error=True)
+        log(
+            f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
+            level=LogLevel.WARN,
+        )
         return _decode_cached(entry)
 
     if response.status_code == 304:
@@ -271,9 +275,13 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
     try:
         response.raise_for_status()
         result = response.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as err:
         http_metrics.record(
             url, response.status_code, len(response.content), error=True
+        )
+        log(
+            f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
+            level=LogLevel.WARN,
         )
         return _decode_cached(entry)
     http_metrics.record(url, response.status_code, len(response.content))

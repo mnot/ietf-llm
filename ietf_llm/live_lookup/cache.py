@@ -26,7 +26,8 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 
 from ..atomicio import atomic_open, file_lock
-from ..net import DEFAULT_HEADERS, governed_get
+from ..log import LogLevel, log
+from ..net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ..paths import get_cache_dir
 
 _DT_BASE = "https://datatracker.ietf.org"
@@ -88,14 +89,19 @@ def _fetch_json(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
 
     No disk cache and no ETag store — the read path writes nothing. Uses the
     shared rate governor (`governed_get`) so a burst of agenda lookups stays
-    polite to Datatracker. Any transport or decode error is swallowed to
-    None; the caller decides whether to fall back to a stale cache entry.
+    polite to Datatracker. Any transport or decode error is logged (with the
+    Cloudflare Ray ID when the response carries one) and swallowed to None;
+    the caller decides whether to fall back to a stale cache entry.
     """
     try:
         response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=timeout)
         response.raise_for_status()
         body = response.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as err:
+        log(
+            f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
+            level=LogLevel.WARN,
+        )
         return None
     return body if isinstance(body, dict) else None
 

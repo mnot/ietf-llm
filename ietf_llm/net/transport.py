@@ -110,6 +110,19 @@ def governed_get(
         return http_session(retrying=retrying).get(url, **kwargs)
 
 
+def http_error_detail(err: Exception) -> str:
+    """`str(err)`, plus the Cloudflare Ray ID when the response carries one.
+
+    IETF properties (datatracker especially) sit behind Cloudflare, whose bot
+    protection sometimes blocks a fetch; their support needs the `cf-ray`
+    header value to trace a specific block. Safe on any exception — no
+    response (or no header) means no suffix.
+    """
+    headers = getattr(getattr(err, "response", None), "headers", None)
+    ray_id = headers.get("cf-ray") if headers is not None else None
+    return f"{err} (Cloudflare Ray ID: {ray_id})" if ray_id else str(err)
+
+
 def fetch_resource(
     url: str, headers: Optional[Dict[str, str]] = None
 ) -> Optional[requests.Response]:
@@ -126,7 +139,7 @@ def fetch_resource(
         status = err.response.status_code if err.response is not None else 0
         n_bytes = len(err.response.content) if err.response is not None else 0
         http_metrics.record(url, status, n_bytes, error=True)
-        log(f"Error fetching {url}: {err}", level=LogLevel.ERROR)
+        log(f"Error fetching {url}: {http_error_detail(err)}", level=LogLevel.ERROR)
         return None
 
 
