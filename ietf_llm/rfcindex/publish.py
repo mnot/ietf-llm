@@ -29,7 +29,7 @@ from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir
 from .build import BuildStats, build_rfc_index
 from .fetch import IndexRelease, download_index, latest_release
-from .format import RfcIndexError, read_manifest, read_sources
+from .format import RfcIndexError, read_sources
 from .mirror import Reconciliation, reconcile, sync_mirror
 
 #: Where the publisher keeps RFC plain text. Under the cache, beside the
@@ -110,17 +110,17 @@ def build_from_upstream(
 
     have = _existing_build(db_path)
     if have == release.build and not force:
+        # Returned without consulting the staged index at all: the corpus is
+        # already the artifact this release describes, so a missing stage dir
+        # is no reason to re-download ~130 MB to confirm it.
         log(f"RFC corpus already built from {release.tag}", verbosity, LogLevel.STATUS)
-        index_dir = os.path.join(stage_dir(), "index")
-        manifest = read_manifest(index_dir) if os.path.isdir(index_dir) else None
-        if manifest is not None:
-            return PublishResult(
-                release=release,
-                db_path=db_path,
-                stats=BuildStats(),
-                reconciliation=Reconciliation(),
-                rebuilt=False,
-            )
+        return PublishResult(
+            release=release,
+            db_path=db_path,
+            stats=BuildStats(),
+            reconciliation=Reconciliation(),
+            rebuilt=False,
+        )
 
     index_dir = download_index(release, stage_dir(), verbosity)
     sync_mirror(mirror_dir(), verbosity=verbosity)

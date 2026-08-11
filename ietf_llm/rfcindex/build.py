@@ -61,7 +61,14 @@ from ..embeddings.storage import (
     write_codec,
 )
 from ..log import LogLevel, Verbosity, log
-from .format import ChunkMeta, IndexManifest, read_manifest, read_sources
+from .format import (
+    ChunkMeta,
+    IndexManifest,
+    iter_clusters,
+    read_centroids,
+    read_manifest,
+    read_sources,
+)
 from .mirror import reconcile, text_path
 from .text import clean_section_text
 
@@ -211,22 +218,20 @@ def build_rfc_index(  # pylint: disable=too-many-locals
     manifest = manifest or read_manifest(index_dir)
     usable = _usable_rfcs(index_dir, mirror_dir)
 
-    # pylint: disable-next=import-outside-toplevel
-    from .format import iter_clusters
-
     grouped: Dict[str, List[Tuple[ChunkMeta, bytes, int]]] = defaultdict(list)
-    skipped: List[str] = []
+    dropped: Set[str] = set()
     for cluster in iter_clusters(index_dir, manifest):
         for row, meta in enumerate(cluster.chunks):
             if usable is not None and meta.rfc not in usable:
+                # Its bytes moved since the build, or it is not in the mirror.
+                # Collected as we go: a set difference afterwards cannot see
+                # these, because they never enter `grouped` at all.
+                dropped.add(meta.rfc)
                 continue
             grouped[meta.rfc].append(
                 (meta, cluster.vectors[row].tobytes(), cluster.ident)
             )
-    if usable is not None:
-        skipped = sorted(usable.symmetric_difference(grouped) - set(grouped))
-
-    stats = BuildStats(skipped_rfcs=skipped)
+    stats = BuildStats(skipped_rfcs=sorted(dropped, key=_rfc_sort_key))
     conn = _open_db("", path=db_path)
     try:
         conn.execute("DELETE FROM chunks")
@@ -292,9 +297,6 @@ def _write_centroids(
     step. 4,337 rows at 384 int8 dimensions is 1.6 MiB, against the ~160 ms a
     query saves by not reading the other 455,000 vectors.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from .format import read_centroids
-
     matrix = read_centroids(index_dir, manifest)
     conn.executemany(
         "INSERT INTO centroids(id, vector) VALUES(?, ?)",

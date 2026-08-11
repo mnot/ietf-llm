@@ -124,3 +124,25 @@ def test_the_rfc_corpus_is_not_listed_as_a_gathered_corpus(
     """
     _install_local("20260811T003915Z")
     assert rfc_corpus.RFC_CORPUS not in cached_wg_names()
+
+
+def test_the_store_index_is_not_fetched_on_every_invocation(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This runs on *every* `ietf-llm` run, and the store's index moves about
+    six times a year, so an unthrottled fetch would be a request per run for a
+    document that almost never changes."""
+    monkeypatch.setenv("IETF_LLM_SEED_ENABLED", "on")
+    monkeypatch.setattr(rfc_corpus.service_config, "seed_url", lambda: "https://x/")
+    fetched: List[str] = []
+    import ietf_llm.seed.fetch as sf
+
+    monkeypatch.setattr(sf, "load_index", lambda url, **kw: fetched.append(url) or None)
+
+    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
+    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
+    assert len(fetched) == 1, "the second call should have been throttled"
+
+    # A zero interval is the escape hatch the tests and a forced check use.
+    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
+    assert len(fetched) == 2

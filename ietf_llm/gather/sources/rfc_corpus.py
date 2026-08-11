@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -49,9 +50,42 @@ _BUILD_KEY = "rfc_index_build"
 #: Build ids are `YYYYMMDDTHHMMSSZ` — a legal git ref, and parseable.
 _BUILD_FORMAT = "%Y%m%dT%H%M%SZ"
 
+#: Don't ask the store for its index more often than this. Upstream
+#: republishes about monthly and the staleness margin means a re-seed lands
+#: about every second month, so checking once an hour is already far more
+#: often than anything can change — and this runs on *every* `ietf-llm`
+#: invocation, where an unthrottled fetch would be a request per run for a
+#: document that moves six times a year. Mirrors the throttle
+#: `ensure_rfc_index` uses beside it.
+_CHECK_INTERVAL = 3600.0
+
+#: Touched after each check; its mtime is the throttle.
+_STAMP = "last-checked"
+
 
 def _db_path() -> str:
     return os.path.join(get_index_dir(), RFC_CORPUS, "embeddings.db")
+
+
+def _stamp_path() -> str:
+    return os.path.join(get_index_dir(), RFC_CORPUS, _STAMP)
+
+
+def _checked_recently(interval: float) -> bool:
+    try:
+        return (time.time() - os.path.getmtime(_stamp_path())) < interval
+    except OSError:
+        return False
+
+
+def _touch_stamp() -> None:
+    path = _stamp_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8"):
+            os.utime(path, None)
+    except OSError:
+        pass  # best-effort: a missing stamp only costs an extra check
 
 
 def local_build() -> Optional[str]:
@@ -101,13 +135,17 @@ def _should_install(have: Optional[str], offered: str, margin_days: float) -> bo
 
 
 def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
-    verbosity: Verbosity = Verbosity.STATUS, margin_days: Optional[float] = None
+    verbosity: Verbosity = Verbosity.STATUS,
+    margin_days: Optional[float] = None,
+    interval: float = _CHECK_INTERVAL,
 ) -> None:
     """Install or refresh the RFC full-text corpus, best-effort."""
     if not service_config.seeding_enabled():
         return
     seed_url = service_config.seed_url()
     if not seed_url:
+        return
+    if _checked_recently(interval):
         return
     # Lazy: the seed consumer is gather-path only, and this keeps the import
     # off any path that merely reads.
@@ -118,6 +156,10 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
 
     # pylint: enable=import-outside-toplevel
 
+    # Stamped on the attempt, not on success: a store that is unreachable or
+    # carries no index would otherwise be retried on every single invocation,
+    # which is the case the throttle most needs to cover.
+    _touch_stamp()
     try:
         index = seed_fetch.load_index(seed_url)
     except Exception:  # pylint: disable=broad-except

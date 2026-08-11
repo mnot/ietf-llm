@@ -234,3 +234,34 @@ def test_an_rfc_absent_from_the_mirror_is_skipped(tmp_path: Any) -> None:
     ]
     out = _rows(_build(tmp_path, rows))
     assert {r[0] for r in out} == {"rfc9111.txt"}
+
+
+def test_a_differing_digest_is_reported_as_skipped(tmp_path: Any) -> None:
+    """The stat, not just the corpus. An earlier version computed
+    `usable - grouped`, which is the RFCs that matched and had no chunks —
+    the opposite of what the field means — so a reissued RFC was correctly
+    dropped from the corpus and silently absent from the report.
+    """
+    index = _index(str(tmp_path / "index"), OVERLAPPING, {"9111": "0" * 64})
+    mirror = _mirror(str(tmp_path / "mirror"))
+    db = str(tmp_path / "out.db")
+    stats = build_rfc_index(index, mirror, db, verbosity=Verbosity.QUIET)
+    assert stats.skipped_rfcs == ["9111"]
+    assert "1 RFCs skipped" in stats.summary()
+    assert _rows(db) == []
+
+
+def test_a_matching_digest_reports_nothing_skipped(tmp_path: Any) -> None:
+    import hashlib
+
+    index = _index(
+        str(tmp_path / "index"),
+        OVERLAPPING,
+        {"9111": hashlib.sha256(BODY).hexdigest()},
+    )
+    mirror = _mirror(str(tmp_path / "mirror"))
+    stats = build_rfc_index(
+        index, mirror, str(tmp_path / "out.db"), verbosity=Verbosity.QUIET
+    )
+    assert stats.skipped_rfcs == []
+    assert "skipped" not in stats.summary()

@@ -96,6 +96,8 @@ class Reconciliation:
         return not self.differing and not self.absent
 
     def summary(self) -> str:
+        if not self.total:
+            return "no per-RFC digests in this index — mirror unverified"
         parts = [f"{self.matched:,}/{self.total:,} RFCs match the build"]
         if self.differing:
             sample = ", ".join(self.differing[:5])
@@ -109,10 +111,10 @@ def reconcile(mirror_dir: str, digests: Dict[str, str]) -> Reconciliation:
     """Compare `mirror_dir` against the index's per-RFC `sources.json` digests.
 
     An empty `digests` means the index predates the sidecar, which is a real
-    case for an early release: everything is reported as matched, because
-    there is nothing to check against. The caller decides whether an
-    unverifiable join is acceptable; saying "0 matched" would be a lie in the
-    other direction.
+    case for an early release. The result is then empty rather than negative
+    — nothing matched, nothing differed, `usable` True — because there was
+    nothing to check against. `summary()` says so in words; a bare "0/0"
+    reads as failure when the truth is "unverifiable".
     """
     result = Reconciliation()
     if not digests:

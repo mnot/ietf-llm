@@ -10,15 +10,20 @@ Issues), because 3234 had one section scoring as well as 9111's best did.
 The scheme is a port of the one in rfc.fyi's `client.js`, whose coefficients
 were swept with `eval/rerank.py` over an 87-query labelled set:
 
-    score = sum(top 3 section scores) / 3
+    score = sum(top 3 hit scores) / 3
           + 0.10 * title_overlap
           + 0.02 * log1p(inbound citations)
 
-**The divisor is fixed at three, not the number of sections found.** That is
-the whole point: an RFC with one strong section scores a third of one with
-three equally strong, which is what stops a passing mention outranking a
-document on its subject. Dividing by `len(top)` would restore exactly the
-behaviour this replaces.
+**The divisor is fixed at three, not the number of hits found.** That is the
+whole point: an RFC with one strong passage scores a third of one with three
+equally strong, which is what stops a passing mention outranking a document
+on its subject. Dividing by `len(top)` would restore exactly the behaviour
+this replaces.
+
+The three are the caller's top hits, which are *chunks* — so a long section
+split across several of them can occupy more than one slot. That is what the
+coefficients were swept against (`scripts/eval_rfc_rank.py`), so the numbers
+describe this behaviour and not an idealised one-slot-per-section variant.
 
 **Title overlap is lexical, deliberately.** The corpus embedding never saw
 the titles -- only body text was chunked -- so the title is independent

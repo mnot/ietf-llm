@@ -200,3 +200,26 @@ def test_the_read_path_does_not_import_the_publisher_package() -> None:
         check=True,
     )
     assert proc.stdout.strip() == "False", proc.stdout
+
+
+@pytest.mark.parametrize(
+    "asked,expected",
+    [
+        ("9110", "rfc9110.txt"),
+        ("RFC9110", "rfc9110.txt"),
+        ("rfc 9110", "rfc9110.txt"),
+        # Two chunks in 457k carry a lettered id. `format.py` and the importer
+        # keep `rfc` a string for exactly this; coercing to int here would
+        # send get_rfc_section("17a") to rfc17.txt and undo that at the last
+        # step.
+        ("17a", "rfc17a.txt"),
+        ("RFC17a", "rfc17a.txt"),
+    ],
+)
+def test_rfc_filenames_keep_a_lettered_suffix(asked: str, expected: str) -> None:
+    assert rfc_text._rfc_file(asked) == expected
+
+
+@pytest.mark.parametrize("asked", ["nonsense", "", "rfc", "9110.5"])
+def test_a_non_rfc_number_has_no_file(asked: str) -> None:
+    assert rfc_text._rfc_file(asked) is None

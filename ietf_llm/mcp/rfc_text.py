@@ -76,9 +76,25 @@ def _normalise_section(ask: str) -> Optional[str]:
     return label.upper() if label[:1].isalpha() else label
 
 
+#: An RFC identifier as the index stores it: digits, and for two chunks in
+#: the whole corpus a trailing letter (`17a`). Accepts "9110", "RFC9110",
+#: "rfc 9110".
+_NUMBER_RE = re.compile(r"^\s*(?:rfc[\s-]*)?(\d+)([a-z])?\s*$", re.IGNORECASE)
+
+
 def _rfc_file(number: str) -> Optional[str]:
-    digits = "".join(c for c in str(number) if c.isdigit())
-    return f"rfc{int(digits)}.txt" if digits else None
+    """The corpus filename for an RFC number.
+
+    The suffix is preserved rather than parsed away. `format.py` and the
+    importer take care to keep `rfc` a string precisely because of `17a`, and
+    coercing to `int` here would send `get_rfc_section("17a")` to `rfc17.txt`
+    — undoing that care at the last step, for the only two chunks it exists
+    for.
+    """
+    match = _NUMBER_RE.match(str(number))
+    if not match:
+        return None
+    return f"rfc{int(match.group(1))}{(match.group(2) or '').lower()}.txt"
 
 
 def _status_note(number: str) -> str:
