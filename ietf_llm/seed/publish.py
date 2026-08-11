@@ -441,7 +441,10 @@ def _refresh_external(
     if built is None:
         report.skipped.append((corpus, "no RFC index published upstream yet"))
         return None
-    return built.release.build
+    # pylint: disable-next=import-outside-toplevel
+    from ..rfcindex.build import assembly_version
+
+    return assembly_version(built.release.build)
 
 
 def generation_dir(base_dir: str, dry_run: bool = False) -> str:

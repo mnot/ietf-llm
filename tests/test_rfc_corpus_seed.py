@@ -67,6 +67,26 @@ def test_a_store_behind_us_is_ignored() -> None:
     )
 
 
+def test_a_bumped_assembly_is_taken_even_though_upstream_is_unchanged() -> None:
+    """A fix to our own assembly of the same upstream index. Without this the
+    republished bundle carries the version the client already has and reaches
+    nobody — which is what would have happened to the fix that stopped chunk
+    boundaries splitting figure rows."""
+    b = "20260811T003915Z"
+    assert rfc_corpus._should_install(f"{b}+1", f"{b}+2", MARGIN)
+    assert not rfc_corpus._should_install(f"{b}+2", f"{b}+2", MARGIN)
+
+
+def test_the_margin_still_applies_across_upstream_builds() -> None:
+    """The assembly suffix must not disturb the staleness arithmetic."""
+    assert not rfc_corpus._should_install(
+        "20260711T000000Z+2", "20260811T000000Z+2", MARGIN
+    )
+    assert rfc_corpus._should_install(
+        "20260511T000000Z+2", "20260811T000000Z+2", MARGIN
+    )
+
+
 def test_an_unreadable_build_id_prefers_the_fresher_artifact() -> None:
     """We produce these ids; a shape we cannot parse means something changed."""
     assert rfc_corpus._should_install("nonsense", "20260811T000000Z", MARGIN)

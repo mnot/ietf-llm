@@ -178,7 +178,9 @@ def test_meta_names_the_query_model_and_keeps_provenance(tmp_path: Any) -> None:
     assert meta["model"] == QUERY_MODEL
     assert meta["chunker_version"] == CHUNKER_ID
     assert meta[META_SOURCE_MODEL] == "Xenova/bge-small-en-v1.5"
-    assert meta[META_SOURCE_BUILD] == "20260811T003915Z"
+    # Which upstream build, *and* how we assembled it — so a fix to our own
+    # build is visible to a client that already has the previous bundle.
+    assert meta[META_SOURCE_BUILD].startswith("20260811T003915Z+")
     assert meta[META_SOURCE_COMMIT] == "d640e524"
 
 

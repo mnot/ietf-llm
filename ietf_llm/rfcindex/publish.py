@@ -27,7 +27,7 @@ from typing import Optional
 
 from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir
-from .build import BuildStats, build_rfc_index
+from .build import BuildStats, assembly_version, build_rfc_index
 from .fetch import IndexRelease, download_index, latest_release
 from .format import RfcIndexError, read_sources
 from .mirror import Reconciliation, reconcile, sync_mirror
@@ -109,7 +109,7 @@ def build_from_upstream(
         return None
 
     have = _existing_build(db_path)
-    if have == release.build and not force:
+    if have == assembly_version(release.build) and not force:
         # Returned without consulting the staged index at all: the corpus is
         # already the artifact this release describes, so a missing stage dir
         # is no reason to re-download ~130 MB to confirm it.

@@ -84,6 +84,23 @@ QUERY_MODEL = "sentence-transformers/BAAI/bge-small-en-v1.5"
 #: Bump by hand if rfc.fyi's chunking changes materially.
 CHUNKER_ID = "rfcfyi-1"
 
+#: How *we* assembled this corpus, distinct from which upstream build it came
+#: from. Bump when a change alters the bytes a rebuild of the same upstream
+#: index would produce.
+#:
+#: Without it a corpus is identified by the upstream build alone, so a fix to
+#: our own assembly is invisible: the republished bundle carries the version
+#: the client already has, and `_should_install` sees no reason to fetch it.
+#: That is not hypothetical — the fix that stopped chunk boundaries splitting
+#: figure rows changed every affected section and would have reached nobody.
+ASSEMBLY = "2"
+
+
+def assembly_version(build: str) -> str:
+    """The corpus version: which upstream build, and how we assembled it."""
+    return f"{build}+{ASSEMBLY}"
+
+
 _TEXT_BASE = "https://www.rfc-editor.org/rfc"
 
 #: Rows per executemany. Large enough that the write is not per-row overhead,
@@ -369,7 +386,7 @@ def _write_meta(conn: sqlite3.Connection, manifest: IndexManifest) -> None:
             ("chunker_version", CHUNKER_ID),
             ("embed_dim", str(manifest.dims)),
             (META_SOURCE_MODEL, manifest.model_id),
-            (META_SOURCE_BUILD, manifest.build),
+            (META_SOURCE_BUILD, assembly_version(manifest.build)),
             (META_SOURCE_COMMIT, manifest.source_commit),
             (META_NPROBE, str(manifest.nprobe or DEFAULT_NPROBE)),
         ],

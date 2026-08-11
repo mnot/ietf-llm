@@ -113,8 +113,10 @@ def local_build() -> Optional[str]:
 
 
 def _parse_build(build: str) -> Optional[datetime]:
+    """The upstream timestamp out of a version, ignoring the assembly suffix."""
+    head = str(build).split("+", 1)[0]
     try:
-        return datetime.strptime(build, _BUILD_FORMAT).replace(tzinfo=timezone.utc)
+        return datetime.strptime(head, _BUILD_FORMAT).replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
 
@@ -133,7 +135,13 @@ def _should_install(have: Optional[str], offered: str, margin_days: float) -> bo
     mine, theirs = _parse_build(have), _parse_build(offered)
     if mine is None or theirs is None:
         return True
-    if theirs <= mine:
+    if theirs == mine:
+        # Same upstream index, assembled differently — a fix to our own build.
+        # No bandwidth guard applies: the content is not fresher, it is more
+        # correct, and the whole point of bumping the assembly is that a
+        # client takes it.
+        return True
+    if theirs < mine:
         return False  # the store is behind us; keep what we have
     return (theirs - mine).total_seconds() > margin_days * 86400.0
 
