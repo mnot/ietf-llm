@@ -13,6 +13,7 @@ publisher can turn rfc.fyi's artifact into one.
 
 from __future__ import annotations
 
+from .fetch import IndexRelease, download_index, latest_release
 from .format import (
     Cluster,
     ChunkMeta,
@@ -30,9 +31,12 @@ __all__ = [
     "ChunkMeta",
     "Cluster",
     "IndexManifest",
+    "IndexRelease",
     "RfcIndexError",
     "dequantise",
+    "download_index",
     "iter_clusters",
+    "latest_release",
     "read_centroids",
     "read_manifest",
     "read_sources",
