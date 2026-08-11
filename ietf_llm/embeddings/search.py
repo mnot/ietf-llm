@@ -59,6 +59,7 @@ from .storage import (
     load_centroids,
     read_codec,
     seed_build_db,
+    try_upgrade_schema,
 )
 
 #: Emit an embed-progress update (STATUS log + gather_status detail) at most
@@ -937,13 +938,26 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
         )
         return None
     conn = _connect_ro(wg)
-    # We cannot migrate read-only, so if the on-disk schema predates this
-    # version the faceted columns this query selects may be absent -- bail
-    # with guidance rather than erroring on a missing column.
+    # An index predating this version may lack columns the query selects. We
+    # cannot migrate on a read-only connection -- but for the cheap, additive
+    # steps we can do it on a fresh write connection first and carry on, so a
+    # schema bump does not take search away from someone who never gathers.
+    # See `try_upgrade_schema` for what it will and will not do.
     cur = conn.cursor()
     cur.execute("SELECT value FROM meta WHERE key='schema_version'")
     sv_row = cur.fetchone()
-    if (int(sv_row[0]) if sv_row else 1) < _SCHEMA_VERSION:
+    current = int(sv_row[0]) if sv_row else 1
+    if current < _SCHEMA_VERSION:
+        conn.close()
+        if try_upgrade_schema(wg, current):
+            log(
+                f"Upgraded {wg}'s embeddings index from schema {current} to "
+                f"{_SCHEMA_VERSION}.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            return _connect_ro(wg)
+        conn = _connect_ro(wg)
         log(
             f"Embeddings index for {wg} is an older schema; re-run "
             f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",

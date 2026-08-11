@@ -946,6 +946,19 @@ and needs no re-embed. Measured on rfc.fyi's 87-query labelled set over
 457,156 RFC chunks (issue #230): recall@10 0.543 without, 0.657 with.
 `IETF_LLM_QUERY_PREFIX=off` disables it.
 
+**A read may upgrade an index's schema in place.** A bump would otherwise
+take `search_corpus` away from anyone who does not gather: the read path
+cannot migrate, so an index one release old is refused until its owner
+happens to run a gather — which a read-only MCP user may never do. So
+`try_upgrade_schema` runs the migration on a fresh write connection and the
+query carries on. It stays a narrow exception to "gather is the only
+writer": it adds columns to a local index, never fetches, never changes a
+chunk of content, and declines outright when the step is expensive
+(`_AUTO_UPGRADE_FROM` — below it a migration rebuilds the table or hashes
+every row) or the index is not ours to write (`_index_immutable`; a
+published replica upgrades by being republished). Any failure falls back to
+the previous behaviour, which is to tell the user to gather.
+
 `corpus.routing` deliberately does **not** use it: its confidence floor is an
 absolute calibrated threshold, and a prefixed query moves the distribution
 that calibration was fitted to. Adopting it there means re-running

@@ -33,6 +33,7 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from .. import serve_metrics
+from ..atomicio import file_lock
 from ..paths import get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
@@ -619,6 +620,55 @@ def load_centroids(
         return None
     ids = [int(r[0]) for r in rows]
     return _unpack_matrix([bytes(r[1]) for r in rows], codec), ids
+
+
+#: Oldest on-disk schema a *read* will upgrade in place, rather than telling
+#: the user to gather.
+#:
+#: From v9 upward every step is `ALTER TABLE ADD COLUMN` (plus one index) —
+#: milliseconds, no data rewritten, no re-embedding. Below it the work is
+#: real: v7 → v8 recreates the chunks table to widen a UNIQUE constraint, and
+#: v8 → v9 hashes every row's text to backfill `chunk_hash`. Those belong to
+#: an explicit gather, where the user is expecting to wait.
+#:
+#: Raise this in step with any future migration that does more than add a
+#: nullable column.
+_AUTO_UPGRADE_FROM = 9
+
+
+def try_upgrade_schema(wg: str, current: int) -> bool:
+    """Bring `wg`'s index up to the current schema for a *reader*.
+
+    A schema bump would otherwise take `search_corpus` away from anyone who
+    does not gather — the read path cannot migrate, so an index one release
+    old is refused until its owner happens to run a gather, which a
+    read-only MCP user may never do. That is a poor trade for two `ALTER
+    TABLE`s.
+
+    This is a narrow exception to "gather is the only writer", and stays
+    narrow: it adds columns to a local index, never fetches, never changes a
+    single chunk of content, and refuses to run at all when the step would be
+    expensive (`_AUTO_UPGRADE_FROM`) or the index is not ours to write
+    (`_index_immutable` — a published replica upgrades by being republished,
+    not by a reader mutating a materialised copy).
+
+    Returns True when the index is now current. Best-effort: any failure
+    returns False and the caller falls back to telling the user to gather.
+    """
+    if current < _AUTO_UPGRADE_FROM or _index_immutable():
+        return False
+    path = _db_path_ro(wg)
+    if not os.access(os.path.dirname(path) or ".", os.W_OK):
+        return False
+    try:
+        # The same lock a build takes, so a reader upgrading and a gather
+        # starting cannot both migrate at once.
+        with file_lock(path + ".lock"):
+            conn = _open_db(wg, path=path)
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return False
+    return True
 
 
 def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
