@@ -16,10 +16,12 @@ seeding).
 
 ## What is published
 
-A published corpus is the **matched pair** — its `files/` tree *and* its
-`embeddings.db`. The index alone is not a usable corpus (the read tools need
+A published *gathered* corpus is the **matched pair** — its `files/` tree *and*
+its `embeddings.db`. The index alone is not a usable corpus (the read tools need
 `files/`) and would not reliably skip re-embedding, so both ship together; the
-text adds little over the vectors.
+text adds little over the vectors. An
+[externally-sourced member](#externally-sourced-members) is the exception: it
+has no `files/` tree, because its text is in the index.
 
 - **Included:** `files/` (minus `raw/`), `embeddings.db`, `topics.json`, and the
   incremental-gather manifests (`documents.json`, `materials.json`,
@@ -71,6 +73,10 @@ is an operator script (not a console entry; never imported by the read path).
   (default `sentence-transformers/BAAI/bge-small-en-v1.5`) — a store holds one
   model, and the default covers the most clients.
 - A static HTTPS host for the output (web server, S3/R2 bucket, GitHub Pages).
+- **`rsync` on `PATH`, and ~1.5 GB of free disk**, if you carry the `rfcs`
+  member (see [Externally-sourced members](#externally-sourced-members)): it
+  keeps a ~530 MB plain-text mirror plus a ~660 MB assembled corpus under the
+  cache. Skip the member and neither is needed.
 
 You do **not** need to pre-gather: the publisher gathers each member itself.
 
@@ -85,6 +91,17 @@ python scripts/publish_seeds.py ~/seed-store --add httpbis --add tls --add quic
 
 `--add <corpus> [--months N]` records each member's window; `--remove <corpus>`
 drops one.
+
+To carry the full text of the RFC series, add `rfcs` like any other member:
+
+```
+python scripts/publish_seeds.py ~/seed-store --add rfcs
+```
+
+It is built from public artifacts rather than gathered, and needs no further
+configuration — `--months` does not apply to it. See
+[Externally-sourced members](#externally-sourced-members) for what that
+changes.
 
 ### 2. Publish
 
@@ -107,6 +124,39 @@ The gather step invokes the normal pipeline (so "one writer to the cache" holds)
 `index.json` is written last and is the sole source of truth for coverage. A
 member on a different embedding model is refused rather than writing an
 inconsistent index.
+
+**What the `rfcs` member costs on its first run**, since it is much the largest
+thing in a store and none of it is a gather:
+
+| | |
+|---|---|
+| Download the newest published index from rfc.fyi | ~138 MB |
+| `rsync` the RFC plain-text mirror from the RFC Editor | ~530 MB |
+| Assemble the corpus | ~30 s |
+| Resulting corpus / bundle | ~660 MB / ~270 MB |
+
+Later runs re-download nothing unless upstream has republished: the member's
+version *is* the upstream build id, so an unchanged upstream reports
+`up-to-date` and stops. The mirror stays and `rsync` keeps it level in
+seconds.
+
+Watch for two lines in the output. The reconciliation —
+
+```
+RFC text mirror: 9,813/9,813 RFCs match the build
+```
+
+— is the guard against [RFC 9920 §7.6](https://www.rfc-editor.org/rfc/rfc9920)
+reissues: an RFC whose bytes have moved since the upstream build is dropped
+rather than joined to the wrong text, and a run that reports many differing
+RFCs has a mirror out of step with the index, not a bug. And the build:
+
+```
+rfc index: 457,153 chunks from 9,813 RFCs; 223,504 sections; 396 MiB of text
+```
+
+A publish that never reaches these has skipped the member; the reason is in
+the run's `skipped` list.
 
 ### 3. Host it
 
@@ -148,7 +198,9 @@ corpus is then seeded on its next `ietf-llm <corpus>`.
 ### 5. Keep it fresh
 
 Membership persists, so a refresh needs no arguments — run it on a schedule
-(monthly matches the ~1y window well):
+(monthly matches the ~1y window well). The same run refreshes the `rfcs`
+member, which rebuilds only when rfc.fyi has published a newer index — also
+about monthly, and a no-op otherwise:
 
 ```
 0 4 1 * * python .../publish_seeds.py ~/seed-store --prune && rsync -a ~/seed-store/ host:/var/www/seed/
@@ -172,6 +224,17 @@ what is local:
   save embedding a delta it would gather for free is pure waste (issue #187).
 - **Otherwise** (local as fresh or fresher, or the seed would narrow it) → skip;
   gather incrementally.
+
+**The `rfcs` member arrives differently**, and the difference matters if you are
+wondering why it appeared without being asked for. The rule above is keyed to
+the corpus being gathered, which would never reach a corpus nobody gathers — so
+it rides tail housekeeping instead, once per `ietf-llm` run, whatever corpus you
+were actually working on. Same opt-out (`--no-seed`,
+`IETF_LLM_SEED_ENABLED=off`) and the same staleness margin, though for a
+different reason: with no incremental path the margin is purely a bandwidth
+guard, so the local copy sits a month or two behind and every RFC tool says
+which snapshot it is serving. It refreshes on the upstream build id, never a
+gather time, and never goes backwards.
 
 Install downloads the bundle, verifies its `bundle_sha256`, and atomically swaps
 the tree into `~/.cache/ietf-llm/<corpus>/` (a failed swap restores the prior
