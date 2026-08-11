@@ -278,3 +278,65 @@ def test_dirs_identical_recurses_into_subdirs(tmp_path: Path) -> None:
     assert skill_install._dirs_identical(a, b) is True
     (b / "sub" / "x.txt").write_text("different")
     assert skill_install._dirs_identical(a, b) is False
+
+
+def test_edited_copies_across_harnesses_report_as_one_line(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Driven through `sync_if_pristine` rather than by handing
+    `_report_diverged` a list: the aggregation is only worth anything if the
+    real path feeds it, and a synthetic list would agree with whatever the
+    code did."""
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude", "gemini")
+    skill_install.install_skills()
+    capsys.readouterr()
+    edited = [
+        home / _ROOTS[key] / name / "SKILL.md"
+        for key in ("claude", "gemini")
+        for name in ("ietf-contributing", "ietf-interpreting")
+    ]
+    for path in edited:
+        path.write_text("hand-edited by the user")
+
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1, f"expected one line, got:\n{err}"
+    # Each skill and each harness named once, not once per combination.
+    for token in ("ietf-contributing", "ietf-interpreting", ".claude", ".gemini"):
+        assert err.count(token) == 1, f"{token!r} appears more than once"
+    assert "--install-skills" in err
+    # And nothing was overwritten.
+    assert all(p.read_text() == "hand-edited by the user" for p in edited)
+
+
+def test_a_single_edited_copy_reads_correctly(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The common case. A sentence would need its verb and pronoun to agree
+    with the count; this is phrased so it does not."""
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
+    (home / _ROOTS["claude"] / "ietf-contributing" / "SKILL.md").write_text("edited")
+
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+
+    err = capsys.readouterr().err.strip()
+    assert "ietf-contributing" in err
+    # No plural-agreement wreckage: no "copies", no "differ", no "them".
+    for wrong in ("copies", "differ ", " them"):
+        assert wrong not in err, f"{wrong!r} in singular message: {err}"
+
+
+def test_nothing_is_reported_when_nothing_diverged(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+    capsys.readouterr()
+    skill_install.sync_if_pristine(Verbosity.STATUS)
+    assert capsys.readouterr().err == ""
