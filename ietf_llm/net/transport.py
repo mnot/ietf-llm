@@ -118,8 +118,8 @@ def http_error_detail(err: Exception) -> str:
     header value to trace a specific block. Safe on any exception — no
     response (or no header) means no suffix.
     """
-    response = getattr(err, "response", None)
-    ray_id = response.headers.get("cf-ray") if response is not None else None
+    headers = getattr(getattr(err, "response", None), "headers", None)
+    ray_id = headers.get("cf-ray") if headers is not None else None
     return f"{err} (Cloudflare Ray ID: {ray_id})" if ray_id else str(err)
 
 

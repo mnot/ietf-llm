@@ -10,8 +10,14 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from ietf_llm.gather.sources import datatracker
+from ietf_llm.live_lookup import cache as live_cache
 from ietf_llm.net import transport
 from ietf_llm.net.transport import fetch_resource, http_error_detail
+
+# Captured at import (before conftest's autouse `_no_datatracker` stub binds
+# over it) so the WARN test below exercises the genuine `_get_json`.
+_REAL_GET_JSON = datatracker._get_json  # pylint: disable=protected-access
 
 _URL = "https://datatracker.ietf.org/api/v1/group/group/"
 
@@ -61,14 +67,40 @@ def test_non_requests_error() -> None:
     assert http_error_detail(err) == str(err)
 
 
+def _blocked(url: str, **_kwargs: Any) -> requests.Response:
+    return _response(403, {"CF-RAY": "deadbeefcafef00d-SYD"})
+
+
 def test_fetch_resource_logs_ray_id(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
-
-    def blocked(url: str, **_kwargs: Any) -> requests.Response:
-        return _response(403, {"CF-RAY": "deadbeefcafef00d-SYD"})
-
-    monkeypatch.setattr(transport, "governed_get", blocked)
+    monkeypatch.setattr(transport, "governed_get", _blocked)
     assert fetch_resource(_URL) is None
     err_out = capsys.readouterr().err
     assert f"Error fetching {_URL}" in err_out
+    assert "(Cloudflare Ray ID: deadbeefcafef00d-SYD)" in err_out
+
+
+def test_get_json_warns_with_ray_id(
+    monkeypatch: Any, capsys: Any, isolated_home: Any
+) -> None:
+    # The Datatracker API path falls back to cached data on failure; before
+    # this change the block was silent. isolated_home sandboxes the ETag store.
+    assert isolated_home
+    monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
+    monkeypatch.setattr(datatracker, "_get_json", _REAL_GET_JSON)
+    monkeypatch.setattr(datatracker, "_DEFAULT_CACHE", None)
+    monkeypatch.setattr(datatracker, "governed_get", _blocked)
+    assert datatracker._get_json("/api/v1/group/group/") is None  # pylint: disable=protected-access
+    err_out = capsys.readouterr().err
+    assert "[WARN]" in err_out
+    assert "(Cloudflare Ray ID: deadbeefcafef00d-SYD)" in err_out
+
+
+def test_live_fetch_json_warns_with_ray_id(monkeypatch: Any, capsys: Any) -> None:
+    # Same for the live-lookup fetch seam, whose failures were also silent.
+    monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
+    monkeypatch.setattr(live_cache, "governed_get", _blocked)
+    assert live_cache._fetch_json(_URL) is None  # pylint: disable=protected-access
+    err_out = capsys.readouterr().err
+    assert "[WARN]" in err_out
     assert "(Cloudflare Ray ID: deadbeefcafef00d-SYD)" in err_out
