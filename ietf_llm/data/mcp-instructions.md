@@ -88,10 +88,23 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   on the IESG side), `draft_authors`, `get_draft` (verbatim text).
 - **Issues / threads:** `get_issue` (verbatim), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
-- **RFCs:** `search_rfcs`, `get_rfc` (authoritative on whether an RFC exists:
-  it refreshes its index before reporting one missing). Never conclude an RFC
-  is unpublished from a `search_rfcs` miss alone — that reads a mirror that
-  may predate it; confirm with `get_rfc`.  **By URL:** `get_by_url`.
+- **RFCs — four tools, and picking the wrong one is the common mistake:**
+  - `search_rfc_index` — titles and keywords. Use it to find *which*
+    document something is ("which RFC is HTTP caching") and to filter by
+    status / stream / level / group. Always available.
+  - `search_rfc_text` — what the documents **say**, semantically, over the
+    full text of every RFC. Use it when the question is about content
+    ("when must a cache not store a response"). Needs the RFC text corpus;
+    says so if it is not installed.
+  - `get_rfc_section` — you already have a citation: read that section, in
+    full, offline. No argument but the number returns the outline, which is
+    also what a miss returns.
+  - `get_rfc` — catalogue metadata and the reference graph. **Never the
+    document text**; do not characterise what an RFC says from it.
+  Authority: `get_rfc` refreshes its index before reporting one missing, so
+  never conclude an RFC is unpublished from a `search_rfc_index` miss alone.
+  **Obsoleted RFCs are in the text corpus and are marked** — check the
+  marker before citing anything as current. **By URL:** `get_by_url`.
 - **Norms (mandatory before acting — see the gate above):**
   `read_ietf_participation_norms`, `read_ietf_interpretation_norms`.
 

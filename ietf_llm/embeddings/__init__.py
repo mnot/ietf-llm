@@ -42,6 +42,8 @@ from .storage import (
     get_messages,
     probe_index,
     read_topics,
+    section_outline,
+    section_rows,
 )
 from .topics import build_topics, generate_topics, has_topics
 
@@ -63,6 +65,8 @@ __all__ = [
     "index_model",
     "probe_index",
     "read_topics",
+    "section_outline",
+    "section_rows",
     "related",
     "search",
     # Used by ietf_llm/mcp/server.py for pre-warming

@@ -320,7 +320,7 @@ Key invariants:
   `get_rfc` on a stale miss (see the networked read exception below). The
   leading underscore keeps it out of
   `list_corpora` / `ietf-llm --list`, which enumerate real corpora. The
-  `search_rfcs` / `get_rfc` tools read it; it is not embedded.
+  `search_rfc_index` / `get_rfc` tools read it; it is not embedded.
 - **`_catalog/` is the matching singleton for active efforts.** It
   mirrors the active (and BoF) slice of the Datatracker group list,
   refreshed beside `_rfc/` in tail housekeeping with the same TTL / ETag
@@ -456,7 +456,7 @@ ietf_llm/
 │                           # (fetch_group_object + get_group_* + get_wg_title)
 ├── singletons/             # cross-corpus singleton readers (fleet-wide indexes, offline read side;
 │   │                       # each the read twin of a gather/sources/ writer that mirrors into it)
-│   ├── rfcs.py             # RFC-series reader (search_rfcs / get_rfc); reads _rfc/ (mirrored from rfc.fyi)
+│   ├── rfcs.py             # RFC-series reader (search_rfc_index / get_rfc); reads _rfc/ (mirrored from rfc.fyi)
 │   └── catalog.py          # active-effort reader (find_efforts); ranks _catalog/ by topic, tags cached
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
@@ -571,7 +571,7 @@ which tool for which question, with worked examples — lives in
   `find_citations`, `find_message_citations`.
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`, `get_by_url`,
   `read_file_section`.
-- **RFC series (cross-corpus):** `search_rfcs(query)` / `get_rfc(number)` over
+- **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc(number)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
   text. A body is on disk only where a corpus that published the RFC was
@@ -1129,7 +1129,7 @@ exported `files/` are cleared. Thread reconstruction walks it directly.
 Two questions no single gathered corpus can answer — "find/status of any RFC"
 and "what is the IETF doing around X?" — are served by **singleton mirrors**
 rather than folded into every corpus. `_rfc/` (mirrored from rfc.fyi's
-canonical JSON; read by `search_rfcs` / `get_rfc`) and `_catalog/` (the active
+canonical JSON; read by `search_rfc_index` / `get_rfc`) and `_catalog/` (the active
 + BoF slice of the Datatracker group collection; read by `find_efforts`) both
 live once at the cache root, refreshed in the same tail housekeeping as each
 gather run and sharing one mirror plumbing (`gather/sources/_mirror.py`: TTL guard,
@@ -1143,7 +1143,7 @@ list); the RFC mirror is used as-is. The one qualification to "offline" is
 gate — the reader module itself stays offline; the tool layer composes it with
 the mirror writer (see the networked read exception above). v1 catalog covers
 active groups only;
-concluded efforts surface through `search_rfcs`, already-cached ones through
+concluded efforts surface through `search_rfc_index`, already-cached ones through
 `list_corpora`.
 
 ### Other normalisation invariants

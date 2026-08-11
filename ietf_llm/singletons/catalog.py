@@ -223,7 +223,7 @@ def render_efforts(query: str, limit: int = 15) -> str:
         return (
             f"No active efforts match `{query}`. The catalog covers active "
             "working and research groups only — a concluded effort or one "
-            "framed differently may not surface; try `search_rfcs` for "
+            "framed differently may not surface; try `search_rfc_index` for "
             "published work, or broaden the topic."
         )
     header = f"**{total} effort{'s' if total != 1 else ''}** for `{query}`"

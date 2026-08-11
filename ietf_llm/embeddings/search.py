@@ -152,6 +152,10 @@ class Hit:
     # comment on a closed issue, useful as a one-line "why" indicator.
     duplicate_of: Optional[int] = None
     closing_rationale: Optional[str] = None
+    # Document section label ("7.2", "A.1") for chunks from a corpus that
+    # has one — today only the imported RFC series. None for everything a
+    # gather writes, which has no such structure.
+    section: Optional[str] = None
 
 
 def _file_hash(path: str) -> Optional[str]:
@@ -1006,6 +1010,7 @@ _HIT_COLUMN_NAMES = (
     "url",
     "duplicate_of",
     "closing_rationale",
+    "section",
 )
 _HIT_COLUMNS = ", ".join(_HIT_COLUMN_NAMES)
 #: Position of `chunk_date` in a fetched row, which `id` prefixes. Derived
@@ -1221,6 +1226,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
             url,
             duplicate_of,
             closing_rationale,
+            section,
         ) = detail[cand.ids[i]]
         # Structure-aware snippet: prefer tables / lists when present,
         # since those carry the most ranking information per byte.
@@ -1242,6 +1248,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
                 url=url if url else None,
                 duplicate_of=(int(duplicate_of) if duplicate_of is not None else None),
                 closing_rationale=closing_rationale if closing_rationale else None,
+                section=section if section else None,
             )
         )
     return hits

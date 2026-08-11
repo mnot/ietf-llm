@@ -237,7 +237,7 @@ the only ones that fail if the remote `/v1/embeddings` endpoint is unreachable:
 - **Fail:** `search_corpus` and `read_topic`.
 - **Keep working:** every deterministic tool — `overview`, `read_digest`, `list_corpora`,
   `list_files`, `list_labels`, `grep_corpus`, `find_citations`, `find_replies`, `tally_positions`,
-  `search_rfcs` / `get_rfc`, `read_file_section`, `get_chunk_text` / `get_chunks_batch`, and
+  `search_rfc_index` / `get_rfc`, `read_file_section`, `get_chunk_text` / `get_chunks_batch`, and
   `get_by_url` (which fetches a URL rather than embedding — independent of the embedding backend,
   but not of network egress). `grep_corpus` is the useful fallback here: it reads the files, not the
   index, so exact-string search survives an embedding outage entirely.

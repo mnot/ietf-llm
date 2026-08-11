@@ -1,4 +1,4 @@
-"""RFC-series tools (search_rfcs, get_rfc) — thin wrappers over ietf_llm.rfcs."""
+"""RFC-series tools (search_rfc_index, get_rfc) — thin wrappers over ietf_llm.rfcs."""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def _render_rfc_live(number: str) -> str:
 
 def register(server: "FastMCP") -> None:
     @server.tool()
-    async def search_rfcs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfc_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         query: str,
         status: Optional[str] = None,
         stream: Optional[str] = None,

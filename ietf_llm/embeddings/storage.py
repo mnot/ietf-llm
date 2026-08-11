@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """SQLite layer for the per-WG embedding index.
 
 One DB per WG at <index-dir>/<wg>/embeddings.db (the index dir defaults to
@@ -550,6 +551,62 @@ def _unpack_matrix(
         raw = np.frombuffer(b"".join(rows), dtype=np.int8).reshape(len(rows), dim)
         return np.asarray(raw, dtype=np.float32) * np.float32(codec.scale)
     return np.frombuffer(b"".join(rows), dtype=np.float32).reshape(len(rows), dim)
+
+
+def section_rows(wg: str, file: str, section: Optional[str]) -> List[Tuple[int, str]]:
+    """`(chunk_idx, text)` for one section of one file, in document order.
+
+    Rows store text with the chunker's carried-forward overlap trimmed off,
+    so joining them reproduces the section as published. That is why a
+    caller wanting a section reads this rather than one chunk: an individual
+    row can begin mid-sentence (23% of trimmed rows do), and only the whole
+    run is faithful.
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return []
+    conn = _connect_ro(wg)
+    try:
+        if section is None:
+            cur = conn.execute(
+                "SELECT chunk_idx, text FROM chunks "
+                "WHERE file = ? AND section IS NULL ORDER BY chunk_idx",
+                (file,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT chunk_idx, text FROM chunks "
+                "WHERE file = ? AND section = ? ORDER BY chunk_idx",
+                (file, section),
+            )
+        return [(int(r[0]), str(r[1])) for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def section_outline(wg: str, file: str) -> List[Tuple[str, str, int]]:
+    """`(section, title, characters)` per labelled section of `file`.
+
+    Ordered by first appearance, which is document order, so the result
+    reads as a table of contents rather than a lexical sort ("10" before
+    "2").
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return []
+    conn = _connect_ro(wg)
+    try:
+        cur = conn.execute(
+            "SELECT section, title, sum(length(text)), min(chunk_idx) "
+            "FROM chunks WHERE file = ? AND section IS NOT NULL "
+            "GROUP BY section ORDER BY min(chunk_idx)",
+            (file,),
+        )
+        return [(str(r[0]), str(r[1]), int(r[2] or 0)) for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def chunk_counts(wg: str) -> Dict[str, int]:
