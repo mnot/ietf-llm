@@ -10,10 +10,7 @@ harness marker dirs to simulate which are present.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
-
-import pytest
 
 from ietf_llm.cli import skill_install
 from ietf_llm.log import Verbosity
@@ -281,32 +278,3 @@ def test_dirs_identical_recurses_into_subdirs(tmp_path: Path) -> None:
     assert skill_install._dirs_identical(a, b) is True
     (b / "sub" / "x.txt").write_text("different")
     assert skill_install._dirs_identical(a, b) is False
-
-
-def test_edited_copies_are_reported_in_one_line(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    """This runs after every gather. Two skills across three harnesses used to
-    print six near-identical paragraphs, each repeating the same remedy."""
-    from ietf_llm.cli.skill_install import _report_diverged
-
-    home = Path.home()
-    diverged = [
-        home / d / "skills" / name
-        for d in (".agents", ".claude", ".gemini")
-        for name in ("ietf-contributing", "ietf-interpreting")
-    ]
-    _report_diverged(diverged, Verbosity.STATUS)
-    err = capsys.readouterr().err
-    assert err.count("\n") == 1, f"expected one line, got:\n{err}"
-    # Each skill and each harness named once, not once per combination.
-    assert err.count("ietf-contributing") == 1
-    assert err.count(".agents") == 1
-    assert "--install-skills" in err and "overwriting local edits" in err
-
-
-def test_nothing_is_printed_when_nothing_diverged(capsys: Any) -> None:
-    from ietf_llm.cli.skill_install import _report_diverged
-
-    _report_diverged([], Verbosity.STATUS)
-    assert capsys.readouterr().err == ""

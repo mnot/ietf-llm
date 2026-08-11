@@ -36,7 +36,7 @@ import sys
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .. import __version__
 from ..log import LogLevel, Verbosity, log
@@ -280,7 +280,6 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
         return
     manifest = _read_manifest()
     changed = False
-    diverged: List[Path] = []
     # Every harness's own skills root.
     roots = {h.skills_root for h in _harnesses()}
     for root in roots:
@@ -288,35 +287,12 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
             dest = root / name
             if not dest.is_dir():
                 continue  # not installed here — leave it alone
-            if _sync_one(src, dest, manifest, verbosity, diverged):
+            if _sync_one(src, dest, manifest, verbosity):
                 changed = True
-    _report_diverged(diverged, verbosity)
     if _prune_orphans(manifest, set(bundled), verbosity):
         changed = True
     if changed:
         _write_manifest(manifest)
-
-
-def _report_diverged(diverged: List[Path], verbosity: Verbosity) -> None:
-    """One line for however many edited copies there are.
-
-    This runs after every gather, so it has to stay small. Naming each skill
-    once and each harness once says as much as a paragraph per copy did.
-    """
-    if not diverged:
-        return
-    home = str(Path.home())
-    skills = sorted({d.name for d in diverged})
-    places = sorted({str(d.parent.parent).replace(home, "~") for d in diverged})
-    log(
-        f"{len(diverged)} installed skill "
-        f"cop{'y' if len(diverged) == 1 else 'ies'} "
-        f"({', '.join(skills)} in {', '.join(places)}) "
-        "differ from the bundled version — `ietf-llm --install-skills` "
-        "updates them, overwriting local edits.",
-        verbosity,
-        level=LogLevel.STATUS,
-    )
 
 
 def _prune_orphans(
@@ -360,19 +336,10 @@ def _prune_orphans(
 
 
 def _sync_one(
-    src: Path,
-    dest: Path,
-    manifest: Dict[str, Any],
-    verbosity: Verbosity,
-    diverged: Optional[List[Path]] = None,
+    src: Path, dest: Path, manifest: Dict[str, Any], verbosity: Verbosity
 ) -> bool:
     """Sync one installed skill against its bundled source. Mutates `manifest`
-    in place; returns True if the manifest changed (so the caller persists).
-
-    A copy the user has edited is appended to `diverged` rather than reported
-    here: the caller summarises them in one line. Reporting per copy meant two
-    skills across three harnesses printed six near-identical paragraphs, each
-    repeating the same remedy — a wall of text after every gather."""
+    in place; returns True if the manifest changed (so the caller persists)."""
     bundled = _tree_hash(src)
     installed = _tree_hash(dest)
     if installed == bundled:
@@ -387,8 +354,14 @@ def _sync_one(
     entry = manifest.get(str(dest))
     pristine = entry is not None and entry.get("sha256") == installed
     if not pristine:
-        if diverged is not None:
-            diverged.append(dest)
+        log(
+            f"The installed {src.name} skill at {dest} differs from the "
+            "bundled version (local edits, or installed by an older release). "
+            "Run `ietf-llm --install-skills` to update it (overwrites the "
+            "installed copy).",
+            verbosity,
+            level=LogLevel.STATUS,
+        )
         return False
 
     # Pristine but out of date: copy into a temp sibling and swap atomically
