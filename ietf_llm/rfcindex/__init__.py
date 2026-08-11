@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from .fetch import IndexRelease, download_index, latest_release
 from .mirror import Reconciliation, digest_file, reconcile, sync_mirror, text_path
+from .text import SectionSpan, clean_section_text, read_section, section_spans
 from .format import (
     Cluster,
     ChunkMeta,
@@ -34,16 +35,20 @@ __all__ = [
     "IndexManifest",
     "IndexRelease",
     "RfcIndexError",
+    "SectionSpan",
     "dequantise",
     "Reconciliation",
+    "clean_section_text",
     "digest_file",
     "download_index",
     "iter_clusters",
     "latest_release",
     "read_centroids",
     "read_manifest",
+    "read_section",
     "read_sources",
     "reconcile",
+    "section_spans",
     "sync_mirror",
     "text_path",
     "verify",
