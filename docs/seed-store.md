@@ -211,11 +211,37 @@ cached `_seed/index.json` and revalidates in the background (bounded + throttled
 routine `list_corpora` never stalls. The read-only HTTP replica never fetches and
 omits the section (you can't gather there anyway).
 
+## Externally-sourced members
+
+Most members are gathered and then bundled. A member may instead be
+**assembled from an upstream artifact** — today just `rfcs`, the full text of
+the RFC series, built from the semantic index
+[rfc.fyi](https://github.com/mnot/rfc.fyi) publishes plus a plain-text mirror
+([#230](https://github.com/mnot/ietf-llm/issues/230)). Four differences:
+
+- **No gather, no window.** `--months` is meaningless; a refresh means
+  rebuilding from whatever upstream has published since.
+- **The version is the upstream build id**, not a gather time. An unchanged
+  upstream is a no-op end to end: same version, so the re-bundle is skipped
+  exactly as for a corpus that has not moved.
+- **The bundle is index-only** — no `files/` tree, because the text lives in
+  the index. See the scoped non-goal below.
+- **The client never freshens it.** There is no local pipeline that could,
+  so a follow-on gather would be a no-op at best.
+
+The publisher needs no extra configuration: both inputs are public, and the
+~530 MB text mirror defaults under the cache (`IETF_LLM_RFC_MIRROR` moves
+it). Membership is added like any other — `--add rfcs` — and the source is
+implied by the name.
+
 ## Non-goals
 
-- **Embeddings-only distribution** — not usable without `files/`, and the
-  per-file skip makes the saving unreliable. Revisit after
-  [#183](https://github.com/mnot/ietf-llm/issues/183) (per-chunk incremental).
+- **Embeddings-only distribution, for a *gathered* corpus** — not usable
+  without `files/`, and the per-file skip makes the saving unreliable.
+  Revisit after [#183](https://github.com/mnot/ietf-llm/issues/183)
+  (per-chunk incremental). This does **not** cover an externally-sourced
+  member (below): both halves of that reasoning are about gathering, and
+  such a member is never gathered.
 - **Multiple model variants** — v1 ships one default-model store; the format
   already namespaces by the tuple, so variants slot in later.
 - **Going backwards** — seeding never replaces a fresher local copy or

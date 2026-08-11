@@ -43,11 +43,25 @@ class PublishError(Exception):
     member, or the store directory is unusable)."""
 
 
+#: A member built by gathering it — the ordinary case, and the default for
+#: any spec written before `source` existed.
+SOURCE_GATHER = "gather"
+#: A member assembled from an upstream artifact instead. It has no gather, so
+#: no window and nothing to freshen: a refresh means rebuilding it from
+#: whatever upstream has published since (issue #230).
+SOURCE_RFC_INDEX = "rfc-index"
+
+
 @dataclass
 class MemberSpec:
     """One member's persisted publish settings."""
 
     window_months: int = DEFAULT_MONTHS
+    source: str = SOURCE_GATHER
+
+    @property
+    def externally_sourced(self) -> bool:
+        return self.source != SOURCE_GATHER
 
 
 @dataclass
@@ -93,7 +107,11 @@ def load_members(store_dir: str) -> Dict[str, MemberSpec]:
     out: Dict[str, MemberSpec] = {}
     for name, spec in (data.get("members") or {}).items():
         months = spec.get("window_months") if isinstance(spec, dict) else None
-        out[str(name)] = MemberSpec(window_months=int(months or DEFAULT_MONTHS))
+        source = spec.get("source") if isinstance(spec, dict) else None
+        out[str(name)] = MemberSpec(
+            window_months=int(months or DEFAULT_MONTHS),
+            source=str(source or SOURCE_GATHER),
+        )
     return out
 
 
@@ -102,7 +120,7 @@ def save_members(store_dir: str, members: Dict[str, MemberSpec]) -> None:
     payload = {
         "format": fmt.FORMAT_VERSION,
         "members": {
-            name: {"window_months": spec.window_months}
+            name: {"window_months": spec.window_months, "source": spec.source}
             for name, spec in sorted(members.items())
         },
     }
@@ -146,7 +164,14 @@ def _write_member(
     """Bundle `corpus`, write its manifest, and return the index entry. Assumes
     the corpus is gathered and compatible (the caller checked)."""
     corpus_dir, index_dir, _ = _corpus_paths(corpus)
-    members = fmt.iter_bundle_members(corpus_dir, index_dir)
+    if spec.externally_sourced:
+        # No `files/` tree: this corpus is an index and nothing else. The
+        # seed-store non-goal against embeddings-only bundles is about the
+        # per-file gather skip making the saving unreliable, which cannot
+        # apply to a member that is never gathered. See docs/seed-store.md.
+        members = fmt.iter_index_members(index_dir)
+    else:
+        members = fmt.iter_bundle_members(corpus_dir, index_dir)
     bundle_rel = fmt.bundle_relpath(corpus, version)
     bundle_abs = os.path.join(store_dir, bundle_rel)
     # Drop any older bundle(s) for this corpus before writing the new one, so the
@@ -226,7 +251,9 @@ def publish_store(  # pylint: disable=too-many-arguments,too-many-locals,too-man
         if members.pop(name, None) is not None:
             report.removed.append(name)
     for name in add or []:
-        members[name] = MemberSpec(window_months=months or DEFAULT_MONTHS)
+        members[name] = MemberSpec(
+            window_months=months or DEFAULT_MONTHS, source=_source_for(name)
+        )
         report.added.append(name)
     if (add or remove) and not dry_run:
         save_members(store_dir, members)
@@ -299,19 +326,23 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
 ) -> Optional[Tuple[fmt.IndexEntry, fmt.CompatTuple]]:
     """Publish one member. Returns `(entry, store_compat)` on publish/up-to-date,
     or None when skipped (already recorded in `report`)."""
-    if not no_gather and not dry_run:
-        try:
-            gather(corpus, spec.window_months)
-        except PublishError as err:
-            report.skipped.append((corpus, str(err)))
-            return None
-
     _, _, db_path = _corpus_paths(corpus)
-    gathered = freshness.last_gathered(corpus)
-    if gathered is None:
-        report.skipped.append((corpus, "not gathered locally (no last-gathered)"))
-        return None
-    version = fmt.version_stamp(gathered)
+    if spec.externally_sourced:
+        version = _refresh_external(corpus, spec, db_path, report, dry_run, force)
+        if version is None:
+            return None
+    else:
+        if not no_gather and not dry_run:
+            try:
+                gather(corpus, spec.window_months)
+            except PublishError as err:
+                report.skipped.append((corpus, str(err)))
+                return None
+        gathered = freshness.last_gathered(corpus)
+        if gathered is None:
+            report.skipped.append((corpus, "not gathered locally (no last-gathered)"))
+            return None
+        version = fmt.version_stamp(gathered)
 
     if prev is not None and prev.version == version and not force:
         # Unchanged since its published version — skip re-bundling. Establish the
@@ -351,6 +382,57 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
     entry = _write_member(store_dir, corpus, spec, compat, version)
     report.published.append((corpus, version, entry.bytes))
     return entry, compat
+
+
+def _source_for(corpus: str) -> str:
+    """How a member is built, from its name.
+
+    Implied rather than a flag: `rfcs` is the RFC series and there is exactly
+    one way to build it, so making an operator say so is a way to get it
+    wrong. A name that is not a known external corpus is gathered, which is
+    every other member.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from ..mcp.rfc_text import RFC_CORPUS
+
+    return SOURCE_RFC_INDEX if corpus == RFC_CORPUS else SOURCE_GATHER
+
+
+def _refresh_external(
+    corpus: str,
+    spec: MemberSpec,
+    db_path: str,
+    report: PublishReport,
+    dry_run: bool,
+    force: bool,
+) -> Optional[str]:
+    """Rebuild an externally-sourced member and return its version stamp.
+
+    The version is the *upstream build id*, not a gather time: this member has
+    no gather, and what makes one snapshot different from another is which
+    upstream artifact it was assembled from. That also makes an unchanged
+    upstream a no-op end to end — same version, so `_publish_one` skips the
+    re-bundle exactly as it does for a corpus that has not moved.
+    """
+    if spec.source != SOURCE_RFC_INDEX:
+        report.skipped.append((corpus, f"unknown member source {spec.source!r}"))
+        return None
+    # Imported here so the ordinary publish path does not pay for the network
+    # stack this pulls in, and so `seed` stays importable without it.
+    # pylint: disable-next=import-outside-toplevel
+    from ..rfcindex.publish import build_from_upstream
+
+    if dry_run:
+        return "dry-run"
+    try:
+        built = build_from_upstream(db_path, force=force)
+    except Exception as err:  # pylint: disable=broad-except
+        report.skipped.append((corpus, f"upstream build failed: {err}"))
+        return None
+    if built is None:
+        report.skipped.append((corpus, "no RFC index published upstream yet"))
+        return None
+    return built.release.build
 
 
 def _published_corpus_dirs(store_dir: str) -> List[str]:
