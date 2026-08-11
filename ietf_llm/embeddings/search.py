@@ -42,6 +42,8 @@ from .models import (
 )
 from .snippet import make_snippet
 from .storage import (
+    FLOAT32_CODEC,
+    VectorCodec,
     _SCHEMA_VERSION,
     _connect_ro,
     _db_path,
@@ -52,6 +54,7 @@ from .storage import (
     chunk_hash,
     discard_build_db,
     promote_build_db,
+    read_codec,
     seed_build_db,
 )
 
@@ -1034,7 +1037,9 @@ class _Candidates:
 
 
 def _scan_candidates(
-    cur: sqlite3.Cursor, q_vec: "np.ndarray[Any, np.dtype[np.float32]]"
+    cur: sqlite3.Cursor,
+    q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
+    codec: VectorCodec = FLOAT32_CODEC,
 ) -> _Candidates:
     """Score an open scan cursor batch by batch, keeping no vectors.
 
@@ -1061,7 +1066,7 @@ def _scan_candidates(
             name = seen_files.setdefault(row[1], row[1])
             keys.append((name, int(row[2])))
         # cosine, since both sides are normalised
-        blocks.append(_unpack_matrix([r[3] for r in batch]) @ q_vec)
+        blocks.append(_unpack_matrix([r[3] for r in batch], codec) @ q_vec)
     scores = np.concatenate(blocks) if blocks else np.zeros(0, dtype=np.float32)
     return _Candidates(ids=ids, keys=keys, scores=scores)
 
@@ -1098,7 +1103,7 @@ def _fetch_vectors(
             level=LogLevel.WARN,
         )
         return None
-    return _unpack_matrix([by_id[i] for i in ids])
+    return _unpack_matrix([by_id[i] for i in ids], read_codec(conn))
 
 
 def _fetch_hit_rows(
@@ -1157,11 +1162,14 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     """
     cur = conn.cursor()
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    # Read once, outside the scan: the codec is per-index, and asking per
+    # batch would put a meta query in the hot loop.
+    codec = read_codec(conn)
     cur.execute(
         f"SELECT id, file, chunk_idx, embedding FROM chunks{where_sql}",
         where_args,
     )
-    cand = _scan_candidates(cur, q_vec)
+    cand = _scan_candidates(cur, q_vec, codec)
     if not cand.ids:
         return []
     scores = cand.scores
@@ -1411,7 +1419,7 @@ def related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         # A split message owns several fragment vectors; average them into
         # one representative of the whole message, then renormalise so the
         # dot product against the (normalised) corpus stays a cosine.
-        seed = _unpack_matrix(vecs).mean(axis=0)
+        seed = _unpack_matrix(vecs, read_codec(conn)).mean(axis=0)
         seed_norm = float(np.linalg.norm(seed))
         if seed_norm:
             seed = seed / seed_norm

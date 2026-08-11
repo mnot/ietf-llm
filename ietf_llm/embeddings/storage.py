@@ -412,6 +412,84 @@ def _backfill_chunk_hash(conn: sqlite3.Connection) -> None:
     conn.executemany("UPDATE chunks SET chunk_hash=? WHERE id=?", updates)
 
 
+#: How the `chunks.embedding` blob is encoded. `float32` is what a gather
+#: writes and what every existing index holds; `int8` exists so an index
+#: *imported* from vectors that are already quantised can keep them that way
+#: (issue #230: rfc.fyi publishes the RFC series at 384 int8 dimensions, and
+#: dequantising on import would inflate 167 MiB to 670 MiB to no benefit —
+#: the precision is already gone).
+ENCODING_FLOAT32 = "float32"
+ENCODING_INT8 = "int8"
+
+#: Meta keys recording the encoding. Absent means `float32`, which is what
+#: every index written before this existed holds — so no migration, and no
+#: schema bump: `meta` is key-value, and an older reader simply never asks.
+_META_ENCODING = "vector_encoding"
+_META_SCALE = "vector_scale"
+
+
+@dataclass(frozen=True)
+class VectorCodec:
+    """How to read one index's vectors back into float32."""
+
+    encoding: str = ENCODING_FLOAT32
+    #: Only meaningful for int8: `float = int8 * scale`.
+    scale: float = 1.0
+
+    @property
+    def itemsize(self) -> int:
+        return 1 if self.encoding == ENCODING_INT8 else 4
+
+
+#: The default, so a caller that hasn't looked at `meta` behaves exactly as
+#: before this existed.
+FLOAT32_CODEC = VectorCodec()
+
+
+def read_codec(conn: sqlite3.Connection) -> VectorCodec:
+    """The vector codec recorded in an index's `meta`, defaulting to float32."""
+    # Via a cursor, not `conn.execute`: `search` reaches its connection through
+    # a proxy that forwards `cursor` and `close` and nothing else, and keeping
+    # that surface at two methods is worth more than the one saved line.
+    try:
+        rows = dict(
+            conn.cursor()
+            .execute(
+                "SELECT key, value FROM meta WHERE key IN (?, ?)",
+                (_META_ENCODING, _META_SCALE),
+            )
+            .fetchall()
+        )
+    except sqlite3.Error:
+        return FLOAT32_CODEC
+    encoding = str(rows.get(_META_ENCODING) or ENCODING_FLOAT32)
+    if encoding != ENCODING_INT8:
+        return FLOAT32_CODEC
+    try:
+        scale = float(rows.get(_META_SCALE) or 0.0)
+    except (TypeError, ValueError):
+        scale = 0.0
+    if scale <= 0:
+        # An int8 index without a usable scale cannot be read at all; saying
+        # so beats returning vectors scaled by a silent 1.0, which would look
+        # like a catastrophic quality regression rather than a broken index.
+        raise ValueError(
+            "index declares int8 vectors but no positive vector_scale in meta"
+        )
+    return VectorCodec(encoding=ENCODING_INT8, scale=scale)
+
+
+def write_codec(conn: sqlite3.Connection, codec: VectorCodec) -> None:
+    """Record `codec` in `meta`. A float32 index writes nothing, so its meta
+    stays byte-identical to one written before this existed."""
+    if codec.encoding == ENCODING_FLOAT32:
+        return
+    conn.executemany(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+        [(_META_ENCODING, codec.encoding), (_META_SCALE, repr(codec.scale))],
+    )
+
+
 def _pack(vec: Iterable[float]) -> bytes:
     """Pack and L2-normalise a vector for storage."""
     arr = np.asarray(list(vec), dtype=np.float32)
@@ -421,10 +499,35 @@ def _pack(vec: Iterable[float]) -> bytes:
     return arr.tobytes()
 
 
+def pack_vector(vec: Iterable[float], codec: VectorCodec) -> bytes:
+    """Pack one vector under `codec`.
+
+    The int8 path is here for symmetry and for tests: the one importer that
+    writes int8 today copies vectors that are *already* quantised, byte for
+    byte, which is the whole point of reusing them.
+    """
+    if codec.encoding != ENCODING_INT8:
+        return _pack(vec)
+    arr = np.asarray(list(vec), dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    if norm:
+        arr = arr / norm
+    quantised = np.rint(arr / np.float32(codec.scale)).clip(-127, 127)
+    return quantised.astype(np.int8).tobytes()
+
+
 def _unpack_matrix(
     rows: List[bytes],
+    codec: VectorCodec = FLOAT32_CODEC,
 ) -> "np.ndarray[Any, np.dtype[np.float32]]":
-    """Reshape a list of packed vectors into a single (n, dim) matrix.
+    """Reshape a list of packed vectors into a single (n, dim) float32 matrix.
+
+    int8 rows are dequantised but deliberately **not** re-normalised. The
+    index that ships them was built that way, the quantisation error is
+    reported by its own manifest as a mean cosine of 0.9998, and the
+    retrieval numbers this was measured against were taken without
+    re-normalising — so doing it here would make our scores disagree with
+    the measurement for no accuracy that matters.
 
     Return type is annotated with full generic parameters because
     NumPy's stub on Python 3.10 (with newer numpy) treats bare
@@ -434,7 +537,10 @@ def _unpack_matrix(
     """
     if not rows:
         return np.zeros((0, 0), dtype=np.float32)
-    dim = len(rows[0]) // 4
+    dim = len(rows[0]) // codec.itemsize
+    if codec.encoding == ENCODING_INT8:
+        raw = np.frombuffer(b"".join(rows), dtype=np.int8).reshape(len(rows), dim)
+        return np.asarray(raw, dtype=np.float32) * np.float32(codec.scale)
     return np.frombuffer(b"".join(rows), dtype=np.float32).reshape(len(rows), dim)
 
 
@@ -765,6 +871,7 @@ def load_documents(wg: str) -> List[Document]:
         return []
     conn = _connect_ro(wg)
     try:
+        codec = read_codec(conn)
         cur = conn.execute(
             "SELECT file, chunk_idx, sub_idx, title, text, embedding, chunk_date "
             "FROM chunks ORDER BY file, chunk_idx, sub_idx"
@@ -785,7 +892,7 @@ def load_documents(wg: str) -> List[Document]:
 
     docs: List[Document] = []
     for file, frows in by_file.items():
-        vecs = _unpack_matrix([r[5] for r in frows])
+        vecs = _unpack_matrix([r[5] for r in frows], codec)
         pooled = vecs.mean(axis=0)
         norm = float(np.linalg.norm(pooled))
         if norm:
