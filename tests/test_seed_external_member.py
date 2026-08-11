@@ -89,3 +89,21 @@ def test_index_only_bundle_skips_absent_optional_files(tmp_path: Any) -> None:
     index_dir.mkdir(parents=True)
     (index_dir / "embeddings.db").write_text("db", encoding="utf-8")
     assert [a for a, _p in fmt.iter_index_members(str(index_dir))] == ["embeddings.db"]
+
+
+def test_a_dry_run_reports_the_external_member_as_publishable(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It has no local `embeddings.db` until the run builds one, so reading a
+    compatibility tuple for it during a dry run reports a skip for exactly the
+    thing the run would do. An operator uses the dry run to decide; it must
+    not describe the member as skipped when it would succeed.
+    """
+    from ietf_llm.seed.publish import publish_store
+
+    store = str(tmp_path / "store")
+    report = publish_store(
+        store, add=["rfcs"], dry_run=True, gather=lambda n, m: None
+    )
+    assert [name for name, _v, _b in report.published] == ["rfcs"]
+    assert report.skipped == []

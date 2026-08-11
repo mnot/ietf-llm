@@ -329,6 +329,14 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
     or None when skipped (already recorded in `report`)."""
     _, _, db_path = _corpus_paths(corpus)
     if spec.externally_sourced:
+        if dry_run:
+            # Reported here rather than falling through to the compat read
+            # below. That read needs an `embeddings.db` this member does not
+            # have yet — it is built from upstream by the run itself — so a
+            # dry run would report a skip for the one thing it is about to
+            # do, which is worse than saying nothing.
+            report.published.append((corpus, "(build from upstream)", 0))
+            return None
         version = _refresh_external(corpus, spec, db_path, report, dry_run, force)
         if version is None:
             return None
