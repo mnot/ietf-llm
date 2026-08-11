@@ -928,3 +928,45 @@ def test_owner_wins_when_several_corpora_hold_the_body(
     _install_store(monkeypatch, ["aaa", "phone"])
     out = mcp_rfcs._render_rfc_live("200")
     assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
+
+
+def test_a_reference_written_as_a_name_still_resolves() -> None:
+    """Observed live: RFC 9786's normative refs carry `"RFC9785"` where all
+    9,797 other entries carry `"9785"`. `int()` on that raised, which aborted
+    the whole index load and took every RFC tool with it."""
+    assert rfcs.rfc_num_to_name("RFC9785") == "RFC9785"
+    assert rfcs.rfc_num_to_name("9785") == "RFC9785"
+    assert rfcs.rfc_name_to_num("RFC9785") == "9785"
+
+
+@pytest.mark.parametrize("value", ["", "nonsense", "RFC", "9110.5", None])
+def test_an_unparseable_reference_is_dropped_not_raised(value: Any) -> None:
+    """One malformed field in someone else's data is not a reason to have no
+    RFC metadata at all."""
+    assert rfcs.rfc_num_to_name(value) == ""
+    assert rfcs.rfc_name_to_num(value) == ""
+
+
+def test_one_bad_reference_does_not_abort_the_index(isolated_home: Path) -> None:
+    rfc_dir = isolated_home / ".cache" / "ietf-llm" / rfcs.RFC_DIR
+    rfc_dir.mkdir(parents=True, exist_ok=True)
+    (rfc_dir / "rfcs.json").write_text(
+        json.dumps(
+            {
+                "RFC9785": {"title": "Cited", "status": "current"},
+                "RFC9786": {"title": "Citing", "status": "current"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (rfc_dir / "refs.json").write_text(
+        json.dumps({"9786": {"normative": ["RFC9785", "junk"], "informative": []}}),
+        encoding="utf-8",
+    )
+    (rfc_dir / "tags.json").write_text("{}", encoding="utf-8")
+    rfcs._CACHE = None
+    data = rfcs._load()
+    assert data is not None, "one malformed reference aborted the load"
+    out = data.outbound_refs("RFC9786")
+    assert out["normative"] == ["RFC9785"]  # the junk is dropped, not blank
+    assert len(data.inbound_refs("RFC9785")) == 1
