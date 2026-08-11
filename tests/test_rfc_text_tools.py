@@ -174,3 +174,29 @@ def test_an_uninstalled_corpus_says_so_rather_than_returning_nothing(
 ) -> None:
     out = tool_get_rfc_section("9111", "3")
     assert "not installed" in out
+
+
+def test_the_read_path_does_not_import_the_publisher_package() -> None:
+    """`ietf_llm.rfcindex` fetches releases and rsyncs mirrors — it reaches the
+    network, and the MCP surface must stay offline. The two share meta-key
+    constants, which is exactly the kind of import that reintroduces the
+    dependency, so it is checked rather than trusted.
+
+    In a subprocess because module caching makes an in-process check depend on
+    whatever the rest of the suite imported first.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, ietf_llm.mcp.rfc_text as m; "
+            "print(any(k.startswith('ietf_llm.rfcindex') for k in sys.modules))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "False", proc.stdout

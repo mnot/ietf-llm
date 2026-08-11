@@ -30,7 +30,13 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings.search import search as _search
-from ..embeddings.storage import section_outline, section_rows
+from ..embeddings.storage import (
+    META_SOURCE_BUILD,
+    META_SOURCE_COMMIT,
+    read_meta,
+    section_outline,
+    section_rows,
+)
 from ..singletons.rfc_rank import rank_documents
 from ..singletons.rfcs import rfc_num_to_name
 from .common import _offload
@@ -118,6 +124,32 @@ def _number_of(file: str) -> str:
     return file[3:-4] if file.startswith("rfc") and file.endswith(".txt") else file
 
 
+def _provenance() -> str:
+    """One line naming the snapshot this text came from.
+
+    A citation should be pinnable to a version of the source, and this corpus
+    is a monthly snapshot of a series that keeps growing: without the build
+    id a caller cannot tell an August corpus from a September one, and cannot
+    tell "this RFC does not exist" from "this snapshot predates it". The
+    build id is also the upstream release tag, so it resolves to the exact
+    artifact this was assembled from.
+    """
+    meta = read_meta(RFC_CORPUS, (META_SOURCE_BUILD, META_SOURCE_COMMIT))
+    build = meta.get(META_SOURCE_BUILD)
+    if not build:
+        return ""
+    stamp = build
+    if len(build) >= 8 and build[:8].isdigit():
+        stamp = f"{build[:4]}-{build[4:6]}-{build[6:8]}"
+    commit = meta.get(META_SOURCE_COMMIT, "")
+    tail = f", rfc.fyi {commit[:8]}" if commit else ""
+    return (
+        f"Text from the RFC-series snapshot built {stamp} "
+        f"(`index-{build}`{tail}). An RFC published since then is not in it — "
+        "`get_rfc` is the authority on whether one exists."
+    )
+
+
 def section_text(number: str, section: Optional[str]) -> Optional[str]:
     """Assemble one section from its rows, in document order.
 
@@ -156,6 +188,10 @@ def _render_outline(number: str, rows: List[Tuple[str, str, int]]) -> str:
         "reference list) is not indexed, so a gap here means that section "
         "exists in the document but is not searchable._"
     )
+    provenance = _provenance()
+    if provenance:
+        lines.append("")
+        lines.append(f"_{provenance}_")
     return "\n".join(lines)
 
 
@@ -214,8 +250,13 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
     out.append(
         f"_{len(ranked)} RFCs matched; showing {min(limit, len(ranked))}. "
         "Snippets are the opening of each section, not the passage that "
-        "matched — read the section before quoting it._"
+        "matched — read the section with `get_rfc_section` before quoting "
+        "it._"
     )
+    provenance = _provenance()
+    if provenance:
+        out.append("")
+        out.append(f"_{provenance}_")
     return "\n".join(out)
 
 
@@ -250,6 +291,9 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
         parts.append("")
         parts.append(body)
         parts.append("")
+    provenance = _provenance()
+    if provenance:
+        parts.append(f"_{provenance}_")
     return "\n".join(parts)
 
 

@@ -436,6 +436,16 @@ ENCODING_INT8 = "int8"
 _META_ENCODING = "vector_encoding"
 _META_SCALE = "vector_scale"
 
+#: Provenance for a corpus imported from an upstream artifact rather than
+#: gathered: which build it came from, and the commit that produced it.
+#: Written by `rfcindex.build`, read by the RFC tools to stamp their output.
+#: They live here, with the `meta` table they describe, so the read path can
+#: name them without importing the publisher-side package (which reaches the
+#: network and must stay off the serve path).
+META_SOURCE_MODEL = "vector_source_model"
+META_SOURCE_BUILD = "rfc_index_build"
+META_SOURCE_COMMIT = "rfc_index_commit"
+
 
 @dataclass(frozen=True)
 class VectorCodec:
@@ -551,6 +561,28 @@ def _unpack_matrix(
         raw = np.frombuffer(b"".join(rows), dtype=np.int8).reshape(len(rows), dim)
         return np.asarray(raw, dtype=np.float32) * np.float32(codec.scale)
     return np.frombuffer(b"".join(rows), dtype=np.float32).reshape(len(rows), dim)
+
+
+def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
+    """Selected `meta` values for a corpus, omitting any that are absent.
+
+    Read-only and never migrates, so a reader can ask an index about itself
+    without taking a write lock on it.
+    """
+    wanted = list(keys)
+    if not wanted or not os.path.exists(_db_path_ro(wg)):
+        return {}
+    conn = _connect_ro(wg)
+    try:
+        placeholders = ",".join("?" * len(wanted))
+        cur = conn.execute(
+            f"SELECT key, value FROM meta WHERE key IN ({placeholders})", wanted
+        )
+        return {str(k): str(v) for k, v in cur.fetchall()}
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
 
 
 def section_rows(wg: str, file: str, section: Optional[str]) -> List[Tuple[int, str]]:

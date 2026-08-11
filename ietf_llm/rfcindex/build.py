@@ -43,6 +43,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..embeddings.storage import (
     ENCODING_INT8,
+    META_SOURCE_BUILD,
+    META_SOURCE_COMMIT,
+    META_SOURCE_MODEL,
     VectorCodec,
     _open_db,
     chunk_hash,
@@ -64,11 +67,6 @@ QUERY_MODEL = "sentence-transformers/BAAI/bge-small-en-v1.5"
 #: incompatible, and this member has no cold-gather path to fall back to.
 #: Bump by hand if rfc.fyi's chunking changes materially.
 CHUNKER_ID = "rfcfyi-1"
-
-#: Provenance keys, alongside the compatibility tuple in `meta`.
-META_SOURCE_MODEL = "vector_source_model"
-META_SOURCE_BUILD = "rfc_index_build"
-META_SOURCE_COMMIT = "rfc_index_commit"
 
 _TEXT_BASE = "https://www.rfc-editor.org/rfc"
 
