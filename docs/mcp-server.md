@@ -68,6 +68,16 @@ The MCP endpoint is served at `/mcp`; `GET /health` is the readiness probe.
 - **Gather is separate.** Corpora are gathered on the write side (`ietf-llm <name>`, where
   `IETF_LLM_CACHE_DIR` is writable); the server only reads — unless the
   [in-session gather](#in-session-gather) tools are enabled.
+- **Run `ietf-llm --init` on the write side**, or the RFC tools are dead here.
+  `search_rfc_index`, `search_rfc_text`, `get_rfc_info` and `get_rfc_section`
+  cover the whole published series and belong to no corpus, so gathering
+  corpora does not bring them. Their data — the metadata mirror, the effort
+  catalog, and ~285 MB of RFC full text from the seed store — normally arrives
+  as gather housekeeping; a deployment that gathers nothing never reaches it.
+  `--init` does that housekeeping and exits, writing into the same
+  `IETF_LLM_CACHE_DIR` the server reads. It needs a **writable** cache: on a
+  read-only mount or an immutable index it will decline, so run it before the
+  mount is sealed, or against the cache you then publish/sync.
 
 ## Deployment contract
 
