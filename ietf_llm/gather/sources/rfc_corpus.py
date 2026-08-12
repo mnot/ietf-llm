@@ -150,19 +150,34 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     verbosity: Verbosity = Verbosity.STATUS,
     margin_days: Optional[float] = None,
     interval: float = _CHECK_INTERVAL,
-) -> None:
-    """Install or refresh the RFC full-text corpus, best-effort."""
+) -> Optional[str]:
+    """Install or refresh the RFC full-text corpus, best-effort.
+
+    Returns None when the corpus is installed and current, and otherwise a
+    short reason why it is not. Every way this can decline is quiet by design —
+    it runs as housekeeping after an unrelated gather, where a store that is
+    disabled or unreachable is not that gather's problem — but `--init` exists
+    precisely to say what state the machine is in, and "not installed" with no
+    reason sends the user looking in the wrong place. So the reason is
+    *returned* rather than logged: the caller that cares prints it.
+    """
     if not service_config.seeding_enabled():
-        return
+        return (
+            "seeding is disabled (`--no-seed`, or IETF_LLM_SEED_ENABLED=off); "
+            "re-enable it with `ietf-llm --seed`"
+        )
     # Lazy for the same reason as the block below.
     # pylint: disable-next=import-outside-toplevel
     from ...seed import generation as seed_generation
 
     seed_url = seed_generation.rfc_store_url()
     if not seed_url:
-        return
+        return (
+            "no seed store is configured (the seed URL is empty or `off`; "
+            "IETF_LLM_SEED_URL overrides it)"
+        )
     if _checked_recently(interval):
-        return
+        return f"the seed store was checked within the last {interval:.0f}s"
     # Lazy: the seed consumer is gather-path only, and this keeps the import
     # off any path that merely reads.
     # pylint: disable=import-outside-toplevel
@@ -177,20 +192,18 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     # which is the case the throttle most needs to cover.
     _touch_stamp()
     try:
-        index = seed_fetch.load_index(seed_url)
-    except Exception:  # pylint: disable=broad-except
-        return
-    if index is None:
-        return
+        index = seed_fetch.read_index(seed_url)
+    except Exception as err:  # pylint: disable=broad-except
+        return f"cannot read the seed store index at {seed_url}: {err}"
     entry = index.entry(RFC_CORPUS)
     if entry is None:
-        return  # the store does not carry it — stay quiet
+        return f"the seed store at {seed_url} carries no `{RFC_CORPUS}` entry"
 
     if margin_days is None:
         margin_days = _seed_stale_jump_margin().total_seconds() / 86400.0
     have = local_build()
     if not _should_install(have, entry.version, margin_days):
-        return
+        return None  # already current, or the store is behind us
 
     try:
         seed_fetch.install(seed_url, entry)
@@ -201,10 +214,11 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
             verbosity,
             level=LogLevel.STATUS,
         )
-        return
+        return f"the seed download failed: {err}"
     what = "installed" if have is None else f"updated from build {have}"
     log(
         f"{RFC_CORPUS}: RFC full-text corpus {what} (build {entry.version})",
         verbosity,
         level=LogLevel.STATUS,
     )
+    return None

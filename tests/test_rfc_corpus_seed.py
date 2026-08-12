@@ -119,8 +119,9 @@ def test_disabled_seeding_is_a_no_op(
     monkeypatch.setattr(
         rfc_corpus.service_config, "seed_url", lambda: called.append("url") or None
     )
-    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
+    reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
     assert called == []
+    assert reason and "--seed" in reason
 
 
 def test_no_seed_url_is_a_no_op(
@@ -128,7 +129,92 @@ def test_no_seed_url_is_a_no_op(
 ) -> None:
     monkeypatch.setenv("IETF_LLM_SEED_ENABLED", "on")
     monkeypatch.setattr(rfc_corpus.service_config, "seed_url", lambda: None)
-    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)  # must not raise
+    reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)  # must not raise
+    assert reason and "IETF_LLM_SEED_URL" in reason
+
+
+# --- why it declined --------------------------------------------------------
+#
+# Every path out of `ensure_rfc_corpus` is silent by design — it is
+# housekeeping after somebody else's gather. `--init` is the one caller that
+# has to explain itself, so each way of declining has to name itself.
+
+
+def _stub_store(monkeypatch: pytest.MonkeyPatch, index: Any) -> None:
+    """Point the corpus at a store whose index is `index` — an `fmt.Index`, or
+    an exception instance to raise instead."""
+    import ietf_llm.seed.fetch as sf
+
+    monkeypatch.setenv("IETF_LLM_SEED_ENABLED", "on")
+    monkeypatch.setattr(rfc_corpus.service_config, "seed_url", lambda: "https://x/")
+
+    def _read(_url: str, **_kw: Any) -> Any:
+        if isinstance(index, Exception):
+            raise index
+        return index
+
+    monkeypatch.setattr(sf, "read_index", _read)
+
+
+def _index(*names: str) -> Any:
+    """A store index carrying an entry per name."""
+    from ietf_llm.seed import format as fmt
+
+    return fmt.Index(
+        generated="2026-08-11T20:24:52Z",
+        compat=fmt.CompatTuple(11, "m", "rfcfyi-1", 384),
+        corpora=[
+            fmt.IndexEntry(
+                name=n,
+                kind="custom",
+                subject="",
+                window_months=12,
+                gathered="2026-08-11T20:24:52Z",
+                version="20260811T003915Z+2",
+                manifest=f"{n}/manifest.json",
+                bytes=1,
+            )
+            for n in names
+        ],
+    )
+
+
+def test_an_unreachable_store_names_the_error(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason a fresh `--init` most often reports nothing useful: the
+    index read soft-failed and the caller could only guess at why."""
+    import ietf_llm.seed.fetch as sf
+
+    _stub_store(monkeypatch, sf.SeedFetchError("HTTP Error 404: Not Found"))
+    reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
+    assert reason and "404" in reason
+
+
+def test_a_store_without_the_entry_says_so(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_store(monkeypatch, _index("httpbis"))
+    reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
+    assert reason and rfc_corpus.RFC_CORPUS in reason
+
+
+def test_a_current_corpus_declines_with_no_reason(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing to install is not a failure, and `--init` must not report one."""
+    _install_local("20260811T003915Z+2")
+    _stub_store(monkeypatch, _index(rfc_corpus.RFC_CORPUS))
+    assert rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0) is None
+
+
+def test_the_throttle_says_it_is_the_throttle(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_store(monkeypatch, _index("httpbis"))
+    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
+    reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
+    assert reason and "checked within" in reason
 
 
 # --- enumeration ------------------------------------------------------------
@@ -157,7 +243,11 @@ def test_the_store_index_is_not_fetched_on_every_invocation(
     fetched: List[str] = []
     import ietf_llm.seed.fetch as sf
 
-    monkeypatch.setattr(sf, "load_index", lambda url, **kw: fetched.append(url) or None)
+    def _read(url: str, **_kw: Any) -> Any:
+        fetched.append(url)
+        raise sf.SeedFetchError("stub")
+
+    monkeypatch.setattr(sf, "read_index", _read)
 
     rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
     rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
@@ -211,8 +301,7 @@ def test_init_reports_the_state_it_leaves(
 def test_init_says_so_when_the_corpus_is_missing(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    """The case worth being loud about: the RFC tools will not work, and the
-    two reasons are the ones a user can act on."""
+    """The case worth being loud about: the RFC tools will not work."""
     import sys as _sys
 
     from ietf_llm.cli import main as cli_main
@@ -223,4 +312,41 @@ def test_init_says_so_when_the_corpus_is_missing(
         cli_main.main()
     out = capsys.readouterr().out
     assert "NOT installed" in out
-    assert "IETF_LLM_SEED_URL" in out and "writable" in out
+    # Nothing named a cause, so the report falls back rather than inventing one.
+    assert "writable" in out
+
+
+def test_init_reports_why_the_corpus_is_missing(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The whole point of the plumbing: seeding off, an empty seed URL, an
+    unreachable store and a store missing the entry all end in the same "not
+    installed", and only the step that declined knows which it was."""
+    import sys as _sys
+
+    from ietf_llm.cli import main as cli_main
+
+    monkeypatch.setattr(
+        cli_main, "_housekeeping", lambda v, forced=False: "seeding is disabled"
+    )
+    monkeypatch.setattr(_sys, "argv", ["ietf-llm", "--init"])
+    with pytest.raises(SystemExit):
+        cli_main.main()
+    out = capsys.readouterr().out
+    assert "seeding is disabled" in out
+    assert "writable" not in out  # the guess is not printed alongside the answer
+
+
+def test_housekeeping_hands_back_the_corpus_reason(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--init` can only report what `_housekeeping` passes up."""
+    from ietf_llm.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "ensure_rfc_index", lambda v: None)
+    monkeypatch.setattr(cli_main, "ensure_catalog_index", lambda v: None)
+    monkeypatch.setattr(cli_main, "sync_if_pristine", lambda v: None)
+    monkeypatch.setattr(
+        cli_main, "ensure_rfc_corpus", lambda v, interval=None: "no store"
+    )
+    assert cli_main._housekeeping(Verbosity.QUIET, forced=True) == "no store"

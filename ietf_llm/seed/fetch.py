@@ -93,6 +93,17 @@ def _download(location: str, dest_path: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def read_index(seed_url: str, timeout: Optional[float] = None) -> fmt.Index:
+    """Fetch and parse the store's `index.json`, **raising** on failure
+    (`SeedFetchError` / `SeedFormatError` / `UnicodeDecodeError`).
+
+    Most callers want `load_index`, which soft-fails. This one is for the caller
+    that has to *report* why there is no index — a soft failure is unhelpful when
+    the whole job is telling the user what went wrong (`ietf-llm --init`)."""
+    raw = _read_bytes(_child(seed_url, fmt.INDEX_NAME), timeout=timeout)
+    return fmt.Index.from_json(raw.decode("utf-8"))
+
+
 def load_index(seed_url: str, timeout: Optional[float] = None) -> Optional[fmt.Index]:
     """Fetch and parse the store's `index.json`. **Best-effort**: returns None on
     any failure (unreachable, malformed, unsupported format) so a gather degrades
@@ -100,8 +111,7 @@ def load_index(seed_url: str, timeout: Optional[float] = None) -> Optional[fmt.I
     `timeout` bounds the HTTP read (default `_HTTP_TIMEOUT`); the catalog refresh
     passes a short one so a read tool never hangs on a slow mirror."""
     try:
-        raw = _read_bytes(_child(seed_url, fmt.INDEX_NAME), timeout=timeout)
-        return fmt.Index.from_json(raw.decode("utf-8"))
+        return read_index(seed_url, timeout=timeout)
     except (SeedFetchError, fmt.SeedFormatError, UnicodeDecodeError):
         return None
 
