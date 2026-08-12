@@ -73,9 +73,10 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   accurate? Update them in the same PR.
 - **Routing brain + tool docstrings.** `ietf_llm/data/mcp-instructions.md` is
   the routing brain, served to clients as the MCP `instructions` field. Update
-  it and the affected tool docstrings whenever behaviour changes. (The vendored
-  norms skills under `ietf_llm/data/skills/<name>/SKILL.md` are separate
-  installed Agent Skills, not the routing brain.)
+  it and the affected tool docstrings whenever behaviour changes. (The skills
+  vendored under `ietf_llm/data/skills/<name>/` are separate installed Agent
+  Skills, not the routing brain — and are vendored, so edit them upstream in
+  mnot/ietf-skill and re-run `scripts/vendor-skills.sh`.)
 - **The gate.** `make test lint typecheck` clean (pylint 10.00/10), and
   `ietf_llm/` is black-clean. See "The gate" above.
 

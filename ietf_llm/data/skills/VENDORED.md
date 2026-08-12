@@ -1,20 +1,24 @@
 # Vendored skill text
 
-The norm skills in this directory — `ietf-contributing/` and `ietf-interpreting/`
-— are **vendored, not authored here.** Their canonical source is:
+The skills in this directory are **vendored, not authored here.** Their
+canonical source is:
 
     https://github.com/mnot/ietf-skill
-    tag v0.4.0  (commit bcce3dc3676559a5c5a45817ce7e871d028ca712)
+    tag v0.4.1  (commit e127f7267c2a0abb6e0302652c99b5f838310c6e)
     licensed CC-BY-4.0
 
-The MCP server serves their bodies via `read_ietf_participation_norms` /
-`read_ietf_interpretation_norms`, and its instructions (`data/mcp-instructions.md`)
-point at them.
+Whatever that repo publishes is what ships here: the vendoring script discovers
+the skill set rather than naming it, so a skill added upstream arrives on the
+next re-vendor and one retired upstream is pruned. The MCP server serves two of
+their bodies as tools — `read_ietf_participation_norms` (`ietf-contributing`)
+and `read_ietf_interpretation_norms` (`ietf-interpreting`) — and its
+instructions (`data/mcp-instructions.md`) point at them; the rest ship for
+`--install-skills` only.
 
-Do **not** edit these two files here — edit them upstream and re-vendor with
-`scripts/vendor-norms.sh`. Run with no argument to track the newest upstream
-tag, or pass one to pin a specific version (`scripts/vendor-norms.sh v0.2.2`);
+Do **not** edit these files here — edit them upstream and re-vendor with
+`scripts/vendor-skills.sh`. Run with no argument to track the newest upstream
+tag, or pass one to pin a specific version (`scripts/vendor-skills.sh v0.2.2`);
 either way the script rewrites the tag+commit line above for you — review the
-diff and commit. `scripts/vendor-norms.sh --check` verifies the on-disk files
-match that pin. Only the norms are vendored; routing lives in the MCP server's
-own instructions, not a skill.
+diff and commit. `scripts/vendor-skills.sh --check` verifies the on-disk files
+match that pin. Routing is not vendored: it lives in the MCP server's own
+instructions, not a skill.

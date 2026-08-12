@@ -1,0 +1,11 @@
+The `.txt` files in this directory are RFCs. They are NOT covered by the
+CC-BY-4.0 licence that applies to the rest of this skill.
+
+They are Copyright (c) the IETF Trust or the Internet Society and the persons
+identified as their authors, and are reproduced in full under the IETF Trust's
+legal provisions: https://trustee.ietf.org/license-info
+
+They are the published .txt renderings from the RFC Editor, unchanged apart
+from stripping a byte-order mark, leading blank lines, and trailing whitespace.
+
+The `.md` files beside them are part of the skill and are CC-BY-4.0.

@@ -2,9 +2,12 @@
 
 Multi-harness: the installer copies each bundled skill under
 `data/skills/<name>/` into every detected harness's skills dir. The bundled
-skills are the two norms skills; the query/routing skill is not bundled (it
-lives in mnot/ietf-skill). Tests redirect `_home()` to a sandbox and create
-harness marker dirs to simulate which are present.
+set is whatever mnot/ietf-skill publishes at the vendored pin, so tests assert
+against `_bundled_skills()` rather than a list of names — the two norms skills
+are named only where the point *is* that specific skill. The query/routing
+skill is not bundled at all (routing comes from the MCP `instructions` field).
+Tests redirect `_home()` to a sandbox and create harness marker dirs to
+simulate which are present.
 """
 
 from __future__ import annotations
@@ -57,10 +60,27 @@ def test_installs_all_skills_into_claude(tmp_path: Path, monkeypatch) -> None:
     home = _sandbox(monkeypatch, tmp_path)
     _present(home, "claude")
     assert skill_install.install_skills() == 0
-    for skill in ("ietf-interpreting", "ietf-contributing"):
-        assert _installed(home, "claude", skill)
+    bundled = skill_install._bundled_skills()
+    assert len(bundled) >= 2
+    for src in bundled:
+        assert _installed(home, "claude", src.name)
     # The routing skill is no longer bundled, so it is never installed.
     assert not _installed(home, "claude", "ietf-llm")
+
+
+def test_install_copies_whole_skill_tree(tmp_path: Path, monkeypatch) -> None:
+    """A skill is more than its SKILL.md: several carry companion files and a
+    `reference/` subdirectory, and a skill installed without them is broken in
+    a way `SKILL.md`-only assertions cannot see."""
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    assert skill_install.install_skills() == 0
+    nested = 0
+    for src in skill_install._bundled_skills():
+        dest = home / _ROOTS["claude"] / src.name
+        assert skill_install._dirs_identical(src, dest)
+        nested += sum(1 for p in src.rglob("*") if p.is_dir())
+    assert nested, "expected at least one bundled skill with a subdirectory"
 
 
 def test_norms_install_into_every_detected_harness(
