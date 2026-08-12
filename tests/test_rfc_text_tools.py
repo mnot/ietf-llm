@@ -20,7 +20,7 @@ import pytest
 from ietf_llm.embeddings.storage import _db_path, _open_db, section_outline, section_rows
 from ietf_llm.mcp import rfc_text
 from ietf_llm.mcp.rfc_text import (
-    _normalise_section,
+    normalise_section,
     section_text,
     tool_get_rfc_section,
 )
@@ -90,11 +90,11 @@ def _seed_rfc_metadata(home: Path, obsoleted: bool = False) -> None:
     ],
 )
 def test_labels_are_normalised_as_cited(asked: str, expected: str) -> None:
-    assert _normalise_section(asked) == expected
+    assert normalise_section(asked) == expected
 
 
 def test_nonsense_label_is_rejected() -> None:
-    assert _normalise_section("the caching bit") is None
+    assert normalise_section("the caching bit") is None
 
 
 # --- section assembly -------------------------------------------------------

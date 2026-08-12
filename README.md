@@ -44,6 +44,7 @@ See the workflow documentation linked above for installation and use instruction
 All three read a corpus you first **gather** with `ietf-llm <corpus>`.
 
 The RFC series is the exception: `search_rfc_index`, `search_rfc_text`,
+`grep_corpus(corpus="rfcs", …)` (exact phrases, across the 72-column wrap),
 `get_rfc_info` and `get_rfc_section` cover **every published RFC** and are not
 tied to a corpus. Their data arrives on its own — a gather pulls it as
 housekeeping — but a machine that only ever *reads*, such as a hosted MCP

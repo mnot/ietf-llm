@@ -596,11 +596,40 @@ which tool for which question, with worked examples — lives in
   names them, and the skip is reported so the denominator stays honest. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
+
+  **`corpus="rfcs"` is a second backend behind the same tool**, and answers
+  the same question for the published series: which RFCs contain an exact
+  phrase, and does some wording appear nowhere in it. It cannot scan files —
+  the RFC corpus is an `embeddings.db` with no `files/` dir, and the
+  `_rfc/text/` mirror is publisher-side, absent on any machine that installed
+  the corpus rather than building it — so it scans assembled section text via
+  `storage.iter_sections`. Two consequences are visible to callers. A hit is
+  located as **RFC + section**, because the index carries rfc.fyi's byte
+  offsets and `start_line` is NULL on every row; that is also the better
+  citation unit, and the footer pivots to `get_rfc_section`. And a literal
+  pattern matches **across line breaks**, because RFC text is hard-wrapped at
+  72 columns and a line-bounded match would miss most real sentences —
+  assembling the section is also what lets a phrase straddling a chunk
+  boundary match at all, since rows carry the chunker's overlap trimmed off.
+  A full-series scan is ~2.5s. Front and back matter is unindexed, which is
+  the one bound the empty result states.
 - **Narrative:** `read_topic`, `find_replies`, `tally_positions`,
   `find_citations`, `find_message_citations`.
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`, `get_by_url`,
   `read_file_section`.
-- **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(number)` over
+- **Verbatim artifacts:** `get_draft`, `get_issue`. Both are bounded by
+  characters as well as lines, and both banner a partial read at *both* ends.
+  The bound is in characters because that is the one that binds: a 2000-line
+  window of draft text is ~88 KB, over an MCP client's per-result limit, so
+  the client truncates again — from the tail, where the "continue with
+  `start_line=N`" footer was — leaving a header line that reads as part of the
+  document. Emitting less than the client's limit is what keeps our own notice
+  the only truncation, and therefore the true one. `get_draft` additionally
+  addresses **sections**: no argument returns the outline, `section="4.2"`
+  reads one (a parent label takes its descendants). Headings are parsed from
+  the cached text at read time, not recorded at gather time, so this is
+  reader-side and needs no re-gather.
+- **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(rfc)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
   text. A body is on disk only where a corpus that published the RFC was

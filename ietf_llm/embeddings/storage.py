@@ -27,7 +27,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
@@ -743,6 +743,94 @@ def section_outline(wg: str, file: str) -> List[Tuple[str, str, int]]:
             (file,),
         )
         return [(str(r[0]), str(r[1]), int(r[2] or 0)) for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def iter_sections(
+    wg: str, files: Optional[Iterable[str]] = None
+) -> Generator[Tuple[str, Optional[str], str, str], None, None]:
+    """Yield `(file, section, title, text)` for every section of a corpus, in
+    document order, each section's rows already joined.
+
+    The whole-corpus counterpart to `section_rows`: for a reader that must look
+    at *everything* rather than at one citation — a literal scan. Joining here
+    rather than in the caller is the point, not a convenience. Rows carry the
+    chunker's overlap trimmed off, so a phrase straddling a chunk boundary
+    exists in neither row and is findable only in the joined run.
+
+    Streams one section at a time: the RFC corpus is ~400 MB of text across
+    ~233k sections, and a scan that materialised it would be a
+    memory-exhaustion lever on a shared server.
+
+    `files` restricts the scan to those corpus filenames. Sections with no
+    label (~9% of the RFC series, mostly very old unnumbered documents) are
+    yielded with `section=None` — one per chunk, since without a heading there
+    is nothing claiming several chunks are one passage.
+
+    Sections are cut as **consecutive runs** in document order rather than
+    grouped by label, which keeps the SQL a single ordered pass and keeps the
+    output in reading order. It relies on a section's chunks being contiguous,
+    which holds for all but one `(file, section)` in the current RFC corpus;
+    where it does not, that section is yielded as two runs. For a scan that
+    degrades benignly — the text is all still read, one section is merely
+    reported twice — whereas label-grouping would have to sort the whole
+    corpus to recover the order.
+
+    **A `sqlite3.Error` propagates rather than ending the iteration.** The
+    other readers here swallow it and return a value, which is safe when the
+    caller renders "nothing found". It is not safe for a generator feeding an
+    evidence-of-absence scan: stopping quietly mid-corpus is indistinguishable
+    from finishing, so the caller would report a complete scan of a fraction
+    of the series and call the silence proof. Raising is what lets it say the
+    scan failed.
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return
+    conn = _connect_ro(wg)
+    try:
+        sql = "SELECT file, section, title, text FROM chunks "
+        params: List[Any] = []
+        names = list(dict.fromkeys(files)) if files is not None else None
+        if names is not None:
+            if not names:
+                return
+            sql += f"WHERE file IN ({','.join('?' * len(names))}) "
+            params = list(names)
+        sql += "ORDER BY file, chunk_idx, sub_idx"
+        cur = conn.execute(sql, params)
+        key: Optional[Tuple[str, Optional[str]]] = None
+        title = ""
+        buf: List[str] = []
+        for file, section, row_title, text in cur:
+            here = (str(file), section)
+            # An unlabelled chunk always starts its own run: consecutive NULLs
+            # are separate passages, not one long one.
+            if here != key or section is None:
+                if key is not None:
+                    yield (key[0], key[1], title, "\n".join(buf))
+                key, title, buf = here, str(row_title or ""), []
+            buf.append(str(text or ""))
+        if key is not None:
+            yield (key[0], key[1], title, "\n".join(buf))
+    finally:
+        conn.close()
+
+
+def indexed_files(wg: str) -> List[str]:
+    """Every filename the corpus has chunks for, sorted.
+
+    `chunk_counts` answers the same question but pays for a COUNT it does not
+    need when the caller only wants the denominator of a scan.
+    """
+    if not os.path.exists(_db_path_ro(wg)):
+        return []
+    conn = _connect_ro(wg)
+    try:
+        cur = conn.execute("SELECT DISTINCT file FROM chunks ORDER BY file")
+        return [str(row[0]) for row in cur.fetchall()]
     except sqlite3.Error:
         return []
     finally:

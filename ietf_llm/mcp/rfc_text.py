@@ -65,7 +65,7 @@ _ASK_RE = re.compile(
 )
 
 
-def _normalise_section(ask: str) -> Optional[str]:
+def normalise_section(ask: str) -> Optional[str]:
     """Turn what a caller typed into the label the index stores."""
     match = _ASK_RE.match(ask or "")
     if not match:
@@ -97,7 +97,7 @@ def _rfc_file(number: str) -> Optional[str]:
     return f"rfc{int(match.group(1))}{(match.group(2) or '').lower()}.txt"
 
 
-def _status_note(number: str) -> str:
+def status_note(number: str) -> str:
     """`(obsoleted by RFC 9111)` or "" — the citation guard.
 
     Read from the `_rfc/` metadata mirror, which is a separate singleton from
@@ -140,7 +140,7 @@ def _number_of(file: str) -> str:
     return file[3:-4] if file.startswith("rfc") and file.endswith(".txt") else file
 
 
-def _provenance() -> str:
+def provenance_line() -> str:
     """One line naming the snapshot this text came from.
 
     A citation should be pinnable to a version of the source, and this corpus
@@ -192,7 +192,7 @@ def _outline(number: str) -> List[Tuple[str, str, int]]:
 
 def _render_outline(number: str, rows: List[Tuple[str, str, int]]) -> str:
     lines = [
-        f"## RFC {number} — indexed sections{_status_note(number)}",
+        f"## RFC {number} — indexed sections{status_note(number)}",
         "",
         "| Section | Title | Chars |",
         "|---|---|---|",
@@ -204,7 +204,7 @@ def _render_outline(number: str, rows: List[Tuple[str, str, int]]) -> str:
         "reference list) is not indexed, so a gap here means that section "
         "exists in the document but is not searchable._"
     )
-    provenance = _provenance()
+    provenance = provenance_line()
     if provenance:
         lines.append("")
         lines.append(f"_{provenance}_")
@@ -255,7 +255,7 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
         # mirrored the metadata yet, it is empty, and a dangling em-dash is
         # worse than no title at all.
         heading = f"## RFC {number} — {title}" if title else f"## RFC {number}"
-        out.append(f"{heading}{_status_note(number)}")
+        out.append(f"{heading}{status_note(number)}")
         seen: Dict[Optional[str], Any] = {}
         for hit in entry.hits:
             if hit.section not in seen:
@@ -275,7 +275,7 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
         "matched — read the section with `get_rfc_section` before quoting "
         "it._"
     )
-    provenance = _provenance()
+    provenance = provenance_line()
     if provenance:
         out.append("")
         out.append(f"_{provenance}_")
@@ -294,7 +294,7 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
     if not section:
         return _render_outline(number, rows)
 
-    label = _normalise_section(section)
+    label = normalise_section(section)
     if label is None:
         return f"'{section}' is not a section label."
     wanted = [r for r in rows if r[0] == label or r[0].startswith(label + ".")]
@@ -305,7 +305,7 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
         return f"RFC {number} has no indexed section {label}.\n\n" + _render_outline(
             number, rows
         )
-    parts = [f"# RFC {number} §{label}{_status_note(number)}", ""]
+    parts = [f"# RFC {number} §{label}{status_note(number)}", ""]
     for sec, title, _size in wanted:
         body = section_text(number, sec)
         if not body:
@@ -314,7 +314,7 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
         parts.append("")
         parts.append(body)
         parts.append("")
-    provenance = _provenance()
+    provenance = provenance_line()
     if provenance:
         parts.append(f"_{provenance}_")
     return "\n".join(parts)
@@ -347,6 +347,14 @@ def register(server: "FastMCP") -> None:
             say: "when must a cache not store a response", "how does QUIC
             do key update".
 
+        **This is semantic, not literal.** It ranks passages by embedding
+        similarity and never matches a string, so it cannot answer "which
+        RFCs contain this exact sentence" or support a claim that some
+        wording appears nowhere in the series. For either of those use
+        `grep_corpus(corpus="rfcs", pattern=…)`, which scans the same text
+        literally, matches across the 72-column wrap, and reports the number
+        of RFCs it scanned so a zero means something.
+
         `rfc` narrows to a single document, which turns this into
         search-within-this-RFC — useful when the document is large.
 
@@ -363,10 +371,10 @@ def register(server: "FastMCP") -> None:
         )
 
     @server.tool()
-    async def get_rfc_section(number: str, section: Optional[str] = None) -> str:
+    async def get_rfc_section(rfc: str, section: Optional[str] = None) -> str:
         """Read one section of an RFC from the local text corpus, offline.
 
-        `number` is an RFC number ("9111"). `section` is a label as cited —
+        `rfc` is an RFC number ("9111"). `section` is a label as cited —
         `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted. A
         parent label returns it and everything beneath it, so `section="7"`
         gives §7, §7.1, §7.2…
@@ -384,4 +392,4 @@ def register(server: "FastMCP") -> None:
         This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
-        return await _offload(tool_get_rfc_section, number, section)
+        return await _offload(tool_get_rfc_section, rfc, section)

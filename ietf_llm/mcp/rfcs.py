@@ -181,13 +181,13 @@ def register(server: "FastMCP") -> None:
           - `group`: an IETF working group acronym.
           - `limit`: max results (default 50).
 
-        Follow a hit with `get_rfc_info(number)` for full metadata and its
+        Follow a hit with `get_rfc_info(rfc)` for full metadata and its
         reference graph.
         """
         return await _offload(render_search, query, status, stream, level, group, limit)
 
     @server.tool()
-    async def get_rfc_info(number: str) -> str:
+    async def get_rfc_info(rfc: str) -> str:
         """Catalogue metadata and the reference graph for one RFC — **not
         the document text**, which is what the name says and what
         `get_rfc_section` is for.
@@ -197,7 +197,7 @@ def register(server: "FastMCP") -> None:
         obsoletes / is obsoleted by, its normative + informative
         references, how many RFCs cite it, and links to the text.
 
-        `number` is an RFC number or name ("9110" or "RFC9110").
+        `rfc` is an RFC number or name ("9110" or "RFC9110").
 
         **This is catalogue metadata, never the document body.** The last
         line of the output says which of two cases you are in: the body is
@@ -212,4 +212,4 @@ def register(server: "FastMCP") -> None:
         and that mirror is stale, it is refreshed live before answering,
         so a just-published RFC still resolves.
         """
-        return await _offload(_render_rfc_live, number)
+        return await _offload(_render_rfc_live, rfc)

@@ -12,6 +12,7 @@ from ..gather.sources.citations import normalize_draft_name
 from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
 from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_freshness
+from .rfc_text import normalise_section
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -161,9 +162,53 @@ _DRAFT_MAX_LINES = 2000
 _ISSUE_MAX_LINES = 3000
 
 
-def _read_file_window(path: str, start_line: int, max_lines: int) -> str:
-    """Return a bounded, header-stamped line window of `path`, with a footer
-    pointing at how to page further when it is truncated."""
+#: The bound that actually binds. A line cap is the wrong unit: 2000 lines of
+#: draft text is ~88,000 characters, which overruns an MCP client's per-result
+#: token limit, so the client truncates *again* — and its cut lands wherever it
+#: lands, silently, after our own "continue with start_line=N" footer has been
+#: chopped off the end. Two truncations disagreeing is how a caller ends up
+#: reading half a document believing they read all of it. Bounding by
+#: characters keeps a result under any plausible client limit, which is what
+#: makes our own truncation notice the only one and therefore the true one.
+_MAX_WINDOW_CHARS = 40_000
+
+
+def _truncation_notice(start: int, end: int, total: int, extra: str = "") -> str:
+    """The banner for a partial read.
+
+    Deliberately not in the document's voice: the failure this exists to stop
+    was a `#`-prefixed header line reading as part of the draft it introduced.
+    It is emitted at both ends, because a client that truncates further eats
+    the tail first.
+    """
+    shown = end - start + 1
+    return (
+        f"**PARTIAL READ — lines {start}–{end} of {total} "
+        f"({shown * 100 // max(1, total)}% of the file).** "
+        f"Continue with `start_line={end + 1}`{extra}."
+    )
+
+
+def _read_file_window(
+    path: str,
+    start_line: int,
+    max_lines: int,
+    complete_at: Optional[int] = None,
+    section_hint: str = "",
+) -> str:
+    """Return a bounded, header-stamped line window of `path`, banner-stamped
+    at both ends when it is partial.
+
+    Bounded by `max_lines` *and* `_MAX_WINDOW_CHARS`, whichever binds first;
+    the banner reports the cut that actually happened, so it never promises
+    lines the caller did not get.
+
+    `complete_at` is the line at which the caller's request is satisfied — the
+    end of the file for a page read, the end of the section for a section
+    read. Without it a fully-delivered section would be stamped "partial"
+    merely because the *document* continues, which is the same
+    read-it-as-content confusion this banner exists to end.
+    """
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.readlines()
@@ -177,21 +222,192 @@ def _read_file_window(path: str, start_line: int, max_lines: int) -> str:
             f"_(start_line={start_line} is past the end — the file has "
             f"{total} lines.)_\n"
         )
+    satisfied = min(total, complete_at if complete_at is not None else total)
     end = min(total, start - 1 + max(1, max_lines))
+    body: List[str] = []
+    budget = _MAX_WINDOW_CHARS
+    for offset, line in enumerate(lines[start - 1 : end]):
+        if budget - len(line) < 0:
+            if body:
+                end = start + offset - 1
+                break
+            # One line longer than the whole budget: a pasted base64 blob or
+            # log dump, which `get_issue` does see. Emitting it whole to avoid
+            # an empty result would put the character bound back where it
+            # started, so it is cut instead — and saying so matters, because a
+            # silently shortened line is a misquote.
+            body.append(line[:budget].rstrip("\n") + " …[line truncated]\n")
+            end = start + offset
+            break
+        body.append(line)
+        budget -= len(line)
     header = f"# {os.path.basename(path)} (lines {start}–{end} of {total})\n\n"
-    footer = ""
-    if end < total:
-        footer = (
-            f"\n\n_(showing lines {start}–{end} of {total}; continue with "
-            f"`start_line={end + 1}`)_\n"
+    if end >= satisfied:
+        return header + "".join(body)
+    notice = _truncation_notice(start, end, total, section_hint)
+    return f"{notice}\n\n{header}" + "".join(body) + f"\n{notice}\n"
+
+
+#: A section heading at column 0: `1.  Introduction`, `3.1.  Overview`,
+#: `Appendix B.  Rationale`, `B.5.  ...`.
+#:
+#: A bare single letter must carry the `Appendix` / `Annex` word. Without that
+#: the branch matches the initial in a column-0 running footer — `R. Perlman,
+#: et. al.  Expires: 17 May 2001` becomes "Appendix R". `B.1` is unambiguous
+#: and stands alone.
+_DRAFT_HEADING_RE = re.compile(
+    r"^(?:(?P<word>Appendix|Annex)\s+)?"
+    r"(?P<label>[0-9]+(?:\.[0-9]+)*|[A-Z]\.[0-9]+(?:\.[0-9]+)*|[A-Z])\."
+    r"\s+(?P<title>\S.*?)\s*$"
+)
+
+#: A run of dots is a table-of-contents leader, never a section title.
+_TOC_LEADER_RE = re.compile(r"\.{4,}")
+
+
+def _draft_headings(lines: List[str]) -> List[Tuple[str, str, int]]:
+    """`(label, title, line_number)` for each section heading, in document
+    order. Reader-side: parsed from the cached text on every call, so this
+    needs no re-gather and works on every corpus already on disk.
+
+    Column 0 alone is not enough to identify a heading, which an earlier
+    version assumed. Two things also live at column 0 and match the shape:
+
+    * a **table of contents** in the older non-xml2rfc layout, where entries
+      are unindented (`1.  Introduction......4`); and
+    * **numbered pseudocode**, common in CFRG drafts (`1.  L =
+      length(messages)`), sometimes blank-line separated like a heading.
+
+    Either produces duplicate labels, and a duplicate is how `section="1"`
+    comes to return the table of contents instead of the introduction — a
+    wrong answer delivered silently, which is the failure this tool exists to
+    end. So a heading must also be surrounded by blank lines and carry no dot
+    leader. Across the 2,389 cached drafts that takes drafts with duplicated
+    labels from 38 to 10; the cost is 9 of 2,247 drafts with a table of
+    contents losing an entry from their outline, which is recoverable — a
+    missing row answers "no section X" and shows what is there.
+    """
+    out: List[Tuple[str, str, int]] = []
+    for index, line in enumerate(lines):
+        match = _DRAFT_HEADING_RE.match(line.rstrip("\n"))
+        if match is None:
+            continue
+        label = match.group("label")
+        if len(label) == 1 and label.isalpha() and not match.group("word"):
+            continue
+        if _TOC_LEADER_RE.search(match.group("title")):
+            continue
+        if index and lines[index - 1].strip():
+            continue
+        if index + 1 < len(lines) and lines[index + 1].strip():
+            continue
+        out.append((label, match.group("title"), index + 1))
+    return out
+
+
+def _is_descendant(label: str, parent: str) -> bool:
+    return label == parent or label.startswith(parent + ".")
+
+
+def _section_span(
+    headings: List[Tuple[str, str, int]], label: str, total: int
+) -> Optional[Tuple[int, int]]:
+    """The `(first_line, last_line)` of `label` and everything beneath it.
+
+    A parent takes its descendants, matching `get_rfc_section`: asking for §7
+    of a document whose content is in §7.1 and §7.2 should not return a
+    heading and nothing else.
+
+    Only the **first contiguous run** of descendants counts. `_draft_headings`
+    filters out most false positives but cannot catch blank-line-separated
+    pseudocode that reuses a low number, and spanning from the first match to
+    the last would then stretch §1 from the introduction to somewhere near the
+    end of the document — returning most of the draft under the name of one
+    section. Stopping at the first heading that is *not* a descendant bounds
+    the damage to what a correct parse would have returned anyway.
+    """
+    indices = [i for i, h in enumerate(headings) if _is_descendant(h[0], label)]
+    if not indices:
+        return None
+    run_end = indices[0]
+    for index in indices[1:]:
+        if index != run_end + 1:
+            break
+        run_end = index
+    start = headings[indices[0]][2]
+    after = headings[run_end + 1][2] if run_end + 1 < len(headings) else None
+    return (start, (after - 1) if after is not None else total)
+
+
+def _render_draft_outline(
+    fname: str, headings: List[Tuple[str, str, int]], total: int
+) -> str:
+    rows = []
+    for index, (label, title, line) in enumerate(headings):
+        nxt = headings[index + 1][2] if index + 1 < len(headings) else total + 1
+        rows.append(f"| {label} | {title} | {line} | {nxt - line:,} |")
+    return "\n".join(
+        [
+            f"# {fname} — {total:,} lines, {len(headings)} sections",
+            "",
+            "| Section | Title | Line | Lines |",
+            "|---|---|---|---|",
+            *rows,
+            "",
+            '_Read one with `get_draft(name, section="4.2")` — a parent label '
+            "takes everything beneath it. `start_line=1` reads the document "
+            "from the top instead, in pages._",
+        ]
+    )
+
+
+def _draft_by_section(path: str, section: Optional[str], max_lines: int) -> str:
+    """The outline, or one section of it. Split out from `tool_get_draft` so
+    the mode selection there stays a three-way choice rather than a chain."""
+    fname = os.path.basename(path)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return f"Could not read `{fname}`."
+    headings = _draft_headings(lines)
+    if not headings:
+        # Some very old drafts carry no column-0 headings at all. Falling back
+        # to the window keeps the tool useful rather than reporting an empty
+        # outline that reads as "this draft has no sections".
+        return (
+            f"_No parseable section headings in `{fname}` — reading from the "
+            "top instead._\n\n" + _read_file_window(path, 1, max_lines)
         )
-    return header + "".join(lines[start - 1 : end]) + footer
+    if section is None:
+        return _render_draft_outline(fname, headings, len(lines))
+    label = normalise_section(section)
+    span = _section_span(headings, label, len(lines)) if label else None
+    if span is None:
+        missing = (
+            f"'{section}' is not a section label"
+            if label is None
+            else (f"`{fname}` has no section {label}")
+        )
+        return f"{missing}.\n\n" + _render_draft_outline(fname, headings, len(lines))
+    start, end = span
+    return _read_file_window(
+        path,
+        start,
+        min(end - start + 1, max_lines),
+        complete_at=end,
+        section_hint=" to finish this section",
+    )
 
 
 def tool_get_draft(
-    name: str, start_line: int = 1, max_lines: int = _DRAFT_MAX_LINES
+    name: str,
+    section: Optional[str] = None,
+    start_line: Optional[int] = None,
+    max_lines: int = _DRAFT_MAX_LINES,
 ) -> str:
-    """Verbatim text of the newest cached revision of draft `name`, bounded."""
+    """The newest cached revision of draft `name`: its outline, one section of
+    it, or a verbatim line window."""
     path = _find_latest_draft_file(name)
     if path is None:
         return (
@@ -199,7 +415,10 @@ def tool_get_draft(
             f"— {gather_suggestion(normalize_draft_name(name), purpose='to fetch it')}, "
             "or call `list_corpora` to see what is available."
         )
-    return _read_file_window(path, start_line, min(max_lines, _DRAFT_MAX_LINES))
+    capped = min(max_lines, _DRAFT_MAX_LINES)
+    if start_line is not None:
+        return _read_file_window(path, start_line, capped)
+    return _draft_by_section(path, section, capped)
 
 
 def _resolve_issue_file(
@@ -356,16 +575,38 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_list_drafts, corpus, state)
 
     @server.tool()
-    async def get_draft(name: str, start_line: int = 1, max_lines: int = 2000) -> str:
+    async def get_draft(
+        name: str,
+        section: Optional[str] = None,
+        start_line: Optional[int] = None,
+        max_lines: int = 2000,
+    ) -> str:
         """Verbatim text of a cached Internet-Draft by name (newest cached
-        revision, across all gathered corpora), as a bounded line window.
+        revision, across all gathered corpora).
 
         Use this to quote a draft's ACTUAL wording — to ground a review, a
         citation, or a contribution in primary text rather than a search
-        snippet. Page a long draft with `start_line`. The owning WG must be
-        gathered.
+        snippet. The owning WG must be gathered.
+
+        Three modes, and the first is the one to reach for:
+
+        - **No arguments but `name`** — the draft's outline: every section
+          with its title, start line, and length. A draft is typically 2,000
+          to 4,000 lines, far past what one result can carry, so start here
+          and read what you need.
+        - **`section="4.2"`** — that section, in full. `4.2`, `§4.2`,
+          `Section 4.2` and `Appendix B` are all accepted, and a parent label
+          takes everything beneath it (`section="4"` gives §4, §4.1, §4.2…).
+        - **`start_line=1`** — the document from the top, in pages, for when
+          you genuinely want to read it end to end.
+
+        **A partial result says so, at both ends, in a banner that is not part
+        of the document** (`PARTIAL READ — lines 1–412 of 3920`). Reads are
+        bounded by characters as well as lines so the result stays inside a
+        client's limit and that banner is the only truncation in play — but
+        check for it before treating what you got as the whole section.
         """
-        return await _offload(tool_get_draft, name, start_line, max_lines)
+        return await _offload(tool_get_draft, name, section, start_line, max_lines)
 
     @server.tool()
     async def get_issue(
