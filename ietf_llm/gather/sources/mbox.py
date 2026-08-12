@@ -15,7 +15,7 @@ import requests
 from ...atomicio import atomic_open_binary, write_if_changed
 from ...datatracker_api import get_mailing_list_name
 from ...log import LogLevel, Verbosity, log
-from ...net import governed_get
+from ...net import DEFAULT_HEADERS, governed_get
 from ...paths import get_cache_dir, raw_dir, raw_mail_archive_path
 
 IMAP_SERVER = "imap.ietf.org"
@@ -63,7 +63,9 @@ def validate_list_names(
             continue
         url = f"https://mailarchive.ietf.org/arch/browse/{norm}/"
         try:
-            status: Optional[int] = governed_get(url, timeout=30).status_code
+            status: Optional[int] = governed_get(
+                url, headers=DEFAULT_HEADERS, timeout=30
+            ).status_code
         except requests.RequestException:
             status = None
         if status == 404:
