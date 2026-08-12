@@ -142,6 +142,14 @@ user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare.
 
+**A draft is bigger than one result.** `get_draft(name)` returns its
+**outline** — every section with its title and length — and
+`get_draft(name, section="4.2")` reads one section (a parent label takes
+everything beneath it). Reach for those rather than paging from line 1. When a
+read is cut short it says so in a `PARTIAL READ` banner at both ends, which is
+not part of the document: check for it before treating what you have as the
+whole section. The same banner appears on `get_issue`.
+
 **RFC text is the exception: `get_rfc_info` does not return it.** It is catalogue
 metadata — title, status, reference graph. An RFC body is on disk only when a
 corpus that published it was gathered with `--rfcs`; `get_rfc_info`'s last line says

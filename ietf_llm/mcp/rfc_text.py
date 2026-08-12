@@ -65,7 +65,7 @@ _ASK_RE = re.compile(
 )
 
 
-def _normalise_section(ask: str) -> Optional[str]:
+def normalise_section(ask: str) -> Optional[str]:
     """Turn what a caller typed into the label the index stores."""
     match = _ASK_RE.match(ask or "")
     if not match:
@@ -294,7 +294,7 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
     if not section:
         return _render_outline(number, rows)
 
-    label = _normalise_section(section)
+    label = normalise_section(section)
     if label is None:
         return f"'{section}' is not a section label."
     wanted = [r for r in rows if r[0] == label or r[0].startswith(label + ".")]
