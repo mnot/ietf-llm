@@ -299,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set this machine up without gathering anything: refresh the "
         "RFC-series metadata mirror and the effort catalog, install the full "
         "text of the RFC series from the seed store (about 285 MB, so "
-        "`search_rfc_text` and `get_rfc_section` work), and sync the norms "
+        "`search_rfc_text` and `get_rfc_section` work), and sync the bundled "
         "skills. Every gather does all of this afterwards as housekeeping; "
         "this is for the machine that never gathers -- a read-only MCP "
         "deployment, or a first run before you have chosen a corpus. Then "
@@ -308,11 +308,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--install-skills",
         action="store_true",
-        help="Install the norms skills (ietf-interpreting + ietf-contributing) "
-        "into every supported agent harness detected on this machine (Claude "
-        "Code, Codex, Gemini CLI, opencode) and exit. A convenience for the "
-        "same skills you can install yourself from mnot/ietf-skill (their "
-        "canonical home). Overwrites any existing copy. Does not gather.",
+        help="Install the bundled IETF skills into every supported agent "
+        "harness detected on this machine (Claude Code, Codex, Gemini CLI, "
+        "opencode) and exit. A convenience for the same skills you can install "
+        "yourself from mnot/ietf-skill (their canonical home), whichever it "
+        "publishes. Overwrites any existing copy. Does not gather.",
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="Only output errors."

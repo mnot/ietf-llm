@@ -489,9 +489,11 @@ ietf_llm/
 │   └── catalog.py          # active-effort reader (find_efforts); ranks _catalog/ by topic, tags cached
 ├── serve_metrics.py        # serve-side RED registry + Prometheus /metrics exposition (read side)
 ├── data/mcp-instructions.md              # the routing brain, served as the MCP `instructions` field
-├── data/skills/ietf-interpreting/SKILL.md  # read-side norms (vendored), via read_ietf_interpretation_norms
-├── data/skills/ietf-contributing/SKILL.md  # write-side norms (vendored), via read_ietf_participation_norms
-├── data/skills/VENDORED.md               # provenance: norm skills vendored from mnot/ietf-skill
+├── data/skills/ietf-interpreting/  # read-side norms (vendored), via read_ietf_interpretation_norms
+├── data/skills/ietf-contributing/  # write-side norms (vendored), via read_ietf_participation_norms
+├── data/skills/ietf-reviewing/     # reviewing an Internet-Draft (vendored); --install-skills only
+├── data/skills/ietf-http/          # BCP 56 guidance for HTTP-based specs (vendored); --install-skills only
+├── data/skills/VENDORED.md               # provenance: skills vendored wholesale from mnot/ietf-skill
 │
 ├── gather/                 # orchestration (below) + content acquisition / per-source post-processing
 │   ├── runner.py               # in-session gather orchestration: queue/leases/heartbeat, gather-status.json
@@ -653,7 +655,7 @@ typo neither creates a cache dir nor returns a hollow result).
 The full routing brain (`data/mcp-instructions.md`) is handed to compliant
 clients via the MCP server's `instructions` field, so every harness — Claude,
 Codex, Gemini, Cursor, Zed, opencode — gets the same routing and the norms
-gate with no separately-installed skill. (The two IETF *norms* skills can be
+gate with no separately-installed skill. (The bundled IETF skills can be
 installed locally as a convenience, but routing always comes from the server.)
 
 ## Key design decisions

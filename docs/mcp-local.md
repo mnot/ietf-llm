@@ -12,7 +12,7 @@ To serve many clients from one shared process instead, see
 - [1. Install the package](#1-install-the-package)
 - [2. Register the server with your client](#2-register-the-server-with-your-client)
 - [3. Gather](#3-gather)
-- [4. Installing the norm skills (optional)](#4-installing-the-norm-skills-optional)
+- [4. Installing the IETF skills (optional)](#4-installing-the-ietf-skills-optional)
 - [Tuning the MCP server](#tuning-the-mcp-server)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -47,8 +47,8 @@ your client. Use the absolute path (`which ietf-llm-mcp`) if the client can't fi
 
 The server hands its routing and norms guidance to every client through the MCP `instructions`
 field, so any compliant client picks up the routing rules automatically — no skill required. You
-can optionally install the two IETF *norms* skills locally as a convenience (see below), but
-routing itself always comes from the server.
+can optionally install the bundled IETF skills locally as a convenience (see below), but routing
+itself always comes from the server.
 
 ### Claude Code
 
@@ -197,19 +197,20 @@ To turn this **off** — for instance if this server points at a read-only-mount
 ```
 
 
-## 4. Installing the norm skills (optional)
+## 4. Installing the IETF skills (optional)
 
-You can install the two IETF **norms** skills — `ietf-interpreting` and `ietf-contributing` (the
-read- and write-side norms the server also serves via `read_ietf_interpretation_norms` /
-`read_ietf_participation_norms`) — into every supported agent harness:
+You can install the bundled IETF skills into every supported agent harness:
 
 ```bash
 ietf-llm --install-skills
 ```
 
-This is a convenience; it installs the same two norm skills you can install yourself from
-[mnot/ietf-skill](https://github.com/mnot/ietf-skill) (their canonical home). Re-run after
-upgrading to pick up a newer pin.
+Today that is `ietf-interpreting` and `ietf-contributing` (the read- and write-side norms the
+server also serves via `read_ietf_interpretation_norms` / `read_ietf_participation_norms`),
+`ietf-reviewing` (how to review an Internet-Draft), and `ietf-http` (BCP 56 / RFC 9205 guidance
+for specs built on HTTP) — but the set is whatever [mnot/ietf-skill](https://github.com/mnot/ietf-skill)
+publishes at the pinned tag, not a fixed list. This is a convenience; installing them from that
+repo yourself is equivalent. Re-run after upgrading to pick up a newer pin.
 
 
 ## Tuning the MCP server

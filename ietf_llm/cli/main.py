@@ -17,9 +17,10 @@ from __future__ import annotations
 import argparse
 import copy
 import sys
+from typing import Optional
 
 from ..gather.cli import build_parser
-from ..gather.sequencer import _gather_one
+from ..gather.sequencer import _gather_one, _persist_seed_toggle
 from ..gather.sources.catalog import ensure_catalog_index
 from ..gather.sources.repo_discovery import print_discovery
 from ..gather.sources.rfc_corpus import ensure_rfc_corpus
@@ -31,7 +32,7 @@ from .completion import maybe_autocomplete, print_completion_snippet
 from .skill_install import install_skills, sync_if_pristine
 
 
-def _init_report() -> None:
+def _init_report(rfc_corpus_reason: Optional[str] = None) -> None:
     """Say what state `--init` left the machine in.
 
     The housekeeping steps log only when they *change* something, which is
@@ -39,6 +40,11 @@ def _init_report() -> None:
     whose entire job is setting a machine up. A successful `--init` on an
     already-current machine otherwise prints nothing but unrelated skill
     warnings, and the user cannot tell it from a silent failure.
+
+    `rfc_corpus_reason` is what `ensure_rfc_corpus` returned. A guessed hint
+    here cannot do that job: seeding turned off, an empty seed URL, an
+    unreachable store and a store missing the entry all end in the same
+    "not installed", and only the step that declined knows which.
     """
     # pylint: disable=import-outside-toplevel
     from ..gather.sources.rfc_corpus import local_build
@@ -57,11 +63,11 @@ def _init_report() -> None:
     if build:
         print(f"RFC full text: installed, build {build}")
     else:
+        why = rfc_corpus_reason or "the cache may not be writable"
         print(
             "RFC full text: NOT installed — search_rfc_text and "
             "get_rfc_section will be unavailable.\n"
-            "               Check the seed store is reachable "
-            "(IETF_LLM_SEED_URL) and that the cache is writable."
+            f"               Because: {why}."
         )
     efforts = catalog_reader._load()  # pylint: disable=protected-access
     print(
@@ -71,7 +77,7 @@ def _init_report() -> None:
     )
 
 
-def _housekeeping(verbosity: Verbosity, forced: bool = False) -> None:
+def _housekeeping(verbosity: Verbosity, forced: bool = False) -> Optional[str]:
     """Refresh the mirrors and skills a gather keeps current.
 
     Best-effort, never blocks exit. Runs after every gather — and on its own
@@ -79,14 +85,18 @@ def _housekeeping(verbosity: Verbosity, forced: bool = False) -> None:
     that only ever reads never reaches it, leaving the RFC tools unavailable
     with nothing obvious to do about it. `forced` skips the RFC corpus's
     once-an-hour throttle, since asking explicitly is the point.
+
+    Returns why the RFC full-text corpus was not installed, if it was not, for
+    `--init` to report.
     """
     ensure_rfc_index(verbosity)
     if forced:
-        ensure_rfc_corpus(verbosity, interval=0.0)
+        reason = ensure_rfc_corpus(verbosity, interval=0.0)
     else:
-        ensure_rfc_corpus(verbosity)
+        reason = ensure_rfc_corpus(verbosity)
     ensure_catalog_index(verbosity)
     sync_if_pristine(verbosity)
+    return reason
 
 
 @graceful_keyboard_interrupt
@@ -135,9 +145,15 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     if args.init_machine:
         # After verbosity is resolved, before the gather-argument validation
         # below: --init takes no corpus, so those checks do not apply to it.
-        _housekeeping(verbosity, forced=True)
+        #
+        # The toggle first, so `--init --seed` re-enables seeding and then acts
+        # on it. Otherwise the one remedy for the state --init most often has
+        # to report — seeding turned off — is a gather, which is exactly what
+        # the user of this flag does not have a corpus for.
+        _persist_seed_toggle(args)
+        reason = _housekeeping(verbosity, forced=True)
         if verbosity is not Verbosity.QUIET:
-            _init_report()
+            _init_report(reason)
         sys.exit(0)
 
     if args.used_within is not None:

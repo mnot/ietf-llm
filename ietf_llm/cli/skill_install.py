@@ -2,21 +2,20 @@
 
 The skills ship as package data under `ietf_llm/data/skills/<name>/`, each a
 self-contained Agent Skill (`SKILL.md` with `name` + `description`
-frontmatter — the open standard at agentskills.io). Two are bundled, both
-norms skills vendored from mnot/ietf-skill (see data/skills/VENDORED.md):
-
-  - `ietf-interpreting`  — read-side norms (consensus, attribution, …)
-  - `ietf-contributing`  — write-side norms (drafting list mail / issues)
+frontmatter — the open standard at agentskills.io), vendored wholesale from
+mnot/ietf-skill (see data/skills/VENDORED.md). Whatever that repo publishes is
+what ships — the set is discovered when re-vendoring, not listed anywhere here,
+so nothing in this module needs touching when it changes.
 
 There is no bundled query/routing skill — routing comes from the MCP server's
 `instructions` field (see `data/mcp-instructions.md`), served to every client.
 
 `--install-skills` detects every supported harness present on the machine
 (Claude Code, Codex, Gemini CLI, opencode — all adopters of the Agent Skills
-open standard) and installs each bundled (norms) skill into every one's skills
+open standard) and installs each bundled skill into every one's skills
 directory, with idempotency and a safety check for user edits. It is a
-convenience: the two norms skills are vendored copies of what mnot/ietf-skill
-publishes, so installing them from that repo instead is equivalent.
+convenience: they are vendored copies of what mnot/ietf-skill publishes, so
+installing them from that repo instead is equivalent.
 
 On every CLI gather, `sync_if_pristine()` keeps already-installed skills
 current: it auto-updates an installed copy to the bundled version *only* when
@@ -205,8 +204,8 @@ def install_skills() -> int:
     """Install the bundled skills into every supported harness present on this
     machine (`--install-skills`).
 
-    Every bundled (norms) skill goes into each detected harness's own skills
-    dir. Overwrites any existing copy at each destination (explicit install) —
+    Every bundled skill goes into each detected harness's own skills dir.
+    Overwrites any existing copy at each destination (explicit install) —
     a user's edits are restored too, so back them up first if that matters.
 
     Returns a shell-style exit code:
@@ -232,7 +231,7 @@ def install_skills() -> int:
         return 0
 
     # Group skills by destination root so a root shared by two harnesses is
-    # written once. Every bundled skill (all norms) goes into each harness.
+    # written once. Every bundled skill goes into each harness.
     by_root: Dict[Path, Dict[str, Path]] = {}
     for harness in present:
         dest = by_root.setdefault(harness.skills_root, {})
@@ -247,7 +246,7 @@ def install_skills() -> int:
         names = ", ".join(sorted(by_root[root]))
         print(f"  {names} → {root}")
     print(
-        "  (a convenience copy of the norms skills from mnot/ietf-skill; "
+        "  (convenience copies of the skills mnot/ietf-skill publishes; "
         "routing itself comes from the MCP server's instructions.)"
     )
     return 0

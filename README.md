@@ -56,9 +56,11 @@ ietf-llm --init
 ```
 
 That refreshes the RFC metadata mirror and the effort catalog, installs the
-full text of the series from the seed store (about 285 MB, which is what makes
-`search_rfc_text` and `get_rfc_section` work), and syncs the norms skills. It
-gathers nothing, and it is safe to re-run.
+full text of the series from the seed store (about 285 MB to download, ~650 MB
+on disk once installed, which is what makes `search_rfc_text` and
+`get_rfc_section` work), and syncs the bundled skills. It gathers nothing, and
+it is safe to re-run. If it reports the full text as NOT installed, it says
+why.
 
 > **Heads up — gathering reaches the network by default.** To make a first gather fast, `ietf-llm`
 > pulls a prebuilt snapshot of covered corpora from the public
