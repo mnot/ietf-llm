@@ -110,7 +110,15 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   - `search_rfc_text` — what the documents **say**, semantically, over the
     full text of every RFC. Use it when the question is about content
     ("when must a cache not store a response"). Needs the RFC text corpus;
-    says so if it is not installed.
+    says so if it is not installed. **Semantic only** — it ranks by
+    similarity and never matches a string, so it cannot tell you which RFCs
+    contain an exact phrase. That is `grep_corpus(corpus="rfcs", …)`.
+  - `grep_corpus(corpus="rfcs", pattern=…)` — the same text, scanned
+    **literally**. Use it for "which RFCs contain this exact sentence" and
+    for any claim that some wording appears nowhere in the series. A literal
+    pattern matches across the 72-column wrap, so a whole sentence works; a
+    hit is located as RFC + section (there are no line numbers), so pivot
+    with `get_rfc_section`.
   - `get_rfc_section` — you already have a citation: read that section, in
     full, offline. No argument but the number returns the outline, which is
     also what a miss returns.
@@ -162,10 +170,19 @@ out each). Route on the shape of the question:
 - "was X *ever* said / cited / proposed", "does this corpus mention `X.509`",
   "which revision first used this term" → `grep_corpus`.
 
-It matches **within one line**, so search the most distinctive single token
-(`8890`, not `RFC 8890`) — a phrase can be broken by a mail wrap. It also reads
-files the index does not hold (superseded draft revisions are not embedded), so
-it is the only way to find wording that was removed before publication.
+Over a gathered corpus it matches **within one line**, so search the most
+distinctive single token (`8890`, not `RFC 8890`) — a phrase can be broken by a
+mail wrap. It also reads files the index does not hold (superseded draft
+revisions are not embedded), so it is the only way to find wording that was
+removed before publication.
+
+The same tool answers this for the **published series**: `grep_corpus(
+corpus="rfcs", pattern=…)` scans the full text of every RFC and reports how
+many it scanned, so "this wording appears nowhere in the RFC series" becomes a
+statement you can make. There a literal pattern matches **across** line breaks
+(RFC text is hard-wrapped), so search the whole phrase. Its one bound: front
+and back matter — status of this memo, copyright, authors' addresses, the
+reference list — is not indexed, so a string living only there is not found.
 
 ## Whose words are in a thread file
 

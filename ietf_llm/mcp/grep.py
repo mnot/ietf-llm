@@ -14,16 +14,25 @@ embedded, so wording that lived only in a superseded revision is invisible to
 Read-only and offline like every other read tool, and needs no embedding index
 — only the files. The index is consulted opportunistically, to attribute a
 matching line to the chunk containing it.
+
+**Two backends behind one tool.** A gathered corpus is scanned as files, a line
+at a time. The RFC series (`corpus="rfcs"`) has no files to scan — only the
+`embeddings.db` that `ietf-llm --init` installs — so it is scanned as assembled
+section text instead, which also lets a phrase match across the 72-column wrap.
+The dispatcher at `tool_grep_corpus` picks; the differences a caller sees are
+set out above `_grep_rfc_corpus`.
 """
 
 from __future__ import annotations
 
+import bisect
 import fnmatch
 import os
 import re
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from ..embeddings import chunk_spans
+from ..embeddings.storage import indexed_files, iter_sections
 from .common import (
     _append_participation_nudge,
     _files_dir,
@@ -31,6 +40,7 @@ from .common import (
     _requires_corpus,
     _with_freshness,
 )
+from .rfc_text import RFC_CORPUS, provenance_line, status_note
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -415,8 +425,274 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
     return "\n".join(out)
 
 
-@_requires_corpus
-def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+# --- the RFC series ----------------------------------------------------------
+#
+# The RFC corpus is not a gathered corpus: it has no `files/` dir, only an
+# `embeddings.db` installed by `ietf-llm --init`. The plain-text mirror this
+# would otherwise scan (`_rfc/text/`) is publisher-side and absent on a client,
+# so the chunk table *is* the text on every machine that has the corpus at all
+# — and scanning it is the only implementation that works for the people who
+# installed it rather than built it.
+#
+# Two consequences the caller sees. Hits are located as **RFC + section**, not
+# file + line: the index carries rfc.fyi's byte offsets, and `start_line` is
+# NULL for every row, so a line number does not exist to report. That is the
+# better citation unit anyway — a section is what `get_rfc_section` takes.
+# And a literal pattern matches **across line breaks**, because RFC text is
+# hard-wrapped at 72 columns: line-bounded matching would miss any phrase
+# longer than about ten words, which is most of what anyone asks this.
+
+
+#: Sections rendered per RFC, and matches rendered per section. A broad
+#: pattern hits thousands of sections; these keep one call readable while the
+#: reported totals stay complete.
+_RFC_SECTIONS_PER_DOC = 3
+_RFC_MATCHES_PER_SECTION = 2
+
+
+def _rfc_number(file: str) -> str:
+    """`rfc9111.txt` → `9111`. The corpus filename is the only identifier the
+    chunk rows carry."""
+    return file[3:-4] if file.startswith("rfc") and file.endswith(".txt") else file
+
+
+def _compile_phrase(
+    pattern: str, regex: bool, case_sensitive: bool
+) -> "re.Pattern[str]":
+    """Compile a pattern for matching against assembled section text.
+
+    A literal pattern has every run of whitespace turned into "any whitespace",
+    so a phrase matches regardless of where the publisher's 72-column wrap fell
+    in the middle of it. That is the whole point of scanning sections rather
+    than lines, and it is why this cannot reuse `_compile`.
+
+    A regex is the caller's own and is passed through untouched, under
+    MULTILINE so `^` and `$` still mean line edges within the section.
+    """
+    flags = re.MULTILINE if case_sensitive else re.MULTILINE | re.IGNORECASE
+    if regex:
+        return re.compile(pattern, flags)
+    return re.compile(r"\s+".join(re.escape(word) for word in pattern.split()), flags)
+
+
+def _excerpts(
+    text: str, matcher: "re.Pattern[str]", context: int, max_matches: int
+) -> List[List[str]]:
+    """The lines covering each of the first `max_matches` matches in `text`,
+    with `context` lines either side.
+
+    A match may straddle a wrap, so the span is taken from the line holding its
+    first character to the line holding its last — rendering only the opening
+    line would cut the phrase the caller searched for in half.
+    """
+    lines = text.splitlines()
+    offsets: List[int] = []
+    running = 0
+    for line in lines:
+        offsets.append(running)
+        running += len(line) + 1
+    out: List[List[str]] = []
+    for count, match in enumerate(matcher.finditer(text)):
+        if count >= max_matches:
+            break
+        first = max(0, bisect.bisect_right(offsets, match.start()) - 1)
+        last = max(
+            first, bisect.bisect_right(offsets, max(match.start(), match.end() - 1)) - 1
+        )
+        low = max(0, first - context)
+        high = min(len(lines), last + 1 + context)
+        out.append([_elide(line) for line in lines[low:high]])
+    return out
+
+
+class _RfcHit(NamedTuple):
+    """One matching section of one RFC."""
+
+    number: str
+    section: Optional[str]
+    title: str
+    #: Not `count` — that is `tuple.count`, and shadowing it here is a type
+    #: error rather than a style question.
+    matches: int
+    excerpts: List[List[str]]
+
+
+def _rfc_scope_phrase(file_pattern: Optional[str], docs: int, sections: int) -> str:
+    scope = f"`{file_pattern}`" if file_pattern else "the whole series"
+    return f"scanned {docs} RFC(s) / {sections} section(s) — {scope}"
+
+
+def _rfc_no_match_body(
+    pattern: str, file_pattern: Optional[str], mode: str, docs: int, sections: int
+) -> str:
+    """A zero over the whole series is a strong claim, so it states its own
+    scope and its own two remaining limits."""
+    lines = [
+        f"(no matches for `{pattern}` in the RFC series — {mode}; "
+        f"{_rfc_scope_phrase(file_pattern, docs, sections)}.)",
+        "",
+        "_This is a complete scan of the indexed text of every RFC above, so "
+        "it is real evidence of absence — unlike a semantic miss. Two limits "
+        "bound the claim. **Front and back matter is not indexed** (status of "
+        "this memo, copyright, authors' addresses, the reference list), so a "
+        "string that appears only there will not be found. And the corpus is "
+        "a dated snapshot — the provenance line below says which — so an RFC "
+        "published since is not in it._",
+    ]
+    if file_pattern:
+        lines.append(
+            f"\n_Scoped to `{file_pattern}` — re-run without `file_pattern` "
+            "before treating this as absence from the series._"
+        )
+    return "\n".join(lines)
+
+
+def _rfc_footer() -> str:
+    return (
+        "\n_Next: read a hit in full with "
+        '`get_rfc_section(number="<number>", section="<section>")` — the '
+        "excerpts above are windows, not the section. `search_rfc_text` for "
+        "the semantic view of the same corpus._"
+    )
+
+
+def _render_rfc_files_only(
+    per_doc: Dict[str, int], total: int, header: str, limit: int
+) -> str:
+    ranked = sorted(per_doc.items(), key=lambda kv: (-kv[1], _int_or_zero(kv[0])))
+    shown = ranked[:limit]
+    out = [header, ""]
+    for number, count in shown:
+        out.append(f"{count:>6} match(es)  RFC {number}{status_note(number)}")
+    if len(ranked) > len(shown):
+        out.append(
+            f"\n_{len(ranked) - len(shown)} more RFC(s) matched "
+            f"(showing {len(shown)} of {len(ranked)}); raise `limit`._"
+        )
+    out.append(
+        f"\n_{total} match(es) across {len(ranked)} RFC(s). "
+        "Drop `files_only` to see the passages themselves._"
+    )
+    out.append(_rfc_footer())
+    return "\n".join(out)
+
+
+def _int_or_zero(value: str) -> int:
+    """Sort key for an RFC number that may carry a trailing letter (`17a`)."""
+    digits = "".join(c for c in value if c.isdigit())
+    return int(digits) if digits else 0
+
+
+def _render_rfc_hits(hits: List[_RfcHit], total: int, header: str, limit: int) -> str:
+    out = [header, ""]
+    current: Optional[str] = None
+    shown = 0
+    for hit in hits:
+        if shown >= limit:
+            break
+        if hit.number != current:
+            current = hit.number
+            out.append(f"## RFC {hit.number}{status_note(hit.number)}")
+        label = f"§{hit.section}" if hit.section else "(unsectioned)"
+        suffix = f" ({hit.matches} matches)" if hit.matches > 1 else ""
+        out.append(f"- **{label} {hit.title}**{suffix}")
+        for block in hit.excerpts:
+            for line in block:
+                out.append(f"      {line}")
+            out.append("")
+        shown += 1
+    if len(hits) > shown:
+        out.append(
+            f"_Showing {shown} of {len(hits)} matching section(s) — the counts "
+            "are the complete scan, only the listing is capped. Raise `limit` "
+            f"(max {_MAX_GREP_LIMIT}), narrow with `file_pattern`, or pass "
+            "`files_only=True` for one row per RFC._"
+        )
+    out.append(_rfc_footer())
+    return "\n".join(out)
+
+
+def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    pattern: str,
+    file_pattern: Optional[str],
+    regex: bool,
+    case_sensitive: bool,
+    limit: int,
+    context: int,
+    files_only: bool,
+) -> str:
+    """Literal scan over the assembled section text of the RFC series."""
+    try:
+        matcher = _compile_phrase(pattern, regex, case_sensitive)
+    except re.error as exc:
+        return (
+            f"Invalid regex `{pattern}`: {exc}. Fix the pattern, or drop "
+            "`regex=True` to search for it as a literal string."
+        )
+
+    files = indexed_files(RFC_CORPUS)
+    if not files:
+        return (
+            "The RFC full-text corpus is not installed on this server, so "
+            "there is nothing to scan — `ietf-llm --init` installs it. "
+            "`search_rfc_index` searches titles and keywords either way."
+        )
+    if file_pattern:
+        files = [f for f in files if fnmatch.fnmatch(f, file_pattern)]
+        if not files:
+            return (
+                f"(no RFC matches `{file_pattern}`, so nothing was scanned — "
+                "this is **not** evidence of absence. The scan globs the "
+                "corpus filename, which is `rfc9111.txt`, so `rfc91*` works "
+                "and `9111` does not.)"
+            )
+
+    hits: List[_RfcHit] = []
+    per_doc: Dict[str, int] = {}
+    total = 0
+    sections = 0
+    keep = 0 if files_only else _MAX_GREP_LIMIT
+    for file, section, title, text in iter_sections(RFC_CORPUS, files):
+        sections += 1
+        found = len(matcher.findall(text))
+        if not found:
+            continue
+        number = _rfc_number(file)
+        total += found
+        per_doc[number] = per_doc.get(number, 0) + found
+        if len(hits) < keep and sum(1 for h in hits if h.number == number) < (
+            _RFC_SECTIONS_PER_DOC
+        ):
+            hits.append(
+                _RfcHit(
+                    number,
+                    section,
+                    title,
+                    found,
+                    _excerpts(text, matcher, context, _RFC_MATCHES_PER_SECTION),
+                )
+            )
+
+    mode = _mode_phrase(regex, case_sensitive) + (
+        "" if regex else ", across line breaks"
+    )
+    if not per_doc:
+        body = _rfc_no_match_body(pattern, file_pattern, mode, len(files), sections)
+        return f"{body}\n\n_{provenance_line()}_"
+
+    header = (
+        f"_grep `{pattern}` in the RFC series ({mode}): {total} match(es) in "
+        f"{len(per_doc)} RFC(s); "
+        f"{_rfc_scope_phrase(file_pattern, len(files), sections)}._"
+    )
+    if files_only:
+        body = _render_rfc_files_only(per_doc, total, header, limit)
+    else:
+        body = _render_rfc_hits(hits, total, header, limit)
+    return f"{body}\n\n_{provenance_line()}_"
+
+
+def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     wg: str,
     pattern: str,
     file_pattern: Optional[str] = None,
@@ -426,17 +702,17 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     context: int = 0,
     files_only: bool = False,
 ) -> str:
+    """Dispatch to the gathered-files scan or the RFC-series scan.
+
+    The two share a tool because they answer the same question — "does this
+    string appear, and where" — and a caller should not have to know that one
+    reads files and the other reads a chunk table. They differ in what a hit
+    can be located by; see the RFC section above.
+    """
     if not (pattern or "").strip():
         return (
             "grep_corpus needs a non-empty `pattern` — the literal string to "
             'look for, e.g. `grep_corpus("httpbis", "8890")`.'
-        )
-    try:
-        matcher = _compile(pattern, regex, case_sensitive)
-    except re.error as exc:
-        return (
-            f"Invalid regex `{pattern}`: {exc}. Fix the pattern, or drop "
-            "`regex=True` to search for it as a literal string."
         )
     try:
         limit = max(1, min(int(limit), _MAX_GREP_LIMIT))
@@ -446,6 +722,35 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
         context = max(0, min(int(context), _MAX_CONTEXT))
     except (TypeError, ValueError):
         context = 0
+    if wg == RFC_CORPUS:
+        return _grep_rfc_corpus(
+            pattern, file_pattern, regex, case_sensitive, limit, context, files_only
+        )
+    return _grep_gathered(
+        wg, pattern, file_pattern, regex, case_sensitive, limit, context, files_only
+    )
+
+
+@_requires_corpus
+def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+    wg: str,
+    pattern: str,
+    file_pattern: Optional[str] = None,
+    regex: bool = False,
+    case_sensitive: bool = False,
+    limit: int = 50,
+    context: int = 0,
+    files_only: bool = False,
+) -> str:
+    # `pattern`, `limit` and `context` are already validated and clamped by the
+    # dispatcher, which has to do it for both backends.
+    try:
+        matcher = _compile(pattern, regex, case_sensitive)
+    except re.error as exc:
+        return (
+            f"Invalid regex `{pattern}`: {exc}. Fix the pattern, or drop "
+            "`regex=True` to search for it as a literal string."
+        )
 
     cache = _files_dir(wg)
     if not os.path.isdir(cache):
@@ -533,9 +838,26 @@ def register(server: "FastMCP") -> None:
         embedded, so wording that appeared only in a superseded revision is
         findable here and nowhere else.
 
-        **Match within one line.** A phrase broken across a mail wrap will not
-        match. Search the most distinctive single token — `8890`, not
-        `RFC 8890` — then widen once you have the files.
+        **`corpus="rfcs"` searches the full text of the whole RFC series**,
+        and is the way to answer "which RFCs contain this exact sentence" —
+        the question `search_rfc_text` cannot answer, because that ranks by
+        embedding similarity and never matches a string. It differs from a
+        gathered corpus in two ways:
+
+        - A hit is located as **RFC + section**, not file + line — the RFC
+          index carries no line numbers. Pivot with `get_rfc_section`.
+        - A literal pattern **matches across line breaks**, since RFC text is
+          hard-wrapped at 72 columns. So a whole sentence works here, where in
+          a gathered corpus it would be split by the wrap and missed.
+
+        Front and back matter (status of this memo, copyright, authors'
+        addresses, the reference list) is not indexed, so it bounds a negative
+        result — the zero-match reply says so. `file_pattern` globs the corpus
+        filename, which is `rfc9111.txt`.
+
+        **Everywhere else, a match is within one line.** A phrase broken
+        across a mail wrap will not match. Search the most distinctive single
+        token — `8890`, not `RFC 8890` — then widen once you have the files.
 
         Options:
           - `file_pattern`: glob over the relative path (`threads/*`,
