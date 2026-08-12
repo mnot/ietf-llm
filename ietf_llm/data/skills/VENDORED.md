@@ -4,7 +4,7 @@ The norm skills in this directory — `ietf-contributing/` and `ietf-interpretin
 — are **vendored, not authored here.** Their canonical source is:
 
     https://github.com/mnot/ietf-skill
-    tag v0.2.2  (commit 0dbba6098092bfa5d86298ef103758aa1f097d54)
+    tag v0.4.0  (commit bcce3dc3676559a5c5a45817ce7e871d028ca712)
     licensed CC-BY-4.0
 
 The MCP server serves their bodies via `read_ietf_participation_norms` /
