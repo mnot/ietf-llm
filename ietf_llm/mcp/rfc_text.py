@@ -371,10 +371,10 @@ def register(server: "FastMCP") -> None:
         )
 
     @server.tool()
-    async def get_rfc_section(number: str, section: Optional[str] = None) -> str:
+    async def get_rfc_section(rfc: str, section: Optional[str] = None) -> str:
         """Read one section of an RFC from the local text corpus, offline.
 
-        `number` is an RFC number ("9111"). `section` is a label as cited —
+        `rfc` is an RFC number ("9111"). `section` is a label as cited —
         `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted. A
         parent label returns it and everything beneath it, so `section="7"`
         gives §7, §7.1, §7.2…
@@ -392,4 +392,4 @@ def register(server: "FastMCP") -> None:
         This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
-        return await _offload(tool_get_rfc_section, number, section)
+        return await _offload(tool_get_rfc_section, rfc, section)

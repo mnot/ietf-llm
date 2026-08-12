@@ -105,7 +105,7 @@ def test_hits_cite_rfc_and_section_not_line_numbers(corpus: Path) -> None:
     out = tool_grep_corpus("rfcs", "MUST NOT store")
     assert "## RFC 9111" in out
     assert "§3 Storing Responses" in out
-    assert 'get_rfc_section(number="<number>"' in out
+    assert 'get_rfc_section(rfc="<number>"' in out
 
 
 def test_obsoleted_rfcs_are_marked(corpus: Path) -> None:

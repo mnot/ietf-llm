@@ -550,7 +550,7 @@ def _rfc_no_match_body(
 def _rfc_footer() -> str:
     return (
         "\n_Next: read a hit in full with "
-        '`get_rfc_section(number="<number>", section="<section>")` — the '
+        '`get_rfc_section(rfc="<number>", section="<section>")` — the '
         "excerpts above are windows, not the section. `search_rfc_text` for "
         "the semantic view of the same corpus._"
     )

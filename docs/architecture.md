@@ -600,7 +600,7 @@ which tool for which question, with worked examples — lives in
   `find_citations`, `find_message_citations`.
 - **Pivot / read:** `get_chunk_text`, `get_chunks_batch`, `get_by_url`,
   `read_file_section`.
-- **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(number)` over
+- **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(rfc)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
   text. A body is on disk only where a corpus that published the RFC was

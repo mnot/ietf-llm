@@ -127,6 +127,10 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
     how many RFCs cite it. **Never the document text** — that is
     `get_rfc_section`. It is also the authority on whether an RFC
     exists, since it revalidates its mirror before reporting a miss.
+  All four name an RFC with **`rfc`** — `get_rfc_section(rfc="8615",
+  section="3")`, `get_rfc_info(rfc="9110")`, `search_rfc_text(query, rfc=…)`.
+  (`number` elsewhere in this server is a GitHub issue / PR number, which is a
+  different thing.)
   Authority: `get_rfc_info` refreshes its index before reporting one missing, so
   never conclude an RFC is unpublished from a `search_rfc_index` miss alone.
   **Obsoleted RFCs are in the text corpus and are marked** — check the
