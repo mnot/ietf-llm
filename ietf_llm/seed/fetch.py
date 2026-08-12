@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from .. import freshness
+from ..net import DEFAULT_HEADERS
 from ..paths import get_cache_dir, get_index_dir
 from . import format as fmt
 
@@ -47,12 +48,21 @@ def _child(base: str, rel: str) -> str:
     return os.path.join(base, *rel.split("/"))
 
 
+def _request(location: str) -> urllib.request.Request:
+    """A GET carrying the project's `User-Agent`. The seed base can be any
+    operator's mirror, so identify the client and its contact path here exactly
+    as `net.transport` does for the gather fetches — this module streams bundles
+    and so stays on urllib rather than the shared `requests` session."""
+    return urllib.request.Request(location, headers=dict(DEFAULT_HEADERS))
+
+
 def _read_bytes(location: str, timeout: Optional[float] = None) -> bytes:
     """Read a small resource (index/manifest) fully into memory."""
     try:
         if _is_url(location):
             with urllib.request.urlopen(  # nosec B310 — operator/user-set base
-                location, timeout=_HTTP_TIMEOUT if timeout is None else timeout
+                _request(location),
+                timeout=_HTTP_TIMEOUT if timeout is None else timeout,
             ) as resp:
                 return bytes(resp.read())
         with open(location, "rb") as handle:
@@ -67,7 +77,7 @@ def _download(location: str, dest_path: str) -> None:
         if _is_url(location):
             with (
                 urllib.request.urlopen(  # nosec B310 — operator/user-set base
-                    location, timeout=_HTTP_TIMEOUT
+                    _request(location), timeout=_HTTP_TIMEOUT
                 ) as resp,
                 open(dest_path, "wb") as out,
             ):
