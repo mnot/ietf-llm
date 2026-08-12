@@ -43,6 +43,7 @@ from typing import Optional
 from ...config import service as service_config
 from ...log import LogLevel, Verbosity, log
 from ...paths import get_index_dir
+from ...tls import certificate_hint
 
 #: The corpus name the RFC series installs under. Defined here rather than
 #: imported from `mcp` so the gather path does not pull the MCP surface in.
@@ -206,7 +207,13 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     try:
         index = seed_fetch.read_index(seed_url)
     except Exception as err:  # pylint: disable=broad-except
-        return f"cannot read the seed store index at {seed_url}: {err}"
+        # A TLS-inspecting corporate proxy lands here, and the raw OpenSSL
+        # message alone reads as "the store is broken" rather than "your
+        # machine cannot verify it" — which sends the user to the wrong place.
+        return (
+            f"cannot read the seed store index at {seed_url}: {err}"
+            f"{certificate_hint(err)}"
+        )
     entry = index.entry(RFC_CORPUS)
     if entry is None:
         return f"the seed store at {seed_url} carries no `{RFC_CORPUS}` entry"
@@ -226,7 +233,7 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
             verbosity,
             level=LogLevel.STATUS,
         )
-        return f"the seed download failed: {err}"
+        return f"the seed download failed: {err}{certificate_hint(err)}"
     what = "installed" if have is None else f"updated from build {have}"
     log(
         f"{RFC_CORPUS}: RFC full-text corpus {what} (build {entry.version})",

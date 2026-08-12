@@ -62,6 +62,12 @@ on disk once installed, which is what makes `search_rfc_text` and
 it is safe to re-run. If it reports the full text as NOT installed, it says
 why.
 
+> **Behind a corporate TLS-inspecting proxy?** We verify against your operating
+> system's trust store, so a root your machine already trusts works without
+> configuration. If the proxy's root is *not* installed there, point
+> `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` at its PEM. To go back to verifying
+> against certifi's bundle instead, set `IETF_LLM_SYSTEM_TRUST_STORE=off`.
+
 > **Heads up — gathering reaches the network by default.** To make a first gather fast, `ietf-llm`
 > pulls a prebuilt snapshot of covered corpora from the public
 > [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at

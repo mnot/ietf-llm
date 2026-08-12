@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from .. import freshness
 from ..net import DEFAULT_HEADERS
 from ..paths import get_cache_dir, get_index_dir
+from ..tls import system_trust_context
 from . import format as fmt
 
 #: Network read timeout (seconds) for an http(s) seed base.
@@ -63,6 +64,7 @@ def _read_bytes(location: str, timeout: Optional[float] = None) -> bytes:
             with urllib.request.urlopen(  # nosec B310 — operator/user-set base
                 _request(location),
                 timeout=_HTTP_TIMEOUT if timeout is None else timeout,
+                context=system_trust_context(),
             ) as resp:
                 return bytes(resp.read())
         with open(location, "rb") as handle:
@@ -77,7 +79,9 @@ def _download(location: str, dest_path: str) -> None:
         if _is_url(location):
             with (
                 urllib.request.urlopen(  # nosec B310 — operator/user-set base
-                    _request(location), timeout=_HTTP_TIMEOUT
+                    _request(location),
+                    timeout=_HTTP_TIMEOUT,
+                    context=system_trust_context(),
                 ) as resp,
                 open(dest_path, "wb") as out,
             ):

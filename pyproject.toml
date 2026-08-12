@@ -39,6 +39,12 @@ dependencies = [
     "mcp>=1.10,<2",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
+    # Verify TLS against the OS trust store rather than certifi's bundle
+    # (`ietf_llm/tls.py`). Machines behind a TLS-inspecting corporate proxy
+    # trust its root already -- we were the only thing on the box that could
+    # not see it, which broke every fetch including `--init`. Pure Python, no
+    # transitive dependencies, so the torch-free serve path is unaffected.
+    "truststore",
 ]
 
 [project.optional-dependencies]
