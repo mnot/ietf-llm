@@ -33,6 +33,7 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
+from .. import coverage
 from ..embeddings import chunk_spans
 from ..embeddings.storage import indexed_files, iter_sections
 from .common import (
@@ -308,6 +309,17 @@ def _nothing_scanned_body(
     )
 
 
+def _github_edge(cache: str, eligible: List[Tuple[str, str]]) -> str:
+    """The GitHub record's ceiling, as a bound on this zero — empty unless the
+    scan covered `issues/` / `pulls/`, since on a mail-only scope it would
+    limit something the caller didn't ask about. Parses the archives, which is
+    why only the zero path calls it: that is the one place this tool invites a
+    positive claim of absence, and so the one place the parse earns itself."""
+    if not any(relpath.startswith(("issues/", "pulls/")) for relpath, _ in eligible):
+        return ""
+    return coverage.record_edge_line(coverage.github_records(cache))
+
+
 def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     wg: str,
     pattern: str,
@@ -316,6 +328,7 @@ def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-ar
     scanned: int,
     skipped: int,
     derived: int,
+    edge: str = "",
 ) -> str:
     """Render a zero-result scan as the finding it is.
 
@@ -338,6 +351,12 @@ def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-ar
         "will be missed. Search the most distinctive single token (`8890`, "
         "not `RFC 8890`) before concluding anything._",
     ]
+    if edge:
+        lines.append(
+            f"\n_The GitHub record scanned here ends at {edge}. Issues and PRs "
+            "above that number were never gathered, so this zero is silent "
+            "about them — re-gather before reading it as absence._"
+        )
     if file_pattern:
         lines.append(
             f"\n_Scoped to `{file_pattern}` — re-run without `file_pattern` "
@@ -859,10 +878,11 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
             wg, _nothing_scanned_body(wg, file_pattern, skipped, derived)
         )
     if not hits and not per_file:
-        return _with_freshness(
-            wg,
-            _no_match_body(wg, pattern, file_pattern, mode, scanned, skipped, derived),
+        edge = _github_edge(cache, eligible)
+        body = _no_match_body(
+            wg, pattern, file_pattern, mode, scanned, skipped, derived, edge
         )
+        return _with_freshness(wg, body)
 
     # `eligible` is relpath-sorted and retention stopped at `keep`, so `hits`
     # is already the first `limit` in (file, line) order — no sort needed.
@@ -936,6 +956,11 @@ def register(server: "FastMCP") -> None:
         **Everywhere else, a match is within one line.** A phrase broken
         across a mail wrap will not match. Search the most distinctive single
         token — `8890`, not `RFC 8890` — then widen once you have the files.
+
+        A zero over `issues/` / `pulls/` also reports **where the GitHub
+        record stops** — the highest issue/PR number held, and when that
+        archive was built. An issue filed above that number was never scanned,
+        so check the ceiling before reading a zero as "never raised".
 
         Options:
           - `file_pattern`: glob over the relative path (`threads/*`,

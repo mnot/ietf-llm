@@ -174,8 +174,10 @@ never proposed", or "nobody cited X" on the strength of a `search_corpus` miss.
 
 Use **`grep_corpus`** for those: it scans every gathered file line by line and
 reports how many it scanned, so a zero is a finding you can state — bounded by
-the gather window, the corpus, and the glob if you pass one (its output spells
-out each). Route on the shape of the question:
+the gather window, the corpus, the glob if you pass one, and (for issues/PRs)
+the highest number the gather held: its output spells out each, and names that
+last number so you can see whether the thing you're asking about is above the
+end of the record. Route on the shape of the question:
 
 - "what was said about X", "arguments for Y", "where does this live" →
   `search_corpus` / `search_corpora` / `read_topic`.

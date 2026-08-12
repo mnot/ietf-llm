@@ -334,7 +334,15 @@ Key invariants:
   source inventory read from on-disk artifacts — both reader-side, so a
   client knows how far back a corpus reaches and what it holds without a
   re-gather. The window bounds mailing-list / meeting recency only;
-  GitHub issues and drafts are the full set.
+  GitHub issues and drafts are not windowed. Unwindowed is not
+  unbounded, though: `coverage.RepoRecord` reads the highest issue/PR
+  number each `github/<repo>.json` holds (across both its `issues` and
+  `pulls` arrays — GitHub numbers them in one sequence), and dates it
+  from the archive's own timestamp rather than the gather, because the
+  archive is fetched from the repo's published `archive.json` and can
+  be days older than the gather that pulled it. `overview` and a
+  zero-result `grep_corpus` state that ceiling, so a negative over
+  `issues/` is bounded above as well as below.
 - **`gather-metrics.json`** records the upstream HTTP load of the last
   run — request counts (transferred / revalidated / error), bytes, a
   per-host breakdown, and a top-N of URL patterns. `net/http_metrics.py`
