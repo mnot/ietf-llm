@@ -27,7 +27,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
@@ -751,7 +751,7 @@ def section_outline(wg: str, file: str) -> List[Tuple[str, str, int]]:
 
 def iter_sections(
     wg: str, files: Optional[Iterable[str]] = None
-) -> Iterator[Tuple[str, Optional[str], str, str]]:
+) -> Generator[Tuple[str, Optional[str], str, str], None, None]:
     """Yield `(file, section, title, text)` for every section of a corpus, in
     document order, each section's rows already joined.
 
@@ -778,6 +778,14 @@ def iter_sections(
     degrades benignly — the text is all still read, one section is merely
     reported twice — whereas label-grouping would have to sort the whole
     corpus to recover the order.
+
+    **A `sqlite3.Error` propagates rather than ending the iteration.** The
+    other readers here swallow it and return a value, which is safe when the
+    caller renders "nothing found". It is not safe for a generator feeding an
+    evidence-of-absence scan: stopping quietly mid-corpus is indistinguishable
+    from finishing, so the caller would report a complete scan of a fraction
+    of the series and call the silence proof. Raising is what lets it say the
+    scan failed.
     """
     if not os.path.exists(_db_path_ro(wg)):
         return
@@ -807,8 +815,6 @@ def iter_sections(
             buf.append(str(text or ""))
         if key is not None:
             yield (key[0], key[1], title, "\n".join(buf))
-    except sqlite3.Error:
-        return
     finally:
         conn.close()
 

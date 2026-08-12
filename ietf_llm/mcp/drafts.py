@@ -227,8 +227,17 @@ def _read_file_window(
     body: List[str] = []
     budget = _MAX_WINDOW_CHARS
     for offset, line in enumerate(lines[start - 1 : end]):
-        if budget - len(line) < 0 and body:
-            end = start + offset - 1
+        if budget - len(line) < 0:
+            if body:
+                end = start + offset - 1
+                break
+            # One line longer than the whole budget: a pasted base64 blob or
+            # log dump, which `get_issue` does see. Emitting it whole to avoid
+            # an empty result would put the character bound back where it
+            # started, so it is cut instead — and saying so matters, because a
+            # silently shortened line is a misquote.
+            body.append(line[:budget].rstrip("\n") + " …[line truncated]\n")
+            end = start + offset
             break
         body.append(line)
         budget -= len(line)
@@ -240,27 +249,59 @@ def _read_file_window(
 
 
 #: A section heading at column 0: `1.  Introduction`, `3.1.  Overview`,
-#: `Appendix B.  Rationale`, `B.5.  ...`. Body text in an Internet-Draft is
-#: indented, so anchoring at column 0 is what separates a heading from a
-#: numbered list item, and the table of contents (indented, dot-leadered) is
-#: excluded by the same anchor. Validated against 379 cached drafts that carry
-#: a ToC: every ToC entry is found, plus the deeper headings a ToC omits.
+#: `Appendix B.  Rationale`, `B.5.  ...`.
+#:
+#: A bare single letter must carry the `Appendix` / `Annex` word. Without that
+#: the branch matches the initial in a column-0 running footer — `R. Perlman,
+#: et. al.  Expires: 17 May 2001` becomes "Appendix R". `B.1` is unambiguous
+#: and stands alone.
 _DRAFT_HEADING_RE = re.compile(
-    r"^(?:Appendix\s+|Annex\s+)?"
-    r"([0-9]+(?:\.[0-9]+)*|[A-Z](?:\.[0-9]+)*)\.\s+(\S.*?)\s*$",
-    re.MULTILINE,
+    r"^(?:(?P<word>Appendix|Annex)\s+)?"
+    r"(?P<label>[0-9]+(?:\.[0-9]+)*|[A-Z]\.[0-9]+(?:\.[0-9]+)*|[A-Z])\."
+    r"\s+(?P<title>\S.*?)\s*$"
 )
+
+#: A run of dots is a table-of-contents leader, never a section title.
+_TOC_LEADER_RE = re.compile(r"\.{4,}")
 
 
 def _draft_headings(lines: List[str]) -> List[Tuple[str, str, int]]:
     """`(label, title, line_number)` for each section heading, in document
     order. Reader-side: parsed from the cached text on every call, so this
-    needs no re-gather and works on every corpus already on disk."""
+    needs no re-gather and works on every corpus already on disk.
+
+    Column 0 alone is not enough to identify a heading, which an earlier
+    version assumed. Two things also live at column 0 and match the shape:
+
+    * a **table of contents** in the older non-xml2rfc layout, where entries
+      are unindented (`1.  Introduction......4`); and
+    * **numbered pseudocode**, common in CFRG drafts (`1.  L =
+      length(messages)`), sometimes blank-line separated like a heading.
+
+    Either produces duplicate labels, and a duplicate is how `section="1"`
+    comes to return the table of contents instead of the introduction — a
+    wrong answer delivered silently, which is the failure this tool exists to
+    end. So a heading must also be surrounded by blank lines and carry no dot
+    leader. Across the 2,389 cached drafts that takes drafts with duplicated
+    labels from 38 to 10; the cost is 9 of 2,247 drafts with a table of
+    contents losing an entry from their outline, which is recoverable — a
+    missing row answers "no section X" and shows what is there.
+    """
     out: List[Tuple[str, str, int]] = []
-    for number, line in enumerate(lines, 1):
+    for index, line in enumerate(lines):
         match = _DRAFT_HEADING_RE.match(line.rstrip("\n"))
-        if match:
-            out.append((match.group(1), match.group(2), number))
+        if match is None:
+            continue
+        label = match.group("label")
+        if len(label) == 1 and label.isalpha() and not match.group("word"):
+            continue
+        if _TOC_LEADER_RE.search(match.group("title")):
+            continue
+        if index and lines[index - 1].strip():
+            continue
+        if index + 1 < len(lines) and lines[index + 1].strip():
+            continue
+        out.append((label, match.group("title"), index + 1))
     return out
 
 
@@ -276,13 +317,26 @@ def _section_span(
     A parent takes its descendants, matching `get_rfc_section`: asking for §7
     of a document whose content is in §7.1 and §7.2 should not return a
     heading and nothing else.
+
+    Only the **first contiguous run** of descendants counts. `_draft_headings`
+    filters out most false positives but cannot catch blank-line-separated
+    pseudocode that reuses a low number, and spanning from the first match to
+    the last would then stretch §1 from the introduction to somewhere near the
+    end of the document — returning most of the draft under the name of one
+    section. Stopping at the first heading that is *not* a descendant bounds
+    the damage to what a correct parse would have returned anyway.
     """
-    matched = [h for h in headings if _is_descendant(h[0], label)]
-    if not matched:
+    indices = [i for i, h in enumerate(headings) if _is_descendant(h[0], label)]
+    if not indices:
         return None
-    start = matched[0][2]
-    after = [h[2] for h in headings if h[2] > matched[-1][2]]
-    return (start, (after[0] - 1) if after else total)
+    run_end = indices[0]
+    for index in indices[1:]:
+        if index != run_end + 1:
+            break
+        run_end = index
+    start = headings[indices[0]][2]
+    after = headings[run_end + 1][2] if run_end + 1 < len(headings) else None
+    return (start, (after - 1) if after is not None else total)
 
 
 def _render_draft_outline(

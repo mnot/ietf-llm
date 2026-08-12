@@ -164,3 +164,96 @@ def test_draft_without_headings_falls_back_to_reading_from_the_top(
 def test_uncached_draft_still_says_so(isolated_home: Path) -> None:
     assert isolated_home
     assert "No cached draft" in tool_get_draft("draft-ietf-wg-absent")
+
+
+#: The older non-xml2rfc layout: the table of contents sits at column 0, so
+#: the column-0 anchor alone takes it — `1.` then appears twice, and a
+#: `section="1"` read spans from the ToC to the real §2. This is the shape
+#: that broke on 38 of the 2,389 cached drafts.
+COLUMN_ZERO_TOC = """\
+                          Another Test Draft
+
+Table of Contents
+
+1.  Introduction................................................2
+2.  Behaviour..................................................3
+
+1.  Introduction
+
+   The real introduction.
+
+2.  Behaviour
+
+   The real behaviour.
+"""
+
+#: Numbered pseudocode at column 0, blank-line separated exactly like a
+#: heading. Common in CFRG drafts; one had 37 spurious "section 1"s.
+PSEUDOCODE = """\
+1.  Introduction
+
+   Prose.
+
+2.  Procedure
+
+   Steps:
+
+1.  L = length(messages)
+
+2.  return INVALID
+
+3.  Security Considerations
+
+   None.
+"""
+
+
+def test_a_column_zero_toc_is_not_mistaken_for_headings(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home, "wg", "drafts/draft-ietf-wg-toc-00.txt", COLUMN_ZERO_TOC
+    )
+    labels = [l for l, _t, _n in _draft_headings(COLUMN_ZERO_TOC.splitlines(True))]
+    assert labels == ["1", "2"]
+    out = tool_get_draft("draft-ietf-wg-toc", section="1")
+    assert "The real introduction" in out
+    # The failure was returning the ToC under the name of the section.
+    assert "................" not in out
+    assert "The real behaviour" not in out
+
+
+def test_a_duplicate_label_cannot_stretch_a_section(isolated_home: Path) -> None:
+    """Blank-line-separated pseudocode is genuinely indistinguishable from a
+    heading by local rules — 10 of the 2,389 cached drafts still carry a
+    duplicate label because of it. The guarantee is therefore not "no
+    duplicates" but that a duplicate cannot do damage: `_section_span` takes
+    only the first contiguous run, so §1 stops at §2 instead of running to the
+    end of the document under one section's name."""
+    write_cache_file(
+        isolated_home, "wg", "drafts/draft-ietf-wg-pseudo-00.txt", PSEUDOCODE
+    )
+    labels = [l for l, _t, _n in _draft_headings(PSEUDOCODE.splitlines(True))]
+    assert labels.count("1") == 2  # the parse is wrong here, and known to be
+    out = tool_get_draft("draft-ietf-wg-pseudo", section="1")
+    assert "Prose." in out
+    assert "Security Considerations" not in out
+    assert "L = length" not in out
+
+
+def test_a_running_footer_initial_is_not_an_appendix(isolated_home: Path) -> None:
+    """`R. Perlman, et. al.  Expires: 17 May 2001` at column 0 became
+    "Appendix R" eleven times over."""
+    text = "1.  Introduction\n\n   Prose.\n\nR. Perlman, et. al.  Expires: 17 May 2001\n\n"
+    assert [l for l, _t, _n in _draft_headings(text.splitlines(True))] == ["1"]
+    assert [l for l, _t, _n in _draft_headings(
+        "Appendix R.  Rationale\n\n   Why.\n\n".splitlines(True)
+    )] == ["R"]
+
+
+def test_one_overlong_line_is_cut_not_emitted_whole(isolated_home: Path) -> None:
+    """A single line longer than the whole budget — a pasted blob, which
+    get_issue does see — must not escape the character bound."""
+    blob = "x" * (_MAX_WINDOW_CHARS * 3)
+    write_cache_file(isolated_home, "wg", "drafts/draft-ietf-wg-blob-00.txt", blob + "\n")
+    out = tool_get_draft("draft-ietf-wg-blob", start_line=1)
+    assert len(out) < _MAX_WINDOW_CHARS + 2000
+    assert "line truncated" in out

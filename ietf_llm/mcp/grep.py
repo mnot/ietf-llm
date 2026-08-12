@@ -29,6 +29,8 @@ import bisect
 import fnmatch
 import os
 import re
+import sqlite3
+import time
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from ..embeddings import chunk_spans
@@ -449,6 +451,21 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
 _RFC_SECTIONS_PER_DOC = 3
 _RFC_MATCHES_PER_SECTION = 2
 
+#: Wall-clock budget for one RFC-series scan. A literal phrase crosses the
+#: whole corpus in ~2.5s, but a plausible regex is far slower — `[A-Za-z]+ing`
+#: takes ~25s and `(\s|\w)+$` ~88s over the same ~400 MB, and nothing about
+#: either is adversarial. Every call re-scans from scratch on an `_offload`
+#: worker, so without a bound a few concurrent calls saturate the pool on the
+#: shared deployment. Stopping and *saying so* is the only safe behaviour: a
+#: truncated scan that rendered as a normal result would be the unsound
+#: negative this tool exists to prevent.
+_RFC_SCAN_BUDGET_S = 20.0
+
+#: How often the budget is polled, in sections. A clock read per section would
+#: be ~264k of them for no gain; this is a small fraction of the corpus either
+#: way.
+_RFC_SCAN_CHECK_EVERY = 512
+
 
 def _rfc_number(file: str) -> str:
     """`rfc9111.txt` → `9111`. The corpus filename is the only identifier the
@@ -583,7 +600,12 @@ def _int_or_zero(value: str) -> int:
     return int(digits) if digits else 0
 
 
-def _render_rfc_hits(hits: List[_RfcHit], total: int, header: str, limit: int) -> str:
+def _render_rfc_hits(
+    hits: List[_RfcHit], matching_sections: int, header: str, limit: int
+) -> str:
+    """`matching_sections` is the true count from the scan, not `len(hits)` —
+    which is a retention artefact, capped both overall and per RFC, and so
+    cannot be the denominator in a sentence claiming the counts are complete."""
     out = [header, ""]
     current: Optional[str] = None
     shown = 0
@@ -601,15 +623,40 @@ def _render_rfc_hits(hits: List[_RfcHit], total: int, header: str, limit: int) -
                 out.append(f"      {line}")
             out.append("")
         shown += 1
-    if len(hits) > shown:
+    if matching_sections > shown:
         out.append(
-            f"_Showing {shown} of {len(hits)} matching section(s) — the counts "
-            "are the complete scan, only the listing is capped. Raise `limit` "
+            f"_Showing {shown} of {matching_sections} matching section(s), at "
+            f"most {_RFC_SECTIONS_PER_DOC} per RFC — the totals above are the "
+            "complete scan, only this listing is capped. Raise `limit` "
             f"(max {_MAX_GREP_LIMIT}), narrow with `file_pattern`, or pass "
             "`files_only=True` for one row per RFC._"
         )
     out.append(_rfc_footer())
     return "\n".join(out)
+
+
+def _rfc_scan_scope(
+    file_pattern: Optional[str],
+) -> Tuple[List[str], Optional[str]]:
+    """The RFCs a scan will cover, or a message saying why it will not run."""
+    files = indexed_files(RFC_CORPUS)
+    if not files:
+        return [], (
+            "The RFC full-text corpus is not installed on this server, so "
+            "there is nothing to scan — `ietf-llm --init` installs it. "
+            "`search_rfc_index` searches titles and keywords either way."
+        )
+    if not file_pattern:
+        return files, None
+    narrowed = [f for f in files if fnmatch.fnmatch(f, file_pattern)]
+    if not narrowed:
+        return [], (
+            f"(no RFC matches `{file_pattern}`, so nothing was scanned — "
+            "this is **not** evidence of absence. The scan globs the "
+            "corpus filename, which is `rfc9111.txt`, so `rfc91*` works "
+            "and `9111` does not.)"
+        )
+    return narrowed, None
 
 
 def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -630,39 +677,43 @@ def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
             "`regex=True` to search for it as a literal string."
         )
 
-    files = indexed_files(RFC_CORPUS)
-    if not files:
-        return (
-            "The RFC full-text corpus is not installed on this server, so "
-            "there is nothing to scan — `ietf-llm --init` installs it. "
-            "`search_rfc_index` searches titles and keywords either way."
-        )
-    if file_pattern:
-        files = [f for f in files if fnmatch.fnmatch(f, file_pattern)]
-        if not files:
-            return (
-                f"(no RFC matches `{file_pattern}`, so nothing was scanned — "
-                "this is **not** evidence of absence. The scan globs the "
-                "corpus filename, which is `rfc9111.txt`, so `rfc91*` works "
-                "and `9111` does not.)"
-            )
+    files, refusal = _rfc_scan_scope(file_pattern)
+    if refusal is not None:
+        return refusal
 
     hits: List[_RfcHit] = []
     per_doc: Dict[str, int] = {}
     total = 0
     sections = 0
+    matching_sections = 0
+    stopped_early = False
     keep = 0 if files_only else _MAX_GREP_LIMIT
-    for file, section, title, text in iter_sections(RFC_CORPUS, files):
-        sections += 1
-        found = len(matcher.findall(text))
-        if not found:
-            continue
-        number = _rfc_number(file)
-        total += found
-        per_doc[number] = per_doc.get(number, 0) + found
-        if len(hits) < keep and sum(1 for h in hits if h.number == number) < (
-            _RFC_SECTIONS_PER_DOC
-        ):
+    deadline = time.monotonic() + _RFC_SCAN_BUDGET_S
+    # A glob is the only reason to name files: an unscoped scan would otherwise
+    # build an `IN (?,?,…)` clause with one parameter per RFC — 9,813 of them,
+    # past the 999-parameter default of SQLite before 3.32, which older
+    # distribution Pythons still ship. That is exactly where a swallowed error
+    # would have turned into a confident claim of absence.
+    scoped = files if file_pattern else None
+    try:
+        stream = iter_sections(RFC_CORPUS, scoped)
+        for file, section, title, text in stream:
+            sections += 1
+            if not sections % _RFC_SCAN_CHECK_EVERY and time.monotonic() > deadline:
+                stopped_early = True
+                stream.close()
+                break
+            found = sum(1 for _ in matcher.finditer(text))
+            if not found:
+                continue
+            matching_sections += 1
+            number = _rfc_number(file)
+            total += found
+            per_doc[number] = per_doc.get(number, 0) + found
+            if len(hits) >= keep or sum(1 for h in hits if h.number == number) >= (
+                _RFC_SECTIONS_PER_DOC
+            ):
+                continue
             hits.append(
                 _RfcHit(
                     number,
@@ -672,10 +723,37 @@ def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
                     _excerpts(text, matcher, context, _RFC_MATCHES_PER_SECTION),
                 )
             )
+    except sqlite3.Error as exc:
+        # An incomplete scan must never render as absence. Whatever was found
+        # before the failure is still true, but the denominator is not, so the
+        # one thing this must not do is stay quiet.
+        return (
+            f"The scan of the RFC series failed after {sections} section(s): "
+            f"{exc}. **Nothing can be concluded from this** — in particular a "
+            "partial scan is not evidence that the pattern is absent. Retry, "
+            "or narrow with `file_pattern`."
+        )
 
     mode = _mode_phrase(regex, case_sensitive) + (
         "" if regex else ", across line breaks"
     )
+    if stopped_early:
+        # Same rule as a failed scan: a truncated denominator cannot support a
+        # negative, so say what was covered and refuse to imply the rest.
+        found_note = (
+            f"{total} match(es) in {len(per_doc)} RFC(s) before it stopped"
+            if per_doc
+            else "no matches before it stopped"
+        )
+        return (
+            f"**INCOMPLETE SCAN — stopped after {_RFC_SCAN_BUDGET_S:.0f}s.** "
+            f"`{pattern}` ({mode}): {found_note}, having read {sections} of "
+            f"the corpus's section(s). A regex over ~400 MB can run for "
+            "minutes; a literal phrase scans the whole series in seconds. "
+            "**This cannot support a negative claim** — narrow with "
+            "`file_pattern`, or search a literal phrase instead.\n\n"
+            f"_{provenance_line()}_"
+        )
     if not per_doc:
         body = _rfc_no_match_body(pattern, file_pattern, mode, len(files), sections)
         return f"{body}\n\n_{provenance_line()}_"
@@ -688,7 +766,7 @@ def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     if files_only:
         body = _render_rfc_files_only(per_doc, total, header, limit)
     else:
-        body = _render_rfc_hits(hits, total, header, limit)
+        body = _render_rfc_hits(hits, matching_sections, header, limit)
     return f"{body}\n\n_{provenance_line()}_"
 
 

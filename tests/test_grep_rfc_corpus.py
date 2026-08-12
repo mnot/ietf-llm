@@ -19,6 +19,7 @@ a hit count.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
@@ -159,3 +160,68 @@ def test_missing_corpus_says_how_to_install_it(isolated_home: Path) -> None:
     out = tool_grep_corpus("rfcs", "anything")
     assert "not installed" in out
     assert "--init" in out
+
+
+def test_a_failed_scan_never_renders_as_absence(corpus: Path, monkeypatch: Any) -> None:
+    """The finding that mattered: `iter_sections` swallowing a sqlite3.Error
+    ended the generator quietly, so a scan of a fraction of the corpus was
+    rendered as a complete one — under a paragraph calling it real evidence of
+    absence. An incomplete scan has no denominator and must say so."""
+    assert corpus
+    from ietf_llm.mcp import grep as grep_mod
+
+    real = grep_mod.iter_sections
+
+    def flaky(name: str, files: Any = None) -> Any:
+        for index, row in enumerate(real(name, files)):
+            if index >= 1:
+                raise sqlite3.OperationalError("database is locked")
+            yield row
+
+    monkeypatch.setattr(grep_mod, "iter_sections", flaky)
+    out = tool_grep_corpus("rfcs", "caching")
+    assert "evidence of absence" not in out
+    assert "Nothing can be concluded" in out
+
+
+def test_an_unscoped_scan_names_no_files(corpus: Path, monkeypatch: Any) -> None:
+    """An unscoped scan passed one bind parameter per RFC — 9,813 of them,
+    past the 999-parameter default of SQLite before 3.32. The glob is the only
+    thing that needs the IN clause."""
+    assert corpus
+    seen: Dict[str, Any] = {}
+    from ietf_llm.mcp import grep as grep_mod
+
+    real = grep_mod.iter_sections
+
+    def spy(name: str, files: Any = None) -> Any:
+        seen["files"] = files
+        return real(name, files)
+
+    monkeypatch.setattr(grep_mod, "iter_sections", spy)
+    tool_grep_corpus("rfcs", "caching")
+    assert seen["files"] is None
+    tool_grep_corpus("rfcs", "caching", file_pattern="rfc9111.txt")
+    assert seen["files"] == ["rfc9111.txt"]
+
+
+def test_a_budgeted_stop_refuses_to_support_a_negative(
+    corpus: Path, monkeypatch: Any
+) -> None:
+    assert corpus
+    from ietf_llm.mcp import grep as grep_mod
+
+    monkeypatch.setattr(grep_mod, "_RFC_SCAN_BUDGET_S", -1.0)
+    monkeypatch.setattr(grep_mod, "_RFC_SCAN_CHECK_EVERY", 1)
+    out = tool_grep_corpus("rfcs", "caching")
+    assert "INCOMPLETE SCAN" in out
+    assert "cannot support a negative claim" in out
+    assert "evidence of absence" not in out
+
+
+def test_the_listing_cap_reports_the_true_section_count(corpus: Path) -> None:
+    """`len(hits)` is a retention artefact — capped overall and per RFC — so it
+    cannot be the denominator in a sentence claiming the counts are complete."""
+    assert corpus
+    out = tool_grep_corpus("rfcs", "caching", limit=1)
+    assert "Showing 1 of 2 matching section(s), at most 3 per RFC" in out
