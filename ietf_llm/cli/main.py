@@ -20,7 +20,7 @@ import sys
 from typing import Optional
 
 from ..gather.cli import build_parser
-from ..gather.sequencer import _gather_one
+from ..gather.sequencer import _gather_one, _persist_seed_toggle
 from ..gather.sources.catalog import ensure_catalog_index
 from ..gather.sources.repo_discovery import print_discovery
 from ..gather.sources.rfc_corpus import ensure_rfc_corpus
@@ -145,6 +145,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
     if args.init_machine:
         # After verbosity is resolved, before the gather-argument validation
         # below: --init takes no corpus, so those checks do not apply to it.
+        #
+        # The toggle first, so `--init --seed` re-enables seeding and then acts
+        # on it. Otherwise the one remedy for the state --init most often has
+        # to report — seeding turned off — is a gather, which is exactly what
+        # the user of this flag does not have a corpus for.
+        _persist_seed_toggle(args)
         reason = _housekeeping(verbosity, forced=True)
         if verbosity is not Verbosity.QUIET:
             _init_report(reason)

@@ -79,6 +79,14 @@ local_skills() {
   done | sort
 }
 
+# Every directory under $dest, sorted — including any without a SKILL.md.
+# `local_skills` cannot see those, but `data/skills/**/*` still ships them, so
+# --check has to look wider than the vendoring does. An interrupted run between
+# the rm -rf and the cp -R leaves exactly that.
+local_dirs() {
+  find "$dest" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
+}
+
 # Rewrite the "tag vX.Y.Z  (commit <sha>)" line in VENDORED.md in place
 # (temp-file + mv, so it works on both BSD/macOS and GNU sed).
 update_vendored_md() {  # ref sha
@@ -93,7 +101,7 @@ if [[ "${1:-}" == "--check" ]]; then
   root="$(fetch_tree "$ref")"
   status=0
   upstream="$(skills_in "$root")"
-  mine="$(local_skills)"
+  mine="$(local_dirs)"
   if [[ "$upstream" != "$mine" ]]; then
     echo "DRIFT: vendored skill set differs from $REPO@$ref" >&2
     diff <(echo "$mine") <(echo "$upstream") | sed 's/^/  /' >&2
@@ -132,8 +140,10 @@ done
 
 # Anything we hold that upstream no longer publishes. Dropping it here is what
 # lets `--install-skills` stop shipping a retired skill; removing the installed
-# copy on a user's machine is `skill_install._prune_orphans`' job.
-for skill in $(local_skills); do
+# copy on a user's machine is `skill_install._prune_orphans`' job. Over every
+# directory, not just the ones with a SKILL.md, so a torn earlier run cleans up
+# rather than shipping its debris in the wheel.
+for skill in $(local_dirs); do
   if ! echo "$upstream" | grep -qx "$skill"; then
     rm -rf "${dest:?}/$skill"
     echo "pruned $skill/ — no longer published by $REPO"

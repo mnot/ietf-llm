@@ -160,11 +160,15 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     precisely to say what state the machine is in, and "not installed" with no
     reason sends the user looking in the wrong place. So the reason is
     *returned* rather than logged: the caller that cares prints it.
+
+    A reason is about the *corpus*, not about this call: a step that declined
+    with the corpus already installed and current has nothing to report, so it
+    returns None like any other success.
     """
     if not service_config.seeding_enabled():
         return (
             "seeding is disabled (`--no-seed`, or IETF_LLM_SEED_ENABLED=off); "
-            "re-enable it with `ietf-llm --seed`"
+            "re-enable it and install in one go with `ietf-llm --init --seed`"
         )
     # Lazy for the same reason as the block below.
     # pylint: disable-next=import-outside-toplevel
@@ -177,7 +181,15 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
             "IETF_LLM_SEED_URL overrides it)"
         )
     if _checked_recently(interval):
-        return f"the seed store was checked within the last {interval:.0f}s"
+        if local_build():
+            return None  # current and throttled — nothing to report
+        # Named with the stamp, because the case that reaches here with no
+        # corpus is a stamp mtime in the future (clock skew, a restored
+        # backup), where the file to delete is the whole remedy.
+        return (
+            f"the seed store was checked within the last {interval:.0f}s "
+            f"(delete {_stamp_path()} to force a check)"
+        )
     # Lazy: the seed consumer is gather-path only, and this keeps the import
     # off any path that merely reads.
     # pylint: disable=import-outside-toplevel

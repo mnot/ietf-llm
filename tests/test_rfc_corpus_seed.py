@@ -215,6 +215,31 @@ def test_the_throttle_says_it_is_the_throttle(
     rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
     reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
     assert reason and "checked within" in reason
+    # And names the stamp, which is the whole remedy when the mtime is in the
+    # future (clock skew, a restored backup) and even interval=0.0 throttles.
+    assert rfc_corpus._STAMP in reason
+
+
+def test_the_throttle_is_not_a_reason_when_the_corpus_is_current(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reason is about the corpus, not about the call. Throttling a machine
+    that already has a current corpus is an ordinary success, and reporting it
+    as a cause would send `--init` looking for a problem that is not there."""
+    _install_local("20260811T003915Z+2")
+    _stub_store(monkeypatch, _index(rfc_corpus.RFC_CORPUS))
+    rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
+    assert rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET) is None
+
+
+def test_the_disabled_seeding_remedy_is_a_command_that_runs(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ietf-llm --seed` alone exits 2 — a corpus name is required — so naming
+    it would hand the user of a machine that has no corpus a dead end."""
+    monkeypatch.setenv("IETF_LLM_SEED_ENABLED", "off")
+    reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET)
+    assert reason and "--init --seed" in reason
 
 
 # --- enumeration ------------------------------------------------------------
@@ -335,6 +360,49 @@ def test_init_reports_why_the_corpus_is_missing(
     out = capsys.readouterr().out
     assert "seeding is disabled" in out
     assert "writable" not in out  # the guess is not printed alongside the answer
+
+
+def test_init_seed_re_enables_seeding_before_installing(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--init --seed` is the remedy the disabled-seeding reason names, so it
+    has to work on a machine with no corpus to gather. The toggle must land
+    before the housekeeping, or the run it is meant to unblock still sees
+    seeding off."""
+    import sys as _sys
+
+    from ietf_llm.cli import main as cli_main
+    from ietf_llm.config import service as service_config
+
+    service_config.set_seeding_enabled(False)
+    seen: List[bool] = []
+    monkeypatch.setattr(
+        cli_main,
+        "_housekeeping",
+        lambda v, forced=False: seen.append(service_config.seeding_enabled()),
+    )
+    monkeypatch.setattr(_sys, "argv", ["ietf-llm", "--init", "--seed"])
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main()
+    assert exc.value.code == 0
+    assert seen == [True]
+    assert service_config.seeding_enabled()  # and it persisted
+
+
+def test_init_without_the_flag_leaves_the_toggle_alone(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys as _sys
+
+    from ietf_llm.cli import main as cli_main
+    from ietf_llm.config import service as service_config
+
+    service_config.set_seeding_enabled(False)
+    monkeypatch.setattr(cli_main, "_housekeeping", lambda v, forced=False: None)
+    monkeypatch.setattr(_sys, "argv", ["ietf-llm", "--init"])
+    with pytest.raises(SystemExit):
+        cli_main.main()
+    assert not service_config.seeding_enabled()
 
 
 def test_housekeeping_hands_back_the_corpus_reason(

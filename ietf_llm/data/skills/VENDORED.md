@@ -7,6 +7,13 @@ canonical source is:
     tag v0.4.1  (commit e127f7267c2a0abb6e0302652c99b5f838310c6e)
     licensed CC-BY-4.0
 
+**Not all of it is CC-BY-4.0.** The skill text is; the RFC `.txt` files under
+`ietf-http/reference/` and `ietf-reviewing/reference/` are not — they are RFCs,
+copyright the IETF Trust or the Internet Society and their authors, reproduced
+under <https://trustee.ietf.org/license-info>. Each `reference/` directory
+carries the upstream `NOTICE` saying so, vendored with it; read those before
+reasoning about redistribution of the wheel, not this line.
+
 Whatever that repo publishes is what ships here: the vendoring script discovers
 the skill set rather than naming it, so a skill added upstream arrives on the
 next re-vendor and one retired upstream is pruned. The MCP server serves two of
