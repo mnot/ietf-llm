@@ -45,7 +45,5 @@ jobs:
     # the GitHub API.
     - name: Check vendored skills match their pin
       if: matrix.python-version == '3.13'
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: make vendor-skills-check
     # === pyproject-tmpl: end "post-test" ===
