@@ -18,12 +18,11 @@ from typing import Any, Dict, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .. import __version__
 from ..log import LogLevel, log
-from ..tls import system_trust_context
+from ..tls import trust_store_adapter
 from . import http_metrics
 from .http_governor import host_slot
 
@@ -39,39 +38,11 @@ _NO_RETRY_SESSION: Optional[requests.Session] = None
 _SESSION_LOCK = threading.Lock()
 
 
-class _TrustStoreAdapter(HTTPAdapter):
-    """`HTTPAdapter` whose pools verify through the OS trust store.
-
-    Handed to urllib3 as a pool kwarg rather than injected into `ssl` globally;
-    `tls.py` explains why that distinction is load-bearing (it is what keeps
-    boto3, and so the cloud storage backend, working).
-    """
-
-    def __init__(self, *args: Any, ssl_context: Any, **kwargs: Any) -> None:
-        self._ssl_context = ssl_context
-        super().__init__(*args, **kwargs)
-
-    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
-        kwargs["ssl_context"] = self._ssl_context
-        super().init_poolmanager(*args, **kwargs)
-
-    def proxy_manager_for(self, *args: Any, **kwargs: Any) -> Any:
-        kwargs["ssl_context"] = self._ssl_context
-        return super().proxy_manager_for(*args, **kwargs)
-
-
 def _build_session(retry: Any) -> requests.Session:
     session = requests.Session()
-    pool = {"pool_connections": 8, "pool_maxsize": 8, "max_retries": retry}
-    context = system_trust_context()
-    # `proxy_manager_for` above is not incidental: the machine that needs the
-    # OS trust store is usually the one reaching us through a proxy, so the
-    # proxied pool is exactly the one that must carry the context too.
-    adapter: HTTPAdapter = (
-        _TrustStoreAdapter(ssl_context=context, **pool)
-        if context is not None
-        else HTTPAdapter(**pool)
-    )
+    # Verifies through the OS trust store where that is available -- see
+    # `tls.py` for why it is scoped here rather than injected into `ssl`.
+    adapter = trust_store_adapter(pool_connections=8, pool_maxsize=8, max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import os
 import ssl
-from typing import List, Optional
+from typing import Any, List, Optional
 
 #: Opt out of platform verification, falling back to certifi / OpenSSL defaults.
 _ENV = "IETF_LLM_SYSTEM_TRUST_STORE"
@@ -77,6 +77,39 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
         return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     except Exception:  # pylint: disable=broad-except
         return None
+
+
+def trust_store_adapter(**pool_kwargs: Any) -> Any:
+    """A `requests` `HTTPAdapter` whose pools verify through the OS trust store,
+    or a plain one when platform verification is unavailable or opted out.
+
+    The factory rather than the class, so every `requests` transport we own is
+    built the same way and none of them has to know whether a context was
+    available. `requests` is imported inside, keeping this module stdlib-only at
+    import time — it is reached from the serve path, which must stay light.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from requests.adapters import HTTPAdapter
+
+    context = system_trust_context()
+    if context is None:
+        return HTTPAdapter(**pool_kwargs)
+
+    class _TrustStoreAdapter(HTTPAdapter):
+        """Passes the context to urllib3 as a pool kwarg. Note `proxy_manager_for`
+        as well as `init_poolmanager`: the machine that needs the OS trust store
+        is usually the one reaching us through a proxy, so the proxied pool is
+        exactly the one that must carry it."""
+
+        def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+            kwargs["ssl_context"] = context
+            super().init_poolmanager(*args, **kwargs)
+
+        def proxy_manager_for(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs["ssl_context"] = context
+            return super().proxy_manager_for(*args, **kwargs)
+
+    return _TrustStoreAdapter(**pool_kwargs)
 
 
 def certificate_error(err: BaseException) -> Optional[ssl.SSLCertVerificationError]:

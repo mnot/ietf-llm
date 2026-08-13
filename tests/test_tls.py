@@ -161,27 +161,47 @@ def test_boto3_still_works_after_we_build_our_context() -> None:
     )
 
 
-def test_the_requests_session_carries_the_context(
+def test_the_adapter_carries_the_context_into_both_pools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from ietf_llm.net import transport
-
     monkeypatch.delenv(tls._ENV, raising=False)
-    adapter = transport._build_session(None).get_adapter("https://example.org/")
-    assert isinstance(adapter, transport._TrustStoreAdapter)
-    # Both pools, not just the direct one: the machine that needs the OS trust
-    # store is usually the one reaching us through a proxy.
+    adapter = tls.trust_store_adapter(pool_maxsize=2)
     assert adapter.poolmanager.connection_pool_kw["ssl_context"] is not None
+    # Not just the direct pool: the machine that needs the OS trust store is
+    # usually the one reaching us through a proxy.
+    proxied = adapter.proxy_manager_for("http://proxy.example.org:3128")
+    assert proxied.connection_pool_kw["ssl_context"] is not None
 
 
-def test_the_session_falls_back_when_opted_out(
+def test_the_adapter_falls_back_when_opted_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(tls._ENV, "off")
+    adapter = tls.trust_store_adapter(pool_maxsize=2)
+    assert "ssl_context" not in adapter.poolmanager.connection_pool_kw
+
+
+def test_every_requests_transport_we_own_uses_the_factory() -> None:
+    """Two `requests` transports exist: the gather session and the remote
+    embedding client. The second was missed first time round — and it is the
+    serve path's one hard network dependency, so an enterprise proxy breaking
+    it takes a torch-free deployment down with it."""
+    import ast
+    import inspect
+
+    from ietf_llm.embeddings import models
     from ietf_llm.net import transport
 
-    monkeypatch.setenv(tls._ENV, "off")
-    adapter = transport._build_session(None).get_adapter("https://example.org/")
-    assert not isinstance(adapter, transport._TrustStoreAdapter)
+    for mod in (transport, models):
+        src = inspect.getsource(mod)
+        mounts = [
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "mount"
+        ]
+        assert mounts, f"{mod.__name__} mounts nothing"
+        assert "trust_store_adapter(" in src, mod.__name__
+        assert "HTTPAdapter(" not in src, f"{mod.__name__} builds a bare adapter"
 
 
 def test_the_seed_fetcher_passes_a_context(monkeypatch: pytest.MonkeyPatch) -> None:
