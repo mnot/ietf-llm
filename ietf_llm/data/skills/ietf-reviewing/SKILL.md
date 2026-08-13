@@ -40,6 +40,17 @@ procedure. Both are gates at Step 8, stated in full there.
   On a directorate, WGLC or Last Call review, announce the gap before dispatching, treat every
   "never raised" as unverified, and carry it beside the provisional view as well as in *Could not
   obtain*.
+- **No `review_record`.** It reaches the network, so it is absent wherever gathering is off. Two
+  Datatracker endpoints carry the same join by hand:
+
+  ```
+  /api/v1/review/reviewassignment/?review_request__doc__name=draft-...&format=json   # reviewed_rev, result, reviewer, state
+  /api/v1/doc/ballotpositiondocevent/?doc__name=draft-...&format=json                # rev, pos, balloter, time
+  ```
+
+  They take different filters, and neither takes the obvious `?doc=`. On the ballot endpoint that
+  errors; on the assignment endpoint it is *ignored*, returning every assignment in the datatracker
+  in a well-formed response. Keep the revision field on both -- it is the whole value of the join.
 - **No `rfcdiff`.** A single script, no install:
   <https://raw.githubusercontent.com/ietf-tools/rfcdiff/main/rfcdiff>
   Failing that, strip page headers, footers and form feeds before a raw `diff`.
@@ -87,16 +98,48 @@ want looked at.
 gathered corpus, compare it against the live state now. If the corpus is behind or missing, start
 the gather now. Verify the text you are about to read cold against the authoritative source.
 
+**At or past WGLC, read the review record before you read the draft.** `review_record(name)` gives
+every review and ballot position with the revision it was cast against, and leads with whether
+anything has examined the current one.
+
+Read the two halves separately, as it reports them. Reviews and ballot routinely disagree -- an AD
+who has re-balloted on the current text while the directorate reviews stop two revisions back is not
+a document anyone has re-read. Where a half has examined nothing current, say so first: a concern in
+text no reviewer has seen is a different concern.
+
+Read the rows that produced nothing, too. A rejected assignment and a directorate that never
+returned are facts about the coverage, and they are the rows the eye skips.
+
 **Check the corpus's source inventory, not the gather's status.** A gather reports `done` while
 saying nothing about a source it never had, so `gather_status` will not tell you the issue tracker
 is absent. The inventory will: `list_corpora`'s trailing `(list · issues · drafts · minutes)`, or
 the `Sources:` line from `overview`. Read it before dispatching anything and know which sources you
-have.
+have, and from `overview`'s Coverage, where each one stops.
 
 A corpus with no gathered issues is common and is not a defect, but it changes where the record
 lives -- a group can run a 400-issue tracker that was never gathered. A review run without the
 tracker looks exactly like a review run against a group that does not use one, so establish which
 you are in.
+
+**Then ask which corpora the stage needs**, which is not the same as what this one holds. Step 8
+licenses claims that a point was never raised anywhere:
+
+| Stage | A "never raised" has to have scanned |
+|---|---|
+| WG document, WGLC | the WG list, and its issues and pull requests |
+| IETF Last Call, and after | the above, plus `last-call` -- Last Call comments go to `last-call@ietf.org`, gathered as a list corpus of its own |
+| IESG evaluation | the above, plus the ballot record |
+
+Gather what is missing now. What you cannot gather bounds every negative the review makes -- Step 8.
+
+### The reviewer's own standing
+
+Two things about the person whose name this goes out under change what the findings have to say.
+What is their role in this group -- chair, AD, author or editor of this document? And did they write
+or edit anything the draft normatively references? Ask rather than infer; the reference list and the
+RFCs' own author lines settle the second.
+
+Where either holds it goes in *Your call* at Step 10. Neither softens a finding.
 
 ### Reviews of a particular kind
 
@@ -258,6 +301,11 @@ override that default. If your reason for being unsure is *another lens probably
 better*, rule it out and record which lens. And where the rubric's own "rarely fires" language says
 this is not its case, follow the rubric.
 
+**A rule-out quotes the criterion it fails.** Name the rubric, quote the sentence from its `Firing`
+section that excludes this draft, and say why. One line each. *This is a caching header, not DNS* is
+not a rule-out: a rubric's topic does not predict whether its concern applies, which is what the
+`Firing` sections are for. Ruling out on another lens is the exception -- name that lens instead.
+
 Off a directorate assignment, scope every dispatch to the team's lane -- `stages.md`, at Step 1. The
 lens set itself is not cut to the lane.
 
@@ -313,6 +361,13 @@ before it as a matter of course, and go further back only when a concern turns o
 changed. This step is on the critical path and every extra revision is another read, so when you do
 go back, grep the revisions for the one string (flattened, per `quoting.md`) rather than diffing them
 pairwise.
+
+**Fetch both sides rather than assuming either is on disk.** A gather stores the revision that was
+current when it ran, so most corpora hold exactly one per draft -- a long back-catalogue is the
+exception, not the rule, and the *current* revision is missing whenever the draft moved since the
+gather. Older revisions are at `https://www.ietf.org/archive/id/draft-...-NN.txt`. `get_draft`
+returns what was gathered, which is neither reliably the old side nor reliably the new one, so check
+which revision it gave you before diffing it.
 
 If you have reviewed this draft before, your own prior findings are an input -- but after the cold
 read, not before it. Anything on that list which did not reappear either gets re-derived or gets
@@ -431,6 +486,17 @@ distinctive string, which scans every gathered file, embedded or not, and states
 Match within a line -- search `8890`, not `RFC 8890` -- since a phrase split across a mail wrap
 misses.
 
+**A negative names the corpora it scanned**, from the stage's list at Step 1: grep over the wrong
+corpus is a false negative carrying the confidence of a checked one. A stage-required corpus you
+could not gather goes in *Could not obtain* and beside the provisional view, and bounds every
+negative resting on it.
+
+**And it carries the ceiling `grep_corpus` printed**, quoted rather than paraphrased. A zero over
+`issues/` or `pulls/` states where the GitHub record ends -- `owner/repo through #N (archive built
+<date>)` -- and anything above that number was never fetched, so the zero is silent about it. Two
+details are easy to restate wrongly: that date is the archive's, not the gather's, and issues and
+pull requests share one number sequence, so the ceiling is not per-kind.
+
 Each concern comes back **settled**, **out of scope**, **wrong**, **live**, or **reframed** -- it
 holds but is about something else now, usually a condition the change was agreed under.
 
@@ -500,9 +566,10 @@ Spot-check the quotes your findings rest on against the files before anything go
 `quoting.md`. This applies to the draft text you hand the lenses: copy it and you are the extraction
 bug, so check what comes back against the authoritative fetch.
 
-Record the lenses you ruled out without dispatching, with what you checked, and the ones that came
-back not applying or supporting the design. Keep both so the next reviewer does not rediscover them;
-`findings.md` writes them up on request rather than by default.
+Record the lenses you ruled out without dispatching -- each with the criterion it fails, quoted from
+its rubric's `Firing` section, per Step 4 -- and the ones that came back not applying or supporting
+the design. Keep both so the next reviewer does not rediscover them; `findings.md` writes them up on
+request rather than by default.
 
 ## 9. Rank the concerns, and form a provisional view
 
@@ -584,6 +651,10 @@ Expect one or two at Step 10, and count them as findings rather than rework.
 The output. Its shape is specified in `findings.md` -- follow it. Each issue is a record you already
 have, merged, chained and calibrated at Step 9; assembling is rendering, and fresh thinking here
 means Step 9 is unfinished.
+
+That governs *analysis*, not sources. **Re-print every record fact from the tool here** -- revision
+numbers, dates, reviewer and balloter names, review results, ballot positions, issue and pull
+request numbers -- rather than copying it from your notes. A summary of a tool return is recall.
 
 ## Delivering the review
 

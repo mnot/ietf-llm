@@ -4,7 +4,7 @@ The skills in this directory are **vendored, not authored here.** Their
 canonical source is:
 
     https://github.com/mnot/ietf-skill
-    tag v0.4.1  (commit e127f7267c2a0abb6e0302652c99b5f838310c6e)
+    tag v0.4.2  (commit 9414bf39547fff7a2196274feb19b2a68c3d2af5)
     licensed CC-BY-4.0
 
 **Not all of it is CC-BY-4.0.** The skill text is; the RFC `.txt` files under

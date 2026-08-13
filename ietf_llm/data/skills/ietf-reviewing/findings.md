@@ -7,6 +7,9 @@ optional.
 Each issue is a record you already have, merged, chained and calibrated at Step 9. Assembling is
 rendering; fresh thinking here means Step 9 is unfinished.
 
+Rendering is not recall: re-print every record fact -- revisions, dates, reviewer and balloter
+names, results, ballot positions, issue and pull request numbers -- from the tool as you write it.
+
 Lists, not tables -- this gets read in a text editor as often as anywhere that renders markdown.
 Use a table only where the content is genuinely a matrix.
 
@@ -105,10 +108,10 @@ in another section. The four marked *only where* are conditional; the rest are a
   on one mechanism that are not one decision, so the merge rule keeps them apart. Name the ID and
   the adjacency. If the reviewer raises only one, this is what tells them the other's framing
   changes.
-- **Disposition:** only where the record has already answered this -- what was raised, by whom, what
-  the closing reason was, and whether it engaged the point. A concern the authors have declined is
-  raised differently from one they have never seen, and this is what carries that when *Prior
-  concerns* is not written.
+- **Disposition:** only where this has been raised before -- what was raised, by whom, what the
+  closing reason was if there is one, and whether it engaged the point. A concern the authors have
+  declined is raised differently from one they have never seen, and this is what carries that when
+  *Prior concerns* is not written.
 - **Severity:** how significant the issue is / how strong its impact is; scale of one to five 🔥.
   Five is *this cannot ship, and if it did the IETF would have to fix it afterwards*; three is
   *the authors should fix this before publication, and a reviewer would expect them to*; one is
@@ -143,6 +146,9 @@ a consequence attached.
 - A finding resting on an inference rather than on quoted text, and what turns on it.
 - A finding where they have standing you do not -- they closed the issue, edited the RFC, chaired
   the thread. Say so; do not quietly raise their own point back at them.
+- A finding that turns on the reviewer's *own* work, or that they would raise from a chair's or AD's
+  seat -- Step 1 established both. A finding that the draft misuses their specification is the one
+  they will doubt least; a point pressed by a chair is read as more than one reviewer's view.
 - A finding whose framing commits them to a position they may not want to hold.
 - Anything you could not verify, and what it would change.
 
