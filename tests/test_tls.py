@@ -224,32 +224,58 @@ def test_no_requests_call_bypasses_the_trust_store() -> None:
     module-level `requests.get`/`post` or a bare `HTTPAdapter` is the shape of
     the mistake, so that is what this looks for.
     """
-    import ast
     import pathlib
 
     root = pathlib.Path(tls.__file__).parent
     offenders = []
     for path in sorted(root.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            # `requests.get(...)` / `requests.post(...)` — module-level calls
-            # build a throwaway session with certifi verification.
-            if (
-                isinstance(func, ast.Attribute)
-                and getattr(func.value, "id", None) == "requests"
-                and func.attr in ("get", "post", "put", "delete", "request", "head")
-            ):
-                offenders.append(f"{path.name}:{node.lineno} requests.{func.attr}()")
-            # A bare adapter carries no context; `tls.trust_store_adapter` is
-            # the only sanctioned way to build one (and defines the subclass).
-            if (
-                getattr(func, "id", None) == "HTTPAdapter"
-                and path.name != "tls.py"
-            ):
-                offenders.append(f"{path.name}:{node.lineno} HTTPAdapter()")
+        offenders += _bypasses(path.read_text(encoding="utf-8"), path.name)
     assert not offenders, offenders
+
+
+def _bypasses(source: str, name: str = "x.py") -> "list[str]":
+    """Calls in `source` that would reach the network without the trust store."""
+    import ast
+
+    tree = ast.parse(source)
+    # `requests` is a perfectly ordinary variable name — `live_lookup/reviews.py`
+    # keeps a dict of review requests and calls `.get()` on it, which matching the
+    # name alone flagged. Gate on the module actually importing the library.
+    imports_requests = any(
+        isinstance(n, ast.Import) and any(a.name == "requests" for a in n.names)
+        for n in ast.walk(tree)
+    )
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # A module-level `requests.get(...)` builds a throwaway session, which
+        # verifies against certifi rather than the OS trust store.
+        if (
+            imports_requests
+            and isinstance(func, ast.Attribute)
+            and getattr(func.value, "id", None) == "requests"
+            and func.attr in ("get", "post", "put", "delete", "request", "head")
+        ):
+            found.append(f"{name}:{node.lineno} requests.{func.attr}()")
+        # A bare adapter carries no context; `tls.trust_store_adapter` is the
+        # only sanctioned way to build one (and defines the subclass).
+        if getattr(func, "id", None) == "HTTPAdapter" and name != "tls.py":
+            found.append(f"{name}:{node.lineno} HTTPAdapter()")
+    return found
+
+
+def test_the_bypass_scan_catches_what_it_should_and_nothing_else() -> None:
+    """The scan above is only worth its noise if it still fires. Narrowing it to
+    dodge the `reviews.py` false positive could have neutered it silently."""
+    assert _bypasses("import requests\nrequests.post('u')\n")
+    assert _bypasses("import requests\nrequests.get('u')\n")
+    assert _bypasses("from requests.adapters import HTTPAdapter\nHTTPAdapter()\n")
+    # A local dict named `requests` is not the library.
+    assert not _bypasses("requests = {}\nrequests.get('k')\n")
+    # Nor is one in a module that never imports it, however it is spelled.
+    assert not _bypasses("def f(requests):\n    return requests.get('k')\n")
 
 
 def test_the_seed_fetcher_passes_a_context(monkeypatch: pytest.MonkeyPatch) -> None:
