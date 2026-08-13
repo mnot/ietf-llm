@@ -87,7 +87,14 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   (`read_file_section`); attendance is presence, NOT a position.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state —
   the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
-  on the IESG side), `draft_authors`, `get_draft` (verbatim text).
+  on the IESG side), `review_record` (live — who reviewed or balloted, and on
+  **which revision**), `draft_authors`, `get_draft` (verbatim text).
+- **Before reviewing or commenting on a draft at WGLC / Last Call / a
+  telechat, call `review_record`.** It says whether any review or ballot
+  position has been cast against the *current* revision. A revision posted
+  after the reviews were written is text nobody has examined, and that changes
+  what a finding in it means — say so rather than presenting it as a point
+  among reviewed text.
 - **Issues / PRs / threads:** `get_issue` (verbatim — takes an issue OR a pull
   request number; GitHub numbers them in one sequence), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
