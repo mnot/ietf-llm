@@ -18,11 +18,11 @@ from typing import Any, Dict, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .. import __version__
 from ..log import LogLevel, log
+from ..tls import trust_store_adapter
 from . import http_metrics
 from .http_governor import host_slot
 
@@ -40,7 +40,9 @@ _SESSION_LOCK = threading.Lock()
 
 def _build_session(retry: Any) -> requests.Session:
     session = requests.Session()
-    adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=retry)
+    # Verifies through the OS trust store where that is available -- see
+    # `tls.py` for why it is scoped here rather than injected into `ssl`.
+    adapter = trust_store_adapter(pool_connections=8, pool_maxsize=8, max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session

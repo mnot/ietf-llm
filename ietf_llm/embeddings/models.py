@@ -23,10 +23,10 @@ import traceback
 from typing import Any, Iterable, Sequence
 
 import requests
-from requests.adapters import HTTPAdapter
 
 from .. import serve_metrics
 from ..log import LogLevel, Verbosity, log
+from ..tls import trust_store_adapter
 from . import oai_compat
 
 #: Default embedding model. Local, no API key, via sentence-transformers.
@@ -352,7 +352,10 @@ class _OpenAICompatEmbeddingModel:
         # would exhaust it and urllib3 would discard the surplus connections
         # after each use, quietly undoing the keep-alive saving on most batches.
         self._session = requests.Session()
-        adapter = HTTPAdapter(pool_maxsize=max(1, pool_maxsize))
+        # Same OS-trust-store verification as the gather transport: a remote
+        # embedding endpoint is the serve path's one hard network dependency,
+        # so an enterprise proxy breaking it takes the whole deployment down.
+        adapter = trust_store_adapter(pool_maxsize=max(1, pool_maxsize))
         self._session.mount("https://", adapter)
         self._session.mount("http://", adapter)
 

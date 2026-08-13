@@ -270,10 +270,7 @@ def _installed_mcp_version() -> Optional[str]:
 #: extras, so a hint omitting them downgrades the install it means to repair.
 #: Only unambiguous markers: `google-auth` / `boto3` (notebooklm, s3) are
 #: common transitive deps, so their presence would not imply the extra.
-_EXTRA_MARKERS = (
-    ("local-embeddings", "llm-sentence-transformers"),
-    ("certs", "pip-system-certs"),
-)
+_EXTRA_MARKERS = (("local-embeddings", "llm-sentence-transformers"),)
 
 
 def _reinstall_command() -> str:

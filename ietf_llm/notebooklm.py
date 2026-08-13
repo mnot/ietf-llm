@@ -20,12 +20,32 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 
 from .log import LogLevel, Verbosity, log
+from .tls import trust_store_adapter
 
 # Scopes required for Discovery Engine API
 SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
 # Discovery Engine API Base URL
 BASE_URL = "https://us-discoveryengine.googleapis.com/v1alpha"
+
+_SESSION: Optional[requests.Session] = None
+
+
+def _session() -> requests.Session:
+    """Lazily-built session verifying through the OS trust store.
+
+    Only covers our own calls. `google.auth.transport.requests.Request` builds
+    its own session for the token refresh, so that leg still verifies against
+    certifi -- `REQUESTS_CA_BUNDLE` is what reaches it.
+    """
+    global _SESSION  # pylint: disable=global-statement
+    if _SESSION is None:
+        session = requests.Session()
+        adapter = trust_store_adapter()
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _SESSION = session
+    return _SESSION
 
 
 def get_credentials(
@@ -110,7 +130,7 @@ def create_notebook(
 
     log(f"Creating notebook '{title}'...", verbose, level=LogLevel.STATUS)
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
+        res = _session().post(url, headers=headers, json=payload, timeout=30)
         res.raise_for_status()
         notebook = res.json()
         notebook_id = notebook["name"].split("/")[-1]
@@ -169,7 +189,7 @@ def upload_source(
 
     log(f"Uploading {display_name}...", verbose, level=LogLevel.PROGRESS)
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=60)
+        res = _session().post(url, headers=headers, json=payload, timeout=60)
         res.raise_for_status()
         return True
     except requests.RequestException as err:

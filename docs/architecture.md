@@ -471,6 +471,9 @@ ietf_llm/
 │   ├── drafts.py           # per-draft live status + overview reconciliation
 │   └── reviews.py          # review assignments joined to ballot positions, per revision
 ├── freshness.py            # last-gathered sentinel + staleness warnings
+├── tls.py                  # OS-trust-store SSLContext for our two transports only
+│                           # (never injected globally -- that breaks boto3/cloud);
+│                           # + recognising a cert-verification failure for error text
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── people/                 # actor/identity registry + position extraction
 │   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)

@@ -39,6 +39,9 @@ dependencies = [
     "mcp>=1.10,<2",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
+    # OS-trust-store TLS verification, so a corporate proxy root the machine
+    # already trusts works. Floor: standalone SSLContext. See `ietf_llm/tls.py`.
+    "truststore>=0.10.0",
 ]
 
 [project.optional-dependencies]
@@ -58,8 +61,6 @@ notebooklm = [
 # Only the `cloud` store backend with an `s3://` IETF_LLM_BLOB_DIR needs it;
 # the default file:// blob store and base install do not.
 s3 = ["boto3"]
-# Behaviour-shaping extras (not feature-gating)
-certs = ["pip-system-certs"]
 dev = [
     # Floor, not a pin: 2.3.0 narrowed what `no-untyped-call` fires on, so the
     # ignore it made redundant is gone from cli/completion.py. An older mypy
