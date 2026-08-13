@@ -39,15 +39,8 @@ dependencies = [
     "mcp>=1.10,<2",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
-    # Verify TLS against the OS trust store rather than certifi's bundle
-    # (`ietf_llm/tls.py`). Machines behind a TLS-inspecting corporate proxy
-    # trust its root already -- we were the only thing on the box that could
-    # not see it, which broke every fetch including `--init`. Pure Python, no
-    # transitive dependencies, so the torch-free serve path is unaffected.
-    # Floor, not a pin: 0.10.0 is the oldest release whose `SSLContext` is
-    # usable standalone (older ones assumed `inject_into_ssl`, which we must
-    # not call -- see `tls.py`). 0.10.4 is what the behaviour here was
-    # verified against.
+    # OS-trust-store TLS verification, so a corporate proxy root the machine
+    # already trusts works. Floor: standalone SSLContext. See `ietf_llm/tls.py`.
     "truststore>=0.10.0",
 ]
 

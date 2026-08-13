@@ -118,6 +118,7 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | `IETF_LLM_MCP_STATELESS` | stateless sessions (`0`/`false` for stateful) | `1` (on) |
 | `IETF_LLM_MCP_ALLOWED_HOSTS` | comma-separated `Host` allow-list (enables DNS-rebinding protection) | unset (off) |
 | `IETF_LLM_MCP_ALLOWED_ORIGINS` | comma-separated `Origin` allow-list (browser callers) | unset (any) |
+| `IETF_LLM_SYSTEM_TRUST_STORE` | `off` to verify outbound TLS against certifi instead of the OS trust store — for an image without `ca-certificates` installed, where certifi is the more complete of the two | unset (on) |
 
 **Observability**
 

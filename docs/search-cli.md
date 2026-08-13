@@ -15,13 +15,10 @@ pipx install 'ietf-llm[local-embeddings]'
 The on-device search model needs the `local-embeddings` extra. Alternatively, point at a
 [remote endpoint](models.md). Then [gather a corpus](gathering.md) to search.
 
-**Behind a corporate firewall** with TLS interception? If you encounter errors, you may need the
-`certs` extra:
-
-```bash
-pipx uninstall ietf-llm
-pipx install 'ietf-llm[local-embeddings,certs]'
-```
+**Behind a corporate firewall** with TLS interception? Nothing extra to install — we verify
+against your OS trust store, so a root your machine already trusts just works. If the proxy's
+root is *not* installed there, point `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` at its PEM.
+(This replaces the old `certs` extra, which is gone.)
 
 ## Searching
 
