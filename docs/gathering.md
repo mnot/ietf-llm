@@ -41,6 +41,27 @@ see the [global model settings](models.md#global-settings).)
 anonymous 60-requests/hour API limit. A fine-scoped read-only token is plenty.
 
 
+## The RFC series, which no gather brings
+
+`search_rfc_index`, `search_rfc_text`, `grep_corpus(corpus="rfcs", …)`, `get_rfc_info` and
+`get_rfc_section` cover **every published RFC** and belong to no corpus, so gathering one does not
+bring them. Their data arrives as gather *housekeeping* — the RFC metadata mirror, the effort
+catalog, and the full text of the series from the seed store. Gather anything and you get it.
+
+A machine that only ever reads never gathers, so it never gets it. `--init` does that housekeeping
+on its own and exits:
+
+```bash
+ietf-llm --init
+```
+
+About 285 MB to download and ~650 MB on disk once installed. It gathers nothing, is safe to re-run,
+and needs a **writable** cache. If it reports the full text as `NOT installed`, it says why — seeding
+turned off, no seed store configured, an unreachable store, or a TLS certificate it cannot verify.
+
+Add `--seed` to re-enable seeding and install in one go, if a previous `--no-seed` turned it off.
+
+
 ## Identifying what to gather
 
 A corpus doesn't have to be a Working Group — the name is classified automatically:
