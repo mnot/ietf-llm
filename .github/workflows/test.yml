@@ -22,6 +22,7 @@ jobs:
     # === pyproject-tmpl: start "pre-test" ===
     # === pyproject-tmpl: end "pre-test" ===
     - name: Set up Python ${{ matrix.python-version }}
+      id: setup-python
       uses: actions/setup-python@v7
       with:
         python-version: ${{ matrix.python-version }}
@@ -29,9 +30,11 @@ jobs:
       uses: actions/cache@v6
       with:
         path: .venv
-        key: ${{ runner.os }}-${{ matrix.python-version }}-venv-${{ hashFiles('pyproject.toml') }}
+        key: ${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-venv-${{ hashFiles('pyproject.toml') }}
     - name: Set up venv
-      run: make venv
+      run: |
+        .venv/bin/python -V >/dev/null 2>&1 || rm -rf .venv
+        make venv
     - name: Typecheck
       run: make typecheck
     - name: Lint
@@ -49,3 +52,10 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: make vendor-skills-check
     # === pyproject-tmpl: end "post-test" ===
+
+# === pyproject-tmpl: MIGRATION NEEDED ===
+# The lines below were in your prior file but are not in the new template.
+# Move what you still want into a named region above, then delete this section.
+# ---
+#         key: ${{ runner.os }}-${{ matrix.python-version }}-venv-${{ hashFiles('pyproject.toml') }}
+#       run: make venv
