@@ -1,10 +1,12 @@
 """Live Datatracker fact lookups for the chair-workflow read tools.
 
 This package is the one read-path exception to the server's offline rule.
-`meeting_schedule` and `draft_status` hit Datatracker *live* because the
-facts they serve — meeting schedules, IESG document states — change daily
-and a gather cache (a 36-month window, often days stale) is too coarse for
-an agenda. They are therefore gated exactly like the gather tools
+`meeting_schedule`, `draft_status` and `review_record` hit Datatracker *live*
+because the facts they serve — meeting schedules, IESG document states, who
+has reviewed which revision — change daily and a gather cache (a 36-month
+window, often days stale) is too coarse for an agenda, or for the question of
+whether anyone has read the text now on the telechat. They are gated exactly
+like the gather tools
 (registered only when `freshness.gather_enabled()` is true: on for a local
 stdio server, off for the shared read-only HTTP replica) and imported
 lazily by `ietf_llm.mcp`, so the default read path never pulls this in.
@@ -30,6 +32,8 @@ Implementation is split across cohesive submodules:
                  on-disk cache, shared base URLs / datetime helpers, age_stamp
   meetings.py  — a group's sessions at a meeting + its upcoming meetings
   drafts.py    — per-draft live status + overview reconciliation
+  reviews.py   — per-draft review assignments joined to ballot positions,
+                 each keyed by the revision it was cast against
 
 Every externally-used symbol is re-exported here so callers can keep using
 `live_lookup.<name>`. The one exception is the network seam `_fetch_json`:
@@ -54,6 +58,12 @@ from .drafts import (
     fetch_draft_status,
     reconcile_active_drafts,
 )
+from .reviews import (
+    PositionRow,
+    ReviewRecord,
+    ReviewRow,
+    fetch_review_record,
+)
 from .meetings import (
     MeetingSession,
     UpcomingMeeting,
@@ -76,6 +86,11 @@ __all__ = [
     "DraftReconciliation",
     "fetch_draft_status",
     "reconcile_active_drafts",
+    # Reviews + ballot
+    "ReviewRecord",
+    "ReviewRow",
+    "PositionRow",
+    "fetch_review_record",
     # Cache / rendering
     "age_stamp",
     # Re-exported for tests

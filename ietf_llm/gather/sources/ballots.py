@@ -7,6 +7,16 @@ their text are load-bearing for "what's at the IESG"-shaped questions
 — and previously invisible to ietf-llm consumers, who had to guess at
 chair characterisations from list traffic alone.
 
+Two slugs beyond that set matter, and both were missing until an
+invented one (`noupcoming`, which Datatracker does not emit) stood in
+for the first. `norecord` is what the API records for a balloter
+holding *no* position — never posted, or posted and later cleared —
+and it is common; rendered as a position it inflates the tally and
+implies a balloter weighed in when they did not. `block` / `concern` /
+`moretime` / `notready` are the IAB and IRSG ballots, which an RG
+corpus reaches through this same endpoint. The full vocabulary is
+`/api/v1/name/ballotpositionname/`.
+
 Scoping. Long-running WGs have decades of ballot history, almost all
 of it irrelevant to a current reader. We clamp gathering to drafts
 that have had **at least one ballot position event** in the
@@ -17,8 +27,8 @@ DISCUSS is still active and must show up.
 
 Storage. One markdown file per in-scope draft at
 `ballots/<doc-name>.md`. Header carries the revision balloted on, the
-ballot-opened date, and a tally line. DISCUSS positions render first
-(with full discuss text), then the other positions ordered by AD name.
+ballot-opened date, and a tally line. Blocking positions render first
+(with their full filed text), then the others ordered by AD name.
 
 Events. Each in-window position change emits an `Event` with
 `kind="ballot"` for the chronological timeline digest. The link
@@ -45,26 +55,49 @@ from .datatracker import (  # pylint: disable=protected-access
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
 
-# Datatracker position slug → human label and order. Order matters for
-# rendering: DISCUSS positions come first because they're load-bearing
-# (they hold publication); other positions follow.
+# Datatracker position slug → human label and order, the full vocabulary of
+# `/api/v1/name/ballotpositionname/`. Order matters for rendering: blocking
+# positions come first because they're load-bearing (they hold publication);
+# other positions follow. `block` / `concern` / `moretime` / `notready` are
+# the IAB and IRSG ballots, which an RG corpus reaches through this same
+# endpoint — omitting them left their slug to leak through the `.upper()`
+# fallback as a position label.
 _POSITION_LABELS = {
     "discuss": "DISCUSS",
+    "block": "Block",
+    "concern": "Concern",
     "yes": "Yes",
     "noobj": "No Objection",
+    "notready": "Not Ready",
+    "moretime": "Need More Time",
     "abstain": "Abstain",
     "recuse": "Recuse",
-    "noupcoming": "Not Yet Posted",
+    "norecord": "No Record",
 }
 # Sort within a ballot rendering. Lower = appears earlier.
 _POSITION_ORDER = {
     "discuss": 0,
-    "yes": 1,
-    "noobj": 2,
-    "abstain": 3,
-    "recuse": 4,
-    "noupcoming": 5,
+    "block": 1,
+    "concern": 2,
+    "yes": 3,
+    "noobj": 4,
+    "notready": 5,
+    "moretime": 6,
+    "abstain": 7,
+    "recuse": 8,
+    "norecord": 9,
 }
+
+#: Positions that hold publication until cleared. They render first, with the
+#: text the balloter filed — which is the whole reason the section exists, and
+#: which the "other positions" rendering drops.
+_BLOCKING = ("discuss", "block", "concern")
+
+#: Not a position on the document: Datatracker records `norecord` for a
+#: balloter who has taken none, either never having posted one or having
+#: cleared it. Dropped rather than rendered — counted as a position it both
+#: inflates the tally and implies a balloter weighed in when they did not.
+_NO_POSITION = "norecord"
 
 _DOC_URL_RE = re.compile(r"/api/v1/doc/document/([^/]+)/?$")
 _POS_URL_RE = re.compile(r"/api/v1/name/ballotpositionname/([^/]+)/?$")
@@ -312,10 +345,10 @@ def _build_ballot(
         if balloter in seen:
             continue
         seen.add(balloter)
-        pos_slug = _slug_from_pos_url(obj.get("pos") or "") or "noupcoming"
-        # "noupcoming" / blank: balloter hasn't yet posted a position
-        # on this ballot. Skip — there's nothing to render.
-        if pos_slug == "noupcoming":
+        pos_slug = _slug_from_pos_url(obj.get("pos") or "") or _NO_POSITION
+        # `norecord` / blank: the balloter holds no position on this ballot.
+        # Skip — there's nothing to render.
+        if pos_slug == _NO_POSITION:
             continue
         name = _fetch_person_name(balloter, person_cache)
         if not name:
@@ -351,7 +384,7 @@ def _build_ballot(
 def render_ballot(ballot: Ballot) -> str:
     """Render one Ballot as markdown for `ballots/<doc-name>.md`.
 
-    DISCUSS positions appear first (with full discuss text inline);
+    Blocking positions appear first (with the full filed text inline);
     other positions follow in their canonical order. The tally line
     in the header lets a consumer see the shape of the ballot at a
     glance without scrolling.
@@ -380,19 +413,24 @@ def render_ballot(ballot: Ballot) -> str:
     if tally_bits:
         out.append(f"**Tally:** {', '.join(tally_bits)}")
     out.append("")
-    discuss = [p for p in ballot.positions if p.pos_slug == "discuss"]
-    other = [p for p in ballot.positions if p.pos_slug != "discuss"]
+    blocking = [p for p in ballot.positions if p.pos_slug in _BLOCKING]
+    other = [p for p in ballot.positions if p.pos_slug not in _BLOCKING]
     other.sort(key=lambda p: (_POSITION_ORDER.get(p.pos_slug, 99), p.name))
-    if discuss:
-        out.append("## DISCUSS positions\n")
+    if blocking:
+        # Headed by the position kind actually present, so an IESG ballot
+        # still says "DISCUSS positions" — what a reader (and the `**Tally:**`
+        # scan in `digest.overview`) expects — while an IRSG Block is not
+        # filed under a heading naming a position it isn't.
+        kinds = sorted({p.pos_label for p in blocking})
+        out.append(f"## {' / '.join(kinds)} positions\n")
         out.append(
-            "_DISCUSS holds publication until resolved with the "
-            "responsible AD. Text below is the DISCUSS body as filed; "
+            "_A blocking position holds publication until resolved with the "
+            "responsible AD. Text below is the position body as filed; "
             "later list / chair discussion may have addressed it._\n"
         )
-        for pos in sorted(discuss, key=lambda p: p.name):
+        for pos in sorted(blocking, key=lambda p: (p.pos_label, p.name)):
             out.append(
-                f"### {pos.name} — DISCUSS — "
+                f"### {pos.name} — {pos.pos_label} — "
                 f"{pos.when.strftime('%Y-%m-%d')}"
                 + (f" (on -{pos.rev})" if pos.rev else "")
             )

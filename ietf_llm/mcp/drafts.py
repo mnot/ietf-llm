@@ -1,11 +1,11 @@
 """Draft / issue tools: draft_authors, list_drafts, get_draft,
-get_issue, draft_status."""
+get_issue, draft_status, review_record."""
 
 from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from ..freshness import gather_suggestion
 from ..gather.sources.citations import normalize_draft_name
@@ -16,6 +16,8 @@ from .rfc_text import normalise_section
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
+
+    from ..live_lookup.reviews import ReviewRecord  # pragma: no cover
 
 
 def _find_latest_draft_file(name: str) -> Optional[str]:
@@ -635,6 +637,188 @@ def register(server: "FastMCP") -> None:
         )
 
 
+def _review_rows(record: "ReviewRecord") -> List[str]:
+    """The review table: one row per assignment, produced or not.
+
+    An assignment that produced nothing has no revision and no result, so its
+    row says which state it ended in instead — a directorate that returned
+    nothing is a fact about the review coverage, not a blank to hide."""
+    out = [
+        "| Rev | Team | Type | Reviewer | Result | Date |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in record.reviews:
+        result = row.result or f"_{row.state}_"
+        out.append(
+            f"| {'-' + row.reviewed_rev if row.reviewed_rev else '—'} "
+            f"| {row.team or '—'} | {(row.kind or '—').upper()} "
+            f"| {row.reviewer} | {result} | {row.when or '—'} |"
+        )
+    return out
+
+
+def _position_rows(record: "ReviewRecord") -> List[str]:
+    """The ballot table, in the order positions were cast."""
+    out = ["| Rev | Position | Balloter | Date |", "|---|---|---|---|"]
+    for row in record.positions:
+        position = f"**{row.position}**" if row.discuss else row.position
+        out.append(
+            f"| {'-' + row.rev if row.rev else '—'} | {position} "
+            f"| {row.balloter} | {row.when or '—'} |"
+        )
+    return out
+
+
+def _behind(current: Optional[int], newest: int) -> str:
+    """`-07 (1 revision behind)` — the gap from the current revision."""
+    label = f"-{newest:02d}"
+    if current is None or current <= newest:
+        return label
+    gap = current - newest
+    return f"{label} ({gap} revision{'' if gap == 1 else 's'} behind)"
+
+
+def _spread(revs: List[int], current: Optional[int]) -> str:
+    """How a set of positions distributes across revisions, newest first.
+
+    Reported per revision rather than as a single newest: a ballot where one
+    AD has re-balloted on the current text and four have not is a different
+    thing from four positions on the current text, and a max hides that.
+    """
+    counts: Dict[int, int] = {}
+    for rev in revs:
+        counts[rev] = counts.get(rev, 0) + 1
+    return ", ".join(
+        f"{counts[rev]} against {_behind(current, rev)}"
+        for rev in sorted(counts, reverse=True)
+    )
+
+
+def _coverage_verdict(record: "ReviewRecord") -> List[str]:
+    """The lines the whole tool exists for: whether anything has examined the
+    text now in front of the reader — reported per half.
+
+    The two halves are stated separately because they answer different
+    questions and routinely disagree: on a document at the IESG the reviews
+    can be two revisions behind while a single AD has re-balloted on the
+    current text. A combined "newest input" would report that document as
+    reviewed. Mechanical throughout — it counts revisions, and says nothing
+    about whether the gap matters. That judgement is the reader's.
+    """
+    rev_text = record.rev or ""
+    current = int(rev_text) if rev_text.isdigit() else None
+    label = f"-{record.rev}" if record.rev else "the current revision"
+    completed = [row for row in record.reviews if row.produced_review]
+    unproductive = len(record.reviews) - len(completed)
+    review_revs = [int(row.reviewed_rev) for row in completed if row.reviewed_rev]
+    # A Recuse names a revision without being a look at it — see
+    # `PositionRow.examined`.
+    position_revs = [
+        int(row.rev) for row in record.positions if row.rev and row.examined
+    ]
+
+    lines: List[str] = []
+    if record.unavailable:
+        # The verdict is a claim of absence, and these rows are unknown rather
+        # than absent. Say so instead of rendering a confident "nobody has
+        # looked at this" out of a Datatracker outage.
+        halves = " and ".join(record.unavailable)
+        return [
+            f"**Datatracker did not answer for the {halves} — this record is "
+            "incomplete.** What follows is only what came back; do not read "
+            "it as what exists. Retry before concluding anything."
+        ]
+    seen = review_revs + position_revs
+    # The headline is about a *gap* between what was examined and what is now
+    # posted, so it needs something to have been examined. On a draft that has
+    # never been reviewed there is no "since" and no earlier revision to diff,
+    # and firing here reads as "reviewed, then moved on" — the opposite of the
+    # truth. The two lines below already say the true thing.
+    if current is not None and seen and current not in seen:
+        lines.append(
+            f"**Nothing in this record has examined {label}.** Text added or "
+            "rewritten since has been seen by no reviewer and no balloter; "
+            "`get_draft` on both revisions shows what moved."
+        )
+        lines.append("")
+    if review_revs:
+        note = (
+            f" ({unproductive} assignment{'' if unproductive == 1 else 's'} "
+            "produced no review)"
+            if unproductive
+            else ""
+        )
+        lines.append(f"- **Reviews:** {_spread(review_revs, current)}{note}.")
+    elif record.reviews:
+        lines.append(
+            f"- **Reviews:** none completed — {len(record.reviews)} assignment(s), "
+            "none of which produced a review."
+        )
+    else:
+        lines.append("- **Reviews:** none requested.")
+    if position_revs:
+        lines.append(f"- **Ballot:** {_spread(position_revs, current)}.")
+    elif record.positions:
+        lines.append(
+            f"- **Ballot:** {len(record.positions)} position(s), none carrying "
+            "the revision they were cast against."
+        )
+    else:
+        lines.append("- **Ballot:** not opened.")
+    return lines
+
+
+def tool_review_record(name: str) -> str:
+    """Render one draft's review and ballot history, keyed by revision.
+
+    Live read-path tool (lazy `live_lookup` import, gather-gated), for the
+    question a document at Last Call or on a telechat turns on: has anyone
+    reviewed *this* text. See `live_lookup.reviews` for why the join has to
+    happen here rather than being left to the caller.
+    """
+    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+
+    name = (name or "").strip()
+    if not name:
+        return (
+            "Provide a draft name, e.g. `draft-ietf-httpbis-no-vary-search` "
+            "(the version suffix is optional)."
+        )
+    record, fetched = live_lookup.fetch_review_record(name)
+    if record is None:
+        canonical = normalize_draft_name(name)
+        return (
+            f"Datatracker has no document named `{canonical}`. Check the "
+            "`draft-...` stem (version optional).\n\n" + live_lookup.age_stamp(fetched)
+        )
+
+    rev = f"-{record.rev}" if record.rev else "unknown"
+    when = f" ({record.rev_date})" if record.rev_date else ""
+    lines = [f"# {record.name} — review record\n", f"**Current revision:** {rev}{when}"]
+    lines.append("")
+    lines += _coverage_verdict(record)
+    if record.reviews:
+        lines += ["", f"## Reviews ({len(record.reviews)})", ""]
+        lines += _review_rows(record)
+    else:
+        lines += ["", "## Reviews", "", "_No review has been requested._"]
+    if record.positions:
+        lines += ["", f"## Ballot ({len(record.positions)} positions)", ""]
+        lines += _position_rows(record)
+        if any(row.discuss for row in record.positions):
+            # The DISCUSS text is long and is already gathered per draft; this
+            # tool carries the shape of the ballot, not its bodies.
+            lines.append(
+                "\n_A DISCUSS holds publication. Its text is in the gathered "
+                f"`ballots/{record.name}.md` — read that for the substance._"
+            )
+    else:
+        lines += ["", "## Ballot", "", "_No ballot has been opened._"]
+    lines.append("")
+    lines.append(live_lookup.age_stamp(fetched))
+    return "\n".join(lines)
+
+
 def register_live(server: "FastMCP") -> None:
     @server.tool()
     async def draft_status(name: str) -> str:
@@ -664,3 +848,42 @@ def register_live(server: "FastMCP") -> None:
                 the version suffix is optional.
         """
         return await _offload(tool_draft_status, name)
+
+    @server.tool()
+    async def review_record(name: str) -> str:
+        """**Who has reviewed which revision of a draft** — every directorate
+        review and IESG ballot position, each with the revision it was cast
+        against, plus the current revision. **Live** from Datatracker.
+
+        Call this before reviewing or commenting on a draft at WGLC, IETF Last
+        Call, or on an IESG telechat. It answers the question the individual
+        records cannot: *has anyone looked at the text actually in front of
+        them?* A revision posted after the reviews were written is unreviewed
+        text, and that reframes a review — a finding in unexamined text a week
+        before a telechat is a different contribution from the same finding in
+        text four reviewers cleared.
+
+        Returns a verdict line first (whether anything has been cast against
+        the current revision, and how many revisions behind the newest input
+        is), then the reviews, then the ballot. **Assignments that produced no
+        review are included** — rejected, or assigned and never completed —
+        because a directorate that returned nothing is a fact about the
+        coverage, and filtering to completed rows hides it.
+
+        Two things this is the only way to get: Datatracker's ballot *page*
+        does not show which revision a position was cast against, so scraping
+        it cannot answer the question; and the review and ballot halves live
+        at separate endpoints, which is a join that is easy to get wrong by
+        hand (three reviews collapse into one, the -06 rows vanish).
+
+        `draft_status` for where the draft sits in the process;
+        `read_digest(kind="timeline", event_kind="ballot")` and the gathered
+        `ballots/<draft>.md` for DISCUSS text and the WG's own record.
+
+        Live (short TTL + freshness stamp; it reaches the network).
+
+        Args:
+            name: The draft name (`draft-ietf-httpbis-no-vary-search`);
+                the version suffix is optional.
+        """
+        return await _offload(tool_review_record, name)

@@ -87,7 +87,14 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   (`read_file_section`); attendance is presence, NOT a position.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state —
   the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
-  on the IESG side), `draft_authors`, `get_draft` (verbatim text).
+  on the IESG side), `review_record` (live — who reviewed or balloted, and on
+  **which revision**), `draft_authors`, `get_draft` (verbatim text).
+- **Before reviewing or commenting on a draft at WGLC / Last Call / a
+  telechat, call `review_record`.** It says whether any review or ballot
+  position has been cast against the *current* revision. A revision posted
+  after the reviews were written is text nobody has examined, and that changes
+  what a finding in it means — say so rather than presenting it as a point
+  among reviewed text.
 - **Issues / PRs / threads:** `get_issue` (verbatim — takes an issue OR a pull
   request number; GitHub numbers them in one sequence), `find_replies`,
   `find_citations`, `find_message_citations`, `tally_positions`.
@@ -174,8 +181,10 @@ never proposed", or "nobody cited X" on the strength of a `search_corpus` miss.
 
 Use **`grep_corpus`** for those: it scans every gathered file line by line and
 reports how many it scanned, so a zero is a finding you can state — bounded by
-the gather window, the corpus, and the glob if you pass one (its output spells
-out each). Route on the shape of the question:
+the gather window, the corpus, the glob if you pass one, and (for issues/PRs)
+the highest number the gather held: its output spells out each, and names that
+last number so you can see whether the thing you're asking about is above the
+end of the record. Route on the shape of the question:
 
 - "what was said about X", "arguments for Y", "where does this live" →
   `search_corpus` / `search_corpora` / `read_topic`.

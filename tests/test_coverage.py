@@ -37,15 +37,27 @@ def _set_gathered(wg: str, when: str) -> None:
     path.write_text(when, encoding="utf-8")
 
 
-def _write_archive(home: Path, wg: str, slug: str, repo: str) -> None:
+def _write_archive(  # pylint: disable=too-many-arguments
+    home: Path,
+    wg: str,
+    slug: str,
+    repo: str,
+    issues: "list[int] | None" = None,
+    pulls: "list[int] | None" = None,
+    timestamp: str = "2026-01-01T00:00:00",
+) -> None:
     """A GitHub archive in the writer's shape (the `repo` field is verbatim
-    `owner/repo`; the slug filename is lossy and deliberately not relied on)."""
-    write_cache_file(
-        home,
-        wg,
-        f"github/{slug}.json",
-        json.dumps({"repo": repo, "timestamp": "2026-01-01T00:00:00", "issues": []}),
-    )
+    `owner/repo`; the slug filename is lossy and deliberately not relied on).
+
+    `issues` and `pulls` are numbers only — the ceiling reader wants nothing
+    else from a record, and the two arrays are separate in the real archive."""
+    body = {
+        "repo": repo,
+        "timestamp": timestamp,
+        "issues": [{"number": n} for n in issues or []],
+        "pulls": [{"number": n} for n in pulls or []],
+    }
+    write_cache_file(home, wg, f"github/{slug}.json", json.dumps(body))
 
 
 # --- window_months ---------------------------------------------------------
@@ -134,6 +146,65 @@ def test_github_repo_count_zero_without_archives(isolated_home: Path) -> None:
     assert coverage.github_repo_count(_files_dir("wg")) == 0
 
 
+# --- github_records / record_edge_line -------------------------------------
+
+
+def test_ceiling_spans_issues_and_pulls(isolated_home: Path) -> None:
+    # GitHub numbers issues and PRs in one sequence, so the edge of the record
+    # is the max across both arrays. Taking either alone names the wrong
+    # number: on the real httpwg/http-extensions archive the issues stop at
+    # #3501 while the PRs reach #3502.
+    _write_archive(
+        isolated_home, "wg", "a", "org/a", issues=[3499, 3501], pulls=[3500, 3502]
+    )
+    assert coverage.github_records(_files_dir("wg"))[0].ceiling == 3502
+
+
+def test_ceiling_none_when_archive_holds_nothing(isolated_home: Path) -> None:
+    _write_archive(isolated_home, "wg", "a", "org/a")
+    record = coverage.github_records(_files_dir("wg"))[0]
+    assert record.ceiling is None
+    # No ceiling means nothing to bound, so the line stays silent rather than
+    # rendering a repo with an empty number.
+    assert coverage.record_edge_line([record]) == ""
+
+
+def test_built_date_comes_from_the_archive(isolated_home: Path) -> None:
+    # Dated from the archive's own timestamp, not the gather: the archive is
+    # fetched from the repo's published `archive.json`, which can be days older
+    # than the gather that pulled it.
+    _set_gathered("wg", "2026-08-11T00:00:00Z")
+    _write_archive(
+        isolated_home,
+        "wg",
+        "a",
+        "org/a",
+        issues=[7],
+        timestamp="2026-08-06T01:49:14.562886+00:00",
+    )
+    line = coverage.record_edge_line(coverage.github_records(_files_dir("wg")))
+    assert line == "org/a through #7 (archive built 2026-08-06)"
+
+
+def test_built_dropped_when_timestamp_unusable(isolated_home: Path) -> None:
+    # A junk timestamp loses the date, not the ceiling — the number is the
+    # load-bearing half.
+    _write_archive(isolated_home, "wg", "a", "org/a", issues=[7], timestamp="lately")
+    assert coverage.record_edge_line(coverage.github_records(_files_dir("wg"))) == (
+        "org/a through #7"
+    )
+
+
+def test_record_edge_line_joins_repos(isolated_home: Path) -> None:
+    _write_archive(isolated_home, "wg", "a", "org/a", issues=[7])
+    _write_archive(isolated_home, "wg", "b", "org/b", pulls=[12])
+    line = coverage.record_edge_line(coverage.github_records(_files_dir("wg")))
+    assert line == (
+        "org/a through #7 (archive built 2026-01-01); "
+        "org/b through #12 (archive built 2026-01-01)"
+    )
+
+
 # --- detect_sources --------------------------------------------------------
 
 
@@ -184,9 +255,9 @@ def test_window_line_for_list_corpus(isolated_home: Path) -> None:
     assert "mailing-list activity" in line
     assert "~2025-12" in line
     assert "6-mo window" in line
-    # A list-only corpus has no non-windowed sources, so the full-set caveat
-    # is omitted — the line must not cite issues/drafts it doesn't hold.
-    assert "full set" not in line
+    # A list-only corpus has no non-windowed sources, so that caveat is
+    # omitted — the line must not cite issues/drafts it doesn't hold.
+    assert "not windowed" not in line
 
 
 def test_window_line_fullset_clause_names_present_sources(
@@ -198,7 +269,10 @@ def test_window_line_fullset_clause_names_present_sources(
     _write_archive(isolated_home, "wg", "org-repo", "org/repo")
     line = coverage.window_line("wg", _files_dir("wg"))
     assert line is not None
-    assert "GitHub issues and drafts are the full set, not windowed" in line
+    assert "GitHub issues/PRs and drafts are not windowed" in line
+    # Unwindowed is not unbounded: the caveat has to say the record still
+    # stops somewhere, or a zero over it reads as absence from the record.
+    assert "end where the last gather did" in line
 
 
 def test_window_line_fullset_clause_omits_absent_source(
@@ -210,8 +284,8 @@ def test_window_line_fullset_clause_omits_absent_source(
     write_cache_file(isolated_home, "wg", "drafts/draft-foo-00.txt", "d")
     line = coverage.window_line("wg", _files_dir("wg"))
     assert line is not None
-    assert "drafts are the full set, not windowed" in line
-    assert "GitHub issues" not in line
+    assert "drafts are not windowed" in line
+    assert "GitHub" not in line
 
 
 def test_window_line_names_both_when_present(isolated_home: Path) -> None:

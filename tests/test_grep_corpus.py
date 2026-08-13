@@ -131,6 +131,44 @@ def test_no_match_states_the_denominator_and_its_limits(isolated_home: Path) -> 
     assert "single line" in out
 
 
+def _seed_github(home: Path) -> None:
+    """An issue file plus the archive it came from, so the record has both
+    something to scan and a stated ceiling."""
+    write_cache_file(home, "wg", "issues/org-repo/12.md", "# Widget handling\n")
+    write_cache_file(
+        home,
+        "wg",
+        "github/org-repo.json",
+        '{"repo": "org/repo", "timestamp": "2026-08-06T01:49:14Z", '
+        '"issues": [{"number": 12}], "pulls": [{"number": 14}]}',
+    )
+
+
+def test_no_match_over_github_states_where_the_record_ends(
+    isolated_home: Path,
+) -> None:
+    # The zero is sound over what was scanned, but the scan stops at #14 and
+    # the caller has no way to know that — which is how "no one raised this"
+    # gets stated about an issue filed after the archive was built.
+    _seed(isolated_home)
+    _seed_github(isolated_home)
+    out = tool_grep_corpus("wg", "quantum annealing")
+    assert "no matches" in out
+    assert "org/repo through #14 (archive built 2026-08-06)" in out
+
+
+def test_no_match_omits_the_record_edge_when_github_was_not_scanned(
+    isolated_home: Path,
+) -> None:
+    # Scoped to mail: the GitHub ceiling bounds nothing the caller asked about,
+    # so quoting it would be noise dressed as a caveat.
+    _seed(isolated_home)
+    _seed_github(isolated_home)
+    out = tool_grep_corpus("wg", "quantum annealing", file_pattern="threads/*")
+    assert "no matches" in out
+    assert "org/repo through" not in out
+
+
 def test_scoped_no_match_says_it_was_scoped(isolated_home: Path) -> None:
     _seed(isolated_home)
     out = tool_grep_corpus("wg", "fail closed", file_pattern="drafts/*")

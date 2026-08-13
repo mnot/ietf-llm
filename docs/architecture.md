@@ -334,7 +334,15 @@ Key invariants:
   source inventory read from on-disk artifacts — both reader-side, so a
   client knows how far back a corpus reaches and what it holds without a
   re-gather. The window bounds mailing-list / meeting recency only;
-  GitHub issues and drafts are the full set.
+  GitHub issues and drafts are not windowed. Unwindowed is not
+  unbounded, though: `coverage.RepoRecord` reads the highest issue/PR
+  number each `github/<repo>.json` holds (across both its `issues` and
+  `pulls` arrays — GitHub numbers them in one sequence), and dates it
+  from the archive's own timestamp rather than the gather, because the
+  archive is fetched from the repo's published `archive.json` and can
+  be days older than the gather that pulled it. `overview` and a
+  zero-result `grep_corpus` state that ceiling, so a negative over
+  `issues/` is bounded above as well as below.
 - **`gather-metrics.json`** records the upstream HTTP load of the last
   run — request counts (transferred / revalidated / error), bytes, a
   per-host breakdown, and a top-N of URL patterns. `net/http_metrics.py`
@@ -456,10 +464,12 @@ ietf_llm/
 │   ├── fetch.py            # consumer: load index, download + verify + install a bundle (gather-path)
 │   └── publish.py          # producer: build/refresh a static store from the cache (scripts/publish_seeds.py)
 ├── live_lookup/            # live Datatracker reads (meeting_schedule / draft_status /
-│   │                       # overview reconciliation); gather-gated, the one networked read path
+│   │                       # review_record / overview reconciliation); gather-gated,
+│   │                       # the one networked read path
 │   ├── cache.py            # TTL-cached fetch seam (_fetch_json) + in-proc/on-disk cache; age_stamp
 │   ├── meetings.py         # a group's sessions at a meeting + its upcoming meetings
-│   └── drafts.py           # per-draft live status + overview reconciliation
+│   ├── drafts.py           # per-draft live status + overview reconciliation
+│   └── reviews.py          # review assignments joined to ballot positions, per revision
 ├── freshness.py            # last-gathered sentinel + staleness warnings
 ├── coverage.py             # reader-side window + source inventory (no network)
 ├── people/                 # actor/identity registry + position extraction
@@ -640,9 +650,10 @@ which tool for which question, with worked examples — lives in
   well-formed metadata response otherwise reads as the document itself
   (issue #218).
 - **Live chair-workflow facts (gated, networked):** `meeting_schedule`,
-  `draft_status`, and `overview(corpus, live=True)` read *live* from
-  Datatracker, so they share the gather gate (see "The networked read
-  exception" below); the offline cousin `draft_authors` is always registered.
+  `draft_status`, `review_record`, and `overview(corpus, live=True)` read
+  *live* from Datatracker, so they share the gather gate (see "The networked
+  read exception" below); the offline cousin `draft_authors` is always
+  registered.
 - **Diagnostics (gated):** `get_session_log`, registered only under
   `IETF_LLM_DEBUG_LOG=1`.
 
@@ -1139,9 +1150,13 @@ half-populated index — see "Writers are write-if-changed and atomic".
 ### The networked read exception: live Datatracker lookups and get_rfc_info
 
 A narrower break from the no-network contract: `meeting_schedule`,
-`draft_status`, and `overview(corpus, live=True)` read **live** from Datatracker
-(`live_lookup/`) because meeting schedules and draft states change daily, so an
-agenda built on the (often days-stale) gather cache is wrong at the edges. A
+`draft_status`, `review_record`, and `overview(corpus, live=True)` read **live**
+from Datatracker (`live_lookup/`) because meeting schedules and draft states
+change daily, so an agenda built on the (often days-stale) gather cache is wrong
+at the edges. `review_record` is there for the same reason in a sharper form:
+its payload is the derived claim that nothing has been cast against the current
+revision, which a snapshot would answer confidently and wrongly the day after a
+review lands. A
 small TTL cache (`IETF_LLM_LIVE_TTL`, default 300s) is in-process plus a
 best-effort `.live-cache.json` on disk — the *only* thing this path writes,
 no-op on a read-only mount — and every result carries its UTC fetch time. It
