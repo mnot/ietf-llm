@@ -15,20 +15,34 @@ which is where an MDM-deployed root actually lives. It is pure Python with no
 transitive dependencies, so the torch-free serve path is unaffected.
 
 **Scoped to our own transports, never injected globally.** `truststore` also
-offers `inject_into_ssl()`, which rebinds `ssl.SSLContext` process-wide. That
-is a trap here: stdlib `ssl.SSLContext.options` resolves `SSLContext` through
-the module global its setter closes over, so rebinding it makes the setter
-recurse into itself — and `boto3`, which the cloud storage backend is built on,
-sets `options` while constructing a client. Verified: one `inject_into_ssl()`
-call is enough to turn every `boto3.client(...)` into a `RecursionError`. So
-this module hands a context to the two transports we own (`net.transport`'s
-session and `seed.fetch`'s urllib calls) and leaves every other TLS client on
-the machine exactly as it was.
+offers `inject_into_ssl()`, which rebinds `ssl.SSLContext` process-wide. An
+application should not do that to every other library in its process on
+principle — but it is also concretely broken here. stdlib
+`ssl.SSLContext.options` resolves `SSLContext` through the module global its
+setter closes over, so rebinding makes the setter recurse into itself, and
+botocore sets `options` while building a client.
 
-The cost of that choice is reach: `dulwich` (the transcripts repo sync) and
-`llm` (a remote embedding endpoint) build their own contexts and still verify
-against their own defaults. `SSL_CERT_FILE` covers them, which is why
-`CERTIFICATE_HINT` names it rather than claiming the problem is solved.
+Observed on macOS 26.5.2 / CPython 3.13.14 / truststore 0.10.4, against both
+botocore 1.43.67 and 1.43.70, in a clean venv::
+
+    python -c "import truststore, boto3; truststore.inject_into_ssl(); \\
+               boto3.client('s3', region_name='us-east-1')"
+    RecursionError: maximum recursion depth exceeded
+
+`botocore.httpsession.create_urllib3_context()` is the call that recurses. A
+review of this change did not reproduce it at those same versions, so treat it
+as environment-sensitive rather than universal — re-run the line above before
+concluding it has been fixed upstream, and note the design does not rest on it.
+
+So this module hands a context to the transports we own and leaves every other
+TLS client on the machine exactly as it was.
+
+The cost of that choice is reach: `dulwich` (the transcripts repo sync), `llm`
+(summariser plugins) and `google.auth`'s own session build their own contexts
+and still verify against their own defaults. `SSL_CERT_FILE` and
+`REQUESTS_CA_BUNDLE` cover much of that, which is why `CERTIFICATE_HINT` names
+them rather than claiming the problem is solved — and why
+`system_trust_context` below is careful to keep `SSL_CERT_FILE` working.
 
 `IETF_LLM_SYSTEM_TRUST_STORE=off` opts out, for the deployment whose platform
 store is the *less* complete of the two (a container without `ca-certificates`
@@ -74,7 +88,18 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
     try:
         import truststore  # pylint: disable=import-outside-toplevel
 
-        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # Load the *default* CA material as extra anchors. Without this the
+        # context carries none, and on macOS truststore does not read them
+        # itself — so passing this to `urlopen` would silently stop honouring
+        # `SSL_CERT_FILE`, which is the remedy `CERTIFICATE_HINT` names and the
+        # only one that reaches the urllib path at all. Widening only: the
+        # platform store still applies, so this can add trust, never remove it.
+        try:
+            context.load_default_certs()
+        except (OSError, ssl.SSLError):
+            pass  # a malformed SSL_CERT_FILE must not cost us the platform store
+        return context
     except Exception:  # pylint: disable=broad-except
         return None
 

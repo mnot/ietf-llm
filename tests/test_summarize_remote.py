@@ -1,6 +1,6 @@
 """Tests for the remote OpenAI-compatible summariser backend.
 
-No network: oai_compat.requests.post is stubbed. Verifies prefix
+No network: oai_compat._shared_session is stubbed. Verifies prefix
 detection, the chat-completions request/response surface, env-driven
 construction, 429 retry, and that _Summarizer routes an
 'openai-summarize/' model id to this backend.
@@ -9,6 +9,7 @@ construction, 429 retry, and that _Summarizer routes an
 from __future__ import annotations
 
 import requests
+from types import SimpleNamespace
 
 from ietf_llm.embeddings import oai_compat
 from ietf_llm.digest.remote_summarizer import (
@@ -52,7 +53,9 @@ def test_prompt_request_and_response(monkeypatch):
         seen.update(url=url, headers=headers, payload=json)
         return _FakeResp(200, "a summary")
 
-    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
     out = _OpenAICompatChatModel(
         "@cf/meta/llama-3.1-8b-instruct", "https://host/v1",
         {"Authorization": "Bearer tok", "cf-aig-authorization": "g"},
@@ -71,8 +74,10 @@ def test_prompt_handles_empty_choices(monkeypatch):
         def json(self):
             return {"choices": []}
 
-    monkeypatch.setattr(oai_compat.requests, "post",
-                        lambda url, headers, json, timeout: _Empty(200))
+    monkeypatch.setattr(
+        oai_compat, "_shared_session",
+        lambda: SimpleNamespace(post=lambda url, headers, json, timeout: _Empty(200)),
+    )
     assert _chat(max_retries=0).prompt("x").text() == ""
 
 
@@ -84,7 +89,9 @@ def test_retry_then_succeed(monkeypatch):
         n["i"] += 1
         return _FakeResp(429) if n["i"] <= 2 else _FakeResp(200, "ok")
 
-    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
     assert _chat(max_retries=3).prompt("x").text() == "ok"
     assert n["i"] == 3
 
@@ -111,8 +118,12 @@ def test_summarizer_routes_to_remote(monkeypatch):
     monkeypatch.setenv("IETF_LLM_SUMMARIZE_BASE_URL", "https://host/v1")
     monkeypatch.delenv("IETF_LLM_SUMMARIZE_TOKEN", raising=False)
     monkeypatch.delenv("IETF_LLM_SUMMARIZE_HEADERS", raising=False)
-    monkeypatch.setattr(oai_compat.requests, "post",
-                        lambda url, headers, json, timeout: _FakeResp(200, '"Quoted summary."'))
+    monkeypatch.setattr(
+        oai_compat, "_shared_session",
+        lambda: SimpleNamespace(
+            post=lambda url, headers, json, timeout: _FakeResp(200, '"Quoted summary."')
+        ),
+    )
     s = _Summarizer("openai-summarize/m", Verbosity.QUIET)
     assert s.active()
     # _Summarizer collapses newlines and strips surrounding quotes.

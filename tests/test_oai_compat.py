@@ -8,6 +8,7 @@ env_float coercers.
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from ietf_llm.embeddings import oai_compat
 from ietf_llm.log import Verbosity
@@ -97,7 +98,9 @@ def test_auth_status_raises_actionable_error_without_retrying(monkeypatch, statu
         calls["n"] += 1
         return _Resp(status, reason="Unauthorized")
 
-    monkeypatch.setattr(oai_compat.requests, "post", fake)
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
     with pytest.raises(oai_compat.UpstreamAuthError) as exc:
         oai_compat.post_json_with_retry(
             "https://host/v1/embeddings", {}, {},
@@ -113,8 +116,8 @@ def test_non_auth_4xx_still_raises_for_status(monkeypatch):
     # A 400 is a request bug, not an auth failure: it must not be wrapped as
     # UpstreamAuthError, and (since it is not 429/5xx) is not retried.
     monkeypatch.setattr(
-        oai_compat.requests, "post",
-        lambda url, headers, json, timeout: _BadReq(),
+        oai_compat, "_shared_session",
+        lambda: SimpleNamespace(post=lambda url, headers, json, timeout: _BadReq()),
     )
     with pytest.raises(Exception) as exc:
         oai_compat.post_json_with_retry(

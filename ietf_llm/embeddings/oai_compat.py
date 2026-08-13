@@ -22,10 +22,29 @@ from typing import Any, cast
 import requests
 
 from ..log import LogLevel, Verbosity, log
+from ..tls import trust_store_adapter
 
 #: HTTP statuses that mean "your credentials are missing/invalid/insufficient",
 #: not "try again later": 401 Unauthorized, 403 Forbidden, 407 Proxy Auth.
 _AUTH_STATUSES = frozenset({401, 403, 407})
+
+#: Fallback session for callers that pass no `session` (the remote summariser).
+#: A bare `requests.post` would verify against certifi instead of the OS trust
+#: store, which is how the summariser stayed exposed to an enterprise proxy
+#: after the embedding client beside it was covered.
+_SESSION: "requests.Session | None" = None
+
+
+def _shared_session() -> "requests.Session":
+    """Lazily-built session verifying through the OS trust store."""
+    global _SESSION  # pylint: disable=global-statement
+    if _SESSION is None:
+        session = requests.Session()
+        adapter = trust_store_adapter()
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _SESSION = session
+    return _SESSION
 
 
 class UpstreamAuthError(RuntimeError):
@@ -159,7 +178,7 @@ def post_json_with_retry(
     caller reads its token / gateway headers from — so the operator gets
     actionable guidance instead of a bare ``requests`` traceback.
     """
-    post = session.post if session is not None else requests.post
+    post = session.post if session is not None else _shared_session().post
     max_retries = max(0, max_retries)
     attempt = 0
     while True:

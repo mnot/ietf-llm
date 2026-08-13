@@ -95,6 +95,40 @@ def test_a_platform_context_is_built_by_default(
     assert isinstance(ctx, truststore.SSLContext)
 
 
+def test_ssl_cert_file_still_reaches_the_context(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare `truststore.SSLContext` carries no CA material, and on macOS
+    truststore does not read the default paths itself — so handing one to
+    `urlopen` silently stopped honouring `SSL_CERT_FILE`. That is the remedy
+    `CERTIFICATE_HINT` names, and the only one that reaches the urllib path at
+    all (`REQUESTS_CA_BUNDLE` is requests-only), so breaking it would leave the
+    hint pointing at nothing."""
+    import certifi
+
+    monkeypatch.delenv(tls._ENV, raising=False)
+    one = tmp_path / "one-ca.pem"
+    first = certifi.contents().split("-----END CERTIFICATE-----")[0]
+    one.write_text(f"{first}-----END CERTIFICATE-----\n")
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(one))
+    ctx = tls.system_trust_context()
+    assert ctx is not None
+    # Reading the wrapped context: that is where truststore looks for the extra
+    # anchors it passes to the platform verifier.
+    assert len(ctx._ctx.get_ca_certs()) == 1
+
+
+def test_a_malformed_ssl_cert_file_does_not_cost_us_the_platform_store(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(tls._ENV, raising=False)
+    bad = tmp_path / "nonsense.pem"
+    bad.write_text("this is not a certificate")
+    monkeypatch.setenv("SSL_CERT_FILE", str(bad))
+    assert tls.system_trust_context() is not None
+
+
 @pytest.mark.parametrize("value", ["off", "0", "false", "no", "OFF"])
 def test_the_opt_out_is_honoured(value: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """For the deployment whose platform store is the less complete of the two
@@ -181,27 +215,41 @@ def test_the_adapter_falls_back_when_opted_out(
     assert "ssl_context" not in adapter.poolmanager.connection_pool_kw
 
 
-def test_every_requests_transport_we_own_uses_the_factory() -> None:
-    """Two `requests` transports exist: the gather session and the remote
-    embedding client. The second was missed first time round — and it is the
-    serve path's one hard network dependency, so an enterprise proxy breaking
-    it takes a torch-free deployment down with it."""
+def test_no_requests_call_bypasses_the_trust_store() -> None:
+    """Scanned across the whole package rather than a list of known transports.
+
+    "We missed one" happened twice — the remote embedding client, then the
+    remote summariser and the NotebookLM push — and both times the guard named
+    the modules it already knew about, so it could not have caught either. A
+    module-level `requests.get`/`post` or a bare `HTTPAdapter` is the shape of
+    the mistake, so that is what this looks for.
+    """
     import ast
-    import inspect
+    import pathlib
 
-    from ietf_llm.embeddings import models
-    from ietf_llm.net import transport
-
-    for mod in (transport, models):
-        src = inspect.getsource(mod)
-        mounts = [
-            n
-            for n in ast.walk(ast.parse(src))
-            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "mount"
-        ]
-        assert mounts, f"{mod.__name__} mounts nothing"
-        assert "trust_store_adapter(" in src, mod.__name__
-        assert "HTTPAdapter(" not in src, f"{mod.__name__} builds a bare adapter"
+    root = pathlib.Path(tls.__file__).parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # `requests.get(...)` / `requests.post(...)` — module-level calls
+            # build a throwaway session with certifi verification.
+            if (
+                isinstance(func, ast.Attribute)
+                and getattr(func.value, "id", None) == "requests"
+                and func.attr in ("get", "post", "put", "delete", "request", "head")
+            ):
+                offenders.append(f"{path.name}:{node.lineno} requests.{func.attr}()")
+            # A bare adapter carries no context; `tls.trust_store_adapter` is
+            # the only sanctioned way to build one (and defines the subclass).
+            if (
+                getattr(func, "id", None) == "HTTPAdapter"
+                and path.name != "tls.py"
+            ):
+                offenders.append(f"{path.name}:{node.lineno} HTTPAdapter()")
+    assert not offenders, offenders
 
 
 def test_the_seed_fetcher_passes_a_context(monkeypatch: pytest.MonkeyPatch) -> None:
