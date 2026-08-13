@@ -201,6 +201,7 @@ def _load_server_instructions() -> str:
 # skill might depend on; never remove one without a real capability change.
 SERVER_FEATURES: tuple[str, ...] = (
     "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_schedule
+    "review-record",  # review_record — reviews + ballot positions, per revision
     "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
 )
 
@@ -411,7 +412,8 @@ def main() -> None:  # pylint: disable=too-many-locals
     # contract — so they are registered only when gather is enabled. That
     # defaults on for local stdio and off for the shared HTTP replica;
     # IETF_LLM_ENABLE_GATHER overrides either way. `meeting_schedule` and
-    # `draft_status` reach Datatracker live, so they ride the same gate.
+    # `draft_status` / `review_record` reach Datatracker live, so they ride
+    # the same gate.
     if _gather_enabled():
         gather.register(server)
         meetings.register_live(server)

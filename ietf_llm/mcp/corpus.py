@@ -253,13 +253,25 @@ def tool_overview(wg: str, live: bool = False) -> str:
             if _gather_notes_available(wg)
             else ""
         )
+        # The GitHub record has a ceiling as well as a floor, and only the
+        # floor was ever stated. A reader who greps `issues/` for a proposal
+        # filed after the archive was built gets a sound zero over a record
+        # that stops short of it — so name the last number held, and date it
+        # from the archive rather than the gather (see `coverage.RepoRecord`).
+        edge = coverage.record_edge_line(src.records)
+        edge_note = (
+            f"\n\n**Record ends at:** {edge}. A number above that was never "
+            "gathered, so a `grep_corpus` zero says nothing about it."
+            if edge
+            else ""
+        )
         body += (
             "\n\n## Coverage\n\n"
-            f"**Sources:** {inventory}.\n\n"
-            "_GitHub issues and drafts are the full set, not limited by the "
-            "gather window. For activity older than the window above, "
-            f"re-gather deeper with {deeper} — don't read absence as proof it "
-            f"didn't happen.{missing}_"
+            f"**Sources:** {inventory}.{edge_note}\n\n"
+            "_GitHub issues and drafts are not limited by the gather window, "
+            "though they stop where the last gather did. For activity older "
+            f"than the window above, re-gather deeper with {deeper} — don't "
+            f"read absence as proof it didn't happen.{missing}_"
         )
     body += _overview_live_reconciliation(wg, live)
     return _with_freshness(wg, body, sources=src)

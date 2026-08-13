@@ -18,15 +18,27 @@ Two honesty constraints shape what we report:
   - Which GitHub repos a corpus tracks is read from each archive's `repo`
     field (the verbatim `owner/repo`), not the on-disk slug dir name — the
     slug replaces `/` with `-` and is lossy.
+
+Unwindowed is not unbounded, which is the third constraint and the reason
+`RepoRecord` exists. "The full set" is true of a GitHub archive at the moment
+it was built and false from then on, so a `grep_corpus` zero over `issues/` is
+bounded above by a number nothing used to state — the difference between "no
+one raised this" and "no one raised this in the part of the record we hold".
+The bound is reported as the highest issue/PR number present, with the
+archive's own build date rather than the gather date: the archive is fetched
+from the repo's published `archive.json` when there is one, so it can be days
+older than the gather that pulled it, and stamping it with the gather date
+would overstate how current the ceiling is.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
 from .config import load as load_config
@@ -43,6 +55,21 @@ _DAYS_PER_MONTH = 30
 
 
 @dataclass
+class RepoRecord:
+    """One tracked GitHub repo, and where the record we hold for it ends.
+
+    `ceiling` is the highest issue *or* PR number in the archive: GitHub
+    numbers both in one sequence, so a per-kind ceiling would name the edge of
+    the wrong record (on httpwg/http-extensions the issues stop at #3501 while
+    the PRs reach #3502). `built` is the archive's own timestamp — see the
+    module docstring on why not the gather date."""
+
+    repo: str  # verbatim owner/repo
+    ceiling: Optional[int]  # highest issue/PR number held; None if unreadable
+    built: Optional[str]  # YYYY-MM-DD the archive was built, where stated
+
+
+@dataclass
 class Sources:
     """Which substantive sources are present in a corpus's files dir, detected
     from on-disk artifacts. Charter / group metadata are omitted — they are
@@ -56,6 +83,8 @@ class Sources:
     drafts: bool
     rfcs: bool
     meetings: bool
+    records: List[RepoRecord] = field(default_factory=list)  # same repos as
+    # `repos`, with their record ceilings; full path only, for the same reason
 
 
 # --- Window -----------------------------------------------------------------
@@ -100,16 +129,44 @@ def coverage_start_label(wg: str) -> Optional[str]:
 # --- Source detection -------------------------------------------------------
 
 
-def github_repos(files_dir: str) -> List[str]:
-    """The verbatim `owner/repo` names whose issues are present, read from the
-    `repo` field of each `github/<slug>.json` archive (the non-lossy source of
-    truth). Sorted and de-duplicated; empty when no archives are present."""
+#: An archive timestamp we'll quote. The gh-pages archives carry an ISO
+#: instant (`2026-08-06T01:49:14.562886+00:00`); the API fallback writes a
+#: naive `datetime.now().isoformat()`. Only the date part is reported, so both
+#: shapes reduce to the same thing and anything else is dropped rather than
+#: rendered as a bogus date.
+_ISO_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+
+def _archive_ceiling(data: Dict[str, Any]) -> Optional[int]:
+    """The highest issue/PR number in one parsed archive, or None when it holds
+    no numbered record. Both arrays are scanned — see `RepoRecord.ceiling`."""
+    top: Optional[int] = None
+    for key in ("issues", "pulls"):
+        records = data.get(key)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            number = record.get("number") if isinstance(record, dict) else None
+            if isinstance(number, int) and (top is None or number > top):
+                top = number
+    return top
+
+
+def github_records(files_dir: str) -> List[RepoRecord]:
+    """One `RepoRecord` per `github/<slug>.json` archive — the verbatim repo
+    name (the non-lossy source of truth; the dir slug replaces `/` with `-`),
+    the highest issue/PR number held, and when the archive was built. Sorted by
+    repo name, one archive parse each; empty when no archives are present.
+
+    `github_repos` is the name-only view of this, and `github_repo_count` the
+    count-only one that skips the parse entirely.
+    """
     gh_dir = paths.github_dir(files_dir)
     try:
         names = os.listdir(gh_dir)
     except OSError:
         return []
-    repos: set[str] = set()
+    by_repo: Dict[str, RepoRecord] = {}
     for name in names:
         if not name.endswith(".json"):
             continue
@@ -118,10 +175,26 @@ def github_repos(files_dir: str) -> List[str]:
                 data = json.load(fh)
         except (OSError, json.JSONDecodeError):
             continue
-        repo = data.get("repo") if isinstance(data, dict) else None
-        if isinstance(repo, str) and repo:
-            repos.add(repo)
-    return sorted(repos)
+        if not isinstance(data, dict):
+            continue
+        repo = data.get("repo")
+        if not isinstance(repo, str) or not repo:
+            continue
+        stamp = data.get("timestamp")
+        match = _ISO_DATE_RE.match(stamp) if isinstance(stamp, str) else None
+        by_repo[repo] = RepoRecord(
+            repo=repo,
+            ceiling=_archive_ceiling(data),
+            built=match.group(1) if match else None,
+        )
+    return [by_repo[repo] for repo in sorted(by_repo)]
+
+
+def github_repos(files_dir: str) -> List[str]:
+    """The verbatim `owner/repo` names whose issues are present, read from the
+    `repo` field of each `github/<slug>.json` archive (the non-lossy source of
+    truth). Sorted and de-duplicated; empty when no archives are present."""
+    return [record.repo for record in github_records(files_dir)]
 
 
 def github_repo_count(files_dir: str) -> int:
@@ -142,14 +215,15 @@ def detect_sources(files_dir: str) -> Sources:
     repo names (a parse of every archive). Use `detect_sources_compact` when
     only presence and counts are needed (the windowed line, `list_corpora`)."""
     has_drafts, has_rfcs = _draft_kinds(paths.drafts_dir(files_dir))
-    repos = github_repos(files_dir)
+    records = github_records(files_dir)
     return Sources(
         mailing_list=_dir_nonempty(paths.threads_dir(files_dir)),
-        repos=repos,
-        repo_count=len(repos),
+        repos=[record.repo for record in records],
+        repo_count=len(records),
         drafts=has_drafts,
         rfcs=has_rfcs,
         meetings=_dir_nonempty(paths.meetings_dir(files_dir)),
+        records=records,
     )
 
 
@@ -212,17 +286,41 @@ def _windowed_subject(sources: Sources) -> Optional[str]:
 
 
 def _fullset_clause(sources: Sources) -> str:
-    """The trailing `; … the full set, not windowed` caveat, naming only the
-    non-windowed sources actually present (GitHub issues, drafts) — empty when
-    the corpus has neither, so the line never cites a source it lacks."""
+    """The trailing `; … not windowed` caveat, naming only the non-windowed
+    sources actually present (GitHub issues, drafts) — empty when the corpus
+    has neither, so the line never cites a source it lacks.
+
+    It says where they end rather than calling them "the full set": unwindowed
+    means the window doesn't bound them, not that nothing does. `overview`
+    carries the numeric edge (`record_edge_line`); this line runs on every tool
+    response, so it stays cheap and says only which bound applies."""
     full: List[str] = []
     if sources.repo_count:
-        full.append("GitHub issues")
+        full.append("GitHub issues/PRs")
     if sources.drafts:
         full.append("drafts")
     if not full:
         return ""
-    return f"; {' and '.join(full)} are the full set, not windowed"
+    return (
+        f"; {' and '.join(full)} are not windowed, but end where the last "
+        "gather did — not where the record does"
+    )
+
+
+def record_edge_line(records: List[RepoRecord]) -> str:
+    """Where each tracked repo's record stops: `owner/repo through #N (archive
+    built YYYY-MM-DD)`, joined by `;`. Empty when nothing is known.
+
+    This is what makes a `grep_corpus` zero over `issues/` / `pulls/` a bounded
+    claim instead of an open one — the reader can see that #3504 was never
+    scanned because it was never fetched."""
+    parts: List[str] = []
+    for record in records:
+        if record.ceiling is None:
+            continue
+        built = f" (archive built {record.built})" if record.built else ""
+        parts.append(f"{record.repo} through #{record.ceiling}{built}")
+    return "; ".join(parts)
 
 
 def window_line(
