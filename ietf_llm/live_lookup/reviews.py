@@ -41,20 +41,35 @@ import datetime
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote
 
 from ..gather.sources.citations import normalize_draft_name
 from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc
 
-#: Ballot position slug → the label the IESG uses. Positions are rendered in
-#: the order they were cast, so no sort order is needed here.
+#: Ballot position slug → label, the full vocabulary of
+#: `/api/v1/name/ballotpositionname/`. The last four are the IAB / IRSG
+#: ballots, which use this same endpoint. Positions render in the order they
+#: were cast, so no sort order is needed here.
 _POSITION_LABELS = {
     "discuss": "DISCUSS",
     "yes": "Yes",
     "noobj": "No Objection",
     "abstain": "Abstain",
     "recuse": "Recuse",
-    "noupcoming": "Not Yet Posted",
+    "norecord": "No Record",
+    "block": "Block",
+    "concern": "Concern",
+    "moretime": "Need More Time",
+    "notready": "Not Ready",
 }
+
+#: Slugs that are not a position on the document, and are dropped rather than
+#: rendered. `norecord` is what Datatracker records when a balloter has taken
+#: no position — either never having posted one or having cleared it — and it
+#: is common (thousands of live events), so treating it as a position both
+#: inflates the tally and, worse, lets a cleared position stand in for an
+#: examination of the revision it names.
+_NO_POSITION = {"norecord"}
 
 #: Cap on pages followed when a list endpoint returns `meta.next`. One
 #: document's history fits in a page; the cap only stops a runaway.
@@ -82,15 +97,20 @@ def _date(value: Any) -> Optional[str]:
     return value[:10] if value[4] == "-" and value[7] == "-" else None
 
 
-def _objects(url: str) -> Tuple[List[Dict[str, Any]], datetime.datetime]:
+def _objects(url: str) -> Tuple[List[Dict[str, Any]], datetime.datetime, bool]:
     """Every object from a list endpoint, following `meta.next`.
 
-    Returns the newest `fetched_at` of the pages read, so a caller can stamp
-    the result with the freshest thing it saw.
+    Returns `(objects, fetched_at, answered)`. The flag is load-bearing rather
+    than fastidious: `_cached_json` swallows a timeout, a 500 and a decode
+    failure alike to `None`, so without it a Datatracker outage is
+    indistinguishable from a document nobody has reviewed — and this tool's
+    whole payload is a claim of absence. An empty list with `answered=True` is
+    a real "none"; with `answered=False` it is "we do not know".
     """
     out: List[Dict[str, Any]] = []
     fetched = _now_utc()
     next_url: Optional[str] = url
+    answered = False
     for _ in range(_MAX_PAGES):
         if not next_url:
             break
@@ -98,12 +118,13 @@ def _objects(url: str) -> Tuple[List[Dict[str, Any]], datetime.datetime]:
         fetched = page_fetched
         if not body:
             break
+        answered = True
         for obj in body.get("objects") or []:
             if isinstance(obj, dict):
                 out.append(obj)
         nxt = (body.get("meta") or {}).get("next")
         next_url = f"{_DT_BASE}{nxt}" if isinstance(nxt, str) and nxt else None
-    return out, fetched
+    return out, fetched, answered
 
 
 def _fetch_map(
@@ -120,7 +141,12 @@ def _fetch_map(
         return {}
     out: Dict[str, Dict[str, Any]] = {}
     for start in range(0, len(wanted), 100):
-        chunk = wanted[start : start + 100]
+        # `+` is a space in a query string, and 297 Datatracker person emails
+        # contain one (`prehn.lars+ietf@gmail.com`). Unescaped, the row simply
+        # does not come back and the reviewer renders as a raw address — a
+        # silent hole in the column this join exists to produce. `,` is the
+        # separator, so it stays unescaped.
+        chunk = [quote(value, safe="") for value in wanted[start : start + 100]]
         body, _ = _cached_json(
             f"{_API_BASE}/{path}/?{key}__in={','.join(chunk)}&limit=100"
         )
@@ -159,10 +185,21 @@ class PositionRow:
     """One balloter's current position."""
 
     balloter: str
+    slug: str  # raw position slug ('yes', 'noobj', 'recuse', …)
     position: str  # 'Yes', 'No Objection', 'DISCUSS', …
     rev: Optional[str]  # revision the position was placed against
     when: Optional[str]
     discuss: bool  # carries DISCUSS text
+
+    @property
+    def examined(self) -> bool:
+        """Whether this position implies someone read the revision it names.
+
+        A Recuse is a declaration of *not* participating. Counting it as
+        input on the text is how an AD who stepped aside comes to stand in
+        for one who looked — which would suppress exactly the warning this
+        record exists to raise."""
+        return self.slug != "recuse"
 
 
 @dataclass
@@ -174,9 +211,13 @@ class ReviewRecord:
     rev_date: Optional[str]  # when that revision was posted
     reviews: List[ReviewRow] = field(default_factory=list)
     positions: List[PositionRow] = field(default_factory=list)
+    #: Halves Datatracker did not answer for ('reviews', 'ballot'). An empty
+    #: list beside empty rows means a real absence; a named half means the
+    #: rows are unknown, not none — see `_objects`.
+    unavailable: List[str] = field(default_factory=list)
 
 
-def _reviews(doc_name: str) -> Tuple[List[ReviewRow], datetime.datetime]:
+def _reviews(doc_name: str) -> Tuple[List[ReviewRow], datetime.datetime, bool]:
     """Every review assignment for `doc_name`, newest first.
 
     Team and review type come from each row's `review_request` rather than
@@ -184,12 +225,13 @@ def _reviews(doc_name: str) -> Tuple[List[ReviewRow], datetime.datetime]:
     been produced, and the unproductive assignments are exactly the rows worth
     keeping.
     """
-    rows, fetched = _objects(
+    rows, fetched, answered = _objects(
         f"{_API_BASE}/review/reviewassignment/"
-        f"?review_request__doc__name={doc_name}&format=json&limit=100"
+        f"?review_request__doc__name={quote(doc_name, safe='')}"
+        "&format=json&limit=100"
     )
     if not rows:
-        return [], fetched
+        return [], fetched, answered
 
     requests = _fetch_map(
         "review/reviewrequest", "id", (_slug(row.get("review_request")) for row in rows)
@@ -229,22 +271,22 @@ def _reviews(doc_name: str) -> Tuple[List[ReviewRow], datetime.datetime]:
             )
         )
     out.sort(key=lambda row: (row.when or "", row.team or ""))
-    return out, fetched
+    return out, fetched, answered
 
 
-def _positions(doc_name: str) -> Tuple[List[PositionRow], datetime.datetime]:
+def _positions(doc_name: str) -> Tuple[List[PositionRow], datetime.datetime, bool]:
     """Each balloter's current position — latest event per balloter wins.
 
     The endpoint returns one row per position *change*, so collapsing is not
     optional: without it a balloter who revised a DISCUSS to No Objection
     appears twice, in both states.
     """
-    rows, fetched = _objects(
+    rows, fetched, answered = _objects(
         f"{_API_BASE}/doc/ballotpositiondocevent/"
-        f"?doc__name={doc_name}&format=json&limit=100"
+        f"?doc__name={quote(doc_name, safe='')}&format=json&limit=100"
     )
     if not rows:
-        return [], fetched
+        return [], fetched, answered
 
     latest: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -259,15 +301,16 @@ def _positions(doc_name: str) -> Tuple[List[PositionRow], datetime.datetime]:
     people = _fetch_map("person/person", "id", (_slug(uri) for uri in latest))
     out: List[PositionRow] = []
     for balloter, row in latest.items():
-        slug = _slug(row.get("pos")) or "noupcoming"
-        # A balloter with no position posted has nothing to report; the
-        # ballot's shape is the set of positions actually taken.
-        if slug == "noupcoming":
+        slug = _slug(row.get("pos")) or "norecord"
+        # A balloter holding no position has nothing to report; the ballot's
+        # shape is the set of positions actually taken.
+        if slug in _NO_POSITION:
             continue
         rev = row.get("rev")
         out.append(
             PositionRow(
                 balloter=_named(people, balloter, "name") or "(unknown)",
+                slug=slug,
                 position=_POSITION_LABELS.get(slug, slug.upper()),
                 rev=str(rev) if str(rev or "").isdigit() else None,
                 when=_date(row.get("time")),
@@ -275,7 +318,29 @@ def _positions(doc_name: str) -> Tuple[List[PositionRow], datetime.datetime]:
             )
         )
     out.sort(key=lambda row: (row.when or "", row.balloter))
-    return out, fetched
+    return out, fetched, answered
+
+
+def _revision_date(doc_name: str, rev: Any) -> Optional[str]:
+    """When `rev` of `doc_name` was actually posted, from its
+    `newrevisiondocevent`.
+
+    The document's own `time` is its last-modified stamp and advances on any
+    later state change, so it dates the revision too late — for
+    `draft-ietf-idr-bgp-ls-sr-epe-over-l2bundle` it reads 2026-08-10 for a -09
+    posted on 2026-08-05, which renders positions cast on the 6th as though
+    they predated the text they were cast against. In a tool whose entire
+    payload is revision attribution, a header that contradicts its own table
+    is worse than one extra request.
+    """
+    if not isinstance(rev, str) or not rev:
+        return None
+    rows, _, _ = _objects(
+        f"{_API_BASE}/doc/newrevisiondocevent/"
+        f"?doc__name={quote(doc_name, safe='')}&rev={quote(rev, safe='')}"
+        "&format=json&limit=1"
+    )
+    return _date(rows[0].get("time")) if rows else None
 
 
 def fetch_review_record(
@@ -292,14 +357,19 @@ def fetch_review_record(
     if doc is None or not doc.get("name"):
         return None, fetched
 
-    reviews, reviews_fetched = _reviews(canonical)
-    positions, positions_fetched = _positions(canonical)
+    reviews, reviews_fetched, reviews_ok = _reviews(canonical)
+    positions, positions_fetched, positions_ok = _positions(canonical)
     rev = doc.get("rev")
     record = ReviewRecord(
         name=str(doc.get("name")),
         rev=str(rev) if isinstance(rev, str) and rev else None,
-        rev_date=_date(doc.get("time")),
+        rev_date=_revision_date(canonical, rev) or _date(doc.get("time")),
         reviews=reviews,
         positions=positions,
+        unavailable=[
+            half
+            for half, ok in (("reviews", reviews_ok), ("ballot", positions_ok))
+            if not ok
+        ],
     )
     return record, min(fetched, reviews_fetched, positions_fetched)

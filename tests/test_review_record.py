@@ -20,7 +20,15 @@ import pytest
 from ietf_llm import live_lookup
 from ietf_llm.mcp.drafts import tool_review_record
 
+# `time` is the document's last-modified stamp, which advances on later state
+# changes; `_REVISIONS` carries when -08 was actually posted. They differ here
+# on purpose — that gap is what made the header contradict its own table.
 _DOC = {"name": "draft-ietf-httpbis-no-vary-search", "rev": "08", "time": "2026-08-12"}
+
+_REVISIONS = {
+    "meta": {"next": None},
+    "objects": [{"rev": "08", "time": "2026-08-09T14:22:45Z"}],
+}
 
 _ASSIGNMENTS = {
     "meta": {"next": None},
@@ -167,6 +175,8 @@ def _canned(url: str) -> Optional[Dict[str, Any]]:
         return _DOC
     if "/doc/document/" in url:
         return None  # unknown document
+    if "/doc/newrevisiondocevent/" in url:
+        return _REVISIONS
     if "/review/reviewassignment/" in url:
         return _ASSIGNMENTS
     if "/review/reviewrequest/" in url:
@@ -303,10 +313,11 @@ def test_latest_position_per_balloter_wins(monkeypatch, urls) -> None:
 
 
 def test_unposted_positions_are_dropped(monkeypatch, urls) -> None:
-    # `noupcoming` means the balloter has not posted a position at all.
+    # `norecord` is what Datatracker records for a balloter holding no
+    # position — never posted, or posted and later cleared.
     empty = {
         "meta": {"next": None},
-        "objects": [_position(11, "noupcoming", "", "2026-08-01T10:00:00Z")],
+        "objects": [_position(11, "norecord", "", "2026-08-01T10:00:00Z")],
     }
     monkeypatch.setattr(
         live_lookup.cache,
@@ -343,6 +354,137 @@ def test_standing_discuss_points_at_the_gathered_ballot_file(
     out = _record()
     assert "| -08 | **DISCUSS** | Gorry Fairhurst | 2026-08-12 |" in out
     assert "ballots/draft-ietf-httpbis-no-vary-search.md" in out
+
+
+def _stub_positions(monkeypatch, objects: List[Dict[str, Any]]) -> None:
+    body = {"meta": {"next": None}, "objects": objects}
+    monkeypatch.setattr(
+        live_lookup.cache,
+        "_fetch_json",
+        lambda url, timeout=10.0: (
+            body if "/ballotpositiondocevent/" in url else _canned(url)
+        ),
+    )
+    live_lookup._reset_cache()  # pylint: disable=protected-access
+
+
+def test_cleared_position_does_not_stand_in_for_an_examination(
+    monkeypatch, urls
+) -> None:
+    """`norecord` is a balloter holding *no* position. Counted as one, it puts
+    its revision into the examined set and silently withholds the headline —
+    an AD who cleared their position standing in for one who read the text."""
+    _stub_positions(
+        monkeypatch,
+        [
+            _position(10, "yes", "06", "2026-08-03T10:00:00Z"),
+            _position(11, "norecord", "08", "2026-08-12T10:00:00Z"),
+        ],
+    )
+    out = _record()
+    assert "**Nothing in this record has examined -08.**" in out
+    assert "NORECORD" not in out
+    assert "No Record" not in out
+
+
+def test_recuse_is_shown_but_is_not_an_examination(monkeypatch, urls) -> None:
+    # A Recuse is a declaration of not participating. It belongs in the table
+    # — the ballot's shape includes it — but not in the examined set.
+    _stub_positions(
+        monkeypatch,
+        [
+            _position(10, "yes", "06", "2026-08-03T10:00:00Z"),
+            _position(11, "recuse", "08", "2026-08-12T10:00:00Z"),
+        ],
+    )
+    out = _record()
+    assert "| -08 | Recuse | Gorry Fairhurst | 2026-08-12 |" in out
+    assert "**Nothing in this record has examined -08.**" in out
+    assert "**Ballot:** 1 against -06" in out
+
+
+def test_iesg_position_vocabulary_matches_datatracker(urls) -> None:
+    # The full `/api/v1/name/ballotpositionname/` set, including the four the
+    # IAB / IRSG ballots use. A slug missing from the map leaks in upper case
+    # through the fallback, so the guard is that none of them do.
+    for slug in ("block", "concern", "moretime", "notready", "abstain"):
+        assert slug in live_lookup.reviews._POSITION_LABELS  # pylint: disable=protected-access
+        assert live_lookup.reviews._POSITION_LABELS[slug] != slug.upper()  # pylint: disable=protected-access
+
+
+# --- what the record does not know ------------------------------------------
+
+
+def test_a_failed_fetch_is_not_rendered_as_an_empty_record(monkeypatch, urls) -> None:
+    """A Datatracker outage on the list endpoints must not read as a draft
+    nobody has reviewed. The doc fetch still answers (it can come off the disk
+    cache), so without the flag this renders a confident, wrong absence."""
+    monkeypatch.setattr(
+        live_lookup.cache,
+        "_fetch_json",
+        lambda url, timeout=10.0: (
+            None
+            if ("/review/reviewassignment/" in url or "/ballotpositiondocevent/" in url)
+            else _canned(url)
+        ),
+    )
+    live_lookup._reset_cache()  # pylint: disable=protected-access
+    out = _record()
+    assert "Datatracker did not answer for the reviews and ballot" in out
+    assert "this record is incomplete" in out
+    # None of the absence claims may appear.
+    assert "none requested" not in out
+    assert "not opened" not in out
+    assert "Nothing in this record has examined" not in out
+
+
+def test_never_reviewed_draft_gets_no_gap_headline(monkeypatch, urls) -> None:
+    """With nothing ever cast there is no "since" and no earlier revision to
+    diff; the headline would read as "reviewed, then moved on"."""
+    monkeypatch.setattr(
+        live_lookup.cache,
+        "_fetch_json",
+        lambda url, timeout=10.0: (
+            {"meta": {"next": None}, "objects": []}
+            if ("/review/reviewassignment/" in url or "/ballotpositiondocevent/" in url)
+            else _canned(url)
+        ),
+    )
+    live_lookup._reset_cache()  # pylint: disable=protected-access
+    out = _record()
+    assert "Nothing in this record has examined" not in out
+    assert "- **Reviews:** none requested." in out
+    assert "- **Ballot:** not opened." in out
+
+
+def test_revision_is_dated_from_its_own_posting_event(urls) -> None:
+    # Not from the document's `time`, which advances on later state changes
+    # and would date -08 after positions that were cast against it.
+    assert "**Current revision:** -08 (2026-08-09)" in _record()
+
+
+def test_query_values_are_escaped(monkeypatch, urls) -> None:
+    """`+` is a space in a query string, and 297 Datatracker person emails
+    contain one — unescaped, the name never comes back."""
+    plussed = {
+        "meta": {"next": None},
+        "objects": [
+            dict(
+                _ASSIGNMENTS["objects"][0],
+                reviewer="/api/v1/person/email/lars+ietf@example.net/",
+            )
+        ],
+    }
+    def _fetch(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        urls.append(url)  # this stub replaces the fixture's, so it records too
+        return plussed if "/review/reviewassignment/" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
+    live_lookup._reset_cache()  # pylint: disable=protected-access
+    _record()
+    email_urls = [url for url in urls if "/person/email/?" in url]
+    assert email_urls
+    assert any("lars%2Bietf%40example.net" in url for url in email_urls)
 
 
 def test_unknown_document_is_reported(urls) -> None:

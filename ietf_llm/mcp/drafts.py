@@ -711,10 +711,30 @@ def _coverage_verdict(record: "ReviewRecord") -> List[str]:
     completed = [row for row in record.reviews if row.produced_review]
     unproductive = len(record.reviews) - len(completed)
     review_revs = [int(row.reviewed_rev) for row in completed if row.reviewed_rev]
-    position_revs = [int(row.rev) for row in record.positions if row.rev]
+    # A Recuse names a revision without being a look at it — see
+    # `PositionRow.examined`.
+    position_revs = [
+        int(row.rev) for row in record.positions if row.rev and row.examined
+    ]
 
     lines: List[str] = []
-    if current is not None and current not in review_revs + position_revs:
+    if record.unavailable:
+        # The verdict is a claim of absence, and these rows are unknown rather
+        # than absent. Say so instead of rendering a confident "nobody has
+        # looked at this" out of a Datatracker outage.
+        halves = " and ".join(record.unavailable)
+        return [
+            f"**Datatracker did not answer for the {halves} — this record is "
+            "incomplete.** What follows is only what came back; do not read "
+            "it as what exists. Retry before concluding anything."
+        ]
+    seen = review_revs + position_revs
+    # The headline is about a *gap* between what was examined and what is now
+    # posted, so it needs something to have been examined. On a draft that has
+    # never been reviewed there is no "since" and no earlier revision to diff,
+    # and firing here reads as "reviewed, then moved on" — the opposite of the
+    # truth. The two lines below already say the true thing.
+    if current is not None and seen and current not in seen:
         lines.append(
             f"**Nothing in this record has examined {label}.** Text added or "
             "rewritten since has been seen by no reviewer and no balloter; "
