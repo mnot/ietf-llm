@@ -15,8 +15,18 @@ the hard way.
   commit. `make tidy` formats **only `ietf_llm/`, not `tests/`** — do not
   run black over the test files; they use a compact style black fights
   and it isn't enforced there.
-- Do **not** edit managed files: `.pylintrc`, `Makefile`,
-  `Makefile.venv`, `Makefile.pyproject`.
+- Do **not** edit files `make update` overwrites from mnot/pyproject-tmpl
+  (the authoritative list is `UPDATE_MAKEFILES` + `UPDATE_FILES` in
+  `Makefile.pyproject`): `Makefile.pyproject`, `Makefile.venv`, `mypy.ini`,
+  `.pylintrc`, `.isort.cfg`, `.github/workflows/publish.yml`. Each carries a
+  banner saying so.
+- `.github/workflows/test.yml`, `.gitignore` and `.editorconfig` are managed
+  *except* inside `# === pyproject-tmpl: start "<name>" ===` regions, whose
+  contents are spliced back in on update. Project-specific CI steps go in a
+  region, never outside one.
+- The top-level **`Makefile` is ours** — no banner, not in either update list,
+  and already where `PROJECT` and the project's `test` target live. Add
+  project-specific targets there rather than reaching for a bare script.
 
 ## Commit conventions
 
@@ -76,7 +86,8 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   it and the affected tool docstrings whenever behaviour changes. (The skills
   vendored under `ietf_llm/data/skills/<name>/` are separate installed Agent
   Skills, not the routing brain — and are vendored, so edit them upstream in
-  mnot/ietf-skill and re-run `scripts/vendor-skills.sh`.)
+  mnot/ietf-skill and re-run `make vendor-skills`; CI runs
+  `make vendor-skills-check`, so drift from the pin fails the build.)
 - **The gate.** `make test lint typecheck` clean (pylint 10.00/10), and
   `ietf_llm/` is black-clean. See "The gate" above.
 

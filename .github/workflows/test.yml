@@ -42,6 +42,15 @@ jobs:
     - name: Test
       run: make test
     # === pyproject-tmpl: start "post-test" ===
+    # The vendored Agent Skills are copies of mnot/ietf-skill at the tag pinned
+    # in VENDORED.md; nothing else notices if they drift from it. One Python
+    # version only -- the answer cannot differ across the matrix, and this hits
+    # the GitHub API.
+    - name: Check vendored skills match their pin
+      if: matrix.python-version == '3.13'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: make vendor-skills-check
     # === pyproject-tmpl: end "post-test" ===
 
 # === pyproject-tmpl: MIGRATION NEEDED ===
