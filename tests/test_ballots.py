@@ -165,6 +165,42 @@ def test_latest_event_per_balloter_wins(
     assert positions[0].discuss == ""
 
 
+def test_cleared_position_is_not_a_position(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`norecord` is a balloter holding no position — either never posted or
+    posted and later cleared. It is the real slug Datatracker emits (there is
+    no `noupcoming`), so before this it fell through the skip and rendered as
+    a `NORECORD` position, inflating the tally."""
+    now = datetime.now(timezone.utc)
+    early = (now - timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    late = (now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {
+            "objects": [_position_event("draft-foo", 101, "norecord", late)],
+        },
+        "doc__name__in=draft-foo": {
+            "objects": [
+                _position_event("draft-foo", 101, "discuss", early, discuss="Old."),
+                _position_event("draft-foo", 101, "norecord", late),
+                _position_event("draft-foo", 102, "yes", late),
+            ],
+        },
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/102/": {"name": "Bob Smith"},
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    positions = out[0].positions
+    assert [p.name for p in positions] == ["Bob Smith"]
+    text = render_ballot(out[0])
+    assert "NORECORD" not in text and "No Record" not in text
+    assert "**Tally:** 1 Yes" in text
+    # The cleared DISCUSS must not come back either: the latest event wins,
+    # and the latest event is that Alice holds nothing.
+    assert "Old." not in text
+
+
 def test_pre_window_discuss_still_appears_when_ad_hasnt_revisited(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -254,10 +290,9 @@ def _pos(name: str, slug: str, **kwargs: Any) -> Position:
         person_url=f"/api/v1/person/person/{abs(hash(name)) % 1000}/",
         name=name,
         pos_slug=slug,
-        pos_label={
-            "discuss": "DISCUSS", "noobj": "No Objection",
-            "yes": "Yes", "abstain": "Abstain", "recuse": "Recuse",
-        }[slug],
+        # From the module's own map, so a test can't agree with the code
+        # about a label the API never emits.
+        pos_label=ballots_module._POSITION_LABELS[slug],
         when=kwargs.get("when", datetime(2026, 5, 1, tzinfo=timezone.utc)),
         rev=kwargs.get("rev", "12"),
         comment=kwargs.get("comment", ""),
@@ -282,6 +317,22 @@ def test_render_ballot_puts_discuss_first() -> None:
     assert "1 DISCUSS" in text
     assert "1 Yes" in text
     assert "1 No Objection" in text
+
+
+def test_render_ballot_heads_the_section_by_the_position_present() -> None:
+    # An IRSG Block holds publication the same way a DISCUSS does, so it
+    # renders with its filed text — but under its own name, not "DISCUSS".
+    ballot = _make_ballot(
+        _pos("Alice Chen", "noobj"),
+        _pos("Bob Smith", "block", discuss="Blocking on the security model."),
+    )
+    text = render_ballot(ballot)
+    assert "## Block positions" in text
+    assert "DISCUSS" not in text
+    # The filed text survives; before, a Block fell into "Other positions",
+    # which renders only the comment and drops the body entirely.
+    assert "Blocking on the security model." in text
+    assert "1 Block" in text
 
 
 def test_render_ballot_no_discuss_omits_that_section() -> None:
