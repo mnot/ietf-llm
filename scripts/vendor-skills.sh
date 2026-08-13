@@ -2,6 +2,11 @@
 # Re-vendor the Agent Skills from the canonical repo. See
 # ietf_llm/data/skills/VENDORED.md.
 #
+# Prefer the make targets, which is how CI invokes this:
+#
+#   make vendor-skills [REF=v0.4.1]   -> this script [REF]
+#   make vendor-skills-check          -> this script --check
+#
 #   scripts/vendor-skills.sh [REF]
 #     Vendor every skill upstream publishes and rewrite the tag+commit pin in
 #     VENDORED.md — no hand-copying. With no REF, tracks the newest vN.N.N tag
@@ -10,8 +15,16 @@
 #
 #   scripts/vendor-skills.sh --check
 #     Verify the on-disk vendored skills (and the pin recorded in VENDORED.md)
-#     match upstream at that pinned tag. Exits non-zero on any drift. Run before
-#     a release, or wire into CI.
+#     match upstream at that pinned tag. Runs in CI on every push.
+#
+#     Exit 0  everything matches the pin.
+#     Exit 1  something is wrong and we know it: file or skill-set drift, or a
+#             pin GitHub says does not resolve. Fails the build.
+#     Exit 2  we could not find out — no network, `gh` missing, a 5xx. Warns
+#             only. Note that 2 is non-zero without meaning drift, so callers
+#             must test the value rather than mere success (`make` cannot: it
+#             collapses any recipe failure to its own exit 2, which is why the
+#             make target translates rather than the workflow).
 #
 # The skill set is *discovered*, not listed here: every top-level directory
 # upstream that holds a SKILL.md is vendored, whole tree (several carry
@@ -46,20 +59,51 @@ current_sha() {
   grep -oE 'commit [0-9a-f]+' "$vendored_md" | head -1 | awk '{print $2}'
 }
 
-resolve_sha() { gh api "repos/$REPO/commits/$1" --jq '.sha'; }
+resolve_sha() {  # ref
+  if ! gh api "repos/$REPO/commits/$1" --jq '.sha' 2> "$work/gh.err"; then
+    cat "$work/gh.err" >&2
+    return "$(gh_failure_kind "$work/gh.err")"
+  fi
+}
+
+# Exit statuses, shared by the helpers below and by --check.
+#   1 -- a definitive answer that something is wrong (drift, or a pin GitHub
+#        says does not exist). Fails the build.
+#   2 -- we could not find out. Warns; does not fail the build.
+readonly WRONG=1
+readonly UNKNOWN=2
+
+# Classify a failed `gh` call from its stderr. An HTTP 4xx is GitHub answering
+# the question -- the tag is gone, the repo was renamed, it went private -- and
+# a pin that cannot be resolved is drift of the worst kind, since re-vendoring
+# from it is impossible. Anything else (no route, TLS, 5xx, `gh` not installed)
+# is us failing to ask.
+gh_failure_kind() {  # stderr-file
+  grep -qE 'HTTP 4[0-9][0-9]' "$1" && echo "$WRONG" || echo "$UNKNOWN"
+}
 
 # Extract the repo at $1 into $work/src and echo the extracted root. A tarball
 # rather than per-file content calls: it is one request whatever the skill
 # count, and it carries subdirectories without walking the tree API.
+#
+# Fails at the step that actually failed. Letting a 404 fall through to `tar`
+# and then to an empty-root guard produced three messages for one fault, the
+# last of which ("empty tarball") named a cause that was not the cause.
 fetch_tree() {  # ref
   local src="$work/src"
   mkdir -p "$src"
-  gh api "repos/$REPO/tarball/$1" > "$work/repo.tar.gz"
-  tar xzf "$work/repo.tar.gz" -C "$src"
+  if ! gh api "repos/$REPO/tarball/$1" > "$work/repo.tar.gz" 2> "$work/gh.err"; then
+    cat "$work/gh.err" >&2
+    return "$(gh_failure_kind "$work/gh.err")"
+  fi
+  if ! tar xzf "$work/repo.tar.gz" -C "$src" 2>/dev/null; then
+    echo "$REPO@$1 did not return a tarball" >&2
+    return "$UNKNOWN"
+  fi
   # GitHub's tarball wraps everything in one <owner>-<repo>-<sha> directory.
   local root
   root="$(find "$src" -mindepth 1 -maxdepth 1 -type d | head -1)"
-  [[ -n "$root" ]] || { echo "empty tarball for $REPO@$1" >&2; exit 1; }
+  [[ -n "$root" ]] || { echo "empty tarball for $REPO@$1" >&2; return "$UNKNOWN"; }
   echo "$root"
 }
 
@@ -98,13 +142,16 @@ update_vendored_md() {  # ref sha
 if [[ "${1:-}" == "--check" ]]; then
   ref="$(current_ref)"
   [[ -n "$ref" ]] || { echo "could not read a pinned tag from VENDORED.md" >&2; exit 1; }
-  # Exit 2, distinct from the exit 1 that means drift: a check that reports
-  # "upstream had a bad minute" the same way it reports "the vendored files are
-  # wrong" is one people learn to re-run rather than read, and then it is not a
-  # check at all. CI turns 2 into a warning.
-  if ! root="$(fetch_tree "$ref")"; then
+  set +e
+  root="$(fetch_tree "$ref")"
+  fetched=$?
+  set -e
+  if [[ $fetched -eq $WRONG ]]; then
+    echo "DRIFT: VENDORED.md pins $REPO@$ref, which does not resolve" >&2
+    exit "$WRONG"
+  elif [[ $fetched -ne 0 ]]; then
     echo "could not reach $REPO@$ref; vendored skills not checked" >&2
-    exit 2
+    exit "$UNKNOWN"
   fi
   status=0
   upstream="$(skills_in "$root")"
@@ -122,9 +169,16 @@ if [[ "${1:-}" == "--check" ]]; then
     fi
   done
   recorded="$(current_sha)"
-  if ! actual="$(resolve_sha "$ref")"; then
+  set +e
+  actual="$(resolve_sha "$ref")"
+  resolved=$?
+  set -e
+  if [[ $resolved -eq $WRONG ]]; then
+    echo "DRIFT: VENDORED.md pins $REPO@$ref, which does not resolve" >&2
+    exit "$WRONG"
+  elif [[ $resolved -ne 0 ]]; then
     echo "could not resolve $REPO@$ref; vendored skills not checked" >&2
-    exit 2
+    exit "$UNKNOWN"
   fi
   if [[ "$recorded" != "$actual" ]]; then
     echo "DRIFT: VENDORED.md pins commit $recorded but $REPO@$ref is $actual" >&2

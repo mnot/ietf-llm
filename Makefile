@@ -33,6 +33,8 @@ vendor-skills-check:
 	@./scripts/vendor-skills.sh --check; code=$$?; \
 	if [ $$code -eq 2 ]; then \
 		echo "upstream unreachable; vendored skills not checked"; \
+		[ -n "$$GITHUB_ACTIONS" ] && \
+			echo "::warning::vendored-skill pin not checked (upstream unreachable)"; \
 		exit 0; \
 	fi; \
 	exit $$code

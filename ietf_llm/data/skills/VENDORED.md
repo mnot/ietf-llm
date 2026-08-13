@@ -23,9 +23,13 @@ instructions (`data/mcp-instructions.md`) point at them; the rest ship for
 `--install-skills` only.
 
 Do **not** edit these files here — edit them upstream and re-vendor with
-`scripts/vendor-skills.sh`. Run with no argument to track the newest upstream
-tag, or pass one to pin a specific version (`scripts/vendor-skills.sh v0.2.2`);
-either way the script rewrites the tag+commit line above for you — review the
-diff and commit. `scripts/vendor-skills.sh --check` verifies the on-disk files
-match that pin. Routing is not vendored: it lives in the MCP server's own
-instructions, not a skill.
+`make vendor-skills`. Run with no argument to track the newest upstream tag, or
+pass one to pin a specific version (`make vendor-skills REF=v0.2.2`); either way
+it rewrites the tag+commit line above for you — review the diff and commit.
+
+`make vendor-skills-check` verifies the on-disk files match that pin, **and CI
+runs it on every push**, so drift from the pin fails the build rather than
+sitting here unnoticed.
+
+Routing is not vendored: it lives in the MCP server's own instructions, not a
+skill.
