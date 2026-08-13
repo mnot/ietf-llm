@@ -41,32 +41,16 @@ There are three supported workflows:
 See the workflow documentation linked above for installation and use instructions, or the
 [full documentation listing](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
 
-All three read a corpus you first **gather** with `ietf-llm <corpus>`.
-
-The RFC series is the exception: `search_rfc_index`, `search_rfc_text`,
-`grep_corpus(corpus="rfcs", …)` (exact phrases, across the 72-column wrap),
-`get_rfc_info` and `get_rfc_section` cover **every published RFC** and are not
-tied to a corpus. Their data arrives on its own — a gather pulls it as
-housekeeping — but a machine that only ever *reads*, such as a hosted MCP
-deployment, never runs a gather and so never gets it. Set that machine up in
-one step:
-
-```
-ietf-llm --init
-```
-
-That refreshes the RFC metadata mirror and the effort catalog, installs the
-full text of the series from the seed store (about 285 MB to download, ~650 MB
-on disk once installed, which is what makes `search_rfc_text` and
-`get_rfc_section` work), and syncs the bundled skills. It gathers nothing, and
-it is safe to re-run. If it reports the full text as NOT installed, it says
-why.
+All three read a corpus you first **gather** with `ietf-llm <corpus>`. The RFC series is the
+exception: the RFC tools cover **every published RFC** and belong to no corpus, so they work
+without gathering anything — see [gathering](https://github.com/mnot/ietf-llm/blob/main/docs/gathering.md).
 
 > **Heads up — gathering reaches the network by default.** To make a first gather fast, `ietf-llm`
 > pulls a prebuilt snapshot of covered corpora from the public
 > [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at
 > `seed-store.mnot.net` (and `list_corpora` looks its catalog up there), then freshens only the
-> delta — skipping most of the embedding and download cost. **To turn this off:** `ietf-llm <corpus>
+> delta — skipping most of the embedding and download cost. The same store holds the RFC full
+> text that `ietf-llm --init` installs. **To turn this off:** `ietf-llm <corpus>
 > --no-seed` (it *persists* across gathers; re-enable with `--seed`), or set `IETF_LLM_SEED_ENABLED=off`
 > (or `IETF_LLM_SEED_URL=off`) in your environment. With seeding off, gathers run fully cold and
 > offline. It is best-effort either way — an unreachable or unlisted corpus just gathers from scratch.
