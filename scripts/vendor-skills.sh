@@ -98,7 +98,14 @@ update_vendored_md() {  # ref sha
 if [[ "${1:-}" == "--check" ]]; then
   ref="$(current_ref)"
   [[ -n "$ref" ]] || { echo "could not read a pinned tag from VENDORED.md" >&2; exit 1; }
-  root="$(fetch_tree "$ref")"
+  # Exit 2, distinct from the exit 1 that means drift: a check that reports
+  # "upstream had a bad minute" the same way it reports "the vendored files are
+  # wrong" is one people learn to re-run rather than read, and then it is not a
+  # check at all. CI turns 2 into a warning.
+  if ! root="$(fetch_tree "$ref")"; then
+    echo "could not reach $REPO@$ref; vendored skills not checked" >&2
+    exit 2
+  fi
   status=0
   upstream="$(skills_in "$root")"
   mine="$(local_dirs)"
@@ -115,7 +122,10 @@ if [[ "${1:-}" == "--check" ]]; then
     fi
   done
   recorded="$(current_sha)"
-  actual="$(resolve_sha "$ref")"
+  if ! actual="$(resolve_sha "$ref")"; then
+    echo "could not resolve $REPO@$ref; vendored skills not checked" >&2
+    exit 2
+  fi
   if [[ "$recorded" != "$actual" ]]; then
     echo "DRIFT: VENDORED.md pins commit $recorded but $REPO@$ref is $actual" >&2
     status=1

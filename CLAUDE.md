@@ -15,8 +15,18 @@ the hard way.
   commit. `make tidy` formats **only `ietf_llm/`, not `tests/`** — do not
   run black over the test files; they use a compact style black fights
   and it isn't enforced there.
-- Do **not** edit managed files: `.pylintrc`, `Makefile`,
-  `Makefile.venv`, `Makefile.pyproject`.
+- Do **not** edit files `make update` overwrites from mnot/pyproject-tmpl
+  (the authoritative list is `UPDATE_MAKEFILES` + `UPDATE_FILES` in
+  `Makefile.pyproject`): `Makefile.pyproject`, `Makefile.venv`, `mypy.ini`,
+  `.pylintrc`, `.isort.cfg`, `.github/workflows/publish.yml`. Each carries a
+  banner saying so.
+- `.github/workflows/test.yml`, `.gitignore` and `.editorconfig` are managed
+  *except* inside `# === pyproject-tmpl: start "<name>" ===` regions, whose
+  contents are spliced back in on update. Project-specific CI steps go in a
+  region, never outside one.
+- The top-level **`Makefile` is ours** — no banner, not in either update list,
+  and already where `PROJECT` and the project's `test` target live. Add
+  project-specific targets there rather than reaching for a bare script.
 
 ## Commit conventions
 
