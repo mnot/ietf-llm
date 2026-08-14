@@ -662,3 +662,7 @@ request numbers -- rather than copying it from your notes. A summary of a tool r
 draft's repo -- read `delivering.md` beside this file and follow it. Do it only after they have
 chosen what to raise, and only on what they chose. Nothing there should reach back and change a
 finding.
+
+Both output shapes are record text, so both are governed by the Register in `register.md` beside
+this file. Read it at that point -- `delivering.md` says the same thing, and says it first, because
+a review written before it is a review to be rewritten.

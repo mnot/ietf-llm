@@ -18,7 +18,7 @@ First, confirm that HTTP is being used by the specification in question; see "Is
 
 From there:
 * If you are creating or modifying a specification that uses HTTP, follow the steps in "Creating HTTP Specifications".
-* If you are reviewing a specification that uses HTTP, follow the steps in "Review Process". That covers the HTTP substance; for how to conduct the review itself — which question it answers at this document's stage, how to weigh what you find, and how to present it — see the `ietf-reviewing` skill.
+* If you are reviewing a specification that uses HTTP, follow the steps in "Review Process". That covers the HTTP substance; for how to conduct the review itself -- which question it answers at this document's stage, how to weigh what you find, and how to present it -- see the `ietf-reviewing` skill.
 
 
 ## Reference Texts

@@ -4,36 +4,38 @@ The optional, second half of `SKILL.md`. Read it only when the reviewer asks for
 have chosen what to raise, and only on what they chose. Nothing here should reach back and change a
 finding.
 
-Two shapes -- prose, or issues against the draft's repo. Both begin with `ietf-contributing`, both
-rely on the findings rather than re-verifying them, and in both the human sends.
+Two shapes -- prose, or issues against the draft's repo. Both are record text, so both open by
+reading `register.md` beside this file; both rely on the findings rather than re-verifying them; and
+in both the human sends.
 
 
 ## Writing the review
 
+**Before the first sentence, read `register.md` beside this file.** The trigger is the moment, not a
+judgement that you need it -- a review is record text under a participant's name, so the Register
+governs it exactly as it governs list mail. Knowing what it says is not having read it, and the
+final pass below checks against that file rather than against your memory of it. It is a generated
+copy of the section in `ietf-contributing`, whose other sections govern disclosure and what the
+sender has to be able to defend.
+
+The short form, which is not a substitute for reading it:
+
+- Terse. No padding to soften a finding, no warmth to carry it.
+- Per sentence: would removing this change what the recipient does? If not, cut it.
+- No hard wrap. Quoted text keeps the source's line breaks.
+- Drop the first person where the point stands without it.
+- Replace a pronoun with its referent on the second mention; attach a noun to a bare *this*.
+- Do not announce structure.
+- Quote only what the argument uses; do not restate a quote in prose beside it.
+
 Rely on the findings. The quotes were verified at Step 8 and re-checking them here buys nothing but
-delay -- the reviewer is waiting, and friction here is what stops them asking next time.
-
-This does not conflict with `ietf-contributing`'s rule against citing what you cannot retrieve. A
-Step 8 quote in the findings *is* retrieved text; that rule is against reconstructing a citation
-from memory. Do not read it as licence to re-verify.
-
-The exception is narrow: if the Step 8 verification was not yours, because the findings came from a
-context you did not audit, say so once and let the reviewer decide. Say it -- do not silently
-re-derive, which spends their time to answer a question they were not asked.
-
-Read `ietf-contributing` first. It governs register, disclosure, and what the sender has to be able
-to defend.
-
-**Terseness is appreciated, not rude.** The audience is expert and short of time. Do not pad a
-finding to soften it, and do not add warmth to carry it.
+delay -- the reviewer is waiting, and friction here is what stops them asking next time. If the Step
+8 verification was not yours, because the findings came from a context you did not audit, say so
+once and let the reviewer decide -- do not silently re-derive.
 
 Get the conventional form from a recent real review of the type you are writing -- for a
 directorate, one by that team; for a Last Call comment, one from the last-call list. The headings
 below are the directorate convention and will not always fit.
-
-Do not hard-wrap it. Mail clients and archives reflow, and hard breaks survive into quoted replies
-as ragged fragments. Leave each prose paragraph on one line. Quoted draft or RFC text keeps the
-source's own line breaks and indentation -- it is verbatim, and reflowing it changes it.
 
 The review is a selection from the findings, not a rendering of them: it usually carries fewer
 issues than the findings hold. Cut on relevance to the audience and the stage, not to a number.
@@ -80,16 +82,14 @@ just outside the scope you declared, say it and mark it out of lane.
 A short review means the document is fine or it is hopeless; the long ones are the salvageable
 middle. Use it as a sanity check on where yours sits, never as a budget.
 
-The test is per-sentence: *would removing this change what the recipient does?* If not, cut it.
-Over-length comes from padding the argument, not from having found a lot of things. Three patterns
-produce most of it:
+The Register's per-sentence test, with the authors as the recipient. Over-length comes from padding
+the argument, not from having found a lot of things. Three patterns produce most of it:
 
 - **Justifying the finding to the reviewer** -- why this is an issue rather than a nit, why it is
   worth raising. That was the findings' job and it is done.
 - **Pre-empting the authors at length.** A clause where their best objection changes the ask;
   otherwise nothing.
-- **Quoting past what the argument uses, then restating the quote in prose.** Trim the quote to what
-  the sentence turns on, and let it stand.
+- **Quoting past what the argument uses.** The Register rule, and where most of the length goes.
 
 Delete prose. Do not delete defects. A finding the reviewer chose to raise stays in, even if the
 prose around it goes.
@@ -97,19 +97,12 @@ prose around it goes.
 **A finding short of its support goes back to the reviewer**, not into the review. Six fully
 supported beat seven with one soft; the soft one is what the reply argues with.
 
-### Wording
-
-- **Drop the first person where the point stands without it.** *I'd note that X* is *X*; *I'd have
-  preferred X* is *X would have been nice*, or nothing. Keep it where the sentence is a position.
-- **Replace a pronoun with its referent on the second mention.** Not *scopes it to*, but *scopes the
-  SSRF requirement to* -- a reply quotes the paragraph, not the antecedent.
-- **Do not announce structure.** *Section 6.1 is the example: it specifies* is *Section 6.1
-  specifies*.
-
 ### Final pass
 
 Double check the review for each of these:
 
+- **Every numbered item in the Register's own check, in order** -- open `register.md` and read them
+  off it. A pass done from memory is the failure this list exists to catch.
 - Is each claim about the **document** or about the **topic**? Cut comments on the topic.
 - Does the quoted text actually support the claim made about it?
 - Does anything read as position-taking without reference to what the document says? Cut it.
@@ -119,7 +112,9 @@ Double check the review for each of these:
 
 ## Filing issues
 
-The other output shape, in a group that runs its draft from a repo.
+The other output shape, in a group that runs its draft from a repo. An issue body is record text too,
+and a run that files issues skips the section the Register gate sits in -- so read `register.md`
+before the first issue, and run its check over each body before showing it to the reviewer.
 
 **One at a time, confirmed before each.** Show the reviewer the exact text -- title and body -- and
 file it only when they have approved that one. Never file a batch on a single approval, and never

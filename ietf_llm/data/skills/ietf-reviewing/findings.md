@@ -7,11 +7,24 @@ optional.
 Each issue is a record you already have, merged, chained and calibrated at Step 9. Assembling is
 rendering; fresh thinking here means Step 9 is unfinished.
 
+These go to the reviewer, not into the record, so the Register in `register.md` beside this file
+does not reach them by its own scope. Follow it here anyway, for a different reason: *The case* and
+*Can be resolved if* transfer almost verbatim into the review or an issue body, so a finding written
+outside the Register has to be rewritten at the point where the reviewer is waiting. Write them so
+that the transfer is a copy.
+
+Its question about where content belongs is the one the fields below already ask, and its economy
+test is the one at the end of this file, with the reviewer as the recipient. Two rules invert,
+because a finding is analysis rather than a contribution:
+
+- **First person belongs here.** A provisional view is yours and marked as yours; confidence and
+  grounding are your judgement rather than the document's.
+- **Hard-wrap, and prefer lists to tables.** This gets read in a text editor as often as anywhere
+  that renders markdown, and nothing here is quoted back in a reply. Use a table only where the
+  content is genuinely a matrix.
+
 Rendering is not recall: re-print every record fact -- revisions, dates, reviewer and balloter
 names, results, ballot positions, issue and pull request numbers -- from the tool as you write it.
-
-Lists, not tables -- this gets read in a text editor as often as anywhere that renders markdown.
-Use a table only where the content is genuinely a matrix.
 
 Headings in this order; levels shift with context. Drop the qualifiers when the review is written,
 and then only for what the reviewer chose.
@@ -83,9 +96,8 @@ in another section. The four marked *only where* are conditional; the rest are a
   rests on needs its quote here -- if you cannot quote it, you cannot claim it. Then re-read each
   sentence against the quote beside it and check it claims no more.
 
-  Where a weaker form is still true, write the weaker one -- *reasonable* not *sound*, *very little
-  specified behaviour* not *none at all*. Cut a consequence you cannot show from the text; do not
-  hedge it into the case.
+  Where a weaker form is still true, write the weaker one. Cut a consequence you cannot show from
+  the text; do not hedge it into the case.
 
   That covers facts about anything, not just the draft: what a registry holds, what another RFC
   says, who wrote what and when. Fetch and read the source; recall is not a basis. Where such a fact

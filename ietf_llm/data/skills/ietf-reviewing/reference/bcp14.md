@@ -1,10 +1,10 @@
-# Normative language — BCP 14 (RFC 2119, RFC 8174)
+# Normative language -- BCP 14 (RFC 2119, RFC 8174)
 
 **Text:** `rfc2119.txt`, `rfc8174.txt`
 
 ## Scope
 
-Whether the document's conformance requirements can be conformed to — who is bound, and whether that
+Whether the document's conformance requirements can be conformed to -- who is bound, and whether that
 party can tell.
 
 The text supplies the keywords' meaning rather than a position to test the design against, so
@@ -19,12 +19,12 @@ the other lenses.
 
 Calibrate on the kind of document. The keywords target protocol behaviour; policy and process
 documents tend to carry fewer, and what they do carry binds registrants, expert reviewers, the IESG
-— parties reached by process rather than by an implementation. A tendency, not a rule. Where a
+-- parties reached by process rather than by an implementation. A tendency, not a rule. Where a
 process document is dense with keywords, ask of each whether it binds a party the document can
 actually reach, which is test 10.
 
 The first three tests ask which party is bound, so take the actor table if it was passed to you. Do
-not wait for it — the parties are nameable from the draft, and the sweep does not need it at all.
+not wait for it -- the parties are nameable from the draft, and the sweep does not need it at all.
 
 ## The sweep
 
@@ -36,29 +36,29 @@ Then sweep the other way for test 8, which the keyword list cannot reach.
 
 ## The tests
 
-1. **Target.** Who is bound? Context counts — a section scoped to one party carries down its
+1. **Target.** Who is bound? Context counts -- a section scoped to one party carries down its
    sentences, and that is ordinary drafting. The finding is where the inference does not land: no
    candidate, two candidates, or one the sentence then contradicts.
 
    *Parameters MUST NOT be ignored* is the shape to catch. Read against the cache it fails test 3;
    read against the origin the verb is wrong, since origins declare which parameters may be ignored
-   rather than ignoring them. Two candidates and neither works — that is the finding, not the
+   rather than ignoring them. Two candidates and neither works -- that is the finding, not the
    passive voice on its own.
 
    A requirement whose subject is the artefact rather than any party is test 2.
 
-2. **Bound to an artefact, not a party.** The subject is a field, a value, a message, a URI —
-   *the value MUST be a dictionary* — rather than whoever sends or receives it. Common enough to
+2. **Bound to an artefact, not a party.** The subject is a field, a value, a message, a URI --
+   *the value MUST be a dictionary* -- rather than whoever sends or receives it. Common enough to
    read as convention, and it leaves error handling undefined: nothing says whether the sender is
    forbidden to emit it, or the recipient obliged to reject it, or what the recipient does instead.
 
    Ask what a conforming recipient does when the artefact arrives anyway. Where the document defines
-   tolerant handling elsewhere the two have to be reconciled — a MUST the receiver silently absorbs
+   tolerant handling elsewhere the two have to be reconciled -- a MUST the receiver silently absorbs
    is a sender-side rule, and should say so.
 
 3. **Decidable by the target.** Can the bound party evaluate its own conformance from information it
    holds? A cache told not to ignore a parameter *if doing so would bypass server processing* cannot
-   — it knows nothing of the server's processing. Check the terms the requirement turns on: one the
+   -- it knows nothing of the server's processing. Check the terms the requirement turns on: one the
    document never defines makes the requirement undecidable even where the party is named.
 
    Not the same as observable on the wire. Requirements over internal behaviour are legitimate; a
@@ -83,7 +83,7 @@ Then sweep the other way for test 8, which the keyword list cannot reach.
    requirement from a restatement of one made elsewhere.
 
 8. **Declarative doing normative work.** Behavioural statements carrying a requirement with no
-   keyword. Look hardest at the sentence the specification exists for — it is often the one written
+   keyword. Look hardest at the sentence the specification exists for -- it is often the one written
    as description. RFC 8174 makes lowercase *must* and *should* non-normative, so a lowercase
    keyword in a requirement sentence is a defect.
 
@@ -91,12 +91,12 @@ Then sweep the other way for test 8, which the keyword list cannot reach.
    antecedent cannot occur; a MUST some MAY elsewhere overrides.
 
    Before calling one unreachable, ask whether it is a robustness rule. The document's definitions
-   govern its model, not what people send or register — a prohibition the grammar already makes
+   govern its model, not what people send or register -- a prohibition the grammar already makes
    impossible still tells an implementation what to do when it meets one in the wild. Unreachability
    is a finding only where nothing outside the model can produce the case either.
 
 10. **A party the protocol cannot bind.** Requirements on operators, content authors, deployments.
-    Not wrong in itself — raise it where the document's guarantees rest on it.
+    Not wrong in itself -- raise it where the document's guarantees rest on it.
 
 11. **Boilerplate.** RFC 8174 boilerplate present, and matching the keywords used. Nit-level.
 
@@ -106,14 +106,14 @@ This fires on every draft and will always return something. Report only where th
 what an implementer builds, or forces a decision the authors have not taken.
 
 Expect Comments and Nits. Most findings here are defects in how a sentence is written, and rewriting
-the sentence fixes them — which is the survivability test failing.
+the sentence fixes them -- which is the survivability test failing.
 
 Two shapes reach Issue, both because the fix is a decision rather than a rewrite. Test 9, where two
 requirements conflict and the authors have to say which gives way. And tests 1, 3 and 8 landing on
-the requirement the specification exists for — no target, no decidable condition, or no keyword at
-all — where the authors have to settle who is bound and to what before anyone can write the sentence.
+the requirement the specification exists for -- no target, no decidable condition, or no keyword at
+all -- where the authors have to settle who is bound and to what before anyone can write the sentence.
 
 ## Return
 
-The sweep table — section, sentence, target, verdict — then the findings, each naming the test it
+The sweep table -- section, sentence, target, verdict -- then the findings, each naming the test it
 failed and quoting the text.
