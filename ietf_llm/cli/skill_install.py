@@ -17,6 +17,11 @@ directory, with idempotency and a safety check for user edits. It is a
 convenience: they are vendored copies of what mnot/ietf-skill publishes, so
 installing them from that repo instead is equivalent.
 
+Inside WSL, also detects the same harnesses installed on the Windows side
+(`_wsl_windows_home()`) — WSL and Windows don't share a home directory, so a
+WSL-installed `ietf-llm` would otherwise have no way to reach a Windows-native
+Claude Code/Codex/Gemini/opencode install.
+
 On every CLI gather, `sync_if_pristine()` keeps already-installed skills
 current: it auto-updates an installed copy to the bundled version *only* when
 that copy is unchanged since we last wrote it (tracked by a content
@@ -31,11 +36,12 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .. import __version__
 from ..log import LogLevel, Verbosity, log
@@ -57,13 +63,66 @@ def _home() -> Path:
     return Path.home()
 
 
+def _is_wsl() -> bool:
+    """True inside a WSL distro (not on native Windows or native Linux)."""
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        return False
+
+
+def _wsl_windows_home() -> Optional[Path]:
+    """The Windows-side home directory, when running inside WSL.
+
+    A harness installed on the Windows side (e.g. Claude Code run from a
+    Windows terminal, not the WSL one) keeps its own `~/.claude` etc. under
+    the Windows home, which is invisible to the Linux-side `_home()` we
+    otherwise use — WSL and Windows are separate filesystems with separate
+    homes. Windows' own interop (`cmd.exe`, `wslpath`) is how we ask it,
+    since there is no other route from inside the distro. Best-effort: any
+    failure (interop disabled, `cmd.exe`/`wslpath` missing, timeout) just
+    means we don't detect a Windows-side install, not a crash.
+    """
+    if not _is_wsl():
+        return None
+    try:
+        userprofile = subprocess.run(
+            ["cmd.exe", "/c", "echo %USERPROFILE%"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+        if not userprofile or "%USERPROFILE%" in userprofile:
+            return None
+        converted = subprocess.run(
+            ["wslpath", "-u", userprofile],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+        path = Path(converted)
+        return path if path.is_dir() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _harnesses() -> List[Harness]:
     """Supported harnesses and their skill-discovery paths, per each tool's
     current docs (Agent Skills open standard). Codex reads `~/.agents/skills`,
     Gemini `~/.gemini/skills`, opencode `~/.config/opencode/skills` (and also
-    `~/.claude/skills`), Claude `~/.claude/skills`."""
+    `~/.claude/skills`), Claude `~/.claude/skills`.
+
+    Inside WSL, also looks for the same harnesses installed on the Windows
+    side (see `_wsl_windows_home()`) — a WSL-installed `ietf-llm` otherwise
+    has no way to reach a Windows-native Claude Code/Codex/Gemini/opencode
+    install, since the two sides don't share a home directory.
+    """
     home = _home()
-    return [
+    harnesses = [
         Harness("claude", "Claude Code", home / ".claude", home / ".claude" / "skills"),
         Harness("codex", "Codex CLI", home / ".codex", home / ".agents" / "skills"),
         Harness("gemini", "Gemini CLI", home / ".gemini", home / ".gemini" / "skills"),
@@ -74,6 +133,18 @@ def _harnesses() -> List[Harness]:
             home / ".config" / "opencode" / "skills",
         ),
     ]
+    win_home = _wsl_windows_home()
+    if win_home is not None:
+        harnesses += [
+            Harness(
+                f"{h.key}-win",
+                f"{h.label} (Windows)",
+                win_home / h.marker.relative_to(home),
+                win_home / h.skills_root.relative_to(home),
+            )
+            for h in harnesses
+        ]
+    return harnesses
 
 
 def _detect_harnesses() -> List[Harness]:

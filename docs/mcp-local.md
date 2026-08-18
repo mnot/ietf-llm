@@ -83,6 +83,35 @@ configuration may help:
       }
 ```
 
+**On WSL:** Claude Desktop is a native Windows process — it cannot exec a Linux
+binary directly, so `pipx install`-ing `ietf-llm` inside a WSL distro is not
+enough on its own. `claude_desktop_config.json` still lives on the Windows
+side (`%APPDATA%\Claude\...`, as above); point its `"command"` at `wsl.exe`
+instead of `ietf-llm-mcp` directly, and give it the absolute Linux path (find
+it with `which ietf-llm-mcp` *inside* the distro):
+
+```json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "wsl.exe",
+      "args": ["-d", "<YourDistroName>", "-e", "/home/<you>/.local/bin/ietf-llm-mcp"]
+    }
+  }
+}
+```
+
+`-d <YourDistroName>` is optional if you only have one distro (`wsl -l -v` from
+PowerShell lists them). Env vars in the config's `"env"` block are **not**
+forwarded across the `wsl.exe` boundary — set them inside the distro instead
+(e.g. in `~/.bashrc`, or hardcode them into a wrapper script you point `-e` at).
+
+If instead you run **Claude Code inside WSL** (the common VS Code + WSL setup),
+there is no split: the extension's server process is itself a WSL-side Linux
+process, so it sees `ietf-llm-mcp` on its own `PATH` like any other Linux
+install — `claude mcp add ietf-llm -- ietf-llm-mcp` (above) just works, no
+`wsl.exe` wrapper needed.
+
 
 ### Codex CLI (OpenAI)
 
@@ -208,6 +237,12 @@ server also serves via `read_ietf_interpretation_norms` / `read_ietf_participati
 for specs built on HTTP) — but the set is whatever [mnot/ietf-skill](https://github.com/mnot/ietf-skill)
 publishes at the pinned tag, not a fixed list. This is a convenience; installing them from that
 repo yourself is equivalent. Re-run after upgrading to pick up a newer pin.
+
+**On WSL**, running this inside the distro also detects and installs into a
+Windows-native Claude Code/Codex CLI/Gemini CLI/opencode, if present — WSL and
+Windows don't share a home directory, so this is the only way a WSL-installed
+`ietf-llm` can reach them. (This does not cover Claude Desktop, which has no
+skills directory of its own — see the WSL note under Claude Desktop above.)
 
 
 ## Tuning the MCP server

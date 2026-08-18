@@ -34,12 +34,18 @@ _ROOTS = {
 
 
 def _sandbox(monkeypatch, tmp_path: Path) -> Path:
-    """Redirect home + cache to a sandbox; return the sandbox home."""
+    """Redirect home + cache to a sandbox; return the sandbox home.
+
+    Also stubs out the Windows-side WSL lookup so tests are deterministic
+    whether or not the machine actually running them is WSL — the WSL split-
+    brain tests below override this back on deliberately.
+    """
     home = tmp_path / "home"
     home.mkdir()
     (tmp_path / "cache").mkdir()
     monkeypatch.setattr(skill_install, "_home", lambda: home)
     monkeypatch.setattr(skill_install, "get_cache_dir", lambda: str(tmp_path / "cache"))
+    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: None)
     return home
 
 
@@ -360,3 +366,42 @@ def test_nothing_is_reported_when_nothing_diverged(
     capsys.readouterr()
     skill_install.sync_if_pristine(Verbosity.STATUS)
     assert capsys.readouterr().err == ""
+
+
+# --- WSL split-brain --------------------------------------------------------
+
+
+def test_wsl_windows_home_none_outside_wsl(monkeypatch) -> None:
+    monkeypatch.setattr(skill_install, "_is_wsl", lambda: False)
+    assert skill_install._wsl_windows_home() is None
+
+
+def test_is_wsl_detects_env_var(monkeypatch) -> None:
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    assert skill_install._is_wsl() is True
+
+
+def test_install_reaches_windows_side_harness_under_wsl(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A WSL-installed ietf-llm can't see a Windows-native Claude Code by
+    walking the Linux-side home — it has to be told the Windows home
+    separately (`_wsl_windows_home()`), which this simulates directly rather
+    than through `cmd.exe`/`wslpath`."""
+    home = _sandbox(monkeypatch, tmp_path)
+    win_home = tmp_path / "winhome"
+    (win_home / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: win_home)
+    assert skill_install.install_skills() == 0
+    for src in skill_install._bundled_skills():
+        assert (win_home / ".claude" / "skills" / src.name / "SKILL.md").exists()
+    # The Linux-side home was not touched — only the Windows-side harness was present.
+    assert not (home / ".claude").exists()
+
+
+def test_no_windows_side_harness_when_not_wsl(tmp_path: Path, monkeypatch) -> None:
+    home = _sandbox(monkeypatch, tmp_path)
+    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: None)
+    _present(home, "claude")
+    assert skill_install.install_skills() == 0
+    assert not any("-win" in h.key for h in skill_install._detect_harnesses())
