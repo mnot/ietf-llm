@@ -55,7 +55,10 @@ do it — this is the report's traceback, frame for frame::
 still possible, rather than at request time where it is a traceback. On the
 machine that motivated it the fallback costs nothing — its injected
 `ssl.SSLContext` *is* a platform-verifying context, so default verification
-goes through the platform anyway.
+goes through the platform anyway. That is what
+`_platform_verified_elsewhere` tests, and why declining there is quiet: a
+`[WARN]` on every run of a tool that is verifying exactly as intended would be
+a false alarm nobody can act on.
 
 The cost of that choice is reach: `dulwich` (the transcripts repo sync), `llm`
 (summariser plugins) and `google.auth`'s own session build their own contexts
@@ -75,6 +78,8 @@ import os
 import ssl
 from typing import Any, List, Optional
 
+from .log import LogLevel, log
+
 #: Opt out of platform verification, falling back to certifi / OpenSSL defaults.
 _ENV = "IETF_LLM_SYSTEM_TRUST_STORE"
 
@@ -90,11 +95,38 @@ CERTIFICATE_HINT = (
     "REQUESTS_CA_BUNDLE at its PEM"
 )
 
+#: The same remedy for the process that is *not* verifying against the platform
+#: — opted out, or declined by `_usable`. The sentence above would send someone
+#: to audit a keychain we never consulted, and its root being installed there is
+#: exactly what did not help.
+CERTIFICATE_HINT_NO_PLATFORM = (
+    "the server's TLS certificate could not be verified, and your OS trust "
+    "store was not consulted — platform verification is off in this process "
+    "(see IETF_LLM_SYSTEM_TRUST_STORE, and any earlier warning about "
+    "ssl.SSLContext). Point SSL_CERT_FILE and REQUESTS_CA_BUNDLE at the PEM of "
+    "the root that signs your traffic, typically a TLS-inspecting proxy"
+)
+
 
 #: Set once a platform context has proven unusable in this process (see
 #: `_usable`). Nothing un-poisons an interpreter mid-run, and the proof costs a
 #: near-1000-frame recursion, so we ask once.
 _UNUSABLE = False
+
+
+def _opted_out() -> bool:
+    return os.environ.get(_ENV, "").strip().lower() in _OFF
+
+
+def _platform_verified_elsewhere() -> bool:
+    """Is something else in this process already verifying through the platform?
+
+    An injected `truststore` — the very thing that makes our own context
+    unusable — leaves every plain `ssl.SSLContext()` verifying against the OS
+    store, so declining costs that process nothing. Sniffing the class is
+    inexact by nature; it decides only how loudly we say what happened.
+    """
+    return "truststore" in getattr(ssl.SSLContext, "__module__", "").split(".")
 
 
 def _usable(context: ssl.SSLContext) -> bool:
@@ -131,7 +163,7 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
     """
     global _UNUSABLE  # pylint: disable=global-statement
 
-    if _UNUSABLE or os.environ.get(_ENV, "").strip().lower() in _OFF:
+    if _UNUSABLE or _opted_out():
         return None
     try:
         import truststore  # pylint: disable=import-outside-toplevel
@@ -149,6 +181,22 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
             pass  # a malformed SSL_CERT_FILE must not cost us the platform store
         if not _usable(context):
             _UNUSABLE = True
+            # Said once, because declining is otherwise invisible and the
+            # failure it defers — a certificate error on an intercepted network
+            # — then reads as though the platform store had been consulted and
+            # come up short. Naming `ssl.SSLContext` gives whoever runs the
+            # machine the one string to search their startup hooks for.
+            # Nothing at all where an injected truststore is still verifying
+            # against the platform: there is nothing to act on, and no
+            # verbosity reaches here to hang a --verbose line on.
+            if not _platform_verified_elsewhere():
+                log(
+                    "TLS: platform trust-store verification is unavailable in "
+                    "this process — something has replaced ssl.SSLContext, "
+                    "which makes the stdlib setters recurse. Falling back to "
+                    "certifi / OpenSSL defaults.",
+                    level=LogLevel.WARN,
+                )
             return None
         return context
     except Exception:  # pylint: disable=broad-except
@@ -214,5 +262,15 @@ def certificate_error(err: BaseException) -> Optional[ssl.SSLCertVerificationErr
 
 
 def certificate_hint(err: BaseException) -> str:
-    """`CERTIFICATE_HINT` when `err` is a verification failure, else empty."""
-    return f" — {CERTIFICATE_HINT}" if certificate_error(err) else ""
+    """The hint for `err`, or empty when `err` is not a verification failure.
+
+    Which hint depends on what verified the certificate: `CERTIFICATE_HINT`
+    claims the platform, so it is wrong for the process that opted out or had to
+    decline — unless something else injected a platform-verifying context, in
+    which case the OS store was consulted after all.
+    """
+    if not certificate_error(err):
+        return ""
+    if (_UNUSABLE or _opted_out()) and not _platform_verified_elsewhere():
+        return f" — {CERTIFICATE_HINT_NO_PLATFORM}"
+    return f" — {CERTIFICATE_HINT}"

@@ -152,18 +152,10 @@ def test_an_unavailable_truststore_is_not_fatal(
     assert tls.system_trust_context() is None
 
 
-def test_a_context_this_process_cannot_configure_is_declined(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The reported failure: an enterprise macOS interpreter starts with
-    `pip._vendor.truststore.inject_into_ssl()`, so `ssl.SSLContext` names a
-    subclass and CPython 3.14's `verify_mode` setter — which resolves the class
-    through that global — recurses into itself. urllib3 sets `verify_mode` on
-    every connection, so `--init` died ~980 frames deep in the RFC index fetch.
-    We cannot un-poison their interpreter; we can decline to hand over a context
-    that will explode at request time."""
-    monkeypatch.delenv(tls._ENV, raising=False)
-    monkeypatch.setattr(tls, "_UNUSABLE", False)
+def _poison(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Stand in for the reported interpreter: a platform context whose
+    `verify_mode` setter recurses. Returns the real `truststore.SSLContext`, so
+    a test can put it back and watch the verdict hold."""
     import truststore
 
     real = truststore.SSLContext
@@ -177,13 +169,93 @@ def test_a_context_this_process_cannot_configure_is_declined(
         def verify_mode(self, value: Any) -> None:
             raise RecursionError("maximum recursion depth exceeded")
 
+    monkeypatch.delenv(tls._ENV, raising=False)
+    monkeypatch.setattr(tls, "_UNUSABLE", False)
     monkeypatch.setattr(truststore, "SSLContext", _Poisoned)
+    return real
+
+
+def test_a_context_this_process_cannot_configure_is_declined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported failure: an enterprise macOS interpreter starts with
+    `pip._vendor.truststore.inject_into_ssl()`, so `ssl.SSLContext` names a
+    subclass and CPython 3.14's `verify_mode` setter — which resolves the class
+    through that global — recurses into itself. urllib3 sets `verify_mode` on
+    every connection, so `--init` died ~980 frames deep in the RFC index fetch.
+    We cannot un-poison their interpreter; we can decline to hand over a context
+    that will explode at request time."""
+    import truststore
+
+    real = _poison(monkeypatch)
     assert tls.system_trust_context() is None
 
     # And the verdict sticks: nothing un-poisons an interpreter mid-run, so a
     # later call must not pay for the recursion again.
     monkeypatch.setattr(truststore, "SSLContext", real)
     assert tls.system_trust_context() is None
+
+
+def test_declining_is_said_out_loud_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """Silent degradation would leave the certificate error it defers looking
+    like an OS trust store that had been consulted and come up short. Once,
+    because the verdict is cached and a gather builds contexts in a loop."""
+    monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
+    _poison(monkeypatch)
+
+    assert tls.system_trust_context() is None
+    first = capsys.readouterr().err
+    assert first.startswith("[WARN] ")
+    assert "ssl.SSLContext" in first
+
+    assert tls.system_trust_context() is None
+    assert capsys.readouterr().err == ""
+
+
+def test_the_hint_stops_claiming_a_trust_store_we_did_not_consult(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`CERTIFICATE_HINT` opens by saying we already verify against the OS trust
+    store. In the process that declined, that sends the reader to audit a
+    keychain we never opened — where an installed root is exactly what did not
+    help."""
+    monkeypatch.delenv(tls._ENV, raising=False)
+    monkeypatch.setattr(tls, "_UNUSABLE", True)
+    hint = tls.certificate_hint(_verify_error())
+    assert tls.CERTIFICATE_HINT_NO_PLATFORM in hint
+    assert "SSL_CERT_FILE" in hint and "REQUESTS_CA_BUNDLE" in hint
+
+
+def test_the_hint_follows_the_opt_out_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same sentence, same wrongness, for the deployment that turned platform
+    verification off on purpose."""
+    monkeypatch.setattr(tls, "_UNUSABLE", False)
+    monkeypatch.setenv(tls._ENV, "off")
+    assert tls.CERTIFICATE_HINT_NO_PLATFORM in tls.certificate_hint(_verify_error())
+
+
+def test_an_injected_truststore_keeps_the_decline_quiet(
+    monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The reported box again: its `ssl.SSLContext` is pip's vendored
+    `truststore`, so every default context there verifies against the keychain
+    and our declining changes nothing anyone can act on. A `[WARN]` on every run
+    would be a false alarm — and the certificate hint must keep crediting the OS
+    trust store, because that is what checked the certificate."""
+    monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
+    _poison(monkeypatch)
+
+    class _Injected:
+        pass
+
+    _Injected.__module__ = "truststore._api"
+    monkeypatch.setattr(ssl, "SSLContext", _Injected)
+
+    assert tls.system_trust_context() is None
+    assert capsys.readouterr().err == ""
+    assert tls.CERTIFICATE_HINT in tls.certificate_hint(_verify_error())
 
 
 def test_an_injected_interpreter_declines_rather_than_crashing() -> None:
