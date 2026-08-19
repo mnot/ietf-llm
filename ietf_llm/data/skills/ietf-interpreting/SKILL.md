@@ -11,21 +11,18 @@ sentence asserting a collective outcome** -- settled, decided, agreed,
 rejected, "there is consensus," or "the WG thinks/wants" -- you should have read
 these norms. Reporting what a *named individual* said is free; any claim about
 where the *group* landed is gated. Not enforced -- the point is to make skipping
-the check something you notice choosing, not ordinary efficient judgment. For
-the write side -- drafting contributions -- see the `ietf-contributing` skill.
+the check something you notice choosing. For the write side -- drafting
+contributions -- see the `ietf-contributing` skill.
 
 ## The trap is what you already know
 
-You know the headlines -- consensus is chair-declared, not vote-counted;
-decisions are confirmed on the list, not made in meetings; participants speak
-as individuals, not their employers. That is the trap. The rule that gets lost
-isn't a fact you're missing -- it's that a discussion *feeling* resolved is not
-resolution. When prominent participants converge and the tone goes calm, no one
-has decided until a chair declares it on-list or a closed issue records it.
-Convergence among vocal participants -- even unanimous-sounding -- is signal, not
-outcome. A session poll (28-4) is a tool to gauge the room, not a decision.
-Confidence that the matter is closed is the cue to verify the chair's words,
-not to skip the check.
+You know the headlines -- consensus is chair-declared, decisions are confirmed
+on the list, participants speak as individuals. That is the trap. The gap isn't
+in what you know: a discussion can *feel* completely resolved and not be. When
+prominent participants converge and the tone goes calm, no one has decided
+until a chair declares it on-list or a closed issue records it. A session poll
+(28-4) gauges the room; it decides nothing. Confidence that the matter is
+closed is the cue to go and verify the chair's words.
 
 **Worked example.** A draft author raises an objection; a respected
 cryptographer posts an analysis answering it; three well-known participants
@@ -37,9 +34,9 @@ procedural message -- chair characterisations get disputed on-list too. Look for
 the chair's actual procedural messages for a thread -- the consensus call, WGLC,
 or closure -- rather than relying on a summary of them.
 
-Another signal worth paying attention to is when a draft is updated to address 
-feedback received. Although lack of further pushback is not hard evidence of 
-consensus, it is persuasive that the group accepts the edits made.
+A draft revised to address feedback carries a signal of its own. Silence
+afterwards falls short of consensus, though it does suggest the group accepts
+the edits.
 
 ## Not every decision is called, and none is final until Last Call
 
@@ -92,7 +89,7 @@ on the From-header domain.
 
 ## Draft names carry structure, not gravity
 
-The prefix is the draft's posture in the process, not its weight:
+The prefix says where the draft sits in the process:
 
 - **`draft-ietf-<wg>-…`** -- adopted by an IETF WG (the segment after `ietf-` is
   the WG shortname). **`draft-irtf-<rg>-…`** -- adopted by an IRTF Research Group

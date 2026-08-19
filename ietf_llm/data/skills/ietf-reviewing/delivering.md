@@ -4,21 +4,16 @@ The optional, second half of `SKILL.md`. Read it only when the reviewer asks for
 have chosen what to raise, and only on what they chose. Nothing here should reach back and change a
 finding.
 
-Two shapes -- prose, or issues against the draft's repo. Both are record text, so both open by
-reading `register.md` beside this file; both rely on the findings rather than re-verifying them; and
-in both the human sends.
+Two shapes -- prose, or issues against the draft's repo. Both rely on the findings rather than
+re-verifying them, and in both the human sends.
 
+Both are record text, so **read `register.md` beside this file before writing a line of either**.
+It is a generated copy of the section in `ietf-contributing`, whose other sections govern
+disclosure and what the sender has to be able to defend.
 
 ## Writing the review
 
-**Before the first sentence, read `register.md` beside this file.** The trigger is the moment, not a
-judgement that you need it -- a review is record text under a participant's name, so the Register
-governs it exactly as it governs list mail. Knowing what it says is not having read it, and the
-final pass below checks against that file rather than against your memory of it. It is a generated
-copy of the section in `ietf-contributing`, whose other sections govern disclosure and what the
-sender has to be able to defend.
-
-The short form, which is not a substitute for reading it:
+The Register in short, which is not a substitute for reading it:
 
 - Terse. No padding to soften a finding, no warmth to carry it.
 - Per sentence: would removing this change what the recipient does? If not, cut it.
@@ -41,6 +36,10 @@ The review is a selection from the findings, not a rendering of them: it usually
 issues than the findings hold. Cut on relevance to the audience and the stage, not to a number.
 Plain headings -- `Issues`, `Comments`, `Nits` -- carrying only what was chosen.
 
+**Drop what the reviewer's role lets them simply do.** An unlabelled issue, a missing changes
+section, a stale link -- where a chair or editor can fix it directly, it is a note to them, not a
+review item. Step 1 established the role.
+
 ### Open with the verdict
 
 Open with the disposition, in one or two sentences, answering the Step 1 question. Then
@@ -49,6 +48,12 @@ the concerns.
 Do not open with methodology or a summary of the draft. A line of genuine thanks before the verdict
 is often conventional in directorate reviews; what to avoid is praise standing in for a verdict, or
 warmth calibrated to soften one.
+
+**Where the reviewer's standing makes the verdict a pre-emption, disclaim instead.** A chair
+reviewing the last call they declared, or an author or editor of the document, cannot open with a
+disposition without pre-empting the consensus call they will have to make. Open by saying the
+findings are input to the discussion and not a position. Something has to stand where the verdict
+would -- one line does it, and leaving the slot empty reads as an omission.
 
 State the concession after the verdict, not instead of it. *This should not be picked up in its
 current state, though something of roughly this shape might be* is a verdict. *Here are some
@@ -67,11 +72,17 @@ httpdir, artart, tsvart, intdir, dnsdir -- offer `Ready`, `Ready with Nits`, `Re
 assume. Pick the result the document earns from the set that team actually uses; the prose verdict
 should say the same thing the field does.
 
-**Do not copy all finding contents** -- keep what's relevant to the review type being created. In
-particular *severity* and *confidence* are intended for the reviewer, not the review.
+**Do not copy all finding contents** -- keep what is relevant to the review type being created.
+*Severity*, *Confidence* and *Grounding* never ship in either shape; they were for the reviewer.
 
 **Decline whole categories out loud** rather than skipping silently: "I'll skip editorial issues
 given the state of the text."
+
+**A departure from a BCP is raised as a question for the wider review, not as the group being
+wrong.** The working group may have judged the BCP inapplicable or the exception warranted; what
+it cannot do is make that judgement final. Say what the BCP requires, what the document does, and
+that the two need reconciling before publication -- and say the group considered it, where the
+record shows they did.
 
 **A declared scope is permeable.** Reviewers announce a lane and then say the important thing
 anyway, flagging it -- "this is for the security directorate, but". If a finding matters and sits
@@ -83,13 +94,19 @@ A short review means the document is fine or it is hopeless; the long ones are t
 middle. Use it as a sanity check on where yours sits, never as a budget.
 
 The Register's per-sentence test, with the authors as the recipient. Over-length comes from padding
-the argument, not from having found a lot of things. Three patterns produce most of it:
+the argument, not from having found a lot of things. Most of it comes from these:
 
 - **Justifying the finding to the reviewer** -- why this is an issue rather than a nit, why it is
   worth raising. That was the findings' job and it is done.
 - **Pre-empting the authors at length.** A clause where their best objection changes the ask;
   otherwise nothing.
 - **Quoting past what the argument uses.** The Register rule, and where most of the length goes.
+- **Drawing the inference for the author.** *The case* is built so the reviewer can check the
+  claim; a review needs only enough for the author to locate the defect and see which decision is
+  theirs. State what the document says and what it does not, and stop.
+
+**Where the fix is a wording change, propose the wording.** *Should this be s/x/y/?* replaces the
+argument for it -- once the reader sees the substitution, the case for it is usually unnecessary.
 
 Delete prose. Do not delete defects. A finding the reviewer chose to raise stays in, even if the
 prose around it goes.
@@ -104,6 +121,10 @@ Double check the review for each of these:
 - **Every numbered item in the Register's own check, in order** -- open `register.md` and read them
   off it. A pass done from memory is the failure this list exists to catch.
 - Is each claim about the **document** or about the **topic**? Cut comments on the topic.
+- Does every piece of history earn its place? Recite a decision's history only where the ask
+  depends on it. Provenance never ships as corroboration, and quoting a named participant's past
+  position needs a reason beyond its being on the record -- most of all where they are an author
+  of the document.
 - Does the quoted text actually support the claim made about it?
 - Does anything read as position-taking without reference to what the document says? Cut it.
 - Does a sentence score off the authors or an earlier group? Name the prior work; cut the moral
@@ -112,9 +133,8 @@ Double check the review for each of these:
 
 ## Filing issues
 
-The other output shape, in a group that runs its draft from a repo. An issue body is record text too,
-and a run that files issues skips the section the Register gate sits in -- so read `register.md`
-before the first issue, and run its check over each body before showing it to the reviewer.
+The other output shape, in a group that runs its draft from a repo. Run the Register's check over
+each issue body before showing it to the reviewer.
 
 **One at a time, confirmed before each.** Show the reviewer the exact text -- title and body -- and
 file it only when they have approved that one. Never file a batch on a single approval, and never
@@ -153,9 +173,8 @@ message and no shared thread, so nothing may refer to the findings or to "the re
 
 ### What transfers
 
-*The case* and *Can be resolved if* go over almost verbatim. *Related* and *Caused by* become issue
-links, which is the one thing the tracker does better than prose. *Confidence* and *Grounding* do
-not ship; they were for the reviewer.
+*The case* and *Can be resolved if* go over almost verbatim. *Related* and *Caused by* become
+issue links, which is the one thing the tracker does better than prose.
 
 **Label the editorial ones.** Repos commonly carry an `editorial` label for issues that need no WG
 discussion; check `gh label list` and apply it where it exists. It is how the chairs keep the
@@ -175,7 +194,7 @@ Open the issue first for anything substantive and reference it from the pull req
 text arriving as a pull request with nothing behind it is the pattern Step 1 tells you to flag; do
 not create it.
 
-### The verdict has nowhere to go
+### Where the verdict goes
 
 A tracker has no slot for the Step 1 answer, and a set of issues without one reads as nits whatever
 is in them. It goes in a covering message to the list, the ballot, or the Last Call comment. Say

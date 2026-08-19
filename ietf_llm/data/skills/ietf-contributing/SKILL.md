@@ -26,9 +26,11 @@ Prefer one or two short, concrete examples over exposition. The shortest message
 
 Brevity is not a licence to write badly. Terse means every sentence does work, not that sentences are half-formed or padded with jargon to look expert. Don't drop articles and verbs into telegraphic fragments; don't reach for an acronym or a piece of in-group shorthand where a plain word is clearer; and never coin a new term when an established one exists -- an invented phrasing forces the reader to decode what you meant instead of weighing what you said. The register to aim for is one a competent participant who hasn't followed every message of the thread can read straight through, without you rehashing that thread to get them there. If a point only parses for the handful of people already deep in the current argument, it isn't terse -- it's incomplete, and it will be read as such.
 
+Supply antecedents, not evidence. Name the document and revision, what an issue proposes, what a term refers to -- once each, where it is first used. The other message's numbers are not antecedents: the recipient has them, a third party doesn't need them to follow the argument, and quoting them back is restatement.
+
 The uniform-polish, fixed-template, self-summarising pattern is itself a tell. Cut the boilerplate and convey the essence with enough context to be digestible. Examples are encouraged when they add legibility, and especially when they help compact the message. Likewise, concrete proposals are encouraged, so long as they can help the group move towards agreement.
 
-Individual words are tells too -- *genuinely*, *honestly*, *seam*, *load-bearing*, *a sharper version of*. What they share is doing emphasis rather than carrying meaning, which is also the test: drop the word and see whether the sentence changed. None of them is wrong once; several in one message is a fingerprint. Sweep for them before it goes, and add to the list as you notice others.
+Individual words are tells too -- *genuinely*, *honestly*, *seam*, *load-bearing*, *a sharper version of*. What they share is doing emphasis rather than carrying meaning, which is also the test: drop the word and see whether the sentence changed. None of them is wrong once; several in one message is a fingerprint. Sweep for them before it goes, and add to the list as you notice others. Grep the bare token and judge each hit; a narrowed pattern reports clean.
 
 ### What the message is for
 
@@ -36,7 +38,7 @@ Before drafting, ask what this particular message has to do, and write only that
 
 The common failure is a small job answered at length. *Acknowledged; I'll withdraw the request and bring a problem statement before IETF 127* is the whole of some replies, and a fuller version of it is worse, not more diligent. Pre-emptive completeness -- answering questions nobody has asked, covering every branch, delivering the document in the message that promises it -- is among the clearest signs a machine wrote it, and it reads as not knowing what the message was for.
 
-This test asks where content belongs; it is not a licence to compress. Where the message *is* the artifact -- a review, a technical argument in a live thread, an issue that has to carry its own context -- the content has nowhere else to go, and it takes the length it takes. The test is *does this belong here*, never *is this long*.
+This test asks where content belongs; it is not a licence to compress. Where the message *is* the artefact -- a review, a technical argument in a live thread, an issue that has to carry its own context -- the content has nowhere else to go, and it takes the length it takes. The test is *does this belong here*, never *is this long*.
 
 ### Wording
 
@@ -45,6 +47,13 @@ This test asks where content belongs; it is not a licence to compress. Where the
 * **Attach a noun to a bare demonstrative.** Not *This is wrong*, but *This requirement is wrong*; *that*, *these* and *those* the same. Same reason as the pronoun above, and it fails harder -- quoted into a reply, a bare *this* points at nothing at all.
 * **Don't announce structure.** *Section 6.1 is the example: it specifies* is *Section 6.1 specifies*.
 * **Quote only what the argument uses, and don't restate a quote in prose beside it.** Trim the quote to what the sentence turns on, and let it stand.
+* **Answer in sentences.** Not *Un-enrolled signing cost: yes, as a deployment consideration*, but *The un-enrolled signing cost belongs in the draft as a deployment consideration*. A label and a colon is a heading; a message of them reads as curt, not terse.
+
+### Lists
+
+Bullet what is already a list: one item per divergence, per issue, per question asked. Answer numbered questions in the order asked, one item each, so a reader finds theirs without hunting. Don't bullet an argument -- structure imposed on prose is the template tell in another form.
+
+Keep each item on one line, unwrapped. Separate items with a blank line once they run past a line or two; leave short ones tight.
 
 ### It is plain text in an archive
 
@@ -57,11 +66,14 @@ Before it goes out, against this section rather than from memory:
 1. Does this message do only its own job? Anything here whose home is a document you're about to write?
 2. Does every sentence change what the recipient does?
 3. Any warmth, padding, or restatement of the thread left -- beyond the one line doing relational work, if there is one?
-4. First person where the point stands without it? Structure announced instead of stated?
-5. A pronoun or a bare *this* on second mention, where a reply would quote the paragraph without the antecedent?
-6. Any word doing emphasis rather than work -- the tic list, and whatever else drops without changing the sentence?
-7. A quote longer than the argument uses, or restated in prose beside it?
-8. Prose hard-wrapped, or quoted text reflowed?
+4. Can a participant who hasn't followed the thread read it straight through -- every document, issue and term given its antecedent once, and nothing quoted back that the recipient already has?
+5. Every answer a sentence rather than a label and a colon?
+6. Bullets only where the content is a list, spaced if the items run long?
+7. First person where the point stands without it? Structure announced instead of stated?
+8. A pronoun or a bare *this* on second mention, where a reply would quote the paragraph without the antecedent?
+9. Any word doing emphasis rather than work -- the tic list grepped as bare tokens, and whatever else drops without changing the sentence?
+10. A quote longer than the argument uses, or restated in prose beside it?
+11. Prose hard-wrapped, or quoted text reflowed?
 <!-- register:end -->
 
 
@@ -79,7 +91,7 @@ So your job isn't just to produce text; it's to get the human to the point where
 * Surface commitments they may not have clocked: "this concedes the point on Y; is that what you want?"
 * Name what you couldn't verify: "I'm citing Section 4.1 from memory, not from the draft text I've actually read -- confirm before this goes out."
 
-A fast "looks good, send it" is the failure mode. If the human hasn't engaged with the substance, the right move is to make them, not to smooth the draft toward approval. This might be done by discussing it with them or even role playing the discussion with them.
+A fast "looks good, send it" is the failure mode. If the human hasn't engaged with the substance, the right move is to make them, not to smooth the draft towards approval. This might be done by discussing it with them or even role playing the discussion with them.
 
 ## Say it's AI-generated -- and how closely supervised
 
@@ -102,7 +114,7 @@ In particular, source material needs to be accurately cited -- plagiarism has so
 Plenty of assistance carries little risk, and pretending otherwise just gets the guidance ignored. These are fine:
 
 - **Summarising or translating a discussion** for the human's own understanding -- and it's often useful to ask for alternative readings or conclusions they might have missed.
-- **Explaining a machine-readable artifact** -- "what does this ABNF / YANG module / ASN.1 do?" is a straightforward comprehension task.
+- **Explaining a machine-readable artefact** -- "what does this ABNF / YANG module / ASN.1 do?" is a straightforward comprehension task.
 - **Translating the human's own message into English.** With caveats: they should read the English back and be sure they understand it before sending; consider including the original-language text too, so another speaker of that language can catch a mistranslation; and keep it direct and short.
 
 The common thread: these help the *human* understand or be understood. The riskier territory is composing contributions in their voice -- the rest of this file is about doing that responsibly.
@@ -125,15 +137,15 @@ An obsoleted RFC reads as authoritatively as its replacement, but citing it as c
 
 ## Engage with the group's existing work
 
-A fully-formed new idea dropped cold onto the list rarely goes anywhere. Groups have limited attention, and an unsolicited proposal with no connection to what they're already doing reads as "do my thing instead of yours." Far more lands when it's tied to the work in flight: a comment on an open issue, a concrete suggestion against the current draft text, a reply in a live thread. So before drafting a from-scratch proposal, look for the existing work it relates to and engage there first. If there's genuinely no hook, the realistic path is usually a smaller, well-scoped contribution that earns context -- not a manifesto.
+A fully-formed new idea dropped cold onto the list rarely goes anywhere. Groups have limited attention, and an unsolicited proposal with no connection to what they're already doing reads as "do my thing instead of yours." Far more lands when it's tied to the work in flight: a comment on an open issue, a concrete suggestion against the current draft text, a reply in a live thread. So before drafting a from-scratch proposal, look for the existing work it relates to and engage there first. If there's no hook, the realistic path is usually a smaller, well-scoped contribution that earns context -- not a manifesto.
 
 ## Don't re-litigate settled questions
 
-Check whether the point has already been decided before drafting an argument that reopens it: chair consensus calls, closed issues with a rationale, earlier threads that reached a conclusion. If the chairs have called consensus, reopening it takes genuinely new information -- a new argument or new data -- not a more eloquent restatement of one the group already weighed. When it looks settled, say so to the human and let them decide, rather than drafting the reopening for them.
+Check whether the point has already been decided before drafting an argument that reopens it: chair consensus calls, closed issues with a rationale, earlier threads that reached a conclusion. If the chairs have called consensus, reopening it takes new information -- a new argument or new data -- not a more eloquent restatement of one the group already weighed. When it looks settled, say so to the human and let them decide, rather than drafting the reopening for them.
 
 ## Respect the chairs' role
 
-Chairs run the group, and their procedural calls -- declaring consensus, starting a Last Call, closing a thread, ruling something out of scope -- carry real weight; don't draft messages that re-argue a process call as though it were a technical disagreement. That said, chairs aren't infallible, and they serve the group's consensus rather than the other way round: if a call genuinely looks wrong, the move is to raise it with them plainly, and there's a formal appeal path when that doesn't resolve it. Neither is something to reach for on reflex.
+Chairs run the group, and their procedural calls -- declaring consensus, starting a Last Call, closing a thread, ruling something out of scope -- carry real weight; don't draft messages that re-argue a process call as though it were a technical disagreement. That said, chairs aren't infallible, and they serve the group's consensus rather than the other way round: if a call looks wrong, the move is to raise it with them plainly, and there's a formal appeal path when that doesn't resolve it. Neither is something to reach for on reflex.
 
 ## Volume is not persuasive
 
@@ -141,7 +153,7 @@ A point made once is on the record; restating it, pressing it after the group ha
 
 And don't manufacture *consensus* signal: consensus is chair-declared on the substance of arguments, not counted, so a flurry of "+1 / I support this" messages is worse than useless -- noise that distorts what the chairs weigh, and experienced participants recognise it for what it is. One well-reasoned message beats ten echoes; never produce volume to simulate support, on either side. Before drafting, check whether the point is already made; if it is, the right contribution is often silence.
 
-## Honor the code of conduct
+## Honour the code of conduct
 
 IETF has a [Code of Conduct](https://www.rfc-editor.org/rfc/rfc7154.html). Arguments should always be professional, polite, and about technical positions, not people making them -- including who they work for.
 
@@ -149,13 +161,13 @@ IETF has a [Code of Conduct](https://www.rfc-editor.org/rfc/rfc7154.html). Argum
 
 The IETF uses "rough consensus" to make decisions. That means that the group will listen to and seek to understand well-reasoned objections and come to agreement about what the best way forward is. However, a position can be "in the rough":
 
-    If the chair of a working group determines that a technical issue brought forward by an
-    objector has been truly considered by the working group, and the working group has made an
-    informed decision that the objection has been answered or is not enough of a technical problem
-    to prevent moving forward, the chair can declare that there is rough consensus to go forward,
-    the objection notwithstanding.
+> If the chair of a working group determines that a technical issue brought forward by an
+> objector has been truly considered by the working group, and the working group has made an
+> informed decision that the objection has been answered or is not enough of a technical problem
+> to prevent moving forward, the chair can declare that there is rough consensus to go forward,
+> the objection notwithstanding.
 
--- RFC 7282 https://www.rfc-editor.org/info/rfc7282/
+-- [RFC 7282](https://www.rfc-editor.org/info/rfc7282/)
 
 Understand that the consensus process is not a way to force the group to consider a position that isn't relevant or well-reasoned; spurious arguments will be ignored or ruled out of scope.
 
