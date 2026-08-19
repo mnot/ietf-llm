@@ -152,6 +152,67 @@ def test_an_unavailable_truststore_is_not_fatal(
     assert tls.system_trust_context() is None
 
 
+def test_a_context_this_process_cannot_configure_is_declined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported failure: an enterprise macOS interpreter starts with
+    `pip._vendor.truststore.inject_into_ssl()`, so `ssl.SSLContext` names a
+    subclass and CPython 3.14's `verify_mode` setter — which resolves the class
+    through that global — recurses into itself. urllib3 sets `verify_mode` on
+    every connection, so `--init` died ~980 frames deep in the RFC index fetch.
+    We cannot un-poison their interpreter; we can decline to hand over a context
+    that will explode at request time."""
+    monkeypatch.delenv(tls._ENV, raising=False)
+    monkeypatch.setattr(tls, "_UNUSABLE", False)
+    import truststore
+
+    real = truststore.SSLContext
+
+    class _Poisoned(real):  # type: ignore[valid-type,misc]
+        @property
+        def verify_mode(self) -> Any:
+            return ssl.CERT_REQUIRED
+
+        @verify_mode.setter
+        def verify_mode(self, value: Any) -> None:
+            raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(truststore, "SSLContext", _Poisoned)
+    assert tls.system_trust_context() is None
+
+    # And the verdict sticks: nothing un-poisons an interpreter mid-run, so a
+    # later call must not pay for the recursion again.
+    monkeypatch.setattr(truststore, "SSLContext", real)
+    assert tls.system_trust_context() is None
+
+
+def test_an_injected_interpreter_declines_rather_than_crashing() -> None:
+    """The reported environment itself, not a stand-in for it: an interpreter
+    whose `ssl.SSLContext` is pip's vendored `truststore` (a corporate startup
+    hook's way of teaching every Python the MDM root). In a subprocess because
+    `inject_into_ssl()` is global and irreversible — the same reason the guard
+    above it is a source check. Without the `_usable` probe this process gets a
+    context that raises RecursionError on the first request."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("pip._vendor.truststore")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pip._vendor import truststore; truststore.inject_into_ssl();"
+            " from ietf_llm import tls;"
+            " assert tls.system_trust_context() is None; print('declined')",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "declined" in proc.stdout
+
+
 # --- scoped, never global ---------------------------------------------------
 
 

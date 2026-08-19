@@ -37,6 +37,26 @@ concluding it has been fixed upstream, and note the design does not rest on it.
 So this module hands a context to the transports we own and leaves every other
 TLS client on the machine exactly as it was.
 
+**Not injecting is not enough — someone else's injection poisons ours.** The
+trap belongs to the rebound global, not to whoever rebound it. An interpreter
+that starts with `pip._vendor.truststore.inject_into_ssl()` — a corporate macOS
+build's way of teaching every Python the MDM root — leaves `ssl.SSLContext`
+naming a *subclass*, which is then what `truststore` captures and wraps. On
+CPython 3.14, where `verify_mode` grew the same global-resolving setter that
+`options` has, the assignment urllib3 makes for every connection recurses
+~980 frames deep and `--init` dies in the RFC index fetch. Any rebinding will
+do it — this is the report's traceback, frame for frame::
+
+    python -c "import ssl; ssl.SSLContext = type('S', (ssl.SSLContext,), {}); \\
+               import truststore; \\
+               truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT).verify_mode = 2"
+
+`_usable` below is the guard: make those assignments here, where declining is
+still possible, rather than at request time where it is a traceback. On the
+machine that motivated it the fallback costs nothing — its injected
+`ssl.SSLContext` *is* a platform-verifying context, so default verification
+goes through the platform anyway.
+
 The cost of that choice is reach: `dulwich` (the transcripts repo sync), `llm`
 (summariser plugins) and `google.auth`'s own session build their own contexts
 and still verify against their own defaults. `SSL_CERT_FILE` and
@@ -71,19 +91,47 @@ CERTIFICATE_HINT = (
 )
 
 
+#: Set once a platform context has proven unusable in this process (see
+#: `_usable`). Nothing un-poisons an interpreter mid-run, and the proof costs a
+#: near-1000-frame recursion, so we ask once.
+_UNUSABLE = False
+
+
+def _usable(context: ssl.SSLContext) -> bool:
+    """Does `context` survive what our transports are about to do to it?
+
+    urllib3 assigns `verify_mode` on every connection it builds, and `options`
+    while building a context. Both stdlib setters resolve the class through the
+    `ssl` module global (`super(SSLContext, SSLContext).verify_mode.__set__`),
+    so in a process where anything has rebound `ssl.SSLContext` to a subclass
+    they recurse into themselves — see the module docstring for the enterprise
+    build where that happens. Making the assignments here, to the values they
+    already hold, moves the discovery to the one place that can still decline.
+    """
+    try:
+        context.verify_mode = context.verify_mode
+        context.options = context.options
+    except Exception:  # pylint: disable=broad-except
+        return False
+    return True
+
+
 def system_trust_context() -> Optional[ssl.SSLContext]:
     """An `SSLContext` verifying through the platform trust store, or None.
 
-    None means "carry on with the default verification" — opted out, or
-    `truststore` unavailable or unsupported here. This only ever widens what we
-    can reach, so failing to widen it is not worth an error on a machine where
-    nothing was broken to begin with.
+    None means "carry on with the default verification" — opted out,
+    `truststore` unavailable or unsupported here, or a context this process
+    cannot configure (`_usable`). This only ever widens what we can reach, so
+    failing to widen it is not worth an error on a machine where nothing was
+    broken to begin with.
 
     A fresh context per call: `SSLContext` is not documented as safe to share
     across urllib3 pools and urllib calls, and building one is cheap next to
     the request it is about to serve.
     """
-    if os.environ.get(_ENV, "").strip().lower() in _OFF:
+    global _UNUSABLE  # pylint: disable=global-statement
+
+    if _UNUSABLE or os.environ.get(_ENV, "").strip().lower() in _OFF:
         return None
     try:
         import truststore  # pylint: disable=import-outside-toplevel
@@ -99,6 +147,9 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
             context.load_default_certs()
         except (OSError, ssl.SSLError):
             pass  # a malformed SSL_CERT_FILE must not cost us the platform store
+        if not _usable(context):
+            _UNUSABLE = True
+            return None
         return context
     except Exception:  # pylint: disable=broad-except
         return None
