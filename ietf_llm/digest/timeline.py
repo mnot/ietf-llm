@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -432,14 +433,19 @@ def build_events(
     # no group record to query.
     if group_backed:
         dt_events: List[Event] = []
-        dt_events.extend(fetch_group_events(wg, months, verbose))
-        dt_events.extend(fetch_role_history(wg, verbose))
-        dt_events.extend(fetch_doc_events(wg, months, verbose))
-        # IESG ballot positions for drafts active in the window. Each
-        # in-window position change becomes an event linked to the
-        # per-draft ballot file — read_digest(event_kind="ballot") makes
-        # the IESG activity directly addressable.
-        ballots = fetch_ballots(wg, months, verbose=verbose)
+        # Four independent queries against slow endpoints. Overlapped, not
+        # unbounded: the per-host governor still caps what datatracker sees.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            f_group = pool.submit(fetch_group_events, wg, months, verbose)
+            f_roles = pool.submit(fetch_role_history, wg, verbose)
+            f_docs = pool.submit(fetch_doc_events, wg, months, verbose)
+            # IESG ballot positions -> per-draft ballot file, which
+            # read_digest(event_kind="ballot") addresses directly.
+            f_ballots = pool.submit(fetch_ballots, wg, months, verbose=verbose)
+        dt_events.extend(f_group.result())
+        dt_events.extend(f_roles.result())
+        dt_events.extend(f_docs.result())
+        ballots = f_ballots.result()
         write_ballot_files(cache_dir, ballots, verbose=verbose)
         dt_events.extend(ballot_events(ballots, cache_dir, _ballot_cutoff(months)))
         events.extend(dt_events)

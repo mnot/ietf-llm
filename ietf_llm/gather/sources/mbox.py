@@ -482,6 +482,19 @@ def _sync_one_list(
     return []  # unreachable: the loop always returns; satisfies the type checker
 
 
+def _cached_eml_count(wg_name: str, list_names: List[str]) -> int:
+    """How many .eml files the given lists hold. Detects "something arrived"
+    without changing `_sync_one_list`'s tested return contract."""
+    total = 0
+    for list_name in list_names:
+        cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
+        try:
+            total += sum(1 for n in os.listdir(cache_dir) if n.endswith(".eml"))
+        except OSError:
+            continue
+    return total
+
+
 def sync_mailing_list(
     wg_name: str,
     dest_folder: str,
@@ -554,6 +567,7 @@ def sync_mailing_list(
         return []
 
     # Per-list IMAP sync + UID collection.
+    n_before = _cached_eml_count(wg_name, list_names)
     per_list_uids: Dict[str, List[str]] = {}
     for list_name in list_names:
         per_list_cb: Optional[Callable[[int, int], None]] = None
@@ -594,6 +608,20 @@ def sync_mailing_list(
             except OSError:
                 pass
         return []
+    # No new mail: rebuilding re-parses every cached message to write the same
+    # bytes back.
+    # Keyed on new mail, not on the window — narrowing --months keeps the wider
+    # dumps until mail arrives. They are export-only; rm raw/ resets.
+    existing_dumps = glob.glob(os.path.join(raw_dir(dest_folder), "mail-archive-*.txt"))
+    if existing_dumps and _cached_eml_count(wg_name, list_names) == n_before:
+        log(
+            "Mail archives: no new messages; keeping the existing "
+            f"{len(existing_dumps)} year dump(s).",
+            verbose,
+            level=LogLevel.STATUS,
+        )
+        return sorted(existing_dumps)
+
     combined: Dict[int, List[str]] = {}
     for list_name, uids in per_list_uids.items():
         cache_dir = os.path.join(
