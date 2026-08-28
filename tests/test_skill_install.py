@@ -36,16 +36,19 @@ _ROOTS = {
 def _sandbox(monkeypatch, tmp_path: Path) -> Path:
     """Redirect home + cache to a sandbox; return the sandbox home.
 
-    Also stubs out the Windows-side WSL lookup so tests are deterministic
-    whether or not the machine actually running them is WSL — the WSL split-
-    brain tests below override this back on deliberately.
+    Also forces the WSL gate off so tests are deterministic whether or not
+    the machine actually running them is WSL. Stubbing `_is_wsl` rather than
+    `_wsl_windows_home` leaves the real `_wsl_windows_home` in place — it
+    returns `None` through its own gate without spawning `cmd.exe`, so the
+    production gating is exercised rather than replaced. The WSL split-brain
+    tests below override the lookup itself deliberately.
     """
     home = tmp_path / "home"
     home.mkdir()
     (tmp_path / "cache").mkdir()
     monkeypatch.setattr(skill_install, "_home", lambda: home)
     monkeypatch.setattr(skill_install, "get_cache_dir", lambda: str(tmp_path / "cache"))
-    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: None)
+    monkeypatch.setattr(skill_install, "_is_wsl", lambda: False)
     return home
 
 
@@ -136,6 +139,29 @@ def test_install_overwrites_modified(tmp_path: Path, monkeypatch) -> None:
     edited.write_text("user-edited content")
     assert skill_install.install_skills() == 0
     assert "user-edited content" not in edited.read_text()
+
+
+def test_one_root_oserror_does_not_abort_others(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A DrvFs-style mount failure installing into one harness's root (e.g. a
+    WSL Windows-side skills dir) must not abort installs into the others."""
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude", "codex")
+    claude_root = home / ".claude" / "skills"
+    real_install_into = skill_install._install_into
+
+    def _flaky_install_into(root: Path, skills) -> None:
+        if root == claude_root:
+            raise OSError("Read-only file system")
+        real_install_into(root, skills)
+
+    monkeypatch.setattr(skill_install, "_install_into", _flaky_install_into)
+    rc = skill_install.install_skills()
+    assert rc == 0
+    assert _installed(home, "codex", "ietf-interpreting")
+    assert not _installed(home, "claude", "ietf-interpreting")
+    assert "Could not install into" in capsys.readouterr().err
 
 
 def test_missing_bundled_skills(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -400,8 +426,55 @@ def test_install_reaches_windows_side_harness_under_wsl(
 
 
 def test_no_windows_side_harness_when_not_wsl(tmp_path: Path, monkeypatch) -> None:
+    """`_sandbox` stubs only `_is_wsl`, so the real `_wsl_windows_home` runs
+    and has to gate itself — this would pass vacuously if the lookup were
+    stubbed to `None` instead."""
     home = _sandbox(monkeypatch, tmp_path)
-    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: None)
     _present(home, "claude")
     assert skill_install.install_skills() == 0
     assert not any("-win" in h.key for h in skill_install._detect_harnesses())
+
+
+def test_gather_sync_does_not_probe_for_windows_home(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The per-gather sync must not pay the WSL interop cold start: it takes
+    its Windows-side roots from the manifest, never from `cmd.exe`."""
+    home = _sandbox(monkeypatch, tmp_path)
+    _present(home, "claude")
+    skill_install.install_skills()
+
+    def _boom() -> None:
+        raise AssertionError("sync_if_pristine must not probe for a Windows home")
+
+    monkeypatch.setattr(skill_install, "_wsl_windows_home", _boom)
+    skill_install._sync_if_pristine(Verbosity.STATUS)  # unwrapped: no except
+
+
+def test_gather_sync_keeps_windows_side_skill_current(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Windows-side install is still auto-updated on a later gather even
+    though that path no longer probes — the manifest records its root."""
+    home = _sandbox(monkeypatch, tmp_path)
+    win_home = tmp_path / "winhome"
+    (win_home / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: win_home)
+    skill_install.install_skills()
+    _present(home, "claude")  # so the Linux side exists for later runs
+
+    # Staleness the sync should repair, on the Windows-side copy only.
+    src = {s.name: s for s in skill_install._bundled_skills()}["ietf-contributing"]
+    dest = win_home / ".claude" / "skills" / "ietf-contributing"
+    stale = dest / "SKILL.md"
+    original = stale.read_text()
+    stale.write_text("stale but pristine")
+    manifest = skill_install._read_manifest()
+    skill_install._record(manifest, dest, skill_install._tree_hash(dest))
+    skill_install._write_manifest(manifest)
+
+    # No probe available: the root has to come from the manifest.
+    monkeypatch.setattr(skill_install, "_wsl_windows_home", lambda: None)
+    skill_install._sync_if_pristine(Verbosity.STATUS)
+    assert stale.read_text() == original
+    assert skill_install._tree_hash(dest) == skill_install._tree_hash(src)

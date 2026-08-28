@@ -53,6 +53,10 @@ itself always comes from the server.
 claude mcp add ietf-llm -- ietf-llm-mcp
 ```
 
+Running inside a WSL distro, this just works. Running Claude Code as a
+*native Windows* process against an `ietf-llm` installed in WSL needs a
+wrapper — see [Under WSL](#under-wsl).
+
 ### Claude Desktop
 
 Edit `claude_desktop_config.json` (create it if missing):
@@ -83,34 +87,9 @@ configuration may help:
       }
 ```
 
-**On WSL:** Claude Desktop is a native Windows process — it cannot exec a Linux
-binary directly, so `pipx install`-ing `ietf-llm` inside a WSL distro is not
-enough on its own. `claude_desktop_config.json` still lives on the Windows
-side (`%APPDATA%\Claude\...`, as above); point its `"command"` at `wsl.exe`
-instead of `ietf-llm-mcp` directly, and give it the absolute Linux path (find
-it with `which ietf-llm-mcp` *inside* the distro):
-
-```json
-{
-  "mcpServers": {
-    "ietf-llm": {
-      "command": "wsl.exe",
-      "args": ["-d", "<YourDistroName>", "-e", "/home/<you>/.local/bin/ietf-llm-mcp"]
-    }
-  }
-}
-```
-
-`-d <YourDistroName>` is optional if you only have one distro (`wsl -l -v` from
-PowerShell lists them). Env vars in the config's `"env"` block are **not**
-forwarded across the `wsl.exe` boundary — set them inside the distro instead
-(e.g. in `~/.bashrc`, or hardcode them into a wrapper script you point `-e` at).
-
-If instead you run **Claude Code inside WSL** (the common VS Code + WSL setup),
-there is no split: the extension's server process is itself a WSL-side Linux
-process, so it sees `ietf-llm-mcp` on its own `PATH` like any other Linux
-install — `claude mcp add ietf-llm -- ietf-llm-mcp` (above) just works, no
-`wsl.exe` wrapper needed.
+**On WSL:** Claude Desktop is a native Windows process and cannot exec a
+Linux binary, so a `pipx install` inside a WSL distro is not enough on its
+own — see [Under WSL](#under-wsl) below.
 
 
 ### Codex CLI (OpenAI)
@@ -185,6 +164,101 @@ In-app MCP settings panel, or `~/.cursor/mcp.json` (global) or `.cursor/mcp.json
 }
 ```
 
+### Under WSL
+
+Only relevant if `ietf-llm` is installed **inside a WSL distro** but the client
+is a **native Windows** process (Claude Desktop always is; Claude Code, Codex
+CLI, Gemini CLI and opencode are when launched from a Windows terminal rather
+than a WSL one). A Windows process cannot exec a Linux binary, so `"command":
+"ietf-llm-mcp"` will not resolve — route it through `wsl.exe` instead, giving
+the absolute Linux path (find it with `which ietf-llm-mcp` *inside* the
+distro). Each client's config file still lives on the Windows side.
+
+```json
+// Claude Desktop — %APPDATA%\Claude\claude_desktop_config.json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "wsl.exe",
+      "args": ["-d", "<YourDistroName>", "--cd", "~", "-e", "/home/<you>/.local/bin/ietf-llm-mcp"]
+    }
+  }
+}
+```
+
+```powershell
+# Claude Code — run from a Windows shell
+claude mcp add ietf-llm -- wsl.exe -d <YourDistroName> --cd "~" -e /home/<you>/.local/bin/ietf-llm-mcp
+```
+
+```toml
+# Codex CLI — %USERPROFILE%\.codex\config.toml
+[mcp_servers.ietf-llm]
+command = "wsl.exe"
+args = ["-d", "<YourDistroName>", "--cd", "~", "-e", "/home/<you>/.local/bin/ietf-llm-mcp"]
+```
+
+```json
+// Gemini CLI — %USERPROFILE%\.gemini\settings.json
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "wsl.exe",
+      "args": ["-d", "<YourDistroName>", "--cd", "~", "-e", "/home/<you>/.local/bin/ietf-llm-mcp"]
+    }
+  }
+}
+```
+
+```json
+// opencode — %USERPROFILE%\.config\opencode\opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ietf-llm": {
+      "type": "local",
+      "command": ["wsl.exe", "-d", "<YourDistroName>", "--cd", "~", "-e", "/home/<you>/.local/bin/ietf-llm-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+`-d <YourDistroName>` is optional if you only have one distro (`wsl -l -v` from
+PowerShell lists them). `--cd ~` is worth keeping: `wsl.exe` otherwise
+translates the launching process's Windows working directory into the distro,
+which fails if that directory isn't translatable.
+
+**Environment variables need `WSLENV`.** A `"env"` block alone is not enough —
+those variables are set on the Windows `wsl.exe` process and are not forwarded
+across the boundary. Nor does setting them inside the distro help: `wsl.exe -e`
+execs the binary directly with no shell, so `~/.bashrc` is never sourced.
+Name each variable in
+[`WSLENV`](https://learn.microsoft.com/en-us/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl)
+to carry it across (or hardcode it into a wrapper script you point `-e` at).
+This matters for the `IETF_LLM_GATHER_MAX_WAIT` workaround above, which would
+otherwise silently do nothing:
+
+```json
+      "env": {
+        "IETF_LLM_GATHER_MAX_WAIT": "0",
+        "WSLENV": "IETF_LLM_GATHER_MAX_WAIT"
+      }
+```
+
+**Skills are separate.** Running `ietf-llm --install-skills` inside the distro
+also installs into these Windows-side harnesses (see
+[step 4](#4-installing-the-ietf-skills-optional)), but it cannot register the
+MCP server for you — that is the per-client config above. Skills installed
+without it leave the harness with no route to `ietf-llm-mcp`.
+
+**No split to bridge if the client itself runs in WSL.** The common VS Code +
+Remote-WSL setup runs the editor and all its subprocesses inside the distro, so
+its MCP server process is a WSL-side Linux process that sees `ietf-llm-mcp` on
+its own `PATH` — the plain `claude mcp add ietf-llm -- ietf-llm-mcp` applies,
+with no `wsl.exe` wrapper. Same for any of these tools run from a WSL terminal.
+
+
 ## 3. Gather
 
 **The RFC tools are the exception, and come first.** `search_rfc_index`,
@@ -241,8 +315,10 @@ repo yourself is equivalent. Re-run after upgrading to pick up a newer pin.
 **On WSL**, running this inside the distro also detects and installs into a
 Windows-native Claude Code/Codex CLI/Gemini CLI/opencode, if present — WSL and
 Windows don't share a home directory, so this is the only way a WSL-installed
-`ietf-llm` can reach them. (This does not cover Claude Desktop, which has no
-skills directory of its own — see the WSL note under Claude Desktop above.)
+`ietf-llm` can reach them. Skills are all it installs: registering the MCP
+server with those Windows-side harnesses is a separate step, and without it
+they have no route to `ietf-llm-mcp` — see [Under WSL](#under-wsl). (Claude
+Desktop has no skills directory of its own, so it is unaffected either way.)
 
 
 ## Tuning the MCP server
