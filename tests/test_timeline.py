@@ -6,7 +6,12 @@ Four event sources, each tested with synthetic cache contents.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+import ietf_llm.net.http_metrics as http_metrics
+from ietf_llm.digest import timeline
 from ietf_llm.people import Registry
 from ietf_llm.digest.timeline import _meeting_label, build_events, write_timeline_digest
 from ietf_llm.log import Verbosity
@@ -309,3 +314,27 @@ def test_meeting_label_handles_known_forms() -> None:
     assert _meeting_label("interim2025aipref09-minutes.md") == "Interim 2025 #09"
     # Falls back to the base if it's something we don't recognise.
     assert _meeting_label("weird-meeting-minutes.md") == "weird-meeting"
+
+
+def test_datatracker_workers_share_http_metrics(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timeline requests made in workers count toward the gather total."""
+    http_metrics.reset()
+
+    def fetch(*args: Any, **kwargs: Any) -> list[Any]:
+        del args, kwargs
+        http_metrics.record("https://datatracker.ietf.org/api/v1/", 200, 1)
+        return []
+
+    monkeypatch.setattr(timeline, "fetch_group_events", fetch)
+    monkeypatch.setattr(timeline, "fetch_role_history", fetch)
+    monkeypatch.setattr(timeline, "fetch_doc_events", fetch)
+    monkeypatch.setattr(timeline, "fetch_ballots", fetch)
+
+    try:
+        build_events("wg", str(isolated_home), Registry())
+        assert http_metrics.current().host_requests["datatracker.ietf.org"] == 4
+    finally:
+        http_metrics.reset()

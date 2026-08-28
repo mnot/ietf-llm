@@ -610,8 +610,10 @@ def sync_mailing_list(
         return []
     # No new mail: rebuilding re-parses every cached message to write the same
     # bytes back.
-    # Keyed on new mail, not on the window — narrowing --months keeps the wider
-    # dumps until mail arrives. They are export-only; rm raw/ resets.
+    # Keyed on new mail, not other staleness: narrowing --months keeps wider
+    # dumps, re-adding a previously gathered list does not restore it, and a
+    # future rendering change does not rebuild existing dumps. These dumps are
+    # export-only; new mail or manually removing raw/ triggers a rebuild.
     existing_dumps = glob.glob(os.path.join(raw_dir(dest_folder), "mail-archive-*.txt"))
     if existing_dumps and _cached_eml_count(wg_name, list_names) == n_before:
         log(
@@ -620,7 +622,7 @@ def sync_mailing_list(
             verbose,
             level=LogLevel.STATUS,
         )
-        return sorted(existing_dumps)
+        return []
 
     combined: Dict[int, List[str]] = {}
     for list_name, uids in per_list_uids.items():

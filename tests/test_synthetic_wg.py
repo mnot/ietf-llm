@@ -175,5 +175,5 @@ def test_sync_mailing_list_skips_rebuild_when_nothing_new(
     )
     again = sync_mailing_list("httpbis", str(dest), verbose=Verbosity.QUIET)
     assert calls == []                     # no re-parse
-    assert again == [str(archive)]         # existing dump still reported
+    assert again == []                     # no files written
     assert archive.exists()
