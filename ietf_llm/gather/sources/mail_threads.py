@@ -45,7 +45,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
@@ -506,12 +506,23 @@ def _threads_better(new: Message, old: Message) -> bool:
     return new_signal and not old_signal
 
 
+#: Three gather stages call build_threads with the same wg + registry, each
+#: re-parsing every .eml. Holding the registry keeps `is` sound against id()
+#: reuse; a later gather brings a fresh one and recomputes. Gather-only — no
+#: read tool builds threads, so this cannot go stale under the MCP server.
+_THREAD_MEMO: Dict[str, Tuple[Registry, List[Thread]]] = {}
+
+
 def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
     """Reconstruct threads from the WG's IMAP cache.
 
     Pass `registry` (from `people.build_registry()`) to render senders
     using consolidated canonical names instead of raw display strings.
     """
+    if registry is not None:
+        hit = _THREAD_MEMO.get(wg)
+        if hit is not None and hit[0] is registry:
+            return hit[1]
     # De-duplicate by Message-Id as we parse. A message cross-posted to two
     # lists (e.g. tls + last-call) is cached once under each list, so the
     # same Message-Id appears more than once under imap-cache/<wg>/. Keeping
@@ -579,6 +590,8 @@ def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
         # Order chronologically; messages without a date sink to the end.
         members.sort(key=lambda mm: mm.date.timestamp() if mm.date else float("inf"))
         threads.append(Thread(root=root, members=members))
+    if registry is not None:
+        _THREAD_MEMO[wg] = (registry, threads)
     return threads
 
 

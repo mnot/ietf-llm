@@ -155,3 +155,25 @@ def test_sync_mailing_list_suppress_raw_sweeps_preexisting(
     )
     assert written == []
     assert not stale.exists()
+
+
+def test_sync_mailing_list_skips_rebuild_when_nothing_new(
+    isolated_home: Path, monkeypatch: Any,
+) -> None:
+    # Nothing downloaded, so the second run must reuse the dumps, not re-parse.
+    from ietf_llm.gather.sources import mbox
+
+    _stub_mail_sync(monkeypatch)
+    dest = isolated_home / "files"
+    first = sync_mailing_list("httpbis", str(dest), verbose=Verbosity.QUIET)
+    archive = dest / "raw" / "mail-archive-2025.txt"
+    assert str(archive) in first
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        mbox, "process_cache", lambda *a, **kw: calls.append(1) or {2025: "body"}
+    )
+    again = sync_mailing_list("httpbis", str(dest), verbose=Verbosity.QUIET)
+    assert calls == []                     # no re-parse
+    assert again == []                     # no files written
+    assert archive.exists()

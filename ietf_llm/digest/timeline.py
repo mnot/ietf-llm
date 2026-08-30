@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..atomicio import atomic_open
 from ..gather.sources.ballots import _cutoff as _ballot_cutoff
@@ -54,6 +55,7 @@ from ..gather.sources.mail_threads import Thread, build_threads, thread_slug
 from ..gather.sources.session_polls import discover_local_polls
 from ..gather.sources.transcript_context import transcript_context
 from ..log import LogLevel, Verbosity, log
+from ..net import http_metrics
 from ..paths import (
     DIR_MEETINGS,
     digest_path,
@@ -432,14 +434,31 @@ def build_events(
     # no group record to query.
     if group_backed:
         dt_events: List[Event] = []
-        dt_events.extend(fetch_group_events(wg, months, verbose))
-        dt_events.extend(fetch_role_history(wg, verbose))
-        dt_events.extend(fetch_doc_events(wg, months, verbose))
-        # IESG ballot positions for drafts active in the window. Each
-        # in-window position change becomes an event linked to the
-        # per-draft ballot file — read_digest(event_kind="ballot") makes
-        # the IESG activity directly addressable.
-        ballots = fetch_ballots(wg, months, verbose=verbose)
+        # Four independent queries against slow endpoints. Overlapped, not
+        # unbounded: the per-host governor still caps what datatracker sees.
+        parent = http_metrics.current()
+
+        def _bound(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            previous = http_metrics.current()
+            http_metrics.set_current(parent)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                http_metrics.set_current(previous)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            f_group = pool.submit(_bound, fetch_group_events, wg, months, verbose)
+            f_roles = pool.submit(_bound, fetch_role_history, wg, verbose)
+            f_docs = pool.submit(_bound, fetch_doc_events, wg, months, verbose)
+            # IESG ballot positions -> per-draft ballot file, which
+            # read_digest(event_kind="ballot") addresses directly.
+            f_ballots = pool.submit(
+                _bound, fetch_ballots, wg, months, verbose=verbose
+            )
+        dt_events.extend(f_group.result())
+        dt_events.extend(f_roles.result())
+        dt_events.extend(f_docs.result())
+        ballots = f_ballots.result()
         write_ballot_files(cache_dir, ballots, verbose=verbose)
         dt_events.extend(ballot_events(ballots, cache_dir, _ballot_cutoff(months)))
         events.extend(dt_events)

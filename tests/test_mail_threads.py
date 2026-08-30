@@ -1097,3 +1097,20 @@ def test_sender_line_keeps_its_markdown_hard_break() -> None:
     out = _render("Reply.\n\nOn Mon, Bob <b@x> wrote:\n\n> a\n> b\n> c\n> d\n")
     line = next(l for l in out.splitlines() if l.startswith("**Message senders"))
     assert line.endswith("  ")
+
+
+def test_build_threads_memoises_per_registry(isolated_home: Path) -> None:
+    # A later gather brings a fresh Registry and must not get the old result.
+    from ietf_llm.people import Registry
+
+    _write_eml(
+        isolated_home, "wg", 1,
+        subject="Topic A", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2025 10:00:00 +0000",
+        message_id="<root@x>",
+    )
+    reg = Registry()
+    first = build_threads("wg", registry=reg)
+    assert build_threads("wg", registry=reg) is first  # same registry: memo hit
+    assert build_threads("wg", registry=Registry()) is not first  # fresh: recomputed
+    assert build_threads("wg") is not first  # no registry: never memoised
