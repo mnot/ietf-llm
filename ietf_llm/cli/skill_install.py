@@ -17,11 +17,20 @@ directory, with idempotency and a safety check for user edits. It is a
 convenience: they are vendored copies of what mnot/ietf-skill publishes, so
 installing them from that repo instead is equivalent.
 
+Inside WSL, also detects the same harnesses installed on the Windows side
+(`_wsl_windows_home()`) — WSL and Windows don't share a home directory, so a
+WSL-installed `ietf-llm` would otherwise have no way to reach a Windows-native
+Claude Code/Codex/Gemini/opencode install. Note that this only installs the
+*skills* there; registering the MCP server with a Windows-side harness needs a
+`wsl.exe` wrapper in that harness's own config (see docs/mcp-local.md).
+
 On every CLI gather, `sync_if_pristine()` keeps already-installed skills
 current: it auto-updates an installed copy to the bundled version *only* when
 that copy is unchanged since we last wrote it (tracked by a content
 manifest), and otherwise just prints a one-line notice so a user's local
-edits are never silently clobbered.
+edits are never silently clobbered. That path deliberately does not probe for
+a Windows-side home — it reads the roots it already knows from the manifest,
+so a gather never pays the WSL interop cold start.
 """
 
 from __future__ import annotations
@@ -31,11 +40,12 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .. import __version__
 from ..log import LogLevel, Verbosity, log
@@ -57,23 +67,124 @@ def _home() -> Path:
     return Path.home()
 
 
-def _harnesses() -> List[Harness]:
-    """Supported harnesses and their skill-discovery paths, per each tool's
-    current docs (Agent Skills open standard). Codex reads `~/.agents/skills`,
-    Gemini `~/.gemini/skills`, opencode `~/.config/opencode/skills` (and also
-    `~/.claude/skills`), Claude `~/.claude/skills`."""
-    home = _home()
+def _is_wsl() -> bool:
+    """True inside a WSL distro (not on native Windows or native Linux)."""
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        return False
+
+
+def _wsl_windows_home() -> Optional[Path]:
+    """The Windows-side home directory, when running inside WSL.
+
+    A harness installed on the Windows side (e.g. Claude Code run from a
+    Windows terminal, not the WSL one) keeps its own `~/.claude` etc. under
+    the Windows home, which is invisible to the Linux-side `_home()` we
+    otherwise use — WSL and Windows are separate filesystems with separate
+    homes. Windows' own interop (`cmd.exe`, `wslpath`) is how we ask it,
+    since there is no other route from inside the distro. Best-effort: any
+    failure (interop disabled, `cmd.exe`/`wslpath` missing, timeout) just
+    means we don't detect a Windows-side install, not a crash.
+
+    Two subprocesses with a cold start to pay, so only the explicit
+    `--install-skills` path calls this; the per-gather `sync_if_pristine`
+    takes its Windows-side roots from the manifest instead.
+    """
+    if not _is_wsl():
+        return None
+    try:
+        userprofile = _run_last_line(["cmd.exe", "/c", "echo %USERPROFILE%"])
+        if not userprofile or "%USERPROFILE%" in userprofile:
+            return None
+        converted = _run_last_line(["wslpath", "-u", userprofile])
+        if not converted:
+            return None
+        path = Path(converted)
+        return path if path.is_dir() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _run_last_line(cmd: List[str]) -> str:
+    """Run `cmd`, returning the last line of its stdout stripped (`""` if none).
+
+    `cmd.exe` invoked with a Linux working directory prints a banner ("UNC
+    paths are not supported...") before running the command. Everything we
+    can find says that goes to stderr, which we capture and discard — but
+    taking the last stdout line rather than the whole blob costs nothing and
+    keeps us right if some build sends it to stdout instead.
+    """
+    out = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    ).stdout.strip()
+    lines = out.splitlines()
+    return lines[-1].strip() if lines else ""
+
+
+def _harnesses_for(
+    home: Path, key_suffix: str = "", label_suffix: str = ""
+) -> List[Harness]:
+    """The harness table rooted at `home`, per each tool's current docs (Agent
+    Skills open standard). Codex reads `~/.agents/skills`, Gemini
+    `~/.gemini/skills`, opencode `~/.config/opencode/skills` (and also
+    `~/.claude/skills`), Claude `~/.claude/skills`.
+
+    Used for both the Linux-side table (`_home()`, no suffix) and the
+    Windows-side one under WSL (`_wsl_windows_home()`, `-win`/` (Windows)`) —
+    building each fresh from its own root avoids reconstructing one from the
+    other via `Path.relative_to`, which would raise if a future harness ever
+    lived outside `home`.
+    """
     return [
-        Harness("claude", "Claude Code", home / ".claude", home / ".claude" / "skills"),
-        Harness("codex", "Codex CLI", home / ".codex", home / ".agents" / "skills"),
-        Harness("gemini", "Gemini CLI", home / ".gemini", home / ".gemini" / "skills"),
         Harness(
-            "opencode",
-            "opencode",
+            f"claude{key_suffix}",
+            f"Claude Code{label_suffix}",
+            home / ".claude",
+            home / ".claude" / "skills",
+        ),
+        Harness(
+            f"codex{key_suffix}",
+            f"Codex CLI{label_suffix}",
+            home / ".codex",
+            home / ".agents" / "skills",
+        ),
+        Harness(
+            f"gemini{key_suffix}",
+            f"Gemini CLI{label_suffix}",
+            home / ".gemini",
+            home / ".gemini" / "skills",
+        ),
+        Harness(
+            f"opencode{key_suffix}",
+            f"opencode{label_suffix}",
             home / ".config" / "opencode",
             home / ".config" / "opencode" / "skills",
         ),
     ]
+
+
+def _harnesses() -> List[Harness]:
+    """Supported harnesses and their skill-discovery paths.
+
+    Inside WSL, also looks for the same harnesses installed on the Windows
+    side (see `_wsl_windows_home()`) — a WSL-installed `ietf-llm` otherwise
+    has no way to reach a Windows-native Claude Code/Codex/Gemini/opencode
+    install, since the two sides don't share a home directory.
+    """
+    harnesses = _harnesses_for(_home())
+    win_home = _wsl_windows_home()
+    if win_home is not None:
+        harnesses += _harnesses_for(
+            win_home, key_suffix="-win", label_suffix=" (Windows)"
+        )
+    return harnesses
 
 
 def _detect_harnesses() -> List[Harness]:
@@ -238,11 +349,29 @@ def install_skills() -> int:
         for skill in bundled:
             dest[skill.name] = skill
 
+    # `by_root` follows `_harnesses()` order, so the Linux-side roots are
+    # written before any Windows-side one either way — but the guard is what
+    # makes a failure on one root non-fatal for the rest.
+    failed: "set[Path]" = set()
     for root, skills in by_root.items():
-        _install_into(root, list(skills.values()))
+        try:
+            _install_into(root, list(skills.values()))
+        except OSError as exc:
+            # A DrvFs mount (the WSL Windows-side roots) can be read-only or
+            # missing the `metadata` mount option `os.chmod` needs, where the
+            # Linux-side home never would be — one root's mount trouble
+            # shouldn't abort installs into the others.
+            print(f"Could not install into {root}: {exc}", file=sys.stderr)
+            failed.add(root)
 
-    print("Installed skills into: " + ", ".join(h.label for h in present) + ".")
+    installed_labels = [h.label for h in present if h.skills_root not in failed]
+    if not installed_labels:
+        print("No skills installed (see errors above).")
+        return 1
+    print("Installed skills into: " + ", ".join(installed_labels) + ".")
     for root in sorted(by_root, key=str):
+        if root in failed:
+            continue
         names = ", ".join(sorted(by_root[root]))
         print(f"  {names} → {root}")
     print(
@@ -280,8 +409,18 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
     manifest = _read_manifest()
     changed = False
     diverged: List[Path] = []
-    # Every harness's own skills root.
-    roots = {h.skills_root for h in _harnesses()}
+    # The Linux-side harness table, plus every root we have previously
+    # installed into (the manifest keys are `<root>/<skill>`).
+    #
+    # Deliberately *not* `_harnesses()`: that probes for a Windows-side home,
+    # and `_wsl_windows_home()`'s cmd.exe/wslpath cold start (100ms-1s under
+    # WSL) is too much to spend on every `ietf-llm <wg>` run for what is only
+    # a convenience nudge. The manifest gets us the same coverage for free —
+    # anything we installed Windows-side is recorded there, so it still syncs,
+    # and a Windows harness we have never written to has nothing to sync. It
+    # also covers roots whose harness has since left the table.
+    roots = {h.skills_root for h in _harnesses_for(_home())}
+    roots |= {Path(dest).parent for dest in manifest}
     for root in roots:
         for name, src in bundled.items():
             dest = root / name
