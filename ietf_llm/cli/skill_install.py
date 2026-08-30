@@ -112,10 +112,10 @@ def _run_last_line(cmd: List[str]) -> str:
     """Run `cmd`, returning the last line of its stdout stripped (`""` if none).
 
     `cmd.exe` invoked with a Linux working directory prints a banner ("UNC
-    paths are not supported...") before running the command. Everything we
-    can find says that goes to stderr, which we capture and discard — but
-    taking the last stdout line rather than the whole blob costs nothing and
-    keeps us right if some build sends it to stdout instead.
+    paths are not supported...") before running the command. Measured on
+    Ubuntu/WSL2 (see #244) that goes to stderr, which we capture and discard
+    — but taking the last stdout line rather than the whole blob costs
+    nothing and keeps us right if some other build sends it to stdout.
     """
     out = subprocess.run(
         cmd,
@@ -320,8 +320,11 @@ def install_skills() -> int:
     a user's edits are restored too, so back them up first if that matters.
 
     Returns a shell-style exit code:
-      0 — installed into the detected harnesses (or none detected: nothing to do)
-      1 — internal error (bundled skills missing from the wheel)
+      0 — installed into at least one detected root (or none detected:
+          nothing to do). A root that failed is reported on stderr and skipped
+          in the summary, but does not change the code.
+      1 — internal error (bundled skills missing from the wheel), or every
+          detected root failed to write.
     """
     bundled = _bundled_skills()
     if not bundled:
@@ -419,6 +422,12 @@ def _sync_if_pristine(verbosity: Verbosity) -> None:
     # anything we installed Windows-side is recorded there, so it still syncs,
     # and a Windows harness we have never written to has nothing to sync. It
     # also covers roots whose harness has since left the table.
+    #
+    # The one thing this gives up: the manifest lives in the cache dir, which
+    # a user may clear. After that the Linux-side roots are still rediscovered
+    # from the table, but a Windows-side install is unmanaged — no sync, no
+    # divergence notice, no orphan prune — until the next `--install-skills`
+    # records it again.
     roots = {h.skills_root for h in _harnesses_for(_home())}
     roots |= {Path(dest).parent for dest in manifest}
     for root in roots:
