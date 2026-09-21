@@ -17,9 +17,39 @@ forcing a re-gather to populate the sentinel would be noisier than
 useful. One real gather and we're tracking it from there on.
 
 The `local`-backend `CorpusStore` reaches these through `record_access` /
-`last_accessed` / `last_gathered`; the `cloud` backend keeps the same
-information in its control plane instead (a `last-accessed` sentinel on
-ephemeral scratch would not survive). `iso_now` / `parse_iso` are the shared
+`last_accessed` / `last_gathered`; the `cloud` backend keeps `last-accessed`
+in its control plane instead (a sentinel on ephemeral scratch would not
+survive), but `last-gathered` (and the `seed-source` provenance sentinel
+below) ride along in the published version like any other corpus-root
+artifact, so their *readers* resolve the current version through the
+`CorpusStore` seam (`_read_sentinel_path`) rather than composing a path from
+the cache root — the same split `documents.json` uses (see
+`gather.sources.documents_manifest`). That resolution is deliberately the
+*non-fetching* accessor (`materialised_corpus_dir`, not `local_corpus_dir`):
+freshness is read from `/health`, `/metrics`, and other per-corpus sweeps
+that must never trigger a blob download, so a replica that hasn't already
+materialised `wg` reports "not recorded" rather than fetching it just to
+answer a UX hint — and the whole resolution is wrapped best-effort, so a
+misconfigured or unreachable store degrades the same way, never raises.
+
+A second family of readers — `local_last_gathered` / `local_last_accessed` /
+`local_seed_source` / `local_staleness_warning` — reads the *local* gather
+workspace directly (`_sentinel_path`), bypassing the seam entirely
+regardless of the ambient `IETF_LLM_STORE_BACKEND`. Any caller that only
+ever reads or writes the local cache must not care what backend a shared
+deployment elsewhere happens to run: `LocalCorpusStore`'s own accessors, the
+local-only CLI tools (`cli.list`, `cli.export`), the local gather-entry
+debounce/seed checks (`debounce_reason`, `gather.sequencer._maybe_seed`),
+and the seed-store producer/consumer (`seed.publish`, `seed.fetch`) all use
+the `local_*` readers instead of the seam-routed ones, so "this caller wants
+local truth" is a declared, discoverable choice at each call site rather
+than a private, easily-missed one.
+
+Writers (`record_gather`, `record_seed_source`) always target the local
+gather workspace (`_sentinel_path`), which is what `publish` turns into
+that version — the same path the `local_*` readers use, so on the local
+backend (where the workspace *is* the live cache) reading through either
+family gives the identical answer. `iso_now` / `parse_iso` are the shared
 timestamp format both backends use.
 """
 
@@ -150,7 +180,76 @@ def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) ->
 
 
 def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
+    """The sentinel path in the local gather *workspace* — `<cache>/<wg>/name`.
+
+    Always the write-side path: a sentinel is stamped mid-gather, before
+    publish, into the tree that becomes the new version, never into an
+    already-materialised (immutable) one. See `_read_sentinel_path` for the
+    read side."""
     return os.path.join(get_cache_dir(), wg, name)
+
+
+def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str]:
+    """The sentinel path for `wg`'s current version *if it is already staged
+    on this replica* (`CorpusStore.materialised_corpus_dir`), or None.
+
+    Sentinels live in the corpus root beside `files/`, so — like
+    `documents.json` (`gather.sources.documents_manifest`) — they ride along in
+    a published version, and composing the path from `get_cache_dir()` finds
+    nothing on the cloud backend (issue #223). Deliberately the *non-fetching*
+    accessor, not `local_corpus_dir`: freshness is read from `/health`,
+    `/metrics`, and other per-corpus sweeps that must never turn into a blob
+    download (R18), and the sentinel value is only ever a UX hint, never worth
+    materialising a corpus for. A cold replica that hasn't touched `wg` yet
+    reports "not recorded" here, same as an absent sentinel always has.
+
+    Never raises: resolving the store (a misconfigured or unrecognised
+    `IETF_LLM_STORE_BACKEND`, a control-plane connectivity failure) degrades
+    to "not recorded" the same way, since this is read from call sites —
+    `/health`, `/metrics`, the per-corpus read-tool guard — that are
+    documented to never fail on a freshness lookup that has nothing to do
+    with the actual read being served.
+
+    Imports `get_corpus_store` locally: `store.corpus` (and `store.cloud`)
+    import this module for `record_access` / `last_accessed` / `gathered_at`,
+    so a top-level import here would cycle.
+    """
+    try:
+        # pylint: disable-next=import-outside-toplevel,cyclic-import
+        from .store.corpus import get_corpus_store
+
+        root = get_corpus_store().materialised_corpus_dir(wg)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    return os.path.join(root, name) if root else None
+
+
+def _read_text_from(path: Optional[str]) -> Optional[str]:
+    """Raw text at `path`, or None if `path` is None, absent, unreadable, or
+    not valid text. Shared by every sentinel reader below, seam-routed or
+    local — never raises."""
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, ValueError):
+        return None
+
+
+def _read_sentinel_text(wg: str, name: str) -> Optional[str]:
+    """Raw text of `wg`'s `name` sentinel for its *current version*, resolved
+    through the `CorpusStore` seam. Shared by `last_gathered`/`last_accessed`
+    (parse an ISO timestamp) and `seed_source` (parse JSON)."""
+    return _read_text_from(_read_sentinel_path(wg, name))
+
+
+def _local_sentinel_text(wg: str, name: str) -> Optional[str]:
+    """Raw text of `wg`'s `name` sentinel, read straight off the local gather
+    workspace (`_sentinel_path`) — regardless of the ambient
+    `IETF_LLM_STORE_BACKEND`. See the module docstring for which callers use
+    this instead of the seam-routed `_read_sentinel_text`."""
+    return _read_text_from(_sentinel_path(wg, name))
 
 
 def iso_now() -> str:
@@ -194,16 +293,10 @@ def _write_sentinel(wg: str, name: str) -> None:
         pass
 
 
-def _read_sentinel(wg: str, name: str) -> Optional[datetime]:
-    """Read `wg`'s `name` sentinel as a tz-aware UTC datetime, or None if
-    missing / unreadable / malformed."""
-    path = _sentinel_path(wg, name)
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = fh.read().strip()
-    except OSError:
-        return None
-    return parse_iso(raw)
+def _parse_sentinel_datetime(raw: Optional[str]) -> Optional[datetime]:
+    """`raw`'s text as a tz-aware UTC datetime, or None if `raw` is None or
+    malformed. Shared by every datetime-shaped sentinel reader."""
+    return parse_iso(raw.strip()) if raw is not None else None
 
 
 def record_gather(wg: str) -> None:
@@ -213,8 +306,18 @@ def record_gather(wg: str) -> None:
 
 
 def last_gathered(wg: str) -> Optional[datetime]:
-    """The WG's last-gathered time, or None if unrecorded / unreadable."""
-    return _read_sentinel(wg, _GATHERED_SENTINEL)
+    """The WG's last-gathered time for its current version, resolved through
+    the `CorpusStore` seam, or None if unrecorded / unreadable / the version
+    isn't staged on this replica. See the module docstring; callers that must
+    ignore the ambient store backend want `local_last_gathered` instead."""
+    return _parse_sentinel_datetime(_read_sentinel_text(wg, _GATHERED_SENTINEL))
+
+
+def local_last_gathered(wg: str) -> Optional[datetime]:
+    """The WG's last-gathered time, read straight off the local gather
+    workspace regardless of the ambient `IETF_LLM_STORE_BACKEND`. See the
+    module docstring for which callers want this over `last_gathered`."""
+    return _parse_sentinel_datetime(_local_sentinel_text(wg, _GATHERED_SENTINEL))
 
 
 def record_access(wg: str) -> None:
@@ -225,9 +328,19 @@ def record_access(wg: str) -> None:
 
 
 def last_accessed(wg: str) -> Optional[datetime]:
-    """The WG's last read-path access time, or None if unrecorded /
-    unreadable."""
-    return _read_sentinel(wg, _ACCESSED_SENTINEL)
+    """The WG's last read-path access time for its current version, resolved
+    through the `CorpusStore` seam, or None if unrecorded / unreadable / the
+    version isn't staged on this replica. See the module docstring; callers
+    that must ignore the ambient store backend want `local_last_accessed`
+    instead."""
+    return _parse_sentinel_datetime(_read_sentinel_text(wg, _ACCESSED_SENTINEL))
+
+
+def local_last_accessed(wg: str) -> Optional[datetime]:
+    """The WG's last read-path access time, read straight off the local
+    gather workspace regardless of the ambient `IETF_LLM_STORE_BACKEND`. See
+    the module docstring for which callers want this over `last_accessed`."""
+    return _parse_sentinel_datetime(_local_sentinel_text(wg, _ACCESSED_SENTINEL))
 
 
 #: Provenance sentinel written when a corpus is (re-)seeded from the seed store
@@ -255,15 +368,28 @@ def record_seed_source(wg: str, *, url: str, version: str, gathered: str) -> Non
         pass
 
 
-def seed_source(wg: str) -> Optional[Dict[str, Any]]:
-    """`wg`'s seed provenance record, or None if it was never seeded."""
-    path = _sentinel_path(wg, _SEED_SOURCE_SENTINEL)
+def _parse_seed_source(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
+        data = json.loads(raw)
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def seed_source(wg: str) -> Optional[Dict[str, Any]]:
+    """`wg`'s seed provenance record for its current version, resolved
+    through the `CorpusStore` seam, or None if it was never seeded / not
+    staged on this replica. Callers that must ignore the ambient store
+    backend (`seed.fetch`) want `local_seed_source` instead."""
+    return _parse_seed_source(_read_sentinel_text(wg, _SEED_SOURCE_SENTINEL))
+
+
+def local_seed_source(wg: str) -> Optional[Dict[str, Any]]:
+    """`wg`'s seed provenance record, read straight off the local gather
+    workspace regardless of the ambient `IETF_LLM_STORE_BACKEND`."""
+    return _parse_seed_source(_local_sentinel_text(wg, _SEED_SOURCE_SENTINEL))
 
 
 def _humanize_age(age_days: int) -> str:
@@ -283,22 +409,36 @@ def _stale_warning(wg: str, age_days: int, date: str) -> str:
     )
 
 
-def staleness_warning(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[str]:
-    """Return a one-line warning if the cache is older than the threshold.
-
-    Returns None when the cache is fresh, or when we have no record of
-    when it was last gathered (see module docstring for why we don't
-    warn on absence). Single line — callers prepend or print as-is. Used
-    by the export CLI, which only wants to speak up when something is
-    actually stale.
-    """
-    when = last_gathered(wg)
+def _staleness_warning_for(
+    when: Optional[datetime], wg: str, threshold_days: int
+) -> Optional[str]:
     if when is None:
         return None
     age_days = (datetime.now(timezone.utc) - when).days
     if age_days < threshold_days:
         return None
     return _stale_warning(wg, age_days, when.strftime("%Y-%m-%d"))
+
+
+def staleness_warning(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[str]:
+    """Return a one-line warning if `wg`'s current version (resolved through
+    the `CorpusStore` seam) is older than the threshold.
+
+    Returns None when the cache is fresh, or when we have no record of
+    when it was last gathered (see module docstring for why we don't
+    warn on absence). Single line — callers prepend or print as-is.
+    """
+    return _staleness_warning_for(last_gathered(wg), wg, threshold_days)
+
+
+def local_staleness_warning(
+    wg: str, threshold_days: int = STALE_AFTER_DAYS
+) -> Optional[str]:
+    """Local-only counterpart of `staleness_warning`, for callers (the export
+    CLI) that read the local cache directly and must ignore the ambient
+    `IETF_LLM_STORE_BACKEND` — same semantics, `local_last_gathered` instead
+    of `last_gathered`."""
+    return _staleness_warning_for(local_last_gathered(wg), wg, threshold_days)
 
 
 def freshness_line(wg: str, threshold_days: int = STALE_AFTER_DAYS) -> Optional[str]:
@@ -369,6 +509,12 @@ def debounce_reason(
     `--force` / `force=True` bypass the debounce by simply not calling
     this. A returned string is a success state, not an error: the existing
     snapshot is fresh enough to query as-is.
+
+    Local-only: this guards a gather about to write the local workspace
+    (the CLI's pre-flight check, and the MCP gather-entry path), so it must
+    read what's actually there regardless of the ambient
+    `IETF_LLM_STORE_BACKEND` — a plain local `ietf-llm <wg>` run must not
+    depend on cloud store config it has nothing to do with.
     """
     hours = (
         gather_min_interval_hours()
@@ -377,7 +523,7 @@ def debounce_reason(
     )
     if hours <= 0:
         return None
-    when = last_gathered(wg)
+    when = local_last_gathered(wg)
     if when is None:
         return None
     age = datetime.now(timezone.utc) - when

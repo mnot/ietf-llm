@@ -216,5 +216,10 @@ def _write_seed_source(corpus: str, seed_url: str, manifest: fmt.Manifest) -> No
 
 
 def seed_source(corpus: str) -> Optional[Dict[str, Any]]:
-    """The provenance recorded when `corpus` was last seeded, or None."""
-    return freshness.seed_source(corpus)
+    """The provenance recorded when `corpus` was last seeded, or None.
+
+    Local-only: reads straight off local disk, matching what
+    `_write_seed_source` just wrote there, rather than bouncing through the
+    seam (which could report a different backend's version under
+    `IETF_LLM_STORE_BACKEND=cloud`)."""
+    return freshness.local_seed_source(corpus)

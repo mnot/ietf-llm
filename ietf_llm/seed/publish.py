@@ -179,7 +179,7 @@ def _write_member(
     # corpus dir holds only the current version's payload.
     _drop_old_bundles(os.path.dirname(bundle_abs), keep=os.path.basename(bundle_abs))
     digest, size = fmt.build_bundle(members, bundle_abs)
-    gathered = freshness.last_gathered(corpus)
+    gathered = freshness.local_last_gathered(corpus)
     manifest = fmt.Manifest(
         name=corpus,
         version=version,
@@ -347,7 +347,7 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
             except PublishError as err:
                 report.skipped.append((corpus, str(err)))
                 return None
-        gathered = freshness.last_gathered(corpus)
+        gathered = freshness.local_last_gathered(corpus)
         if gathered is None:
             report.skipped.append((corpus, "not gathered locally (no last-gathered)"))
             return None

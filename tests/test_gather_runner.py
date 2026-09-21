@@ -260,6 +260,9 @@ def test_cloud_backend_trips_both_without_flags(
     # plane, so give it an in-memory one rather than requiring a real S3 URL.
     cloud_config = CloudConfigStore(KvControlPlane(InMemoryKvStore()))
     monkeypatch.setattr(main_mod.config, "get_config_store", lambda: cloud_config)
+    # The freshness debounce check (`cli_gather_skip` -> `debounce_reason`)
+    # reads the local workspace directly (`local_last_gathered`), never the
+    # CorpusStore seam, so no cloud CorpusStore double is needed here.
     seen = _capture_suppress(monkeypatch, (False, True))
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)

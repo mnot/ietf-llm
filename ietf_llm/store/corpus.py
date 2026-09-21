@@ -237,6 +237,27 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         cloud backend overrides it to consult only staged scratch."""
         return self.local_cache_dir(corpus)
 
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        """The corpus-root counterpart of `materialised_cache_dir`: the current
+        version's root **only if already staged on local disk** — never
+        fetches, never creates. None otherwise.
+
+        This is the accessor a reader of a root-level artifact (`documents.json`,
+        the `last-gathered` / `seed-source` sentinels) uses when the read is
+        best-effort discovery rather than a request that has already committed
+        to materialising the corpus — `freshness.py`'s sentinel readers, so a
+        `/health` or `/metrics` scrape (documented as making no upstream call)
+        or a `list_corpora` sweep across every cached corpus cannot turn into a
+        per-corpus blob download. Callers degrade gracefully on None (no
+        freshness info recorded yet on this replica), exactly like an absent
+        sentinel file always has.
+
+        The default delegates to `local_corpus_dir`, correct for the local
+        backend (already a read-only existence check). The cloud backend
+        overrides it to consult only staged scratch, mirroring
+        `materialised_cache_dir`."""
+        return self.local_corpus_dir(corpus)
+
     def seed_workspace(self, corpus: str, dest_root: str) -> Optional[str]:
         """Pre-populate a gather workspace at `dest_root` with the current
         published version of `corpus`, before the gather runs. Returns the
@@ -405,6 +426,18 @@ class LocalCorpusStore(CorpusStore):
         # a gather can read what it has already written before `files/` exists.
         return os.path.join(get_cache_dir(), corpus)
 
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        # The base class default (`return self.local_corpus_dir(corpus)`)
+        # would inherit `local_corpus_dir`'s deliberate no-existence-check —
+        # correct for that method's own callers, but wrong here: this
+        # method's contract ("None otherwise") is the whole reason it's a
+        # separate accessor from `local_corpus_dir` in the first place, and
+        # `materialised_cache_dir` (its sibling, right above) already gets
+        # this right by delegating to `local_cache_dir`, which does check.
+        # An explicit override, gated on the directory actually existing.
+        root = self.local_corpus_dir(corpus)
+        return root if root is not None and os.path.isdir(root) else None
+
     def local_index_dir(self, corpus: str) -> Optional[str]:
         # The live index dir — `<index_root>/<corpus>` — exactly where
         # `_db_path` has always resolved it, so local read behaviour is
@@ -427,10 +460,20 @@ class LocalCorpusStore(CorpusStore):
         freshness.record_access(corpus)
 
     def last_accessed(self, corpus: str) -> Optional[datetime]:
-        return freshness.last_accessed(corpus)
+        # local_last_accessed, not last_accessed -- same reasoning as
+        # gathered_at below: this instance IS the local backend, so it must
+        # read straight off local disk rather than bounce through
+        # get_corpus_store(), which could answer a different store's state.
+        return freshness.local_last_accessed(corpus)
 
     def gathered_at(self, corpus: str) -> Optional[datetime]:
-        return freshness.last_gathered(corpus)
+        # local_last_gathered, not last_gathered: this method is already the
+        # local backend, so it must read straight off local disk through
+        # `self` rather than bounce through the ambient-config-selecting
+        # `get_corpus_store()` that `last_gathered` (the seam-routed reader)
+        # resolves internally — that could silently answer a *different*
+        # store's state if `IETF_LLM_STORE_BACKEND` disagreed with `self`.
+        return freshness.local_last_gathered(corpus)
 
 
 def get_corpus_store() -> CorpusStore:

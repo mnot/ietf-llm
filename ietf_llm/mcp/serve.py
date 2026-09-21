@@ -35,7 +35,10 @@ def _corpora_freshness() -> "dict[str, Any]":
     """
     now = datetime.datetime.now(datetime.timezone.utc)
     wgs = _list_wgs()
-    tracked = [(wg, when) for wg in wgs if (when := last_gathered(wg)) is not None]
+    tracked = serve_metrics.timed_store(
+        "freshness_sweep",
+        lambda: [(wg, when) for wg in wgs if (when := last_gathered(wg)) is not None],
+    )
 
     def _entry(item: "tuple[str, datetime.datetime]") -> "dict[str, Any]":
         wg, when = item
@@ -117,12 +120,17 @@ def _corpus_ages() -> "List[Tuple[str, int]]":
     breakdown /health deliberately summarises rather than enumerates.
     """
     now = datetime.datetime.now(datetime.timezone.utc)
-    ages: "List[Tuple[str, int]]" = []
-    for wg in _list_wgs():
-        when = last_gathered(wg)
-        if when is not None:
-            ages.append((wg, max(0, int((now - when).total_seconds()))))
-    return ages
+    wgs = _list_wgs()
+
+    def _sweep() -> "List[Tuple[str, int]]":
+        ages: "List[Tuple[str, int]]" = []
+        for wg in wgs:
+            when = last_gathered(wg)
+            if when is not None:
+                ages.append((wg, max(0, int((now - when).total_seconds()))))
+        return ages
+
+    return serve_metrics.timed_store("freshness_sweep", _sweep)
 
 
 async def _metrics_endpoint(_request: Any) -> Any:

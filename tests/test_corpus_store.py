@@ -48,6 +48,18 @@ def test_local_cache_dir_present_vs_absent(isolated_home: Path) -> None:
     assert store.local_cache_dir("ghost") is None
 
 
+def test_materialised_corpus_dir_present_vs_absent(isolated_home: Path) -> None:
+    # Unlike local_corpus_dir (deliberately unchecked, so a gather can read
+    # what it's already written before files/ exists), materialised_corpus_dir
+    # promises "None otherwise" -- the same contract materialised_cache_dir
+    # already has, and the one a caller doing best-effort discovery relies on.
+    write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
+    store = LocalCorpusStore()
+    expected = isolated_home / ".cache" / "ietf-llm" / "httpbis"
+    assert store.materialised_corpus_dir("httpbis") == str(expected)
+    assert store.materialised_corpus_dir("ghost") is None
+
+
 def test_absent_corpus_is_never_materialised(isolated_home: Path) -> None:
     # The typo-safety invariant: probing a corpus that does not exist must
     # not create its cache dir (unlike paths.get_wg_file_cache_dir, which does).

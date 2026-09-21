@@ -29,7 +29,7 @@ from ..embeddings import (
     generate_topics,
     has_topics,
 )
-from ..freshness import last_gathered, parse_iso, record_gather
+from ..freshness import local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
@@ -461,7 +461,10 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
             level=LogLevel.STATUS,
         )
         return
-    prior = last_gathered(args.wg)
+    # local_last_gathered, not last_gathered: this decides whether to seed
+    # the local gather workspace this run is about to write, so it must read
+    # what's actually there regardless of the ambient IETF_LLM_STORE_BACKEND.
+    prior = local_last_gathered(args.wg)
     reason = _seed_decision(args, entry, prior)
     if reason is None:
         return

@@ -54,10 +54,10 @@ def test_print_cached_wgs_shows_last_gathered(
     from ietf_llm.cli import list as cli_list
     write_cache_file(isolated_home, "httpbis", "digests/index.md", "# x\n")
     fake = datetime.datetime(2026, 5, 27, tzinfo=datetime.timezone.utc)
-    # `cli_list` binds `last_gathered` at import time (from .freshness
-    # import last_gathered), so patch the name where it's looked up.
+    # `cli_list` binds `local_last_gathered` at import time (from .freshness
+    # import local_last_gathered), so patch the name where it's looked up.
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        cli_list, "last_gathered", lambda _wg: fake,
+        cli_list, "local_last_gathered", lambda _wg: fake,
     )
     print_cached_wgs()
     out = capsys.readouterr().out

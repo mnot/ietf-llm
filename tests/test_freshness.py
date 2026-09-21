@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -248,6 +249,22 @@ def test_debounce_explicit_interval_overrides_env(isolated_home: Path) -> None:
     assert debounce_reason("wg", min_interval_hours=4) is not None
 
 
+def test_debounce_ignores_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # debounce_reason guards a gather about to write the local workspace (the
+    # CLI's pre-flight check, and the MCP gather-entry path), so it must read
+    # local state regardless of the ambient IETF_LLM_STORE_BACKEND -- an
+    # unconfigured/different cloud backend must neither raise nor silently
+    # skip the debounce for a corpus this replica just gathered.
+    record_gather("wg")
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert debounce_reason("wg") is not None
+
+
 # --- record_access / last_accessed round-trip -----------------------------
 
 
@@ -290,3 +307,128 @@ def test_parse_iso_handles_z_and_malformed() -> None:
     assert when is not None
     assert when.tzinfo is not None
     assert when.year == 2026 and when.month == 6 and when.day == 4
+
+
+# --- reader-side sentinels resolve through the CorpusStore seam (#223) -----
+#
+# `last_gathered` / `seed_source` must not compose `<cache>/<wg>/...`
+# directly: on the cloud backend the current version lives in per-version
+# scratch, never under the cache root, so that path finds nothing. A minimal
+# fake store (matching the `documents_manifest` test pattern) stands in for
+# `CloudCorpusStore` here without pulling in the real backend. It implements
+# only `materialised_corpus_dir` (the non-fetching accessor `_read_sentinel_path`
+# actually calls) — not `local_corpus_dir` — since the whole point of that
+# choice is that freshness reads must never reach the fetching path.
+
+
+class _FakeStore:
+    """Reports `root` as the corpus's already-staged version root, or None."""
+
+    def __init__(self, root: Optional[Path]) -> None:
+        self._root = root
+
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        return str(self._root) if self._root is not None else None
+
+
+def test_last_gathered_reads_through_the_corpus_store_seam(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    published = tmp_path / "published"
+    published.mkdir()
+    (published / "last-gathered").write_text("2026-06-04T00:00:00Z")
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(published)
+    )
+
+    when = last_gathered("tls")
+    assert when is not None
+    assert when.isoformat() == "2026-06-04T00:00:00+00:00"
+
+
+def test_last_gathered_none_when_store_has_no_current_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    assert last_gathered("ghost") is None
+
+
+def test_seed_source_reads_through_the_corpus_store_seam(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    published = tmp_path / "published"
+    published.mkdir()
+    (published / "seed-source").write_text(
+        '{"url": "https://seed/", "version": "v1", '
+        '"gathered": "2026-07-01T00:00:00Z", "fetched": "2026-07-02T00:00:00Z"}'
+    )
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(published)
+    )
+
+    src = freshness.seed_source("tls")
+    assert src is not None
+    assert src["url"] == "https://seed/" and src["version"] == "v1"
+
+
+def test_seed_source_none_when_store_has_no_current_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    assert freshness.seed_source("ghost") is None
+
+
+# --- local_* readers bypass the seam entirely ------------------------------
+#
+# Callers that only ever write/read the local gather workspace (the CLI's
+# `--list`, `export.py`'s staleness check, `seed.fetch`/`seed.publish`) must
+# see what's on local disk even when the ambient `IETF_LLM_STORE_BACKEND`
+# selects cloud -- a store that would resolve to different, or no, state.
+
+
+def test_local_last_gathered_ignores_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_gather("tls")
+    seam = freshness.local_last_gathered("tls")
+    assert seam is not None
+
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert freshness.local_last_gathered("tls") == seam
+
+
+def test_local_last_accessed_ignores_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freshness.record_access("tls")
+    seam = freshness.local_last_accessed("tls")
+    assert seam is not None
+
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert freshness.local_last_accessed("tls") == seam
+
+
+def test_record_gather_writes_the_workspace_not_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Writers always target the local gather workspace, whatever the corpus
+    store resolves — that workspace is the tree `publish` turns into the new
+    version, so reading it back through the store before publish would still
+    see the *previous* version (or nothing, on a first gather)."""
+
+    def _boom() -> None:
+        raise AssertionError("record_gather must not consult the corpus store")
+
+    monkeypatch.setattr("ietf_llm.store.corpus.get_corpus_store", _boom)
+    record_gather("wg")
+    assert Path(_sentinel_path("wg")).is_file()

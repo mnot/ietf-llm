@@ -712,11 +712,34 @@ a gather (`materials.json`, and `documents.json`'s embedding-skip reader) stay o
 the workspace path: they describe the tree being built, which is not yet
 published.
 
-Only `documents.json` reads through this accessor today. The `last-gathered` and
-`seed-source` sentinels are published the same way but their readers still
-compose from `get_cache_dir()`, so on a cloud replica they are silently absent —
-costing every tool response its freshness line, and mis-firing the first-gather
-read guard (issue #223).
+`documents.json` reads through `local_corpus_dir` (a request already committed to
+materialising the corpus for a real read). The `last-gathered` / `seed-source`
+sentinels (`freshness.py`) instead read through `materialised_corpus_dir` — the
+corpus-root counterpart of `materialised_cache_dir`, same non-fetching contract:
+the version root only if it is *already* staged on this replica's scratch, None
+otherwise, never a fetch, and — via `_cached_current_version` on the cloud
+backend — never a live control-plane call either, so a cold or unreachable
+control plane cannot make a readiness probe hang or fail (R18 is "no upstream
+call", not merely "no blob download"). Freshness is read from `/health`,
+`/metrics`, and other per-corpus sweeps across the whole fleet, so a cold
+replica that hasn't touched a corpus yet just reports "not recorded", exactly
+like an absent sentinel always has; the whole resolution is wrapped
+best-effort as well, so a misconfigured or unrecognised store backend
+degrades the same way instead of raising out of a health check (issue #223).
+
+That seam-routed pair (`last_gathered` / `seed_source`) answers "what does
+*this deployment's configured backend* currently think", which is what
+`/health`, `/metrics`, and the MCP read tools want. A second, local-only
+family — `local_last_gathered` / `local_seed_source` / `local_staleness_warning`
+— instead reads the local gather workspace directly (`_sentinel_path`),
+ignoring the ambient `IETF_LLM_STORE_BACKEND` entirely. Every caller that only
+ever reads or writes the local cache — `LocalCorpusStore.gathered_at`, the
+`--list` / `--export` CLIs, and the seed-store producer/consumer
+(`seed.publish`, `seed.fetch`) — uses this family instead: on a shared
+deployment where `IETF_LLM_STORE_BACKEND=cloud` for the read/serve path, these
+callers still need "what did *this* local run just do", which the seam-routed
+readers cannot answer (they would report a different backend's state, or
+nothing at all).
 
 Under a split `IETF_LLM_INDEX_DIR`, `seed_workspace` materialises the current
 version into scratch, where its top-level *index* files (`embeddings.db` and

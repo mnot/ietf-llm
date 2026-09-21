@@ -49,6 +49,42 @@ def test_read_tools_serve_cloud_backend(
     assert "threads/2026-06-01-hello.md" in out
 
 
+def test_list_corpora_never_materialises_a_seeded_corpus(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`list_corpora`'s `_seed_marker` column reads `freshness.seed_source`
+    for every corpus in the sweep. Like `_corpus_sources` (its neighbour,
+    which deliberately uses the non-fetching `_materialised_files_dir`), it
+    must never turn a listing into a per-corpus blob download just to show a
+    'seeded <date>' tag (issue #223's read-side fix, R18's no-upstream-call
+    invariant)."""
+    root = isolated_home / "cloud"
+    store = _cloud_store(root)
+    ws = root / "ws"
+    (ws / "files" / "digests").mkdir(parents=True)
+    (ws / "files" / "digests" / "index.md").write_text("# Overview\n")
+    (ws / "seed-source").write_text(
+        '{"url": "https://seed/", "version": "v1", '
+        '"gathered": "2026-07-01T00:00:00Z", "fetched": "2026-07-02T00:00:00Z"}'
+    )
+    store.publish("tls", str(ws), version="v1")
+    scratch = root / "scratch"
+    assert not scratch.exists()  # publish uploads; it never stages locally
+
+    monkeypatch.setattr(mcp.common, "get_corpus_store", lambda: store)
+    monkeypatch.setattr("ietf_llm.store.corpus.get_corpus_store", lambda: store)
+
+    out = mcp.corpus.tool_list_corpora()
+    tls_line = next(line for line in out.splitlines() if line.startswith("tls"))
+    # Not yet staged on this replica, so the marker degrades to absent on
+    # *this* corpus's row — exactly like an unseeded corpus, not an error
+    # (the tool's trailing help text mentions "seeded" generically, so the
+    # assertion is scoped to tls's own row).
+    assert "seeded" not in tls_line
+    # The regression this guards against: no fetch happened just to answer.
+    assert not scratch.exists()
+
+
 def test_list_drafts_reads_the_published_documents_manifest(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
