@@ -385,6 +385,27 @@ def test_index_extra_files_captures_split_index(
     assert extras["embeddings.db"] == str(split / "tls" / "embeddings.db")
 
 
+def test_index_extra_files_excludes_non_index_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A split index dir is meant to hold only `INDEX_FILE_NAMES` — but if a
+    root artifact (`documents.json`, a sentinel) ever ended up there too, it
+    must not be uploaded to the version root as if it were corpus content
+    (the write-side half of the issue #224 round trip: a future re-widening
+    of this filter is what the read side's regression test can't catch)."""
+    from ietf_llm.gather import runner as gr
+
+    ws = tmp_path / "cache" / "tls"
+    ws.mkdir(parents=True)
+    split = tmp_path / "fastindex"
+    (split / "tls").mkdir(parents=True)
+    (split / "tls" / "embeddings.db").write_bytes(b"DB")
+    (split / "tls" / "documents.json").write_text("{}")  # not an index file
+    monkeypatch.setattr(gr, "get_index_dir", lambda: str(split))
+    extras = gr._index_extra_files("tls", str(ws))
+    assert set(extras) == {"embeddings.db"}
+
+
 # --- scratch reaper: bound per-replica materialised versions ---
 
 

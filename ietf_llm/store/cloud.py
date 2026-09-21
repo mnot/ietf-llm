@@ -33,11 +33,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .. import freshness
-from ..paths import get_index_dir
+from ..paths import INDEX_FILE_NAMES, get_index_dir
 from .blobs import BlobStore, parallel_each
 from .control import KvControlPlane
 from .corpus import (
-    INDEX_FILE_NAMES,
     CorpusStore,
     VersionVanished,
     pinned_version,

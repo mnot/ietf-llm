@@ -724,10 +724,16 @@ its SQLite sidecars, plus `topics.json`) out to the index dir before swapping
 the rest into the gather workspace. At the staged version root those files are
 otherwise indistinguishable from the root artifacts above (`documents.json`,
 `materials.json`, the sentinels) — a version is the whole corpus root, not just
-`files/` plus the index. `CorpusStore.INDEX_FILE_NAMES` names the index-file set
-once and is shared with the write side, `gather.runner._index_extra_files` (what
-to upload from a split index dir into the version root), so the two halves of
-the round trip cannot drift apart (issue #224).
+`files/` plus the index. `paths.INDEX_FILE_NAMES` names the index-file set once
+(a bare module constant, not a `CorpusStore` method — filenames are `paths.py`'s
+job, per that module's own docstring) and is shared by every consumer of this
+split: the write side, `gather.runner._index_extra_files` (what to upload from a
+split index dir into the version root); this read side, `seed_workspace`; and
+the public seed store's identical split, `seed.format`'s bundle assembly and
+`seed.fetch._install_tree`'s install-side relocation — so none of them can draw
+this line differently and drift apart again (issue #224; a second, disconnected
+copy of the list in `seed.format` had already done exactly that, missing the
+SQLite sidecars).
 
 Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config/store.py`,
 `get_config_store()`), chosen by the same `IETF_LLM_STORE_BACKEND` selector but

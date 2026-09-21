@@ -3,10 +3,13 @@ integrity hashing, and safe extraction shared by the publisher
 (`scripts/publish_seeds.py`) and the consumer fetch path (`seed.fetch`).
 
 Deliberately dependency-light — **stdlib only** (`sqlite3`, `tarfile`,
-`hashlib`, `json`), no network, no torch, no gather imports — so both the
-producer script and the consumer can import it cheaply and it stays trivially
-testable. Callers pass in resolved paths and values; this module owns the format,
-not where files live (that is `paths.py`'s job). See `docs/seed-store.md`.
+`hashlib`, `json`) plus `paths.INDEX_FILE_NAMES` (itself stdlib-only: no
+network, no torch, no gather imports) — so both the producer script and the
+consumer can import it cheaply and it stays trivially testable. Callers pass
+in resolved paths and values; this module owns the format, not where files
+live (that is `paths.py`'s job — `INDEX_FILE_NAMES` is exactly that: which
+filenames are index machinery, shared with the cloud store's identical
+split, issue #224). See `docs/seed-store.md`.
 
 Layout on the static host::
 
@@ -31,6 +34,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..paths import INDEX_FILE_NAMES
+
 #: Bumped only on an incompatible change to the JSON schema below. A consumer
 #: refuses an index whose `format` it does not understand.
 FORMAT_VERSION = 1
@@ -40,8 +45,11 @@ INDEX_NAME = "index.json"
 
 #: The index files that live in `IETF_LLM_INDEX_DIR/<corpus>/` rather than the
 #: corpus cache dir, and so are added to a bundle explicitly (top-level arcnames)
-#: rather than picked up by the corpus-dir walk.
-INDEX_FILES: Tuple[str, ...] = ("embeddings.db", "topics.json")
+#: rather than picked up by the corpus-dir walk. The same set the cloud store's
+#: split-index round trip uses (`paths.INDEX_FILE_NAMES`), so the seed-store
+#: bundle format and that round trip cannot draw this line differently
+#: (issue #224) — `paths.py` is where the codebase already says "files live".
+INDEX_FILES = INDEX_FILE_NAMES
 
 #: Streaming read size for hashing / copying.
 _CHUNK = 1 << 20

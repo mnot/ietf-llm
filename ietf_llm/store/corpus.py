@@ -40,22 +40,6 @@ from ..paths import cached_wg_names, get_cache_dir, get_index_dir
 #: only has to be non-None to mean "this corpus is present".
 LOCAL_VERSION = "local"
 
-#: Filenames the split-index layout (`IETF_LLM_INDEX_DIR` off the cache)
-#: treats as index machinery rather than corpus content: the embeddings DB,
-#: its SQLite WAL/SHM sidecars, and the topic-routing sidecar (see
-#: `embeddings/storage.py` and `embeddings/topics.py` for where each is
-#: written). Named once here and shared by both halves of the split-index
-#: round trip — `gather.runner._index_extra_files` (write: what to upload
-#: from a split index dir into the version root) and
-#: `CloudCorpusStore.seed_workspace` (read: what to move back out of a
-#: freshly staged version into the index dir) — so they cannot drift apart
-#: again (issue #224): a version root also carries `documents.json`,
-#: `materials.json` and the freshness sentinels, which are indistinguishable
-#: from index files once staged unless both sides name the same set.
-INDEX_FILE_NAMES = frozenset(
-    {"embeddings.db", "embeddings.db-wal", "embeddings.db-shm", "topics.json"}
-)
-
 
 class VersionVanished(FileNotFoundError):
     """The pinned version of a corpus was reaped out from under an in-flight

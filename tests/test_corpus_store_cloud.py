@@ -310,11 +310,12 @@ def test_seed_workspace_split_index_keeps_root_machinery_in_workspace(
     """A version's root carries more than `files/` and the index: the gather
     workspace *is* the corpus root, so `documents.json`, `materials.json` and
     the freshness sentinels ride along too (docs/architecture.md, "The storage
-    seam"). Under a split index dir those used to be indistinguishable from
-    `embeddings.db` at the staged version root and were relocated right along
-    with it (issue #224) — losing `last-gathered` for the whole gather (mis-
-    firing the first-gather read guard) and `materials.json` (forcing a full
-    re-download of every meeting material)."""
+    seam"). Under a split index dir, at the staged version root those are
+    indistinguishable from `embeddings.db` unless the relocation filters to
+    the named index-file set (issue #224) — without the filter they get
+    relocated right along with it, losing `last-gathered` for the whole
+    gather (mis-firing the first-gather read guard) and `materials.json`
+    (forcing a full re-download of every meeting material)."""
     store, _ = _store(tmp_path)
     ws = tmp_path / "src"
     (ws / "files" / "drafts").mkdir(parents=True)
