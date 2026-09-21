@@ -589,15 +589,24 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                     data = handle.read()
             except FileNotFoundError:
                 # Only the specific sidecar names in _VANISH_TOLERANT_EXTRA_FILES
-                # are tolerated — never embeddings.db or topics.json themselves,
+                # are tolerated, and only when `rel` is a genuine SQLite sidecar
+                # of a real embeddings.db in this same version (a sibling check,
+                # not just any file anywhere that happens to share the
+                # basename) — never embeddings.db or topics.json themselves,
                 # whose disappearance means genuine corruption and must still
                 # raise (see the constant's docstring). Gated on the basename
-                # alone, not on whether `rel` came from extra_files (the split
-                # layout) or the workspace walk (the default layout): the same
-                # SQLite WAL/SHM checkpoint race is equally benign either way,
-                # so tolerating it only for one layout left the more common
-                # default layout failing publishes on nothing actually wrong.
-                if os.path.basename(rel) in _VANISH_TOLERANT_EXTRA_FILES:
+                # plus the sibling check, not on whether `rel` came from
+                # extra_files (the split layout) or the workspace walk (the
+                # default layout): the same SQLite WAL/SHM checkpoint race is
+                # equally benign either way, so tolerating it only for one
+                # layout left the more common default layout failing publishes
+                # on nothing actually wrong.
+                rel_dir, _, _ = rel.rpartition("/")
+                sibling_db = f"{rel_dir}/embeddings.db" if rel_dir else "embeddings.db"
+                if (
+                    os.path.basename(rel) in _VANISH_TOLERANT_EXTRA_FILES
+                    and sibling_db in staged
+                ):
                     vanished.add(rel)
                     return
                 raise

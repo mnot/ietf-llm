@@ -62,6 +62,32 @@ def test_stage_split_dir_with_no_live_dir_just_moves_new_files(tmp_path: Path) -
     assert (Path(staged) / "embeddings.db").read_text() == "new-db"
 
 
+def test_stage_split_dir_cleans_up_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mid-call failure means stage_split_dir never returns, so a caller
+    # (which only learns the staged path from the return value) has no
+    # reference to clean it up -- the function must clean up after itself,
+    # rather than leaking a scratch dir neither side can find.
+    live_dir = tmp_path / "index"
+    live_dir.mkdir()
+    (live_dir / "topics.json").write_text("old-topics")
+    source = tmp_path / "fetched"
+    source.mkdir()
+    (source / "embeddings.db").write_text("new-db")
+
+    def flaky_copy2(*_a: object, **_k: object) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr("ietf_llm.atomicio.shutil.copy2", flaky_copy2)
+    with pytest.raises(OSError):
+        stage_split_dir(str(live_dir), "seed", str(source), {"embeddings.db"})
+
+    # No leaked ".index.seed.<hex>" scratch sibling survives the failure.
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".index.seed.")]
+    assert leftovers == []
+
+
 def test_swap_dir_replaces_existing_dest(tmp_path: Path) -> None:
     dest = tmp_path / "corpus"
     dest.mkdir()

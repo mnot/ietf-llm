@@ -353,8 +353,21 @@ def test_seed_workspace_split_index_no_op_when_version_carries_no_index_files(
     needs no index-dir swap at all -- staging and swapping index_dir for an
     unchanged copy of itself would be pure waste, and a new rename the old
     (pre-split) code never had to make, so a failure there could now roll
-    back a seed that used to have nothing to roll back. index_dir must come
-    out byte-for-byte untouched, not merely equal."""
+    back a seed that used to have nothing to roll back.
+
+    Content-equality alone doesn't distinguish "never touched" from "staged
+    and swapped back to an equivalent copy", so this spies on
+    `stage_split_dir` directly and asserts it is never called -- the actual
+    behavior this test exists to lock in."""
+    from ietf_llm.store import cloud as cloud_mod
+
+    calls = []
+    real_stage_split_dir = cloud_mod.stage_split_dir
+    monkeypatch.setattr(
+        cloud_mod, "stage_split_dir",
+        lambda *a, **k: calls.append(1) or real_stage_split_dir(*a, **k),
+    )
+
     store, _ = _store(tmp_path)
     ws = tmp_path / "src"
     (ws / "files" / "drafts").mkdir(parents=True)
@@ -369,6 +382,7 @@ def test_seed_workspace_split_index_no_op_when_version_carries_no_index_files(
     dest = tmp_path / "cache" / "tls"
     assert store.seed_workspace("tls", str(dest)) == "v1"
 
+    assert not calls, "stage_split_dir must not run when there's nothing to relocate"
     assert (idx_dir / "topics.json").read_text() == "{}"
     # No scratch/backup sibling was ever created for index_dir.
     assert sorted(p.name for p in idx_dir.parent.iterdir()) == ["tls"]

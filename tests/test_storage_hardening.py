@@ -461,6 +461,33 @@ def test_publish_still_raises_when_real_content_vanishes(
         store.publish("tls", str(ws), version="v1")
 
 
+def test_publish_still_raises_for_a_namesake_with_no_sibling_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The WAL/SHM vanish-tolerance is scoped to a genuine SQLite sidecar of
+    a real embeddings.db in this same version (a sibling check), not any
+    file anywhere that happens to share one of those two basenames -- a real
+    gathered file that coincidentally shares the name must still raise."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    # A file named exactly like the tolerated sidecar, but with no
+    # embeddings.db next to it -- not a real SQLite artifact.
+    (ws / "files" / "attachments").mkdir(parents=True)
+    doomed = ws / "files" / "attachments" / "embeddings.db-wal"
+    doomed.write_text("not actually sqlite")
+
+    real_open = open
+
+    def _flaky_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == str(doomed):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.open", _flaky_open, raising=False)
+    with pytest.raises(FileNotFoundError):
+        store.publish("tls", str(ws), version="v1")
+
+
 def test_index_extra_files_empty_when_inside_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

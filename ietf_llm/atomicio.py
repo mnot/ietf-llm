@@ -124,21 +124,31 @@ def stage_split_dir(live_dir: str, tag: str, source: str, new_names: "Set[str]")
     — two independent call sites for the identical split-index round trip
     (issue #224) — so the staging procedure itself has one implementation to
     keep correct rather than two that can silently drift apart.
+
+    Cleans up `staged` itself on any failure, rather than leaving the
+    caller to notice: a caller only learns `staged`'s path from this
+    function's return value, so a mid-call failure (this function never
+    returning) would otherwise leave a scratch dir neither side has a
+    reference to clean up.
     """
     staged = scratch_sibling_name(live_dir, tag)
     os.makedirs(staged, exist_ok=True)
-    if os.path.isdir(live_dir):
-        for name in os.listdir(live_dir):
-            if name in new_names:
-                continue
-            src = os.path.join(live_dir, name)
-            dst = os.path.join(staged, name)
-            if os.path.isfile(src):
-                shutil.copy2(src, dst)
-            elif os.path.isdir(src):
-                shutil.copytree(src, dst)
-    for name in new_names:
-        shutil.move(os.path.join(source, name), os.path.join(staged, name))
+    try:
+        if os.path.isdir(live_dir):
+            for name in os.listdir(live_dir):
+                if name in new_names:
+                    continue
+                src = os.path.join(live_dir, name)
+                dst = os.path.join(staged, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                elif os.path.isdir(src):
+                    shutil.copytree(src, dst)
+        for name in new_names:
+            shutil.move(os.path.join(source, name), os.path.join(staged, name))
+    except Exception:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
     return staged
 
 

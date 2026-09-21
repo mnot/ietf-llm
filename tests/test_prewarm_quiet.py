@@ -207,16 +207,23 @@ def test_prewarm_scan_skips_leaked_scratch_dirs(
 
     The scan itself runs synchronously inside `_prewarm_embedding_model_async`
     (it's the *loading* that's backgrounded); `_prewarm_one` is patched to
-    record its argument instead of actually loading a model, and the spawned
-    daemon thread is joined by name so the assertion runs after it finishes."""
+    record its argument and signal an Event instead of actually loading a
+    model, so the assertion waits on that signal rather than trying to
+    locate and join the spawned daemon thread after the fact -- a thread
+    that finishes as fast as this mock does can already be gone from
+    `threading.enumerate()` by the time a caller checks for it."""
     root = get_index_dir()
     _write_model_db(Path(root) / ".tls.seed.deadbeef" / "embeddings.db", "leaked-model")
     _write_model_db(Path(root) / "tls" / "embeddings.db", "real-model")
 
     calls: List[str] = []
-    monkeypatch.setattr(mcp_server, "_prewarm_one", calls.append)
+    done = threading.Event()
+
+    def _record(model: str) -> None:
+        calls.append(model)
+        done.set()
+
+    monkeypatch.setattr(mcp_server, "_prewarm_one", _record)
     mcp_server._prewarm_embedding_model_async()
-    for thread in threading.enumerate():
-        if thread.name == "ietf-llm-prewarm":
-            thread.join(timeout=5)
+    assert done.wait(timeout=5), "prewarm worker did not run"
     assert calls == ["real-model"]
