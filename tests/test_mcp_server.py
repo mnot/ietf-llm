@@ -600,15 +600,26 @@ def test_first_gather_guard_runs_inside_the_version_pin(
     """`_requires_corpus` resolves and pins a corpus's current version once,
     so every read in the call sees one consistent version (G-1). Its own
     call to `_first_gather_guard` must run inside that same pin -- not
-    before it, which would let the guard's `last_gathered` resolve a second,
+    before it, which would let the guard's freshness check resolve a second,
     independently-timed version (only observable on the cloud backend, when
     a publish lands in the gap; see issue #223 review). Verified here by
-    asserting the pin is already active by the time the guard runs."""
+    asserting the pin is already active by the time the guard runs.
+
+    `local_inflight` is truthy so `_first_gather_guard`'s body actually
+    reaches its `store.gathered_at` call (a falsy status short-circuits the
+    `or` before it) -- otherwise this test would pass without exercising the
+    read it claims to guard."""
     from ietf_llm.gather import runner as gather_runner
+    from ietf_llm.freshness import record_gather
     from ietf_llm.store.corpus import pinned_version
 
     write_cache_file(isolated_home, "wg", "digests/index.md", "# x\n")
-    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+    record_gather("wg")  # a completed prior gather, so the guard doesn't refuse
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 1,
+                    "stage_total": 19},
+    )
 
     seen: dict = {}
     real_guard = mcp.common._first_gather_guard
@@ -627,6 +638,35 @@ def test_first_gather_guard_runs_inside_the_version_pin(
     assert _tool("wg") == "ok"
     assert seen["pinned_during_guard"] is not None
     assert seen["pinned_during_guard"] == seen["pinned_during_call"]
+
+
+def test_first_gather_guard_uses_gathered_at_not_local_staging(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cold replica reading an already-published corpus mid-re-gather must
+    not report "first gather in progress" just because it hasn't staged that
+    version onto its own local scratch yet. On the cloud backend,
+    `CorpusStore.gathered_at` answers from the version token (no staging
+    required); `freshness.last_gathered` instead answers "is a version
+    already staged here", which is a materially different -- and, for this
+    guard, wrong -- question. `_first_gather_guard` must ask the former."""
+    from ietf_llm.gather import runner as gather_runner
+    import datetime as _datetime
+
+    class _FakeStore:
+        """Mimics CloudCorpusStore.gathered_at: answers from the version
+        token, never requiring local staging."""
+
+        def gathered_at(self, corpus: str) -> _datetime.datetime:
+            return _datetime.datetime(2026, 1, 1, tzinfo=_datetime.timezone.utc)
+
+    monkeypatch.setattr(mcp.common, "get_corpus_store", lambda: _FakeStore())
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"corpus": wg, "state": "running", "stage_index": 1,
+                    "stage_total": 19},
+    )
+    assert mcp.common._first_gather_guard("wg") is None
 
 
 def test_timeout_note_names_running_gather(monkeypatch: pytest.MonkeyPatch) -> None:

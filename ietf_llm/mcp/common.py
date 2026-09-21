@@ -22,7 +22,6 @@ from ..freshness import (
     freshness_line,
     gather_enabled,
     gather_suggestion,
-    last_gathered,
 )
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path
@@ -277,14 +276,23 @@ def _first_gather_guard(wg: str) -> Optional[str]:
     A first gather has no previously-published snapshot to fall back on, so the
     cache is being built in place and any read would serve half-built content
     that reads like a real answer. Refuse, naming the stage, rather than return
-    it. A re-gather (a completed version exists — `last_gathered` is set) is not
-    guarded here: it keeps serving the previous complete snapshot with the
-    in-flight caveat from `_inflight_refresh_note`."""
+    it. A re-gather (a completed version exists — `store.gathered_at` is set) is
+    not guarded here: it keeps serving the previous complete snapshot with the
+    in-flight caveat from `_inflight_refresh_note`.
+
+    Uses `CorpusStore.gathered_at`, not `freshness.last_gathered`: the latter
+    answers "is a version already staged on *this* replica's scratch", which a
+    cold replica reading an already-published corpus mid-re-gather would fail
+    even though a complete version genuinely exists — wrongly reporting a first
+    gather in progress. `gathered_at` answers "was the current version actually
+    gathered" without requiring local staging (the cloud backend derives it from
+    the version token itself, cheaply, since `resolve_current` was just warmed
+    by this same request in `_requires_corpus`)."""
     # pylint: disable-next=import-outside-toplevel
     from ..gather import runner as gather_runner
 
     status = gather_runner.local_inflight(wg)
-    if not status or last_gathered(wg) is not None:
+    if not status or get_corpus_store().gathered_at(wg) is not None:
         return None
     phrase = _stage_phrase(status) or "starting"
     total = status.get("stage_total")

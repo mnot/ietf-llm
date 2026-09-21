@@ -460,7 +460,11 @@ class LocalCorpusStore(CorpusStore):
         freshness.record_access(corpus)
 
     def last_accessed(self, corpus: str) -> Optional[datetime]:
-        return freshness.last_accessed(corpus)
+        # local_last_accessed, not last_accessed -- same reasoning as
+        # gathered_at below: this instance IS the local backend, so it must
+        # read straight off local disk rather than bounce through
+        # get_corpus_store(), which could answer a different store's state.
+        return freshness.local_last_accessed(corpus)
 
     def gathered_at(self, corpus: str) -> Optional[datetime]:
         # local_last_gathered, not last_gathered: this method is already the

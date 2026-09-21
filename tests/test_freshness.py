@@ -404,6 +404,20 @@ def test_local_last_gathered_ignores_the_store_seam(
     assert freshness.local_last_gathered("tls") == seam
 
 
+def test_local_last_accessed_ignores_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freshness.record_access("tls")
+    seam = freshness.local_last_accessed("tls")
+    assert seam is not None
+
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert freshness.local_last_accessed("tls") == seam
+
+
 def test_record_gather_writes_the_workspace_not_the_store_seam(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

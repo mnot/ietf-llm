@@ -32,18 +32,18 @@ materialised `wg` reports "not recorded" rather than fetching it just to
 answer a UX hint — and the whole resolution is wrapped best-effort, so a
 misconfigured or unreachable store degrades the same way, never raises.
 
-A second family of readers — `local_last_gathered` / `local_seed_source` /
-`local_staleness_warning` — reads the *local* gather workspace directly
-(`_sentinel_path`), bypassing the seam entirely regardless of the ambient
-`IETF_LLM_STORE_BACKEND`. `last_gathered` silently changed from "always
-local" to "seam-routed" when the split above was introduced (issue #223),
-which was wrong for every caller that only ever reads/writes the local
-cache and must not care what backend a shared deployment elsewhere happens
-to run: `LocalCorpusStore.gathered_at`, the local-only CLI tools
-(`cli.list`, `cli.export`), and the seed-store producer/consumer
-(`seed.publish`, `seed.fetch`) all use the `local_*` readers instead, so
-"this caller wants local truth" is a declared, discoverable choice rather
-than a private, easily-missed workaround.
+A second family of readers — `local_last_gathered` / `local_last_accessed` /
+`local_seed_source` / `local_staleness_warning` — reads the *local* gather
+workspace directly (`_sentinel_path`), bypassing the seam entirely
+regardless of the ambient `IETF_LLM_STORE_BACKEND`. Any caller that only
+ever reads or writes the local cache must not care what backend a shared
+deployment elsewhere happens to run: `LocalCorpusStore`'s own accessors, the
+local-only CLI tools (`cli.list`, `cli.export`), the local gather-entry
+debounce/seed checks (`debounce_reason`, `gather.sequencer._maybe_seed`),
+and the seed-store producer/consumer (`seed.publish`, `seed.fetch`) all use
+the `local_*` readers instead of the seam-routed ones, so "this caller wants
+local truth" is a declared, discoverable choice at each call site rather
+than a private, easily-missed one.
 
 Writers (`record_gather`, `record_seed_source`) always target the local
 gather workspace (`_sentinel_path`), which is what `publish` turns into
@@ -328,9 +328,19 @@ def record_access(wg: str) -> None:
 
 
 def last_accessed(wg: str) -> Optional[datetime]:
-    """The WG's last read-path access time, or None if unrecorded /
-    unreadable."""
+    """The WG's last read-path access time for its current version, resolved
+    through the `CorpusStore` seam, or None if unrecorded / unreadable / the
+    version isn't staged on this replica. See the module docstring; callers
+    that must ignore the ambient store backend want `local_last_accessed`
+    instead."""
     return _parse_sentinel_datetime(_read_sentinel_text(wg, _ACCESSED_SENTINEL))
+
+
+def local_last_accessed(wg: str) -> Optional[datetime]:
+    """The WG's last read-path access time, read straight off the local
+    gather workspace regardless of the ambient `IETF_LLM_STORE_BACKEND`. See
+    the module docstring for which callers want this over `last_accessed`."""
+    return _parse_sentinel_datetime(_local_sentinel_text(wg, _ACCESSED_SENTINEL))
 
 
 #: Provenance sentinel written when a corpus is (re-)seeded from the seed store
