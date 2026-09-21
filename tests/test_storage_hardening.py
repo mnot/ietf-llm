@@ -335,6 +335,46 @@ def test_resolve_cache_scoped_per_control_plane(tmp_path: Path) -> None:
     assert count_a["n"] == 1 and count_b["n"] == 1
 
 
+# --- materialised_cache_dir / materialised_corpus_dir never make a live call ---
+
+
+def test_materialised_dirs_find_warm_cache_without_a_live_call(tmp_path: Path) -> None:
+    """Once something has resolved the current version (warming the
+    resolve-TTL cache -- the production default, ttl=10s, per
+    `service_config.resolve_ttl`), `materialised_cache_dir` /
+    `materialised_corpus_dir` must find it from that cache alone, never a
+    fresh control-plane call — their whole point is a per-corpus sweep
+    (`/health`, `/metrics`, `list_corpora`) that makes zero upstream calls
+    (R18), not just avoids a blob download (issue #223 follow-up)."""
+    _clear_resolve_cache()
+    store, counter = _counting_cloud(tmp_path)
+    _publish_version(store, tmp_path, "cloud")
+    # A real read resolves + materialises, warming the cache.
+    assert store.local_cache_dir("tls") is not None
+    counter["n"] = 0
+
+    root = store.materialised_corpus_dir("tls")
+    assert root is not None
+    files = store.materialised_cache_dir("tls")
+    assert files is not None
+    assert counter["n"] == 0  # zero live control-plane calls
+
+
+def test_materialised_dirs_degrade_to_none_without_cache_or_pin(
+    tmp_path: Path,
+) -> None:
+    """With resolve-caching disabled (`IETF_LLM_RESOLVE_TTL=0`, a supported
+    opt-out) and nothing pinned, `materialised_corpus_dir` has no way to
+    learn the current version without a live call -- and, per its
+    non-fetching contract, must not make one. It degrades to None (like an
+    absent sentinel always has) rather than resolving live; this is the
+    documented trade-off of that opt-out, not a bug."""
+    store, _ = _counting_cloud(tmp_path, ttl=0.0)
+    _publish_version(store, tmp_path, "cloud")
+    assert store.local_cache_dir("tls") is not None  # genuinely staged...
+    assert store.materialised_corpus_dir("tls") is None  # ...but unknowable
+
+
 # --- G-2 residual: a split-out index dir is still captured into the version ---
 
 

@@ -225,6 +225,32 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 time.monotonic() + self._resolve_ttl,
             )
 
+    def _cached_current_version(self, corpus: str) -> Optional[str]:
+        """`corpus`'s pinned or cached current version, *without ever making a
+        live control-plane call* — unlike `resolve_current`, a cache miss (a
+        cold cache, an expired TTL, or resolve-caching disabled entirely)
+        answers None rather than resolving. "Unknown without asking", not "no
+        current version": a real read elsewhere in the same TTL window keeps
+        this warm.
+
+        For `materialised_cache_dir` / `materialised_corpus_dir`, whose whole
+        point is to answer a per-corpus sweep (`/health`, `/metrics`,
+        `list_corpora`) with zero upstream calls (R18) — resolving a version
+        live on a cache miss would turn that guarantee into "no *blob*
+        download", which the sweep's own docstrings don't promise and a slow
+        or unreachable control plane can still turn into per-corpus latency
+        or failures on an endpoint that must never flap for that reason."""
+        pinned = pinned_version(corpus)
+        if pinned is not None:
+            return pinned
+        if self._resolve_ttl <= 0:
+            return None
+        with _RESOLVE_LOCK:
+            entry = _RESOLVE_CACHE.get((self._cache_key, corpus))
+        if entry is not None and entry[1] > time.monotonic():
+            return entry[0]
+        return None
+
     def _staged_root(self, corpus: str, version: str) -> str:
         """Stage `version` on this replica's scratch and return its root dir.
         Versions are immutable, so a materialised copy is reusable — only fetch
@@ -287,16 +313,34 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         return staged[1] if staged is not None else None
 
     def materialised_cache_dir(self, corpus: str) -> Optional[str]:
-        # Read-only, non-fetching: return the version's files dir only if it is
-        # already staged on this replica's scratch. Cheap discovery paths (the
-        # `list_corpora` classification) use this so they never download every
-        # corpus's blobs just to read group.md — they degrade to config-only on
-        # a None. (Unlike `local_cache_dir`, which materialises on a miss.)
-        version = pinned_version(corpus) or self.resolve_current(corpus)
+        # Read-only, non-fetching, and never a live control-plane call either
+        # (_cached_current_version, not resolve_current): return the version's
+        # files dir only if it is already staged on this replica's scratch.
+        # Cheap discovery paths (the `list_corpora` classification) use this
+        # so they never download every corpus's blobs -- or block on the
+        # control plane -- just to read group.md; they degrade to
+        # config-only on a None. (Unlike `local_cache_dir`, which
+        # materialises on a miss.)
+        version = self._cached_current_version(corpus)
         if version is None:
             return None
         files_dir = os.path.join(self._scratch, corpus, version, "files")
         return files_dir if os.path.isdir(files_dir) else None
+
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        # The corpus-root counterpart of materialised_cache_dir, same
+        # non-fetching, no-live-call contract: the version root only if
+        # already staged on this replica's scratch, so freshness.py's
+        # sentinel readers (used from /health, /metrics, and other
+        # per-corpus sweeps) can never turn into a blob download *or* a
+        # control-plane round trip (R18: no upstream call, not "no blob
+        # download"). Unlike materialised_cache_dir it does not require
+        # `files/`, matching local_corpus_dir.
+        version = self._cached_current_version(corpus)
+        if version is None:
+            return None
+        root = os.path.join(self._scratch, corpus, version)
+        return root if os.path.isdir(root) else None
 
     def local_index_dir(self, corpus: str) -> Optional[str]:
         # The version's `embeddings.db` sits directly under the version root, so

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 from .. import corpus
-from ..freshness import last_gathered
+from ..freshness import local_last_gathered
 from ..paths import cached_wg_names
 from ..store.corpus import get_corpus_store
 
@@ -71,7 +71,7 @@ def print_cached_wgs() -> int:
     rows = []
     for wg in wgs:
         kind, status = corpus.kind_status(wg)
-        when = last_gathered(wg)
+        when = local_last_gathered(wg)
         date_str = when.strftime("%Y-%m-%d") if when is not None else "unknown"
         rows.append(
             (wg, kind, corpus.status_cell(kind, status), date_str, corpus.describe(wg))

@@ -74,6 +74,34 @@ def test_publish_creates_index_manifest_bundle(isolated_home, tmp_path):
     assert idx.compat.embedding_model.endswith("bge-small-en-v1.5")
 
 
+def test_write_member_reads_gathered_via_local_last_gathered(
+    isolated_home, tmp_path, monkeypatch
+):
+    """`_write_member` derives its manifest's `gathered` field from
+    `freshness.local_last_gathered`, not the seam-routed `last_gathered`
+    (issue #223) -- this script only ever bundles from the local cache
+    (`_corpus_paths` composes straight from `get_cache_dir()`), regardless
+    of what backend the ambient `IETF_LLM_STORE_BACKEND` selects. See
+    `test_local_last_gathered_ignores_the_store_seam` in test_freshness.py
+    for that reader in isolation; this checks the call site actually uses
+    it."""
+    _gathered("httpbis")
+    real = freshness.local_last_gathered("httpbis")
+    assert real is not None
+
+    called = {}
+
+    def _fake_local_last_gathered(corpus):
+        called["corpus"] = corpus
+        return real
+
+    monkeypatch.setattr(freshness, "local_last_gathered", _fake_local_last_gathered)
+    store = str(tmp_path / "store")
+    report = publish.publish_store(store, add=["httpbis"], no_gather=True, gather=_no_gather)
+    assert report.published and report.published[0][0] == "httpbis"
+    assert called["corpus"] == "httpbis"
+
+
 def test_uptodate_skip_then_force(isolated_home, tmp_path):
     store = str(tmp_path / "store")
     _gathered("httpbis")
