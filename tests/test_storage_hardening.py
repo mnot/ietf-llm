@@ -413,7 +413,7 @@ def test_publish_still_raises_when_a_workspace_file_vanishes(
             raise FileNotFoundError(path)
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr("builtins.open", _flaky_open)
+    monkeypatch.setattr("ietf_llm.store.cloud.open", _flaky_open, raising=False)
     with pytest.raises(FileNotFoundError):
         store.publish("tls", str(ws), version="v1")
 
@@ -510,3 +510,25 @@ def test_reaper_skips_tmp_staging_dirs(tmp_path: Path) -> None:
     store._reap_scratch("tls", "v1")  # current is v1
     # An in-progress / crashed staging dir is never touched by the reaper.
     assert (tmp_path / "scratch" / "tls" / "v2.tmp.deadbeef").is_dir()
+
+
+def test_any_indexed_wg_skips_leaked_scratch_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leaked `seed_workspace`/`_install_tree` scratch dir under the index
+    root (`atomicio.scratch_sibling_name`, dot-prefixed) can itself contain a
+    staged `embeddings.db` -- the readiness probe's index picker must not
+    treat it as a real corpus (issue #224 follow-up)."""
+    from ietf_llm.embeddings.storage import any_indexed_wg
+
+    index_root = tmp_path / "index"
+    (index_root / ".tls.seed.deadbeef").mkdir(parents=True)
+    (index_root / ".tls.seed.deadbeef" / "embeddings.db").write_bytes(b"LEAKED")
+    monkeypatch.setattr(
+        "ietf_llm.embeddings.storage.get_index_dir", lambda: str(index_root)
+    )
+    assert any_indexed_wg() is None  # the leaked scratch dir must not count
+
+    (index_root / "tls").mkdir(parents=True)
+    (index_root / "tls" / "embeddings.db").write_bytes(b"REAL")
+    assert any_indexed_wg() == "tls"

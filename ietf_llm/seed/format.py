@@ -19,8 +19,9 @@ Layout on the static host::
 
 A bundle's arcnames are version-relative paths a consumer installs into
 ``<cache>/<corpus>/``: ``files/…`` (minus ``files/raw/``), the incremental-gather
-manifests, and the index files (``embeddings.db``, ``topics.json``) at the top
-level even when ``IETF_LLM_INDEX_DIR`` splits them onto a separate volume.
+manifests, and the index files (``INDEX_FILES`` — ``embeddings.db`` and its
+SQLite WAL/SHM sidecars, plus ``topics.json``) at the top level even when
+``IETF_LLM_INDEX_DIR`` splits them onto a separate volume.
 """
 
 from __future__ import annotations
@@ -384,8 +385,8 @@ def iter_bundle_members(corpus_dir: str, index_dir: str) -> List[Tuple[str, str]
     Excludes the `files/raw/` subtree (not indexed; grep/NotebookLM only) and
     producer-local sidecars (`gather-metrics.json`, the `last-accessed` /
     `.live-cache.json` read-path state, any `.building` scratch DB). The index
-    files (`embeddings.db`, `topics.json`) are added from `index_dir` at the top
-    level, so a split `IETF_LLM_INDEX_DIR` still lands them in the bundle."""
+    files (`INDEX_FILES`) are added from `index_dir` at the top level, so a
+    split `IETF_LLM_INDEX_DIR` still lands them in the bundle."""
     members: Dict[str, str] = {}
     for root, _dirs, names in os.walk(corpus_dir):
         for name in names:

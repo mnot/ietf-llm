@@ -371,16 +371,19 @@ def test_seed_workspace_replaces_stale_content(
     assert not (dest / "files" / "drafts" / "old.txt").exists()
 
 
-def test_seed_workspace_rolls_back_workspace_when_index_swap_fails(
+def test_seed_workspace_rolls_back_index_when_workspace_swap_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the index-dir swap fails *after* the workspace swap already landed,
-    the workspace swap must be undone too. Pairing fresh content with a stale
-    (or, before this fix, briefly missing) index is worse than the seed
-    failing outright: the gather that follows would build its incremental
-    embed-skip decision from an index that doesn't describe the content it is
-    judging (issue #224 follow-up)."""
-    from ietf_llm.store import cloud as cloud_mod
+    """The index swaps in first, then the workspace (matching the exposure
+    profile this method had before the index/root split existed: a reader
+    could see a stale workspace paired with an already-updated index, never
+    the reverse). If the *later* swap fails after the first one already
+    landed, the first must be undone too — pairing v2's index with v1's
+    content (or the reverse) is worse than the seed failing outright, since
+    the gather that follows would build its incremental embed-skip decision
+    from an index that doesn't describe the content it is judging (issue
+    #224 follow-up)."""
+    from ietf_llm import atomicio
 
     store, _ = _store(tmp_path)
     monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
@@ -396,20 +399,23 @@ def test_seed_workspace_rolls_back_workspace_when_index_swap_fails(
     store.publish(
         "tls", _versioned_workspace(tmp_path, "w2", "v2draft", "IDX2"), "v2"
     )
-    real_swap_dir = cloud_mod._swap_dir
-    index_dir = str(tmp_path / "index" / "tls")
+    real_swap_dir = atomicio.swap_dir
+    workspace_dir = str(dest)
 
     def _flaky_swap_dir(dest_path: str, new_tree: str) -> "Optional[str]":
-        if dest_path == index_dir:
-            raise OSError("simulated index swap failure")
+        if dest_path == workspace_dir:
+            raise OSError("simulated workspace swap failure")
         return real_swap_dir(dest_path, new_tree)
 
-    monkeypatch.setattr(cloud_mod, "_swap_dir", _flaky_swap_dir)
+    # swap_dirs (called by seed_workspace) resolves `swap_dir` as a plain
+    # global in atomicio's own namespace, so patching it there is what
+    # actually affects the call, regardless of how store.cloud imported it.
+    monkeypatch.setattr(atomicio, "swap_dir", _flaky_swap_dir)
     with pytest.raises(OSError):
         store.seed_workspace("tls", str(dest))
 
-    # Rolled back to v1 on both sides — never v2 content paired with v1's
-    # index (or the reverse).
+    # Rolled back to v1 on both sides — never v2's index paired with v1's
+    # content (or the reverse).
     assert (dest / "files" / "drafts" / "d.txt").read_text() == prior_draft
     assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == prior_db
 

@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .. import freshness
+from ..atomicio import scratch_sibling_name, swap_dirs
 from ..paths import INDEX_FILE_NAMES, get_index_dir
 from .blobs import BlobStore, parallel_each
 from .control import KvControlPlane
@@ -47,6 +48,14 @@ from .kv import KvStore
 #: Per-version manifest, stored as a blob inside the version prefix and stripped
 #: from the materialised tree so it never re-enters a re-gather workspace.
 _MANIFEST = "manifest.json"
+
+#: `extra_files` entries that may legitimately vanish between being listed
+#: (`gather.runner._index_extra_files`) and being read (`publish`'s upload
+#: below): SQLite's own WAL/SHM checkpoint, entirely outside our control.
+#: Deliberately narrow — `embeddings.db` and `topics.json` vanishing is never
+#: benign and must still fail the publish loudly, same as a workspace file
+#: vanishing, per `_materialise_version`'s "a lost blob fails loudly" guarantee.
+_VANISH_TOLERANT_EXTRA_FILES = frozenset({"embeddings.db-wal", "embeddings.db-shm"})
 
 #: Process-global current-version cache: (cache_key, corpus) -> (version,
 #: monotonic expiry). Keyed by the control-plane identity (its locator) so two
@@ -93,28 +102,6 @@ def _content_prefix(corpus: str, version: str) -> str:
 def _versions_prefix(corpus: str) -> str:
     """The blob prefix under which every one of `corpus`'s version trees lives."""
     return f"corpora/{corpus}/versions/"
-
-
-def _swap_dir(dest: str, new_tree: str) -> Optional[str]:
-    """Rename `new_tree` into place at `dest`, moving any existing `dest` aside
-    first so a failed rename restores it rather than leaving `dest` half
-    populated. Returns the aside path (still on disk) if there was one, or
-    None — the caller decides when it is safe to remove it (`seed_workspace`
-    coordinates two of these swaps, so an aside from the first may still be
-    needed to undo it if the second fails) and cleans it up itself, unlike a
-    single fire-and-forget swap."""
-    old: Optional[str] = None
-    if os.path.exists(dest):
-        old = f"{dest}.old.{uuid.uuid4().hex[:8]}"
-        os.rename(dest, old)
-    try:
-        os.rename(new_tree, dest)
-    except OSError:
-        if old is not None:
-            os.rename(old, dest)
-            old = None
-        raise
-    return old
 
 
 def build_cloud_store() -> "CloudCorpusStore":
@@ -389,10 +376,8 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # IETF_LLM_INDEX_DIR splits the index onto a separate (e.g. tmpfs) dir,
         # the DB must instead land where build_index reads/writes it.
         split_index = os.path.realpath(index_dir) != os.path.realpath(dest_root)
-        tmp = f"{dest_root}.seed.{uuid.uuid4().hex[:8]}"
+        tmp = scratch_sibling_name(dest_root, "seed")
         index_tmp: Optional[str] = None
-        ws_old: Optional[str] = None
-        idx_old: Optional[str] = None
         try:
             self._fetch_version_to(corpus, version, tmp)
             if split_index:
@@ -409,44 +394,48 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 # Staged into a fresh temp dir, not the live index_dir: two
                 # directory renames (this one, the workspace swap below) can't
                 # happen as one atomic step, so both new trees are fully ready
-                # *before* either swap touches live state. A failure up to this
-                # point leaves dest_root and index_dir completely untouched,
-                # rather than a stale index paired with fresh content (or vice
-                # versa) — content and index silently drawn from two different
-                # versions is worse than the seed failing outright, since the
-                # gather that follows would build its incremental embed skip
-                # from an index that doesn't match the content it is judging.
-                index_tmp = f"{index_dir}.seed.{uuid.uuid4().hex[:8]}"
+                # *before* either swap touches live state. Seeded with whatever
+                # index_dir already holds and isn't being replaced (a
+                # `.building` scratch file from an interrupted rebuild, a
+                # `topics.json` this version's gather didn't regenerate) —
+                # the swap below replaces the whole directory, so anything not
+                # carried over here would otherwise be silently lost.
+                index_tmp = scratch_sibling_name(index_dir, "seed")
                 os.makedirs(index_tmp, exist_ok=True)
-                for name in os.listdir(tmp):
-                    if name not in INDEX_FILE_NAMES:
-                        continue
-                    src = os.path.join(tmp, name)
-                    if not os.path.isfile(src):
-                        continue
-                    shutil.move(src, os.path.join(index_tmp, name))
-            os.makedirs(os.path.dirname(dest_root), exist_ok=True)
-            # Atomic-ish swap: move any existing workspace aside, rename the
-            # freshly staged tree into place. On a rename failure the prior
-            # workspace is restored, so the gather is never left with a
-            # half-populated tree.
-            ws_old = _swap_dir(dest_root, tmp)
-            if index_tmp is not None:
+                new_names = {
+                    name
+                    for name in os.listdir(tmp)
+                    if name in INDEX_FILE_NAMES
+                    and os.path.isfile(os.path.join(tmp, name))
+                }
+                if os.path.isdir(index_dir):
+                    for name in os.listdir(index_dir):
+                        if name in new_names:
+                            continue
+                        src = os.path.join(index_dir, name)
+                        if os.path.isfile(src):
+                            shutil.copy2(src, os.path.join(index_tmp, name))
+                for name in new_names:
+                    shutil.move(os.path.join(tmp, name), os.path.join(index_tmp, name))
                 os.makedirs(os.path.dirname(index_dir), exist_ok=True)
-                try:
-                    idx_old = _swap_dir(index_dir, index_tmp)
-                except OSError:
-                    # The workspace already swapped to the new version; undo
-                    # it rather than pair fresh content with a stale index; a
-                    # retry then starts clean instead of half up-to-date.
-                    if os.path.isdir(dest_root):
-                        shutil.rmtree(dest_root, ignore_errors=True)
-                    if ws_old is not None:
-                        os.rename(ws_old, dest_root)
-                        ws_old = None
-                    raise
+            os.makedirs(os.path.dirname(dest_root), exist_ok=True)
+
+            # Both new trees (and their parents) are fully ready; only the
+            # swaps themselves remain. Order matches the exposure profile
+            # this method had before the index/root split existed — a reader
+            # could see a stale workspace paired with an already-updated
+            # index, never the reverse — so the index swaps in first.
+            # `swap_dirs` treats the two as one unit: if the later swap
+            # fails, the first is unwound too, so a seed either lands as a
+            # whole or leaves dest_root/index_dir exactly as they were,
+            # never a mix of two versions.
+            swaps: List[Tuple[str, str]] = []
+            if index_tmp is not None:
+                swaps.append((index_dir, index_tmp))
+            swaps.append((dest_root, tmp))
+            swap_dirs(swaps)
         finally:
-            for path in (tmp, index_tmp, ws_old, idx_old):
+            for path in (tmp, index_tmp):
                 if path is not None and os.path.isdir(path):
                     shutil.rmtree(path, ignore_errors=True)
         return version
@@ -594,17 +583,21 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # extra_files (e.g. an index living outside the cache), keyed by their
         # version-relative path. Nothing references this prefix yet, so a partial
         # upload is invisible. Workspace files win on a key clash.
-        extra_only: Set[str] = set()
+        extra_rels = {rel.replace(os.sep, "/") for rel in (extra_files or {})}
         for rel, abs_path in (extra_files or {}).items():
-            rel = rel.replace(os.sep, "/")
-            staged[rel] = abs_path
-            extra_only.add(rel)
+            staged[rel.replace(os.sep, "/")] = abs_path
+        workspace_rels: Set[str] = set()
         for dirpath, _dirs, names in os.walk(workspace):
             for name in names:
                 abs_path = os.path.join(dirpath, name)
                 rel = os.path.relpath(abs_path, workspace).replace(os.sep, "/")
                 staged[rel] = abs_path
-                extra_only.discard(rel)  # the workspace walk wins on a key clash
+                workspace_rels.add(rel)
+        # Keys unique to extra_files -- the ones the vanish-tolerance below may
+        # apply to. Computed as a set difference after both loops rather than an
+        # interleaved add/discard, so it doesn't depend on the loops running in
+        # this order.
+        extra_only = extra_rels - workspace_rels
         files: List[str] = list(staged.keys())
         vanished: Set[str] = set()
 
@@ -613,13 +606,13 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 with open(staged[rel], "rb") as handle:
                     data = handle.read()
             except FileNotFoundError:
-                # An extra_files entry (never a workspace one — real gathered
-                # content vanishing here means genuine corruption, so that case
-                # still raises) can disappear benignly mid-gather: the split-index
-                # embeddings.db's WAL/SHM sidecars go away on SQLite's own
-                # checkpoint, outside our control. Drop it rather than fail the
-                # whole gather over a file nobody asked to keep.
-                if rel in extra_only:
+                # Only the specific sidecar names in _VANISH_TOLERANT_EXTRA_FILES
+                # are tolerated — never a workspace file, and never embeddings.db
+                # or topics.json themselves, whose disappearance means genuine
+                # corruption and must still raise (see the constant's docstring).
+                if rel in extra_only and os.path.basename(rel) in (
+                    _VANISH_TOLERANT_EXTRA_FILES
+                ):
                     vanished.add(rel)
                     return
                 raise
