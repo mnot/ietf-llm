@@ -121,6 +121,29 @@ def test_install_split_index_dir(isolated_home, tmp_path, monkeypatch):
     assert os.path.isfile(os.path.join(str(index_root), "httpbis", "embeddings.db"))
 
 
+def test_install_split_index_preserves_existing_subdirectory(
+    isolated_home, tmp_path, monkeypatch
+):
+    """The preservation loop must carry over a subdirectory under index_dir,
+    not just files -- mirrors CloudCorpusStore.seed_workspace's identical
+    fix, since the two are meant to stay in lockstep (issue #224)."""
+    store = str(tmp_path / "store")
+    idx = _publish_store(store)
+    import shutil
+
+    shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
+    index_root = tmp_path / "index"
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(index_root))
+    idx_dir = index_root / "httpbis"
+    (idx_dir / "subdir").mkdir(parents=True)
+    (idx_dir / "subdir" / "nested.txt").write_text("nested")
+
+    fetch.install(store, idx.entry("httpbis"))
+
+    assert os.path.isfile(os.path.join(str(idx_dir), "embeddings.db"))
+    assert (idx_dir / "subdir" / "nested.txt").read_text() == "nested"
+
+
 def test_tamper_detected(isolated_home, tmp_path):
     store = str(tmp_path / "store")
     idx = _publish_store(store)

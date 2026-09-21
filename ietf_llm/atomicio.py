@@ -18,7 +18,7 @@ import os
 import shutil
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Set, Tuple
 
 try:
     import fcntl as _fcntl
@@ -111,6 +111,37 @@ def scratch_sibling_name(path: str, tag: str) -> str:
     return os.path.join(parent, f".{name}.{tag}.{uuid.uuid4().hex[:8]}")
 
 
+def stage_split_dir(live_dir: str, tag: str, source: str, new_names: "Set[str]") -> str:
+    """Stage a fresh scratch sibling of `live_dir`, seeded with whatever
+    `live_dir` already holds that isn't in `new_names` (a `.building`
+    scratch file from an interrupted rebuild, a sidecar this version didn't
+    regenerate — copied via `copy2`/`copytree` so `live_dir` itself stays
+    untouched), then move each `new_names` entry in from `source`. Returns
+    the staged path; the caller swaps it into place (typically via
+    `swap_dir`/`swap_dirs`) once every tree it needs is fully ready.
+
+    Shared by `CloudCorpusStore.seed_workspace` and `seed.fetch._install_tree`
+    — two independent call sites for the identical split-index round trip
+    (issue #224) — so the staging procedure itself has one implementation to
+    keep correct rather than two that can silently drift apart.
+    """
+    staged = scratch_sibling_name(live_dir, tag)
+    os.makedirs(staged, exist_ok=True)
+    if os.path.isdir(live_dir):
+        for name in os.listdir(live_dir):
+            if name in new_names:
+                continue
+            src = os.path.join(live_dir, name)
+            dst = os.path.join(staged, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+            elif os.path.isdir(src):
+                shutil.copytree(src, dst)
+    for name in new_names:
+        shutil.move(os.path.join(source, name), os.path.join(staged, name))
+    return staged
+
+
 def swap_dir(dest: str, new_tree: str) -> Optional[str]:
     """Rename `new_tree` into place at `dest`, moving any existing `dest`
     aside first so a failed rename restores it rather than leaving `dest`
@@ -124,6 +155,13 @@ def swap_dir(dest: str, new_tree: str) -> Optional[str]:
 
     Directory-level counterpart to `atomic_open`'s file-level swap: for
     moving a whole tree into place instead of a single file.
+
+    The restore-on-failure is itself guarded: if it *also* fails (the same
+    transient condition that broke the swap-in can just as easily break the
+    very next rename), `dest` ends up absent rather than restored — a worse
+    outcome than "half populated" that deserves its own, clearly-labelled
+    exception naming where the content actually is, rather than surfacing as
+    whatever unrelated-looking error the second rename happened to raise.
     """
     old: Optional[str] = None
     if os.path.exists(dest):
@@ -131,9 +169,16 @@ def swap_dir(dest: str, new_tree: str) -> Optional[str]:
         os.rename(dest, old)
     try:
         os.rename(new_tree, dest)
-    except OSError:
+    except OSError as err:
         if old is not None:
-            os.rename(old, dest)
+            try:
+                os.rename(old, dest)
+            except OSError as restore_err:
+                raise OSError(
+                    f"swap into {dest!r} failed ({err}) and restoring the "
+                    f"prior content also failed ({restore_err}); {dest!r} is "
+                    f"now absent -- recover it from {old!r}"
+                ) from restore_err
         raise
     return old
 
@@ -141,7 +186,7 @@ def swap_dir(dest: str, new_tree: str) -> Optional[str]:
 def swap_dirs(swaps: "List[Tuple[str, str]]") -> None:
     """Perform every `(dest, new_tree)` swap in `swaps`, in order, as one
     unit: if any swap fails, every swap that already succeeded is undone, in
-    reverse, before the exception (always `OSError`) propagates — so the
+    reverse, before an exception (always `OSError`) propagates — so the
     whole batch either lands or leaves every `dest` exactly as it was before
     this call, never a mix of some swapped and some not.
 
@@ -154,27 +199,39 @@ def swap_dirs(swaps: "List[Tuple[str, str]]") -> None:
     fetching or staging.
 
     A swap that can't be undone (a second, independent failure during the
-    unwind) leaves its `dest` and the un-restorable aside exactly as they
-    are rather than guessing further: a leaked scratch directory, invisible
-    to anything that skips `scratch_sibling_name`'s dot-prefixed entries,
-    never destroyed data.
+    unwind) does not leave that failure silent: the propagated exception
+    names every `dest` the unwind could not restore, so a caller's own
+    error handling (this module is stdlib-only and cannot log) has what it
+    needs to surface a real operator-facing signal instead of treating the
+    batch as cleanly rolled back. `dest` itself is left as `swap_dir`'s own
+    failure mode leaves it (see its docstring) — never destroyed data, but
+    possibly absent rather than restored.
     """
     done: List[Tuple[str, Optional[str]]] = []
     try:
         for dest, new_tree in swaps:
             done.append((dest, swap_dir(dest, new_tree)))
-    except OSError:
+    except OSError as err:
+        unwound_failures: List[str] = []
         for dest, old in reversed(done):
             if old is None:
                 if os.path.isdir(dest):
                     shutil.rmtree(dest, ignore_errors=True)
+                if os.path.isdir(dest):
+                    unwound_failures.append(f"{dest!r}: leftover content after cleanup")
                 continue
             try:
                 discard = swap_dir(dest, old)
-            except OSError:
+            except OSError as unwind_err:
+                unwound_failures.append(f"{dest!r}: {unwind_err}")
                 continue
             if discard is not None and os.path.isdir(discard):
                 shutil.rmtree(discard, ignore_errors=True)
+        if unwound_failures:
+            raise OSError(
+                f"swap failed ({err}) and rollback could not fully restore: "
+                + "; ".join(unwound_failures)
+            ) from err
         raise
     for _dest, old in done:
         if old is not None and os.path.isdir(old):

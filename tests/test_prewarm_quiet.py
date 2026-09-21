@@ -18,8 +18,12 @@ load-failure branch they are about.
 
 from __future__ import annotations
 
+import os
+import sqlite3
 import sys
+import threading
 import types
+from pathlib import Path
 from typing import Any, List, Tuple
 
 import pytest
@@ -27,6 +31,7 @@ import pytest
 from ietf_llm.embeddings import models
 from ietf_llm.log import LogLevel, Verbosity
 from ietf_llm.mcp import server as mcp_server
+from ietf_llm.paths import get_index_dir
 
 _BARE = models.DEFAULT_EMBED_MODEL.split("/", 1)[1]
 
@@ -179,3 +184,39 @@ def test_quiet_embedding_stack_tolerates_a_torch_free_install(
     # must not require it.
     monkeypatch.setitem(sys.modules, "huggingface_hub.utils", None)
     mcp_server._quiet_embedding_stack_output()  # must not raise
+
+
+def _write_model_db(db_path: Path, model: str) -> None:
+    os.makedirs(db_path.parent, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('model', ?)", (model,))
+    conn.commit()
+    conn.close()
+
+
+def test_prewarm_scan_skips_leaked_scratch_dirs(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leaked, dot-prefixed scratch/backup dir from an interrupted
+    cloud-store seed or seed-store install (`atomicio.scratch_sibling_name`)
+    can itself contain a staged, structurally valid `embeddings.db` --
+    sorting before real corpus names. The prewarm scan must skip it, like
+    `any_indexed_wg`/`cached_wg_names` already do, not pick its model over a
+    real corpus's.
+
+    The scan itself runs synchronously inside `_prewarm_embedding_model_async`
+    (it's the *loading* that's backgrounded); `_prewarm_one` is patched to
+    record its argument instead of actually loading a model, and the spawned
+    daemon thread is joined by name so the assertion runs after it finishes."""
+    root = get_index_dir()
+    _write_model_db(Path(root) / ".tls.seed.deadbeef" / "embeddings.db", "leaked-model")
+    _write_model_db(Path(root) / "tls" / "embeddings.db", "real-model")
+
+    calls: List[str] = []
+    monkeypatch.setattr(mcp_server, "_prewarm_one", calls.append)
+    mcp_server._prewarm_embedding_model_async()
+    for thread in threading.enumerate():
+        if thread.name == "ietf-llm-prewarm":
+            thread.join(timeout=5)
+    assert calls == ["real-model"]

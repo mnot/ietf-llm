@@ -734,11 +734,14 @@ this line differently and drift apart again (issue #224; a second, disconnected
 copy of the list in `seed.format` had already done exactly that, missing the
 SQLite sidecars).
 
-Both `seed_workspace` and `_install_tree` stage the index files into their own
-temp dir (seeded with whatever the live index dir already holds and isn't
-being replaced — a `.building` scratch file, a `topics.json` this version's
-gather didn't regenerate — so the swap below can't silently lose them) and
-swap it into place *before* the corpus content, via `atomicio.swap_dirs`: one
+Both `seed_workspace` and `_install_tree` stage the version's index files into
+their own temp dir — via the one shared `atomicio.stage_split_dir`, not two
+independent implementations — seeded with whatever the live index dir already
+holds and isn't being replaced (a `.building` scratch file, a `topics.json`
+this version's gather didn't regenerate, even a subdirectory) so the swap
+below can't silently lose them, and skipped entirely when the version carries
+no index files (nothing to relocate, so no swap to risk). The staged tree
+swaps into place *before* the corpus content, via `atomicio.swap_dirs`: one
 directory rename can't itself be atomic with another, so `swap_dirs` treats a
 list of them as one unit, unwinding every swap that already landed if a later
 one fails. A seed or install either lands as a whole or leaves every directory

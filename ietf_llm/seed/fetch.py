@@ -18,7 +18,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import freshness
-from ..atomicio import scratch_sibling_name, swap_dirs
+from ..atomicio import stage_split_dir, swap_dirs
 from ..net import DEFAULT_HEADERS
 from ..paths import get_cache_dir, get_index_dir
 from ..tls import system_trust_context
@@ -175,28 +175,17 @@ def _install_tree(corpus: str, staging: str) -> None:
     index_tmp: Optional[str] = None
     try:
         if os.path.realpath(index_dir) != os.path.realpath(corpus_dir):
-            # Staged into a fresh temp dir, seeded with whatever index_dir
-            # already holds and isn't being replaced (mirrors
-            # `CloudCorpusStore.seed_workspace`'s identical split, issue #224)
-            # — the swap below replaces the whole directory, so anything not
-            # carried over here would otherwise be silently lost.
-            index_tmp = scratch_sibling_name(index_dir, "install")
-            os.makedirs(index_tmp, exist_ok=True)
             new_names = {
                 name
                 for name in fmt.INDEX_FILES
                 if os.path.isfile(os.path.join(staging, name))
             }
-            if os.path.isdir(index_dir):
-                for name in os.listdir(index_dir):
-                    if name in new_names:
-                        continue
-                    src = os.path.join(index_dir, name)
-                    if os.path.isfile(src):
-                        shutil.copy2(src, os.path.join(index_tmp, name))
-            for name in new_names:
-                shutil.move(os.path.join(staging, name), os.path.join(index_tmp, name))
-            os.makedirs(os.path.dirname(index_dir) or ".", exist_ok=True)
+            # Nothing to relocate: leave index_dir untouched rather than
+            # staging and swapping it for an unchanged copy of itself.
+            # Mirrors `CloudCorpusStore.seed_workspace`'s identical split
+            # (issue #224) via the same shared staging helper.
+            if new_names:
+                index_tmp = stage_split_dir(index_dir, "install", staging, new_names)
         os.makedirs(os.path.dirname(corpus_dir) or ".", exist_ok=True)
 
         # Both new trees (and their parents) are ready; only the swaps

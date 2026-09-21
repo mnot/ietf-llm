@@ -392,13 +392,56 @@ def test_publish_tolerates_extra_file_vanishing_mid_upload(tmp_path: Path) -> No
     assert "embeddings.db" in manifest["files"]
 
 
-def test_publish_still_raises_when_a_workspace_file_vanishes(
+def test_publish_tolerates_wal_shm_vanishing_from_the_default_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The vanish-tolerance above is scoped to `extra_files` only — a file
-    from the workspace walk (real gathered content) disappearing mid-publish
-    means genuine corruption, so that still raises rather than silently
-    dropping content from a published version."""
+    """The same benign SQLite WAL/SHM checkpoint race tolerated above for the
+    split-index layout (extra_files) is identical in the default (unsplit)
+    layout, where these sidecars are picked up by the ordinary workspace
+    walk instead -- the vanish-tolerance is gated on the basename alone, not
+    on which path found the file, so this must be tolerated too rather than
+    failing the whole publish on nothing actually wrong.
+
+    Simply unlinking the file before calling publish() wouldn't reproduce
+    the race: os.walk would just never list it, which is already handled
+    trivially. The real race is listed-then-vanished-before-read, so the
+    disappearance is simulated at the read (open()) step instead, exactly
+    like a checkpoint landing between the walk and the upload would."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    db = ws / "embeddings.db"
+    db.write_bytes(b"DB")
+    wal = ws / "embeddings.db-wal"
+    wal.write_bytes(b"WAL")
+
+    real_open = open
+
+    def _flaky_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == str(wal):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.open", _flaky_open, raising=False)
+    store.publish("tls", str(ws), version="v1")
+
+    manifest = json.loads(
+        (tmp_path / "bucket" / "corpora" / "tls" / "versions" / "v1" / "manifest.json")
+        .read_text()
+    )
+    assert "embeddings.db-wal" not in manifest["files"]
+    assert "embeddings.db" in manifest["files"]
+
+
+def test_publish_still_raises_when_real_content_vanishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vanish-tolerance is scoped to the specific WAL/SHM basenames in
+    _VANISH_TOLERANT_EXTRA_FILES only -- any other file (real gathered
+    content, embeddings.db or topics.json themselves) disappearing
+    mid-publish means genuine corruption, so that still raises rather than
+    silently dropping content from a published version."""
     store = _cloud(tmp_path)
     ws = tmp_path / "ws"
     (ws / "files").mkdir(parents=True)

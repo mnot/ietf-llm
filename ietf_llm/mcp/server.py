@@ -123,6 +123,14 @@ def _prewarm_embedding_model_async() -> None:
         return
     model_name: Optional[str] = None
     for name in sorted(os.listdir(root)):
+        # Skips dot- and underscore-prefixed entries, matching
+        # `paths.cached_wg_names`/`embeddings.any_indexed_wg`'s convention: a
+        # leaked scratch/backup dir from an interrupted cloud-store seed or
+        # seed-store install (`atomicio.scratch_sibling_name`) can itself
+        # contain a staged, structurally valid `embeddings.db` and must not
+        # be picked as the model to warm.
+        if name.startswith(".") or name.startswith("_"):
+            continue
         db_path = os.path.join(root, name, "embeddings.db")
         if not os.path.isfile(db_path):
             continue

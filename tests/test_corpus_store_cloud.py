@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import pytest
 
@@ -344,6 +344,56 @@ def test_seed_workspace_split_index_keeps_root_machinery_in_workspace(
     assert (dest / "last-gathered").read_text() == "2026-06-04T00:00:00Z"
     assert not (idx_dir / "documents.json").exists()
     assert not (idx_dir / "last-gathered").exists()
+
+
+def test_seed_workspace_split_index_no_op_when_version_carries_no_index_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A version with no index files (e.g. an externally-sourced member)
+    needs no index-dir swap at all -- staging and swapping index_dir for an
+    unchanged copy of itself would be pure waste, and a new rename the old
+    (pre-split) code never had to make, so a failure there could now roll
+    back a seed that used to have nothing to roll back. index_dir must come
+    out byte-for-byte untouched, not merely equal."""
+    store, _ = _store(tmp_path)
+    ws = tmp_path / "src"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "d.txt").write_text("draft")
+    store.publish("tls", str(ws), "v1")  # no embeddings.db in this version
+
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    idx_dir = tmp_path / "index" / "tls"
+    idx_dir.mkdir(parents=True)
+    (idx_dir / "topics.json").write_text("{}")
+
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+
+    assert (idx_dir / "topics.json").read_text() == "{}"
+    # No scratch/backup sibling was ever created for index_dir.
+    assert sorted(p.name for p in idx_dir.parent.iterdir()) == ["tls"]
+
+
+def test_seed_workspace_split_index_preserves_existing_subdirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preservation loop must carry over a subdirectory under index_dir,
+    not just files -- the surrounding comment already claims 'whatever
+    index_dir already holds ... can't silently lose them', which only held
+    for files before this fix."""
+    store, _ = _store(tmp_path)
+    store.publish("tls", _versioned_workspace(tmp_path, "src", "draft", "IDX"), "v1")
+
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    idx_dir = tmp_path / "index" / "tls"
+    (idx_dir / "subdir").mkdir(parents=True)
+    (idx_dir / "subdir" / "nested.txt").write_text("nested")
+
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+
+    assert (idx_dir / "embeddings.db").read_text() == "IDX"
+    assert (idx_dir / "subdir" / "nested.txt").read_text() == "nested"
 
 
 def test_seed_workspace_no_published_version(
