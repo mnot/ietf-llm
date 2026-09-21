@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -353,6 +354,68 @@ def test_publish_includes_extra_files(tmp_path: Path) -> None:
     assert got is not None
     assert (Path(got) / "embeddings.db").read_bytes() == b"SPLITDB"
     assert (Path(got) / "files" / "x.md").read_text() == "f"
+
+
+def test_publish_tolerates_extra_file_vanishing_mid_upload(tmp_path: Path) -> None:
+    """An `extra_files` entry (the split-index files) can disappear benignly
+    between `_index_extra_files` listing it and `publish` reading it — e.g.
+    SQLite checkpointing away `embeddings.db`'s WAL/SHM sidecars. That must
+    not fail the whole gather, and the vanished file must not be named in the
+    manifest either (a materialising reader later would otherwise find the
+    manifest promising a blob that was never uploaded)."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    idx_dir = tmp_path / "fastindex" / "tls"
+    idx_dir.mkdir(parents=True)
+    db = idx_dir / "embeddings.db"
+    db.write_bytes(b"DB")
+    wal = idx_dir / "embeddings.db-wal"
+    wal.write_bytes(b"WAL")
+    # The wal sidecar vanishes (checkpointed away) before publish reads it —
+    # embeddings.db itself is present throughout.
+    extra_files = {"embeddings.db": str(db), "embeddings.db-wal": str(wal)}
+    wal.unlink()
+
+    store.publish("tls", str(ws), version="v1", extra_files=extra_files)
+
+    got = store.local_index_dir("tls")
+    assert got is not None
+    assert (Path(got) / "embeddings.db").read_bytes() == b"DB"
+    assert not (Path(got) / "embeddings.db-wal").exists()
+    manifest = json.loads(
+        (tmp_path / "bucket" / "corpora" / "tls" / "versions" / "v1" / "manifest.json")
+        .read_text()
+    )
+    assert "embeddings.db-wal" not in manifest["files"]
+    assert "embeddings.db" in manifest["files"]
+
+
+def test_publish_still_raises_when_a_workspace_file_vanishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vanish-tolerance above is scoped to `extra_files` only — a file
+    from the workspace walk (real gathered content) disappearing mid-publish
+    means genuine corruption, so that still raises rather than silently
+    dropping content from a published version."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    doomed = ws / "files" / "y.md"
+    doomed.write_text("f2")
+
+    real_open = open
+
+    def _flaky_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == str(doomed):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _flaky_open)
+    with pytest.raises(FileNotFoundError):
+        store.publish("tls", str(ws), version="v1")
 
 
 def test_index_extra_files_empty_when_inside_workspace(

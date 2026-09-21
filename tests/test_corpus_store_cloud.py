@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 from typing import Tuple
 
@@ -367,6 +369,85 @@ def test_seed_workspace_replaces_stale_content(
     assert store.seed_workspace("tls", str(dest)) == "v1"
     assert (dest / "files" / "drafts" / "d.txt").read_text() == "v1draft"
     assert not (dest / "files" / "drafts" / "old.txt").exists()
+
+
+def test_seed_workspace_rolls_back_workspace_when_index_swap_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the index-dir swap fails *after* the workspace swap already landed,
+    the workspace swap must be undone too. Pairing fresh content with a stale
+    (or, before this fix, briefly missing) index is worse than the seed
+    failing outright: the gather that follows would build its incremental
+    embed-skip decision from an index that doesn't describe the content it is
+    judging (issue #224 follow-up)."""
+    from ietf_llm.store import cloud as cloud_mod
+
+    store, _ = _store(tmp_path)
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w1", "v1draft", "IDX1"), "v1"
+    )
+    assert store.seed_workspace("tls", str(dest)) == "v1"  # establish real prior content
+    prior_draft = (dest / "files" / "drafts" / "d.txt").read_text()
+    prior_db = (tmp_path / "index" / "tls" / "embeddings.db").read_text()
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w2", "v2draft", "IDX2"), "v2"
+    )
+    real_swap_dir = cloud_mod._swap_dir
+    index_dir = str(tmp_path / "index" / "tls")
+
+    def _flaky_swap_dir(dest_path: str, new_tree: str) -> "Optional[str]":
+        if dest_path == index_dir:
+            raise OSError("simulated index swap failure")
+        return real_swap_dir(dest_path, new_tree)
+
+    monkeypatch.setattr(cloud_mod, "_swap_dir", _flaky_swap_dir)
+    with pytest.raises(OSError):
+        store.seed_workspace("tls", str(dest))
+
+    # Rolled back to v1 on both sides — never v2 content paired with v1's
+    # index (or the reverse).
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == prior_draft
+    assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == prior_db
+
+
+def test_seed_workspace_relocation_failure_leaves_dest_and_index_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure while relocating index files out of the freshly fetched
+    version — before either directory swap happens — must leave the live
+    workspace and index dir completely alone, not partially updated (issue
+    #224 follow-up)."""
+    store, _ = _store(tmp_path)
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w1", "v1draft", "IDX1"), "v1"
+    )
+    assert store.seed_workspace("tls", str(dest)) == "v1"  # establish real prior content
+    prior_draft = (dest / "files" / "drafts" / "d.txt").read_text()
+    prior_db = (tmp_path / "index" / "tls" / "embeddings.db").read_text()
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w2", "v2draft", "IDX2"), "v2"
+    )
+    real_move = shutil.move
+
+    def _flaky_move(src: str, dst: str) -> str:
+        if os.path.basename(src) == "embeddings.db":
+            raise OSError("simulated relocation failure")
+        return real_move(src, dst)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.shutil.move", _flaky_move)
+    with pytest.raises(OSError):
+        store.seed_workspace("tls", str(dest))
+
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == prior_draft
+    assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == prior_db
 
 
 # --- read-path access marker + gather time (cloud backend) ----------------
