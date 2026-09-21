@@ -366,6 +366,28 @@ def test_seed_source_none_when_store_has_no_current_version(
     assert freshness.seed_source("ghost") is None
 
 
+# --- local_* readers bypass the seam entirely ------------------------------
+#
+# Callers that only ever write/read the local gather workspace (the CLI's
+# `--list`, `export.py`'s staleness check, `seed.fetch`/`seed.publish`) must
+# see what's on local disk even when the ambient `IETF_LLM_STORE_BACKEND`
+# selects cloud -- a store that would resolve to different, or no, state.
+
+
+def test_local_last_gathered_ignores_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_gather("tls")
+    seam = freshness.local_last_gathered("tls")
+    assert seam is not None
+
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert freshness.local_last_gathered("tls") == seam
+
+
 def test_record_gather_writes_the_workspace_not_the_store_seam(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -28,7 +28,7 @@ import sys
 
 from .. import __version__, config, export
 from .completion import maybe_autocomplete, wg_completer
-from ..freshness import staleness_warning
+from ..freshness import local_staleness_warning
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_config_dir
 
@@ -131,7 +131,7 @@ def main() -> None:
     # Warn before exporting — the export itself is a no-op cache mirror,
     # so stale-in stale-out. We want this to land in front of the user
     # before they spend bytes / GCP quota on stale material.
-    warning = staleness_warning(args.wg)
+    warning = local_staleness_warning(args.wg)
     if warning:
         print(warning, file=sys.stderr)
 

@@ -426,6 +426,18 @@ class LocalCorpusStore(CorpusStore):
         # a gather can read what it has already written before `files/` exists.
         return os.path.join(get_cache_dir(), corpus)
 
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        # The base class default (`return self.local_corpus_dir(corpus)`)
+        # would inherit `local_corpus_dir`'s deliberate no-existence-check —
+        # correct for that method's own callers, but wrong here: this
+        # method's contract ("None otherwise") is the whole reason it's a
+        # separate accessor from `local_corpus_dir` in the first place, and
+        # `materialised_cache_dir` (its sibling, right above) already gets
+        # this right by delegating to `local_cache_dir`, which does check.
+        # An explicit override, gated on the directory actually existing.
+        root = self.local_corpus_dir(corpus)
+        return root if root is not None and os.path.isdir(root) else None
+
     def local_index_dir(self, corpus: str) -> Optional[str]:
         # The live index dir — `<index_root>/<corpus>` — exactly where
         # `_db_path` has always resolved it, so local read behaviour is
@@ -451,7 +463,13 @@ class LocalCorpusStore(CorpusStore):
         return freshness.last_accessed(corpus)
 
     def gathered_at(self, corpus: str) -> Optional[datetime]:
-        return freshness.last_gathered(corpus)
+        # local_last_gathered, not last_gathered: this method is already the
+        # local backend, so it must read straight off local disk through
+        # `self` rather than bounce through the ambient-config-selecting
+        # `get_corpus_store()` that `last_gathered` (the seam-routed reader)
+        # resolves internally — that could silently answer a *different*
+        # store's state if `IETF_LLM_STORE_BACKEND` disagreed with `self`.
+        return freshness.local_last_gathered(corpus)
 
 
 def get_corpus_store() -> CorpusStore:

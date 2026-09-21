@@ -22,7 +22,6 @@ import shutil
 import subprocess  # nosec B404 — used only to invoke our own gather CLI
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .. import freshness
@@ -160,25 +159,6 @@ def _corpus_paths(corpus: str) -> Tuple[str, str, str]:
     return corpus_dir, index_dir, os.path.join(index_dir, "embeddings.db")
 
 
-def _local_last_gathered(corpus_dir: str) -> Optional[datetime]:
-    """`corpus_dir`'s `last-gathered` sentinel, read directly off local disk.
-
-    This script only ever bundles from the local cache (`_corpus_paths`),
-    never through the `CorpusStore` seam, regardless of the ambient
-    `IETF_LLM_STORE_BACKEND` -- so it must read the sentinel the same way.
-    `freshness.last_gathered` now resolves through that seam (issue #223),
-    which under `IETF_LLM_STORE_BACKEND=cloud` would read a *different*
-    store's state instead of the local corpus this run just gathered."""
-    try:
-        with open(
-            os.path.join(corpus_dir, "last-gathered"), "r", encoding="utf-8"
-        ) as fh:
-            raw = fh.read().strip()
-    except OSError:
-        return None
-    return freshness.parse_iso(raw)
-
-
 def _write_member(
     store_dir: str, corpus: str, spec: MemberSpec, compat: fmt.CompatTuple, version: str
 ) -> fmt.IndexEntry:
@@ -199,7 +179,7 @@ def _write_member(
     # corpus dir holds only the current version's payload.
     _drop_old_bundles(os.path.dirname(bundle_abs), keep=os.path.basename(bundle_abs))
     digest, size = fmt.build_bundle(members, bundle_abs)
-    gathered = _local_last_gathered(corpus_dir)
+    gathered = freshness.local_last_gathered(corpus)
     manifest = fmt.Manifest(
         name=corpus,
         version=version,
@@ -347,7 +327,7 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
 ) -> Optional[Tuple[fmt.IndexEntry, fmt.CompatTuple]]:
     """Publish one member. Returns `(entry, store_compat)` on publish/up-to-date,
     or None when skipped (already recorded in `report`)."""
-    corpus_dir, _, db_path = _corpus_paths(corpus)
+    _, _, db_path = _corpus_paths(corpus)
     if spec.externally_sourced:
         if dry_run:
             # Reported here rather than falling through to the compat read
@@ -367,7 +347,7 @@ def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statemen
             except PublishError as err:
                 report.skipped.append((corpus, str(err)))
                 return None
-        gathered = _local_last_gathered(corpus_dir)
+        gathered = freshness.local_last_gathered(corpus)
         if gathered is None:
             report.skipped.append((corpus, "not gathered locally (no last-gathered)"))
             return None
