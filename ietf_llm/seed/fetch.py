@@ -15,10 +15,10 @@ import os
 import shutil
 import tempfile
 import urllib.request
-import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import freshness
+from ..atomicio import stage_split_dir, swap_dirs
 from ..net import DEFAULT_HEADERS
 from ..paths import get_cache_dir, get_index_dir
 from ..tls import system_trust_context
@@ -161,45 +161,49 @@ def install(seed_url: str, entry: fmt.IndexEntry) -> str:
 
 def _install_tree(corpus: str, staging: str) -> None:
     """Move `staging` (a materialised version tree) into place as `corpus`'s cache
-    tree. When `IETF_LLM_INDEX_DIR` splits the index onto its own volume, relocate
-    the top-level index files there first so only `files/` + manifests swap into
-    the corpus dir."""
+    tree. When `IETF_LLM_INDEX_DIR` splits the index onto its own volume, the
+    index files swap in first (staged into their own temp dir, seeded with
+    whatever `index_dir` isn't being replaced — the same split
+    `CloudCorpusStore.seed_workspace` uses, issue #224); if that swap lands but
+    the corpus-dir swap then fails, the index swap is unwound too, rather than
+    pairing a new index with old content, or the reverse.
+
+    Raises `SeedFetchError` on any failure — staging the index files or
+    swapping either directory into place."""
     corpus_dir = os.path.join(get_cache_dir(), corpus)
     index_dir = os.path.join(get_index_dir(), corpus)
-    if os.path.realpath(index_dir) != os.path.realpath(corpus_dir):
-        os.makedirs(index_dir, exist_ok=True)
-        for name in fmt.INDEX_FILES:
-            src = os.path.join(staging, name)
-            if os.path.isfile(src):
-                dst = os.path.join(index_dir, name)
-                if os.path.exists(dst):
-                    os.remove(dst)
-                shutil.move(src, dst)
-    _swap_dir(staging, corpus_dir)
-
-
-def _swap_dir(staging: str, dest: str) -> None:
-    """Atomically replace `dest` with `staging` via `os.rename`. `install` stages
-    under the cache dir, so `staging` and `dest` are always on one filesystem and
-    the rename never crosses filesystems (no EXDEV, no non-atomic copy).
-
-    Move any existing tree aside first and restore it if the rename fails, so a
-    failed — or killed — re-seed never destroys a good corpus."""
-    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    old: Optional[str] = None
-    if os.path.exists(dest):
-        old = f"{dest}.old.{uuid.uuid4().hex[:8]}"
-        os.rename(dest, old)
+    index_tmp: Optional[str] = None
     try:
-        os.rename(staging, dest)
+        if os.path.realpath(index_dir) != os.path.realpath(corpus_dir):
+            new_names = {
+                name
+                for name in fmt.INDEX_FILES
+                if os.path.isfile(os.path.join(staging, name))
+            }
+            # Nothing to relocate: leave index_dir untouched rather than
+            # staging and swapping it for an unchanged copy of itself.
+            # Mirrors `CloudCorpusStore.seed_workspace`'s identical split
+            # (issue #224) via the same shared staging helper.
+            if new_names:
+                index_tmp = stage_split_dir(index_dir, "install", staging, new_names)
+        os.makedirs(os.path.dirname(corpus_dir) or ".", exist_ok=True)
+
+        # Both new trees (and their parents) are ready; only the swaps
+        # remain. Index first, then the corpus dir, mirroring
+        # `seed_workspace`'s ordering. `swap_dirs` treats the two as one
+        # unit: if the later swap fails, the first is undone too, so an
+        # install either lands as a whole or leaves corpus_dir/index_dir
+        # exactly as they were.
+        swaps: List[Tuple[str, str]] = []
+        if index_tmp is not None:
+            swaps.append((index_dir, index_tmp))
+        swaps.append((corpus_dir, staging))
+        swap_dirs(swaps)
     except OSError as err:
-        if old is not None:
-            os.rename(old, dest)  # restore the prior corpus; rename left dest absent
-            old = None
-        raise SeedFetchError(f"cannot install {dest}: {err}") from err
+        raise SeedFetchError(f"cannot install {corpus_dir}: {err}") from err
     finally:
-        if old is not None and os.path.isdir(old):
-            shutil.rmtree(old, ignore_errors=True)
+        if index_tmp is not None and os.path.isdir(index_tmp):
+            shutil.rmtree(index_tmp, ignore_errors=True)
 
 
 def _write_seed_source(corpus: str, seed_url: str, manifest: fmt.Manifest) -> None:

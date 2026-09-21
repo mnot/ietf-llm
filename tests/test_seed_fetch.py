@@ -121,6 +121,29 @@ def test_install_split_index_dir(isolated_home, tmp_path, monkeypatch):
     assert os.path.isfile(os.path.join(str(index_root), "httpbis", "embeddings.db"))
 
 
+def test_install_split_index_preserves_existing_subdirectory(
+    isolated_home, tmp_path, monkeypatch
+):
+    """The preservation loop must carry over a subdirectory under index_dir,
+    not just files -- mirrors CloudCorpusStore.seed_workspace's identical
+    fix, since the two are meant to stay in lockstep (issue #224)."""
+    store = str(tmp_path / "store")
+    idx = _publish_store(store)
+    import shutil
+
+    shutil.rmtree(os.path.join(get_cache_dir(), "httpbis"))
+    index_root = tmp_path / "index"
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(index_root))
+    idx_dir = index_root / "httpbis"
+    (idx_dir / "subdir").mkdir(parents=True)
+    (idx_dir / "subdir" / "nested.txt").write_text("nested")
+
+    fetch.install(store, idx.entry("httpbis"))
+
+    assert os.path.isfile(os.path.join(str(idx_dir), "embeddings.db"))
+    assert (idx_dir / "subdir" / "nested.txt").read_text() == "nested"
+
+
 def test_tamper_detected(isolated_home, tmp_path):
     store = str(tmp_path / "store")
     idx = _publish_store(store)
@@ -132,29 +155,72 @@ def test_tamper_detected(isolated_home, tmp_path):
         fetch.install(store, entry)
 
 
-def test_swap_dir_restores_prior_corpus_on_failure(isolated_home, tmp_path, monkeypatch):
-    # If the staging->dest rename fails, the prior corpus must be put back — a
-    # failed re-seed can never destroy a good corpus.
-    dest = str(tmp_path / "corpus")
-    os.makedirs(dest)
-    open(os.path.join(dest, "GOOD"), "w").close()
+def test_install_tree_restores_prior_corpus_on_failure(isolated_home, tmp_path, monkeypatch):
+    # If the staging->corpus_dir rename fails, the prior corpus must be put
+    # back — a failed re-seed can never destroy a good corpus. Wrapped as
+    # SeedFetchError, per _install_tree's contract.
+    corpus_dir = os.path.join(get_cache_dir(), "httpbis")
+    os.makedirs(corpus_dir)
+    open(os.path.join(corpus_dir, "GOOD"), "w").close()
     staging = str(tmp_path / "staging")
     os.makedirs(staging)
     open(os.path.join(staging, "NEW"), "w").close()
     real_rename = os.rename
-    calls = {"n": 0}
 
     def flaky(src, dst):
-        calls["n"] += 1
-        if calls["n"] == 2:  # the staging -> dest rename
+        # Only the swap-in itself (staging -> corpus_dir) fails; swap_dir's
+        # own restore rename (old_aside -> corpus_dir) must still succeed.
+        if src == staging and dst == corpus_dir:
             raise OSError("boom")
         return real_rename(src, dst)
 
     monkeypatch.setattr(fetch.os, "rename", flaky)
     with pytest.raises(fetch.SeedFetchError):
-        fetch._swap_dir(staging, dest)
-    assert os.path.isfile(os.path.join(dest, "GOOD"))  # restored
-    assert not os.path.exists(os.path.join(dest, "NEW"))
+        fetch._install_tree("httpbis", staging)
+    assert os.path.isfile(os.path.join(corpus_dir, "GOOD"))  # restored
+    assert not os.path.exists(os.path.join(corpus_dir, "NEW"))
+
+
+def test_install_tree_split_index_unwinds_index_swap_when_corpus_swap_fails(
+    isolated_home, tmp_path, monkeypatch
+):
+    # The index swap lands first (mirroring CloudCorpusStore.seed_workspace);
+    # if the corpus-dir swap then fails, the index swap must be undone too —
+    # never a new index paired with old content (issue #224 follow-up).
+    index_root = tmp_path / "index"
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(index_root))
+    corpus_dir = os.path.join(get_cache_dir(), "httpbis")
+    os.makedirs(os.path.join(corpus_dir, "files"))
+    open(os.path.join(corpus_dir, "files", "old.txt"), "w").close()
+    old_index_dir = os.path.join(str(index_root), "httpbis")
+    os.makedirs(old_index_dir)
+    with open(os.path.join(old_index_dir, "embeddings.db"), "w") as fh:
+        fh.write("OLD")
+
+    staging = str(tmp_path / "staging")
+    os.makedirs(os.path.join(staging, "files"))
+    open(os.path.join(staging, "files", "new.txt"), "w").close()
+    with open(os.path.join(staging, "embeddings.db"), "w") as fh:
+        fh.write("NEW")
+
+    real_rename = os.rename
+
+    def flaky(src, dst):
+        # Only the corpus-dir swap-in itself (staging -> corpus_dir) fails;
+        # every restore rename swap_dir issues to unwind must still succeed.
+        if src == staging and dst == corpus_dir:
+            raise OSError("boom")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(fetch.os, "rename", flaky)
+    with pytest.raises(fetch.SeedFetchError):
+        fetch._install_tree("httpbis", staging)
+
+    # Both sides rolled back to their prior state.
+    assert os.path.isfile(os.path.join(corpus_dir, "files", "old.txt"))
+    assert not os.path.exists(os.path.join(corpus_dir, "files", "new.txt"))
+    with open(os.path.join(old_index_dir, "embeddings.db")) as fh:
+        assert fh.read() == "OLD"
 
 
 def test_seed_catalog_roundtrip(isolated_home):

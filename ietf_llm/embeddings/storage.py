@@ -1088,6 +1088,12 @@ def any_indexed_wg() -> Optional[str]:
 
     Scans the index dir for a ``<wg>/embeddings.db``. Used by the server's
     readiness probe to pick a real index to open.
+
+    Skips dot- and underscore-prefixed entries, matching
+    ``paths.cached_wg_names``'s convention: a leaked scratch/backup
+    directory from an interrupted cloud-store seed or seed-store install
+    (``atomicio.scratch_sibling_name``) can itself contain a staged
+    ``embeddings.db`` and must not be picked as "a real index to open".
     """
     root = get_index_dir()
     try:
@@ -1095,6 +1101,8 @@ def any_indexed_wg() -> Optional[str]:
     except OSError:
         return None
     for name in names:
+        if name.startswith(".") or name.startswith("_"):
+            continue
         if os.path.exists(os.path.join(root, name, "embeddings.db")):
             return name
     return None

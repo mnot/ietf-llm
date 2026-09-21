@@ -33,7 +33,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .. import freshness
-from ..paths import get_index_dir
+from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
+from ..paths import INDEX_FILE_NAMES, get_index_dir
 from .blobs import BlobStore, parallel_each
 from .control import KvControlPlane
 from .corpus import (
@@ -47,6 +48,14 @@ from .kv import KvStore
 #: Per-version manifest, stored as a blob inside the version prefix and stripped
 #: from the materialised tree so it never re-enters a re-gather workspace.
 _MANIFEST = "manifest.json"
+
+#: `extra_files` entries that may legitimately vanish between being listed
+#: (`gather.runner._index_extra_files`) and being read (`publish`'s upload
+#: below): SQLite's own WAL/SHM checkpoint, entirely outside our control.
+#: Deliberately narrow — `embeddings.db` and `topics.json` vanishing is never
+#: benign and must still fail the publish loudly, same as a workspace file
+#: vanishing, per `_materialise_version`'s "a lost blob fails loudly" guarantee.
+_VANISH_TOLERANT_EXTRA_FILES = frozenset({"embeddings.db-wal", "embeddings.db-shm"})
 
 #: Process-global current-version cache: (cache_key, corpus) -> (version,
 #: monotonic expiry). Keyed by the control-plane identity (its locator) so two
@@ -411,47 +420,58 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # IETF_LLM_INDEX_DIR splits the index onto a separate (e.g. tmpfs) dir,
         # the DB must instead land where build_index reads/writes it.
         split_index = os.path.realpath(index_dir) != os.path.realpath(dest_root)
-        tmp = f"{dest_root}.seed.{uuid.uuid4().hex[:8]}"
-        old: Optional[str] = None
+        tmp = scratch_sibling_name(dest_root, "seed")
+        index_tmp: Optional[str] = None
         try:
             self._fetch_version_to(corpus, version, tmp)
             if split_index:
-                # Relocate the version's top-level files so only `files/` is
-                # swapped into the workspace. BUG (issue #224): this moves
-                # *every* top-level file, but the version root is the corpus
-                # root — it carries `documents.json`, `materials.json` and the
-                # sentinels as well as the index, and at this point they are
-                # indistinguishable. So they are relocated out of the workspace
-                # too. The move needs filtering to the index files.
-                os.makedirs(index_dir, exist_ok=True)
-                for name in os.listdir(tmp):
-                    src = os.path.join(tmp, name)
-                    if not os.path.isfile(src):
-                        continue
-                    dst = os.path.join(index_dir, name)
-                    if os.path.exists(dst):
-                        os.remove(dst)
-                    shutil.move(src, dst)
+                # Relocate the version's index files (only) so `files/` plus
+                # the root-level machinery a gather writes beside it
+                # (`documents.json`, `materials.json`, the freshness
+                # sentinels) stay in the swapped workspace — the version root
+                # is the corpus root, so all of that rode along with
+                # `embeddings.db` and is otherwise indistinguishable from it
+                # (issue #224). `INDEX_FILE_NAMES` is the one list shared with
+                # `gather.runner._index_extra_files`, the write side of this
+                # same round trip.
+                new_names = {
+                    name
+                    for name in os.listdir(tmp)
+                    if name in INDEX_FILE_NAMES
+                    and os.path.isfile(os.path.join(tmp, name))
+                }
+                # Nothing to relocate: leave index_dir untouched rather than
+                # staging and swapping it for an unchanged copy of itself —
+                # a version that carries no index files (e.g. an
+                # externally-sourced member) needs no index-dir swap at all.
+                # Staged into a fresh temp dir, not the live index_dir: two
+                # directory renames (this one, the workspace swap below)
+                # can't happen as one atomic step, so both new trees are
+                # fully ready *before* either swap touches live state.
+                if new_names:
+                    index_tmp = stage_split_dir(index_dir, "seed", tmp, new_names)
             os.makedirs(os.path.dirname(dest_root), exist_ok=True)
-            # Atomic-ish swap: move any existing workspace aside, rename the
-            # freshly staged tree into place, then drop the old one. On a rename
-            # failure the prior workspace is restored, so the gather is never
-            # left with a half-populated tree.
-            if os.path.exists(dest_root):
-                old = f"{dest_root}.old.{uuid.uuid4().hex[:8]}"
-                os.rename(dest_root, old)
-            try:
-                os.rename(tmp, dest_root)
-            except OSError:
-                if old is not None:
-                    os.rename(old, dest_root)
-                    old = None
-                raise
+
+            # Both new trees (and their parents) are fully ready; only the
+            # swaps themselves remain. The index swaps in first so a
+            # concurrent reader can only ever see a stale workspace paired
+            # with an already-updated index, never the reverse (a fresh
+            # workspace paired with a stale index would be a materially
+            # worse inconsistency — search results referencing content the
+            # index doesn't have). `swap_dirs` treats the two as one unit: if
+            # the later swap fails, the first is unwound too, so a seed
+            # either lands as a whole or leaves dest_root/index_dir exactly
+            # as they were,
+            # never a mix of two versions.
+            swaps: List[Tuple[str, str]] = []
+            if index_tmp is not None:
+                swaps.append((index_dir, index_tmp))
+            swaps.append((dest_root, tmp))
+            swap_dirs(swaps)
         finally:
-            if os.path.isdir(tmp):
-                shutil.rmtree(tmp, ignore_errors=True)
-            if old is not None and os.path.isdir(old):
-                shutil.rmtree(old, ignore_errors=True)
+            for path in (tmp, index_tmp):
+                if path is not None and os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
         return version
 
     def hydrate_gather_caches(self, corpus: str) -> None:
@@ -605,10 +625,36 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 rel = os.path.relpath(abs_path, workspace).replace(os.sep, "/")
                 staged[rel] = abs_path
         files: List[str] = list(staged.keys())
+        vanished: Set[str] = set()
 
         def _upload(rel: str) -> None:
-            with open(staged[rel], "rb") as handle:
-                self._blobs.put(prefix + rel, handle.read())
+            try:
+                with open(staged[rel], "rb") as handle:
+                    data = handle.read()
+            except FileNotFoundError:
+                # Only the specific sidecar names in _VANISH_TOLERANT_EXTRA_FILES
+                # are tolerated, and only when `rel` is a genuine SQLite sidecar
+                # of a real embeddings.db in this same version (a sibling check,
+                # not just any file anywhere that happens to share the
+                # basename) — never embeddings.db or topics.json themselves,
+                # whose disappearance means genuine corruption and must still
+                # raise (see the constant's docstring). Gated on the basename
+                # plus the sibling check, not on whether `rel` came from
+                # extra_files (the split layout) or the workspace walk (the
+                # default layout): the same SQLite WAL/SHM checkpoint race is
+                # equally benign either way, so tolerating it only for one
+                # layout left the more common default layout failing publishes
+                # on nothing actually wrong.
+                rel_dir, _, _ = rel.rpartition("/")
+                sibling_db = f"{rel_dir}/embeddings.db" if rel_dir else "embeddings.db"
+                if (
+                    os.path.basename(rel) in _VANISH_TOLERANT_EXTRA_FILES
+                    and sibling_db in staged
+                ):
+                    vanished.add(rel)
+                    return
+                raise
+            self._blobs.put(prefix + rel, data)
 
         # Upload the staged blobs concurrently — a version is hundreds of small
         # objects, and serialising a round-trip each made publish minutes-long
@@ -616,8 +662,12 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # parallel_each raises on the first failure, so a partial upload never
         # reaches set_current.
         parallel_each(_upload, files)
+        if vanished:
+            files = [f for f in files if f not in vanished]
         # The manifest is a blob in the version prefix — immutable content, like
-        # the files it lists. Written before the pointer flip.
+        # the files it lists. Written before the pointer flip. Excludes anything
+        # that vanished above, so a reader materialising this version later never
+        # finds the manifest naming a blob that was never actually uploaded.
         self._blobs.put(
             prefix + _MANIFEST,
             json.dumps(

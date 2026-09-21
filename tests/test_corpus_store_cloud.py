@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import pytest
 
@@ -304,6 +306,110 @@ def test_seed_workspace_split_index(
     assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == "IDX"
 
 
+def test_seed_workspace_split_index_keeps_root_machinery_in_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A version's root carries more than `files/` and the index: the gather
+    workspace *is* the corpus root, so `documents.json`, `materials.json` and
+    the freshness sentinels ride along too (docs/architecture.md, "The storage
+    seam"). Under a split index dir, at the staged version root those are
+    indistinguishable from `embeddings.db` unless the relocation filters to
+    the named index-file set (issue #224) — without the filter they get
+    relocated right along with it, losing `last-gathered` for the whole
+    gather (mis-firing the first-gather read guard) and `materials.json`
+    (forcing a full re-download of every meeting material)."""
+    store, _ = _store(tmp_path)
+    ws = tmp_path / "src"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "d.txt").write_text("draft")
+    (ws / "embeddings.db").write_text("IDX")
+    (ws / "topics.json").write_text("{}")
+    (ws / "documents.json").write_text('{"draft-x": {"expires": "", "state": null}}')
+    (ws / "materials.json").write_text('{"agenda.pdf": "rev1"}')
+    (ws / "last-gathered").write_text("2026-06-04T00:00:00Z")
+    store.publish("tls", str(ws), "v1")
+
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+
+    # The index files landed in the split index dir...
+    idx_dir = tmp_path / "index" / "tls"
+    assert (idx_dir / "embeddings.db").read_text() == "IDX"
+    assert (idx_dir / "topics.json").read_text() == "{}"
+    # ...but the corpus-root machinery stayed in the gather workspace, where
+    # the embedding build and the next gather's writers expect to find it.
+    assert (dest / "documents.json").read_text() == '{"draft-x": {"expires": "", "state": null}}'
+    assert (dest / "materials.json").read_text() == '{"agenda.pdf": "rev1"}'
+    assert (dest / "last-gathered").read_text() == "2026-06-04T00:00:00Z"
+    assert not (idx_dir / "documents.json").exists()
+    assert not (idx_dir / "last-gathered").exists()
+
+
+def test_seed_workspace_split_index_no_op_when_version_carries_no_index_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A version with no index files (e.g. an externally-sourced member)
+    needs no index-dir swap at all -- staging and swapping index_dir for an
+    unchanged copy of itself would be pure waste, and a new rename the old
+    (pre-split) code never had to make, so a failure there could now roll
+    back a seed that used to have nothing to roll back.
+
+    Content-equality alone doesn't distinguish "never touched" from "staged
+    and swapped back to an equivalent copy", so this spies on
+    `stage_split_dir` directly and asserts it is never called -- the actual
+    behavior this test exists to lock in."""
+    from ietf_llm.store import cloud as cloud_mod
+
+    calls = []
+    real_stage_split_dir = cloud_mod.stage_split_dir
+    monkeypatch.setattr(
+        cloud_mod, "stage_split_dir",
+        lambda *a, **k: calls.append(1) or real_stage_split_dir(*a, **k),
+    )
+
+    store, _ = _store(tmp_path)
+    ws = tmp_path / "src"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "d.txt").write_text("draft")
+    store.publish("tls", str(ws), "v1")  # no embeddings.db in this version
+
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    idx_dir = tmp_path / "index" / "tls"
+    idx_dir.mkdir(parents=True)
+    (idx_dir / "topics.json").write_text("{}")
+
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+
+    assert not calls, "stage_split_dir must not run when there's nothing to relocate"
+    assert (idx_dir / "topics.json").read_text() == "{}"
+    # No scratch/backup sibling was ever created for index_dir.
+    assert sorted(p.name for p in idx_dir.parent.iterdir()) == ["tls"]
+
+
+def test_seed_workspace_split_index_preserves_existing_subdirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preservation loop must carry over a subdirectory under index_dir,
+    not just files -- the surrounding comment already claims 'whatever
+    index_dir already holds ... can't silently lose them', which only held
+    for files before this fix."""
+    store, _ = _store(tmp_path)
+    store.publish("tls", _versioned_workspace(tmp_path, "src", "draft", "IDX"), "v1")
+
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    idx_dir = tmp_path / "index" / "tls"
+    (idx_dir / "subdir").mkdir(parents=True)
+    (idx_dir / "subdir" / "nested.txt").write_text("nested")
+
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+
+    assert (idx_dir / "embeddings.db").read_text() == "IDX"
+    assert (idx_dir / "subdir" / "nested.txt").read_text() == "nested"
+
+
 def test_seed_workspace_no_published_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -327,6 +433,91 @@ def test_seed_workspace_replaces_stale_content(
     assert store.seed_workspace("tls", str(dest)) == "v1"
     assert (dest / "files" / "drafts" / "d.txt").read_text() == "v1draft"
     assert not (dest / "files" / "drafts" / "old.txt").exists()
+
+
+def test_seed_workspace_rolls_back_index_when_workspace_swap_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index swaps in first, then the workspace (matching the exposure
+    profile this method had before the index/root split existed: a reader
+    could see a stale workspace paired with an already-updated index, never
+    the reverse). If the *later* swap fails after the first one already
+    landed, the first must be undone too — pairing v2's index with v1's
+    content (or the reverse) is worse than the seed failing outright, since
+    the gather that follows would build its incremental embed-skip decision
+    from an index that doesn't describe the content it is judging (issue
+    #224 follow-up)."""
+    from ietf_llm import atomicio
+
+    store, _ = _store(tmp_path)
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w1", "v1draft", "IDX1"), "v1"
+    )
+    assert store.seed_workspace("tls", str(dest)) == "v1"  # establish real prior content
+    prior_draft = (dest / "files" / "drafts" / "d.txt").read_text()
+    prior_db = (tmp_path / "index" / "tls" / "embeddings.db").read_text()
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w2", "v2draft", "IDX2"), "v2"
+    )
+    real_swap_dir = atomicio.swap_dir
+    workspace_dir = str(dest)
+
+    def _flaky_swap_dir(dest_path: str, new_tree: str) -> "Optional[str]":
+        if dest_path == workspace_dir:
+            raise OSError("simulated workspace swap failure")
+        return real_swap_dir(dest_path, new_tree)
+
+    # swap_dirs (called by seed_workspace) resolves `swap_dir` as a plain
+    # global in atomicio's own namespace, so patching it there is what
+    # actually affects the call, regardless of how store.cloud imported it.
+    monkeypatch.setattr(atomicio, "swap_dir", _flaky_swap_dir)
+    with pytest.raises(OSError):
+        store.seed_workspace("tls", str(dest))
+
+    # Rolled back to v1 on both sides — never v2's index paired with v1's
+    # content (or the reverse).
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == prior_draft
+    assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == prior_db
+
+
+def test_seed_workspace_relocation_failure_leaves_dest_and_index_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure while relocating index files out of the freshly fetched
+    version — before either directory swap happens — must leave the live
+    workspace and index dir completely alone, not partially updated (issue
+    #224 follow-up)."""
+    store, _ = _store(tmp_path)
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w1", "v1draft", "IDX1"), "v1"
+    )
+    assert store.seed_workspace("tls", str(dest)) == "v1"  # establish real prior content
+    prior_draft = (dest / "files" / "drafts" / "d.txt").read_text()
+    prior_db = (tmp_path / "index" / "tls" / "embeddings.db").read_text()
+
+    store.publish(
+        "tls", _versioned_workspace(tmp_path, "w2", "v2draft", "IDX2"), "v2"
+    )
+    real_move = shutil.move
+
+    def _flaky_move(src: str, dst: str) -> str:
+        if os.path.basename(src) == "embeddings.db":
+            raise OSError("simulated relocation failure")
+        return real_move(src, dst)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.shutil.move", _flaky_move)
+    with pytest.raises(OSError):
+        store.seed_workspace("tls", str(dest))
+
+    assert (dest / "files" / "drafts" / "d.txt").read_text() == prior_draft
+    assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == prior_db
 
 
 # --- read-path access marker + gather time (cloud backend) ----------------

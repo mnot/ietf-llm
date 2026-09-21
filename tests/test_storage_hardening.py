@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -395,6 +396,138 @@ def test_publish_includes_extra_files(tmp_path: Path) -> None:
     assert (Path(got) / "files" / "x.md").read_text() == "f"
 
 
+def test_publish_tolerates_extra_file_vanishing_mid_upload(tmp_path: Path) -> None:
+    """An `extra_files` entry (the split-index files) can disappear benignly
+    between `_index_extra_files` listing it and `publish` reading it — e.g.
+    SQLite checkpointing away `embeddings.db`'s WAL/SHM sidecars. That must
+    not fail the whole gather, and the vanished file must not be named in the
+    manifest either (a materialising reader later would otherwise find the
+    manifest promising a blob that was never uploaded)."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    idx_dir = tmp_path / "fastindex" / "tls"
+    idx_dir.mkdir(parents=True)
+    db = idx_dir / "embeddings.db"
+    db.write_bytes(b"DB")
+    wal = idx_dir / "embeddings.db-wal"
+    wal.write_bytes(b"WAL")
+    # The wal sidecar vanishes (checkpointed away) before publish reads it —
+    # embeddings.db itself is present throughout.
+    extra_files = {"embeddings.db": str(db), "embeddings.db-wal": str(wal)}
+    wal.unlink()
+
+    store.publish("tls", str(ws), version="v1", extra_files=extra_files)
+
+    got = store.local_index_dir("tls")
+    assert got is not None
+    assert (Path(got) / "embeddings.db").read_bytes() == b"DB"
+    assert not (Path(got) / "embeddings.db-wal").exists()
+    manifest = json.loads(
+        (tmp_path / "bucket" / "corpora" / "tls" / "versions" / "v1" / "manifest.json")
+        .read_text()
+    )
+    assert "embeddings.db-wal" not in manifest["files"]
+    assert "embeddings.db" in manifest["files"]
+
+
+def test_publish_tolerates_wal_shm_vanishing_from_the_default_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same benign SQLite WAL/SHM checkpoint race tolerated above for the
+    split-index layout (extra_files) is identical in the default (unsplit)
+    layout, where these sidecars are picked up by the ordinary workspace
+    walk instead -- the vanish-tolerance is gated on the basename alone, not
+    on which path found the file, so this must be tolerated too rather than
+    failing the whole publish on nothing actually wrong.
+
+    Simply unlinking the file before calling publish() wouldn't reproduce
+    the race: os.walk would just never list it, which is already handled
+    trivially. The real race is listed-then-vanished-before-read, so the
+    disappearance is simulated at the read (open()) step instead, exactly
+    like a checkpoint landing between the walk and the upload would."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    db = ws / "embeddings.db"
+    db.write_bytes(b"DB")
+    wal = ws / "embeddings.db-wal"
+    wal.write_bytes(b"WAL")
+
+    real_open = open
+
+    def _flaky_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == str(wal):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.open", _flaky_open, raising=False)
+    store.publish("tls", str(ws), version="v1")
+
+    manifest = json.loads(
+        (tmp_path / "bucket" / "corpora" / "tls" / "versions" / "v1" / "manifest.json")
+        .read_text()
+    )
+    assert "embeddings.db-wal" not in manifest["files"]
+    assert "embeddings.db" in manifest["files"]
+
+
+def test_publish_still_raises_when_real_content_vanishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vanish-tolerance is scoped to the specific WAL/SHM basenames in
+    _VANISH_TOLERANT_EXTRA_FILES only -- any other file (real gathered
+    content, embeddings.db or topics.json themselves) disappearing
+    mid-publish means genuine corruption, so that still raises rather than
+    silently dropping content from a published version."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "x.md").write_text("f")
+    doomed = ws / "files" / "y.md"
+    doomed.write_text("f2")
+
+    real_open = open
+
+    def _flaky_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == str(doomed):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.open", _flaky_open, raising=False)
+    with pytest.raises(FileNotFoundError):
+        store.publish("tls", str(ws), version="v1")
+
+
+def test_publish_still_raises_for_a_namesake_with_no_sibling_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The WAL/SHM vanish-tolerance is scoped to a genuine SQLite sidecar of
+    a real embeddings.db in this same version (a sibling check), not any
+    file anywhere that happens to share one of those two basenames -- a real
+    gathered file that coincidentally shares the name must still raise."""
+    store = _cloud(tmp_path)
+    ws = tmp_path / "ws"
+    # A file named exactly like the tolerated sidecar, but with no
+    # embeddings.db next to it -- not a real SQLite artifact.
+    (ws / "files" / "attachments").mkdir(parents=True)
+    doomed = ws / "files" / "attachments" / "embeddings.db-wal"
+    doomed.write_text("not actually sqlite")
+
+    real_open = open
+
+    def _flaky_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == str(doomed):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("ietf_llm.store.cloud.open", _flaky_open, raising=False)
+    with pytest.raises(FileNotFoundError):
+        store.publish("tls", str(ws), version="v1")
+
+
 def test_index_extra_files_empty_when_inside_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -423,6 +556,27 @@ def test_index_extra_files_captures_split_index(
     extras = gr._index_extra_files("tls", str(ws))
     assert set(extras) == {"embeddings.db", "embeddings.db-wal"}
     assert extras["embeddings.db"] == str(split / "tls" / "embeddings.db")
+
+
+def test_index_extra_files_excludes_non_index_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A split index dir is meant to hold only `INDEX_FILE_NAMES` — but if a
+    root artifact (`documents.json`, a sentinel) ever ended up there too, it
+    must not be uploaded to the version root as if it were corpus content
+    (the write-side half of the issue #224 round trip: a future re-widening
+    of this filter is what the read side's regression test can't catch)."""
+    from ietf_llm.gather import runner as gr
+
+    ws = tmp_path / "cache" / "tls"
+    ws.mkdir(parents=True)
+    split = tmp_path / "fastindex"
+    (split / "tls").mkdir(parents=True)
+    (split / "tls" / "embeddings.db").write_bytes(b"DB")
+    (split / "tls" / "documents.json").write_text("{}")  # not an index file
+    monkeypatch.setattr(gr, "get_index_dir", lambda: str(split))
+    extras = gr._index_extra_files("tls", str(ws))
+    assert set(extras) == {"embeddings.db"}
 
 
 # --- scratch reaper: bound per-replica materialised versions ---
@@ -466,3 +620,25 @@ def test_reaper_skips_tmp_staging_dirs(tmp_path: Path) -> None:
     store._reap_scratch("tls", "v1")  # current is v1
     # An in-progress / crashed staging dir is never touched by the reaper.
     assert (tmp_path / "scratch" / "tls" / "v2.tmp.deadbeef").is_dir()
+
+
+def test_any_indexed_wg_skips_leaked_scratch_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leaked `seed_workspace`/`_install_tree` scratch dir under the index
+    root (`atomicio.scratch_sibling_name`, dot-prefixed) can itself contain a
+    staged `embeddings.db` -- the readiness probe's index picker must not
+    treat it as a real corpus (issue #224 follow-up)."""
+    from ietf_llm.embeddings.storage import any_indexed_wg
+
+    index_root = tmp_path / "index"
+    (index_root / ".tls.seed.deadbeef").mkdir(parents=True)
+    (index_root / ".tls.seed.deadbeef" / "embeddings.db").write_bytes(b"LEAKED")
+    monkeypatch.setattr(
+        "ietf_llm.embeddings.storage.get_index_dir", lambda: str(index_root)
+    )
+    assert any_indexed_wg() is None  # the leaked scratch dir must not count
+
+    (index_root / "tls").mkdir(parents=True)
+    (index_root / "tls" / "embeddings.db").write_bytes(b"REAL")
+    assert any_indexed_wg() == "tls"

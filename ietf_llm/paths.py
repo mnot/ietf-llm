@@ -56,6 +56,23 @@ import os
 import re
 from typing import Any, Iterator, List, Optional, Tuple
 
+#: Filenames that live at `<wg>/` (beside `files/`, one level up) and are
+#: index machinery, not corpus content: the embeddings DB (`embeddings/
+#: storage.py`), its SQLite WAL/SHM sidecars, and the topic-routing sidecar
+#: (`embeddings/topics.py`). This is the one place both directions of the
+#: split-index round trip name the set — `gather.runner._index_extra_files`
+#: (write: what a split `IETF_LLM_INDEX_DIR` uploads to a published version's
+#: root), `store.cloud.CloudCorpusStore.seed_workspace` (read: what to
+#: relocate back out of a freshly staged version into the index dir), and
+#: `seed.format`'s bundle assembly / seed-install relocation (the same split,
+#: for the public seed store) — so they cannot drift apart (issue #224): a
+#: version/bundle root also carries `documents.json`, `materials.json` and
+#: the freshness sentinels, indistinguishable from index files once staged
+#: unless every consumer of the split names the identical set.
+INDEX_FILE_NAMES = frozenset(
+    {"embeddings.db", "embeddings.db-wal", "embeddings.db-shm", "topics.json"}
+)
+
 
 def get_config_dir() -> str:
     """Return the configuration directory, creating it if necessary.

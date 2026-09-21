@@ -726,9 +726,6 @@ replica that hasn't touched a corpus yet just reports "not recorded", exactly
 like an absent sentinel always has; the whole resolution is wrapped
 best-effort as well, so a misconfigured or unrecognised store backend
 degrades the same way instead of raising out of a health check (issue #223).
-Under a split `IETF_LLM_INDEX_DIR`, seeding still moves this machinery out of
-the workspace, because it cannot tell root artifacts from index files (issue
-#224).
 
 That seam-routed pair (`last_gathered` / `seed_source`) answers "what does
 *this deployment's configured backend* currently think", which is what
@@ -743,6 +740,39 @@ deployment where `IETF_LLM_STORE_BACKEND=cloud` for the read/serve path, these
 callers still need "what did *this* local run just do", which the seam-routed
 readers cannot answer (they would report a different backend's state, or
 nothing at all).
+
+Under a split `IETF_LLM_INDEX_DIR`, `seed_workspace` materialises the current
+version into scratch, where its top-level *index* files (`embeddings.db` and
+its SQLite sidecars, plus `topics.json`) are otherwise indistinguishable from
+the root artifacts above (`documents.json`, `materials.json`, the sentinels) —
+a version is the whole corpus root, not just `files/` plus the index.
+`paths.INDEX_FILE_NAMES` names the index-file set once (a bare module
+constant, not a `CorpusStore` method — filenames are `paths.py`'s job, per
+that module's own docstring) and is shared by every consumer of this split:
+the write side, `gather.runner._index_extra_files` (what to upload from a
+split index dir into the version root); this read side, `seed_workspace`; and
+the public seed store's identical split, `seed.format`'s bundle assembly and
+`seed.fetch._install_tree`'s install-side relocation — so none of them can draw
+this line differently and drift apart again (issue #224; a second, disconnected
+copy of the list in `seed.format` had already done exactly that, missing the
+SQLite sidecars).
+
+Both `seed_workspace` and `_install_tree` stage the version's index files into
+their own temp dir — via the one shared `atomicio.stage_split_dir`, not two
+independent implementations — seeded with whatever the live index dir already
+holds and isn't being replaced (a `.building` scratch file, a `topics.json`
+this version's gather didn't regenerate, even a subdirectory) so the swap
+below can't silently lose them, and skipped entirely when the version carries
+no index files (nothing to relocate, so no swap to risk). The staged tree
+swaps into place *before* the corpus content, via `atomicio.swap_dirs`: one
+directory rename can't itself be atomic with another, so `swap_dirs` treats a
+list of them as one unit, unwinding every swap that already landed if a later
+one fails. A seed or install either lands as a whole or leaves every directory
+exactly as it was — never index and content drawn from two different
+versions. Every scratch/backup directory this creates
+(`atomicio.scratch_sibling_name`) is dot-prefixed, so a leaked one (a killed
+process, a cleanup that silently failed) is invisible to `cached_wg_names()`
+and `any_indexed_wg()` instead of surfacing as a phantom corpus or index.
 
 Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config/store.py`,
 `get_config_store()`), chosen by the same `IETF_LLM_STORE_BACKEND` selector but

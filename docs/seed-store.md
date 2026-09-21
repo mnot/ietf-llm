@@ -23,9 +23,9 @@ text adds little over the vectors. An
 [externally-sourced member](#externally-sourced-members) is the exception: it
 has no `files/` tree, because its text is in the index.
 
-- **Included:** `files/` (minus `raw/`), `embeddings.db`, `topics.json`, and the
-  incremental-gather manifests (`documents.json`, `materials.json`,
-  `last-gathered`, `github/`).
+- **Included:** `files/` (minus `raw/`), `embeddings.db` (and its SQLite WAL/SHM
+  sidecars, when present), `topics.json`, and the incremental-gather manifests
+  (`documents.json`, `materials.json`, `last-gathered`, `github/`).
 - **Excluded:** `files/raw/` (not indexed), `imap-cache/` (large; already in
   `threads/`), and producer-local sidecars (`gather-metrics.json`, `seed-source`).
 

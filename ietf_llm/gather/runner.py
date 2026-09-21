@@ -53,7 +53,7 @@ from ..corpus import canonical
 from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
-from ..paths import get_cache_dir, get_index_dir
+from ..paths import INDEX_FILE_NAMES, get_cache_dir, get_index_dir
 from . import pipeline
 
 # `GatherCancelled` lives in `pipeline` (the raiser) and is re-exported here so
@@ -179,7 +179,13 @@ def _index_extra_files(corpus: str, workspace: str) -> Dict[str, str]:
     the cache. Returns `{}` when the index dir is inside the workspace (the
     default layout), since the workspace walk already captures it. So a cloud
     reader replica gets the version's `embeddings.db` regardless of where the
-    index is configured (G-2)."""
+    index is configured (G-2).
+
+    Filtered to `paths.INDEX_FILE_NAMES` — the write side of the split-index
+    round trip `CloudCorpusStore.seed_workspace` reverses — so the two halves
+    name the same set and cannot drift apart again (issue #224): an unrelated
+    file that ended up in a split index dir would otherwise be uploaded to the
+    version root as if it were corpus content."""
     index_dir = os.path.join(get_index_dir(), corpus)
     if not os.path.isdir(index_dir):
         return {}
@@ -190,7 +196,7 @@ def _index_extra_files(corpus: str, workspace: str) -> Dict[str, str]:
     return {
         name: os.path.join(index_dir, name)
         for name in os.listdir(index_dir)
-        if os.path.isfile(os.path.join(index_dir, name))
+        if name in INDEX_FILE_NAMES and os.path.isfile(os.path.join(index_dir, name))
     }
 
 

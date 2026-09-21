@@ -3,10 +3,13 @@ integrity hashing, and safe extraction shared by the publisher
 (`scripts/publish_seeds.py`) and the consumer fetch path (`seed.fetch`).
 
 Deliberately dependency-light — **stdlib only** (`sqlite3`, `tarfile`,
-`hashlib`, `json`), no network, no torch, no gather imports — so both the
-producer script and the consumer can import it cheaply and it stays trivially
-testable. Callers pass in resolved paths and values; this module owns the format,
-not where files live (that is `paths.py`'s job). See `docs/seed-store.md`.
+`hashlib`, `json`) plus `paths.INDEX_FILE_NAMES` (itself stdlib-only: no
+network, no torch, no gather imports) — so both the producer script and the
+consumer can import it cheaply and it stays trivially testable. Callers pass
+in resolved paths and values; this module owns the format, not where files
+live (that is `paths.py`'s job — `INDEX_FILE_NAMES` is exactly that: which
+filenames are index machinery, shared with the cloud store's identical
+split, issue #224). See `docs/seed-store.md`.
 
 Layout on the static host::
 
@@ -16,8 +19,9 @@ Layout on the static host::
 
 A bundle's arcnames are version-relative paths a consumer installs into
 ``<cache>/<corpus>/``: ``files/…`` (minus ``files/raw/``), the incremental-gather
-manifests, and the index files (``embeddings.db``, ``topics.json``) at the top
-level even when ``IETF_LLM_INDEX_DIR`` splits them onto a separate volume.
+manifests, and the index files (``INDEX_FILES`` — ``embeddings.db`` and its
+SQLite WAL/SHM sidecars, plus ``topics.json``) at the top level even when
+``IETF_LLM_INDEX_DIR`` splits them onto a separate volume.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..paths import INDEX_FILE_NAMES
+
 #: Bumped only on an incompatible change to the JSON schema below. A consumer
 #: refuses an index whose `format` it does not understand.
 FORMAT_VERSION = 1
@@ -40,8 +46,11 @@ INDEX_NAME = "index.json"
 
 #: The index files that live in `IETF_LLM_INDEX_DIR/<corpus>/` rather than the
 #: corpus cache dir, and so are added to a bundle explicitly (top-level arcnames)
-#: rather than picked up by the corpus-dir walk.
-INDEX_FILES: Tuple[str, ...] = ("embeddings.db", "topics.json")
+#: rather than picked up by the corpus-dir walk. The same set the cloud store's
+#: split-index round trip uses (`paths.INDEX_FILE_NAMES`), so the seed-store
+#: bundle format and that round trip cannot draw this line differently
+#: (issue #224) — `paths.py` is where the codebase already says "files live".
+INDEX_FILES = INDEX_FILE_NAMES
 
 #: Streaming read size for hashing / copying.
 _CHUNK = 1 << 20
@@ -376,8 +385,8 @@ def iter_bundle_members(corpus_dir: str, index_dir: str) -> List[Tuple[str, str]
     Excludes the `files/raw/` subtree (not indexed; grep/NotebookLM only) and
     producer-local sidecars (`gather-metrics.json`, the `last-accessed` /
     `.live-cache.json` read-path state, any `.building` scratch DB). The index
-    files (`embeddings.db`, `topics.json`) are added from `index_dir` at the top
-    level, so a split `IETF_LLM_INDEX_DIR` still lands them in the bundle."""
+    files (`INDEX_FILES`) are added from `index_dir` at the top level, so a
+    split `IETF_LLM_INDEX_DIR` still lands them in the bundle."""
     members: Dict[str, str] = {}
     for root, _dirs, names in os.walk(corpus_dir):
         for name in names:
