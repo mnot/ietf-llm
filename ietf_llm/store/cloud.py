@@ -37,6 +37,7 @@ from ..paths import get_index_dir
 from .blobs import BlobStore, parallel_each
 from .control import KvControlPlane
 from .corpus import (
+    INDEX_FILE_NAMES,
     CorpusStore,
     VersionVanished,
     pinned_version,
@@ -372,15 +373,19 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         try:
             self._fetch_version_to(corpus, version, tmp)
             if split_index:
-                # Relocate the version's top-level files so only `files/` is
-                # swapped into the workspace. BUG (issue #224): this moves
-                # *every* top-level file, but the version root is the corpus
-                # root — it carries `documents.json`, `materials.json` and the
-                # sentinels as well as the index, and at this point they are
-                # indistinguishable. So they are relocated out of the workspace
-                # too. The move needs filtering to the index files.
+                # Relocate the version's index files (only) so `files/` plus
+                # the root-level machinery a gather writes beside it
+                # (`documents.json`, `materials.json`, the freshness
+                # sentinels) stay in the swapped workspace — the version root
+                # is the corpus root, so all of that rode along with
+                # `embeddings.db` and is otherwise indistinguishable from it
+                # (issue #224). `INDEX_FILE_NAMES` is the one list shared with
+                # `gather.runner._index_extra_files`, the write side of this
+                # same round trip.
                 os.makedirs(index_dir, exist_ok=True)
                 for name in os.listdir(tmp):
+                    if name not in INDEX_FILE_NAMES:
+                        continue
                     src = os.path.join(tmp, name)
                     if not os.path.isfile(src):
                         continue

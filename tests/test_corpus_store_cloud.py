@@ -304,6 +304,45 @@ def test_seed_workspace_split_index(
     assert (tmp_path / "index" / "tls" / "embeddings.db").read_text() == "IDX"
 
 
+def test_seed_workspace_split_index_keeps_root_machinery_in_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A version's root carries more than `files/` and the index: the gather
+    workspace *is* the corpus root, so `documents.json`, `materials.json` and
+    the freshness sentinels ride along too (docs/architecture.md, "The storage
+    seam"). Under a split index dir those used to be indistinguishable from
+    `embeddings.db` at the staged version root and were relocated right along
+    with it (issue #224) — losing `last-gathered` for the whole gather (mis-
+    firing the first-gather read guard) and `materials.json` (forcing a full
+    re-download of every meeting material)."""
+    store, _ = _store(tmp_path)
+    ws = tmp_path / "src"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "d.txt").write_text("draft")
+    (ws / "embeddings.db").write_text("IDX")
+    (ws / "topics.json").write_text("{}")
+    (ws / "documents.json").write_text('{"draft-x": {"expires": "", "state": null}}')
+    (ws / "materials.json").write_text('{"agenda.pdf": "rev1"}')
+    (ws / "last-gathered").write_text("2026-06-04T00:00:00Z")
+    store.publish("tls", str(ws), "v1")
+
+    monkeypatch.setenv("IETF_LLM_INDEX_DIR", str(tmp_path / "index"))
+    dest = tmp_path / "cache" / "tls"
+    assert store.seed_workspace("tls", str(dest)) == "v1"
+
+    # The index files landed in the split index dir...
+    idx_dir = tmp_path / "index" / "tls"
+    assert (idx_dir / "embeddings.db").read_text() == "IDX"
+    assert (idx_dir / "topics.json").read_text() == "{}"
+    # ...but the corpus-root machinery stayed in the gather workspace, where
+    # the embedding build and the next gather's writers expect to find it.
+    assert (dest / "documents.json").read_text() == '{"draft-x": {"expires": "", "state": null}}'
+    assert (dest / "materials.json").read_text() == '{"agenda.pdf": "rev1"}'
+    assert (dest / "last-gathered").read_text() == "2026-06-04T00:00:00Z"
+    assert not (idx_dir / "documents.json").exists()
+    assert not (idx_dir / "last-gathered").exists()
+
+
 def test_seed_workspace_no_published_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

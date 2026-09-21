@@ -716,9 +716,18 @@ Only `documents.json` reads through this accessor today. The `last-gathered` and
 `seed-source` sentinels are published the same way but their readers still
 compose from `get_cache_dir()`, so on a cloud replica they are silently absent —
 costing every tool response its freshness line, and mis-firing the first-gather
-read guard (issue #223). Under a split `IETF_LLM_INDEX_DIR`, seeding also moves
-this machinery out of the workspace, because it cannot tell root artifacts from
-index files (issue #224).
+read guard (issue #223).
+
+Under a split `IETF_LLM_INDEX_DIR`, `seed_workspace` materialises the current
+version into scratch and must relocate the *index* files (`embeddings.db` and
+its SQLite sidecars, plus `topics.json`) out to the index dir before swapping
+the rest into the gather workspace. At the staged version root those files are
+otherwise indistinguishable from the root artifacts above (`documents.json`,
+`materials.json`, the sentinels) — a version is the whole corpus root, not just
+`files/` plus the index. `CorpusStore.INDEX_FILE_NAMES` names the index-file set
+once and is shared with the write side, `gather.runner._index_extra_files` (what
+to upload from a split index dir into the version root), so the two halves of
+the round trip cannot drift apart (issue #224).
 
 Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config/store.py`,
 `get_config_store()`), chosen by the same `IETF_LLM_STORE_BACKEND` selector but
