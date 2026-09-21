@@ -249,6 +249,22 @@ def test_debounce_explicit_interval_overrides_env(isolated_home: Path) -> None:
     assert debounce_reason("wg", min_interval_hours=4) is not None
 
 
+def test_debounce_ignores_the_store_seam(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # debounce_reason guards a gather about to write the local workspace (the
+    # CLI's pre-flight check, and the MCP gather-entry path), so it must read
+    # local state regardless of the ambient IETF_LLM_STORE_BACKEND -- an
+    # unconfigured/different cloud backend must neither raise nor silently
+    # skip the debounce for a corpus this replica just gathered.
+    record_gather("wg")
+    monkeypatch.setattr(
+        "ietf_llm.store.corpus.get_corpus_store", lambda: _FakeStore(None)
+    )
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert debounce_reason("wg") is not None
+
+
 # --- record_access / last_accessed round-trip -----------------------------
 
 

@@ -594,6 +594,41 @@ def test_first_gather_guard_allows_regather_and_idle(
     assert mcp.common._first_gather_guard("wg") is None
 
 
+def test_first_gather_guard_runs_inside_the_version_pin(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_requires_corpus` resolves and pins a corpus's current version once,
+    so every read in the call sees one consistent version (G-1). Its own
+    call to `_first_gather_guard` must run inside that same pin -- not
+    before it, which would let the guard's `last_gathered` resolve a second,
+    independently-timed version (only observable on the cloud backend, when
+    a publish lands in the gap; see issue #223 review). Verified here by
+    asserting the pin is already active by the time the guard runs."""
+    from ietf_llm.gather import runner as gather_runner
+    from ietf_llm.store.corpus import pinned_version
+
+    write_cache_file(isolated_home, "wg", "digests/index.md", "# x\n")
+    monkeypatch.setattr(gather_runner, "local_inflight", lambda wg: None)
+
+    seen: dict = {}
+    real_guard = mcp.common._first_gather_guard
+
+    def _spy_guard(wg: str) -> None:
+        seen["pinned_during_guard"] = pinned_version(wg)
+        return real_guard(wg)
+
+    monkeypatch.setattr(mcp.common, "_first_gather_guard", _spy_guard)
+
+    @mcp.common._requires_corpus
+    def _tool(wg: str) -> str:
+        seen["pinned_during_call"] = pinned_version(wg)
+        return "ok"
+
+    assert _tool("wg") == "ok"
+    assert seen["pinned_during_guard"] is not None
+    assert seen["pinned_during_guard"] == seen["pinned_during_call"]
+
+
 def test_timeout_note_names_running_gather(monkeypatch: pytest.MonkeyPatch) -> None:
     from ietf_llm.gather import runner as gather_runner
 

@@ -499,6 +499,12 @@ def debounce_reason(
     `--force` / `force=True` bypass the debounce by simply not calling
     this. A returned string is a success state, not an error: the existing
     snapshot is fresh enough to query as-is.
+
+    Local-only: this guards a gather about to write the local workspace
+    (the CLI's pre-flight check, and the MCP gather-entry path), so it must
+    read what's actually there regardless of the ambient
+    `IETF_LLM_STORE_BACKEND` — a plain local `ietf-llm <wg>` run must not
+    depend on cloud store config it has nothing to do with.
     """
     hours = (
         gather_min_interval_hours()
@@ -507,7 +513,7 @@ def debounce_reason(
     )
     if hours <= 0:
         return None
-    when = last_gathered(wg)
+    when = local_last_gathered(wg)
     if when is None:
         return None
     age = datetime.now(timezone.utc) - when

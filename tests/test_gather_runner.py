@@ -248,12 +248,10 @@ def test_suppress_follows_cli_flags(
 
 
 def test_cloud_backend_trips_both_without_flags(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A CLI gather against a cloud backend suppresses even with no flags.
     from ietf_llm.config.store import CloudConfigStore
-    from ietf_llm.store.blobs import FileBlobStore
-    from ietf_llm.store.cloud import CloudCorpusStore
     from ietf_llm.store.control import KvControlPlane
     from ietf_llm.store.kv import InMemoryKvStore
 
@@ -262,17 +260,9 @@ def test_cloud_backend_trips_both_without_flags(
     # plane, so give it an in-memory one rather than requiring a real S3 URL.
     cloud_config = CloudConfigStore(KvControlPlane(InMemoryKvStore()))
     monkeypatch.setattr(main_mod.config, "get_config_store", lambda: cloud_config)
-    # The freshness debounce check (`cli_gather_skip` -> `debounce_reason`) now
-    # resolves the corpus's current version through the CorpusStore seam
-    # (issue #223) instead of composing a cache path — give it a working
-    # in-memory cloud store, same reasoning as the config store above, rather
-    # than the real (deliberately unconfigured) backend.
-    cloud_store = CloudCorpusStore(
-        KvControlPlane(InMemoryKvStore()),
-        FileBlobStore(str(tmp_path / "bucket")),
-        str(tmp_path / "scratch"),
-    )
-    monkeypatch.setattr("ietf_llm.store.corpus.get_corpus_store", lambda: cloud_store)
+    # The freshness debounce check (`cli_gather_skip` -> `debounce_reason`)
+    # reads the local workspace directly (`local_last_gathered`), never the
+    # CorpusStore seam, so no cloud CorpusStore double is needed here.
     seen = _capture_suppress(monkeypatch, (False, True))
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)

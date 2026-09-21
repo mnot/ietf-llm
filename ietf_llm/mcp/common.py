@@ -201,25 +201,33 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
                 f"{gather_suggestion(wg, purpose='to gather it')}, or call "
                 "`list_corpora` to see what is available."
             )
-        # Refuse rather than serve half-built content while a corpus's *first*
-        # gather runs — there is no prior snapshot to fall back on, so the cache
-        # is being built in place. A re-gather is not guarded (it keeps serving
-        # the previous complete version).
-        first_gather = _first_gather_guard(wg)
-        if first_gather is not None:
-            return first_gather
-        # Record the access now the corpus is known to exist: this guard fronts
-        # every per-corpus read tool but not the cross-corpus discovery tools
-        # (list_corpora / search_corpora / which_corpus), so listing never
-        # counts as use. Coarsened and best-effort — see access.note_access.
-        note_access(wg)
+
+        def _guarded_call() -> str:
+            # Refuse rather than serve half-built content while a corpus's
+            # *first* gather runs — there is no prior snapshot to fall back
+            # on, so the cache is being built in place. A re-gather is not
+            # guarded (it keeps serving the previous complete version).
+            # Runs inside the caller's `pin_corpus_version` block so its own
+            # freshness read resolves against the same pinned version already
+            # chosen above, not a second, independently-resolved one.
+            first_gather = _first_gather_guard(wg)
+            if first_gather is not None:
+                return first_gather
+            # Record the access now the corpus is known to exist: this guard
+            # fronts every per-corpus read tool but not the cross-corpus
+            # discovery tools (list_corpora / search_corpora / which_corpus),
+            # so listing never counts as use. Coarsened, best-effort — see
+            # access.note_access.
+            note_access(wg)
+            return fn(wg, *args, **kwargs)
+
         try:
             with pin_corpus_version(wg, version):
-                return fn(wg, *args, **kwargs)
+                return _guarded_call()
         except VersionVanished as vanished:
             try:
                 with pin_corpus_version(wg, vanished.new_version):
-                    return fn(wg, *args, **kwargs)
+                    return _guarded_call()
             except VersionVanished:
                 return (
                     f"Corpus '{wg}' was re-gathered while this request ran and "
