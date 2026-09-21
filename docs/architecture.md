@@ -712,12 +712,18 @@ a gather (`materials.json`, and `documents.json`'s embedding-skip reader) stay o
 the workspace path: they describe the tree being built, which is not yet
 published.
 
-`documents.json` and the `last-gathered` / `seed-source` sentinels (`freshness.py`)
-all read through this accessor now, so every top-level tool response gets its
-freshness line and the first-gather read guard sees a cloud replica's real
-published state. Under a split `IETF_LLM_INDEX_DIR`, seeding still moves this
-machinery out of the workspace, because it cannot tell root artifacts from
-index files (issue #224).
+`documents.json` reads through `local_corpus_dir` (a request already committed to
+materialising the corpus for a real read). The `last-gathered` / `seed-source`
+sentinels (`freshness.py`) instead read through `materialised_corpus_dir` — the
+corpus-root counterpart of `materialised_cache_dir`, same non-fetching contract:
+the version root only if it is *already* staged on this replica's scratch, None
+otherwise, never a fetch. Freshness is read from `/health`, `/metrics`, and other
+per-corpus sweeps across the whole fleet (R18: no upstream call), so resolving it
+through the fetching accessor would turn a readiness probe into a per-corpus blob
+download; a cold replica that hasn't touched a corpus yet just reports "not
+recorded", exactly like an absent sentinel always has (issue #223). Under a split
+`IETF_LLM_INDEX_DIR`, seeding still moves this machinery out of the workspace,
+because it cannot tell root artifacts from index files (issue #224).
 
 Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config/store.py`,
 `get_config_store()`), chosen by the same `IETF_LLM_STORE_BACKEND` selector but

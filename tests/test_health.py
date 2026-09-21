@@ -125,3 +125,44 @@ def test_health_route_includes_freshness(isolated_home):
     assert body["version"] == __version__
     assert body["corpora"]["count"] == 1
     assert body["corpora"]["oldest"]["corpus"] == "tls"
+
+
+# --- R18 on the cloud backend: freshness must never trigger a blob fetch ---
+
+
+def test_corpora_freshness_never_materialises_on_cloud_backend(
+    tmp_path, monkeypatch
+):
+    """`/health` and `/metrics` read `last-gathered` for every cached corpus
+    (R18: no upstream call). On the cloud backend, resolving that sentinel
+    through the wrong accessor (`local_corpus_dir`, which materialises a
+    version's full blob set onto scratch on a miss) would turn a readiness
+    probe into a per-corpus S3 download. This locks the fix: a published-but-
+    unstaged corpus is reported as untracked (no sentinel value available
+    yet on this replica), and — the actual regression guard — nothing lands
+    on local scratch as a side effect of asking."""
+    from ietf_llm.store.blobs import FileBlobStore
+    from ietf_llm.store.cloud import CloudCorpusStore
+    from ietf_llm.store.control import KvControlPlane
+    from ietf_llm.store.kv import InMemoryKvStore
+
+    control = KvControlPlane(InMemoryKvStore())
+    blobs = FileBlobStore(str(tmp_path / "bucket"))
+    scratch = tmp_path / "scratch"
+    store = CloudCorpusStore(control, blobs, str(scratch))
+
+    ws = tmp_path / "ws"
+    (ws / "files").mkdir(parents=True)
+    (ws / "files" / "charter.txt").write_text("hi")
+    (ws / "last-gathered").write_text("2026-06-04T00:00:00Z")
+    store.publish("tls", str(ws), version="v1")
+    assert not scratch.exists()  # publish uploads; it never stages locally
+
+    monkeypatch.setattr(mcp.common, "get_corpus_store", lambda: store)
+    monkeypatch.setattr("ietf_llm.store.corpus.get_corpus_store", lambda: store)
+
+    summary = mcp.serve._corpora_freshness()
+    assert summary["count"] == 1
+    assert summary["tracked"] == 0  # not staged here yet -- degrades cleanly
+    # The regression this guards against: no fetch happened just to answer.
+    assert not scratch.exists()

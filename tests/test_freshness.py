@@ -299,16 +299,19 @@ def test_parse_iso_handles_z_and_malformed() -> None:
 # directly: on the cloud backend the current version lives in per-version
 # scratch, never under the cache root, so that path finds nothing. A minimal
 # fake store (matching the `documents_manifest` test pattern) stands in for
-# `CloudCorpusStore` here without pulling in the real backend.
+# `CloudCorpusStore` here without pulling in the real backend. It implements
+# only `materialised_corpus_dir` (the non-fetching accessor `_read_sentinel_path`
+# actually calls) — not `local_corpus_dir` — since the whole point of that
+# choice is that freshness reads must never reach the fetching path.
 
 
 class _FakeStore:
-    """Reports `root` as the corpus's current version root, or None."""
+    """Reports `root` as the corpus's already-staged version root, or None."""
 
     def __init__(self, root: Optional[Path]) -> None:
         self._root = root
 
-    def local_corpus_dir(self, corpus: str) -> Optional[str]:
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
         return str(self._root) if self._root is not None else None
 
 

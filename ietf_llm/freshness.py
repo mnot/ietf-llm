@@ -24,10 +24,15 @@ below) ride along in the published version like any other corpus-root
 artifact, so their *readers* resolve the current version through the
 `CorpusStore` seam (`_read_sentinel_path`) rather than composing a path from
 the cache root — the same split `documents.json` uses (see
-`gather.sources.documents_manifest`). Writers (`record_gather`,
-`record_seed_source`) always target the local gather workspace
-(`_sentinel_path`), which is what `publish` turns into that version.
-`iso_now` / `parse_iso` are the shared timestamp format both backends use.
+`gather.sources.documents_manifest`). That resolution is deliberately the
+*non-fetching* accessor (`materialised_corpus_dir`, not `local_corpus_dir`):
+freshness is read from `/health`, `/metrics`, and other per-corpus sweeps
+that must never trigger a blob download, so a replica that hasn't already
+materialised `wg` reports "not recorded" rather than fetching it just to
+answer a UX hint. Writers (`record_gather`, `record_seed_source`) always
+target the local gather workspace (`_sentinel_path`), which is what
+`publish` turns into that version. `iso_now` / `parse_iso` are the shared
+timestamp format both backends use.
 """
 
 from __future__ import annotations
@@ -167,17 +172,18 @@ def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
 
 
 def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str]:
-    """The sentinel path for `wg`'s *current version*, resolved through the
-    `CorpusStore` seam, or None if the corpus has no current version.
+    """The sentinel path for `wg`'s current version *if it is already staged
+    on this replica* (`CorpusStore.materialised_corpus_dir`), or None.
 
     Sentinels live in the corpus root beside `files/`, so — like
     `documents.json` (`gather.sources.documents_manifest`) — they ride along in
-    a published version. But on the cloud backend a version is materialised
-    into per-version scratch, never into `<cache>/<wg>/`; composing the path
-    from `get_cache_dir()` there finds nothing, so every reader silently
-    degraded to "not recorded" (issue #223). Resolving through
-    `local_corpus_dir` fixes that; it is the identical `<cache>/<wg>` path on
-    the local backend, so local behaviour is unchanged.
+    a published version, and composing the path from `get_cache_dir()` finds
+    nothing on the cloud backend (issue #223). Deliberately the *non-fetching*
+    accessor, not `local_corpus_dir`: freshness is read from `/health`,
+    `/metrics`, and other per-corpus sweeps that must never turn into a blob
+    download (R18), and the sentinel value is only ever a UX hint, never worth
+    materialising a corpus for. A cold replica that hasn't touched `wg` yet
+    reports "not recorded" here, same as an absent sentinel always has.
 
     Imports `get_corpus_store` locally: `store.corpus` (and `store.cloud`)
     import this module for `record_access` / `last_accessed` / `gathered_at`,
@@ -186,8 +192,23 @@ def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str
     # pylint: disable-next=import-outside-toplevel,cyclic-import
     from .store.corpus import get_corpus_store
 
-    root = get_corpus_store().local_corpus_dir(wg)
+    root = get_corpus_store().materialised_corpus_dir(wg)
     return os.path.join(root, name) if root else None
+
+
+def _read_sentinel_text(wg: str, name: str) -> Optional[str]:
+    """Raw text of `wg`'s `name` sentinel, or None if the corpus has no
+    staged version, the file is absent, or it can't be read. Shared by
+    `_read_sentinel` (parses an ISO timestamp) and `seed_source` (parses
+    JSON), so the "no current version" guard lives in one place."""
+    path = _read_sentinel_path(wg, name)
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None
 
 
 def iso_now() -> str:
@@ -235,17 +256,10 @@ def _read_sentinel(wg: str, name: str) -> Optional[datetime]:
     """Read `wg`'s `name` sentinel as a tz-aware UTC datetime, or None if
     missing / unreadable / malformed.
 
-    Reads through `_read_sentinel_path` (the current-version seam), not the
+    Reads through `_read_sentinel_text` (the current-version seam), not the
     workspace path `_write_sentinel` writes — see that function's docstring."""
-    path = _read_sentinel_path(wg, name)
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = fh.read().strip()
-    except OSError:
-        return None
-    return parse_iso(raw)
+    raw = _read_sentinel_text(wg, name)
+    return parse_iso(raw.strip()) if raw is not None else None
 
 
 def record_gather(wg: str) -> None:
@@ -300,15 +314,14 @@ def record_seed_source(wg: str, *, url: str, version: str, gathered: str) -> Non
 def seed_source(wg: str) -> Optional[Dict[str, Any]]:
     """`wg`'s seed provenance record, or None if it was never seeded.
 
-    Reads through `_read_sentinel_path` (the current-version seam) — see
+    Reads through `_read_sentinel_text` (the current-version seam) — see
     `_read_sentinel` for why."""
-    path = _read_sentinel_path(wg, _SEED_SOURCE_SENTINEL)
-    if path is None:
+    raw = _read_sentinel_text(wg, _SEED_SOURCE_SENTINEL)
+    if raw is None:
         return None
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
+        data = json.loads(raw)
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
 

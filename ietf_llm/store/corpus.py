@@ -237,6 +237,27 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         cloud backend overrides it to consult only staged scratch."""
         return self.local_cache_dir(corpus)
 
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        """The corpus-root counterpart of `materialised_cache_dir`: the current
+        version's root **only if already staged on local disk** — never
+        fetches, never creates. None otherwise.
+
+        This is the accessor a reader of a root-level artifact (`documents.json`,
+        the `last-gathered` / `seed-source` sentinels) uses when the read is
+        best-effort discovery rather than a request that has already committed
+        to materialising the corpus — `freshness.py`'s sentinel readers, so a
+        `/health` or `/metrics` scrape (documented as making no upstream call)
+        or a `list_corpora` sweep across every cached corpus cannot turn into a
+        per-corpus blob download. Callers degrade gracefully on None (no
+        freshness info recorded yet on this replica), exactly like an absent
+        sentinel file always has.
+
+        The default delegates to `local_corpus_dir`, correct for the local
+        backend (already a read-only existence check). The cloud backend
+        overrides it to consult only staged scratch, mirroring
+        `materialised_cache_dir`."""
+        return self.local_corpus_dir(corpus)
+
     def seed_workspace(self, corpus: str, dest_root: str) -> Optional[str]:
         """Pre-populate a gather workspace at `dest_root` with the current
         published version of `corpus`, before the gather runs. Returns the

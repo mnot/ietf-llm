@@ -74,6 +74,28 @@ def test_publish_creates_index_manifest_bundle(isolated_home, tmp_path):
     assert idx.compat.embedding_model.endswith("bge-small-en-v1.5")
 
 
+def test_local_last_gathered_ignores_ambient_store_backend(isolated_home, monkeypatch):
+    """`_local_last_gathered` reads the sentinel directly off the local cache
+    dir this publisher bundles from -- unlike `freshness.last_gathered`, which
+    now resolves through the `CorpusStore` seam (issue #223). This script
+    never gathers or bundles through that seam (`_corpus_paths` composes
+    straight from `get_cache_dir()`), so its notion of "when was this
+    gathered" must stay tied to the local cache regardless of what backend the
+    ambient `IETF_LLM_STORE_BACKEND` selects -- an unconfigured/different
+    cloud backend must not make a freshly-gathered local corpus read back as
+    "not gathered locally"."""
+    _gathered("httpbis")
+    corpus_dir = os.path.join(get_cache_dir(), "httpbis")
+    local = publish._local_last_gathered(corpus_dir)
+    assert local is not None
+
+    # Selecting cloud (and leaving it unconfigured — IETF_LLM_STORE_URL /
+    # IETF_LLM_SCRATCH_DIR unset) would make freshness.last_gathered raise;
+    # _local_last_gathered must not even attempt to resolve a CorpusStore.
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
+    assert publish._local_last_gathered(corpus_dir) == local
+
+
 def test_uptodate_skip_then_force(isolated_home, tmp_path):
     store = str(tmp_path / "store")
     _gathered("httpbis")

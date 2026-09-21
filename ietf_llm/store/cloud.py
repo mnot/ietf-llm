@@ -298,6 +298,19 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         files_dir = os.path.join(self._scratch, corpus, version, "files")
         return files_dir if os.path.isdir(files_dir) else None
 
+    def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
+        # The corpus-root counterpart of materialised_cache_dir, same
+        # non-fetching contract: the version root only if already staged on
+        # this replica's scratch, so freshness.py's sentinel readers (used from
+        # /health, /metrics, and other per-corpus sweeps) never turn into a
+        # blob download. Unlike materialised_cache_dir it does not require
+        # `files/`, matching local_corpus_dir.
+        version = pinned_version(corpus) or self.resolve_current(corpus)
+        if version is None:
+            return None
+        root = os.path.join(self._scratch, corpus, version)
+        return root if os.path.isdir(root) else None
+
     def local_index_dir(self, corpus: str) -> Optional[str]:
         # The version's `embeddings.db` sits directly under the version root, so
         # this is the corpus root — same answer, said once. (The two diverge on
