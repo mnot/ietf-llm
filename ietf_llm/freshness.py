@@ -17,10 +17,17 @@ forcing a re-gather to populate the sentinel would be noisier than
 useful. One real gather and we're tracking it from there on.
 
 The `local`-backend `CorpusStore` reaches these through `record_access` /
-`last_accessed` / `last_gathered`; the `cloud` backend keeps the same
-information in its control plane instead (a `last-accessed` sentinel on
-ephemeral scratch would not survive). `iso_now` / `parse_iso` are the shared
-timestamp format both backends use.
+`last_accessed` / `last_gathered`; the `cloud` backend keeps `last-accessed`
+in its control plane instead (a sentinel on ephemeral scratch would not
+survive), but `last-gathered` (and the `seed-source` provenance sentinel
+below) ride along in the published version like any other corpus-root
+artifact, so their *readers* resolve the current version through the
+`CorpusStore` seam (`_read_sentinel_path`) rather than composing a path from
+the cache root — the same split `documents.json` uses (see
+`gather.sources.documents_manifest`). Writers (`record_gather`,
+`record_seed_source`) always target the local gather workspace
+(`_sentinel_path`), which is what `publish` turns into that version.
+`iso_now` / `parse_iso` are the shared timestamp format both backends use.
 """
 
 from __future__ import annotations
@@ -150,7 +157,37 @@ def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) ->
 
 
 def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
+    """The sentinel path in the local gather *workspace* — `<cache>/<wg>/name`.
+
+    Always the write-side path: a sentinel is stamped mid-gather, before
+    publish, into the tree that becomes the new version, never into an
+    already-materialised (immutable) one. See `_read_sentinel_path` for the
+    read side."""
     return os.path.join(get_cache_dir(), wg, name)
+
+
+def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str]:
+    """The sentinel path for `wg`'s *current version*, resolved through the
+    `CorpusStore` seam, or None if the corpus has no current version.
+
+    Sentinels live in the corpus root beside `files/`, so — like
+    `documents.json` (`gather.sources.documents_manifest`) — they ride along in
+    a published version. But on the cloud backend a version is materialised
+    into per-version scratch, never into `<cache>/<wg>/`; composing the path
+    from `get_cache_dir()` there finds nothing, so every reader silently
+    degraded to "not recorded" (issue #223). Resolving through
+    `local_corpus_dir` fixes that; it is the identical `<cache>/<wg>` path on
+    the local backend, so local behaviour is unchanged.
+
+    Imports `get_corpus_store` locally: `store.corpus` (and `store.cloud`)
+    import this module for `record_access` / `last_accessed` / `gathered_at`,
+    so a top-level import here would cycle.
+    """
+    # pylint: disable-next=import-outside-toplevel,cyclic-import
+    from .store.corpus import get_corpus_store
+
+    root = get_corpus_store().local_corpus_dir(wg)
+    return os.path.join(root, name) if root else None
 
 
 def iso_now() -> str:
@@ -196,8 +233,13 @@ def _write_sentinel(wg: str, name: str) -> None:
 
 def _read_sentinel(wg: str, name: str) -> Optional[datetime]:
     """Read `wg`'s `name` sentinel as a tz-aware UTC datetime, or None if
-    missing / unreadable / malformed."""
-    path = _sentinel_path(wg, name)
+    missing / unreadable / malformed.
+
+    Reads through `_read_sentinel_path` (the current-version seam), not the
+    workspace path `_write_sentinel` writes — see that function's docstring."""
+    path = _read_sentinel_path(wg, name)
+    if path is None:
+        return None
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw = fh.read().strip()
@@ -256,8 +298,13 @@ def record_seed_source(wg: str, *, url: str, version: str, gathered: str) -> Non
 
 
 def seed_source(wg: str) -> Optional[Dict[str, Any]]:
-    """`wg`'s seed provenance record, or None if it was never seeded."""
-    path = _sentinel_path(wg, _SEED_SOURCE_SENTINEL)
+    """`wg`'s seed provenance record, or None if it was never seeded.
+
+    Reads through `_read_sentinel_path` (the current-version seam) — see
+    `_read_sentinel` for why."""
+    path = _read_sentinel_path(wg, _SEED_SOURCE_SENTINEL)
+    if path is None:
+        return None
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)

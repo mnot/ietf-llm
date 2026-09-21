@@ -712,12 +712,11 @@ a gather (`materials.json`, and `documents.json`'s embedding-skip reader) stay o
 the workspace path: they describe the tree being built, which is not yet
 published.
 
-Only `documents.json` reads through this accessor today. The `last-gathered` and
-`seed-source` sentinels are published the same way but their readers still
-compose from `get_cache_dir()`, so on a cloud replica they are silently absent —
-costing every tool response its freshness line, and mis-firing the first-gather
-read guard (issue #223). Under a split `IETF_LLM_INDEX_DIR`, seeding also moves
-this machinery out of the workspace, because it cannot tell root artifacts from
+`documents.json` and the `last-gathered` / `seed-source` sentinels (`freshness.py`)
+all read through this accessor now, so every top-level tool response gets its
+freshness line and the first-gather read guard sees a cloud replica's real
+published state. Under a split `IETF_LLM_INDEX_DIR`, seeding still moves this
+machinery out of the workspace, because it cannot tell root artifacts from
 index files (issue #224).
 
 Per-WG **config** rides a *sibling* seam, `ConfigStore` (`config/store.py`,
