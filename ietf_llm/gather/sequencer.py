@@ -36,6 +36,7 @@ from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
 from ..people import build_registry, write_people_digest
 from .cli import build_parser
+from .lifecycle import GatherOutcome
 from .plan import _gather_plan_summary
 from .sources.author import fetch_author_draft_names, resolve_person
 from .sources.charter import process_charter
@@ -521,7 +522,8 @@ def run_gather(
     outcome notes (e.g. auto-tracked GitHub repos) to the caller's status.
     """
     args = build_parser().parse_args(argv)
-    return _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
+    outcome = _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
+    return outcome is not GatherOutcome.UNUSABLE
 
 
 def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
@@ -529,15 +531,17 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     verbosity: Verbosity,
     progress: Optional[ProgressFn] = None,
     note_fn: Optional[Callable[[str], None]] = None,
-) -> bool:
+) -> GatherOutcome:
     """Run the full gather pipeline for a single WG.
 
     Loads the WG's persisted config first (so per-WG --github lists etc.
     apply), then walks the gather stages in order. Mutates args in place
     via config.merge; safe to call repeatedly with different args.wg
-    values for --all. Returns True on success, False if the corpus name
-    was unusable (logged). `progress`, when given, is called as each
-    stage begins (see `_stage_plan`).
+    values for --all. Returns `GATHERED` when the stages ran, `SKIPPED`
+    when the freshness debounce or a reuse hint left the cache as it was
+    (success, but nothing new to publish), or `UNUSABLE` if the corpus
+    name resolved to nothing (logged). `progress`, when given, is called
+    as each stage begins (see `_stage_plan`).
     """
     http_metrics.reset()  # fresh per-corpus egress accounting; see `http_metrics`
 
@@ -557,7 +561,8 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
 
     shape = _resolve_corpus_shape(args, persisted, verbosity)
     if shape is None:
-        return False  # unusable name (typo); _resolve_corpus_shape logged why
+        # Unusable name (typo); _resolve_corpus_shape logged why.
+        return GatherOutcome.UNUSABLE
     synth, group_backed = shape
 
     # Persist a --no-seed / --seed toggle before anything can short-circuit (a
@@ -572,7 +577,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     skip = canonical.cli_gather_skip(args, synthetic=synth, group_backed=group_backed)
     if skip is not None:
         log(skip, verbosity, level=LogLevel.STATUS)
-        return True
+        return GatherOutcome.SKIPPED
 
     # Validate the *new* CLI-provided --draft / --mailing-list / --github
     # values against their authoritative sources before config.merge
@@ -889,4 +894,4 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             "(or --create <GCP_PROJECT>).",
             file=sys.stderr,
         )
-    return True
+    return GatherOutcome.GATHERED

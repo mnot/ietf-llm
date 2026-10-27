@@ -332,9 +332,11 @@ reports *already running*; a request for a different corpus when no slot is free
 taken at enqueue, so the same corpus is never gathered twice across the fleet, and a
 `queued`/`running` record whose gatherer died is relabelled `interrupted` once its lease lapses.
 
-> The CLI (`ietf-llm <corpus>`) does **not** yet participate in the fleet-wide slot, so a cron/shell
-> gather runs alongside the cap rather than counting toward it. Bringing the CLI under the same slot
-> is a planned follow-up.
+The CLI (`ietf-llm <corpus>`, `ietf-llm --all`) runs the same lifecycle (`gather/lifecycle.py`):
+it takes the corpus's lease (refusing, with a non-zero exit, when a gather is already in flight
+here or on another host), waits for a fleet slot, and records its progress to the same status
+record — so a cron gather shows up in `gather_status` like an in-session one (marked as the CLI's),
+and `start_gather` reports it as *already running* while it lasts.
 
 ### Per-host request governor
 
