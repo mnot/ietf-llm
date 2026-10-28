@@ -430,11 +430,12 @@ def test_timeline_drops_empty_year_headings(tmp_path: Path) -> None:
     assert "## 2026" in out
 
 
-def test_timeline_filter_selects_each_datatracker_kind(
+def test_timeline_filter_falls_back_to_row_text_without_kinds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Titles come from the real classifiers, not hand-typed strings, so a
-    # reworded title that stops matching its kind marker fails here.
+    # A digest with no kinds sidecar (written before it existed) is matched
+    # on row text. Titles come from the real classifiers, so a reworded title
+    # that stops matching its marker fails here.
     from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
         datatracker_history as dh,
     )
@@ -467,7 +468,14 @@ def test_timeline_filter_selects_each_datatracker_kind(
             {"type": "published_rfc", "doc": "/api/v1/doc/document/draft-c/"}
         )[1],
         "doc-wglc": dh._classify_doc_event(  # pylint: disable=protected-access
-            {"type": "sent_last_call", "doc": "/api/v1/doc/document/draft-d/"}
+            {
+                "type": "changed_state",
+                "desc": "IETF WG state changed to <b>In WG Last Call</b> from WG Document",
+                "doc": "/api/v1/doc/document/draft-d/",
+            }
+        )[1],
+        "doc-lc": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "sent_last_call", "doc": "/api/v1/doc/document/draft-g/"}
         )[1],
         "chair-departed": chair_titles[0],
         # Row shape the writer gives an I-D Action thread: title, then link.

@@ -373,3 +373,98 @@ def test_chair_logged_by_email_resolves_through_the_registry(
     canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
     assert canonical("bs7652@att.com") == "Barbara Stark"
     assert canonical("unknown@example.org") == "unknown@example.org"
+
+
+def test_event_kind_filter_is_exact_on_a_written_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Rows whose text would fool a substring match: user-controlled issue and
+    # mail titles that contain other kinds' marker phrases.
+    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import digest_path  # pylint: disable=import-outside-toplevel
+
+    rows = [
+        ("issue-opened", "Issue #1 opened: \"Rename a → b\"", None),
+        ("issue-closed", "Issue #2 closed: \"Fix group state opened and published\"", None),
+        ("ballot", "`draft-a`: Some AD → Discuss", "ballots/draft-a.md"),
+        ("group-state", "Group state: Started group", None),
+        ("draft-published", "`draft-b-01` published", "threads/b.md"),
+        ("doc-rfc", "`draft-b` published as RFC", None),
+        ("meeting", "IETF 126 meeting", "minutes `meetings/ietf126-minutes.md`"),
+        ("poll", "Session polls recorded at IETF 126", "meetings/ietf126/polls/p.md"),
+        ("wglc", "WG Last Call thread: \"adoption of Last Call text\"", "threads/c.md"),
+        ("adoption-call", "Adoption call thread: \"x\"", "threads/d.md"),
+        ("doc-lc", "`draft-e`: IETF Last Call announced", None),
+        ("doc-wglc", "`draft-e`: WG Last Call issued", None),
+    ]
+    events = [
+        Event(
+            when=datetime(2026, 1, 1 + i, tzinfo=timezone.utc),
+            kind=kind,
+            title=title,
+            link=link,
+        )
+        for i, (kind, title, link) in enumerate(rows)
+    ]
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: events)
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    path = digest_path(str(tmp_path), "timeline")
+
+    for kind, title, _link in rows:
+        out = query_digest(path, "timeline", event_kind=kind)
+        assert title in out, kind
+        for other_kind, other_title, _ in rows:
+            if other_kind != kind:
+                assert other_title not in out, (kind, other_kind)
+
+    mechanical_free = query_digest(path, "timeline", exclude_mechanical=True)
+    assert "`draft-b-01` published" not in mechanical_free
+    assert "Some AD → Discuss" not in mechanical_free
+    assert "Rename a → b" in mechanical_free
+    assert "`draft-b` published as RFC" in mechanical_free
+
+
+def test_event_kind_filter_ignores_a_sidecar_that_no_longer_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import digest_kinds_path, digest_path  # pylint: disable=import-outside-toplevel
+
+    events = [
+        Event(when=datetime(2026, 1, 1, tzinfo=timezone.utc), kind="meeting",
+              title="IETF 126 meeting"),
+        Event(when=datetime(2026, 1, 2, tzinfo=timezone.utc), kind="doc-rfc",
+              title="`rfc1` published as RFC"),
+    ]
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: events)
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    path = digest_path(str(tmp_path), "timeline")
+    with open(digest_kinds_path(path), "w", encoding="utf-8") as fh:
+        fh.write('{"kinds": ["meeting"]}')  # one row short
+    out = query_digest(path, "timeline", event_kind="doc-rfc")
+    assert "published as RFC" in out and "IETF 126 meeting" not in out
+
+
+def test_an_empty_timeline_removes_its_kinds_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os  # pylint: disable=import-outside-toplevel
+    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import digest_kinds_path, digest_path  # pylint: disable=import-outside-toplevel
+
+    event = Event(when=datetime(2026, 1, 1, tzinfo=timezone.utc), kind="meeting", title="x")
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: [event])
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    sidecar = digest_kinds_path(digest_path(str(tmp_path), "timeline"))
+    assert os.path.exists(sidecar)
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: [])
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    assert not os.path.exists(sidecar)

@@ -217,6 +217,11 @@ def digest_path(cache_dir: str, kind: str) -> str:
     return os.path.join(cache_dir, DIR_DIGESTS, f"{kind}.md")
 
 
+def digest_kinds_path(digest_file: str) -> str:
+    """Sidecar beside a digest file that lists the kind of each of its rows."""
+    return os.path.splitext(digest_file)[0] + ".kinds.json"
+
+
 def remove_stale_digest(cache_dir: str, kind: str) -> None:
     """Delete a pre-existing digest when a re-gather produced no entries.
 
@@ -230,8 +235,9 @@ def remove_stale_digest(cache_dir: str, kind: str) -> None:
     under the gather lease, so the existence check has no race.
     """
     path = digest_path(cache_dir, kind)
-    if os.path.exists(path):
-        os.remove(path)
+    for stale in (path, digest_kinds_path(path)):
+        if os.path.exists(stale):
+            os.remove(stale)
 
 
 def drafts_dir(cache_dir: str) -> str:

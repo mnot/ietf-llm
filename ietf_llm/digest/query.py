@@ -27,10 +27,13 @@ ignored (so the same call shape works across kinds).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+from ..paths import digest_kinds_path
 
 
 @dataclass
@@ -299,8 +302,34 @@ _TIMELINE_BULLET_RE = re.compile(
 )
 
 
-def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
+#: Kinds the digest writer gives to routine machine-generated rows.
+_MECHANICAL_KINDS = frozenset({"draft-published", "ballot"})
+
+
+def _load_kinds(path: str, text: str) -> Optional[List[str]]:
+    """The per-row kinds beside a timeline digest, if they match its rows.
+
+    Caches written before the sidecar existed, and any digest whose rows no
+    longer line up with it, return None and fall back to matching row text.
+    """
+    try:
+        with open(digest_kinds_path(path), "r", encoding="utf-8") as fh:
+            kinds = json.load(fh).get("kinds")
+    except (OSError, ValueError, AttributeError):
+        return None
+    rows = sum(1 for line in text.splitlines() if _TIMELINE_BULLET_RE.match(line))
+    if isinstance(kinds, list) and len(kinds) == rows:
+        return [str(k) for k in kinds]
+    return None
+
+
+def _filter_timeline(
+    text: str, filters: Dict[str, Any], kinds: Optional[List[str]] = None
+) -> str:
     """Apply since / until / kind / limit to a timeline digest body.
+
+    `kinds` is the writer's kind for each row, in order; without it the
+    kind and mechanical filters fall back to matching substrings of the row.
 
     Timeline rows are bullets like
         - **2026-04-19** — Issue #160 closed: "…"
@@ -318,6 +347,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
     current_year: Optional[str] = None
     preamble_done = False
     preamble: List[str] = []
+    row_index = -1
 
     for line in text.splitlines():
         match = re.match(r"^## (\d{4})\s*$", line)
@@ -334,15 +364,24 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
         bullet = _TIMELINE_BULLET_RE.match(line)
         if not bullet:
             continue
+        row_index += 1
+        row_kind = kinds[row_index] if kinds else None
         date = bullet.group("date")
         rest = bullet.group("rest")
         if since and date < since:
             continue
         if until and date > until:
             continue
-        if exclude_mechanical and is_mechanical_timeline_event(rest):
+        if exclude_mechanical and (
+            row_kind in _MECHANICAL_KINDS
+            if row_kind
+            else is_mechanical_timeline_event(rest)
+        ):
             continue
-        if event_kind:
+        if event_kind and row_kind:
+            if row_kind != event_kind:
+                continue
+        elif event_kind:
             # Map our event kinds to substrings that distinguish them.
             kind_markers: Dict[str, Union[str, Tuple[str, ...]]] = {
                 # The I-D Action row ends "published · <thread link>"; RFC
@@ -367,6 +406,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
                 "doc-adopted": "adopted by WG",
                 "doc-iesg": ("submitted to IESG", "approved by IESG"),
                 "doc-rfc": "published as RFC",
+                "doc-lc": "IETF Last Call announced",
                 "doc-wglc": "WG Last Call issued",
                 "ballot": "→",
                 "adoption-call": "adoption",
@@ -418,7 +458,7 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
         return text
 
     if kind == "timeline":
-        return _filter_timeline(text, active)
+        return _filter_timeline(text, active, _load_kinds(path, text))
     if kind == "index":
         # Index has no per-row filters; just return as-is.
         return text

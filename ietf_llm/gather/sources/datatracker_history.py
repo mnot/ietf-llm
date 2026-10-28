@@ -8,8 +8,8 @@ Two event sources, both best-effort against the public JSON API:
     (foundational context); other group events respect the window.
     The event log records changes only, so a group's founding chairs
     (those already in place when it began) have no appointment event.
-  - **Document events** (`/api/v1/doc/docevent/`) — adoption, WGLC
-    announcement, IESG submission, RFC publication. These are
+  - **Document events** (`/api/v1/doc/docevent/`) — adoption, WG Last
+    Call, IETF Last Call, IESG submission, RFC publication. These are
     per-document and high-volume; they respect the `--months` cutoff.
 
 The output type is the shared `Event` dataclass from
@@ -93,16 +93,15 @@ def fetch_group_events(
         when = _parse_dt_time(obj.get("time"))
         if when is None:
             continue
-        changes = _chair_changes(obj)
+        changes = chair_changes(obj)
         if changes:
             for kind, name in changes:
                 shown = canonical_name(name) if canonical_name else name
-                label = "appointed" if kind == "chair-appointed" else "stepped down"
                 out.append(
                     Event(
                         when=when,
                         kind=kind,
-                        title=f"Chair {label}: {shown}",
+                        title=chair_event_title(kind, shown),
                         detail=None,
                         link=None,
                     )
@@ -203,6 +202,12 @@ def _classify_group_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     return (None, "")
 
 
+#: "IETF WG state changed to <b>In WG Last Call</b> from WG Document"
+_STREAM_LAST_CALL_RE = re.compile(
+    r"state changed to <b>\s*In (WG|RG) Last Call\s*</b>", re.IGNORECASE
+)
+
+
 def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     """Map a DocEvent JSON object to (kind, title) or (None, '')."""
     type_slug = (obj.get("type") or "").strip()
@@ -223,15 +228,13 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     desc_lower = desc.lower()
     if "adopted by" in desc_lower or "adopted as a working group" in desc_lower:
         return ("doc-adopted", f"`{doc_name}` adopted by WG")
-    # WGLC announcement event (some Datatracker eras use this slug, some
-    # surface it via desc). Prefer Datatracker over the mailing-list
-    # heuristic when we find it here.
-    if (
-        type_slug == "sent_last_call"
-        or "last call" in desc_lower
-        and "issued" in desc_lower
-    ):
-        return ("doc-wglc", f"`{doc_name}`: WG Last Call issued")
+    # `sent_last_call` is the IESG's IETF Last Call announcement; a WG (or RG)
+    # Last Call is only visible as the stream state moving to "In WG Last Call".
+    if type_slug == "sent_last_call":
+        return ("doc-lc", f"`{doc_name}`: IETF Last Call announced")
+    match = _STREAM_LAST_CALL_RE.search(desc)
+    if match:
+        return ("doc-wglc", f"`{doc_name}`: {match.group(1).upper()} Last Call issued")
     return (None, "")
 
 
@@ -271,7 +274,7 @@ _CHAIRS_CHANGED_RE = re.compile(
 )
 
 
-def _chair_changes(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
+def chair_changes(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
     """(kind, name) for each chair added or removed by a chair-change event.
 
     Additions come first, then departures. The event carries an exact
@@ -289,6 +292,12 @@ def _chair_changes(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
     return [("chair-appointed", n) for n in after if n not in before] + [
         ("chair-departed", n) for n in before if n not in after
     ]
+
+
+def chair_event_title(kind: str, name: str) -> str:
+    """The timeline row for one chair change."""
+    label = "appointed" if kind == "chair-appointed" else "stepped down"
+    return f"Chair {label}: {name}"
 
 
 def _name_list(text: str) -> List[str]:

@@ -421,6 +421,37 @@ def test_doc_events_detects_adoption_from_desc(
     assert events[0].kind == "doc-adopted"
 
 
+def test_doc_events_tell_ietf_last_call_from_wg_last_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real shapes: the IESG's announcement is `sent_last_call`; a WG Last
+    # Call is the stream state moving to "In WG Last Call" (httpbis).
+    doc = "/api/v1/doc/document/draft-ietf-wg-x/"
+    _stub_get_json(monkeypatch, {
+        "/doc/docevent/": {"objects": [
+            {"time": _now_minus(5), "type": "sent_last_call", "doc": doc,
+             "desc": "The following Last Call announcement was sent out "
+                     "(ends 2026-09-11):<br><br>From: The IESG"},
+            {"time": _now_minus(40), "type": "changed_state", "doc": doc,
+             "desc": "IETF WG state changed to <b>In WG Last Call</b> from "
+                     "WG Document"},
+            {"time": _now_minus(20), "type": "changed_state", "doc": doc,
+             "desc": "IETF WG state changed to <b>WG Consensus: Waiting for "
+                     "Write-Up</b> from In WG Last Call"},
+            {"time": _now_minus(10), "type": "changed_state", "doc": doc,
+             "desc": "IESG state changed to <b>In Last Call</b> from Last "
+                     "Call Requested"},
+        ]},
+    })
+    events = datatracker_history.fetch_doc_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert sorted((e.kind, e.title) for e in events) == [
+        ("doc-lc", "`draft-ietf-wg-x`: IETF Last Call announced"),
+        ("doc-wglc", "`draft-ietf-wg-x`: WG Last Call issued"),
+    ]
+
+
 def test_doc_events_respects_months_cutoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

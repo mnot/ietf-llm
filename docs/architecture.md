@@ -312,7 +312,11 @@ Key invariants:
   tools, not raw. `citations.md` is the draft → citing-thread/issue
   cross-reference; `message_citations.md` is the message → message graph
   (archive-permalink links resolved between gathered messages), read via
-  `find_message_citations`.
+  `find_message_citations`. `timeline.kinds.json` beside `timeline.md` lists
+  the kind of each row, in order, so `read_digest(event_kind=...)` selects rows
+  exactly instead of guessing from their text (issue and mail titles can
+  contain any phrase). A digest without it, or whose row count differs, is
+  matched on row text.
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
   activity in the `--months` window.

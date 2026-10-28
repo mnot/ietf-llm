@@ -31,6 +31,7 @@ can grep down to the period it cares about.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -55,15 +56,16 @@ from ..gather.sources.session_polls import discover_local_polls
 from ..gather.sources.transcript_context import transcript_context
 from ..log import LogLevel, Verbosity, log
 from ..net import http_metrics
-from ..people.names import is_decorated
 from ..paths import (
     DIR_MEETINGS,
+    digest_kinds_path,
     digest_path,
     github_dir,
     minutes_path,
     remove_stale_digest,
 )
 from ..people import Registry
+from ..people.names import is_decorated
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------
@@ -549,6 +551,7 @@ def write_timeline_digest(
             "mailing-list subject-line heuristic as fallback). "
             "Newest first within each year._\n\n"
         )
+        kinds: List[str] = []
         for year in sorted(by_year, reverse=True):
             fh.write(f"## {year}\n\n")
             for event in by_year[year]:
@@ -558,8 +561,14 @@ def write_timeline_digest(
                     line += f" — {event.detail}"
                 if event.link:
                     line += f" · {event.link}"
-                fh.write(line + "\n")
+                # One line per row keeps the row order in step with `kinds`.
+                fh.write(" ".join(line.splitlines()) + "\n")
+                kinds.append(event.kind)
             fh.write("\n")
+    # Lets `read_digest(event_kind=...)` select rows by kind rather than by
+    # guessing from their text.
+    with atomic_open(digest_kinds_path(out_path)) as fh:
+        json.dump({"kinds": kinds}, fh)
 
     log(
         f"Wrote timeline: {len(events)} events",
