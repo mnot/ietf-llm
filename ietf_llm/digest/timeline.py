@@ -397,6 +397,16 @@ def _thread_link(thread: Thread) -> str:
     return f"`threads/{thread_slug(thread.root.subject, iso)}.md`"
 
 
+def _canonical_names(registry: Registry) -> Callable[[str], str]:
+    """Chair names as the people digest spells them, else as logged."""
+
+    def canonical(name: str) -> str:
+        person = registry.person_for_name(name)
+        return person.canonical_name if person else name
+
+    return canonical
+
+
 # --- Public entry point ----------------------------------------------------
 
 
@@ -446,7 +456,14 @@ def build_events(
                 http_metrics.set_current(previous)
 
         with ThreadPoolExecutor(max_workers=3) as pool:
-            f_group = pool.submit(_bound, fetch_group_events, wg, months, verbose)
+            f_group = pool.submit(
+                _bound,
+                fetch_group_events,
+                wg,
+                months,
+                verbose,
+                _canonical_names(registry),
+            )
             f_docs = pool.submit(_bound, fetch_doc_events, wg, months, verbose)
             # IESG ballot positions -> per-draft ballot file, which
             # read_digest(event_kind="ballot") addresses directly.
@@ -512,8 +529,8 @@ def write_timeline_digest(
             "drafts published, issues opened and closed, meetings held "
             "(with minutes / slides / transcripts bundled as aspects of "
             "the same session), session polls recorded, charter "
-            "approvals and chair appointments (Datatracker; appointments "
-            "are those recorded since its event log began), document "
+            "approvals and chair changes (Datatracker; changes are those "
+            "recorded since its event log began), document "
             "adoption / IESG / RFC publication (Datatracker), WGLCs "
             "and adoption calls (Datatracker when available, "
             "mailing-list subject-line heuristic as fallback). "

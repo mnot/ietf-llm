@@ -201,11 +201,11 @@ def test_chair_change_with_no_prior_chairs_appoints_everyone(
     assert _chair_titles(events) == ["Chair appointed: A B", "Chair appointed: C D"]
 
 
-def test_chair_removal_and_duplicate_names_emit_nothing_extra(
+def test_chair_departure_is_reported_once_and_appoints_nobody(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A departure appoints nobody; a name repeated in the old list (seen
-    # in real tls data) must not make an existing chair look new.
+    # A name repeated in the old list (seen in real tls data) must not
+    # make an existing chair look new or departed.
     _stub_get_json(monkeypatch, {
         "/group/groupevent/": {"objects": [
             _chair_event(30, "Chairs changed to <b>A B</b> from A B, C D"),
@@ -216,6 +216,47 @@ def test_chair_removal_and_duplicate_names_emit_nothing_extra(
         "wg", months=12, verbose=Verbosity.QUIET,
     )
     assert _chair_titles(events) == []
+    assert [(e.kind, e.title) for e in events] == [
+        ("chair-departed", "Chair stepped down: C D"),
+    ]
+
+
+def test_replacing_a_chair_reports_both_sides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # tls, 2023: one chair replaced by another in a single change.
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [_chair_event(
+            30,
+            "Chair changed to <b>Deirdre Connolly, Joseph Salowey</b> "
+            "from Christopher Wood, Joseph Salowey",
+        )]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert [(e.kind, e.title) for e in events] == [
+        ("chair-appointed", "Chair appointed: Deirdre Connolly"),
+        ("chair-departed", "Chair stepped down: Christopher Wood"),
+    ]
+
+
+def test_chair_names_use_the_canonical_spelling_when_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [_chair_event(
+            30, "Chairs changed to <b>joseph salowey</b> from Old Chair",
+        )]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+        canonical_name=lambda n: "Joseph Salowey" if n == "joseph salowey" else n,
+    )
+    assert [e.title for e in events] == [
+        "Chair appointed: Joseph Salowey",
+        "Chair stepped down: Old Chair",
+    ]
 
 
 def test_chair_names_are_unescaped_and_compared_unescaped(
@@ -250,7 +291,7 @@ def test_chair_change_without_from_clause_still_parses(
     assert _chair_titles(events) == ["Chair appointed: A B"]
 
 
-def test_emptying_the_chair_list_emits_nothing(
+def test_emptying_the_chair_list_reports_only_departures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_get_json(monkeypatch, {
@@ -261,7 +302,10 @@ def test_emptying_the_chair_list_emits_nothing(
     events = datatracker_history.fetch_group_events(
         "wg", months=12, verbose=Verbosity.QUIET,
     )
-    assert events == []
+    assert [e.title for e in events] == [
+        "Chair stepped down: A B",
+        "Chair stepped down: C D",
+    ]
 
 
 def test_other_info_changes_are_not_chair_events(

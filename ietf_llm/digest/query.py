@@ -356,6 +356,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
                 "meeting": "meeting",
                 "wglc": "Last Call",
                 "chair-appointed": "Chair appointed",
+                "chair-departed": "Chair stepped down",
                 "adoption-call": "adoption",
             }
             marker = kind_markers.get(event_kind, event_kind)

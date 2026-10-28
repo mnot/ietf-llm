@@ -337,3 +337,16 @@ def test_datatracker_workers_share_http_metrics(
         assert http_metrics.current().host_requests["datatracker.ietf.org"] == 3
     finally:
         http_metrics.reset()
+
+
+def test_chair_names_follow_the_registry_spelling(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ietf_llm.digest import timeline as tl  # pylint: disable=import-outside-toplevel
+
+    registry = Registry()
+    registry.add_datatracker_role("Zoë Example", None, "Chair")
+    canonical = tl._canonical_names(registry)  # pylint: disable=protected-access
+    assert canonical("Zoe Example") == "Zoë Example"
+    assert canonical("Nobody Known") == "Nobody Known"

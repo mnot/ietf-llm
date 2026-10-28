@@ -3,7 +3,7 @@
 Two event sources, both best-effort against the public JSON API:
 
   - **Group events** (`/api/v1/group/groupevent/`) — charter approvals,
-    state changes, chair appointments. Charter and chair events ALWAYS
+    state changes, chair appointments and departures. Charter and chair events ALWAYS
     appear in the timeline regardless of the `--months` window
     (foundational context); other group events respect the window.
     The event log records changes only, so a group's founding chairs
@@ -26,7 +26,7 @@ from __future__ import annotations
 import html
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ...digest.events import Event
 from ...log import LogLevel, Verbosity, log
@@ -61,13 +61,17 @@ _GROUP_EVENT_KINDS = {
 
 
 def fetch_group_events(
-    wg: str, months: int, verbose: Verbosity = Verbosity.STATUS
+    wg: str,
+    months: int,
+    verbose: Verbosity = Verbosity.STATUS,
+    canonical_name: Optional[Callable[[str], str]] = None,
 ) -> List[Event]:
-    """Group-level events: charter approvals, state changes, chair appointments.
+    """Group-level events: charter approvals, state changes, chair changes.
 
     Charter and chair events are returned regardless of `months`
     (foundational); other event kinds are filtered to the last `months`
-    months.
+    months. `canonical_name` maps a chair's logged name to the spelling
+    used elsewhere in the corpus.
     """
     objects = _paged_objects(
         f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=500"
@@ -86,18 +90,20 @@ def fetch_group_events(
         when = _parse_dt_time(obj.get("time"))
         if when is None:
             continue
-        chairs = _chairs_appointed(obj)
-        if chairs:
-            out.extend(
-                Event(
-                    when=when,
-                    kind="chair-appointed",
-                    title=f"Chair appointed: {name}",
-                    detail=None,
-                    link=None,
+        changes = _chair_changes(obj)
+        if changes:
+            for kind, name in changes:
+                shown = canonical_name(name) if canonical_name else name
+                label = "appointed" if kind == "chair-appointed" else "stepped down"
+                out.append(
+                    Event(
+                        when=when,
+                        kind=kind,
+                        title=f"Chair {label}: {shown}",
+                        detail=None,
+                        link=None,
+                    )
                 )
-                for name in chairs
-            )
             continue
         event_kind, title = _classify_group_event(obj)
         if event_kind is None:
@@ -184,9 +190,7 @@ def _classify_group_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     if "charter approved" in desc_lower or "charter changed" in desc_lower:
         return ("charter-approved", desc or "Charter event")
     if type_slug == "changed_state":
-        if "state changed" in desc_lower or desc:
-            return ("group-state", desc or "Group state changed")
-        return ("group-state", "Group state changed")
+        return ("group-state", desc or "Group state changed")
     return (None, "")
 
 
@@ -258,23 +262,32 @@ _CHAIRS_CHANGED_RE = re.compile(
 )
 
 
-def _chairs_appointed(obj: Dict[str, Any]) -> List[str]:
-    """Names newly in the chair set of a chair-change group event, else [].
+def _chair_changes(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """(kind, name) for each chair added or removed by a chair-change event.
 
-    The event carries an exact timestamp and both name lists inline.
-    Names are HTML-escaped in the description and can be encoded
-    differently on the two sides, so both are unescaped before comparing.
+    Additions come first, then departures. The event carries an exact
+    timestamp and both name lists inline. Names are HTML-escaped in the
+    description and can be encoded differently on the two sides, so both
+    are unescaped before comparing.
     """
     if (obj.get("type") or "").strip() != "info_changed":
         return []
     match = _CHAIRS_CHANGED_RE.match((obj.get("desc") or "").strip())
     if not match:
         return []
-    before = {html.unescape(name).strip() for name in (match.group(2) or "").split(",")}
+    after = _name_list(match.group(1))
+    before = _name_list(match.group(2) or "")
+    return [("chair-appointed", n) for n in after if n not in before] + [
+        ("chair-departed", n) for n in before if n not in after
+    ]
+
+
+def _name_list(text: str) -> List[str]:
+    """Distinct unescaped names from a comma-separated list, in order."""
     out: List[str] = []
-    for name in match.group(1).split(","):
+    for name in text.split(","):
         name = html.unescape(name).strip()
-        if name and name not in before and name not in out:
+        if name and name not in out:
             out.append(name)
     return out
 

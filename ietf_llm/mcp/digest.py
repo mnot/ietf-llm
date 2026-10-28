@@ -210,7 +210,7 @@ def register(server: "FastMCP") -> None:
                             meetings: "meeting"; session polls:
                             "poll"; procedural: "wglc" / "adoption-call";
                             Datatracker governance: "charter-approved" /
-                            "chair-appointed" / "group-state" /
+                            "chair-appointed" / "chair-departed" / "group-state" /
                             "doc-adopted" / "doc-iesg" / "doc-rfc" /
                             "doc-wglc" / "ballot"), limit. A standing
                             "ballot" DISCUSS holds publication — report
