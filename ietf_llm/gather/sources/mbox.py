@@ -39,6 +39,12 @@ IMAP_RETRIES = 1
 # Per-list file recording the IMAP UIDVALIDITY the cached `<uid>.eml` files were
 # fetched under. UIDs only name a message within one UIDVALIDITY epoch.
 UIDVALIDITY_FILE = ".uidvalidity"
+# Where a list's cached messages go when the server renumbers the folder:
+# `<list>/epoch-<old UIDVALIDITY>/`. Their UIDs no longer name anything on the
+# server, but the messages are still real mail (and the only copy of anything
+# older than the search window), and thread reconstruction walks the list dir
+# recursively, so they keep their threads.
+EPOCH_DIR_PREFIX = "epoch-"
 
 
 def validate_list_names(
@@ -307,8 +313,10 @@ def _reconcile_uidvalidity(
     A changed value means the server renumbered the folder, so a cached
     `<uid>.eml` may be a different message from the one now at that UID -- and
     the "already cached" check would then skip fetching the real one. The cache
-    is cleared and refetched rather than trusted. A cache with no recorded epoch
-    (first sync, or one that predates the marker) is adopted as-is."""
+    is refetched rather than trusted, and the old files move to
+    `epoch-<old>/` rather than being deleted: a windowed refetch can't bring
+    back mail older than the window. A cache with no recorded epoch (first sync,
+    or one that predates the marker) is adopted as-is."""
     current = _server_uidvalidity(mail)
     if current is None:
         log(
@@ -319,15 +327,17 @@ def _reconcile_uidvalidity(
         return
     previous = read_uidvalidity(cache_dir)
     if previous is not None and previous != current:
+        archive = os.path.join(cache_dir, f"{EPOCH_DIR_PREFIX}{previous}")
         log(
-            f"  UIDVALIDITY changed ({previous} -> {current}); "
-            "discarding the cached messages for this list.",
+            f"  UIDVALIDITY changed ({previous} -> {current}); moving the cached "
+            f"messages for this list to {os.path.basename(archive)}/ and refetching.",
             verbose,
             level=LogLevel.WARN,
         )
+        os.makedirs(archive, exist_ok=True)
         for name in os.listdir(cache_dir):
             if name.endswith(".eml"):
-                os.remove(os.path.join(cache_dir, name))
+                os.replace(os.path.join(cache_dir, name), os.path.join(archive, name))
     if previous != current:
         write_if_changed(os.path.join(cache_dir, UIDVALIDITY_FILE), current)
     _VERIFIED[cache_dir] = current

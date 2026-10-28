@@ -332,8 +332,9 @@ Key invariants:
   Calibration constants and the `IETF_LLM_ROUTING_MIN_SCORE` override live in
   `corpus/routing.py`.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
-  files. Thread reconstruction walks that tree (two levels — one
-  subdir per list, since a WG can follow several).
+  files. Thread reconstruction walks that tree recursively: one subdir per
+  list (a WG can follow several), and within a list dir an `epoch-<n>/`
+  archive for each earlier IMAP UIDVALIDITY epoch.
 - **`last-gathered`** is an ISO-8601 sentinel `freshness.py` writes at
   the end of each gather; consumers surface staleness from it.
   `coverage.py` pairs it with the persisted `months` to report the
@@ -1301,10 +1302,17 @@ exported `files/` are cleared. Thread reconstruction walks it directly.
 
 Each list dir also holds `.uidvalidity`, the IMAP UIDVALIDITY epoch the cached
 `<uid>.eml` files were fetched under. A UID names a message only within one
-epoch, so when the server reports a different value the sync discards that
-list's cached mail and refetches (a stale `<uid>.eml` would otherwise satisfy
-the "already cached" check for a different message). A cache with no marker is
-adopted as-is.
+epoch, so when the server reports a different value the sync refetches (a stale
+`<uid>.eml` would otherwise satisfy the "already cached" check for a different
+message). It doesn't delete the old files: they move to `<list>/epoch-<old>/`.
+Their UIDs name nothing on the server any more, but they are still real mail --
+and the only copy of anything older than the search window, which a windowed
+refetch can't bring back -- so thread reconstruction keeps using them. A message
+that is in both the archive and the refetched window is the same `Message-Id` and
+is collapsed to one. The archive's cost is storage, once per renumbering: the
+refetched window's mail is stored twice, and nothing prunes an archive. The
+`raw/mail-archive-*.txt` year dumps are built from the current epoch only. A
+cache with no marker is adopted as-is.
 
 On the cloud backend the cache is round-tripped (`cache_sync.py`) so a fresh
 container doesn't re-download the archive. Per list it stores `index.json` (the
@@ -1314,14 +1322,21 @@ frozen — a wider `--months` window fills in old UIDs — so persist re-uploads
 chunk whose UID set differs from the index, and never replaces a stored chunk
 with one holding fewer messages (it folds the stored mail in): mail outside the
 window exists only in the cache. Hydrate fetches a chunk only when the local
-cache lacks some of its UIDs, so a warm host pays the index GETs alone, and it
-leaves a list alone when the local and stored epochs differ. Epochs are labels,
-not an order, so persist replaces the stored chunks (and deletes the stale ones)
-only when this gather's sync confirmed the local epoch with the server
+cache lacks some of its UIDs, so a warm host pays the index GETs alone. A list is
+a main unit (the current epoch, in the list dir) plus one archive unit per
+earlier epoch (`<list>/epoch-<n>/`), each stored as its own index and chunks. When
+the stored main unit's epoch differs from the local cache's, hydrate restores it
+into its own `epoch-<stored>/` dir instead of mixing UIDs that name different
+messages. Epochs are labels, not an order, so persist replaces the stored main
+unit only when this gather's sync confirmed the local epoch with the server
 (`mbox.verified_uidvalidity`); a differing, unconfirmed epoch -- a warm host whose
-IMAP sync failed -- leaves the store alone. When replacing, it invalidates the
-index before touching the chunks, so a failure part way never leaves an index
-vouching for another epoch's mail. A marker that isn't a bare number counts as
+IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+sure the old epoch's mail is stored as an archive unit (filling the local
+`epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
+list if that fails), then invalidates the old index before touching the chunks,
+so a failure part way never leaves an index vouching for another epoch's mail and
+the old mail is never stored nowhere. An archive of the epoch the cache is
+already in is not stored again. A marker that isn't a bare number counts as
 absent.
 
 This is the one place the gather-cache sync is **not** best-effort. A stored

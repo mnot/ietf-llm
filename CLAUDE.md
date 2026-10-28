@@ -179,7 +179,8 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   512 UIDs + an `index.json` carrying the UIDVALIDITY epoch — persist never
   replaces a chunk with fewer messages, since mail outside the window lives only
   there, and replaces a stored epoch only when the gather's sync confirmed the
-  local one with the server; see issue #260). These are gather-only (the read path never
+  local one with the server, first archiving the old epoch's mail as an
+  `epoch-<n>/` unit; see issue #260). These are gather-only (the read path never
   touches them) and best-effort — except that stored IMAP mail the store errors
   on fetching raises `GatherCacheRestoreError` and fails the gather before any
   stage runs (publishing without it would drop old threads). `_rfc/` is deferred (non-rate-limited CDN

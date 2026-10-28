@@ -38,7 +38,10 @@ single writer:
     chunk whose UID set changed, and never overwrites a stored chunk with fewer
     messages than it holds: mail that has aged out of the window survives only
     in the cache. A differing UIDVALIDITY epoch replaces the stored mail only
-    when this gather's sync confirmed the local epoch with the server.
+    when this gather's sync confirmed the local epoch with the server, and the
+    replaced epoch's mail is kept as its own archive unit (`<list>/epoch-<n>/`,
+    the same index-plus-chunks shape) rather than dropped: it is real mail, and
+    the only copy of anything older than the window.
 
 Best-effort throughout, with one exception: a sync failure doesn't fail a gather
 (it just means a cold rebuild next time), matching how
@@ -86,6 +89,7 @@ _IMAP_INDEX = "index.json"
 #: that the tail chunk a gather touches is cheap to re-upload.
 _IMAP_CHUNK_UIDS = 512
 _EML_NAME = re.compile(r"^(\d+)\.eml$")
+_EPOCH_DIR = re.compile(rf"^{re.escape(mbox.EPOCH_DIR_PREFIX)}(\d+)$")
 #: Shared fleet keys — concurrent writers, so persist uses a CAS-merge.
 _GITHUB_USERS_KEY = "fleet/gather-cache/github-users.json"
 _DATATRACKER_GITHUB_KEY = "fleet/gather-cache/datatracker-github.json"
@@ -391,21 +395,54 @@ def _restore_imap(kv: KvStore, corpus: str, problems: List[str]) -> List[str]:
 
 
 def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Tuple[int, int]:
-    """Restore one list; returns `(fetch failures, chunks missing or corrupt)`."""
+    """Restore one list; returns `(fetch failures, chunks missing or corrupt)`.
+
+    A list is a main unit (the current epoch's mail, in `list_dir`) plus one
+    archive unit per earlier epoch (`epoch-<n>/`, see `mbox.EPOCH_DIR_PREFIX`),
+    each stored as its own index and chunks. Mail from a different epoch than
+    the local cache's lands in its own archive dir rather than being skipped or
+    mixed in: its UIDs name other messages, but the mail is real and thread
+    reconstruction walks the list dir recursively."""
     index = _load_imap_index(kv, prefix + _IMAP_INDEX)
     local_epoch = mbox.read_uidvalidity(list_dir)
     if _epochs_differ(local_epoch, index.uidvalidity):
-        # The local cache is from a different epoch than the stored one; its
-        # UIDs name different messages, so mixing them would corrupt both. The
-        # sync's own UIDVALIDITY check settles which side is current.
-        return 0, 0
-    if local_epoch is None and index.uidvalidity is not None:
-        os.makedirs(list_dir, exist_ok=True)
-        _atomic_write(
-            os.path.join(list_dir, mbox.UIDVALIDITY_FILE),
-            index.uidvalidity.encode("ascii"),
+        target = os.path.join(list_dir, f"{mbox.EPOCH_DIR_PREFIX}{index.uidvalidity}")
+        failed, lost = _restore_unit(kv, prefix, index, target)
+    else:
+        if local_epoch is None and index.uidvalidity is not None:
+            os.makedirs(list_dir, exist_ok=True)
+            _atomic_write(
+                os.path.join(list_dir, mbox.UIDVALIDITY_FILE),
+                index.uidvalidity.encode("ascii"),
+            )
+        failed, lost = _restore_unit(kv, prefix, index, list_dir)
+    for name in kv.list_children(prefix):
+        match = _EPOCH_DIR.match(name)
+        # An archive of the epoch the local cache is now in would only duplicate it.
+        if not match or match.group(1) == local_epoch:
+            continue
+        unit_prefix = f"{prefix}{name}/"
+        try:
+            unit_index = _load_imap_index(kv, unit_prefix + _IMAP_INDEX)
+        except _CorruptIndex:
+            lost += 1
+            continue
+        except Exception:  # pylint: disable=broad-except
+            failed += 1
+            continue
+        more_failed, more_lost = _restore_unit(
+            kv, unit_prefix, unit_index, os.path.join(list_dir, name)
         )
-    local = _local_chunks(list_dir)
+        failed += more_failed
+        lost += more_lost
+    return failed, lost
+
+
+def _restore_unit(
+    kv: KvStore, prefix: str, index: _ImapIndex, unit_dir: str
+) -> Tuple[int, int]:
+    """Fetch the chunks of one stored unit that `unit_dir` doesn't already hold."""
+    local = _local_chunks(unit_dir)
     failed = lost = 0
     for chunk, uids in sorted(index.chunks.items()):
         # A warm host already holding the chunk's mail fetches nothing.
@@ -425,7 +462,7 @@ def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Tuple[int, in
             lost += 1
             continue
         for uid, data in members.items():
-            path = os.path.join(list_dir, f"{uid}.eml")
+            path = os.path.join(unit_dir, f"{uid}.eml")
             if not os.path.exists(path):
                 _atomic_write(path, data)
     return failed, lost
@@ -455,10 +492,8 @@ def _persist_imap(kv: KvStore, corpus: str, problems: List[str]) -> None:
 
 
 def _persist_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Optional[str]:
-    """Upload one list. Returns why it was deliberately left alone, or `None`."""
-    local = _local_chunks(list_dir)
-    if not local:
-        return None
+    """Upload one list: its archive units, then its main unit. Returns why the
+    main unit was deliberately left alone, or `None`."""
     stored = _load_imap_index(kv, prefix + _IMAP_INDEX)
     epoch = mbox.read_uidvalidity(list_dir)
     # Replace the stored mail only when this gather's sync confirmed the local
@@ -469,6 +504,45 @@ def _persist_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Optional[str]
     superseded = _epochs_differ(epoch, stored.uidvalidity)
     if superseded and mbox.verified_uidvalidity(list_dir) != epoch:
         return "local epoch differs from the stored one and was not confirmed"
+    # Archives first. When the main unit is about to be replaced, the old
+    # epoch's mail must be safely stored as an archive before the stored copy
+    # goes. Normally the local `epoch-<old>/` dir already holds it (the sync moved
+    # it there, or hydrate restored it there); fill in anything it lacks from the
+    # stored main unit so this doesn't depend on that. A failure to fetch it, or
+    # to store the archive, abandons the list with the stored main unit untouched.
+    if superseded and stored.chunks:
+        archive_dir = os.path.join(
+            list_dir, f"{mbox.EPOCH_DIR_PREFIX}{stored.uidvalidity}"
+        )
+        failed, _ = _restore_unit(kv, prefix, stored, archive_dir)
+        if failed:
+            raise OSError(
+                f"{failed} stored chunk(s) of the old epoch could not be fetched "
+                "to archive"
+            )
+    for name in sorted(os.listdir(list_dir)):
+        match = _EPOCH_DIR.match(name)
+        unit_dir = os.path.join(list_dir, name)
+        # An archive of the epoch the cache is now in (a restore put it there
+        # from the stored main unit) would only duplicate that unit.
+        if not match or not os.path.isdir(unit_dir) or match.group(1) == epoch:
+            continue
+        unit_prefix = f"{prefix}{name}/"
+        unit_stored = _load_imap_index(kv, unit_prefix + _IMAP_INDEX)
+        _persist_unit(kv, unit_prefix, unit_dir, None, unit_stored)
+    _persist_unit(kv, prefix, list_dir, epoch, stored)
+    return None
+
+
+def _persist_unit(
+    kv: KvStore, prefix: str, unit_dir: str, epoch: Optional[str], stored: _ImapIndex
+) -> None:
+    """Upload one unit's chunks and index. `stored` is what the store holds for
+    it; a unit whose stored epoch differs from `epoch` is replaced wholesale."""
+    local = _local_chunks(unit_dir)
+    if not local:
+        return
+    superseded = _epochs_differ(epoch, stored.uidvalidity)
     base = {} if superseded else stored.chunks
     chunks = dict(base)
     index_key = prefix + _IMAP_INDEX
@@ -483,7 +557,7 @@ def _persist_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Optional[str]
             continue
         members: Dict[int, bytes] = {}
         for uid in uids:
-            data = _read(os.path.join(list_dir, f"{uid}.eml"))
+            data = _read(os.path.join(unit_dir, f"{uid}.eml"))
             if data is not None:
                 members[uid] = data
         if not uids >= have:
@@ -503,7 +577,6 @@ def _persist_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Optional[str]
         kv.put(index_key, _dump_imap_index(index))
     for chunk in stored.chunks.keys() - chunks.keys():
         kv.delete(_chunk_key(prefix, chunk))
-    return None
 
 
 # --- local file helpers ---------------------------------------------------

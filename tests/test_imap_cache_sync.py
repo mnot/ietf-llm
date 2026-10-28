@@ -74,6 +74,11 @@ def _mail(list_dir: Path, uids, epoch: Optional[str] = "7") -> None:
         (list_dir / mbox.UIDVALIDITY_FILE).write_text(epoch)
 
 
+def _names(directory: Path) -> List[str]:
+    """The `.eml` file names in `directory`, in numeric UID order."""
+    return sorted((p.name for p in directory.glob("*.eml")), key=lambda n: int(n[:-4]))
+
+
 def _snapshot(list_dir: Path) -> Dict[str, bytes]:
     return {p.name: p.read_bytes() for p in list_dir.iterdir()}
 
@@ -245,8 +250,11 @@ def test_new_epoch_replaces_the_stored_mail(monkeypatch, tmp_path):
     assert PREFIX + "chunk-1.tar.gz" not in kv._data  # stale chunk deleted
     cold = _host(monkeypatch, tmp_path / "cold")
     cache_sync.hydrate(kv, "moq")
-    assert sorted(p.name for p in cold.glob("*.eml")) == ["10.eml", "11.eml"]
+    assert _names(cold) == ["10.eml", "11.eml"]
     assert (cold / mbox.UIDVALIDITY_FILE).read_text() == "8"
+    # The replaced epoch's mail is archived in the store, not dropped, even though
+    # this host never restored it.
+    assert _names(cold / "epoch-7") == ["1.eml", "2.eml", "3.eml", f"{CHUNK + 1}.eml"]
 
 
 def test_unconfirmed_epoch_never_replaces_the_stored_mail(monkeypatch, tmp_path):
@@ -280,7 +288,7 @@ def test_failed_index_write_never_leaves_mismatched_mail_trusted(monkeypatch, tm
     real_put = kv.put
 
     def put(key, value, *, expect=ANY):
-        if key.endswith("index.json"):
+        if key == PREFIX + "index.json":
             index_writes.append(key)
             if len(index_writes) == 2:  # the final write, after the chunks
                 raise OSError("bucket unreachable")
@@ -294,10 +302,13 @@ def test_failed_index_write_never_leaves_mismatched_mail_trusted(monkeypatch, tm
     # unreachable rather than trusted under the wrong epoch.
     cold = _host(monkeypatch, tmp_path / "cold")
     cache_sync.hydrate(kv, "moq")
-    assert list(cold.glob("*.eml")) == []
+    assert list(cold.glob("*.eml")) == []  # nothing trusted as the current epoch
+    assert _names(cold / "epoch-7") == ["1.eml", "2.eml", "3.eml"]  # old mail kept
 
 
-def test_hydrate_skips_a_list_cached_under_another_epoch(monkeypatch, tmp_path):
+def test_hydrate_keeps_a_list_cached_under_another_epoch_apart(monkeypatch, tmp_path):
+    # The stored mail is real but its UIDs name other messages than the local
+    # cache's: it lands in its own archive dir, and the local mail is untouched.
     kv = _CountingKv()
     other = _host(monkeypatch, tmp_path / "other")
     _mail(other, [1, 2], epoch="7")
@@ -306,7 +317,8 @@ def test_hydrate_skips_a_list_cached_under_another_epoch(monkeypatch, tmp_path):
     here = _host(monkeypatch, tmp_path / "here")
     _mail(here, [9], epoch="8")
     cache_sync.hydrate(kv, "moq")
-    assert sorted(p.name for p in here.glob("*.eml")) == ["9.eml"]
+    assert _names(here) == ["9.eml"]
+    assert _names(here / "epoch-7") == ["1.eml", "2.eml"]
 
 
 def test_unmarked_local_cache_adopts_the_stored_epoch(monkeypatch, tmp_path):
@@ -349,11 +361,18 @@ def test_same_epoch_keeps_the_cache(tmp_path):
     assert sorted(p.name for p in tmp_path.glob("*.eml")) == ["1.eml", "2.eml"]
 
 
-def test_changed_epoch_clears_the_cache(tmp_path):
+def test_changed_epoch_moves_the_cache_aside(tmp_path):
     _mail(tmp_path, [1, 2], epoch="7")
     _reconcile(tmp_path, b"8")
     assert list(tmp_path.glob("*.eml")) == []
+    assert _names(tmp_path / "epoch-7") == ["1.eml", "2.eml"]
+    assert (tmp_path / "epoch-7" / "1.eml").read_text().startswith("Message-Id: <1@x>")
     assert (tmp_path / mbox.UIDVALIDITY_FILE).read_text() == "8"
+
+    _mail(tmp_path, [5], epoch="8")  # the refetch under the new numbering
+    _reconcile(tmp_path, b"9")  # and it changes again: both archives survive
+    assert _names(tmp_path / "epoch-7") == ["1.eml", "2.eml"]
+    assert _names(tmp_path / "epoch-8") == ["5.eml"]
 
 
 @pytest.mark.parametrize("value", [None, b"", b"garbage"])
@@ -622,3 +641,110 @@ def test_a_corrupt_marker_is_unknown_to_the_cloud_sync_too(monkeypatch, tmp_path
 )
 def test_server_uidvalidity_parsing(raw, expected):
     assert mbox._server_uidvalidity(_Mail(raw)) == expected  # type: ignore[arg-type]
+
+
+# --- epoch change keeps the old mail ------------------------------------------
+
+
+def test_epoch_change_through_a_cold_host_keeps_every_message(monkeypatch, tmp_path):
+    # The whole path: a cold host restores epoch 7, its sync finds the server at
+    # 8 (moving the mail aside) and refetches the window, and a later fresh host
+    # still has the old mail -- including what only ever lived in the cache.
+    from ietf_llm.gather.sources import mail_threads
+
+    def shape() -> List[Tuple[str, List[str]]]:
+        threads = mail_threads.build_threads("moq")
+        return sorted((t.root.message_id, [m.message_id for m in t.members]) for t in threads)
+
+    kv = _CountingKv()
+    first = _host(monkeypatch, tmp_path / "first")
+    _write_eml(first, 1, "old-a@x", "Old topic")
+    _write_eml(first, 2, "old-b@x", "Re: Old topic", reply_to="old-a@x")
+    (first / mbox.UIDVALIDITY_FILE).write_text("7")
+    cache_sync.persist(kv, "moq")
+
+    second = _host(monkeypatch, tmp_path / "second")
+    assert cache_sync.hydrate(kv, "moq") == []
+    _reconcile(second, b"8")  # the sync: server renumbered
+    _write_eml(second, 1, "new-a@x", "New topic")  # window refetched as UID 1
+    assert cache_sync.persist(kv, "moq") == []
+    expected = shape()
+    assert [root for root, _ in expected] == ["<new-a@x>", "<old-a@x>"]
+    assert ("<old-a@x>", ["<old-a@x>", "<old-b@x>"]) in expected  # the old thread survived
+
+    third = _host(monkeypatch, tmp_path / "third")
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert (third / mbox.UIDVALIDITY_FILE).read_text() == "8"
+    assert shape() == expected
+    assert PREFIX + "epoch-7/index.json" in kv._data
+
+
+def test_a_stale_host_does_not_store_the_current_epoch_twice(monkeypatch, tmp_path):
+    # Local epoch 7, stored epoch 8, and this gather's sync lands on 8: hydrate
+    # put the stored mail in epoch-8/, but that is the main unit's mail already.
+    kv = _CountingKv()
+    newer = _host(monkeypatch, tmp_path / "newer")
+    _mail(newer, [10, 11], epoch="8")
+    _verify(newer, "8")
+    cache_sync.persist(kv, "moq")
+
+    stale = _host(monkeypatch, tmp_path / "stale")
+    _mail(stale, [1, 2], epoch="7")
+    cache_sync.hydrate(kv, "moq")
+    assert _names(stale / "epoch-8") == ["10.eml", "11.eml"]
+    _reconcile(stale, b"8")  # the sync: server is at 8
+    _mail(stale, [12], epoch="8")
+    assert cache_sync.persist(kv, "moq") == []
+
+    assert PREFIX + "epoch-8/index.json" not in kv._data  # not stored twice
+    assert PREFIX + "epoch-7/index.json" in kv._data  # the stale host's own mail kept
+    cold = _host(monkeypatch, tmp_path / "cold")
+    cache_sync.hydrate(kv, "moq")
+    assert _names(cold) == ["10.eml", "11.eml", "12.eml"]  # folded, none lost
+    assert _names(cold / "epoch-7") == ["1.eml", "2.eml"]
+
+
+def test_epoch_change_is_abandoned_if_the_old_mail_cannot_be_archived(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    old = _host(monkeypatch, tmp_path / "old")
+    _mail(old, [1, 2, 3], epoch="7")
+    cache_sync.persist(kv, "moq")
+    before = dict(kv._data)
+
+    new = _host(monkeypatch, tmp_path / "new")
+    _mail(new, [1], epoch="8")
+    _verify(new, "8")
+    real_get = kv.get
+
+    def get(key):
+        if key.endswith("chunk-0.tar.gz"):
+            raise OSError("bucket unreachable")
+        return real_get(key)
+
+    monkeypatch.setattr(kv, "get", get)
+    problems = cache_sync.persist(kv, "moq")
+    assert len(problems) == 1 and "could not be fetched to archive" in problems[0]
+    assert kv._data == before  # epoch 7 still stored, untouched
+
+
+def test_a_failed_archive_fetch_fails_the_restore(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    old = _host(monkeypatch, tmp_path / "old")
+    _mail(old, [1, 2], epoch="7")
+    cache_sync.persist(kv, "moq")
+    new = _host(monkeypatch, tmp_path / "new")
+    _mail(new, [5], epoch="8")
+    _verify(new, "8")
+    cache_sync.persist(kv, "moq")  # epoch-7 is now an archive unit
+
+    _host(monkeypatch, tmp_path / "cold")
+    real_get = kv.get
+
+    def get(key):
+        if "epoch-7/chunk-" in key:
+            raise OSError("bucket unreachable")
+        return real_get(key)
+
+    monkeypatch.setattr(kv, "get", get)
+    with pytest.raises(GatherCacheRestoreError, match="1 stored chunk"):
+        cache_sync.hydrate(kv, "moq")
