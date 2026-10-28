@@ -374,10 +374,9 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     is silent — the read path there serves the last *published* version, never a
     half-written one, so no caveat is warranted. Best-effort, and deliberately
     in-process-scoped: a gather running in a *separate* local process (a
-    `ietf-llm <corpus>` CLI run sharing the same cache) leaves no signal this
-    process can see — the CLI writes only the `last-gathered` sentinel, not a
-    status record — so that case is unflagged. Closing it would need the CLI to
-    publish an in-process marker; out of scope here.
+    `ietf-llm <corpus>` CLI run sharing the same cache) writes a status record
+    that `gather_status` reports, but reading that file on every response is
+    not worth flagging the rare case, so it is unflagged here.
     """
     # pylint: disable-next=import-outside-toplevel
     from ..gather import runner as gather_runner

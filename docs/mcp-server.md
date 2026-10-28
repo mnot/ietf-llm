@@ -332,9 +332,16 @@ reports *already running*; a request for a different corpus when no slot is free
 taken at enqueue, so the same corpus is never gathered twice across the fleet, and a
 `queued`/`running` record whose gatherer died is relabelled `interrupted` once its lease lapses.
 
-> The CLI (`ietf-llm <corpus>`) does **not** yet participate in the fleet-wide slot, so a cron/shell
-> gather runs alongside the cap rather than counting toward it. Bringing the CLI under the same slot
-> is a planned follow-up.
+The CLI (`ietf-llm <corpus>`, `ietf-llm --all`) runs the same lifecycle (`gather/lifecycle.py`),
+after first settling whether the corpus is worth gathering at all: a mistyped name, or a corpus
+gathered within the freshness window, exits there and takes no lease, slot or status record. On the
+**cloud backend** it then takes the corpus's lease (refusing, with a non-zero exit, when a gather is
+already in flight here or on another host), waits for a fleet slot, and records its progress to
+the same status record — so a cron gather shows up in `gather_status` like an in-session one
+(marked as the CLI's), and `start_gather` reports it as *already running* while it lasts. On the
+**local backend** the lease and slot are no-ops, so a CLI gather and an in-session gather in
+separate processes do not exclude each other; the CLI's status record is still written, and a
+record whose writer's pid has died, or that has not been updated for an hour, reads `interrupted`.
 
 ### Per-host request governor
 
@@ -400,7 +407,7 @@ the container). So this is a **deployment-side** requirement, not something the 
 | `search_corpus` / `read_topic` error, every other tool works | The remote `/v1/embeddings` endpoint is unreachable | [Degraded mode](#cache-freshness-and-degraded-mode) — check `IETF_LLM_EMBED_BASE_URL` reachability and the token; deterministic tools keep serving meanwhile. |
 | Embedding bill climbing unexpectedly | No built-in quota — every `search_corpus`/`read_topic` is a paid call (by design) | Front the server with a proxy that rate-limits and caps spend; see [Deployment contract](#deployment-contract). |
 | A replica serves stale corpus content | Stale resolve cache, or no publish happened | On cloud, lower `IETF_LLM_RESOLVE_TTL` (the `oldest` field in `/health` shows the staleness floor); confirm the write-side gather published. On local, confirm the sync/mount updated. |
-| `start_gather` returns *already running* | A gather for that corpus is in flight here or on another host (per-corpus lease) | Poll `gather_status`; do not retry. A dead gatherer's record flips to `interrupted` once its lease lapses. |
+| `start_gather` returns *already running* | A gather for that corpus is in flight here or, on the cloud backend, on another host (per-corpus lease) | Poll `gather_status`; do not retry. A dead gatherer's record flips to `interrupted` once its lease lapses. |
 | `start_gather` refused (queue full) | Backlog hit `IETF_LLM_GATHER_QUEUE_MAX` | Wait and retry, or raise the cap / `IETF_LLM_GATHER_MAX_INFLIGHT` if upstreams tolerate it. |
 | Requests rejected with `421 Misdirected Request` | `IETF_LLM_MCP_ALLOWED_HOSTS` is set and the request `Host` isn't on the list | Add the public host (`host`, `host:port`, or `host:*`) to the allow-list, or unset it if a proxy already validates `Host`. |
 | Cloud store errors mention rejected credentials | Missing/invalid AWS credentials, or the IAM policy lacks an operation | Check `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (or the instance role) and that the policy grants `GetObject`/`PutObject`/`DeleteObject` on the prefix plus `ListBucket` (see [Storage](storage.md#what-you-provision)). |

@@ -58,7 +58,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .paths import get_cache_dir
 
@@ -497,8 +497,17 @@ def _format_hours(hours: float) -> str:
     return f"{hours:g}h"
 
 
+#: Where a debounce reads a corpus's last-gathered time: `local_last_gathered`
+#: by default, or a `CorpusStore.gathered_at` for a caller that decides before
+#: the workspace is seeded and so has no local sentinel yet.
+GatheredAt = Callable[[str], Optional[datetime]]
+
+
 def debounce_reason(
-    wg: str, *, min_interval_hours: Optional[float] = None
+    wg: str,
+    *,
+    min_interval_hours: Optional[float] = None,
+    gathered_at: Optional[GatheredAt] = None,
 ) -> Optional[str]:
     """One-line 'fresh, skipped' note if `wg` was gathered within the
     debounce window, else None.
@@ -510,11 +519,13 @@ def debounce_reason(
     this. A returned string is a success state, not an error: the existing
     snapshot is fresh enough to query as-is.
 
-    Local-only: this guards a gather about to write the local workspace
-    (the CLI's pre-flight check, and the MCP gather-entry path), so it must
-    read what's actually there regardless of the ambient
+    By default local-only: it guards a gather about to write the local
+    workspace, so it reads what's actually there regardless of the ambient
     `IETF_LLM_STORE_BACKEND` — a plain local `ietf-llm <wg>` run must not
-    depend on cloud store config it has nothing to do with.
+    depend on cloud store config it has nothing to do with. A caller that
+    decides *before* the workspace is seeded (the CLI pre-flight) passes the
+    store's `gathered_at`, which on the cloud backend answers from the
+    published version without downloading it.
     """
     hours = (
         gather_min_interval_hours()
@@ -523,7 +534,7 @@ def debounce_reason(
     )
     if hours <= 0:
         return None
-    when = local_last_gathered(wg)
+    when = (gathered_at or local_last_gathered)(wg)
     if when is None:
         return None
     age = datetime.now(timezone.utc) - when
@@ -557,7 +568,9 @@ _SOURCE_CHANGE_FLAGS = (
 )
 
 
-def cli_debounce_skip(args: Any) -> Optional[str]:
+def cli_debounce_skip(
+    args: Any, *, gathered_at: Optional[GatheredAt] = None
+) -> Optional[str]:
     """The freshness-debounce skip message for a CLI gather `args` namespace,
     or None to go ahead and gather.
 
@@ -571,4 +584,4 @@ def cli_debounce_skip(args: Any) -> Optional[str]:
         return None
     if any(getattr(args, name, None) for name in _SOURCE_CHANGE_FLAGS):
         return None
-    return debounce_reason(args.wg)
+    return debounce_reason(args.wg, gathered_at=gathered_at)

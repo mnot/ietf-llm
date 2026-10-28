@@ -10,8 +10,11 @@ runs the same pipeline as the `ietf-llm` CLI — out of process, via
 stage-level progress to a per-corpus status record
 (`~/.cache/ietf-llm/<corpus>/gather-status.json` and, on the cloud backend, the
 control plane) that the `gather_status` tool reads back. This module owns the
-queue, leases, heartbeat, and status record; `pipeline` owns running the
-pipeline and streaming its progress back into the worker's callbacks.
+queue, the shared heartbeat and cooperative cancel; `lifecycle` owns the
+store-facing steps around the pipeline (lease and slot TTLs, seed/hydrate,
+publish/persist, the status record) that the `ietf-llm` CLI shares; `pipeline`
+owns running the pipeline and streaming its progress back into the worker's
+callbacks.
 
 Concurrency model — `N = service_config.gather_max_inflight()` (default 3) caps
 gather concurrency two ways, keeping the pipeline polite to shared upstreams
@@ -40,21 +43,18 @@ import os
 import queue
 import re
 import secrets
-import socket
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .. import freshness, serve_metrics
 from ..corpus import canonical
-from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
-from ..paths import INDEX_FILE_NAMES, get_cache_dir, get_index_dir
-from . import pipeline
+from ..paths import get_cache_dir
+from . import lifecycle, pipeline
 
 # `GatherCancelled` lives in `pipeline` (the raiser) and is re-exported here so
 # callers keep catching it as `gather_runner.GatherCancelled` (this module's
@@ -62,27 +62,6 @@ from . import pipeline
 # gather time) and never imports `runner` — the cancel check is passed in as a
 # callback — so the dependency runs one way.
 from .pipeline import GatherCancelled
-
-_STATUS_NAME = "gather-status.json"
-
-#: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
-#: gather and renewed periodically (see `_LEASE_HEARTBEAT_S`), so even a gather
-#: longer than the TTL cannot let it lapse and admit a second writer.
-_LEASE_TTL = 3600.0
-
-#: How often the heartbeat thread renews the lease/slot — comfortably under the
-#: TTL so a slow renew or a stalled stage still refreshes in time.
-_LEASE_HEARTBEAT_S = 900.0
-
-#: How often the worker retries the global slot pool while a job sits queued
-#: waiting for the fleet to free a slot.
-_SLOT_POLL_S = 5.0
-
-#: Minimum seconds between mid-stage detail writes (see `_progress`). A long
-#: stage (the mailing-list download) reports a counter per batch; coalescing to
-#: this interval keeps the status file / control plane from churning while still
-#: giving a poller fresh movement to show.
-_DETAIL_MIN_INTERVAL_S = 3.0
 
 #: Minimum seconds between cooperative cancel polls on a chatty stage. A stage
 #: transition always polls (they are infrequent); mid-stage detail updates poll
@@ -147,57 +126,6 @@ def _cancel_requested(corpus: str) -> bool:
         return True
     status = read_status(corpus)
     return bool(status and status.get("cancel_requested"))
-
-
-#: A random per-process nonce so the lease owner id is unique even if two
-#: replicas collide on hostname *and* pid (some orchestrators reuse pod
-#: hostnames) — without it, a renew/release could cross hosts.
-_PROCESS_NONCE = uuid.uuid4().hex[:8]
-
-
-def _owner() -> str:
-    """Identify this gather process for the cross-host lease: host + pid +
-    a per-process random nonce."""
-    return f"{socket.gethostname()}:{os.getpid()}:{_PROCESS_NONCE}"
-
-
-def _heartbeat_lease(
-    store: Any, corpus: str, owner: str, stop: threading.Event
-) -> None:
-    """Renew the gather lease periodically so a gather longer than the lease TTL
-    cannot let the lease lapse (which would admit a second writer). Exits when
-    `stop` is set or if the lease is lost (renew returns False). A no-op renew on
-    the local backend, so this thread is harmless there."""
-    while not stop.wait(_LEASE_HEARTBEAT_S):
-        if not store.renew_lease(corpus, owner, _LEASE_TTL):
-            break
-
-
-def _index_extra_files(corpus: str, workspace: str) -> Dict[str, str]:
-    """Index files that belong in the published version but live *outside*
-    `workspace` — the embeddings index when `IETF_LLM_INDEX_DIR` points away from
-    the cache. Returns `{}` when the index dir is inside the workspace (the
-    default layout), since the workspace walk already captures it. So a cloud
-    reader replica gets the version's `embeddings.db` regardless of where the
-    index is configured (G-2).
-
-    Filtered to `paths.INDEX_FILE_NAMES` — the write side of the split-index
-    round trip `CloudCorpusStore.seed_workspace` reverses — so the two halves
-    name the same set and cannot drift apart again (issue #224): an unrelated
-    file that ended up in a split index dir would otherwise be uploaded to the
-    version root as if it were corpus content."""
-    index_dir = os.path.join(get_index_dir(), corpus)
-    if not os.path.isdir(index_dir):
-        return {}
-    ws_real = os.path.realpath(workspace)
-    idx_real = os.path.realpath(index_dir)
-    if idx_real == ws_real or idx_real.startswith(ws_real + os.sep):
-        return {}  # inside the workspace; the walk already captures it
-    return {
-        name: os.path.join(index_dir, name)
-        for name in os.listdir(index_dir)
-        if name in INDEX_FILE_NAMES and os.path.isfile(os.path.join(index_dir, name))
-    }
 
 
 def valid_corpus_name(name: str) -> bool:
@@ -306,14 +234,6 @@ class GatherSpec:
         return out
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _status_path(corpus: str) -> str:
-    return os.path.join(get_cache_dir(), corpus, _STATUS_NAME)
-
-
 def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
     """Reason to refuse a gather *before* queuing, or None to proceed.
 
@@ -415,7 +335,7 @@ def start(  # pylint: disable=too-many-return-statements
         # near-simultaneous race is told "already running"), and it is the
         # liveness anchor for the queued state. A no-op grant on the local
         # backend, where the in-process registry above is the dedup.
-        if not store.acquire_lease(corpus, owner, _LEASE_TTL):
+        if not store.acquire_lease(corpus, owner, lifecycle.LEASE_TTL):
             return {"started": False, "reason": "already running", "corpus": corpus}
         ahead = len(_jobs)
         _jobs[corpus] = "queued"
@@ -516,49 +436,12 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
 
 
 def _new_status(spec: GatherSpec, state: str) -> Dict[str, Any]:
-    now = _now_iso()
-    return {
-        "corpus": spec.corpus,
-        "state": state,
-        "spec": spec.to_dict(),
-        "pid": os.getpid(),
-        "started": now,
-        "updated": now,
-        "finished": None,
-        "stage": None,
-        "stage_index": 0,
-        "stage_total": None,
-        "stage_detail": None,
-        "cancel_token_sha256": None,
-        "cancel_requested": False,
-        "error": None,
-    }
+    return lifecycle.new_status(spec.corpus, spec.to_dict(), state, driver="mcp")
 
 
-def _write_status(store: Any, status: Dict[str, Any]) -> None:
-    """Persist a status record locally and publish it to the store so it is
-    fleet-visible (G-8). Never fails the gather on a write/publish error."""
-    status["updated"] = _now_iso()
-    corpus = status["corpus"]
-    path = _status_path(corpus)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with atomic_open(path) as handle:
-            json.dump(status, handle, indent=2, sort_keys=True)
-    except OSError as err:
-        log(
-            f"gather.runner: could not write status for {corpus}: {err}",
-            Verbosity.STATUS,
-            level=LogLevel.ERROR,
-        )
-    try:
-        store.put_gather_status(corpus, status)
-    except Exception as err:  # pylint: disable=broad-except
-        log(
-            f"gather.runner: could not publish status for {corpus}: {err}",
-            Verbosity.STATUS,
-            level=LogLevel.ERROR,
-        )
+_write_status = lifecycle.write_status
+_status_path = lifecycle.status_path
+_now_iso = lifecycle.now_iso
 
 
 def _store() -> Any:
@@ -571,12 +454,8 @@ def _store() -> Any:
     return corpus_store.get_corpus_store()
 
 
-def _slot_owner(owner: str, corpus: str) -> str:
-    """The fleet-slot key for one gather. Per-*job* (process owner + corpus), not
-    per-process, so N concurrent gathers on one host hold N distinct slots and
-    the fleet cap is counted correctly. A host gathers a given corpus at most
-    once at a time (deduped), so this is unique per concurrent gather."""
-    return f"{owner}:{corpus}"
+_slot_owner = lifecycle.slot_owner
+_owner = lifecycle.process_owner
 
 
 def _ensure_worker(owner: str) -> None:
@@ -616,16 +495,16 @@ def _heartbeat_loop(owner: str, stop: threading.Event) -> None:
     gather's slot, comfortably within the TTL, so a long gather — or a long wait
     for a fleet slot — cannot let the lease/slot lapse. No-ops on the local
     backend. Lives for the process (daemon); `stop` is a test seam."""
-    while not stop.wait(_LEASE_HEARTBEAT_S):
+    while not stop.wait(lifecycle.LEASE_HEARTBEAT_S):
         with _registry_lock:
             items = list(_jobs.items())
         if not items:
             continue
         store = _store()
         for corpus, state in items:
-            store.renew_lease(corpus, owner, _LEASE_TTL)
+            store.renew_lease(corpus, owner, lifecycle.LEASE_TTL)
             if state == "running":
-                store.renew_gather_slot(_slot_owner(owner, corpus), _LEASE_TTL)
+                store.renew_gather_slot(_slot_owner(owner, corpus), lifecycle.LEASE_TTL)
 
 
 def _worker_loop(owner: str) -> None:
@@ -677,7 +556,9 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     # record is distinguishable. On shutdown, bail without a terminal status —
     # the released lease lets liveness relabel the record `interrupted`.
     max_inflight = service_config.gather_max_inflight()
-    while not store.acquire_gather_slot(slot_owner, corpus, _LEASE_TTL, max_inflight):
+    while not store.acquire_gather_slot(
+        slot_owner, corpus, lifecycle.LEASE_TTL, max_inflight
+    ):
         if _heartbeat_stop.is_set():
             return
         if _cancel_requested(corpus):
@@ -689,7 +570,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             _write_status(store, status)
             return
         _write_status(store, status)
-        time.sleep(_SLOT_POLL_S)
+        time.sleep(lifecycle.SLOT_POLL_S)
     # Gather lifecycle for /metrics: started once we go `running`, finished in
     # the outer `finally` below. `run_start` stays None until then so the
     # finally only records (and balances the in-flight gauge) for a gather that
@@ -704,13 +585,13 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         serve_metrics.record_gather_started()
         run_start = time.monotonic()
 
-        last_detail_write = 0.0
+        recorder = lifecycle.StatusRecorder(store, status)
         last_cancel_poll = 0.0
 
         def _progress(
             name: str, index: int, total: int, detail: Optional[str] = None
         ) -> None:
-            nonlocal last_detail_write, last_cancel_poll
+            nonlocal last_cancel_poll
             now = time.monotonic()
             # Cooperative cancellation checkpoint. Reached at every stage
             # boundary (detail is None) and every download batch (detail set).
@@ -723,77 +604,17 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 if _cancel_requested(corpus):
                     status["cancel_requested"] = True
                     raise GatherCancelled(corpus)
-            status["stage"] = name
-            status["stage_index"] = index
-            status["stage_total"] = total
-            status["stage_detail"] = detail
-            # A stage transition (detail is None) always persists. Mid-stage
-            # detail updates can fire often on a long stage, so throttle the
-            # write/publish to keep a chatty stage from flooding the control
-            # plane — the next transition resets the detail to None and writes
-            # regardless, so a dropped intermediate count is harmless.
-            if detail is not None:
-                now = time.monotonic()
-                if now - last_detail_write < _DETAIL_MIN_INTERVAL_S:
-                    return
-                last_detail_write = now
-            _write_status(store, status)
+            recorder.progress(name, index, total, detail)
 
-        def _note(message: str) -> None:
-            # Surface pipeline-level notes (e.g. which GitHub repos auto-track
-            # added, or that discovery was throttled) so the client sees them
-            # via gather_status instead of only in the server's stderr.
-            status.setdefault("notes", []).append(message)
-            _write_status(store, status)
-
-        # Seed the workspace from the current published version before gathering
-        # so an incremental gather on a fresh replica skips re-downloading
-        # immutable inputs and re-embedding unchanged files. A no-op on the local
-        # backend (the workspace already is the live cache). A seed failure must
-        # not fail the gather — it just means a cold (full) gather — so swallow
-        # and note it.
         workspace = os.path.join(get_cache_dir(), corpus)
-        try:
-            seeded = store.seed_workspace(corpus, workspace)
-            if seeded:
-                _note(f"seeded workspace from published version {seeded}")
-        except Exception as err:  # pylint: disable=broad-except
-            _note(
-                f"workspace seed skipped ({type(err).__name__}: {err}); "
-                "gathering from scratch"
-            )
-
-        # Restore the gather accelerator caches (datatracker ETag store, GitHub /
-        # datatracker identity maps) so a fresh replica revalidates instead of
-        # re-hitting rate-limited upstreams (issue #82). A no-op on the local
-        # backend; best-effort, like the seed above.
-        try:
-            store.hydrate_gather_caches(corpus)
-        except Exception as err:  # pylint: disable=broad-except
-            _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
+        lifecycle.prepare_workspace(store, corpus, workspace, recorder.note)
 
         try:
             ok = pipeline.run_pipeline(
-                spec, _progress, _note, lambda: _cancel_requested(corpus)
+                spec, _progress, recorder.note, lambda: _cancel_requested(corpus)
             )
             if ok:
-                # Publish the gathered tree as a new version. A no-op finalise on
-                # the local backend (the cache already is the live version); on
-                # the cloud backend this uploads the corpus and flips the pointer
-                # atomically. The index lives outside the cache when
-                # IETF_LLM_INDEX_DIR is split off, so include it explicitly (G-2).
-                store.publish(
-                    corpus,
-                    workspace,
-                    extra_files=_index_extra_files(corpus, workspace) or None,
-                )
-                # Persist the gather accelerator caches to durable storage so the
-                # next cold gather builds on them (issue #82). A no-op on the
-                # local backend; best-effort — never fail a completed gather on it.
-                try:
-                    store.persist_gather_caches(corpus)
-                except Exception as err:  # pylint: disable=broad-except
-                    _note(f"gather-cache persist skipped ({type(err).__name__}: {err})")
+                lifecycle.publish_workspace(store, corpus, workspace, recorder.note)
                 status["state"] = "done"
             else:
                 status["state"] = "failed"
@@ -834,11 +655,13 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     cache, so a local file cannot answer for another host).
 
     On the **local** backend status is the per-corpus `gather-status.json`, and
-    a non-terminal (`queued`/`running`) record whose corpus is not in this
-    process's live job registry is relabelled `interrupted`: the worker is a
-    daemon, so a restart/kill would otherwise leave the record stuck. The local
-    backend has a single gatherer (this process), so "not tracked here" means
-    the job that wrote the record is gone.
+    a non-terminal (`queued`/`running`) record is relabelled `interrupted` when
+    its writer is gone: a job of this process that is no longer in the live
+    registry (the worker is a daemon, so a restart/kill would otherwise leave
+    the record stuck), or another process — an `ietf-llm` CLI gather on this
+    host — whose recorded pid is dead. The local backend is a single host, so
+    the pid is a sound liveness check there, provided the record is also recent
+    (a reused pid cannot keep a long-dead gather `running`).
     """
     if not valid_corpus_name(corpus):
         return None
@@ -856,11 +679,41 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     if result.get("state") in ("queued", "running"):
-        with _registry_lock:
-            tracked = corpus in _jobs
+        pid = result.get("pid")
+        if isinstance(pid, int) and pid != os.getpid():
+            tracked = _pid_alive(pid) and _recently_updated(result)
+        else:
+            with _registry_lock:
+                tracked = corpus in _jobs
         if not tracked:
             result["state"] = "interrupted"
     return result
+
+
+def _recently_updated(status: Dict[str, Any]) -> bool:
+    """Whether a status record was written within the lease TTL. A pid alone
+    cannot vouch for a record: after a reboot or long uptime the writer's pid
+    may belong to an unrelated process. A record with no readable `updated`
+    stamp is taken at the pid's word."""
+    stamp = freshness.parse_iso(str(status.get("updated") or ""))
+    if stamp is None:
+        return True
+    return (datetime.now(timezone.utc) - stamp).total_seconds() <= lifecycle.LEASE_TTL
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether another process on this host is still running. `os.kill(pid, 0)`
+    is the POSIX existence probe; on Windows that call would *terminate* the
+    process, so there a foreign record is taken at its word."""
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def local_inflight(corpus: str) -> Optional[Dict[str, Any]]:
@@ -900,11 +753,12 @@ def has_local_status(corpus: str) -> bool:
     status record for `corpus` on local disk?
 
     For the read path, which wants to know whether pointing a reader at
-    `gather_status` will actually tell them anything. A corpus gathered by the
-    `ietf-llm` CLI has no record — the CLI writes none — and `gather_status`
-    would answer "no gather has been recorded", suggesting the reader start one.
-    That is a dead end, and for the case this exists to explain (an upstream feed
-    that lags its archive) the suggested re-gather reads the same feed.
+    `gather_status` will actually tell them anything. A corpus gathered before
+    the CLI wrote status records (or seeded from the public store) has none,
+    and `gather_status` would answer "no gather has been recorded", suggesting
+    the reader start one. That is a dead end, and for the case this exists to
+    explain (an upstream feed that lags its archive) the suggested re-gather
+    reads the same feed.
 
     Deliberately *not* `read_status`: that consults the cloud control plane
     first, so calling it per response would put an S3 round-trip on a read tool

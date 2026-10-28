@@ -333,6 +333,8 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
     corpus = status.get("corpus", "?")
     state = status.get("state", "?")
     parts = [f"**{corpus}** — {state}"]
+    if status.get("driver") == "cli":
+        parts.append("via the ietf-llm CLI")
     if state == "queued":
         parts.append("waiting for a gather slot (gathers are capped to a few at once)")
     if state == "running":
@@ -548,12 +550,14 @@ def register(server: "FastMCP") -> None:
         corpus: Optional[str] = None, wait: Optional[float] = None
     ) -> str:
         """Report the progress of background gathers started with
-        `start_gather`.
+        `start_gather` — and of gathers the `ietf-llm` CLI runs (a cron
+        refresh, say), which record their progress the same way and are
+        marked as the CLI's.
 
         With `corpus`, returns that corpus's state: `running` (with the
         current stage, e.g. `stage 7/17 (github issues)`, and elapsed
         time), `done`, `failed` (with the error), or `interrupted` (the
-        server process ended mid-gather — re-run `start_gather`). With no
+        gathering process ended mid-gather — re-run `start_gather`). With no
         argument, lists every recorded gather, most-recently-active
         first. Once a corpus reports `done`, the read tools (`overview`,
         `search_corpus`, …) work on it.

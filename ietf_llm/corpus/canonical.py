@@ -152,7 +152,13 @@ def canonicalize_skip(
     return _overlap_hint(corpus, existing, shared)
 
 
-def cli_gather_skip(args: Any, *, synthetic: bool, group_backed: bool) -> Optional[str]:
+def cli_gather_skip(
+    args: Any,
+    *,
+    synthetic: bool,
+    group_backed: bool,
+    gathered_at: Optional[freshness.GatheredAt] = None,
+) -> Optional[str]:
     """The skip message for a CLI gather invocation, or None to proceed.
 
     Combines the two entry-point guards: a reuse hint when a *new* custom /
@@ -174,7 +180,7 @@ def cli_gather_skip(args: Any, *, synthetic: bool, group_backed: bool) -> Option
     )
     if hint is not None:
         return hint
-    return freshness.cli_debounce_skip(args)
+    return freshness.cli_debounce_skip(args, gathered_at=gathered_at)
 
 
 def mcp_canonicalize_skip(spec: Any) -> Optional[str]:

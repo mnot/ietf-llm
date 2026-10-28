@@ -519,7 +519,8 @@ ietf_llm/
 ├── data/skills/VENDORED.md               # provenance: skills vendored wholesale from mnot/ietf-skill
 │
 ├── gather/                 # orchestration (below) + content acquisition / per-source post-processing
-│   ├── runner.py               # in-session gather orchestration: queue/leases/heartbeat, gather-status.json
+│   ├── runner.py               # in-session gather orchestration: queue, shared heartbeat, cooperative cancel
+│   ├── lifecycle.py            # the store-facing steps around a gather (lease/slot, seed, publish, status), shared CLI ↔ runner
 │   ├── pipeline.py             # runs the sequencer in a child process, streams its progress back
 │   ├── child.py                # the child entry point (python -m ietf_llm.gather.child)
 │   ├── stages.py               # stage_plan: canonical gather stage order (shared CLI ↔ runner)
@@ -721,7 +722,16 @@ questions and otherwise stays out of the way. **Read side** — `local_cache_dir
 consumers then read through the `paths.py` helpers exactly as before. **Write
 side** — `publish(corpus, workspace)` makes a gathered tree the new current
 version. `get_corpus_store()` picks the backend from service config
-(`IETF_LLM_STORE_BACKEND`, default `local`).
+(`IETF_LLM_STORE_BACKEND`, default `local`). The write side is driven through
+`gather/lifecycle.py` — lease and fleet slot, seed and cache hydration before
+the pipeline, publish and cache persistence after, the status record
+throughout — by both gatherers: the MCP runner wraps it with its queue and
+cooperative cancel, and the `ietf-llm` CLI runs it synchronously around
+`_gather_one`, after `sequencer.preflight` has screened out an unusable name
+and a corpus the freshness debounce says is not due (against the store's
+`gathered_at`, so nothing is leased, seeded or recorded for either). Neither
+driver reaches the store any other way, so a CLI gather
+on the cloud backend publishes exactly as an in-session one does (issue #258).
 
 A corpus is not only its `files/` tree: the gather workspace *is* the corpus
 root, so the machinery it writes beside `files/` — `documents.json` (draft
