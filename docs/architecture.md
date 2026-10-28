@@ -1464,11 +1464,11 @@ free of it and degrades to keyword matching.
 
 **What is in it.** Every `wg` and `rg` group in any state, with the current
 charter, milestones, and a timeline. The timeline is built from bulk feeds —
-group state changes, charter revisions and IESG approvals, milestone history, and
-RFC publications (joined offline from `_rfc/` by its `wg` field). It does not
-include chair changes (a gathered corpus reads them from each group's
-`groupevent` log; the mirror does not yet pull that log in bulk), draft adoption (per
-document), or meetings.
+group state changes, chair changes (the `info_changed` group events, so only
+changes since the Datatracker log began; a group's founding chairs have no
+event), charter revisions and IESG approvals, milestone history, and RFC
+publications (joined offline from `_rfc/` by its `wg` field). It does not include
+draft adoption (per document) or meetings.
 Milestone and charter dates before about 2014 reflect the Datatracker import, not
 the original event. The RFC events are joined from `_rfc/` when the group refresh
 runs (after the RFC mirror in housekeeping), so they are absent until the first

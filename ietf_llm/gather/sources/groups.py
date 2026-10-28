@@ -32,15 +32,16 @@ from ...atomicio import write_if_changed
 from ...config import service as service_config
 from ...freshness import record_gather
 from ...log import LogLevel, Verbosity, log
-from ...paths import get_index_dir
 from ...net import (
     DEFAULT_HEADERS,
     governed_get,
     http_error_detail,
     http_metrics,
 )
+from ...paths import get_index_dir
 from ...singletons import groups as reader
 from . import _mirror
+from .datatracker_history import chair_changes, chair_event_title
 
 _API = "https://datatracker.ietf.org/api/v1"
 _PAGE = 1000
@@ -79,6 +80,11 @@ _FEEDS: Dict[str, str] = {
     "state-events": f"{_API}/group/groupevent/?type=changed_state&group__type__in={_GROUP_TYPES}",
     "charter-revs": f"{_API}/doc/docevent/?doc__type=charter&type=new_revision",
     "charter-approvals": f"{_API}/doc/docevent/?doc__type=charter&type=iesg_approved",
+    # Chair changes: "Chairs changed to <b>A, B</b> from A".
+    "chair-events": (
+        f"{_API}/group/groupevent/?type=info_changed&desc__startswith=Chair"
+        f"&group__type__in={_GROUP_TYPES}"
+    ),
     "milestones": f"{_API}/group/groupmilestone/?group__type__in={_GROUP_TYPES}",
     "milestone-history": f"{_API}/group/groupmilestonehistory/?group__type__in={_GROUP_TYPES}",
     "rfc-published": f"{_API}/doc/docevent/?type=published_rfc",
@@ -147,6 +153,7 @@ def _slim(feed: str, obj: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only what the derived files need; raw rows are large."""
     keep = {
         "state-events": ("id", "group", "desc", "time"),
+        "chair-events": ("id", "group", "desc", "time"),
         "charter-revs": ("id", "doc", "rev", "time"),
         "charter-approvals": ("id", "doc", "rev", "desc", "time"),
         "milestones": (
@@ -398,6 +405,15 @@ def build_timeline(
             "group-state",
             _plain(row.get("desc")),
         )
+    for row in feeds["chair-events"].values():
+        changes = chair_changes({"type": "info_changed", "desc": row.get("desc")})
+        for kind, name in changes:
+            add(
+                by_uri.get(row.get("group") or "", ""),
+                row.get("time"),
+                kind,
+                chair_event_title(kind, name),
+            )
     for row in feeds["charter-revs"].values():
         add(
             _acronym_of_charter(row.get("doc") or ""),

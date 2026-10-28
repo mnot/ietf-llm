@@ -89,6 +89,11 @@ class _Datatracker:
             return [] if self.empty_groups else list(_GROUPS)
         if "doc/document/?type=charter" in url:
             return list(_CHARTER_DOCS)
+        if "groupevent" in url and "info_changed" in url:
+            return [{"id": 20, "group": "/api/v1/group/group/1/", "time": "2016-07-27T09:20:49Z",
+                     "desc": "Chairs changed to <b>Mark Nottingham, Patrick McManus</b> from Mark Nottingham"},
+                    {"id": 21, "group": "/api/v1/group/group/1/", "time": "2019-11-04T06:45:42Z",
+                     "desc": "Chairs changed to <b>Mark Nottingham</b> from Mark Nottingham, Patrick McManus"}]
         if "groupevent" in url:
             return [{"id": 1, "group": "/api/v1/group/group/2/", "time": "2014-10-22T22:21:24Z",
                      "desc": "State changed to <b>Concluded</b> from Active"}]
@@ -182,6 +187,9 @@ def test_timeline_covers_each_source(mirror: _Datatracker) -> None:  # noqa: ARG
     assert "Milestone added: Submit cache (due 2020-06)" in out
     assert "Milestone due 2099-01 (was 2020-06): Submit cache" in out
     assert "Milestone done" not in out  # only one version of that milestone
+    assert "Chair appointed: Patrick McManus" in out
+    assert "Chair stepped down: Patrick McManus" in out
+    assert "Chair appointed: Mark Nottingham" not in out  # already a chair
     assert reader.render_timeline("l3vpn").count("State changed to Concluded from Active") == 1
 
 
