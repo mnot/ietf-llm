@@ -90,11 +90,19 @@ _MAX_CORPUS_LEN = 128
 # service_config.gather_max_inflight()): a pool of N worker threads drains a
 # shared FIFO queue, and each running gather holds a per-job global slot in the
 # control plane (the fleet-wide cap — N slots total, so the whole deployment
-# never exceeds N either). `_jobs` maps corpus -> state ("queued" | "running")
-# for in-process dedup, queue-bound enforcement, and local-backend liveness.
+# never exceeds N either). `_jobs` maps corpus -> state ("queued" | "running" |
+# "finishing") for in-process dedup, queue-bound enforcement, and local-backend
+# liveness. "finishing" is set just before the terminal status is written and
+# held until the worker has released the slot, lease and registry entry.
 _queue: "queue.Queue[GatherSpec]" = queue.Queue()
 _jobs: Dict[str, str] = {}
 _registry_lock = threading.Lock()
+#: Signalled (under `_registry_lock`) when a worker drops a corpus from `_jobs`,
+#: so `start` can wait out a "finishing" job instead of refusing it.
+_registry_cond = threading.Condition(_registry_lock)
+#: How long `start` waits for a finishing job's cleanup (a few store round-trips)
+#: before giving up with the ordinary "already running" refusal.
+_FINISH_WAIT_S = 10.0
 #: The worker pool, mutated in place so it needs no module-level `global` rebind.
 _workers: "List[threading.Thread]" = []
 _heartbeat_stop = threading.Event()
@@ -326,6 +334,14 @@ def start(  # pylint: disable=too-many-return-statements
     store = corpus_store.get_corpus_store()
     owner = _owner()
     with _registry_lock:
+        # The terminal status is published before the worker frees the slot,
+        # lease and registry entry, so a client restarting on seeing it lands
+        # here mid-cleanup. Wait for the old job to be gone: admitting the new
+        # one earlier would let the old worker's cleanup release the new job's
+        # lease and slot, which share the old one's owner.
+        _registry_cond.wait_for(
+            lambda: _jobs.get(corpus) != "finishing", timeout=_FINISH_WAIT_S
+        )
         if corpus in _jobs:
             return {"started": False, "reason": "already running", "corpus": corpus}
         if len(_jobs) >= _queue_max():
@@ -534,7 +550,17 @@ def _worker_loop(owner: str) -> None:
                 _jobs.pop(corpus, None)
                 _cancel_tokens.pop(corpus, None)
                 _cancel_events.pop(corpus, None)
+                _registry_cond.notify_all()
             _queue.task_done()
+
+
+def _mark_finishing(corpus: str) -> None:
+    """Flag a registered job as past its work, before its terminal status is
+    published: the corpus is no longer live (`local_inflight`), but `start`
+    still holds off until the worker has finished cleaning up."""
+    with _registry_lock:
+        if corpus in _jobs:
+            _jobs[corpus] = "finishing"
 
 
 def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
@@ -567,6 +593,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             status["state"] = "cancelled"
             status["cancel_requested"] = True
             status["finished"] = _now_iso()
+            _mark_finishing(corpus)
             _write_status(store, status)
             return
         _write_status(store, status)
@@ -638,6 +665,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             status["error"] = f"{type(err).__name__}: {err}"[:500]
         finally:
             status["finished"] = _now_iso()
+            _mark_finishing(corpus)
             _write_status(store, status)
     finally:
         store.release_gather_slot(slot_owner)

@@ -29,6 +29,7 @@ from .query import (
     is_idaction_publication,
     parse_md_tables,
     query_digest,
+    timeline_rows,
 )
 
 
@@ -677,17 +678,16 @@ def _recent_activity(cache_dir: str, wg: str, limit: int) -> _RecentActivity:
     timeline_path = _digest_path(cache_dir, wg, "timeline")
     if not os.path.isfile(timeline_path):
         return _RecentActivity([], 0, 0)
-    filtered = query_digest(timeline_path, "timeline", limit=max(limit * 4, 40))
-    rows = [
-        line[2:].strip() for line in filtered.splitlines() if line.startswith("- **")
-    ]
+    rows = timeline_rows(timeline_path, max(limit * 4, 40))
     events: List[str] = []
     idaction = 0
     ballots = 0
-    for row in rows:
-        if is_idaction_publication(row):
+    for row, kind in rows:
+        # Kinds, when the digest has them, are exact; row text can be fooled
+        # by an issue or mail title that contains " → ".
+        if kind == "draft-published" or (kind is None and is_idaction_publication(row)):
             idaction += 1
-        elif is_ballot_position(row):
+        elif kind == "ballot" or (kind is None and is_ballot_position(row)):
             ballots += 1
         elif len(events) < limit:
             events.append(row)

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from ietf_llm.log import Verbosity
+
 from ietf_llm.digest.query import (
     Section,
     filter_rows,
@@ -383,6 +387,22 @@ def test_timeline_filter_by_kind(tmp_path: Path) -> None:
     assert "Issue #172" not in out
 
 
+def test_timeline_filter_by_chair_appointed_kind(tmp_path: Path) -> None:
+    # The writer renders the event as "Chair appointed: <name>"; the
+    # advertised kind slug is hyphenated and must still select it.
+    path = tmp_path / "wg-_timeline.md"
+    path.write_text(
+        "# wg: timeline\n\n"
+        "## 2026\n\n"
+        "- **2026-03-16** — IETF 125 meeting\n\n"
+        "## 2016\n\n"
+        "- **2016-07-27** — Chair appointed: Patrick McManus\n"
+    )
+    out = query_digest(str(path), "timeline", event_kind="chair-appointed")
+    assert "Chair appointed: Patrick McManus" in out
+    assert "IETF 125 meeting" not in out
+
+
 def test_timeline_filter_since(tmp_path: Path) -> None:
     path = _timeline_file(tmp_path)
     out = query_digest(str(path), "timeline", since="2026-04-20")
@@ -408,3 +428,68 @@ def test_timeline_drops_empty_year_headings(tmp_path: Path) -> None:
     # Only one meeting (in 2026); 2025 has none, its heading shouldn't appear.
     assert "## 2025" not in out
     assert "## 2026" in out
+
+
+def test_timeline_filter_falls_back_to_row_text_without_kinds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A digest with no kinds sidecar (written before it existed) is matched
+    # on row text. Titles come from the real classifiers, so a reworded title
+    # that stops matching its marker fails here.
+    from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
+        datatracker_history as dh,
+    )
+
+    chair_event = {
+        "time": "2026-01-01T00:00:00Z",
+        "type": "info_changed",
+        "desc": "Chair changed to <b>C D</b> from A B, C D",
+    }
+    monkeypatch.setattr(
+        dh, "_get_json", lambda path, timeout=10.0: {"objects": [chair_event]}
+    )
+    chair_titles = [
+        e.title for e in dh.fetch_group_events("wg", 12, Verbosity.QUIET)
+    ]
+    titles = {
+        "charter-approved": dh._classify_group_event(  # pylint: disable=protected-access
+            {"type": "changed_state", "desc": "Charter approved, group active"}
+        )[1],
+        "group-state": dh._classify_group_event(  # pylint: disable=protected-access
+            {"type": "changed_state", "desc": "Started group"}
+        )[1],
+        "doc-adopted": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "changed_state", "desc": "Adopted by WG", "doc": "/api/v1/doc/document/draft-a/"}
+        )[1],
+        "doc-iesg": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "iesg_approved", "doc": "/api/v1/doc/document/draft-b/"}
+        )[1],
+        "doc-rfc": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "published_rfc", "doc": "/api/v1/doc/document/draft-c/"}
+        )[1],
+        "doc-wglc": dh._classify_doc_event(  # pylint: disable=protected-access
+            {
+                "type": "changed_state",
+                "desc": "IETF WG state changed to <b>In WG Last Call</b> from WG Document",
+                "doc": "/api/v1/doc/document/draft-d/",
+            }
+        )[1],
+        "doc-lc": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "sent_last_call", "doc": "/api/v1/doc/document/draft-g/"}
+        )[1],
+        "chair-departed": chair_titles[0],
+        # Row shape the writer gives an I-D Action thread: title, then link.
+        "draft-published": "`draft-f-06` published · threads/2026/x.md",
+        "ballot": "`draft-e`: Some AD → Discuss",
+    }
+    path = tmp_path / "wg-_timeline.md"
+    path.write_text(
+        "# wg: timeline\n\n## 2026\n\n"
+        + "".join(f"- **2026-01-01** — {t}\n" for t in titles.values())
+    )
+    for kind, title in titles.items():
+        out = query_digest(str(path), "timeline", event_kind=kind)
+        assert title in out, kind
+        for other_kind, other in titles.items():
+            if other_kind != kind:
+                assert other not in out, (kind, other_kind)

@@ -20,7 +20,7 @@ sources, each contributing dated events:
     Adoption). Used as a fallback when Datatracker has no
     corresponding authoritative event.
   - **Datatracker governance** — charter approvals, chair
-    appointments, group state changes, document adoption / IESG /
+    appointments and departures, group state changes, document adoption / IESG /
     RFC publication. Charter and chair events ignore the `--months`
     cutoff (foundational context); document events respect it.
 
@@ -31,6 +31,7 @@ can grep down to the period it cares about.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -48,7 +49,6 @@ from ..gather.sources.ballots import (
 from ..gather.sources.datatracker_history import (
     fetch_doc_events,
     fetch_group_events,
-    fetch_role_history,
 )
 from ..gather.sources.github import iter_issue_archives
 from ..gather.sources.mail_threads import Thread, build_threads, thread_slug
@@ -58,12 +58,15 @@ from ..log import LogLevel, Verbosity, log
 from ..net import http_metrics
 from ..paths import (
     DIR_MEETINGS,
+    digest_fingerprint,
+    digest_kinds_path,
     digest_path,
     github_dir,
     minutes_path,
     remove_stale_digest,
 )
 from ..people import Registry
+from ..people.names import is_decorated
 from .events import Event
 
 # --- Sources ---------------------------------------------------------------
@@ -398,6 +401,28 @@ def _thread_link(thread: Thread) -> str:
     return f"`threads/{thread_slug(thread.root.subject, iso)}.md`"
 
 
+def _canonical_names(registry: Registry) -> Callable[[str], str]:
+    """Chair names as the people digest spells them, else as logged.
+
+    The registry holds a mail-derived spelling for anyone whose Datatracker
+    role has lapsed, which can be worse than the logged name (all lowercase,
+    `Last, First`, a `(handle)` suffix); those are not adopted. A chair logged
+    by email address is resolved through the registry when it knows it.
+    """
+
+    def canonical(name: str) -> str:
+        if "@" in name:
+            person = registry.person_for_email(name.lower())
+        else:
+            person = registry.person_for_name(name)
+        spelling = person.canonical_name if person else name
+        if "@" in spelling or spelling == spelling.lower() or is_decorated(spelling):
+            return name
+        return spelling
+
+    return canonical
+
+
 # --- Public entry point ----------------------------------------------------
 
 
@@ -412,7 +437,7 @@ def build_events(
     """Collect events from every source and return them sorted desc.
 
     `months` bounds the Datatracker document-event window; group-level
-    events (charter, chair appointments) ignore it per policy. The
+    events (charter, chair changes) ignore it per policy. The
     mailing-list-derived events are implicitly bounded by whatever
     `--months` was used when the mail was fetched.
 
@@ -434,7 +459,7 @@ def build_events(
     # no group record to query.
     if group_backed:
         dt_events: List[Event] = []
-        # Four independent queries against slow endpoints. Overlapped, not
+        # Three independent queries against slow endpoints. Overlapped, not
         # unbounded: the per-host governor still caps what datatracker sees.
         parent = http_metrics.current()
 
@@ -446,17 +471,20 @@ def build_events(
             finally:
                 http_metrics.set_current(previous)
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            f_group = pool.submit(_bound, fetch_group_events, wg, months, verbose)
-            f_roles = pool.submit(_bound, fetch_role_history, wg, verbose)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_group = pool.submit(
+                _bound,
+                fetch_group_events,
+                wg,
+                months,
+                verbose,
+                _canonical_names(registry),
+            )
             f_docs = pool.submit(_bound, fetch_doc_events, wg, months, verbose)
             # IESG ballot positions -> per-draft ballot file, which
             # read_digest(event_kind="ballot") addresses directly.
-            f_ballots = pool.submit(
-                _bound, fetch_ballots, wg, months, verbose=verbose
-            )
+            f_ballots = pool.submit(_bound, fetch_ballots, wg, months, verbose=verbose)
         dt_events.extend(f_group.result())
-        dt_events.extend(f_roles.result())
         dt_events.extend(f_docs.result())
         ballots = f_ballots.result()
         write_ballot_files(cache_dir, ballots, verbose=verbose)
@@ -517,12 +545,15 @@ def write_timeline_digest(
             "drafts published, issues opened and closed, meetings held "
             "(with minutes / slides / transcripts bundled as aspects of "
             "the same session), session polls recorded, charter "
-            "approvals and chair appointments (Datatracker), document "
-            "adoption / IESG / RFC publication (Datatracker), WGLCs "
+            "approvals and chair changes (Datatracker; changes are those "
+            "recorded since its event log began), document "
+            "adoption / IESG / RFC publication / IETF and WG Last Calls "
+            "(Datatracker), WGLCs "
             "and adoption calls (Datatracker when available, "
             "mailing-list subject-line heuristic as fallback). "
             "Newest first within each year._\n\n"
         )
+        kinds: List[str] = []
         for year in sorted(by_year, reverse=True):
             fh.write(f"## {year}\n\n")
             for event in by_year[year]:
@@ -532,8 +563,16 @@ def write_timeline_digest(
                     line += f" — {event.detail}"
                 if event.link:
                     line += f" · {event.link}"
-                fh.write(line + "\n")
+                # One line per row keeps the row order in step with `kinds`.
+                fh.write(" ".join(line.splitlines()) + "\n")
+                kinds.append(event.kind)
             fh.write("\n")
+    # Lets `read_digest(event_kind=...)` select rows by kind rather than by
+    # guessing from their text.
+    with open(out_path, "r", encoding="utf-8") as written:
+        fingerprint = digest_fingerprint(written.read())
+    with atomic_open(digest_kinds_path(out_path)) as fh:
+        json.dump({"sha256": fingerprint, "kinds": kinds}, fh)
 
     log(
         f"Wrote timeline: {len(events)} events",

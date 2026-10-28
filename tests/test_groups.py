@@ -89,6 +89,11 @@ class _Datatracker:
             return [] if self.empty_groups else list(_GROUPS)
         if "doc/document/?type=charter" in url:
             return list(_CHARTER_DOCS)
+        if "groupevent" in url and "info_changed" in url:
+            return [{"id": 20, "group": "/api/v1/group/group/1/", "time": "2016-07-27T09:20:49Z",
+                     "desc": "Chairs changed to <b>Mark Nottingham, Patrick McManus</b> from Mark Nottingham"},
+                    {"id": 21, "group": "/api/v1/group/group/1/", "time": "2019-11-04T06:45:42Z",
+                     "desc": "Chairs changed to <b>Mark Nottingham</b> from Mark Nottingham, Patrick McManus"}]
         if "groupevent" in url:
             return [{"id": 1, "group": "/api/v1/group/group/2/", "time": "2014-10-22T22:21:24Z",
                      "desc": "State changed to <b>Concluded</b> from Active"}]
@@ -182,7 +187,52 @@ def test_timeline_covers_each_source(mirror: _Datatracker) -> None:  # noqa: ARG
     assert "Milestone added: Submit cache (due 2020-06)" in out
     assert "Milestone due 2099-01 (was 2020-06): Submit cache" in out
     assert "Milestone done" not in out  # only one version of that milestone
+    assert "Chair appointed: Patrick McManus" in out
+    assert "Chair stepped down: Patrick McManus" in out
+    assert "Chair appointed: Mark Nottingham" not in out  # already a chair
     assert reader.render_timeline("l3vpn").count("State changed to Concluded from Active") == 1
+
+
+def test_chair_feed_asks_only_for_wg_and_rg_chair_changes(mirror: _Datatracker) -> None:
+    (url,) = mirror.feed_urls("desc__startswith=Chair")
+    assert "type=info_changed" in url and "group__type__in=wg,rg" in url
+
+
+def test_chair_feed_backfills_a_mirror_that_predates_it(
+    mirror: _Datatracker, isolated_home: Path
+) -> None:
+    # Upgrade path: state from before the feed existed has watermarks for the
+    # other feeds but nothing for chair events.
+    (marks_path,) = isolated_home.rglob("watermarks.json")
+    marks = json.loads(marks_path.read_text())
+    marks.pop("chair-events")
+    marks_path.write_text(json.dumps(marks))
+    (marks_path.parent / "chair-events.json").unlink()
+    (timeline_path,) = isolated_home.rglob(reader.TIMELINE_FILE)
+    timeline = json.loads(timeline_path.read_text())
+    for events in timeline.values():
+        events[:] = [e for e in events if not e["kind"].startswith("chair")]
+    timeline_path.write_text(json.dumps(timeline))
+
+    mirror.urls.clear()
+    _refresh(mirror)
+    (chair_url,) = mirror.feed_urls("desc__startswith=Chair")
+    (state_url,) = mirror.feed_urls("type=changed_state")
+    assert "time__gte" not in chair_url  # full fetch
+    assert "time__gte" in state_url  # the others stay incremental
+    assert "Chair appointed: Patrick McManus" in reader.render_timeline("httpbis")
+
+
+def test_chair_events_for_an_unknown_group_are_dropped() -> None:
+    feeds: Dict[str, Dict[str, Dict[str, Any]]] = {
+        name: {} for name in writer._FEEDS  # pylint: disable=protected-access
+    }
+    feeds["chair-events"] = {
+        "1": {"id": 1, "group": "/api/v1/group/group/999/",
+              "time": "2020-01-01T00:00:00Z",
+              "desc": "Chairs changed to <b>A B</b> from "},
+    }
+    assert writer.build_timeline(feeds, {}, lambda _n: None) == {}
 
 
 def test_timeline_year_filter(mirror: _Datatracker) -> None:  # noqa: ARG001
