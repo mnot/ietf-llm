@@ -156,7 +156,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │       └── github-<repo-slug>.txt
 │   ├── embeddings.db                      # per-WG semantic index
 │   ├── topics.json                        # topic-map sidecar (cluster centroids + labels; overview themes)
-│   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
+│   ├── materials.json                     # doc-name → rev last fetched (rev-gating) + format:<code>/<kind> layout stamps
 │   ├── documents.json                     # draft-name → {expires, state} (overview split + embed-skip)
 │   ├── last-gathered                      # ISO-8601 sentinel (freshness)
 │   └── gather-metrics.json                # last run's upstream HTTP load (egress metrics)
@@ -580,7 +580,7 @@ ietf_llm/
 │       ├── issue_files.py          # per-issue .md files
 │       ├── datatracker.py          # roles + paginated document listing via JSON API
 │       ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
-│       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
+│       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating), aggregate layout stamps
 │       ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
 │       ├── cache_sync.py           # cloud: round-trip gather accelerator caches (incl. IMAP mail) to the KvStore (#82, #260)
 │       ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
@@ -671,7 +671,12 @@ which tool for which question, with worked examples — lives in
   draft. Matching is per line, so a phrase split by a mail wrap misses; the
   tool says so on every empty result. `raw/` and `github/` are skipped by
   default (they duplicate `threads/` and `issues/`) unless the caller's glob
-  names them, and the skip is reported so the denominator stays honest. Hits
+  names them, and the skip is reported so the denominator stays honest. The
+  line view is bounded twice: `max_per_file` (optional) keeps at most N
+  matching lines per file, then `limit` bounds the total. The per-file cap is
+  applied first, at retention time in `_scan_file`, so a noisy file cannot
+  starve the files sorted after it; counts stay complete and the footer
+  attributes omitted lines to the cap that removed them. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
 
@@ -1093,6 +1098,22 @@ materials merge into the canonical dir and interim transcripts (which
 carry no meeting number) are matched to a cluster by date span instead
 of orphaning. Numbered IETF meetings are never clustered.
 
+A cluster's `minutes.md` / `agenda.md` hold one block per *distinct* body.
+Chairs often attach one document to every session of an interim (or the
+Datatracker lists one document against two sessions of a numbered meeting), so
+`_process_cluster` hashes each stripped body and folds a repeat into the
+earlier block: one `## Sessions <date> (<number>, …); <date> (<number>)`
+heading and one `URL:` line per document, instead of the text once per
+session. Bodies that differ keep their own `## Session` block. Each aggregate's
+layout version is stamped in `materials.json` (`format:<code>/<kind>`), so a
+change to the layout (`_AGGREGATE_FORMAT`) regenerates every already-gathered
+file once; `_needs_rebuild` otherwise fires only on a document revision change.
+Only clusters with more than one link of a kind can change layout, so a file
+built from a single link is stamped without re-fetching. A rebuild that does
+not fetch every link keeps an existing file and stamps nothing (it would
+otherwise drop the failed sessions, whose unchanged revs would stop anything
+retrying them), so the next gather retries the whole cluster.
+
 ### `ietf-llm-export` always does a full export
 
 When the cache changes, the next export produces a complete fresh
@@ -1274,12 +1295,17 @@ message names the running stage. Cancellation (`stop_gather`) terminates the
 child; a child crash fails one gather instead of the whole server. Under
 `IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
 which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
-the stage and how many are left) since there is no prior snapshot; a re-gather
-keeps serving the previous published version until the new one is ready. That
-last guarantee needs the index build to be **atomic**: the build writes a scratch
-DB (seeded from the live index, so it stays incremental) and `os.replace`s it
-into place as a standalone (DELETE-journal) file, so a reader never sees a
-half-populated index — see "Writers are write-if-changed and atomic".
+the stage and how many are left) since there is no prior snapshot. A re-gather
+stays readable, and what a reader sees depends on the backend. On the **cloud**
+backend it is the previous published version until the new one is ready. On the
+**local** backend `publish` is a no-op and the gather writes into the live
+cache, so *files* change in place: counts and file lists (a `grep_corpus` scan,
+say) can differ between calls. The in-flight banner says so, per backend. The
+*search index* is previous-until-swapped on both, and that needs the index build
+to be **atomic**: the build writes a scratch DB (seeded from the live index, so
+it stays incremental) and `os.replace`s it into place as a standalone
+(DELETE-journal) file, so a reader never sees a half-populated index — see
+"Writers are write-if-changed and atomic".
 
 ### The networked read exception: live Datatracker lookups and get_rfc_info
 

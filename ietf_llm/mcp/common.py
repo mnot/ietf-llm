@@ -15,6 +15,7 @@ import anyio
 
 from .. import coverage, serve_metrics
 from ..access_stamp import note_access
+from ..config import service as service_config
 from ..digest.query import parse_md_tables
 from ..embeddings import probe_index
 from ..freshness import (
@@ -205,7 +206,8 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
             # Refuse rather than serve half-built content while a corpus's
             # *first* gather runs — there is no prior snapshot to fall back
             # on, so the cache is being built in place. A re-gather is not
-            # guarded (it keeps serving the previous complete version).
+            # guarded: a completed version exists to read (see
+            # `_inflight_refresh_note` for what a reader can see meanwhile).
             # Runs inside the caller's `pin_corpus_version` block so its own
             # freshness read resolves against the same pinned version already
             # chosen above, not a second, independently-resolved one.
@@ -277,8 +279,8 @@ def _first_gather_guard(wg: str) -> Optional[str]:
     cache is being built in place and any read would serve half-built content
     that reads like a real answer. Refuse, naming the stage, rather than return
     it. A re-gather (a completed version exists — `store.gathered_at` is set) is
-    not guarded here: it keeps serving the previous complete snapshot with the
-    in-flight caveat from `_inflight_refresh_note`.
+    not guarded here: it is served with the in-flight caveat from
+    `_inflight_refresh_note`.
 
     Uses `CorpusStore.gathered_at`, not `freshness.last_gathered`: the latter
     answers "is a version already staged on *this* replica's scratch", which a
@@ -357,26 +359,60 @@ def _timeout_inflight_note(
     phrase = _stage_phrase(status) or "in progress"
     return (
         f"(The read timed out because a gather for '{corpus}' is still running "
-        f"({phrase}) — not because the server is unresponsive. It is serving the "
-        f'previous snapshot; retry once `gather_status(corpus="{corpus}")` '
-        "reports `done`.)"
+        f"({phrase}) — not because the server is unresponsive. "
+        f'Retry once `gather_status(corpus="{corpus}")` reports `done`.)'
     )
 
 
+def _store_is_local() -> bool:
+    """True on the default filesystem backend, where a gather writes straight
+    into the live cache; False on the cloud backend, where readers see the last
+    published version until a gather publishes."""
+    return service_config.store_backend() == "local"
+
+
+def _regather_read_clause() -> str:
+    """What a reader sees while a *re*-gather runs, for the backend in use.
+    Shared by the session instructions and mirrored in the `start_gather`
+    docstring, so the two cannot disagree."""
+    if _store_is_local():
+        return (
+            "files are updated in place, so counts and file lists can change "
+            "between calls, while search uses the previous index until it is "
+            "swapped"
+        )
+    return "readers keep seeing the last published version until the gather publishes"
+
+
+def _banner_stage(status: Dict[str, Any]) -> str:
+    """The stage as the banner shows it, `stage 5/19: mail`. The banner already
+    sits in parentheses, so `_stage_phrase`'s own `(name)` would nest."""
+    idx = status.get("stage_index") or 0
+    total = status.get("stage_total")
+    stage = status.get("stage")
+    if total and idx:
+        return f"stage {idx}/{total}" + (f": {stage}" if stage else "")
+    if stage:
+        return f"stage: {stage}"
+    return "in progress"
+
+
 def _inflight_refresh_note(wg: str) -> Optional[str]:
-    """One-line caveat when a gather for `wg` is running on this host *right
-    now*, so the freshness stamp above reflects the **previous** snapshot, not
-    the refresh in flight — the trap a reader hits when an in-place re-gather
-    leaves the read path stamped with the prior (often same-day) gather time.
+    """One-line caveat when a gather for `wg` is running in this process *right
+    now*, worded for what a reader can actually see on the active backend.
+
+    Local: `LocalCorpusStore.publish` is a no-op and the gather writes into the
+    live cache, so files change in place between calls (counts and file lists
+    included); only the search index is swapped atomically. Cloud: readers see
+    the last *published* version, so the answer is the previous one, whole.
 
     Network-free: keys off `local_inflight`, the in-process job registry, so it
-    adds no control-plane round-trip to the read path. On the cloud backend it
-    is silent — the read path there serves the last *published* version, never a
-    half-written one, so no caveat is warranted. Best-effort, and deliberately
-    in-process-scoped: a gather running in a *separate* local process (a
-    `ietf-llm <corpus>` CLI run sharing the same cache) writes a status record
-    that `gather_status` reports, but reading that file on every response is
-    not worth flagging the rare case, so it is unflagged here.
+    adds no control-plane round-trip to the read path. Best-effort, and
+    deliberately in-process-scoped: a gather running in a *separate* process (a
+    `ietf-llm <corpus>` CLI run sharing the same cache, or another cloud host)
+    writes a status record that `gather_status` reports, but reading that file
+    on every response is not worth flagging the rare case, so it is unflagged
+    here.
     """
     # pylint: disable-next=import-outside-toplevel
     from ..gather import runner as gather_runner
@@ -384,22 +420,19 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     status = gather_runner.local_inflight(wg)
     if not status:
         return None
-    idx = status.get("stage_index") or 0
-    total = status.get("stage_total")
-    stage = status.get("stage")
-    # `stage_index` initialises to 0 before the first progress call, so only
-    # show the numeric "N/total" once a stage has actually been entered;
-    # otherwise fall back to the stage name (or a bare "in progress").
-    if total and idx:
-        where = f"stage {idx}/{total}" + (f": {stage}" if stage else "")
-    elif stage:
-        where = f"stage: {stage}"
-    else:
-        where = "in progress"
+    where = _banner_stage(status)
+    poll = f'poll `gather_status(corpus="{wg}")`'
+    if _store_is_local():
+        return (
+            f"⚠ A refresh is running now ({where}) — any gather date shown is "
+            "the previous gather's, files are updated in place (counts and file "
+            "lists can change between calls), and search uses the previous index "
+            f"until it is swapped ({poll} for `done`)."
+        )
     return (
         f"⚠ A refresh is running now ({where}) — the snapshot above is the "
         f"*previous* gather, not this run, and won't include the new material "
-        f'until it reports `done` (poll `gather_status(corpus="{wg}")`).'
+        f"until it reports `done` ({poll})."
     )
 
 
@@ -674,7 +707,7 @@ def _session_section() -> str:
             f"than announcing it and going quiet ({blocks}). It returns naming "
             "the stage and elapsed time; the corpus is queryable once "
             "`gather_status` reports `done`, and reads refuse until then (a "
-            "re-gather keeps serving the previous snapshot); poll "
+            f"re-gather stays readable: {_regather_read_clause()}); poll "
             f"{_gather_status_call('…')} and keep the user posted rather than "
             "going silent. For live, daily-changing facts use `draft_status` / "
             "`meeting_schedule`; otherwise the offline "
