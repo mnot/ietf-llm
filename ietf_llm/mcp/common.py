@@ -727,15 +727,15 @@ def _session_section() -> str:
 async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     """Run a blocking `tool_*` function in a worker thread.
 
-    FastMCP invokes sync tool functions directly on the asyncio event
-    loop, so any blocking work (embedding-model load, a numpy matmul
-    over every chunk, a large file read, a heavy tally) freezes the
-    whole server for its duration — it can't read stdin or answer
-    other requests, which the client experiences as a hang/timeout.
-    Registering each tool as `async def` that awaits this helper keeps
-    the loop responsive: the blocking body runs off-loop, and even
-    GIL-bound Python work yields between handoffs so the protocol
-    stays alive.
+    Blocking work (embedding-model load, a numpy matmul over every
+    chunk, a large file read, a heavy tally) must not run on the asyncio
+    event loop: it would freeze the whole server for its duration — it
+    can't read stdin or answer other requests, which the client
+    experiences as a hang/timeout. Registering each tool as `async def`
+    that awaits this helper keeps the loop responsive and puts the
+    timeout, telemetry and cancellation handling below in one place: the
+    blocking body runs off-loop, and even GIL-bound Python work yields
+    between handoffs so the protocol stays alive.
 
     `abandon_on_cancel=True`: if the client cancels (its own tool
     timeout fired, say), stop waiting immediately rather than blocking

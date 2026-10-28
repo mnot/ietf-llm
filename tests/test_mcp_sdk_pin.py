@@ -1,9 +1,9 @@
-"""The MCP SDK pin, and the diagnostic for when it isn't honoured.
+"""The MCP SDK requirement, and the diagnostic for when it isn't honoured.
 
-We use the FastMCP bundled in the `mcp` SDK, which exists only in 1.2–2.0.
-Unpinned, a fresh install resolved 2.0.0 and `ietf-llm-mcp` died at startup.
-Two guards: the ceiling stays declared, and the resolved environment actually
-provides the module — the latter fails in CI if the resolve drifts again.
+The server is built on `MCPServer`, which exists from `mcp` 2.0. Two guards:
+the declared range stays inside the era that has it, and the resolved
+environment actually provides it — the latter fails in CI if the resolve
+drifts, which is how an upstream removal reached a user once (#203).
 """
 
 from __future__ import annotations
@@ -17,18 +17,18 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from ietf_llm.mcp import server as mcp_server
-from ietf_llm.mcp.server import _fastmcp_import_error
+from ietf_llm.mcp.server import _mcpserver_import_error
 
 
-def test_bundled_fastmcp_is_importable() -> None:
-    # Not a tautology: `mcp.types` imports fine on 2.x, so only this
-    # submodule distinguishes an in-window SDK from an out-of-window one.
-    from mcp.server.fastmcp import FastMCP  # pylint: disable=import-outside-toplevel
+def test_mcpserver_is_importable() -> None:
+    # Not a tautology: `mcp.types` imports fine on 1.x, so only this
+    # submodule distinguishes a usable SDK from an older one.
+    from mcp.server.mcpserver import MCPServer  # pylint: disable=import-outside-toplevel
 
-    assert FastMCP is not None
+    assert MCPServer is not None
 
 
-def test_mcp_requirement_excludes_the_versions_without_bundled_fastmcp() -> None:
+def test_mcp_requirement_covers_exactly_the_2x_series() -> None:
     # Read the declaration, not `importlib.metadata`: installed metadata is
     # frozen at install time, so an editable checkout reports whatever the
     # pyproject said when it was last installed.
@@ -41,30 +41,30 @@ def test_mcp_requirement_excludes_the_versions_without_bundled_fastmcp() -> None
     mcp_reqs = [r for r in reqs if canonicalize_name(r.name) == "mcp"]
     assert len(mcp_reqs) == 1, f"expected exactly one mcp requirement, got {mcp_reqs}"
     spec = mcp_reqs[0].specifier
-    # Substring-checking for "<2" would pass for `<2.5`, which is the very
-    # state this guards against. Assert on the versions themselves.
-    for excluded in ("1.1.3", "1.9.4", "2.0.0", "2.5.0"):
+    # Assert on the versions themselves, not on the specifier's text.
+    for excluded in ("1.10.0", "1.30.0", "3.0.0"):
         assert Version(excluded) not in spec, (
-            f"mcp {excluded} lacks a usable bundled FastMCP but satisfies {spec}"
+            f"mcp {excluded} is outside the 2.x series but satisfies {spec}"
         )
-    for allowed in ("1.10.0", "1.29.0"):
+    for allowed in ("2.0.0", "2.3.0"):
         assert Version(allowed) in spec, f"mcp {allowed} should satisfy {spec}"
 
 
 def test_import_error_names_the_installed_version_not_a_missing_package() -> None:
-    message = _fastmcp_import_error(ImportError("No module named 'mcp.server.fastmcp'"))
+    message = _mcpserver_import_error(ImportError("No module named 'mcp.server.mcpserver'"))
     installed = metadata.version("mcp")
     # The SDK *is* installed whenever this path is reached, so the message
     # must not claim otherwise — that was the misdiagnosis in the bug report.
     assert "not installed" not in message
     assert installed in message
-    assert "No module named 'mcp.server.fastmcp'" in message
+    assert "No module named 'mcp.server.mcpserver'" in message
 
 
-def test_import_error_steers_away_from_the_fastmcp_distribution() -> None:
-    message = _fastmcp_import_error(ImportError("boom"))
+def test_import_error_names_the_requirement_and_how_to_repair() -> None:
+    message = _mcpserver_import_error(ImportError("boom"))
+    assert "mcp>=2,<3" in message
     assert "pipx install --force" in message
-    assert "Do not install the separate `fastmcp` package" in message
+    assert "pins `mcp<2`" in message
 
 
 def test_import_error_handles_an_sdk_that_is_importable_but_not_installed(
@@ -73,7 +73,7 @@ def test_import_error_handles_an_sdk_that_is_importable_but_not_installed(
     # Reachable despite the docstring's argument: a source tree on sys.path or
     # a vendored copy imports without a distribution to report a version for.
     monkeypatch.setattr(mcp_server, "_installed_mcp_version", lambda: None)
-    message = _fastmcp_import_error(ImportError("boom"))
+    message = _mcpserver_import_error(ImportError("boom"))
     assert "is not installed" in message
     assert "boom" in message
 

@@ -29,7 +29,7 @@ from .common import (
 from .search import _empty_search_message
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 # Matches the thread message section header so we can build the reply
@@ -579,7 +579,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
     return _with_freshness(wg, body)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def find_replies(
         corpus: str,

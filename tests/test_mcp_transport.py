@@ -39,7 +39,7 @@ class _FakeServer:
     def __init__(self):
         self.app = Starlette(routes=[])
 
-    def streamable_http_app(self):
+    def streamable_http_app(self, **_kwargs):
         return self.app
 
 

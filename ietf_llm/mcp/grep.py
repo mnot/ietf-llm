@@ -44,7 +44,7 @@ from .grep_rfc import _grep_rfc_corpus
 from .rfc_text import RFC_CORPUS
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 #: Cap on `context` lines either side of a hit.
@@ -643,7 +643,7 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
 # --- MCP server wiring -------------------------------------------------------
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpus: str,

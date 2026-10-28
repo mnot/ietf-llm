@@ -21,7 +21,7 @@ from .common import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
@@ -411,7 +411,7 @@ def tool_suggest_github_repos(corpus: str) -> str:
     return format_discovery(discover_group_repos(corpus))
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpus: str,
@@ -683,7 +683,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_suggest_github_repos, corpus)
 
 
-def register_session_log(server: "FastMCP") -> None:
+def register_session_log(server: "MCPServer") -> None:
     @server.tool()
     async def get_session_log(
         limit: int = 200, since_seconds: Optional[float] = None

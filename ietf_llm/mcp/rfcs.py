@@ -20,7 +20,7 @@ from ..singletons.rfcs import (
 from .common import _list_wgs, _offload
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 def _cached_body(number: str) -> Optional[Tuple[str, str]]:
@@ -160,7 +160,7 @@ def _render_rfc_live(number: str) -> str:
     return f"{rendered}\n{_body_note(number)}"
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def search_rfc_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         query: str,

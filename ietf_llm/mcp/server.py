@@ -41,12 +41,7 @@ from .common import (
     _session_section,
     _strip_frontmatter,
 )
-from .serve import (
-    _index_immutable_enabled,
-    _run_http,
-    _stateless_http_enabled,
-    _transport_security_settings,
-)
+from .serve import _index_immutable_enabled, _run_http
 
 
 def _prewarm_one(model_name: str) -> None:
@@ -71,7 +66,7 @@ def _prewarm_one(model_name: str) -> None:
 def _quiet_embedding_stack_output() -> None:
     """Keep the embedding stack's INFO logs and progress bars off stderr.
 
-    Constructing FastMCP calls its `configure_logging()`, which installs a
+    Constructing MCPServer calls its `configure_logging()`, which installs a
     rich handler at INFO on the root logger. sentence-transformers keys
     *both* its INFO records and its `Batches` progress bar off the effective
     level, so merely building the server turned a successful background
@@ -174,7 +169,7 @@ def _prewarm_embedding_model_async() -> None:
 
 def _load_server_instructions() -> str:
     """Return the server's built-in routing + norms guidance, served as the
-    FastMCP `instructions` field (which compliant clients surface to the model
+    MCP `instructions` field (which compliant clients surface to the model
     as system-prompt context).
 
     Loaded from the bundled `data/mcp-instructions.md` — the routing brain
@@ -232,20 +227,19 @@ def _capability_footer() -> str:
 
 
 async def _run_with_threaded_writer(server: Any) -> None:
-    """Wire FastMCP's lowlevel server up to our threaded-writer stdio
-    transport. Mirrors `FastMCP.run_stdio_async` (the function our
+    """Wire MCPServer's lowlevel server up to our threaded-writer stdio
+    transport. Mirrors `MCPServer.run_stdio_async` (the function our
     transport replaces) line-for-line, swapping the transport."""
     async with stdio.stdio_server_threaded_writer() as (
         read_stream,
         write_stream,
     ):
-        # `_mcp_server` is the lowlevel `mcp.server.Server` instance
-        # FastMCP wraps. Private attribute, but stable in practice —
-        # the upstream `run_stdio_async` uses the same name.
-        await server._mcp_server.run(  # pylint: disable=protected-access
-            read_stream,
-            write_stream,
-            server._mcp_server.create_initialization_options(),  # pylint: disable=protected-access
+        # `_lowlevel_server` is the `mcp.server.lowlevel.Server` MCPServer
+        # wraps. Private attribute, but the upstream `run_stdio_async` uses
+        # the same name and there is no public handle to it.
+        lowlevel = server._lowlevel_server  # pylint: disable=protected-access
+        await lowlevel.run(
+            read_stream, write_stream, lowlevel.create_initialization_options()
         )
 
 
@@ -309,14 +303,14 @@ def _distribution_present(metadata: Any, dist: str) -> bool:
         return False
 
 
-def _fastmcp_import_error(exc: ImportError) -> str:
-    """Explain a failed `mcp.server.fastmcp` import.
+def _mcpserver_import_error(exc: ImportError) -> str:
+    """Explain a failed `mcp.server.mcpserver` import.
 
     Not "mcp is missing": `stdio.py` imports `mcp.types` at module scope, so an
-    absent SDK dies earlier with a traceback. Getting here means the SDK is
-    installed and outside the 1.2–2.0 window that bundles FastMCP. Steer away
-    from the separate `fastmcp` distribution, which does not provide the module
-    and only appears to help by pinning `mcp<2`."""
+    absent SDK dies earlier with a traceback. Getting here means an `mcp` older
+    than 2.0 is installed, typically because another package in the environment
+    pins `mcp<2` (the separate `fastmcp` distribution does) or a venv was not
+    re-resolved after the requirement moved."""
     version = _installed_mcp_version()
     lines = []
     if version is None:
@@ -326,19 +320,18 @@ def _fastmcp_import_error(exc: ImportError) -> str:
     else:
         lines += [
             f"The installed `mcp` SDK ({version}) does not provide "
-            "`mcp.server.fastmcp`.",
-            "ietf-llm's server is built on the FastMCP bundled in the SDK, which "
-            "exists only in mcp >=1.2,<2 (2.0 removed it).",
+            "`mcp.server.mcpserver`.",
+            "ietf-llm's server is built on MCPServer, which arrived in mcp 2.0.",
         ]
     lines += [
         f"  interpreter:  {sys.executable}",
         f"  import error: {exc}",
         "",
-        "Reinstall to pick up ietf-llm's version pin:",
+        "Reinstall to pick up ietf-llm's requirement (mcp>=2,<3):",
         _reinstall_command(),
         "",
-        "Do not install the separate `fastmcp` package — it is a different "
-        "project and does not provide this module.",
+        "Another package in the same environment that pins `mcp<2` will hold "
+        "the SDK back; install ietf-llm on its own (pipx gives it a venv).",
     ]
     return "\n".join(lines)
 
@@ -346,11 +339,11 @@ def _fastmcp_import_error(exc: ImportError) -> str:
 @graceful_keyboard_interrupt
 def main() -> None:  # pylint: disable=too-many-locals
     try:
-        from mcp.server.fastmcp import (  # pylint: disable=import-outside-toplevel,import-error
-            FastMCP,
+        from mcp.server.mcpserver import (  # pylint: disable=import-outside-toplevel,import-error
+            MCPServer,
         )
     except ImportError as exc:
-        print(_fastmcp_import_error(exc), file=sys.stderr)
+        print(_mcpserver_import_error(exc), file=sys.stderr)
         sys.exit(1)
 
     # Diagnostic facility for investigating client-side stalls/timeouts.
@@ -379,21 +372,20 @@ def main() -> None:  # pylint: disable=too-many-locals
     # routing needs no separately-installed skill. The version/feature footer
     # is appended so a client can feature-gate from the prompt.
     server_instructions = _load_server_instructions() + _capability_footer()
-    # HTTP transport knobs (ignored by stdio): stateless sessions (default on,
-    # so any replica answers any request) and an optional Host/Origin allow-list
-    # for DNS-rebinding protection when the server is fronted directly (#41).
-    server = FastMCP(
+    # `version` is what the `initialize` handshake and 2026-07-28 `server/discover`
+    # report as `serverInfo.version` (what `claude mcp`, Cursor, etc. display);
+    # left unset it would be the `mcp` SDK's. The HTTP knobs (stateless
+    # sessions, Host/Origin allow-list) are applied in `serve._http_app`.
+    # `subscriptions=False`: the tool list is static and there are no
+    # resources, so there is nothing to push; left on, 2026-07-28 clients are
+    # offered `subscriptions/listen`, whose open stream stops uvicorn from
+    # shutting down on SIGTERM.
+    server = MCPServer(
         "ietf-llm",
         instructions=server_instructions,
-        stateless_http=_stateless_http_enabled(),
-        transport_security=_transport_security_settings(),
+        version=__version__,
+        subscriptions=False,
     )
-    # Report ietf-llm's own version in the `initialize` handshake's
-    # `serverInfo.version` (what `claude mcp`, Cursor, etc. display). FastMCP's
-    # constructor takes no `version`, so the lowlevel server otherwise falls
-    # back to reporting the `mcp` SDK version. Same private-but-stable
-    # `_mcp_server` attribute the stdio transport already drives below.
-    server._mcp_server.version = __version__  # pylint: disable=protected-access
 
     # --- register the read-only, always-on tools ---
     corpus.register(server)
@@ -435,7 +427,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         # threaded-writer transport below is stdio-specific.
         _run_http(server)
         return
-    # Replace FastMCP.run() with our own stdio transport. The default
+    # Replace MCPServer.run() with our own stdio transport. The default
     # upstream transport writes outbound responses on the asyncio loop
     # via `await stdout.write(...)`, and a slow client backpressures
     # those writes through the kernel pipe buffer — stalling every

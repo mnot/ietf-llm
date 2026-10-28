@@ -19,7 +19,7 @@ from ..singletons.catalog import render_efforts
 from .common import _offload
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 #: Chunks retrieved before collapsing to one score per group. A charter is one
 #: to a few chunks, so this is a few dozen distinct groups.
@@ -179,7 +179,7 @@ def tool_find_efforts(query: str, limit: int = 15) -> str:
     return render_efforts(query, limit, semantic=semantic)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def get_group_info(acronym: str, include_charter: bool = True) -> str:
         """Everything the IETF/IRTF record holds about **one chartered group**,
