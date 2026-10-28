@@ -659,7 +659,12 @@ which tool for which question, with worked examples — lives in
   draft. Matching is per line, so a phrase split by a mail wrap misses; the
   tool says so on every empty result. `raw/` and `github/` are skipped by
   default (they duplicate `threads/` and `issues/`) unless the caller's glob
-  names them, and the skip is reported so the denominator stays honest. Hits
+  names them, and the skip is reported so the denominator stays honest. The
+  line view is bounded twice: `max_per_file` (optional) keeps at most N
+  matching lines per file, then `limit` bounds the total. The per-file cap is
+  applied first, at retention time in `_scan_file`, so a noisy file cannot
+  starve the files sorted after it; counts stay complete and the footer
+  attributes omitted lines to the cap that removed them. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
 

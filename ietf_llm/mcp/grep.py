@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """Literal-search tool: grep_corpus.
 
 The lexical counterpart to `search_corpus`. Semantic search answers "what was
@@ -109,10 +110,12 @@ def _scan_file(
     matcher: "re.Pattern[str]",
     hits: List[_Hit],
     keep: int,
+    per_file_cap: Optional[int] = None,
 ) -> int:
     """Count every matching line in one file; append the first `keep` of them
-    (across the whole scan) to `hits`. Returns the count, which is complete
-    whether or not the lines were retained.
+    (across the whole scan) to `hits`, and no more than `per_file_cap` from
+    this file. Returns the count, which is complete whether or not the lines
+    were retained.
 
     Reads the file whole and prefilters with a single search over the entire
     text: the overwhelmingly common case is a file with no match at all, and
@@ -125,6 +128,12 @@ def _scan_file(
     memory-exhaustion lever on a shared server. Files are scanned in relpath
     order, so the retained hits are exactly the ones the renderer would have
     shown after sorting.
+
+    The per-file cap is applied here, before the total `keep` is spent, which
+    is what stops a file with hundreds of hits from using up the whole budget
+    ahead of the files sorted after it. With a cap, `hits` is therefore no
+    longer a prefix of the sorted matches, but it is still in (file, line)
+    order.
     """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -134,11 +143,13 @@ def _scan_file(
     if not matcher.search(text):
         return 0
     found = 0
+    kept = 0
     for lineno, line in enumerate(text.splitlines(), 1):
         if matcher.search(line):
             found += 1
-            if len(hits) < keep:
+            if len(hits) < keep and (per_file_cap is None or kept < per_file_cap):
                 hits.append(_Hit(relpath, lineno, line))
+                kept += 1
     return found
 
 
@@ -401,25 +412,101 @@ def _render_files_only(
     return "\n".join(out)
 
 
+def _hits_footer(
+    hits: List[_Hit],
+    per_file: Dict[str, int],
+    total: int,
+    max_per_file: Optional[int],
+) -> str:
+    """The note under a capped listing, or "" when nothing was cut.
+
+    Lines can be cut by two caps that compose in a fixed order: `max_per_file`
+    first, then `limit` over what is left. So the shortfall splits cleanly
+    into the part the per-file cap removed and the part `limit` removed, and
+    the note names each, so a caller knows which knob to turn.
+    """
+    if max_per_file is None:
+        if total > len(hits):
+            return (
+                f"\n_Showing {len(hits)} of {total} matching line(s) — the "
+                "count is the complete scan, only the listing is capped. "
+                f"Raise `limit` (max {_MAX_GREP_LIMIT}), narrow with "
+                "`file_pattern`, or pass `files_only=True` for one row per "
+                "file._"
+            )
+        return ""
+    after_cap = sum(min(count, max_per_file) for count in per_file.values())
+    by_cap = total - after_cap
+    by_limit = after_cap - len(hits)
+    if not by_cap and not by_limit:
+        return ""
+    reasons: List[str] = []
+    if by_cap:
+        capped = sum(1 for count in per_file.values() if count > max_per_file)
+        reasons.append(
+            f"{by_cap} omitted by `max_per_file={max_per_file}` "
+            f"({capped} file(s) had more)"
+        )
+    if by_limit:
+        reasons.append(f"{by_limit} omitted by `limit`")
+    unlisted = len(per_file) - len({hit.file for hit in hits})
+    if unlisted:
+        reasons.append(f"{unlisted} matching file(s) have no line listed")
+    # Advise only the cap that removed lines: raising one that cut nothing
+    # would change nothing, and raising `max_per_file` while `limit` is the
+    # binding cap would just spend the budget on fewer files.
+    raise_what: List[str] = []
+    if by_cap:
+        raise_what.append("`max_per_file`")
+    if by_limit:
+        raise_what.append(f"`limit` (max {_MAX_GREP_LIMIT})")
+    return (
+        f"\n_Showing {len(hits)} of {total} matching line(s) — the count is "
+        f"the complete scan, only the listing is capped: {'; '.join(reasons)}. "
+        f"Raise {' or '.join(raise_what)}, narrow with `file_pattern`, or "
+        "pass `files_only=True` for one row per file._"
+    )
+
+
 def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     wg: str,
     hits: List[_Hit],
+    per_file: Dict[str, int],
     total: int,
     header: str,
     context: int,
     cache: str,
     matcher: "re.Pattern[str]",
+    max_per_file: Optional[int] = None,
 ) -> str:
     """Render matching lines grouped by file, annotated with the chunk that
-    contains each one where the index knows it."""
+    contains each one where the index knows it.
+
+    Under `max_per_file`, each file's group ends with its true match count, so
+    a capped file reads as "3 of 120" rather than as a file with 3 matches.
+    `context` lines are rendered around a shown hit but are never counted
+    against either cap: both caps count matching lines.
+    """
     spans_by_file = chunk_spans(wg, [hit.file for hit in hits])
     line_cache: Dict[str, List[str]] = {}
     out = [header, ""]
     current: Optional[str] = None
+    shown_here = 0
+
+    def _close_group() -> None:
+        if max_per_file is not None and current and shown_here < per_file[current]:
+            out.append(
+                f"  … {shown_here} of {per_file[current]} matching line(s) "
+                "in this file shown"
+            )
+
     for hit in hits:
         if hit.file != current:
+            _close_group()
             current = hit.file
+            shown_here = 0
             out.append(f"## {hit.file}")
+        shown_here += 1
         spans = spans_by_file.get(hit.file, [])
         where = _chunk_for_line(spans, hit.lineno)
         tag = f"  [chunk {where[0]}: {where[1]}]" if where else ""
@@ -435,13 +522,10 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
             out.append("")
         else:
             out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
-    if total > len(hits):
-        out.append(
-            f"\n_Showing {len(hits)} of {total} matching line(s) — the count "
-            "is the complete scan, only the listing is capped. Raise `limit` "
-            f"(max {_MAX_GREP_LIMIT}), narrow with `file_pattern`, or pass "
-            "`files_only=True` for one row per file._"
-        )
+    _close_group()
+    footer = _hits_footer(hits, per_file, total, max_per_file)
+    if footer:
+        out.append(footer)
     out.append(_next_footer(wg))
     return "\n".join(out)
 
@@ -798,6 +882,7 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     limit: int = 50,
     context: int = 0,
     files_only: bool = False,
+    max_per_file: Optional[int] = None,
 ) -> str:
     """Dispatch to the gathered-files scan or the RFC-series scan.
 
@@ -805,12 +890,29 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     string appear, and where" — and a caller should not have to know that one
     reads files and the other reads a chunk table. They differ in what a hit
     can be located by; see the RFC section above.
+
+    `max_per_file` is refused here rather than clamped: unlike `limit`, a zero
+    or negative value has no sensible reading, and silently substituting one
+    would present a different listing from the one asked for. It shapes only
+    the gathered line view; the RFC scan already caps sections per RFC.
     """
     if not (pattern or "").strip():
         return (
             "grep_corpus needs a non-empty `pattern` — the literal string to "
             'look for, e.g. `grep_corpus("httpbis", "8890")`.'
         )
+    if max_per_file is not None:
+        # `True` would pass `int()` as 1, and `inf` raises OverflowError; neither
+        # is a line count the caller meant.
+        try:
+            max_per_file = 0 if isinstance(max_per_file, bool) else int(max_per_file)
+        except (TypeError, ValueError, OverflowError):
+            max_per_file = 0
+        if max_per_file < 1:
+            return (
+                "grep_corpus needs `max_per_file` to be a positive integer "
+                "(lines to show per file), or unset for no per-file cap."
+            )
     try:
         limit = max(1, min(int(limit), _MAX_GREP_LIMIT))
     except (TypeError, ValueError):
@@ -824,7 +926,15 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
             pattern, file_pattern, regex, case_sensitive, limit, context, files_only
         )
     return _grep_gathered(
-        wg, pattern, file_pattern, regex, case_sensitive, limit, context, files_only
+        wg,
+        pattern,
+        file_pattern,
+        regex,
+        case_sensitive,
+        limit,
+        context,
+        files_only,
+        max_per_file,
     )
 
 
@@ -838,9 +948,10 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     limit: int = 50,
     context: int = 0,
     files_only: bool = False,
+    max_per_file: Optional[int] = None,
 ) -> str:
-    # `pattern`, `limit` and `context` are already validated and clamped by the
-    # dispatcher, which has to do it for both backends.
+    # `pattern`, `limit`, `context` and `max_per_file` are already validated by
+    # the dispatcher, which has to do it for both backends.
     try:
         matcher = _compile(pattern, regex, case_sensitive)
     except re.error as exc:
@@ -862,7 +973,7 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     per_file: Dict[str, int] = {}
     total = 0
     for relpath, path in eligible:
-        found = _scan_file(path, relpath, matcher, hits, keep)
+        found = _scan_file(path, relpath, matcher, hits, keep, max_per_file)
         if found:
             per_file[relpath] = found
             total += found
@@ -885,7 +996,9 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
         return _with_freshness(wg, body)
 
     # `eligible` is relpath-sorted and retention stopped at `keep`, so `hits`
-    # is already the first `limit` in (file, line) order — no sort needed.
+    # is already in (file, line) order — no sort needed. Without a per-file cap
+    # it is the first `limit` matches; with one, the first `max_per_file` of
+    # each file, up to `limit` in all.
     header = (
         f"_grep `{pattern}` in {wg} ({mode}): {total} matching line(s) in "
         f"{len(per_file)} file(s); "
@@ -894,7 +1007,9 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     if files_only:
         body = _render_files_only(wg, per_file, total, header, limit)
     else:
-        body = _render_hits(wg, hits, total, header, context, cache, matcher)
+        body = _render_hits(
+            wg, hits, per_file, total, header, context, cache, matcher, max_per_file
+        )
     return _append_participation_nudge(list(per_file.keys()), _with_freshness(wg, body))
 
 
@@ -912,6 +1027,7 @@ def register(server: "FastMCP") -> None:
         limit: int = 50,
         context: int = 0,
         files_only: bool = False,
+        max_per_file: Optional[int] = None,
     ) -> str:
         """Exact-string (or regex) search over a corpus's gathered files —
         the lexical counterpart to `search_corpus`. Returns matching lines as
@@ -973,6 +1089,16 @@ def register(server: "FastMCP") -> None:
           - `limit`: cap on rendered rows — matching lines normally, files
             under `files_only` (default 50, max 200). The scan and the
             reported totals are always complete; only the listing is cut.
+          - `max_per_file=N`: show at most N matching lines per file, so
+            one noisy file cannot use up `limit` ahead of the others. Applied
+            before `limit`, which still bounds the total lines, so a small N
+            reaches more files but not necessarily all of them: the footer
+            says how many matching files got no line, and how many lines each
+            cap omitted. Counts matching lines only; `context` lines are
+            extra. Totals and per-file counts stay complete.
+            Unset (default) means no per-file cap; must be at least 1.
+            Gathered corpora only: ignored under `files_only`, and the RFC
+            series already shows at most 3 sections per RFC.
           - `context=N`: N lines either side of each hit (max 5).
           - `files_only=True`: one row per file with its match count — the
             breadth view for "which threads mention X at all".
@@ -997,4 +1123,5 @@ def register(server: "FastMCP") -> None:
             limit=limit,
             context=context,
             files_only=files_only,
+            max_per_file=max_per_file,
         )
