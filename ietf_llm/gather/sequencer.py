@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import copy
 import os
-import shutil
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
@@ -37,7 +36,7 @@ from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
 from ..people import build_registry, write_people_digest
 from .cli import build_parser
-from .lifecycle import GatherOutcome
+from .lifecycle import GatherOutcome, clear_local_state
 from .plan import _gather_plan_summary
 from .sources.author import fetch_author_draft_names, resolve_person
 from .sources.charter import process_charter
@@ -673,8 +672,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     cache_dir = get_wg_file_cache_dir(args.wg)
     if args.clear_cache:
         log(f"Clearing cache for {args.wg}...", verbosity, level=LogLevel.STATUS)
-        if os.path.exists(wg_cache_dir):
-            shutil.rmtree(wg_cache_dir)
+        clear_local_state(args.wg, wg_cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
     # Seed from the public seed store before the stages run, if it offers a

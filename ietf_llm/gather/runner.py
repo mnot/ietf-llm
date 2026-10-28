@@ -607,9 +607,12 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             recorder.progress(name, index, total, detail)
 
         workspace = os.path.join(get_cache_dir(), corpus)
-        lifecycle.prepare_workspace(store, corpus, workspace, recorder.note)
-
         try:
+            # Inside the try so an unfetchable IMAP mail chunk, which fails the
+            # gather before any stage runs (`GatherCacheRestoreError`), is
+            # recorded as `failed` like any other gather error.
+            lifecycle.prepare_workspace(store, corpus, workspace, recorder.note)
+
             ok = pipeline.run_pipeline(
                 spec, _progress, recorder.note, lambda: _cancel_requested(corpus)
             )

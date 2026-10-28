@@ -19,7 +19,7 @@ from typing import List, Optional
 import pytest
 
 from ietf_llm.singletons.catalog import catalog_index_dir
-from ietf_llm.store.corpus import LocalCorpusStore
+from ietf_llm.store.corpus import GatherCacheRestoreError, LocalCorpusStore
 from ietf_llm.store.cloud import CloudCorpusStore
 from ietf_llm.store.blobs import FileBlobStore
 from ietf_llm.gather.sources import (
@@ -269,9 +269,12 @@ def test_sync_swallows_kvstore_errors(monkeypatch, tmp_path):
     _cache_dir(monkeypatch, tmp_path / "host")
     datatracker.bind_gather_corpus("tls")
     datatracker._active_http_cache().store("u", "e", "{}")
-    # Neither hydrate nor persist may raise on a broken store.
-    cache_sync.hydrate(_RaisingKv(), "tls")
+    # A broken store never fails persist, nor hydrate of the accelerator caches;
+    # the one thing hydrate raises for is stored IMAP mail it couldn't list or
+    # fetch (see test_imap_cache_sync).
     cache_sync.persist(_RaisingKv(), "tls")
+    with pytest.raises(GatherCacheRestoreError, match="listing failed"):
+        cache_sync.hydrate(_RaisingKv(), "tls")
 
 
 # --- seam: local no-op, cloud delegates -----------------------------------

@@ -41,6 +41,14 @@ from ..paths import cached_wg_names, get_cache_dir, get_index_dir
 LOCAL_VERSION = "local"
 
 
+class GatherCacheRestoreError(RuntimeError):
+    """Stored gather state couldn't be restored in a way that would change what
+    the gather publishes (an unreadable chunk of the IMAP mail cache: the thread
+    writer deletes any thread file it doesn't regenerate, so publishing anyway
+    would lose the threads whose mail didn't come back). The gather fails; a
+    retry can succeed. Every other restore failure stays a note."""
+
+
 class VersionVanished(FileNotFoundError):
     """The pinned version of a corpus was reaped out from under an in-flight
     read: a concurrent re-gather published a newer version and the version GC
@@ -280,20 +288,34 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
 
     # --- gather accelerator caches (default: persistent local disk) -------
 
-    def hydrate_gather_caches(self, corpus: str) -> None:
+    def hydrate_gather_caches(self, corpus: str) -> List[str]:
         """Pull the gather accelerator caches (the datatracker ETag store, the
-        GitHub/datatracker identity maps, and the effort catalog) into the local
-        cache dir before a gather of `corpus`, so an ephemeral host revalidates
-        instead of re-hitting rate-limited upstreams to rebuild them (issue #82).
+        GitHub/datatracker identity maps, the effort catalog, and the IMAP mail
+        cache) into the local cache dir before a gather of `corpus`, so an
+        ephemeral host revalidates instead of re-hitting rate-limited upstreams
+        to rebuild them (issues #82, #260). Returns notes for failures to
+        surface. Raises `GatherCacheRestoreError` when the IMAP mail cache could
+        not be fetched, since publishing without it would drop threads.
 
         Default no-op: the local backend keeps these caches on persistent disk
         under `get_cache_dir()`, so there is nothing to fetch. The cloud backend
         overrides this to restore them from durable object storage."""
+        return []
 
-    def persist_gather_caches(self, corpus: str) -> None:
+    def persist_gather_caches(self, corpus: str) -> List[str]:
         """Push the gather accelerator caches back to durable storage after a
-        gather of `corpus`. Default no-op (local backend); the cloud backend
-        overrides it. Best-effort — a failure must never fail the gather."""
+        gather of `corpus`; returns notes for failures worth surfacing. Default
+        no-op (local backend); the cloud backend overrides it. Best-effort — a
+        failure must never fail the gather."""
+        return []
+
+    def clear_gather_caches(self, corpus: str) -> None:
+        """Delete the gather state the store holds for `corpus` between gathers
+        (`--clear-cache`), so the next gather can't restore it: on the cloud
+        backend the mailing-list mail and the per-corpus conditional-GET store.
+        Called under the gather lease. Raises if the store can't be cleared --
+        the caller must not carry on as if it had been. Default no-op: the local
+        backend's caches are plain files the caller removes itself."""
 
     # --- write-side gather lease (default: no-op single writer) -----------
 

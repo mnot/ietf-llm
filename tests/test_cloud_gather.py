@@ -4,6 +4,7 @@ end, over an S3-compatible object store (moto in-process)."""
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 from typing import Iterator
@@ -19,6 +20,7 @@ from ietf_llm.gather import runner as gather_runner
 from ietf_llm.store.corpus import get_corpus_store
 from ietf_llm.store.cloud import _clear_resolve_cache
 from ietf_llm.paths import get_cache_dir
+from ietf_llm.store.kv_s3 import S3KvStore
 
 
 def _wait_done(corpus: str, timeout: float = 5.0) -> None:
@@ -177,6 +179,88 @@ def test_fleet_slot_blocks_a_gather_until_released(
     assert get_corpus_store().resolve_current("tls") is not None
 
 
+def _wait_state(corpus: str, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = gather_runner.read_status(corpus)
+        if status and status.get("state") in ("done", "failed"):
+            return status
+        time.sleep(0.01)
+    raise AssertionError(f"gather for {corpus} did not finish in {timeout}s")
+
+
+def _imap_dir(corpus: str) -> Path:
+    return Path(get_cache_dir()) / "imap-cache" / corpus / corpus
+
+
+def test_cloud_gather_restores_the_mail_cache_on_a_fresh_container(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #260: the second gather runs on a host whose imap-cache is empty,
+    # and must find the first gather's mail restored before any stage runs.
+    seen: list[list[str]] = []
+
+    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> bool:
+        corpus = argv[0]
+        mail = _imap_dir(corpus)
+        if not seen:
+            mail.mkdir(parents=True, exist_ok=True)
+            for uid in (1, 2, 700):
+                (mail / f"{uid}.eml").write_text(f"Message-Id: <{uid}@x>\n\nbody\n")
+            (mail / ".uidvalidity").write_text("7")
+        seen.append(sorted(p.name for p in mail.glob("*.eml")))
+        digests = Path(get_cache_dir()) / corpus / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\n")
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", _fake_run_gather)
+
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
+    assert _wait_state("tls")["state"] == "done"
+    shutil.rmtree(Path(get_cache_dir()) / "imap-cache")  # a fresh container
+
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
+    assert _wait_state("tls")["state"] == "done"
+    assert seen[1] == ["1.eml", "2.eml", "700.eml"]
+
+
+def test_cloud_gather_fails_before_any_stage_when_stored_mail_cannot_be_fetched(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+
+    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> bool:
+        ran.append(argv[0])
+        mail = _imap_dir(argv[0])
+        mail.mkdir(parents=True, exist_ok=True)
+        (mail / "1.eml").write_text("Message-Id: <1@x>\n\nbody\n")
+        digests = Path(get_cache_dir()) / argv[0] / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\n")
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", _fake_run_gather)
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
+    assert _wait_state("tls")["state"] == "done"
+    version = get_corpus_store().resolve_current("tls")
+    shutil.rmtree(Path(get_cache_dir()) / "imap-cache")
+
+    real_get = S3KvStore.get
+
+    def _get(self: S3KvStore, key: str):  # type: ignore[no-untyped-def]
+        if "gather-cache/imap/" in key and key.endswith(".tar.gz"):
+            raise OSError("bucket unreachable")
+        return real_get(self, key)
+
+    monkeypatch.setattr(S3KvStore, "get", _get)
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
+    status = _wait_state("tls")
+    assert status["state"] == "failed"
+    assert "GatherCacheRestoreError" in status["error"] and "'tls'" in status["error"]
+    assert ran == ["tls"]  # the second gather never reached a stage
+    assert get_corpus_store().resolve_current("tls") == version  # nothing published
+
 # --- the CLI on the cloud backend (issue #258) ----------------------------
 
 
@@ -272,3 +356,73 @@ def test_cli_gather_of_a_fresh_corpus_downloads_nothing(
     cli_main.main()
     assert store.resolve_current("tls") == first
     assert store.get_gather_status("tls") is None
+
+
+def test_cli_clear_cache_wipes_the_stores_copy_of_the_mail_too(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ietf-llm tls --clear-cache` on the cloud backend: the old mail is gone
+    from this host and from the store, so neither this gather nor a later fresh
+    container gets it back, and what the gather fetched afresh is what persists."""
+    from ietf_llm.cli import main as cli_main
+    from ietf_llm.gather.lifecycle import GatherOutcome
+    from ietf_llm.gather.sources import cache_sync
+
+    _quiet_cli_housekeeping(monkeypatch)
+
+    def _gather_one(args: object, _v: object, **_kw: object) -> GatherOutcome:
+        mail = _imap_dir("tls")
+        mail.mkdir(parents=True, exist_ok=True)
+        for uid in fresh_uids:
+            (mail / f"{uid}.eml").write_text(f"Message-Id: <{uid}@x>\n\nbody\n")
+        (mail / ".uidvalidity").write_text("7")
+        digests = Path(get_cache_dir()) / "tls" / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\n")
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(cli_main, "_gather_one", _gather_one)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls"])
+    fresh_uids = (1, 2, 700)
+    seen: list[list[str]] = []
+    cli_main.main()  # the first gather: mail now stored
+
+    kv = get_corpus_store()._kv  # type: ignore[attr-defined]
+    assert any("gather-cache/imap/tls/" in key for key in _stored_keys(kv))
+
+    def _gather_after_clear(args: object, _v: object, **_kw: object) -> GatherOutcome:
+        mail = _imap_dir("tls")
+        seen.append(sorted(p.name for p in mail.glob("*.eml")) if mail.exists() else [])
+        assert not (Path(get_cache_dir()) / "tls" / "files" / "digests").exists()
+        mail.mkdir(parents=True, exist_ok=True)
+        (mail / "5.eml").write_text("Message-Id: <5@x>\n\nbody\n")
+        (mail / ".uidvalidity").write_text("7")
+        digests = Path(get_cache_dir()) / "tls" / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\n")
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(cli_main, "_gather_one", _gather_after_clear)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls", "--clear-cache"])
+    cli_main.main()
+    assert seen[-1] == []  # nothing from before was restored
+
+    shutil.rmtree(Path(get_cache_dir()) / "imap-cache")  # a fresh container
+    assert cache_sync.hydrate(kv, "tls") == []
+    assert sorted(p.name for p in _imap_dir("tls").glob("*.eml")) == ["5.eml"]
+
+
+def _stored_keys(kv: object) -> list[str]:
+    from ietf_llm.store.kv import KvStore
+
+    assert isinstance(kv, KvStore)
+    found: list[str] = []
+
+    def walk(prefix: str) -> None:
+        for name in kv.list_children(prefix):
+            if kv.get(prefix + name) is not None:
+                found.append(prefix + name)
+            walk(f"{prefix}{name}/")
+
+    walk("corpora/tls/")
+    return found

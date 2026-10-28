@@ -284,7 +284,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--clear-cache",
         action="store_true",
-        help="Clear the local file cache for this corpus and re-download.",
+        help="Wipe everything cached for this corpus -- its gathered files, its "
+        "cached mailing-list mail, and (on the cloud backend) the copies held in "
+        "the store -- and re-download. Mail older than --months can't be "
+        "re-downloaded, so this discards it for good.",
     )
     parser.add_argument(
         "--clear-config",

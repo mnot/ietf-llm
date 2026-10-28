@@ -36,6 +36,15 @@ IMAP_TIMEOUT = 60
 # without turning a genuinely-down server into a long stall. A folder that
 # won't select is *not* retried — that's a wrong list name, not a transient.
 IMAP_RETRIES = 1
+# Per-list file recording the IMAP UIDVALIDITY the cached `<uid>.eml` files were
+# fetched under. UIDs only name a message within one UIDVALIDITY epoch.
+UIDVALIDITY_FILE = ".uidvalidity"
+# Where a list's cached messages go when the server renumbers the folder:
+# `<list>/epoch-<old UIDVALIDITY>/`. Their UIDs no longer name anything on the
+# server, but the messages are still real mail (and the only copy of anything
+# older than the search window), and thread reconstruction walks the list dir
+# recursively, so they keep their threads.
+EPOCH_DIR_PREFIX = "epoch-"
 
 
 def validate_list_names(
@@ -257,6 +266,95 @@ def _download_batches(
     return new_count
 
 
+#: UIDVALIDITY values the server reported in this process, by list cache dir.
+#: Lets the cloud persist tell "this gather confirmed the local cache's epoch
+#: with the server" from "the cache is whatever an earlier run left" -- only the
+#: former may replace stored mail. Scoped to one gather: `forget_verified` drops
+#: a corpus's entries when its gather starts, and each list's sync drops its
+#: own before reaching the server, so a gather that never syncs a list (its
+#: discovery failed, or the list left the corpus) can't inherit the confirmation
+#: an earlier gather in this process recorded.
+_VERIFIED: Dict[str, str] = {}
+
+
+def verified_uidvalidity(cache_dir: str) -> Optional[str]:
+    """The epoch the server confirmed for `cache_dir` during this gather's sync,
+    or `None` if the sync didn't reach the server (or hasn't run)."""
+    return _VERIFIED.get(cache_dir)
+
+
+def forget_verified(wg_name: str) -> None:
+    """Drop every confirmation recorded for `wg_name`'s lists, so a new gather
+    starts with none."""
+    root = os.path.join(get_cache_dir(), "imap-cache", wg_name) + os.sep
+    for cache_dir in [d for d in _VERIFIED if d.startswith(root)]:
+        del _VERIFIED[cache_dir]
+
+
+def read_uidvalidity(cache_dir: str) -> Optional[str]:
+    """The epoch recorded for a list's cache, or `None` if there is no usable
+    marker. A marker that isn't a bare number counts as absent, so a corrupt one
+    is adopted over rather than read as a changed epoch."""
+    try:
+        with open(os.path.join(cache_dir, UIDVALIDITY_FILE), "rb") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    return text.decode("ascii") if text.isdigit() else None
+
+
+def _server_uidvalidity(mail: imaplib.IMAP4_SSL) -> Optional[str]:
+    """UIDVALIDITY the server reported for the selected folder, or `None` if it
+    didn't (or sent something unparseable)."""
+    try:
+        _, data = mail.response("UIDVALIDITY")
+    except (imaplib.IMAP4.error, OSError):
+        return None
+    raw = data[0] if data else None
+    # imaplib's response-code regex is greedy, so trailing text containing a
+    # further `]` comes through attached to the number; take just the digits.
+    match = re.match(rb"\s*(\d+)(?!\w)", raw) if isinstance(raw, bytes) else None
+    return match.group(1).decode() if match else None
+
+
+def _reconcile_uidvalidity(
+    mail: imaplib.IMAP4_SSL, cache_dir: str, verbose: Verbosity
+) -> None:
+    """Drop the cached messages when the folder's UIDVALIDITY has changed.
+
+    A changed value means the server renumbered the folder, so a cached
+    `<uid>.eml` may be a different message from the one now at that UID -- and
+    the "already cached" check would then skip fetching the real one. The cache
+    is refetched rather than trusted, and the old files move to
+    `epoch-<old>/` rather than being deleted: a windowed refetch can't bring
+    back mail older than the window. A cache with no recorded epoch (first sync,
+    or one that predates the marker) is adopted as-is."""
+    current = _server_uidvalidity(mail)
+    if current is None:
+        log(
+            "  server reported no usable UIDVALIDITY; cached messages not checked.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        return
+    previous = read_uidvalidity(cache_dir)
+    if previous is not None and previous != current:
+        archive = os.path.join(cache_dir, f"{EPOCH_DIR_PREFIX}{previous}")
+        log(
+            f"  UIDVALIDITY changed ({previous} -> {current}); moving the cached "
+            f"messages for this list to {os.path.basename(archive)}/ and refetching.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        os.makedirs(archive, exist_ok=True)
+        for name in os.listdir(cache_dir):
+            if name.endswith(".eml"):
+                os.replace(os.path.join(cache_dir, name), os.path.join(archive, name))
+    if previous != current:
+        write_if_changed(os.path.join(cache_dir, UIDVALIDITY_FILE), current)
+    _VERIFIED[cache_dir] = current
+
+
 class _FolderSelectError(Exception):
     """The IMAP folder for a list couldn't be selected. Almost always a wrong
     or renamed list name rather than a transient fault, so it isn't retried."""
@@ -329,6 +427,7 @@ def _imap_sync_attempt(
         status, _ = mail.select(folder, readonly=True)
         if status != "OK":
             raise _FolderSelectError(folder)
+        _reconcile_uidvalidity(mail, cache_dir, verbose)
         search_criteria = "ALL"
         if months:
             since_date = (datetime.now() - timedelta(days=30 * months)).strftime(
@@ -441,6 +540,7 @@ def _sync_one_list(
 
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
+    _VERIFIED.pop(cache_dir, None)
     window = f"the last {months} month(s)" if months else "all history"
     for attempt in range(IMAP_RETRIES + 1):
         try:

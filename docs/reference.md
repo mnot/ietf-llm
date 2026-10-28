@@ -81,7 +81,13 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
   freshly gathered corpus that hasn't been read yet still gets a grace period rather than being
   skipped. Set `IETF_LLM_RECORD_ACCESS=off` on the read deployment to disable access recording
   entirely (the filter then sees only gather times).
-- `--clear-cache` — wipe this corpus's cache and re-download.
+- `--clear-cache` — wipe everything cached for this corpus and re-download: its gathered files and
+  embedding index, its cached mailing-list mail (kept outside the corpus directory so an ordinary
+  re-gather reuses it), and on the cloud backend the copies of that mail and of its datatracker
+  ETag store held in the bucket, which the next gather would otherwise restore. Other corpora and
+  the caches shared between them are untouched. Mail older than `--months` can't be downloaded
+  again, so this discards it for good. On the cloud backend a failure to clear the bucket fails the
+  gather rather than carrying on with the old state.
 - `--clear-config` — clear this corpus's persisted config.
 - `--discover-github NAME` — print the GitHub repos discovery recommends tracking for a WG (those
   with Internet-Draft sources and an active issue tracker), and the matching `--github` flags, then

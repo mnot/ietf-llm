@@ -332,8 +332,9 @@ Key invariants:
   Calibration constants and the `IETF_LLM_ROUTING_MIN_SCORE` override live in
   `corpus/routing.py`.
 - **`imap-cache/<wg>/<list>/`** is the only place holding raw `.eml`
-  files. Thread reconstruction walks that tree (two levels — one
-  subdir per list, since a WG can follow several).
+  files. Thread reconstruction walks that tree recursively: one subdir per
+  list (a WG can follow several), and within a list dir an `epoch-<n>/`
+  archive for each earlier IMAP UIDVALIDITY epoch.
 - **`last-gathered`** is an ISO-8601 sentinel `freshness.py` writes at
   the end of each gather; consumers surface staleness from it.
   `coverage.py` pairs it with the persisted `months` to report the
@@ -545,7 +546,7 @@ ietf_llm/
 │       ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
 │       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
 │       ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
-│       ├── cache_sync.py           # cloud: round-trip gather accelerator caches to the KvStore (issue #82)
+│       ├── cache_sync.py           # cloud: round-trip gather accelerator caches (incl. IMAP mail) to the KvStore (#82, #260)
 │       ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
 │       ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
 │       ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
@@ -863,14 +864,19 @@ write-throughs its own entry, so it never serves config it just wrote.
   accelerator caches through the `KvStore` — the datatracker ETag store sharded
   per corpus (`corpora/<name>/gather-cache/`, lease-serialised plain RMW), the
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
-  the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins)
-  — so an ephemeral host revalidates rather than re-hitting rate-limited upstreams
-  after scale-to-zero (issue #82); no-ops on local, all best-effort. The large
-  caches stay ephemeral by design: `imap-cache/` is per-corpus and its mail is
-  already published as version content, and `_rfc/` mirrors a CDN rather than a
-  rate-limited API (a restart re-fetches it for bandwidth, not API quota), so only
-  the rate-limited, shared, or per-corpus-lease-serialised caches above are
-  round-tripped.
+  the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins),
+  and the per-list IMAP mail cache (`corpora/<name>/gather-cache/imap/<list>/`,
+  lease-serialised, see below) — so an ephemeral host revalidates rather than
+  re-hitting rate-limited upstreams after scale-to-zero (issues #82, #260); no-ops
+  on local. Best-effort — a sync failure means a cold rebuild, never a failed
+  gather — with one exception: stored IMAP mail the store errors on fetching
+  fails the gather before any stage runs (below). `_rfc/` stays ephemeral by design: it mirrors a CDN
+  rather than a rate-limited API (a restart re-fetches it for bandwidth, not API
+  quota). The IMAP mail is round-tripped even though it is large, because thread
+  reconstruction re-reads *every* cached message and deletes thread files it does
+  not regenerate — a fresh host holding only the new mail would publish a version
+  that has lost the old threads — and the published version holds the rendered
+  threads, not the raw `.eml` they are rebuilt from.
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
   the version blobs): every *control* key is either a *published fact* (pointer,
@@ -1302,7 +1308,67 @@ live path can't replace.
 
 `imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
 store is expensive to refetch and shouldn't be lost when a WG's
-exported `files/` are cleared. Thread reconstruction walks it directly.
+exported `files/` are rewritten. Thread reconstruction walks it directly.
+`--clear-cache` is the one thing that removes it (`lifecycle.clear_local_state`),
+because a user who asks for a clean slate has to get one: a corrupt or unwanted
+list would otherwise survive every re-gather. On the cloud backend the same flag
+deletes the corpus's stored copies first (`CorpusStore.clear_gather_caches`, under
+the gather lease: the IMAP units and the per-corpus ETag store), since hydrate
+would restore them and persist would fold the stored mail back in. The clear
+raises rather than degrading, and the workspace isn't seeded just to be wiped.
+
+Each list dir also holds `.uidvalidity`, the IMAP UIDVALIDITY epoch the cached
+`<uid>.eml` files were fetched under. A UID names a message only within one
+epoch, so when the server reports a different value the sync refetches (a stale
+`<uid>.eml` would otherwise satisfy the "already cached" check for a different
+message). It doesn't delete the old files: they move to `<list>/epoch-<old>/`.
+Their UIDs name nothing on the server any more, but they are still real mail --
+and the only copy of anything older than the search window, which a windowed
+refetch can't bring back -- so thread reconstruction keeps using them. A message
+that is in both the archive and the refetched window is the same `Message-Id` and
+is collapsed to one. The archive's cost is storage, once per renumbering: the
+refetched window's mail is stored twice, and nothing prunes an archive. The
+`raw/mail-archive-*.txt` year dumps are built from the current epoch only. A
+cache with no marker is adopted as-is.
+
+On the cloud backend the cache is round-tripped (`cache_sync.py`) so a fresh
+container doesn't re-download the archive. Per list it stores `index.json` (the
+epoch and each chunk's UIDs) plus gzip-tar chunks of 512 consecutive UIDs, so a
+restore is tens of GETs rather than one per message. A chunk's membership is not
+frozen — a wider `--months` window fills in old UIDs — so persist re-uploads any
+chunk whose UID set differs from the index, and never replaces a stored chunk
+with one holding fewer messages (it folds the stored mail in): mail outside the
+window exists only in the cache. Hydrate fetches a chunk only when the local
+cache lacks some of its UIDs, so a warm host pays the index GETs alone. A list is
+a main unit (the current epoch, in the list dir) plus one archive unit per
+earlier epoch (`<list>/epoch-<n>/`), each stored as its own index and chunks. When
+the stored main unit's epoch differs from the local cache's, hydrate restores it
+into its own `epoch-<stored>/` dir instead of mixing UIDs that name different
+messages. Epochs are labels, not an order, so persist replaces the stored main
+unit only when this gather's sync confirmed the local epoch with the server
+(`mbox.verified_uidvalidity`); a differing, unconfirmed epoch -- a warm host whose
+IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+sure the old epoch's mail is stored as an archive unit (filling the local
+`epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
+list if that fails), then invalidates the old index before touching the chunks,
+so a failure part way never leaves an index vouching for another epoch's mail and
+the old mail is never stored nowhere. An archive of the epoch the cache is
+already in is not stored again. A marker that isn't a bare number counts as
+absent.
+
+This is the one place the gather-cache sync is **not** best-effort. A stored
+chunk the store errors on fetching (or an index it errors on reading, or a
+failed listing) raises `GatherCacheRestoreError` from `hydrate_gather_caches`,
+after everything else is restored, and the runner fails the gather before any
+stage runs: rebuilding from what is left would publish a version missing the
+threads whose mail didn't come back, since `write_thread_files` deletes any
+thread file it doesn't regenerate, and mail older than the search window exists
+nowhere else. The next gather retries, and nothing is published in between.
+What a retry can't fix -- a chunk object that is missing or unreadable, or a
+corrupt index -- is a gather note instead, because failing would wedge the
+corpus; persist rebuilds a missing chunk from local mail. Persist failures are
+notes too (`persist_gather_caches` returns them), and a persistent one means
+every fresh container does a full refetch.
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 

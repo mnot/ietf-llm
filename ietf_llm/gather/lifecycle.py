@@ -24,6 +24,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import shutil
 import socket
 import threading
 import time
@@ -36,6 +37,7 @@ from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, get_cache_dir, get_index_dir
+from ..store.corpus import GatherCacheRestoreError
 
 #: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
 #: gather and renewed periodically (see `LEASE_HEARTBEAT_S`), so even a gather
@@ -213,15 +215,51 @@ def index_extra_files(corpus: str, workspace: str) -> Dict[str, str]:
     }
 
 
-def prepare_workspace(store: Any, corpus: str, workspace: str, note: NoteFn) -> None:
+def clear_local_state(corpus: str, workspace: str) -> None:
+    """Remove everything a gather of `corpus` would otherwise reuse from this
+    host (`--clear-cache`): the workspace, the cached mailing-list mail
+    (`imap-cache/<corpus>/`, which sits outside the workspace so that a plain
+    re-gather keeps it), this corpus's own conditional-GET store (present only on
+    a host that has hydrated one, i.e. the cloud backend; the local backend
+    shares one store across corpora, which is left alone), and the embedding
+    index when `IETF_LLM_INDEX_DIR` keeps it outside the workspace. Idempotent.
+
+    Mail older than the search window can't be fetched again, so this is not
+    reversible for it."""
+    # Deferred: `datatracker` pulls in the whole gather source stack, and this
+    # module is imported by the serve path.
+    # pylint: disable-next=import-outside-toplevel
+    from .sources import datatracker
+
+    for path in index_extra_files(corpus, workspace).values():
+        os.remove(path)
+    for tree in (workspace, os.path.join(get_cache_dir(), "imap-cache", corpus)):
+        shutil.rmtree(tree, ignore_errors=True)
+    try:
+        os.remove(datatracker.http_cache_path(corpus))
+    except FileNotFoundError:
+        pass
+
+
+def prepare_workspace(
+    store: Any, corpus: str, workspace: str, note: NoteFn, *, seed: bool = True
+) -> None:
     """Seed `workspace` from the current published version and restore the
     gather accelerator caches, so an incremental gather on a fresh replica skips
     re-downloading immutable inputs and re-embedding unchanged files, and
     revalidates rather than re-hitting rate-limited upstreams (issue #82). Both
-    are no-ops on the local backend and best-effort everywhere: a failure means
-    a cold gather, not a failed one, and is reported through `note`."""
+    are no-ops on the local backend and best-effort: a failure means a cold
+    gather, not a failed one, and is reported through `note`.
+
+    The one exception is the IMAP mail cache (issue #260). If the store errors
+    fetching it, `hydrate_gather_caches` raises `GatherCacheRestoreError`, which
+    propagates: publishing without that mail would drop the threads built from
+    it (the thread writer deletes any thread file it doesn't regenerate), and a
+    retry can succeed. Callers record the gather as failed before any stage runs.
+
+    `seed=False` skips seeding the workspace (a gather that is about to wipe it)."""
     try:
-        seeded = store.seed_workspace(corpus, workspace)
+        seeded = store.seed_workspace(corpus, workspace) if seed else None
         if seeded:
             note(f"seeded workspace from published version {seeded}")
     except Exception as err:  # pylint: disable=broad-except
@@ -230,7 +268,10 @@ def prepare_workspace(store: Any, corpus: str, workspace: str, note: NoteFn) -> 
             "gathering from scratch"
         )
     try:
-        store.hydrate_gather_caches(corpus)
+        for problem in store.hydrate_gather_caches(corpus):
+            note(problem)
+    except GatherCacheRestoreError:
+        raise
     except Exception as err:  # pylint: disable=broad-except
         note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
 
@@ -249,7 +290,8 @@ def publish_workspace(store: Any, corpus: str, workspace: str, note: NoteFn) -> 
         extra_files=index_extra_files(corpus, workspace) or None,
     )
     try:
-        store.persist_gather_caches(corpus)
+        for problem in store.persist_gather_caches(corpus):
+            note(problem)
     except Exception as err:  # pylint: disable=broad-except
         note(f"gather-cache persist skipped ({type(err).__name__}: {err})")
     return str(version)
@@ -367,11 +409,18 @@ def gather_and_publish(
     *,
     spec: Dict[str, Any],
     verbosity: Verbosity,
+    fresh: bool = False,
 ) -> GatherOutcome:
     """Run one gather synchronously through the whole lifecycle: lease and
     slot, seed and hydrate, `run(progress, note)` (the pipeline), then publish
     and persist when it gathered something. Writes the status record
     throughout, so the gather is visible to `gather_status` like an MCP one.
+
+    `fresh` (`--clear-cache`) starts from nothing instead of from the published
+    version: the store's cached gather state for the corpus is deleted (under the
+    lease, so no other host is writing it) and so is this host's, before anything
+    is restored. Either failing fails the gather -- a clear that quietly kept the
+    old mail would defeat the point.
 
     Raises `GatherBusy` when another gatherer holds the corpus; a pipeline or
     publish exception is recorded as `failed` and re-raised — the caller owns
@@ -396,7 +445,10 @@ def gather_and_publish(
         )
         recorder.write()
         try:
-            prepare_workspace(store, corpus, workspace, recorder.note)
+            if fresh:
+                store.clear_gather_caches(corpus)
+                clear_local_state(corpus, workspace)
+            prepare_workspace(store, corpus, workspace, recorder.note, seed=not fresh)
             outcome = run(recorder.progress, recorder.note)
             if outcome is GatherOutcome.GATHERED:
                 version = publish_workspace(store, corpus, workspace, recorder.note)
