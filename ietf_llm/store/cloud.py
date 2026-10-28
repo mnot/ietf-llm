@@ -474,25 +474,25 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                     shutil.rmtree(path, ignore_errors=True)
         return version
 
-    def hydrate_gather_caches(self, corpus: str) -> None:
+    def hydrate_gather_caches(self, corpus: str) -> List[str]:
         # Restore the gather accelerator caches from the KvStore before a gather,
         # so a fresh replica revalidates instead of re-hitting rate-limited
         # upstreams. Lazily imported so the read-only serve path never pulls the
         # gather modules (consistent with the import dodge in get_corpus_store).
         if self._kv is None:
-            return
+            return []
         # pylint: disable-next=import-outside-toplevel
         from ..gather.sources import cache_sync
 
-        cache_sync.hydrate(self._kv, corpus)
+        return cache_sync.hydrate(self._kv, corpus)
 
-    def persist_gather_caches(self, corpus: str) -> None:
+    def persist_gather_caches(self, corpus: str) -> List[str]:
         if self._kv is None:
-            return
+            return []
         # pylint: disable-next=import-outside-toplevel
         from ..gather.sources import cache_sync
 
-        cache_sync.persist(self._kv, corpus)
+        return cache_sync.persist(self._kv, corpus)
 
     def routing_fleet_table(self) -> Optional[Dict[str, Dict[str, Any]]]:
         # One GET of the fleet key routes the whole fleet — no per-corpus version

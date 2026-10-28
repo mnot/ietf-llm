@@ -260,6 +260,31 @@ def _download_batches(
     return new_count
 
 
+#: UIDVALIDITY values the server reported in this process, by list cache dir;
+#: cleared at the start of each list's sync. Lets the cloud persist tell "this
+#: gather confirmed the local cache's epoch with the server" from "the cache is
+#: whatever an earlier run left" -- only the former may replace stored mail.
+_VERIFIED: Dict[str, str] = {}
+
+
+def verified_uidvalidity(cache_dir: str) -> Optional[str]:
+    """The epoch the server confirmed for `cache_dir` during this gather's sync,
+    or `None` if the sync didn't reach the server (or hasn't run)."""
+    return _VERIFIED.get(cache_dir)
+
+
+def read_uidvalidity(cache_dir: str) -> Optional[str]:
+    """The epoch recorded for a list's cache, or `None` if there is no usable
+    marker. A marker that isn't a bare number counts as absent, so a corrupt one
+    is adopted over rather than read as a changed epoch."""
+    try:
+        with open(os.path.join(cache_dir, UIDVALIDITY_FILE), "rb") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    return text.decode("ascii") if text.isdigit() else None
+
+
 def _server_uidvalidity(mail: imaplib.IMAP4_SSL) -> Optional[str]:
     """UIDVALIDITY the server reported for the selected folder, or `None` if it
     didn't (or sent something unparseable)."""
@@ -268,9 +293,10 @@ def _server_uidvalidity(mail: imaplib.IMAP4_SSL) -> Optional[str]:
     except (imaplib.IMAP4.error, OSError):
         return None
     raw = data[0] if data else None
-    if isinstance(raw, bytes) and raw.strip().isdigit():
-        return raw.strip().decode()
-    return None
+    # imaplib's response-code regex is greedy, so trailing text containing a
+    # further `]` comes through attached to the number; take just the digits.
+    match = re.match(rb"\s*(\d+)(?!\w)", raw) if isinstance(raw, bytes) else None
+    return match.group(1).decode() if match else None
 
 
 def _reconcile_uidvalidity(
@@ -279,22 +305,20 @@ def _reconcile_uidvalidity(
     """Drop the cached messages when the folder's UIDVALIDITY has changed.
 
     A changed value means the server renumbered the folder, so a cached
-    `<uid>.eml` may be a different message from the one now at that UID — and
+    `<uid>.eml` may be a different message from the one now at that UID -- and
     the "already cached" check would then skip fetching the real one. The cache
     is cleared and refetched rather than trusted. A cache with no recorded epoch
     (first sync, or one that predates the marker) is adopted as-is."""
     current = _server_uidvalidity(mail)
     if current is None:
+        log(
+            "  server reported no usable UIDVALIDITY; cached messages not checked.",
+            verbose,
+            level=LogLevel.WARN,
+        )
         return
-    marker = os.path.join(cache_dir, UIDVALIDITY_FILE)
-    try:
-        with open(marker, "r", encoding="ascii") as handle:
-            previous: Optional[str] = handle.read().strip()
-    except OSError:
-        previous = None
-    if previous == current:
-        return
-    if previous is not None:
+    previous = read_uidvalidity(cache_dir)
+    if previous is not None and previous != current:
         log(
             f"  UIDVALIDITY changed ({previous} -> {current}); "
             "discarding the cached messages for this list.",
@@ -304,7 +328,9 @@ def _reconcile_uidvalidity(
         for name in os.listdir(cache_dir):
             if name.endswith(".eml"):
                 os.remove(os.path.join(cache_dir, name))
-    write_if_changed(marker, current)
+    if previous != current:
+        write_if_changed(os.path.join(cache_dir, UIDVALIDITY_FILE), current)
+    _VERIFIED[cache_dir] = current
 
 
 class _FolderSelectError(Exception):
@@ -492,6 +518,7 @@ def _sync_one_list(
 
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
+    _VERIFIED.pop(cache_dir, None)
     window = f"the last {months} month(s)" if months else "all history"
     for attempt in range(IMAP_RETRIES + 1):
         try:

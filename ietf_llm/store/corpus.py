@@ -280,20 +280,25 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
 
     # --- gather accelerator caches (default: persistent local disk) -------
 
-    def hydrate_gather_caches(self, corpus: str) -> None:
+    def hydrate_gather_caches(self, corpus: str) -> List[str]:
         """Pull the gather accelerator caches (the datatracker ETag store, the
-        GitHub/datatracker identity maps, and the effort catalog) into the local
-        cache dir before a gather of `corpus`, so an ephemeral host revalidates
-        instead of re-hitting rate-limited upstreams to rebuild them (issue #82).
+        GitHub/datatracker identity maps, the effort catalog, and the IMAP mail
+        cache) into the local cache dir before a gather of `corpus`, so an
+        ephemeral host revalidates instead of re-hitting rate-limited upstreams
+        to rebuild them (issues #82, #260). Returns notes for failures that
+        change what the gather produces, for the caller to surface.
 
         Default no-op: the local backend keeps these caches on persistent disk
         under `get_cache_dir()`, so there is nothing to fetch. The cloud backend
         overrides this to restore them from durable object storage."""
+        return []
 
-    def persist_gather_caches(self, corpus: str) -> None:
+    def persist_gather_caches(self, corpus: str) -> List[str]:
         """Push the gather accelerator caches back to durable storage after a
-        gather of `corpus`. Default no-op (local backend); the cloud backend
-        overrides it. Best-effort — a failure must never fail the gather."""
+        gather of `corpus`; returns notes for failures worth surfacing. Default
+        no-op (local backend); the cloud backend overrides it. Best-effort — a
+        failure must never fail the gather."""
+        return []
 
     # --- write-side gather lease (default: no-op single writer) -----------
 

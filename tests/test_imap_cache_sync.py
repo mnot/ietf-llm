@@ -11,7 +11,7 @@ simulated by pointing the cache dir somewhere empty.
 
 from __future__ import annotations
 
-import os
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -44,6 +44,18 @@ class _CountingKv(InMemoryKvStore):
     def reset(self) -> None:
         self.gets.clear()
         self.puts.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_verified():
+    mbox._VERIFIED.clear()
+    yield
+    mbox._VERIFIED.clear()
+
+
+def _verify(list_dir: Path, epoch: str) -> None:
+    """Stand in for a sync that confirmed `epoch` with the server this gather."""
+    mbox._VERIFIED[str(list_dir)] = epoch
 
 
 def _host(monkeypatch, path: Path) -> Path:
@@ -224,13 +236,62 @@ def test_new_epoch_replaces_the_stored_mail(monkeypatch, tmp_path):
     # The server renumbered the folder; the sync wiped and refetched under "8".
     new = _host(monkeypatch, tmp_path / "new")
     _mail(new, [10, 11], epoch="8")
-    cache_sync.persist(kv, "moq")
+    _verify(new, "8")
+    assert cache_sync.persist(kv, "moq") == []
 
     assert PREFIX + "chunk-1.tar.gz" not in kv._data  # stale chunk deleted
     cold = _host(monkeypatch, tmp_path / "cold")
     cache_sync.hydrate(kv, "moq")
     assert sorted(p.name for p in cold.glob("*.eml")) == ["10.eml", "11.eml"]
     assert (cold / mbox.UIDVALIDITY_FILE).read_text() == "8"
+
+
+def test_unconfirmed_epoch_never_replaces_the_stored_mail(monkeypatch, tmp_path):
+    # Host X still holds epoch 7; another host stored epoch 8. X's own IMAP sync
+    # failed this gather, so nothing confirmed its epoch: it mustn't overwrite
+    # the newer mail, including mail outside the window that exists only there.
+    kv = _CountingKv()
+    newer = _host(monkeypatch, tmp_path / "newer")
+    _mail(newer, [10, 11], epoch="8")
+    _verify(newer, "8")
+    cache_sync.persist(kv, "moq")
+    before = dict(kv._data)
+
+    stale = _host(monkeypatch, tmp_path / "stale")
+    _mail(stale, [1, 2], epoch="7")
+    problems = cache_sync.persist(kv, "moq")
+    assert kv._data == before
+    assert len(problems) == 1 and "not confirmed" in problems[0]
+
+
+def test_failed_index_write_never_leaves_mismatched_mail_trusted(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    old = _host(monkeypatch, tmp_path / "old")
+    _mail(old, [1, 2, 3], epoch="7")
+    cache_sync.persist(kv, "moq")
+
+    new = _host(monkeypatch, tmp_path / "new")
+    _mail(new, [1, 2], epoch="8")
+    _verify(new, "8")
+    index_writes = []
+    real_put = kv.put
+
+    def put(key, value, *, expect=ANY):
+        if key.endswith("index.json"):
+            index_writes.append(key)
+            if len(index_writes) == 2:  # the final write, after the chunks
+                raise OSError("bucket unreachable")
+        return real_put(key, value, expect=expect)
+
+    monkeypatch.setattr(kv, "put", put)
+    problems = cache_sync.persist(kv, "moq")
+    assert len(problems) == 1 and "not persisted" in problems[0]
+
+    # The old index was invalidated first, so the overwritten chunk is
+    # unreachable rather than trusted under the wrong epoch.
+    cold = _host(monkeypatch, tmp_path / "cold")
+    cache_sync.hydrate(kv, "moq")
+    assert list(cold.glob("*.eml")) == []
 
 
 def test_hydrate_skips_a_list_cached_under_another_epoch(monkeypatch, tmp_path):
@@ -304,3 +365,207 @@ def test_chunk_packing_is_deterministic():
     members = {2: b"two", 1: b"one"}
     assert cache_sync._pack_chunk(members) == cache_sync._pack_chunk(dict(members))
     assert cache_sync._unpack_chunk(cache_sync._pack_chunk(members)) == members
+
+
+# --- failures are reported, not swallowed -----------------------------------
+
+
+def test_failed_chunk_restore_is_reported(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    warm = _host(monkeypatch, tmp_path / "warm")
+    _mail(warm, [1, 2, CHUNK + 1])
+    cache_sync.persist(kv, "moq")
+
+    cold = _host(monkeypatch, tmp_path / "cold")
+    real_get = kv.get
+
+    def get(key):
+        if key.endswith("chunk-0.tar.gz"):
+            raise OSError("bucket unreachable")
+        return real_get(key)
+
+    monkeypatch.setattr(kv, "get", get)
+    problems = cache_sync.hydrate(kv, "moq")
+    assert len(problems) == 1
+    assert "'moq'" in problems[0] and "1 stored chunk(s) failed" in problems[0]
+    assert [p.name for p in cold.glob("*.eml")] == [f"{CHUNK + 1}.eml"]  # the rest came
+
+
+def test_failed_listing_is_reported(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    _host(monkeypatch, tmp_path / "cold")
+
+    def boom(_prefix):
+        raise OSError("down")
+
+    monkeypatch.setattr(kv, "list_children", boom)
+    problems = cache_sync.hydrate(kv, "moq")
+    assert len(problems) == 1 and "listing failed" in problems[0]
+
+
+def test_failed_persist_is_reported(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    warm = _host(monkeypatch, tmp_path / "warm")
+    _mail(warm, [1, 2])
+
+    def boom(*_a, **_k):
+        raise OSError("down")
+
+    monkeypatch.setattr(kv, "put", boom)
+    problems = cache_sync.persist(kv, "moq")
+    assert any("'moq' not persisted" in p for p in problems)
+
+
+# --- the property the change exists for -------------------------------------
+
+
+def _write_eml(list_dir: Path, uid: int, mid: str, subject: str, reply_to: str = "") -> None:
+    headers = [
+        f"Message-Id: <{mid}>",
+        f"Subject: {subject}",
+        "From: Alice <alice@example.com>",
+        f"Date: Mon, 0{1 + uid % 9} Jan 2024 10:00:00 +0000",
+    ]
+    if reply_to:
+        headers.append(f"In-Reply-To: <{reply_to}>")
+    (list_dir / f"{uid}.eml").write_text("\n".join(headers) + f"\n\nbody {uid}\n")
+
+
+def test_cold_host_threads_match_the_warm_hosts(monkeypatch, tmp_path):
+    # Writer -> reader round trip: threads rebuilt on a fresh host from the
+    # restored mail must equal the warm host's, or the next publish would drop
+    # the old ones (write_thread_files deletes any thread it doesn't regenerate).
+    from ietf_llm.gather.sources import mail_threads
+
+    def shape() -> List[Tuple[str, List[str]]]:
+        threads = mail_threads.build_threads("moq")
+        return sorted((t.root.message_id, [m.message_id for m in t.members]) for t in threads)
+
+    kv = _CountingKv()
+    warm = _host(monkeypatch, tmp_path / "warm")
+    _write_eml(warm, 1, "a@x", "Topic one")
+    _write_eml(warm, 2, "b@x", "Re: Topic one", reply_to="a@x")
+    _write_eml(warm, CHUNK + 5, "c@x", "Another topic")
+    (warm / mbox.UIDVALIDITY_FILE).write_text("7")
+    expected = shape()
+    assert len(expected) == 2
+    cache_sync.persist(kv, "moq")
+
+    shutil.rmtree(tmp_path / "warm")
+    cold = _host(monkeypatch, tmp_path / "cold")
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert sorted(p.name for p in cold.glob("*.eml")) == ["1.eml", "2.eml", f"{CHUNK + 5}.eml"]
+    assert shape() == expected
+
+
+# --- the sync wires the epoch check in correctly ----------------------------
+
+
+class _FakeImap:
+    """Just enough IMAP4_SSL for one `_imap_sync_attempt`."""
+
+    def __init__(self, epoch: bytes, uids: List[int]) -> None:
+        self._epoch = epoch
+        self._uids = uids
+
+    def login(self, *_a):
+        return ("OK", [b""])
+
+    def select(self, *_a, **_k):
+        return ("OK", [b"2"])
+
+    def response(self, name: str):
+        assert name == "UIDVALIDITY"
+        return (name, [self._epoch])
+
+    def uid(self, command: str, *args):
+        if command == "search":
+            return ("OK", [b" ".join(str(u).encode() for u in self._uids)])
+        wanted = [int(u) for u in args[0].split(",")]
+        return (
+            "OK",
+            [(f"{u} (UID {u} RFC822 {{5}}".encode(), f"new {u}".encode()) for u in wanted],
+        )
+
+    def logout(self):
+        return ("BYE", [b""])
+
+
+def _attempt(monkeypatch, list_dir: Path, fake: _FakeImap):
+    monkeypatch.setattr(mbox.imaplib, "IMAP4_SSL", lambda *_a, **_k: fake)
+    return mbox._imap_sync_attempt("moq", None, str(list_dir), Verbosity.QUIET, None)
+
+
+def test_epoch_change_clears_the_cache_before_the_cached_set_is_read(monkeypatch, tmp_path):
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    (list_dir / "1.eml").write_text("stale: another message under the old numbering")
+    (list_dir / mbox.UIDVALIDITY_FILE).write_text("7")
+
+    uids, new, _ = _attempt(monkeypatch, list_dir, _FakeImap(b"8", [1, 2]))
+    assert (uids, new) == (["1", "2"], 2)  # UID 1 refetched, not skipped as cached
+    assert (list_dir / "1.eml").read_text() == "new 1"
+    assert (list_dir / mbox.UIDVALIDITY_FILE).read_text() == "8"
+    assert mbox.verified_uidvalidity(str(list_dir)) == "8"
+
+
+def test_unchanged_epoch_skips_cached_messages(monkeypatch, tmp_path):
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    (list_dir / "1.eml").write_text("cached")
+    (list_dir / mbox.UIDVALIDITY_FILE).write_text("7")
+
+    uids, new, _ = _attempt(monkeypatch, list_dir, _FakeImap(b"7", [1, 2]))
+    assert (uids, new) == (["1", "2"], 1)
+    assert (list_dir / "1.eml").read_text() == "cached"
+
+
+def test_a_sync_that_fails_leaves_the_epoch_unverified(monkeypatch, tmp_path):
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    mbox._VERIFIED[str(list_dir)] = "7"  # left over from an earlier gather
+
+    def boom(*_a):
+        raise OSError("timed out")
+
+    monkeypatch.setattr(mbox, "_imap_sync_attempt", boom)
+    mbox._sync_one_list("moq", "moq", 12, Verbosity.QUIET)
+    assert mbox.verified_uidvalidity(str(list_dir)) is None
+
+
+# --- markers and responses that aren't clean ---------------------------------
+
+
+@pytest.mark.parametrize("marker", [b"", b"abc", b"\xff\xfe", b"7 8", b"-3"])
+def test_a_corrupt_marker_is_adopted_over_not_read_as_a_change(tmp_path, marker):
+    (tmp_path / "1.eml").write_text("keep")
+    (tmp_path / mbox.UIDVALIDITY_FILE).write_bytes(marker)
+    assert mbox.read_uidvalidity(str(tmp_path)) is None
+
+    _reconcile(tmp_path, b"7")
+    assert (tmp_path / "1.eml").exists()
+    assert (tmp_path / mbox.UIDVALIDITY_FILE).read_text() == "7"
+
+
+def test_a_corrupt_marker_is_unknown_to_the_cloud_sync_too(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    other = _host(monkeypatch, tmp_path / "other")
+    _mail(other, [1], epoch="7")
+    cache_sync.persist(kv, "moq")
+
+    here = _host(monkeypatch, tmp_path / "here")
+    (here / mbox.UIDVALIDITY_FILE).write_bytes(b"\xff\xfe")
+    cache_sync.hydrate(kv, "moq")
+    assert (here / "1.eml").exists()  # restored, as for an unmarked cache
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (b"3857529045", "3857529045"),
+        (b"123] UIDs [valid", "123"),  # imaplib's greedy response-code regex
+        (b"  42", "42"),
+        (b"12abc", None),
+        (b"garbage", None),
+        (None, None),
+    ],
+)
+def test_server_uidvalidity_parsing(raw, expected):
+    assert mbox._server_uidvalidity(_Mail(raw)) == expected  # type: ignore[arg-type]

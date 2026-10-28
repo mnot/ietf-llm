@@ -768,7 +768,8 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         # re-hitting rate-limited upstreams (issue #82). A no-op on the local
         # backend; best-effort, like the seed above.
         try:
-            store.hydrate_gather_caches(corpus)
+            for problem in store.hydrate_gather_caches(corpus):
+                _note(problem)
         except Exception as err:  # pylint: disable=broad-except
             _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
 
@@ -791,7 +792,8 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 # next cold gather builds on them (issue #82). A no-op on the
                 # local backend; best-effort — never fail a completed gather on it.
                 try:
-                    store.persist_gather_caches(corpus)
+                    for problem in store.persist_gather_caches(corpus):
+                        _note(problem)
                 except Exception as err:  # pylint: disable=broad-except
                     _note(f"gather-cache persist skipped ({type(err).__name__}: {err})")
                 status["state"] = "done"

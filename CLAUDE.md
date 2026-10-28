@@ -178,7 +178,8 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   `corpora/<name>/gather-cache/imap/<list>/` (lease-serialised; gzip-tar chunks of
   512 UIDs + an `index.json` carrying the UIDVALIDITY epoch — persist never
   replaces a chunk with fewer messages, since mail outside the window lives only
-  there; see issue #260). These are gather-only (the read path never
+  there, and replaces a stored epoch only when the gather's sync confirmed the
+  local one with the server; see issue #260). These are gather-only (the read path never
   touches them) and best-effort. `_rfc/` is deferred (non-rate-limited CDN
   mirror). See issue #82.
   publish is the explicit write→read handoff (a compare-and-swap pointer flip),

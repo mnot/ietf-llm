@@ -1313,8 +1313,17 @@ chunk whose UID set differs from the index, and never replaces a stored chunk
 with one holding fewer messages (it folds the stored mail in): mail outside the
 window exists only in the cache. Hydrate fetches a chunk only when the local
 cache lacks some of its UIDs, so a warm host pays the index GETs alone, and it
-leaves a list alone when the local and stored epochs differ. A newer local epoch
-replaces the stored chunks and deletes the stale ones.
+leaves a list alone when the local and stored epochs differ. Epochs are labels,
+not an order, so persist replaces the stored chunks (and deletes the stale ones)
+only when this gather's sync confirmed the local epoch with the server
+(`mbox.verified_uidvalidity`); a differing, unconfirmed epoch -- a warm host whose
+IMAP sync failed -- leaves the store alone. When replacing, it invalidates the
+index before touching the chunks, so a failure part way never leaves an index
+vouching for another epoch's mail. A marker that isn't a bare number counts as
+absent. Restore and persist failures come back as gather notes
+(`hydrate_gather_caches` / `persist_gather_caches` return them), since a chunk
+that doesn't restore means mail older than the search window is missing when the
+threads are rebuilt.
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 
