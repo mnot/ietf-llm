@@ -8,6 +8,7 @@ from ietf_llm.store.corpus import (
     LOCAL_VERSION,
     CorpusStore,
     LocalCorpusStore,
+    clean_relpath,
     get_corpus_store,
 )
 
@@ -106,3 +107,47 @@ def test_local_gathered_at_reads_last_gathered_sentinel(isolated_home: Path) -> 
     assert store.gathered_at("httpbis") is None
     record_gather("httpbis")
     assert store.gathered_at("httpbis") is not None
+
+
+def test_local_has_file(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "httpbis", "drafts/rfc9110.txt", "prose")
+    store = LocalCorpusStore()
+    assert store.has_file("httpbis", "drafts/rfc9110.txt") is True
+    assert store.has_file("httpbis", "drafts/rfc1.txt") is False
+    assert store.has_file("httpbis", "drafts") is False  # a dir is not a file
+    assert store.has_file("ghost", "drafts/rfc9110.txt") is False
+
+
+def test_has_file_refuses_paths_outside_files(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "httpbis", "drafts/rfc9110.txt", "prose")
+    (isolated_home / ".cache" / "ietf-llm" / "httpbis" / "last-gathered").write_text("x")
+    store = LocalCorpusStore()
+    for bad in ("", ".", "/etc/passwd", "../last-gathered", "drafts/../../last-gathered"):
+        assert store.has_file("httpbis", bad) is False
+    # A path that wanders but stays inside files/ is the same file.
+    assert store.has_file("httpbis", "drafts/../drafts/rfc9110.txt") is True
+
+
+def test_has_file_never_creates_the_corpus(isolated_home: Path) -> None:
+    LocalCorpusStore().has_file("ghost", "drafts/rfc1.txt")
+    assert not (isolated_home / ".cache" / "ietf-llm" / "ghost").exists()
+
+
+def test_clean_relpath_refuses_drive_qualified_paths() -> None:
+    # On POSIX `os.path.join` would just nest these under files/, so only the
+    # normalisation itself can pin the guard (it matters where `\\` is a separator).
+    for bad in ("C:/x", "C:\\x", "//host/share/x"):
+        assert clean_relpath(bad) is None
+    assert clean_relpath("drafts/rfc1.txt") == "drafts/rfc1.txt"
+
+
+def test_has_file_does_not_follow_a_symlink_out_of_files(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "httpbis", "drafts/rfc9110.txt", "prose")
+    outside = isolated_home / "secret.txt"
+    outside.write_text("x")
+    files = isolated_home / ".cache" / "ietf-llm" / "httpbis" / "files"
+    (files / "drafts" / "link.txt").symlink_to(outside)
+    (files / "drafts" / "inside.txt").symlink_to(files / "drafts" / "rfc9110.txt")
+    store = LocalCorpusStore()
+    assert store.has_file("httpbis", "drafts/link.txt") is False
+    assert store.has_file("httpbis", "drafts/inside.txt") is True

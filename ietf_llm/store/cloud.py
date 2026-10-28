@@ -30,20 +30,23 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, TypeVar
 
 from .. import freshness
 from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
 from ..paths import INDEX_FILE_NAMES, get_index_dir
-from .blobs import BlobStore, parallel_each
+from .blobs import BlobStore, blob_concurrency, parallel_each
 from .control import KvControlPlane
 from .corpus import (
     CorpusStore,
     VersionVanished,
+    clean_relpath,
     pinned_version,
     pinned_versions_in_use,
 )
 from .kv import KvStore
+
+_T = TypeVar("_T")
 
 #: Per-version manifest, stored as a blob inside the version prefix and stripped
 #: from the materialised tree so it never re-enters a re-gather workspace.
@@ -102,6 +105,30 @@ def _content_prefix(corpus: str, version: str) -> str:
 def _versions_prefix(corpus: str) -> str:
     """The blob prefix under which every one of `corpus`'s version trees lives."""
     return f"corpora/{corpus}/versions/"
+
+
+def store_config_key() -> Tuple[Any, ...]:
+    """Everything `build_cloud_store` reads, as a comparable tuple: a store built
+    under one key is interchangeable with any other built under an equal key.
+    `get_corpus_store` memoizes on it, so an input added to `build_cloud_store`
+    (or read by `S3Bucket`) must be added here too, or a change to it would keep
+    serving the old store. The `AWS_*` credential, region and profile variables
+    are also read when the client is built but are left out: the process
+    environment is fixed in a deployment, and instance-role credentials refresh
+    themselves."""
+    # pylint: disable-next=import-outside-toplevel
+    from ..config import service as service_config
+
+    return (
+        service_config.store_url(),
+        service_config.scratch_dir(),
+        service_config.resolve_ttl(),
+        service_config.retain_versions(),
+        # Read by `S3Bucket` straight from the environment.
+        os.environ.get("IETF_LLM_STORE_ENDPOINT_URL") or None,
+        # Sizes the client's connection pool.
+        blob_concurrency(),
+    )
 
 
 def build_cloud_store() -> "CloudCorpusStore":
@@ -195,6 +222,11 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # never a reap candidate. See `service_config.retain_versions`.
         self._retain_versions = max(1, retain_versions)
         self._cache_key = cache_key
+        # corpus -> (version, files the version's manifest lists). One slot per
+        # corpus: a version is immutable, so its manifest never goes stale, and
+        # a newer version simply replaces it. See `_version_files`.
+        self._manifests: Dict[str, Tuple[str, FrozenSet[str]]] = {}
+        self._manifests_lock = threading.Lock()
 
     def list_corpora(self) -> List[str]:
         return self._control.list_corpora()
@@ -271,13 +303,21 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         return dest_root
 
     def _stage_current(self, corpus: str) -> Optional[Tuple[str, str]]:
-        """Resolve `corpus`'s version (honouring a request-scoped pin so all of a
-        request's reads stay on one version even if a publish lands mid-request,
-        G-1) and stage it, returning (version, dest_root) — or None when the
-        corpus has no current version.
+        """Resolve `corpus`'s version and stage it, returning (version, dest_root)
+        — or None when the corpus has no current version. Recovery from a reaped
+        version is `_with_current`'s."""
+        return self._with_current(
+            corpus, lambda version: (version, self._staged_root(corpus, version))
+        )
+
+    def _with_current(self, corpus: str, read: Callable[[str], _T]) -> Optional[_T]:
+        """Run `read(version)` against `corpus`'s version (honouring a
+        request-scoped pin so all of a request's reads stay on one version even
+        if a publish lands mid-request, G-1) — or return None when the corpus has
+        no current version.
 
         Recovers from the version being reaped out from under a cold read (the
-        couple-with-GC case): on a FileNotFoundError from materialise, re-resolve
+        couple-with-GC case): on a FileNotFoundError from `read`, re-resolve
         the pointer **cache-bypassing** and write it through the resolve cache
         (without the write-through, every retry re-resolves the same dead version
         until the TTL lapses). Then:
@@ -293,7 +333,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         if version is None:
             return None
         try:
-            return version, self._staged_root(corpus, version)
+            return read(version)
         except FileNotFoundError:
             fresh = self._control.resolve_current(corpus)
             self._cache_version(corpus, fresh)
@@ -301,7 +341,46 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 raise
             if pinned is not None:
                 raise VersionVanished(corpus, version, fresh) from None
-            return fresh, self._staged_root(corpus, fresh)
+            return read(fresh)
+
+    def _version_files(self, corpus: str, version: str) -> FrozenSet[str]:
+        """The version-relative paths `version`'s manifest lists, fetched with one
+        GET and kept per corpus for as long as that version stays the one asked
+        about. Raises FileNotFoundError when the manifest is gone (reaped), like
+        a materialise of the same version would."""
+        with self._manifests_lock:
+            held = self._manifests.get(corpus)
+        if held is not None and held[0] == version:
+            return held[1]
+        try:
+            raw = self._blobs.get(_content_prefix(corpus, version) + _MANIFEST)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"version {version} of '{corpus}' is incomplete: no manifest"
+            ) from None
+        files = frozenset(json.loads(raw).get("files") or [])
+        with self._manifests_lock:
+            self._manifests[corpus] = (version, files)
+        return files
+
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        # Answered from the manifest -- the version's own list of what it holds
+        # -- so it costs one small GET per version rather than the version's
+        # content. A version already staged here is checked on disk instead,
+        # which needs no round trip at all and agrees with the manifest (a stage
+        # is verified against it). Not a networked-read exception: it is the same
+        # storage-seam read as `local_cache_dir`, just narrower.
+        rel = clean_relpath(relpath)
+        if rel is None:
+            return False
+
+        def _present(version: str) -> bool:
+            root = os.path.join(self._scratch, corpus, version)
+            if os.path.isdir(root):
+                return os.path.isfile(os.path.join(root, "files", rel))
+            return f"files/{rel}" in self._version_files(corpus, version)
+
+        return bool(self._with_current(corpus, _present))
 
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         staged = self._stage_current(corpus)
