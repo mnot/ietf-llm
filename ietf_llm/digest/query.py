@@ -66,6 +66,12 @@ SUPPORTED_FILTERS: Dict[str, "frozenset[str]"] = {
 }
 
 
+def _is_set(value: Any) -> bool:
+    """A filter value that was really given. `0` is a value (`limit=0`);
+    `False`, `None`, "" and the -1 sentinel are not."""
+    return value is not None and value is not False and value != "" and value != -1
+
+
 def unsupported_filter_message(
     kind: str, filters: Dict[str, Any], include_bodies: bool = False
 ) -> Optional[str]:
@@ -75,7 +81,7 @@ def unsupported_filter_message(
     supported = SUPPORTED_FILTERS.get(kind)
     if supported is None:
         return None
-    asked = {k: v for k, v in filters.items() if v not in (None, "", -1, False)}
+    asked = {k: v for k, v in filters.items() if _is_set(v)}
     if include_bodies:
         asked["include_bodies"] = True
     for name in sorted(asked):
@@ -101,7 +107,9 @@ def _split_row(line: str) -> List[str]:
         line = line[1:]
     if line.endswith("|"):
         line = line[:-1]
-    return [cell.strip() for cell in line.split("|")]
+    # An escaped pipe (`\\|`, as the writers emit inside a cell) is not a
+    # separator; the cell keeps its backslash so a re-render is unchanged.
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", line)]
 
 
 def _is_separator(cells: List[str]) -> bool:
@@ -248,10 +256,18 @@ def _row_domains(row: List[str], columns: List[str]) -> List[str]:
 def _domain_matches(domains: List[str], wanted: str) -> bool:
     """True if any domain is `wanted` or a subdomain of it
     (`ietf.org` matches `mail.ietf.org`, not `notietf.org`)."""
-    wanted = wanted.strip().lstrip("@").lstrip("*.").lower()
+    wanted = normalise_domain(wanted)
     return bool(wanted) and any(
         d == wanted or d.endswith("." + wanted) for d in domains
     )
+
+
+def normalise_domain(value: str) -> str:
+    """The bare domain in what a caller typed: `@ietf.org`, `*.ietf.org`,
+    `https://www.ietf.org/x`, `chair@ietf.org` and `ietf.org.` all reduce to a
+    domain."""
+    domain = value.strip().lower().split("://", 1)[-1].split("/", 1)[0]
+    return domain.rsplit("@", 1)[-1].lstrip("*.").strip(".")
 
 
 #: Headings of the people digest tables that list each actor once. Leadership
@@ -265,33 +281,37 @@ def _people_filter_note(
 ) -> str:
     """One line saying how much of the people digest the `org=` /
     `email_domain=` filter could not see, so a short result is not read as
-    "nobody else works there"."""
-    total = matched = no_org = no_domain = 0
+    "nobody else works there". `matched` counts every row the filters
+    accept; `shown` is what `limit` left of them."""
+    total = matched = shown = no_org = no_domain = 0
     for before, after in pairs:
         if not before.heading.startswith(_ACTOR_HEADINGS):
             continue
         total += len(before.rows)
-        matched += len(after.rows)
+        shown += len(after.rows)
         for row in before.rows:
-            if not _SOURCE_MARK_RE.sub(
-                "", _row_field(row, before.columns, "affiliation")
-            ).strip():
-                no_org += 1
-            if not _row_domains(row, before.columns):
-                no_domain += 1
+            matched += _row_matches(row, before.columns, "people", filters)
+            affiliation = _row_field(row, before.columns, "affiliation")
+            no_org += not _SOURCE_MARK_RE.sub("", affiliation).strip()
+            no_domain += not _row_domains(row, before.columns)
+    if not total:
+        return "_This digest has no participant tables to filter._\n"
     parts = []
     if filters.get("org"):
         parts.append(
-            f"{no_org} of {total} participant rows carry no affiliation signal "
-            "(blank, or no draft / GitHub source) and cannot match `org=`"
+            f"{no_org} of {total} carry no affiliation signal (blank, or no "
+            "draft / GitHub source) and cannot match `org=`, which also "
+            "matches earlier affiliations"
         )
     if filters.get("email_domain"):
         parts.append(
-            f"{no_domain} of {total} carry no email address (GitHub-only) and "
+            f"{no_domain} of {total} have no email address recorded and "
             "cannot match `email_domain=`"
         )
+    trimmed = f" ({shown} shown, cut by `limit`)" if shown < matched else ""
     return (
-        f"_{matched} of {total} participant rows matched. "
+        f"_{matched} of {total} participant rows match the filters{trimmed}; "
+        "leadership, author and role-account rows are not counted. "
         + "; ".join(parts)
         + ". A short result reflects what is recorded, not who else is there._\n"
     )

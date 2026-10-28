@@ -43,6 +43,9 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     path = _digest_path(wg, kind)
     if not path:
         return _missing_digest_message(wg, kind)
+    # Whitespace around a value is never meant.
+    org = org.strip() if org else None
+    email_domain = email_domain.strip() if email_domain else None
     for field, value in (("since", since), ("until", until)):
         date_error = _invalid_date_message(value, field)
         if date_error:
@@ -229,7 +232,10 @@ def register(server: "FastMCP") -> None:
                             e.g. "Chair"), min_messages, limit,
                             org (substring of the Affiliation column
                             ONLY — what the person's drafts and GitHub
-                            profile say), email_domain (a domain, e.g.
+                            profile say; it also matches earlier
+                            affiliations listed there, so it answers
+                            "who has been at X", not strictly "who is
+                            at X"), email_domain (a domain, e.g.
                             "nokia.com"; matches subdomains; a SEPARATE
                             signal from org — participants often use
                             personal or employer-neutral addresses, so
