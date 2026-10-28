@@ -40,10 +40,22 @@ def test_name_key_folds_variants_together(variants: list[str]) -> None:
         ("L. Le Meur", "Laurent Le Meur"),
         ("Mark Smith", "Mary Smith"),
         ("Smith, Jr.", "Jr. Smith"),
+        ("ガ", "カ"),
+        ("-", "_"),
+        ("—", "-"),
     ],
 )
 def test_name_key_keeps_distinct_names_apart(first: str, second: str) -> None:
     assert name_key(first) != name_key(second)
+
+
+def test_name_key_folds_latin_accents_only() -> None:
+    assert name_key("Müller") == "muller"
+    assert name_key("Šimon Ščerbak") == "simon scerbak"
+
+
+def test_name_key_of_bare_separators_is_not_empty() -> None:
+    assert name_key("-") and name_key("_") and name_key("—")
 
 
 def test_name_key_leaves_a_name_that_is_only_a_parenthetical() -> None:
@@ -73,7 +85,10 @@ def _person(name: str, **kw: set[str]) -> Person:
         _person("IETF Meeting Session Request Tool"),
         _person("Repository Activity Summary Bot"),
         _person("rfc-editor@rfc-editor.org", emails={"rfc-editor@rfc-editor.org"}),
-        _person("Someone", emails={"noreply@example.com"}),
+        _person("Honda", emails={"noreply@honda.co.uk"}),
+        _person("Liaison Statement Management Tool"),
+        _person("IAB Chair"),
+        _person("GitHub", emails={"noreply@github.com"}),
         _person("github-actions[bot]", github_logins={"github-actions[bot]"}),
         _person("x", github_logins={"dependabot"}),
     ],
@@ -87,6 +102,11 @@ def test_role_accounts_detected(person: Person) -> None:
     [
         _person("Mark Nottingham", emails={"mnot@ietf.org"}),
         _person("Abbot Costello", github_logins={"abbot"}),
+        _person("Jane Bot"),
+        # A GitHub-relayed sender is a person; so is anyone who also posts
+        # from a real address.
+        _person("Med Boucadair", emails={"noreply@github.com"}),
+        _person("Jane Doe", emails={"jane@corp.example", "noreply@corp.example"}),
         _person("Roberto", github_logins={"robot-lover"}),
         _person("Jo Chair", emails={"chair@example.com"}),
         # A role or a document credit makes someone a person, whatever the
@@ -150,6 +170,31 @@ def test_login_linking_declines_when_there_is_nothing_safe_to_link() -> None:
     r.add_github_author("Pat-Jones")
     _link(r)
     assert len(r.persons) == 5
+
+
+def test_login_linking_leaves_a_login_the_api_named() -> None:
+    # `Mark-Smith` has a profile name, so it is no longer a bare login and
+    # must not be matched on the login's shape.
+    r = Registry()
+    r.add_email_message("Mark Smith <mark@example.org>", None)
+    r.add_github_author("Mark-Smith")
+    assert r.link_github_identity("Mark-Smith", "Marcus Taylor", []) == "named"
+    _link(r)
+    assert sorted(p.canonical_name for p in r.persons) == [
+        "Marcus Taylor",
+        "Mark Smith",
+    ]
+
+
+def test_login_linking_declines_a_name_two_mail_people_share() -> None:
+    r = Registry()
+    first = r.add_email_message("John Smith <john@one.example>", None)
+    second = r.add_email_message("Jon Smith <jon@two.example>", None)
+    assert first is not None and second is not None
+    second.canonical_name = "John Smith"
+    r.add_github_author("John-Smith")
+    _link(r)
+    assert len(r.persons) == 3
 
 
 def test_login_linking_is_not_repeated_for_a_person_with_two_logins() -> None:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import TYPE_CHECKING, Optional, Set
+from typing import TYPE_CHECKING, List, Optional, Set
 
 if TYPE_CHECKING:
     from . import Person
@@ -23,19 +23,20 @@ if TYPE_CHECKING:
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
 _SEPARATOR_RE = re.compile(r"[\s_\-‐-―]+")
 _LOGIN_SEPARATOR_RE = re.compile(r"[_\-]+")
+_LATIN_LIMIT = 0x250
 _NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq"}
 
 
 def name_key(name: str) -> str:
     """Fold a display name to the key used for identity lookup.
 
-    Case, diacritics, hyphens and underscores are ignored, a single
+    Case, Latin diacritics, hyphens and underscores are ignored, a single
     `Last, First` comma is reordered, and trailing `(…)` groups are dropped.
     A comma before a generational or academic suffix (`Smith, Jr.`) is left
-    alone — that is not a surname/forename split.
+    alone — that is not a surname/forename split. A name with nothing left
+    to key on (`-`) keys as itself, so such names don't all collide on "".
     """
-    text = unicodedata.normalize("NFKD", name)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch)).strip()
+    text = _strip_latin_accents(name).strip()
     stripped = text
     while True:
         shorter = _TRAILING_PAREN_RE.sub("", stripped)
@@ -49,16 +50,27 @@ def name_key(name: str) -> str:
         last, first = (part.strip() for part in text.split(","))
         if last and first and first.rstrip(".") not in _NAME_SUFFIXES:
             text = f"{first} {last}"
-    return _SEPARATOR_RE.sub(" ", text).strip()
+    return _SEPARATOR_RE.sub(" ", text).strip() or text
+
+
+def _strip_latin_accents(name: str) -> str:
+    """Drop combining marks after Latin letters only: they are accents there,
+    but the dakuten that separates `ガ` from `カ` is part of the letter."""
+    out: List[str] = []
+    for ch in unicodedata.normalize("NFKD", name):
+        if unicodedata.combining(ch) and out and ord(out[-1]) < _LATIN_LIMIT:
+            continue
+        out.append(ch)
+    return unicodedata.normalize("NFC", "".join(out))
 
 
 def login_as_name(login: str) -> Optional[str]:
     """The name key a GitHub login reads as, or None if it is not name-shaped.
 
     Only a login of two or more alphabetic words joined by `-` or `_`
-    (`Jo-Levy`) qualifies; `mirjak` or `kmadhavan-msft` carry no usable
-    name, and a single run of letters is far too likely to be a handle that
-    merely resembles someone's name.
+    (`Jo-Levy`) qualifies; a single run of letters (`mirjak`) is far too
+    likely to be a handle that merely resembles someone's name. This is a
+    test of shape: `kmadhavan-msft` passes it and simply matches nobody.
     """
     parts = [p for p in _LOGIN_SEPARATOR_RE.split(login.strip()) if p]
     if len(parts) < 2 or not all(p.isalpha() and len(p) > 1 for p in parts):
@@ -104,6 +116,13 @@ _ROLE_NAMES: Set[str] = {
         "Internet-Drafts",
         "IETF Meeting Session Request Tool",
         "Datatracker",
+        "GitHub",
+        "IAB Chair",
+        "IETF Executive Director",
+        "IAB Executive Administrative Manager",
+        "Liaison Statement Management Tool",
+        "IANA General Enquiries via RT",
+        "ietf.org Support",
     )
 }
 _BOT_LOGIN_RE = re.compile(r"(?:\[bot\]|[-_]bot)$", re.IGNORECASE)
@@ -113,7 +132,9 @@ _BOT_LOGINS = {"dependabot", "github-actions", "renovate"}
 def _is_role_address(address: str) -> bool:
     local, _, domain = address.lower().partition("@")
     if local in _AUTOMATED_LOCALPARTS:
-        return True
+        # GitHub relays a person's mail from `noreply@github.com` under their
+        # own display name, so that address says nothing about who sent it.
+        return domain != "github.com" and not domain.endswith(".github.com")
     return domain in _IETF_DOMAINS and local in _IETF_ROLE_LOCALPARTS
 
 
@@ -130,9 +151,12 @@ def is_role_account(person: "Person") -> bool:
     if person.roles or person.authored_documents or person.edited_documents:
         return False
     key = name_key(person.canonical_name)
-    if key in _ROLE_NAMES or key.endswith(" bot"):
+    # "Bot" alone could be a surname; the suffix rule wants a descriptive name.
+    if key in _ROLE_NAMES or (key.endswith(" bot") and len(key.split()) >= 3):
         return True
-    if any(_is_role_address(addr) for addr in person.emails):
+    # Every address, not any: someone who also posts from a noreply@ mailbox
+    # is still a person.
+    if person.emails and all(_is_role_address(a) for a in person.emails):
         return True
     if "@" in person.canonical_name and _is_role_address(person.canonical_name):
         return True

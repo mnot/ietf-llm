@@ -27,13 +27,14 @@ budget; every function drives `Registry` through its public methods.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING, Dict, Iterable, List
 
 from ..gather.sources.datatracker_github import resolve_via_datatracker
 from ..gather.sources.datatracker_people import resolve_addresses
 from ..gather.sources.github_users import resolve_logins
 from ..log import LogLevel, Verbosity, log
-from .names import login_as_name
+from .names import login_as_name, name_key
 
 if TYPE_CHECKING:
     from . import Person, Registry
@@ -227,14 +228,27 @@ def link_github_logins_by_name(
 
     Runs after the two lookup-based passes, for the actors they could not
     help: no `github_username` on Datatracker and no real name on the GitHub
-    profile. The match is the registry's usual exact name match (see
-    `names.name_key`) and, as there, needs a Person with mail signal to land
-    on; a login that is a single word (`mirjak`) is never tried.
+    profile, so the Person is still labelled by its bare login (an actor the
+    GitHub API did name is left alone, whatever its login looks like). The
+    match is the registry's usual exact name match (see `names.name_key`) and,
+    as there, needs a Person with mail signal to land on. A login that is a
+    single word (`mirjak`) is never tried, nor is a name two mail Persons
+    share, since the login cannot say which it means.
     """
     n_linked = 0
     merged: "set[int]" = set()
+    mail_names = Counter(
+        name_key(p.canonical_name)
+        for p in registry.persons
+        if p.emails or p.message_count > 0
+    )
     for login, gh_person in _unlinked_github_logins(registry).items():
-        if id(gh_person) in merged or login_as_name(login) is None:
+        if (
+            id(gh_person) in merged
+            or gh_person.canonical_name not in gh_person.github_logins
+            or login_as_name(login) is None
+            or mail_names[name_key(login)] > 1
+        ):
             continue
         target = registry.person_for_name(login)
         if (
