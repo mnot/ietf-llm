@@ -82,7 +82,7 @@ from .linking import (
     resolve_github_via_datatracker,
 )
 from .meetings import ingest_meeting_participation
-from .names import cleaner_name, name_key, notes_conflict, trailing_notes
+from .names import cleaner_name, name_key
 
 # `write_people_digest` (and the `_format_affiliations` helper some tests
 # reach for) moved to `.digest`; re-exported here so `ietf_llm.people.<name>`
@@ -145,10 +145,6 @@ class Person:
     # affiliations); surfaced only on explicit request as a fallback
     # signal, not an attribution.
     email_domains: Set[str] = field(default_factory=set)
-    # Trailing parentheticals seen on this person's mail display names
-    # (`Eric Vyncke (evyncke)`), casefolded: two same-keyed names whose
-    # parentheticals disagree are not merged.
-    name_notes: Set[str] = field(default_factory=set)
     # Meeting participation, attached link-only by the meetings pass (see
     # `people/meetings.py`): these signals only ever land on a person already
     # known from mail / drafts / GitHub / roles — a meeting never mints a new
@@ -266,7 +262,7 @@ class Registry:
         person = self._by_email.get(addr) if addr else None
         # 2. Fall back to display name.
         if person is None and name:
-            person = self._lookup_name(name)
+            person = self._by_name.get(name_key(name))
 
         if person is None:
             # Brand new actor.
@@ -291,41 +287,13 @@ class Registry:
             if "@" in addr:
                 person.email_domains.add(addr.rsplit("@", 1)[-1])
         if name:
-            # Only the holder of the plain key may take the cleaner spelling:
-            # a namesake kept apart by its parenthetical must stay distinct.
-            if self._claim_name(name, person):
-                person.canonical_name = cleaner_name(person.canonical_name, name)
-            person.name_notes |= trailing_notes(name)
+            person.canonical_name = cleaner_name(person.canonical_name, name)
+            self._by_name[name_key(name)] = person
         if raw_from:
             person.raw_from_headers.add(raw_from)
         person.message_count += 1
         person.touch_date(date)
         return person
-
-    def _lookup_name(self, name: str) -> Optional[Person]:
-        """The Person a display name refers to. A parenthetical the Person
-        was indexed under (`John Smith (Google)`) is tried first; the plain
-        key is refused when it belongs to a namesake whose parenthetical
-        disagrees (`John Smith (Cisco)`)."""
-        key = name_key(name)
-        for note in sorted(trailing_notes(name)):
-            found = self._by_name.get(f"{key}|{note}")
-            if found is not None:
-                return found
-        found = self._by_name.get(key)
-        if found is not None and notes_conflict(name, found.name_notes):
-            return None
-        return found
-
-    def _claim_name(self, name: str, person: Person) -> bool:
-        """Index `person` under `name`: its parentheticals always, the plain
-        key only if nobody holds it (first holder wins). Returns whether the
-        plain key is `person`'s."""
-        key = name_key(name)
-        holder = self._by_name.setdefault(key, person)
-        for note in trailing_notes(name):
-            self._by_name[f"{key}|{note}"] = person
-        return holder is person
 
     def add_github_company(self, login: str, company: Optional[str]) -> None:
         """Record a GitHub user's self-reported `company` field as an
@@ -477,7 +445,6 @@ class Registry:
             keep.canonical_name = drop.canonical_name
         elif drop_name_real:
             keep.canonical_name = cleaner_name(keep.canonical_name, drop.canonical_name)
-        keep.name_notes |= drop.name_notes
 
         keep.emails |= drop.emails
         keep.github_logins |= drop.github_logins
@@ -503,10 +470,9 @@ class Registry:
             self._by_email[email_addr] = keep
         for gh_login in drop.github_logins:
             self._by_github[gh_login] = keep
-        for key, holder in self._by_name.items():
-            if holder is drop:
-                self._by_name[key] = keep
-        self._by_name.setdefault(name_key(keep.canonical_name), keep)
+        if drop.canonical_name:
+            self._by_name[name_key(drop.canonical_name)] = keep
+        self._by_name[name_key(keep.canonical_name)] = keep
         self.persons = [person for person in self.persons if person is not drop]
 
     def add_document_author(
@@ -607,8 +573,9 @@ class Registry:
         name, addr = parse_from_header(raw_from)
         if addr and addr in self._by_email:
             return self._by_email[addr].canonical_name
-        found = self._lookup_name(name) if name else None
-        return found.canonical_name if found else name
+        if name and name_key(name) in self._by_name:
+            return self._by_name[name_key(name)].canonical_name
+        return name
 
     def canonical_for_github(self, login: str) -> Optional[str]:
         person = self._by_github.get(login.strip())
@@ -620,7 +587,7 @@ class Registry:
         GitHub login and want the role-bearing Person back."""
         if not canonical_name:
             return None
-        return self._lookup_name(canonical_name)
+        return self._by_name.get(name_key(canonical_name))
 
     def person_for_email(self, address: str) -> Optional[Person]:
         """Look up a Person by an (already-normalised) email address. Used by

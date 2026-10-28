@@ -3,10 +3,8 @@
 `name_key` is what `Registry._by_name` is keyed on: two display names that
 differ only in case, diacritics, hyphenation, `Last, First` order or a
 trailing parenthetical (`Deen, Glenn (Comcast Cable)`, `Eric Vyncke
-(evyncke)`) share a key and so resolve to one Person, unless both carry
-parentheticals and share none (`John Smith (Cisco)` / `John Smith
-(Google)`), which keeps namesakes apart. The key is for lookup only. Where
-two spellings of one name meet, `cleaner_name` picks the one to display: an
+(evyncke)`) share a key and so resolve to one Person. The key is for lookup
+only. Where two spellings of one name meet, `cleaner_name` picks the one to display: an
 undecorated spelling over a decorated one.
 
 `is_role_account` separates mailboxes and bots (`internet-drafts@ietf.org`,
@@ -66,21 +64,6 @@ def _first_last(text: str) -> str:
         if last and first and first.rstrip(".").casefold() not in _NAME_SUFFIXES:
             return f"{first} {last}"
     return text
-
-
-def trailing_notes(name: str) -> Set[str]:
-    """The trailing parentheticals of a name (`Eric Vyncke (evyncke)` ->
-    `{"evyncke"}`), casefolded."""
-    return _split_notes(name.strip())[1]
-
-
-def notes_conflict(name: str, known: Set[str]) -> bool:
-    """True when `name` and what is already known of a Person both carry
-    parentheticals and share none: `John Smith (Cisco)` and `John Smith
-    (Google)` read as two people, though the key is the same. A name with no
-    parenthetical conflicts with nothing."""
-    incoming = trailing_notes(name)
-    return bool(incoming and known and incoming.isdisjoint(known))
 
 
 def is_decorated(name: str) -> bool:

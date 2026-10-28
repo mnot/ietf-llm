@@ -139,76 +139,14 @@ def test_mail_names_differing_in_form_are_one_person() -> None:
     assert r.canonical_for_email("Éric Vyncke <>") == "Éric Vyncke"
 
 
-def test_same_name_with_different_parentheticals_stays_two_people() -> None:
+def test_same_name_with_different_parentheticals_is_one_person() -> None:
+    # The issue strips a trailing parenthetical before lookup; a differing one
+    # is not treated as evidence of a second person.
     r = Registry()
     r.add_email_message('"John Smith (Cisco)" <john@cisco.example>', None)
     r.add_email_message('"John Smith (Google)" <john@google.example>', None)
-    assert len(r.persons) == 2
-    # A later message with no parenthetical still lands on the first-seen
-    # holder of the name, as before; one sharing a parenthetical lands on it.
-    r.add_email_message('"Smith, John (Cisco)" <jsmith@cisco.example>', None)
-    assert len(r.persons) == 2
-    assert r.persons[0].emails == {"john@cisco.example", "jsmith@cisco.example"}
-
-
-CISCO = '"John Smith (Cisco)" <{}@cisco.example>'
-GOOGLE = '"John Smith (Google)" <{}@google.example>'
-
-
-@pytest.mark.parametrize("cisco_first", [True, False])
-def test_namesakes_stay_two_people_across_new_addresses(cisco_first: bool) -> None:
-    # Each namesake keeps being recognised by name when it writes from an
-    # address the registry has not seen, whichever arrived first.
-    r = Registry()
-    order = [CISCO, GOOGLE] if cisco_first else [GOOGLE, CISCO]
-    for template in order:
-        r.add_email_message(template.format("a"), None)
-    for template in order:
-        r.add_email_message(template.format("b"), None)
-        r.add_email_message(template.format("c"), None)
-    assert len(r.persons) == 2
-    assert sorted(len(p.emails) for p in r.persons) == [3, 3]
-
-
-def test_a_bare_name_from_one_namesake_does_not_take_the_name_over() -> None:
-    r = Registry()
-    cisco = r.add_email_message(CISCO.format("a"), None)
-    google = r.add_email_message(GOOGLE.format("b"), None)
-    r.add_email_message('"John Smith" <b@google.example>', None)
-    assert r.add_email_message(CISCO.format("c"), None) is cisco
-    assert r.add_email_message(GOOGLE.format("d"), None) is google
-    assert len(r.persons) == 2
-    assert cisco is not None and cisco.canonical_name == "John Smith (Cisco)"
-
-
-def test_role_lookup_by_canonical_name_stays_with_the_right_namesake() -> None:
-    r = Registry()
-    cisco = r.add_email_message(CISCO.format("a"), None)
-    google = r.add_email_message(GOOGLE.format("b"), None)
-    assert cisco is not None and google is not None
-    cisco.roles.add("Chair")
-    assert r.person_for_name(cisco.canonical_name) is cisco
-    assert r.person_for_name(google.canonical_name) is google
-    assert r.role_tag(google.canonical_name) is None
-    assert r.canonical_for_email(GOOGLE.format("z")) == "John Smith (Google)"
-
-
-def test_merging_a_namesake_does_not_leave_stale_name_entries() -> None:
-    r = Registry()
-    cisco = r.add_email_message(CISCO.format("a"), None)
-    google = r.add_email_message(GOOGLE.format("b"), None)
-    g2 = r.add_email_message(GOOGLE.format("c"), None)
-    assert cisco is not None and google is not None and g2 is google
-    r.merge_into(google, cisco)
-    assert r.person_for_name("John Smith (Cisco)") is google
     assert len(r.persons) == 1
-
-
-def test_parenthetical_conflict_does_not_steal_the_name_entry() -> None:
-    r = Registry()
-    cisco = r.add_email_message('"John Smith (Cisco)" <john@cisco.example>', None)
-    r.add_email_message('"John Smith (Google)" <john@google.example>', None)
-    assert r.person_for_name("John Smith") is cisco
+    assert r.persons[0].emails == {"john@cisco.example", "john@google.example"}
 
 
 def test_clean_spelling_replaces_a_decorated_one() -> None:
