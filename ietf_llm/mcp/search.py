@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from ..embeddings import index_model, related, search
+from ..embeddings import index_model, probe_index, related, search
 from ..freshness import gather_enabled, staleness_warning
 from ..log import Verbosity
 from .common import (
@@ -29,6 +29,47 @@ _MAX_SEARCH_K = 100
 
 
 # --- Tool implementations (plain functions, also usable for unit tests) -----
+
+
+def _empty_search_message(
+    wg: str,
+    what: str,
+    filters: "List[Tuple[str, Optional[str]]]",
+    *,
+    scope: str = "",
+) -> str:
+    """The parenthetical for a semantic search that returned nothing, saying
+    which of three things happened: the index cannot be served (absent or being
+    rebuilt), a filter excluded everything, or the query simply matched nothing.
+
+    Only the first warrants a re-gather hint; blaming the index when it is
+    there sends the caller after the wrong thing. `what` is the lead-in
+    ("no results for 'q'"); `filters` are the optional facets the caller passed,
+    as `(name, value)` pairs, unset ones being falsy; `scope` is an extra
+    clause for a tool that narrows the search implicitly."""
+    rebuilding = _index_rebuilding_note(wg)
+    if rebuilding is not None:
+        return f"(no results yet — {rebuilding})"
+    if not probe_index(wg):
+        no_index = (
+            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"has `ietf-llm {wg} --embed` been run?"
+        )
+        return f"({what} — {no_index})"
+    active = [f"{name}={value!r}" for name, value in filters if value]
+    if not active:
+        return f"({what} — the search index is present, but no chunks matched{scope}.)"
+    hint = (
+        " `author=` matches the sender named in the chunk header; check how "
+        f'the name is spelled in `read_digest(corpus="{wg}", kind="people")`.'
+        if any(name == "author" and value for name, value in filters)
+        else ""
+    )
+    return (
+        f"({what} — the search index is present, but no chunks matched with "
+        f"{', '.join(active)}{scope}. Loosen or drop a filter.{hint})"
+    )
 
 
 def _flatten_rationale(rationale: str, limit: int) -> str:
@@ -234,15 +275,23 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        rebuilding = _index_rebuilding_note(wg)
-        if rebuilding is not None:
-            return _with_freshness(wg, f"(no results yet — {rebuilding})")
-        no_index = (
-            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
-            if gather_enabled()
-            else f"has `ietf-llm {wg} --embed` been run?"
+        return _with_freshness(
+            wg,
+            _empty_search_message(
+                wg,
+                f"no results for {query!r}",
+                [
+                    ("file_pattern", file_pattern),
+                    ("since", since),
+                    ("until", until),
+                    ("label", label),
+                    ("state", state),
+                    ("sort", sort if sort == "date" else None),
+                    ("author", author),
+                    ("role", role),
+                ],
+            ),
         )
-        return _with_freshness(wg, f"(no results — {no_index})")
     dropped = 0
     if collapse_versions:
         hits, dropped = _collapse_draft_versions(hits)
@@ -319,14 +368,33 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        no_index = (
-            f"no search index, or no chunk {chunk_idx} in {file} — "
-            f"re-gather with {_regather_call(wg)}"
-            if gather_enabled()
-            else f"no chunk {chunk_idx} in {file}, or `ietf-llm {wg} --embed` "
-            "has not been run"
+        seed = f"no chunk {chunk_idx} in {file}"
+        if not probe_index(wg):
+            no_index = (
+                f"no search index, or {seed} — re-gather with {_regather_call(wg)}"
+                if gather_enabled()
+                else f"{seed}, or `ietf-llm {wg} --embed` has not been run"
+            )
+            return _with_freshness(wg, f"(no related chunks — {no_index})")
+        active = [
+            f"{name}={value!r}"
+            for name, value in (
+                ("file_pattern", file_pattern),
+                ("since", since),
+                ("until", until),
+                ("label", label),
+                ("state", state),
+            )
+            if value
+        ]
+        reason = (
+            f"no chunks matched with {', '.join(active)}, or the index has {seed}"
+            if active
+            else f"the index has {seed}"
         )
-        return _with_freshness(wg, f"(no related chunks — {no_index})")
+        return _with_freshness(
+            wg, f"(no related chunks — the search index is present, but {reason})"
+        )
     dropped = 0
     if collapse_versions:
         hits, dropped = _collapse_draft_versions(hits)

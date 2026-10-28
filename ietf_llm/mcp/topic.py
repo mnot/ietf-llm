@@ -6,7 +6,6 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import get_messages, search
-from ..freshness import gather_enabled
 from ..log import Verbosity
 from ..people.positions import (
     extract_chair_statements,
@@ -20,15 +19,14 @@ from .common import (
     _append_participation_nudge,
     _files_dir,
     _grounding_frame,
-    _index_rebuilding_note,
     _offload,
     _participation_nudge,
-    _regather_call,
     _requires_corpus,
     _safe_path,
     _thread_sizes,
     _with_freshness,
 )
+from .search import _empty_search_message
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
@@ -212,15 +210,15 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        rebuilding = _index_rebuilding_note(wg)
-        if rebuilding is not None:
-            return _with_freshness(wg, f"(no results yet — {rebuilding})")
-        no_index = (
-            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
-            if gather_enabled()
-            else f"has `ietf-llm {wg} --embed` been run?"
+        return _with_freshness(
+            wg,
+            _empty_search_message(
+                wg,
+                f"no results for {query!r}",
+                [("file_pattern", file_pattern), ("since", since), ("until", until)],
+                scope=" (only dated thread and issue messages are searched)",
+            ),
         )
-        return _with_freshness(wg, f"(no results for {query!r} — {no_index})")
 
     # Keep only chunks from thread/issue files that have a date — those
     # are the only chunks that represent a "message" in a debate.
