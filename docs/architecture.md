@@ -1283,12 +1283,17 @@ message names the running stage. Cancellation (`stop_gather`) terminates the
 child; a child crash fails one gather instead of the whole server. Under
 `IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
 which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
-the stage and how many are left) since there is no prior snapshot; a re-gather
-keeps serving the previous published version until the new one is ready. That
-last guarantee needs the index build to be **atomic**: the build writes a scratch
-DB (seeded from the live index, so it stays incremental) and `os.replace`s it
-into place as a standalone (DELETE-journal) file, so a reader never sees a
-half-populated index — see "Writers are write-if-changed and atomic".
+the stage and how many are left) since there is no prior snapshot. A re-gather
+stays readable, and what a reader sees depends on the backend. On the **cloud**
+backend it is the previous published version until the new one is ready. On the
+**local** backend `publish` is a no-op and the gather writes into the live
+cache, so *files* change in place: counts and file lists (a `grep_corpus` scan,
+say) can differ between calls. The in-flight banner says so, per backend. The
+*search index* is previous-until-swapped on both, and that needs the index build
+to be **atomic**: the build writes a scratch DB (seeded from the live index, so
+it stays incremental) and `os.replace`s it into place as a standalone
+(DELETE-journal) file, so a reader never sees a half-populated index — see
+"Writers are write-if-changed and atomic".
 
 ### The networked read exception: live Datatracker lookups and get_rfc_info
 
