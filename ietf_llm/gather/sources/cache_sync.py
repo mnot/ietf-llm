@@ -110,6 +110,10 @@ def hydrate(kv: KvStore, corpus: str) -> List[str]:
     Returns notes for failures worth surfacing. Raises `GatherCacheRestoreError`,
     after restoring everything else, if stored IMAP mail couldn't be fetched (see
     `_restore_imap`); nothing else here raises."""
+    # A UIDVALIDITY confirmation is good for one gather, from here to persist.
+    # One left over from an earlier gather in this process would let persist
+    # replace the stored mail on the strength of a check this gather never made.
+    mbox.forget_verified(corpus)
     _restore(
         kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
     )

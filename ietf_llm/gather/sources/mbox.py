@@ -266,10 +266,14 @@ def _download_batches(
     return new_count
 
 
-#: UIDVALIDITY values the server reported in this process, by list cache dir;
-#: cleared at the start of each list's sync. Lets the cloud persist tell "this
-#: gather confirmed the local cache's epoch with the server" from "the cache is
-#: whatever an earlier run left" -- only the former may replace stored mail.
+#: UIDVALIDITY values the server reported in this process, by list cache dir.
+#: Lets the cloud persist tell "this gather confirmed the local cache's epoch
+#: with the server" from "the cache is whatever an earlier run left" -- only the
+#: former may replace stored mail. Scoped to one gather: `forget_verified` drops
+#: a corpus's entries when its gather starts, and each list's sync drops its
+#: own before reaching the server, so a gather that never syncs a list (its
+#: discovery failed, or the list left the corpus) can't inherit the confirmation
+#: an earlier gather in this process recorded.
 _VERIFIED: Dict[str, str] = {}
 
 
@@ -277,6 +281,14 @@ def verified_uidvalidity(cache_dir: str) -> Optional[str]:
     """The epoch the server confirmed for `cache_dir` during this gather's sync,
     or `None` if the sync didn't reach the server (or hasn't run)."""
     return _VERIFIED.get(cache_dir)
+
+
+def forget_verified(wg_name: str) -> None:
+    """Drop every confirmation recorded for `wg_name`'s lists, so a new gather
+    starts with none."""
+    root = os.path.join(get_cache_dir(), "imap-cache", wg_name) + os.sep
+    for cache_dir in [d for d in _VERIFIED if d.startswith(root)]:
+        del _VERIFIED[cache_dir]
 
 
 def read_uidvalidity(cache_dir: str) -> Optional[str]:

@@ -275,6 +275,31 @@ def test_unconfirmed_epoch_never_replaces_the_stored_mail(monkeypatch, tmp_path)
     assert len(problems) == 1 and "not confirmed" in problems[0]
 
 
+def test_a_confirmation_does_not_outlive_its_gather(monkeypatch, tmp_path):
+    # Host X confirmed epoch 7 in an earlier gather of this process; another host
+    # has since stored epoch 8. X's next gather never syncs the list (discovery
+    # failed, say), so nothing confirms 7 this time: the old confirmation must
+    # not let persist put 7 back over 8.
+    kv = _CountingKv()
+    x = _host(monkeypatch, tmp_path / "x")
+    _mail(x, [1, 2], epoch="7")
+    _verify(x, "7")
+    cache_sync.persist(kv, "moq")
+
+    other = _host(monkeypatch, tmp_path / "other")
+    _mail(other, [10, 11], epoch="8")
+    _verify(other, "8")
+    cache_sync.persist(kv, "moq")
+    before = dict(kv._data)
+
+    _host(monkeypatch, tmp_path / "x")  # the next gather on X, same process
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert mbox.verified_uidvalidity(str(x)) is None
+    problems = cache_sync.persist(kv, "moq")
+    assert kv._data == before
+    assert len(problems) == 1 and "not confirmed" in problems[0]
+
+
 def test_failed_index_write_never_leaves_mismatched_mail_trusted(monkeypatch, tmp_path):
     kv = _CountingKv()
     old = _host(monkeypatch, tmp_path / "old")
