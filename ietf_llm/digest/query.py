@@ -18,11 +18,15 @@ Per-kind filter semantics:
   threads  since="YYYY-MM-DD"      limit=N   min_messages=N
            until="YYYY-MM-DD"
   people   role="<substr>"         limit=N   min_messages=N
+           org="<substr>"          email_domain="<domain>"
   timeline since/until=...         limit=N   event_kind="<event-kind>"
                                   exclude_mechanical=True
 
-Filters that don't apply to a given digest kind are silently
-ignored (so the same call shape works across kinds).
+`query_digest` itself tolerates filters a kind does not use (internal
+callers share one call shape). The MCP tool does not: it checks
+`unsupported_filter_message` first, so a caller who asks for something a
+kind cannot do is told, rather than handed an unfiltered table that looks
+like an answer.
 """
 
 from __future__ import annotations
@@ -47,6 +51,57 @@ class Section:
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
+_BODY_KINDS = frozenset({"issues", "pulls"})
+
+#: What each digest kind can filter on. `limit` and `sort` apply wherever the
+#: kind is a table of rows with a recency order; `index` is not filterable.
+SUPPORTED_FILTERS: Dict[str, "frozenset[str]"] = {
+    "index": frozenset(),
+    "issues": frozenset({"state", "label", "author", "limit", "sort"}),
+    "pulls": frozenset({"state", "label", "author", "limit", "sort"}),
+    "threads": frozenset(
+        {"since", "until", "min_messages", "limit", "subject", "sort"}
+    ),
+    "people": frozenset({"role", "min_messages", "limit", "org", "email_domain"}),
+    "timeline": frozenset(
+        {"since", "until", "event_kind", "exclude_mechanical", "limit"}
+    ),
+}
+
+
+def _is_set(value: Any) -> bool:
+    """A filter value that was really given. `0` is a value (`limit=0`);
+    `False`, `None`, "" and the -1 sentinel are not."""
+    return value is not None and value is not False and value != "" and value != -1
+
+
+def unsupported_filter_message(
+    kind: str, filters: Dict[str, Any], include_bodies: bool = False
+) -> Optional[str]:
+    """Error text if any filter that was actually set is not one `kind`
+    supports, else None. Unset means None, "", -1 or False, as in
+    `query_digest`. Names the kinds that do support the filter."""
+    supported = SUPPORTED_FILTERS.get(kind)
+    if supported is None:
+        return None
+    asked = {k: v for k, v in filters.items() if _is_set(v)}
+    if include_bodies:
+        asked["include_bodies"] = True
+    for name in sorted(asked):
+        if name in supported or (name == "include_bodies" and kind in _BODY_KINDS):
+            continue
+        homes = sorted(
+            k
+            for k, names in SUPPORTED_FILTERS.items()
+            if name in names or (name == "include_bodies" and k in _BODY_KINDS)
+        )
+        have = ", ".join(sorted(supported)) or "none"
+        return (
+            f"`{name}` is not a filter for kind={kind!r} (it applies to: "
+            f"{', '.join(homes)}). Filters for {kind!r}: {have}."
+        )
+    return None
+
 
 def _split_row(line: str) -> List[str]:
     """Split a markdown table row into trimmed cell values."""
@@ -55,7 +110,9 @@ def _split_row(line: str) -> List[str]:
         line = line[1:]
     if line.endswith("|"):
         line = line[:-1]
-    return [cell.strip() for cell in line.split("|")]
+    # An escaped pipe (`\\|`, as the writers emit inside a cell) is not a
+    # separator; the cell keeps its backslash so a re-render is unchanged.
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", line)]
 
 
 def _is_separator(cells: List[str]) -> bool:
@@ -178,6 +235,100 @@ def _activity_count(row: List[str], columns: List[str], kind: str) -> int:
     return int(match.group(0)) if match else -1
 
 
+def _leading_org(row: List[str], columns: List[str]) -> str:
+    """The first organisation in a row's Affiliation cell, provenance marks
+    removed. The cell runs most recent first, so this is the best current
+    guess; `org=` looks at nothing else, so it finds who is at an
+    organisation, not everyone who once was."""
+    cell = _SOURCE_MARK_RE.sub("", _row_field(row, columns, "affiliation"))
+    return cell.split(";")[0].strip()
+
+
+#: The provenance marks `_format_affiliations` appends to each organisation
+#: (`Cloudflare (draft, github)`, `(+3 earlier)`); `org=` matches the
+#: organisation names, not the words `draft` or `github`.
+_SOURCE_MARK_RE = re.compile(
+    r"\s*\((?:(?:draft|datatracker|github|signature)(?:, )?)+\)|\s*\(\+\d+ earlier\)"
+)
+
+
+def _row_domains(row: List[str], columns: List[str]) -> List[str]:
+    """The email domains a people row carries: its `Email domain` column
+    where the digest has one, else derived from its address column(s), so
+    the filter also works on a digest gathered before that column existed."""
+    cell = _row_field(row, columns, "email domain")
+    if cell:
+        return [d.strip().lower() for d in cell.split(",") if d.strip()]
+    addresses = _row_field(row, columns, "emails") or _row_field(row, columns, "email")
+    return [
+        a.rsplit("@", 1)[1].strip().lower() for a in addresses.split(",") if "@" in a
+    ]
+
+
+def _domain_matches(domains: List[str], wanted: str) -> bool:
+    """True if any domain is `wanted` or a subdomain of it
+    (`ietf.org` matches `mail.ietf.org`, not `notietf.org`)."""
+    wanted = normalise_domain(wanted)
+    return bool(wanted) and any(
+        d == wanted or d.endswith("." + wanted) for d in domains
+    )
+
+
+def normalise_domain(value: str) -> str:
+    """The bare domain in what a caller typed: `@ietf.org`, `*.ietf.org`,
+    `https://www.ietf.org/x`, `chair@ietf.org` and `ietf.org.` all reduce to a
+    domain."""
+    domain = value.strip().lower().split("://", 1)[-1].split("/", 1)[0]
+    return domain.rsplit("@", 1)[-1].lstrip("*.").strip(".")
+
+
+#: Headings of the people digest tables that list each actor once. Leadership
+#: and author tables repeat people from these, and role accounts are not
+#: participants, so neither is counted.
+_ACTOR_HEADINGS = ("## Active on both", "## Mailing list only", "## GitHub only")
+
+
+def _people_filter_note(
+    pairs: "List[tuple[Section, Section]]", filters: Dict[str, Any]
+) -> str:
+    """One line saying how much of the people digest the `org=` /
+    `email_domain=` filter could not see, so a short result is not read as
+    "nobody else works there". `matched` counts every row the filters
+    accept; `shown` is what `limit` left of them."""
+    total = matched = shown = no_org = no_domain = 0
+    for before, after in pairs:
+        if not before.heading.startswith(_ACTOR_HEADINGS):
+            continue
+        total += len(before.rows)
+        shown += len(after.rows)
+        for row in before.rows:
+            matched += _row_matches(row, before.columns, "people", filters)
+            affiliation = _row_field(row, before.columns, "affiliation")
+            no_org += not _SOURCE_MARK_RE.sub("", affiliation).strip()
+            no_domain += not _row_domains(row, before.columns)
+    if not total:
+        return "_This digest has no participant tables to filter._\n"
+    parts = []
+    if filters.get("org"):
+        parts.append(
+            f"{no_org} of {total} carry no affiliation signal (blank, or no "
+            "draft / GitHub source) and cannot match `org=`, which looks "
+            "at the leading (most recent) affiliation only"
+        )
+    if filters.get("email_domain"):
+        parts.append(
+            f"{no_domain} of {total} have no email address recorded and "
+            "cannot match `email_domain=`"
+        )
+    trimmed = f" ({shown} shown, cut by `limit`)" if shown < matched else ""
+    return (
+        f"_{matched} of {total} participant rows match the filters{trimmed}; "
+        "leadership, author and role-account rows are not counted. "
+        + "; ".join(parts)
+        + ". A short result reflects what is recorded, not who else is there._\n"
+    )
+
+
 def filter_rows(section: Section, kind: str, filters: Dict[str, Any]) -> Section:
     """Return a new Section with rows filtered per kind-specific rules."""
     keep: List[List[str]] = []
@@ -257,6 +408,13 @@ def _row_matches(  # pylint: disable=too-many-return-statements
     elif kind == "people":
         role = filters.get("role")
         if role and role.lower() not in _row_field(row, columns, "roles").lower():
+            return False
+        org = filters.get("org")
+        if org:
+            if org.lower() not in _leading_org(row, columns).lower():
+                return False
+        domain = filters.get("email_domain")
+        if domain and not _domain_matches(_row_domains(row, columns), domain):
             return False
         min_msgs = filters.get("min_messages")
         if isinstance(min_msgs, int):
@@ -500,8 +658,10 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
     preamble = _extract_preamble(text)
     if preamble:
         out_parts.append(preamble.rstrip() + "\n")
+    pairs: "List[tuple[Section, Section]]" = []
     for section in sections:
         filtered = filter_rows(section, kind, active)
+        pairs.append((section, filtered))
         if not filtered.rows and section.rows:
             # Filter eliminated the table entirely; drop the heading
             # so the agent isn't looking at empty headers.
@@ -510,6 +670,8 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
     # Filters were active (the no-filter case returned `text` above), so a
     # falsy `out_parts` means the filter legitimately matched nothing — return
     # the empty result, never the full unfiltered digest.
+    if kind == "people" and (active.get("org") or active.get("email_domain")):
+        out_parts.append(_people_filter_note(pairs, active))
     return "\n".join(out_parts)
 
 

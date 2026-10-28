@@ -83,7 +83,10 @@ def write_people_digest(
             "infer affiliation from email domain — participants often "
             "use personal email, and some hold multiple affiliations, "
             "representing some or none of those interests in a given "
-            "discussion._\n\n"
+            "discussion. The **Email domain** column lists the domains of "
+            "the person's addresses as a separate signal and is NOT an "
+            "affiliation; `read_digest` filters it with `email_domain=` "
+            "and filters the Affiliation column alone with `org=`._\n\n"
             "_Spellings of one organisation are collapsed (`Akamai "
             "Technologies, Inc.` reads as `Akamai`) and the list runs "
             "**most recent first**, by the publication year of the "
@@ -150,6 +153,7 @@ def write_people_digest(
                     "Roles",
                     "Affiliation",
                     "Emails",
+                    "Email domain",
                     "GitHub",
                     "Msgs",
                     "Issues",
@@ -166,6 +170,7 @@ def write_people_digest(
                     "Roles",
                     "Affiliation",
                     "Emails",
+                    "Email domain",
                     "Msgs",
                     "Meetings",
                     "First",

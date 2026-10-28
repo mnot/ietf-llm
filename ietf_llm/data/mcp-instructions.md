@@ -91,8 +91,11 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `read_topic` (chronological narrative), `find_related` (by example),
   `grep_corpus` (exact string / regex).
 - **Catalogue:** `read_digest` (filtered issue / pull-request / thread / people /
-  timeline tables), `list_labels` (label names WITH the repo's own description
-  of each), `list_files`.
+  timeline tables; a filter the kind does not support is rejected, not
+  ignored; `kind="people"` takes `org=` for the Affiliation column and
+  `email_domain=` for address domains, which are separate signals),
+  `list_labels` (label names WITH the repo's own description of each),
+  `list_files`.
 - **Meetings:** `list_meetings` (gathered), `read_minutes` (minutes + poll
   tallies + attendance count for one), `meeting_schedule` (live schedule).
   A meeting's full attendance roster is in `meetings/<code>/attendance.md`
@@ -180,9 +183,9 @@ whether this one is, and gives the `read_file_section` call if so. When it says
 the body is **not reachable from here**, you cannot quote or characterise that
 RFC — say so rather than reconstructing it from memory, which is exactly where
 confident wrong readings come from. That answer is about what this server can
-reach, not about what exists: on the shared HTTP deployment a body can be
-published in the fleet and still be unreachable, so report it as "I can't read
-it", never as "it isn't available".
+reach, not about what exists: the RFC is published, but no corpus gathered
+here holds its text (or, rarely, the server failed to check one), so report it
+as "I can't read it", never as "it isn't available".
 
 ## Saying something was **never** said
 

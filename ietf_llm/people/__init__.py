@@ -520,6 +520,7 @@ class Registry:
             self._by_name[name_key(name)] = person
         if norm_email:
             person.emails.add(norm_email)
+            person.email_domains.add(norm_email.rsplit("@", 1)[-1])
             self._by_email[norm_email] = person
         if is_editor:
             person.edited_documents.add(document)
@@ -566,6 +567,7 @@ class Registry:
             self._by_name[name_key(name)] = person
         if norm_email:
             person.emails.add(norm_email)
+            person.email_domains.add(norm_email.rsplit("@", 1)[-1])
             self._by_email[norm_email] = person
         person.roles.add(label)
         return person

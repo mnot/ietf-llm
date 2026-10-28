@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import contextvars
 import importlib
+import ntpath
 import os
+import posixpath
 import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -69,6 +71,21 @@ class VersionVanished(FileNotFoundError):
         self.corpus = corpus
         self.old_version = old_version
         self.new_version = new_version
+
+
+def clean_relpath(relpath: str) -> Optional[str]:
+    """`relpath` as a normalised `/`-separated path inside a corpus's `files/`
+    tree, or None when it is empty, absolute or climbs out of it. Both backends
+    answer `has_file` from this, so a name that could not be read is never
+    reported present."""
+    rel = posixpath.normpath(relpath.replace(os.sep, "/"))
+    if rel in ("", ".") or rel.startswith("/") or rel == ".." or rel.startswith("../"):
+        return None
+    # A drive-qualified path ("C:/x") is not absolute to posixpath, but
+    # `os.path.join` would let it replace `files/` on a host that has drives.
+    if os.path.splitdrive(rel)[0] or ntpath.splitdrive(rel)[0]:
+        return None
+    return rel
 
 
 def _local_files_dir(corpus: str) -> str:
@@ -162,6 +179,21 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         Callers read it through the `paths.py` helpers. Read-only — never
         creates the directory. The local backend returns the existing tree; a
         cloud backend materialises the version's blobs here first.
+        """
+
+    @abstractmethod
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        """True if the current version of `corpus` holds `relpath`, a path inside
+        its `files/` tree (what `local_cache_dir` points at; the same relpath
+        `read_file_section` takes). False for an absent corpus, an absent file,
+        or a path that is not inside `files/`.
+
+        Exact, and answered without fetching the version's content: a caller
+        that only needs to know whether a file is there must not pay for the
+        bytes of a corpus it will never read. `local_cache_dir` stages the whole
+        version on the cloud backend (`files/` and `embeddings.db`), which is
+        the cost this method exists to avoid. Read-only — never creates
+        anything. Honours the request pin like the other read accessors.
         """
 
     @abstractmethod
@@ -439,6 +471,18 @@ class LocalCorpusStore(CorpusStore):
         files = _local_files_dir(corpus)
         return files if os.path.isdir(files) else None
 
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        rel = clean_relpath(relpath)
+        files = self.local_cache_dir(corpus)
+        if rel is None or files is None:
+            return False
+        # A symlink out of files/ is a file `read_file_section` refuses (its
+        # realpath check), so it must not read as present here.
+        path = os.path.realpath(os.path.join(files, rel))
+        return path.startswith(os.path.realpath(files) + os.sep) and os.path.isfile(
+            path
+        )
+
     def local_corpus_dir(self, corpus: str) -> Optional[str]:
         # `<cache>/<corpus>` — pure path composition, no existence check and no
         # mkdir, exactly where the root-level artifacts have always been read
@@ -498,17 +542,27 @@ class LocalCorpusStore(CorpusStore):
         return freshness.local_last_gathered(corpus)
 
 
+#: The one memoized cloud store: `{store_config_key(): store}`, holding at most
+#: one entry. Reusing it keeps one boto3 client (and its connection pool) per
+#: process instead of one per call; a changed config is a different key, so it
+#: replaces the entry rather than serving a store built for the old config.
+_CLOUD_STORE: Dict[Tuple[Any, ...], CorpusStore] = {}
+_CLOUD_STORE_LOCK = threading.Lock()
+
+
 def get_corpus_store() -> CorpusStore:
     """The `CorpusStore` selected by service config.
 
     `store_backend` (env `IETF_LLM_STORE_BACKEND` > global config > `local`)
     chooses the backend: `local` (the laptop / single-box default, today's
     behaviour) or `cloud` (a SQL control plane + object-store blob plane; see
-    `corpus_store_cloud`). Constructed per call — both backends are cheap,
-    stateless handles that open no connection until used. An unrecognised
-    backend value **raises** rather than silently falling back to local — so a
-    typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead of writing to
-    a local cache and never publishing to the fleet."""
+    `corpus_store_cloud`). The local store is a stateless handle, built per
+    call. The cloud store owns an S3 client, so it is memoized on the config it
+    was built from (`cloud.store_config_key`): repeated calls under unchanged
+    config share one store, and a changed config builds a fresh one. An
+    unrecognised backend value **raises** rather than silently falling back to
+    local — so a typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead
+    of writing to a local cache and never publishing to the fleet."""
     backend = service_config.store_backend()
     if backend == "local":
         return LocalCorpusStore()
@@ -518,7 +572,15 @@ def get_corpus_store() -> CorpusStore:
         # from here, so a static back-import would be a cycle. The cloud
         # machinery stays out of the default local path entirely.
         cloud = importlib.import_module(f"{__package__}.cloud")
-        return cast(CorpusStore, cloud.build_cloud_store())
+        key = cloud.store_config_key()
+        with _CLOUD_STORE_LOCK:
+            store = _CLOUD_STORE.get(key)
+            if store is None:
+                # An under-configured build raises and leaves the cache as it was.
+                store = cast(CorpusStore, cloud.build_cloud_store())
+                _CLOUD_STORE.clear()
+                _CLOUD_STORE[key] = store
+            return store
     raise ValueError(
         f"unrecognised IETF_LLM_STORE_BACKEND={backend!r} (expected 'local' or 'cloud')"
     )

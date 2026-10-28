@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, List, Optional
 
-from ..digest.query import query_digest
+from ..digest.query import query_digest, unsupported_filter_message
 from .common import (
     _digest_path,
     _invalid_date_message,
@@ -37,14 +37,41 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
     subject: Optional[str] = None,
     sort: Optional[str] = None,
     exclude_mechanical: bool = False,
+    org: Optional[str] = None,
+    email_domain: Optional[str] = None,
 ) -> str:
     path = _digest_path(wg, kind)
     if not path:
         return _missing_digest_message(wg, kind)
+    # Whitespace around a value is never meant.
+    org = org.strip() if org else None
+    email_domain = email_domain.strip() if email_domain else None
     for field, value in (("since", since), ("until", until)):
         date_error = _invalid_date_message(value, field)
         if date_error:
             return date_error
+    unsupported = unsupported_filter_message(
+        kind,
+        {
+            "state": state,
+            "label": label,
+            "author": author,
+            "role": role,
+            "since": since,
+            "until": until,
+            "event_kind": event_kind,
+            "min_messages": min_messages,
+            "limit": limit,
+            "subject": subject,
+            "sort": sort,
+            "exclude_mechanical": exclude_mechanical,
+            "org": org,
+            "email_domain": email_domain,
+        },
+        include_bodies,
+    )
+    if unsupported:
+        return unsupported
     filtered = query_digest(
         path,
         kind,
@@ -60,6 +87,8 @@ def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-
         subject=subject,
         sort=sort or None,
         exclude_mechanical=exclude_mechanical or None,
+        org=org,
+        email_domain=email_domain,
     )
     if include_bodies and kind in ("issues", "pulls"):
         filtered = filtered + _append_issue_bodies(wg, filtered)
@@ -147,6 +176,8 @@ def register(server: "FastMCP") -> None:
         subject: Optional[str] = None,
         sort: Optional[str] = None,
         exclude_mechanical: bool = False,
+        org: Optional[str] = None,
+        email_domain: Optional[str] = None,
     ) -> str:
         """Read filtered catalogue digests of an IETF/IRTF effort — its
         GitHub issues and pull requests, mailing-list threads, participants
@@ -198,8 +229,21 @@ def register(server: "FastMCP") -> None:
                             recency — pair with `since=` + `min_messages=`
                             for "most contested lately".
              | "people"   — participants. Filters: role (substring,
-                            e.g. "Chair"), min_messages, limit.
-                            Function mailboxes and bots (the
+                            e.g. "Chair"), min_messages, limit,
+                            org (substring of the Affiliation column
+                            ONLY — what the person's drafts and GitHub
+                            profile say, and only the leading, most
+                            recent one: it answers "who is at X", not
+                            "who has ever been"), email_domain (a
+                            domain, e.g.
+                            "nokia.com"; matches subdomains; a SEPARATE
+                            signal from org — participants often use
+                            personal or employer-neutral addresses, so
+                            a domain is not an affiliation). Both
+                            filters end with a count of rows that carry
+                            no such signal and so could not match: a
+                            short result is not evidence nobody else is
+                            there. Function mailboxes and bots (the
                             Secretariat, internet-drafts@, "Repository
                             Activity Summary Bot") are in their own
                             "Role and automated accounts" section, not
@@ -225,7 +269,9 @@ def register(server: "FastMCP") -> None:
                             discussion / decision events stand out.
 
         Pass no filters to get the full digest (same bytes as before).
-        Filters compose (AND); `limit` truncates after filtering.
+        Filters compose (AND); `limit` truncates after filtering. A filter
+        the chosen kind does not support is REJECTED with a message naming
+        the kinds it applies to, not ignored.
         For catalogue-style queries (e.g. "open issues with label X"),
         always use filters rather than reading the full digest and
         scanning — both faster and easier on context.
@@ -247,4 +293,6 @@ def register(server: "FastMCP") -> None:
             subject=subject,
             sort=sort,
             exclude_mechanical=exclude_mechanical,
+            org=org,
+            email_domain=email_domain,
         )
