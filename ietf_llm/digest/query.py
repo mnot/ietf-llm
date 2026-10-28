@@ -232,6 +232,15 @@ def _activity_count(row: List[str], columns: List[str], kind: str) -> int:
     return int(match.group(0)) if match else -1
 
 
+def _leading_org(row: List[str], columns: List[str]) -> str:
+    """The first organisation in a row's Affiliation cell, provenance marks
+    removed. The cell runs most recent first, so this is the best current
+    guess; `org=` looks at nothing else, so it finds who is at an
+    organisation, not everyone who once was."""
+    cell = _SOURCE_MARK_RE.sub("", _row_field(row, columns, "affiliation"))
+    return cell.split(";")[0].strip()
+
+
 #: The provenance marks `_format_affiliations` appends to each organisation
 #: (`Cloudflare (draft, github)`, `(+3 earlier)`); `org=` matches the
 #: organisation names, not the words `draft` or `github`.
@@ -300,8 +309,8 @@ def _people_filter_note(
     if filters.get("org"):
         parts.append(
             f"{no_org} of {total} carry no affiliation signal (blank, or no "
-            "draft / GitHub source) and cannot match `org=`, which also "
-            "matches earlier affiliations"
+            "draft / GitHub source) and cannot match `org=`, which looks "
+            "at the leading (most recent) affiliation only"
         )
     if filters.get("email_domain"):
         parts.append(
@@ -399,10 +408,7 @@ def _row_matches(  # pylint: disable=too-many-return-statements
             return False
         org = filters.get("org")
         if org:
-            affiliation = _SOURCE_MARK_RE.sub(
-                "", _row_field(row, columns, "affiliation")
-            )
-            if org.lower() not in affiliation.lower():
+            if org.lower() not in _leading_org(row, columns).lower():
                 return False
         domain = filters.get("email_domain")
         if domain and not _domain_matches(_row_domains(row, columns), domain):

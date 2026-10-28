@@ -232,10 +232,10 @@ def register(server: "FastMCP") -> None:
                             e.g. "Chair"), min_messages, limit,
                             org (substring of the Affiliation column
                             ONLY — what the person's drafts and GitHub
-                            profile say; it also matches earlier
-                            affiliations listed there, so it answers
-                            "who has been at X", not strictly "who is
-                            at X"), email_domain (a domain, e.g.
+                            profile say, and only the leading, most
+                            recent one: it answers "who is at X", not
+                            "who has ever been"), email_domain (a
+                            domain, e.g.
                             "nokia.com"; matches subdomains; a SEPARATE
                             signal from org — participants often use
                             personal or employer-neutral addresses, so

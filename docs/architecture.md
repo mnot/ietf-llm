@@ -263,8 +263,10 @@ Key invariants:
     surname (`L. Le Meur`) is deliberately **not** matched: a wrong merge is
     worse than a split.
   - **Affiliation and email domain are filtered separately.**
-    `read_digest(kind="people", org=…)` matches the Affiliation column only (the
-    organisation names, not the `draft` / `github` provenance marks);
+    `read_digest(kind="people", org=…)` matches the leading entry of the
+    Affiliation column only (the cell runs most recent first, so earlier
+    employers do not match; organisation names, not the `draft` / `github`
+    provenance marks);
     `email_domain=…` matches the domains of a row's addresses (the `Email domain`
     column, or the address columns on a digest gathered before that column
     existed), exact or as a parent of a subdomain. Neither is a proxy for the

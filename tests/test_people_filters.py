@@ -307,9 +307,7 @@ def test_normalise_domain() -> None:
     assert normalise_domain("http://mail.ietf.org:8080/x") == "mail.ietf.org:8080"
 
 
-def test_org_also_matches_earlier_affiliations_but_not_the_overflow_note(
-    isolated_home: Path,
-) -> None:
+def test_org_matches_only_the_leading_affiliation(isolated_home: Path) -> None:
     r = Registry()
     r.add_email_message("Mover <m@now.example>", None)
     # Seven employers, newest first: the cell shows five and "(+2 earlier)".
@@ -319,8 +317,27 @@ def test_org_also_matches_earlier_affiliations_but_not_the_overflow_note(
             "Mover", "m@now.example", f"draft-{org}", organization=org, year=year
         )
     write_people_digest("wg", get_wg_file_cache_dir("wg"), r, verbose=Verbosity.QUIET)
-    assert "Mover" in mcp.digest.tool_read_digest("wg", "people", org="epsilon")
-    assert "Mover" not in mcp.digest.tool_read_digest("wg", "people", org="earlier")
+    # The cell does list the earlier employers...
+    assert "Beta (draft)" in mcp.digest.tool_read_digest("wg", "people")
+    # ...but only the leading one answers org=.
+    assert "Mover" in mcp.digest.tool_read_digest("wg", "people", org="alpha")
+    for earlier in ("beta", "epsilon", "earlier", "draft"):
+        assert "Mover" not in mcp.digest.tool_read_digest(
+            "wg", "people", org=earlier
+        )
+
+
+def test_leading_affiliation_is_the_one_the_digest_ranks_first() -> None:
+    text = (
+        "# d\n\n## Mailing list only (2)\n\n"
+        "| Name | Roles | Affiliation | Emails | Msgs |\n|---|---|---|---|---|\n"
+        "| New | | Cisco (draft, github); Fastly (draft) (+1 earlier) | n@c.com | 1 |\n"
+        "| Old | | Fastly (draft); Cisco (github) | o@f.com | 1 |\n"
+    )
+    assert "| New |" in _query(text, org="cisco")
+    assert "| Old |" not in _query(text, org="cisco")
+    assert "| Old |" in _query(text, org="fastly")
+    assert "| New |" not in _query(text, org="fastly")
 
 
 def _query(text: str, **filters: object) -> str:
