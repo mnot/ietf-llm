@@ -383,6 +383,22 @@ def test_timeline_filter_by_kind(tmp_path: Path) -> None:
     assert "Issue #172" not in out
 
 
+def test_timeline_filter_by_chair_appointed_kind(tmp_path: Path) -> None:
+    # The writer renders the event as "Chair appointed: <name>"; the
+    # advertised kind slug is hyphenated and must still select it.
+    path = tmp_path / "wg-_timeline.md"
+    path.write_text(
+        "# wg: timeline\n\n"
+        "## 2026\n\n"
+        "- **2026-03-16** — IETF 125 meeting\n\n"
+        "## 2016\n\n"
+        "- **2016-07-27** — Chair appointed: Patrick McManus\n"
+    )
+    out = query_digest(str(path), "timeline", event_kind="chair-appointed")
+    assert "Chair appointed: Patrick McManus" in out
+    assert "IETF 125 meeting" not in out
+
+
 def test_timeline_filter_since(tmp_path: Path) -> None:
     path = _timeline_file(tmp_path)
     out = query_digest(str(path), "timeline", since="2026-04-20")

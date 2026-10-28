@@ -1,11 +1,13 @@
 """Fetch governance / lifecycle events for a WG from Datatracker.
 
-Two event sources, all best-effort against the public JSON API:
+Two event sources, both best-effort against the public JSON API:
 
   - **Group events** (`/api/v1/group/groupevent/`) — charter approvals,
     state changes, chair appointments. Charter and chair events ALWAYS
     appear in the timeline regardless of the `--months` window
     (foundational context); other group events respect the window.
+    The event log records changes only, so a group's founding chairs
+    (those already in place when it began) have no appointment event.
   - **Document events** (`/api/v1/doc/docevent/`) — adoption, WGLC
     announcement, IESG submission, RFC publication. These are
     per-document and high-volume; they respect the `--months` cutoff.
@@ -21,6 +23,7 @@ already tolerates Datatracker being unreachable (see `people.py`).
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -234,6 +237,12 @@ def _paged_objects(path: str) -> List[Dict[str, Any]]:
     while next_path:
         body = _get_json(next_path)
         if not body:
+            if objects:
+                log(
+                    f"Datatracker: stopped paging at {next_path}; "
+                    "older rows are missing.",
+                    level=LogLevel.WARN,
+                )
             break
         objects.extend(body.get("objects") or [])
         next_path = (body.get("meta") or {}).get("next") or None
@@ -244,26 +253,27 @@ def _paged_objects(path: str) -> List[Dict[str, Any]]:
 #: "Chairs changed to <b>A, B</b> from A" ("Chair changed" when the
 #: group had one chair at the time).
 _CHAIRS_CHANGED_RE = re.compile(
-    r"^Chairs? changed to <b>(.*?)</b>\s*from\s*(.*)$", re.IGNORECASE | re.DOTALL
+    r"^Chairs? changed to <b>(.*?)</b>(?:\s*from\s*(.*))?$",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
 def _chairs_appointed(obj: Dict[str, Any]) -> List[str]:
     """Names newly in the chair set of a chair-change group event, else [].
 
-    `rolehistory` carries no timestamps, so appointments are read off the
-    group event that recorded the change rather than reconstructed from
-    group snapshots.
+    The event carries an exact timestamp and both name lists inline.
+    Names are HTML-escaped in the description and can be encoded
+    differently on the two sides, so both are unescaped before comparing.
     """
     if (obj.get("type") or "").strip() != "info_changed":
         return []
     match = _CHAIRS_CHANGED_RE.match((obj.get("desc") or "").strip())
     if not match:
         return []
-    before = {name.strip() for name in match.group(2).split(",")}
+    before = {html.unescape(name).strip() for name in (match.group(2) or "").split(",")}
     out: List[str] = []
     for name in match.group(1).split(","):
-        name = name.strip()
+        name = html.unescape(name).strip()
         if name and name not in before and name not in out:
             out.append(name)
     return out

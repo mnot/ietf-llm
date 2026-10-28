@@ -355,6 +355,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
                 # are not reliably matchable via substring.
                 "meeting": "meeting",
                 "wglc": "Last Call",
+                "chair-appointed": "Chair appointed",
                 "adoption-call": "adoption",
             }
             marker = kind_markers.get(event_kind, event_kind)

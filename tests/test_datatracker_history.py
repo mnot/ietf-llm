@@ -218,6 +218,52 @@ def test_chair_removal_and_duplicate_names_emit_nothing_extra(
     assert _chair_titles(events) == []
 
 
+def test_chair_names_are_unescaped_and_compared_unescaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Live descriptions HTML-escape names, and the two sides can use
+    # different encodings of the same character.
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [_chair_event(
+            30,
+            "Chairs changed to <b>Karen O&#x27;Donoghue, A B</b> "
+            "from Karen O&#39;Donoghue",
+        )]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert _chair_titles(events) == ["Chair appointed: A B"]
+
+
+def test_chair_change_without_from_clause_still_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [
+            _chair_event(30, "Chair changed to <b>A B</b>"),
+        ]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert _chair_titles(events) == ["Chair appointed: A B"]
+
+
+def test_emptying_the_chair_list_emits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [
+            _chair_event(30, "Chairs changed to <b></b> from A B, C D"),
+        ]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert events == []
+
+
 def test_other_info_changes_are_not_chair_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

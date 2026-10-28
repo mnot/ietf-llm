@@ -151,7 +151,7 @@ def _build_index(
             fh.write(
                 "- `digests/timeline.md` — chronological event log "
                 "(drafts published, issues opened/closed, meetings, "
-                "WGLCs, chair appointments).\n"
+                "WGLCs, chair appointments recorded in the Datatracker).\n"
             )
         fh.write(
             "\nThe `raw/` directory holds large unstructured artefacts "

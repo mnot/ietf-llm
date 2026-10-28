@@ -977,7 +977,10 @@ Concretely, the gather layer reads from the API for:
   resolving to the latest rendered markdown / text / PDF.
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
-  `datatracker_history.py`).
+  `datatracker_history.py`). Chair appointments come from the
+  `info_changed` entries of `group/groupevent` ("Chairs changed to A, B
+  from A"), which hold exact dates and names but only changes since the log
+  began; a group's founding chairs have no event.
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
@@ -1458,7 +1461,8 @@ charter, milestones, and a timeline. The timeline is built from bulk feeds —
 group state changes, charter revisions and IESG approvals, milestone history, and
 RFC publications (joined offline from `_rfc/` by its `wg` field). It does not
 include chair changes (a gathered corpus reads them from each group's
-`groupevent` log; the mirror would need that log as a bulk feed), draft adoption (per document), or meetings.
+`groupevent` log; the mirror has no bulk feed for it), draft adoption (per
+document), or meetings.
 Milestone and charter dates before about 2014 reflect the Datatracker import, not
 the original event. The RFC events are joined from `_rfc/` when the group refresh
 runs (after the RFC mirror in housekeeping), so they are absent until the first
