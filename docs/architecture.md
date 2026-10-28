@@ -267,6 +267,18 @@ Key invariants:
     `noreply` senders and bots get their own labelled section of the people
     digest rather than rows among the participants. Anyone holding a
     Datatracker role or a document credit is never reclassified.
+  - **A display-name parenthetical is a third, weakest affiliation source**
+    (`people.signature`, source label `signature`): `Deen, Glenn (Comcast
+    Cable)`. Most such parentheticals are not organisations (handles,
+    nicknames, department codes, another name), so it is a screening pass over
+    the finished registry, not a parse: a candidate needs a Latin, capitalised,
+    short, non-role string that is not part of the person's own name or anyone's
+    name, and that reads as an organisation (an acronym, or several words with an
+    acronym or an organisational word). A lone capitalised word such as
+    `Nokia` also needs corroboration: an email domain carrying the word, an
+    organisation another source found, or a second person using it. It is
+    undated, so a draft's organisation always leads, and it is skipped for role
+    accounts. CJK parentheticals are left out. Write-side.
   - **Affiliation comes from Datatracker, not from the draft text**
     (`gather.sources.document_authors`). The Authors' Addresses block has no
     markup separating an author's organisation from their street address, so an

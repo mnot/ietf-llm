@@ -47,16 +47,27 @@ def name_key(name: str) -> str:
     return _SEPARATOR_RE.sub(" ", text).strip() or text
 
 
-def _split_notes(text: str) -> "tuple[str, Set[str]]":
+def _split_notes(text: str) -> "tuple[str, List[str]]":
     """Split trailing `(…)` groups off a name, returning the rest and the
-    groups (casefolded)."""
-    notes: Set[str] = set()
+    groups, innermost-last-first (as written, not casefolded)."""
+    notes: List[str] = []
     while True:
         match = _TRAILING_PAREN_RE.search(text)
         if match is None:
             return text, notes
-        notes.add(match.group(0).strip(" ()").casefold())
+        notes.append(match.group(0).strip(" ()"))
         text = text[: match.start()]
+
+
+def without_parentheticals(name: str) -> str:
+    """The name with its trailing `(…)` groups removed."""
+    return _split_notes(name.strip())[0].strip()
+
+
+def trailing_parentheticals(name: str) -> List[str]:
+    """The trailing `(…)` groups of a display name, as written:
+    `Deen, Glenn (Comcast Cable)` -> `["Comcast Cable"]`."""
+    return _split_notes(name.strip())[1]
 
 
 def _first_last(text: str) -> str:
@@ -153,6 +164,7 @@ _ROLE_NAMES: Set[str] = {
         "Internet-Drafts",
         "IETF Meeting Session Request Tool",
         "Datatracker",
+        "Independent Submissions Editor",
         "GitHub",
         "IAB Chair",
         "IETF Executive Director",

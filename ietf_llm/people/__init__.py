@@ -80,7 +80,8 @@ from .linking import (
     resolve_github_via_datatracker,
 )
 from .meetings import ingest_meeting_participation
-from .names import cleaner_name, name_key
+from .names import cleaner_name, name_key, trailing_parentheticals
+from .signature import apply_signature_affiliations
 
 # `write_people_digest` (and the `_format_affiliations` helper some tests
 # reach for) moved to `.digest`; re-exported here so `ietf_llm.people.<name>`
@@ -138,6 +139,10 @@ class Person:
     # which no per-line rule can tell from a one-word employer; matching
     # against the same person's other documents can.
     localities: Set[str] = field(default_factory=set)
+    # Trailing parentheticals seen on this person's mail display names
+    # (`Deen, Glenn (Comcast Cable)`), unscreened. Most are handles or
+    # nicknames; `people/signature.py` decides which name an organisation.
+    name_parentheticals: Set[str] = field(default_factory=set)
     # Domains of every email seen. NOT the same as affiliation
     # (participants often use personal email, and some hold several
     # affiliations); surfaced only on explicit request as a fallback
@@ -286,6 +291,7 @@ class Registry:
                 person.email_domains.add(addr.rsplit("@", 1)[-1])
         if name:
             person.canonical_name = cleaner_name(person.canonical_name, name)
+            person.name_parentheticals.update(trailing_parentheticals(name))
             self._by_name[name_key(name)] = person
         if raw_from:
             person.raw_from_headers.add(raw_from)
@@ -454,6 +460,7 @@ class Registry:
         keep.attended_sessions |= drop.attended_sessions
         keep.spoke_at_meetings |= drop.spoke_at_meetings
         keep.localities |= drop.localities
+        keep.name_parentheticals |= drop.name_parentheticals
         # Affiliations: keep wins on key clashes; drop fills gaps.
         for source, org in drop.affiliations.items():
             keep.affiliations.setdefault(source, org)
@@ -729,6 +736,9 @@ def build_registry(
     if with_datatracker_roles:
         _ingest_datatracker_roles(wg, registry, verbose)
     _ingest_draft_authors(wg, registry, verbose)
+    # Organisations stated in mail display names; needs the finished registry
+    # (everyone's names, the organisations other sources found).
+    apply_signature_affiliations(registry, verbose)
     # Meeting participation — attendance (id-linked) and transcript speaking
     # (name-linked). Runs LAST so it matches against the fully-assembled
     # registry, and link-only so it never adds a meeting-only actor.
