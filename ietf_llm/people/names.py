@@ -1,0 +1,139 @@
+"""Name keys and role-account detection for the people Registry.
+
+`name_key` is what `Registry._by_name` is keyed on: two display names that
+differ only in case, diacritics, hyphenation, `Last, First` order or a
+trailing parenthetical (`Deen, Glenn (Comcast Cable)`, `Eric Vyncke
+(evyncke)`) share a key and so resolve to one Person. It is a lookup key
+only; canonical names are left as the sources spell them.
+
+`is_role_account` separates mailboxes and bots (`internet-drafts@ietf.org`,
+`The IESG`, `Repository Activity Summary Bot`) from people, so the digest
+can list them apart rather than as rows in a table of participants.
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from typing import TYPE_CHECKING, Optional, Set
+
+if TYPE_CHECKING:
+    from . import Person
+
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
+_SEPARATOR_RE = re.compile(r"[\s_\-‐-―]+")
+_LOGIN_SEPARATOR_RE = re.compile(r"[_\-]+")
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq"}
+
+
+def name_key(name: str) -> str:
+    """Fold a display name to the key used for identity lookup.
+
+    Case, diacritics, hyphens and underscores are ignored, a single
+    `Last, First` comma is reordered, and trailing `(…)` groups are dropped.
+    A comma before a generational or academic suffix (`Smith, Jr.`) is left
+    alone — that is not a surname/forename split.
+    """
+    text = unicodedata.normalize("NFKD", name)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).strip()
+    stripped = text
+    while True:
+        shorter = _TRAILING_PAREN_RE.sub("", stripped)
+        if shorter == stripped:
+            break
+        stripped = shorter
+    # A name that is nothing but a parenthetical keeps it: better an odd key
+    # than every such name colliding on "".
+    text = (stripped or text).casefold()
+    if text.count(",") == 1 and "@" not in text:
+        last, first = (part.strip() for part in text.split(","))
+        if last and first and first.rstrip(".") not in _NAME_SUFFIXES:
+            text = f"{first} {last}"
+    return _SEPARATOR_RE.sub(" ", text).strip()
+
+
+def login_as_name(login: str) -> Optional[str]:
+    """The name key a GitHub login reads as, or None if it is not name-shaped.
+
+    Only a login of two or more alphabetic words joined by `-` or `_`
+    (`Jo-Levy`) qualifies; `mirjak` or `kmadhavan-msft` carry no usable
+    name, and a single run of letters is far too likely to be a handle that
+    merely resembles someone's name.
+    """
+    parts = [p for p in _LOGIN_SEPARATOR_RE.split(login.strip()) if p]
+    if len(parts) < 2 or not all(p.isalpha() and len(p) > 1 for p in parts):
+        return None
+    return name_key(" ".join(parts))
+
+
+# Mailboxes that exist for a function, not a person. The IETF ones are only
+# matched on IETF-run domains: plenty of people hold `name@ietf.org`.
+_IETF_DOMAINS = {"ietf.org", "rfc-editor.org", "iab.org", "irtf.org", "iesg.org"}
+_IETF_ROLE_LOCALPARTS = {
+    "agenda",
+    "chair",
+    "iab",
+    "iesg",
+    "iesg-secretary",
+    "ietf-action",
+    "ietf-secretariat",
+    "internet-drafts",
+    "irsg",
+    "rfc-editor",
+    "secretariat",
+    "session-request",
+}
+_AUTOMATED_LOCALPARTS = {
+    "do-not-reply",
+    "donotreply",
+    "mailer-daemon",
+    "no-reply",
+    "noreply",
+    "postmaster",
+}
+_ROLE_NAMES: Set[str] = {
+    name_key(n)
+    for n in (
+        "The IESG",
+        "IESG",
+        "IESG Secretary",
+        "IAB",
+        "IRSG",
+        "IETF Chair",
+        "IETF Secretariat",
+        "Internet-Drafts",
+        "IETF Meeting Session Request Tool",
+        "Datatracker",
+    )
+}
+_BOT_LOGIN_RE = re.compile(r"(?:\[bot\]|[-_]bot)$", re.IGNORECASE)
+_BOT_LOGINS = {"dependabot", "github-actions", "renovate"}
+
+
+def _is_role_address(address: str) -> bool:
+    local, _, domain = address.lower().partition("@")
+    if local in _AUTOMATED_LOCALPARTS:
+        return True
+    return domain in _IETF_DOMAINS and local in _IETF_ROLE_LOCALPARTS
+
+
+def _is_bot_login(login: str) -> bool:
+    return bool(_BOT_LOGIN_RE.search(login)) or login.lower() in _BOT_LOGINS
+
+
+def is_role_account(person: "Person") -> bool:
+    """True for a function mailbox or bot rather than a human participant.
+
+    Anyone holding a Datatracker role or a document credit is a person
+    whatever their address looks like, so those are never reclassified.
+    """
+    if person.roles or person.authored_documents or person.edited_documents:
+        return False
+    key = name_key(person.canonical_name)
+    if key in _ROLE_NAMES or key.endswith(" bot"):
+        return True
+    if any(_is_role_address(addr) for addr in person.emails):
+        return True
+    if "@" in person.canonical_name and _is_role_address(person.canonical_name):
+        return True
+    return any(_is_bot_login(login) for login in person.github_logins)

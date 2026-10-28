@@ -18,7 +18,9 @@ What gets normalised:
     key by display name rather than the fake address.
   - Display-name suffixes: ` via Datatracker`, ` (IETF)`, etc.
   - Multi-email same person: when two emails share a display name, they
-    merge into one Person.
+    merge into one Person. "Same display name" is decided on `name_key`:
+    case, diacritics, hyphens, `Last, First` order and a trailing
+    parenthetical (`Deen, Glenn (Comcast Cable)`) don't make two names.
   - Datatracker person id: one human posting under unrelated addresses /
     name spellings is consolidated via Datatracker's curated email→person
     table — exact-match, collision-free. See `people_linking.py`.
@@ -33,6 +35,8 @@ What gets normalised:
          match: widest reach but name-only, so a last resort. We still
          decline fuzzy / first-name-only matching — it manufactures false
          merges (two different "Eric"s) far more often than real links.
+      4. a name-shaped login (`Jo-Levy`) → an exact mailing-list name match,
+         for the actor the GitHub API gave no name for.
     A GitHub-only actor that none of these link to is at least relabelled
     from its bare login to the resolved real name where we have one.
 
@@ -68,11 +72,13 @@ from ..text import _parse_date
 from .affiliation import INLINE_CAP, capped, group_affiliations, overflow_note
 from .digest import _format_affiliations, write_people_digest
 from .linking import (
+    link_github_logins_by_name,
     reconcile_mail_via_datatracker,
     resolve_github_user_names,
     resolve_github_via_datatracker,
 )
 from .meetings import ingest_meeting_participation
+from .names import name_key
 
 # `write_people_digest` (and the `_format_affiliations` helper some tests
 # reach for) moved to `.digest`; re-exported here so `ietf_llm.people.<name>`
@@ -252,7 +258,7 @@ class Registry:
         person = self._by_email.get(addr) if addr else None
         # 2. Fall back to display name.
         if person is None and name:
-            person = self._by_name.get(name.lower())
+            person = self._by_name.get(name_key(name))
 
         if person is None:
             # Brand new actor.
@@ -277,7 +283,7 @@ class Registry:
             if "@" in addr:
                 person.email_domains.add(addr.rsplit("@", 1)[-1])
         if name:
-            self._by_name[name.lower()] = person
+            self._by_name[name_key(name)] = person
         if raw_from:
             person.raw_from_headers.add(raw_from)
         person.message_count += 1
@@ -372,7 +378,7 @@ class Registry:
 
         if name and gh_person.canonical_name in gh_person.github_logins:
             gh_person.canonical_name = name
-            self._by_name[name.lower()] = gh_person
+            self._by_name[name_key(name)] = gh_person
             return "named"
         return "unmatched"
 
@@ -394,7 +400,7 @@ class Registry:
             if cand is not None and cand is not exclude:
                 return cand
         if name:
-            cand = self._by_name.get(name.lower())
+            cand = self._by_name.get(name_key(name))
             if (
                 cand is not None
                 and cand is not exclude
@@ -456,8 +462,8 @@ class Registry:
         for gh_login in drop.github_logins:
             self._by_github[gh_login] = keep
         if drop.canonical_name:
-            self._by_name[drop.canonical_name.lower()] = keep
-        self._by_name[keep.canonical_name.lower()] = keep
+            self._by_name[name_key(drop.canonical_name)] = keep
+        self._by_name[name_key(keep.canonical_name)] = keep
         self.persons = [person for person in self.persons if person is not drop]
 
     def add_document_author(
@@ -488,7 +494,7 @@ class Registry:
 
         person = self._by_email.get(norm_email) if norm_email else None
         if person is None and name:
-            person = self._by_name.get(name.lower())
+            person = self._by_name.get(name_key(name))
         if person is None:
             person = Person(canonical_name=name or (norm_email or "unknown"))
             self.persons.append(person)
@@ -498,7 +504,7 @@ class Registry:
         # authoritative form.
         if name:
             person.canonical_name = name
-            self._by_name[name.lower()] = person
+            self._by_name[name_key(name)] = person
         if norm_email:
             person.emails.add(norm_email)
             self._by_email[norm_email] = person
@@ -534,7 +540,7 @@ class Registry:
 
         person = self._by_email.get(norm_email) if norm_email else None
         if person is None and name:
-            person = self._by_name.get(name.lower())
+            person = self._by_name.get(name_key(name))
         if person is None:
             person = Person(canonical_name=name or (norm_email or "unknown"))
             self.persons.append(person)
@@ -544,7 +550,7 @@ class Registry:
         # appear with diacritics, middle initials, etc.)
         if name:
             person.canonical_name = name
-            self._by_name[name.lower()] = person
+            self._by_name[name_key(name)] = person
         if norm_email:
             person.emails.add(norm_email)
             self._by_email[norm_email] = person
@@ -558,8 +564,8 @@ class Registry:
         name, addr = parse_from_header(raw_from)
         if addr and addr in self._by_email:
             return self._by_email[addr].canonical_name
-        if name and name.lower() in self._by_name:
-            return self._by_name[name.lower()].canonical_name
+        if name and name_key(name) in self._by_name:
+            return self._by_name[name_key(name)].canonical_name
         return name
 
     def canonical_for_github(self, login: str) -> Optional[str]:
@@ -572,7 +578,7 @@ class Registry:
         GitHub login and want the role-bearing Person back."""
         if not canonical_name:
             return None
-        return self._by_name.get(canonical_name.lower())
+        return self._by_name.get(name_key(canonical_name))
 
     def person_for_email(self, address: str) -> Optional[Person]:
         """Look up a Person by an (already-normalised) email address. Used by
@@ -739,6 +745,8 @@ def build_registry(
     #    only, so a last resort. Also upgrades a bare login to a real name
     #    and records the self-reported `company` affiliation.
     resolve_github_user_names(registry, verbose)
+    # 3. A login that reads as a name (`Jo-Levy`) and the API gave none for.
+    link_github_logins_by_name(registry, verbose)
     if with_datatracker_roles:
         _ingest_datatracker_roles(wg, registry, verbose)
     _ingest_draft_authors(wg, registry, verbose)

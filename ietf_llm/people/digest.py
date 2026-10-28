@@ -14,6 +14,7 @@ from ..atomicio import atomic_open
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, remove_stale_digest
 from .affiliation import TABLE_CAP, capped, group_affiliations, overflow_note
+from .names import is_role_account
 
 if TYPE_CHECKING:
     from . import Person, Registry
@@ -27,17 +28,22 @@ def write_people_digest(
 ) -> Optional[str]:
     """Emit `<wg>-_people.md` describing every distinct actor.
 
-    Three sections:
+    Four sections after leadership and authors:
       - linked: appear on both the mailing list AND GitHub
       - mail-only: have at least one mail message, no GitHub link
       - github-only: GitHub login but no email signal
+      - role and automated accounts: function mailboxes and bots, listed
+        apart so they are not read as participants
     """
-    persons = registry.all_persons()
-    if not persons:
+    everyone = registry.all_persons()
+    if not everyone:
         remove_stale_digest(cache_dir, "people")
         return None
 
+    persons = [p for p in everyone if not is_role_account(p)]
+    role_accounts = [p for p in everyone if is_role_account(p)]
     linked, mail_only, gh_only = _bucket_persons(persons)
+    role_accounts.sort(key=lambda p: (-p.message_count, p.canonical_name.lower()))
 
     out_path = digest_path(cache_dir, "people")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -45,8 +51,15 @@ def write_people_digest(
     with atomic_open(out_path) as fh:
         fh.write(f"# {wg}: participants\n\n")
         fh.write(
-            f"_{len(persons)} distinct actors. Multiple surface forms "
-            "(addresses, DMARC-rewritten variants, GitHub logins) for the "
+            f"_{len(persons)} distinct actors"
+            + (
+                f", plus {len(role_accounts)} role and automated accounts"
+                if role_accounts
+                else ""
+            )
+            + ". Multiple surface forms "
+            "(addresses, DMARC-rewritten variants, GitHub logins, spellings "
+            "differing only in case, accents or word order) for the "
             "same person are consolidated — `Top senders` columns and "
             "issue authors elsewhere in the corpus use these canonical "
             "names._\n\n"
@@ -166,10 +179,24 @@ def write_people_digest(
                 gh_only,
                 columns=("Name", "GitHub", "Issues"),
             )
+        if role_accounts:
+            fh.write(f"## Role and automated accounts ({len(role_accounts)})\n\n")
+            fh.write(
+                "_Function mailboxes (the Secretariat, the I-D tracker, "
+                "session requests) and bots. They are not participants and "
+                "hold no positions; they are listed so they are not "
+                "mistaken for people._\n\n"
+            )
+            _write_actor_table(
+                fh,
+                role_accounts,
+                columns=("Name", "Emails", "GitHub", "Msgs", "Issues", "First", "Last"),
+            )
 
     log(
         f"Wrote people digest: {len(linked)} linked, "
-        f"{len(mail_only)} mail-only, {len(gh_only)} github-only",
+        f"{len(mail_only)} mail-only, {len(gh_only)} github-only, "
+        f"{len(role_accounts)} role accounts",
         verbose,
         level=LogLevel.STATUS,
     )
