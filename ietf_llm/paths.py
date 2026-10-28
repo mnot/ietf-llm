@@ -52,6 +52,7 @@ Relative paths from `files/` are what the chunker stores in
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from typing import Any, Iterator, List, Optional, Tuple
@@ -215,6 +216,12 @@ def group_path(cache_dir: str) -> str:
 def digest_path(cache_dir: str, kind: str) -> str:
     """Path to a digest file. `kind` is `index`, `issues`, etc."""
     return os.path.join(cache_dir, DIR_DIGESTS, f"{kind}.md")
+
+
+def digest_fingerprint(text: str) -> str:
+    """Hash of a digest's text, recorded in its sidecar so a reader can tell the
+    sidecar still describes the file beside it."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def digest_kinds_path(digest_file: str) -> str:

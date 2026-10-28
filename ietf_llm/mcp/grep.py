@@ -67,7 +67,18 @@ _MAX_LINE_CHARS = 400
 #: alongside its text (a slide deck, an image). Decoding them with
 #: `errors="replace"` would not crash, but it would burn time and could
 #: produce meaningless "matches" out of mojibake.
-_SKIP_SUFFIXES = (".pdf", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".gz", ".db")
+#: The `.kinds.json` digest sidecar is machine data, not corpus text.
+_SKIP_SUFFIXES = (
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".zip",
+    ".gz",
+    ".db",
+    ".kinds.json",
+)
 
 #: Directories holding a second copy of material that already has a
 #: first-class per-item file: `raw/` is the year-bundled mail dump behind

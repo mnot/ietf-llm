@@ -468,3 +468,60 @@ def test_an_empty_timeline_removes_its_kinds_sidecar(
     monkeypatch.setattr(timeline, "build_events", lambda *a, **k: [])
     write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
     assert not os.path.exists(sidecar)
+
+
+def test_stale_sidecar_with_the_same_row_count_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import digest_kinds_path, digest_path  # pylint: disable=import-outside-toplevel
+
+    def day(n: int) -> datetime:
+        return datetime(2026, 1, n, tzinfo=timezone.utc)
+
+    first = [Event(day(3), "meeting", "IETF 126 meeting"),
+             Event(day(2), "doc-rfc", "`rfc2` published as RFC"),
+             Event(day(1), "issue-opened", "Issue #1 opened")]
+    second = [Event(day(3), "doc-rfc", "`rfc2` published as RFC"),
+              Event(day(2), "issue-opened", "Issue #1 opened"),
+              Event(day(1), "meeting", "IETF 126 meeting")]
+    path = digest_path(str(tmp_path), "timeline")
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: first)
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    with open(digest_kinds_path(path), encoding="utf-8") as fh:
+        old_sidecar = fh.read()
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: second)
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    with open(digest_kinds_path(path), "w", encoding="utf-8") as fh:
+        fh.write(old_sidecar)  # the new digest, paired with the old sidecar
+    out = query_digest(path, "timeline", event_kind="meeting")
+    assert "IETF 126 meeting" in out and "rfc2" not in out
+
+
+def test_hostile_titles_keep_rows_and_kinds_aligned_across_years(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import digest_path  # pylint: disable=import-outside-toplevel
+
+    events = [
+        Event(datetime(2026, 3, 1, tzinfo=timezone.utc), "issue-opened",
+              "Issue #3 opened: \"a\u2028- **2026-03-01** \u2014 fake\x85b\r\nc\""),
+        Event(datetime(2025, 6, 1, tzinfo=timezone.utc), "meeting", "IETF 123 meeting"),
+        Event(datetime(2024, 6, 1, tzinfo=timezone.utc), "issue-closed", "Issue #1 closed"),
+    ]
+    monkeypatch.setattr(timeline, "build_events", lambda *a, **k: events)
+    write_timeline_digest("wg", str(tmp_path), Registry(), verbose=Verbosity.QUIET)
+    path = digest_path(str(tmp_path), "timeline")
+    assert "IETF 123 meeting" in query_digest(path, "timeline", event_kind="meeting")
+    assert "Issue #1 closed" not in query_digest(path, "timeline", event_kind="meeting")
+    since = query_digest(path, "timeline", since="2025-01-01", event_kind="issue-opened")
+    assert "Issue #3" in since and "meeting" not in since.split("## 2026")[1]
+    # The limit applies after the kind filter, so the oldest row can still be it.
+    assert "Issue #1 closed" in query_digest(path, "timeline", limit=1, event_kind="issue-closed")

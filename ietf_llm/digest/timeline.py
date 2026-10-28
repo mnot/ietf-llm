@@ -58,6 +58,7 @@ from ..log import LogLevel, Verbosity, log
 from ..net import http_metrics
 from ..paths import (
     DIR_MEETINGS,
+    digest_fingerprint,
     digest_kinds_path,
     digest_path,
     github_dir,
@@ -546,7 +547,8 @@ def write_timeline_digest(
             "the same session), session polls recorded, charter "
             "approvals and chair changes (Datatracker; changes are those "
             "recorded since its event log began), document "
-            "adoption / IESG / RFC publication (Datatracker), WGLCs "
+            "adoption / IESG / RFC publication / IETF and WG Last Calls "
+            "(Datatracker), WGLCs "
             "and adoption calls (Datatracker when available, "
             "mailing-list subject-line heuristic as fallback). "
             "Newest first within each year._\n\n"
@@ -567,8 +569,10 @@ def write_timeline_digest(
             fh.write("\n")
     # Lets `read_digest(event_kind=...)` select rows by kind rather than by
     # guessing from their text.
+    with open(out_path, "r", encoding="utf-8") as written:
+        fingerprint = digest_fingerprint(written.read())
     with atomic_open(digest_kinds_path(out_path)) as fh:
-        json.dump({"kinds": kinds}, fh)
+        json.dump({"sha256": fingerprint, "kinds": kinds}, fh)
 
     log(
         f"Wrote timeline: {len(events)} events",

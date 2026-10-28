@@ -213,8 +213,8 @@ def register(server: "FastMCP") -> None:
                             "chair-appointed" / "chair-departed" / "group-state" /
                             "doc-adopted" / "doc-iesg" / "doc-rfc" /
                             "doc-lc" (IESG IETF Last Call) /
-                            "doc-wglc" (stream state to In WG
-                            Last Call) / "ballot"), limit. Kind
+                            "doc-wglc" (stream state to In WG or
+                            RG Last Call) / "ballot"), limit. Kind
                             matching is exact on gathered caches
                             that carry per-row kinds. A standing
                             "ballot" DISCUSS holds publication — report

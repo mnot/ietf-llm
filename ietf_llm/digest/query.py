@@ -5,9 +5,8 @@ already written as markdown tables. Rather than maintain a second
 serialisation, we parse the tables back into rows on demand and
 apply the filters / limits the agent asked for.
 
-That keeps the contract clean — the on-disk format never changes,
-and an agent calling `read_digest(wg, kind)` with no filters gets
-the same bytes as before. With filters, it gets a re-rendered
+That keeps the contract clean — an agent calling `read_digest(wg, kind)`
+with no filters gets the same bytes as before. With filters, it gets a re-rendered
 markdown subset.
 
 Per-kind filter semantics:
@@ -19,7 +18,8 @@ Per-kind filter semantics:
   threads  since="YYYY-MM-DD"      limit=N   min_messages=N
            until="YYYY-MM-DD"
   people   role="<substr>"         limit=N   min_messages=N
-  timeline since/until=...         limit=N   kind="<event-kind>"
+  timeline since/until=...         limit=N   event_kind="<event-kind>"
+                                  exclude_mechanical=True
 
 Filters that don't apply to a given digest kind are silently
 ignored (so the same call shape works across kinds).
@@ -33,7 +33,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ..paths import digest_kinds_path
+from ..paths import digest_fingerprint, digest_kinds_path
 
 
 @dataclass
@@ -158,9 +158,9 @@ def is_ballot_position(rest: str) -> bool:
 def is_mechanical_timeline_event(rest: str) -> bool:
     """True for a routine, machine-shaped timeline event — an I-D Action
     publication or a single IESG ballot position. Lets callers fold or
-    exclude them so human discussion / decision events stand out. One
-    definition, shared by the timeline `exclude_mechanical` filter and the
-    overview recent-activity fold."""
+    exclude them so human discussion / decision events stand out. This is
+    the text-only definition, used when a digest has no kinds sidecar; with
+    one, `_MECHANICAL_KINDS` decides."""
     return is_idaction_publication(rest) or is_ballot_position(rest)
 
 
@@ -307,18 +307,26 @@ _MECHANICAL_KINDS = frozenset({"draft-published", "ballot"})
 
 
 def _load_kinds(path: str, text: str) -> Optional[List[str]]:
-    """The per-row kinds beside a timeline digest, if they match its rows.
+    """The per-row kinds beside a timeline digest, if they describe this text.
 
-    Caches written before the sidecar existed, and any digest whose rows no
-    longer line up with it, return None and fall back to matching row text.
+    The sidecar is replaced after the digest, so a crash or a read in between
+    can pair a new digest with an old sidecar; the hash catches that even when
+    the row counts agree. Caches written before the sidecar existed, and any
+    mismatch, return None and fall back to matching row text.
     """
     try:
         with open(digest_kinds_path(path), "r", encoding="utf-8") as fh:
-            kinds = json.load(fh).get("kinds")
+            sidecar = json.load(fh)
+        kinds = sidecar.get("kinds")
+        fingerprint = sidecar.get("sha256")
     except (OSError, ValueError, AttributeError):
         return None
     rows = sum(1 for line in text.splitlines() if _TIMELINE_BULLET_RE.match(line))
-    if isinstance(kinds, list) and len(kinds) == rows:
+    if (
+        isinstance(kinds, list)
+        and len(kinds) == rows
+        and fingerprint == digest_fingerprint(text)
+    ):
         return [str(k) for k in kinds]
     return None
 
@@ -407,7 +415,7 @@ def _filter_timeline(
                 "doc-iesg": ("submitted to IESG", "approved by IESG"),
                 "doc-rfc": "published as RFC",
                 "doc-lc": "IETF Last Call announced",
-                "doc-wglc": "WG Last Call issued",
+                "doc-wglc": ("WG Last Call issued", "RG Last Call issued"),
                 "ballot": "→",
                 "adoption-call": "adoption",
             }
@@ -438,6 +446,24 @@ def _filter_timeline(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def timeline_rows(path: str, limit: int) -> List[Tuple[str, Optional[str]]]:
+    """The first `limit` rows of a timeline digest, newest first, as
+    `(row text, kind)`; the kind is None when the digest has no usable sidecar."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    kinds = _load_kinds(path, text)
+    out: List[Tuple[str, Optional[str]]] = []
+    for line in text.splitlines():
+        if not _TIMELINE_BULLET_RE.match(line):
+            continue
+        if len(out) >= limit:
+            break
+        out.append((line[2:].strip(), kinds[len(out)] if kinds else None))
+    return out
+
+
 # --- Public entry point ----------------------------------------------------
 
 
@@ -458,7 +484,10 @@ def query_digest(path: str, kind: str, **filters: Any) -> str:
         return text
 
     if kind == "timeline":
-        return _filter_timeline(text, active, _load_kinds(path, text))
+        wants_kinds = "event_kind" in active or "exclude_mechanical" in active
+        return _filter_timeline(
+            text, active, _load_kinds(path, text) if wants_kinds else None
+        )
     if kind == "index":
         # Index has no per-row filters; just return as-is.
         return text
