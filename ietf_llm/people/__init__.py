@@ -78,7 +78,7 @@ from .linking import (
     resolve_github_via_datatracker,
 )
 from .meetings import ingest_meeting_participation
-from .names import name_key
+from .names import cleaner_name, name_key, notes_conflict, trailing_notes
 
 # `write_people_digest` (and the `_format_affiliations` helper some tests
 # reach for) moved to `.digest`; re-exported here so `ietf_llm.people.<name>`
@@ -141,6 +141,10 @@ class Person:
     # affiliations); surfaced only on explicit request as a fallback
     # signal, not an attribution.
     email_domains: Set[str] = field(default_factory=set)
+    # Trailing parentheticals seen on this person's mail display names
+    # (`Eric Vyncke (evyncke)`), casefolded: two same-keyed names whose
+    # parentheticals disagree are not merged.
+    name_notes: Set[str] = field(default_factory=set)
     # Meeting participation, attached link-only by the meetings pass (see
     # `people/meetings.py`): these signals only ever land on a person already
     # known from mail / drafts / GitHub / roles — a meeting never mints a new
@@ -257,8 +261,11 @@ class Registry:
         # 1. Look up by email; that's the strongest signal.
         person = self._by_email.get(addr) if addr else None
         # 2. Fall back to display name.
+        by_name_conflict = False
         if person is None and name:
             person = self._by_name.get(name_key(name))
+            if person is not None and notes_conflict(name, person.name_notes):
+                person, by_name_conflict = None, True
 
         if person is None:
             # Brand new actor.
@@ -276,13 +283,16 @@ class Registry:
                 person.canonical_name = name
         elif name and _looks_like_email(person.canonical_name):
             person.canonical_name = name
+        if name:
+            person.canonical_name = cleaner_name(person.canonical_name, name)
+            person.name_notes |= trailing_notes(name)
 
         if addr:
             person.emails.add(addr)
             self._by_email[addr] = person
             if "@" in addr:
                 person.email_domains.add(addr.rsplit("@", 1)[-1])
-        if name:
+        if name and not by_name_conflict:
             self._by_name[name_key(name)] = person
         if raw_from:
             person.raw_from_headers.add(raw_from)
@@ -374,6 +384,8 @@ class Registry:
         target = self._find_mail_person(name, emails, exclude=gh_person)
         if target is not None:
             self._merge_persons(target, gh_person)
+            if name:
+                target.canonical_name = cleaner_name(target.canonical_name, name)
             return "linked"
 
         if name and gh_person.canonical_name in gh_person.github_logins:
@@ -436,6 +448,9 @@ class Registry:
         )
         if keep_name_weak and drop_name_real:
             keep.canonical_name = drop.canonical_name
+        elif drop_name_real:
+            keep.canonical_name = cleaner_name(keep.canonical_name, drop.canonical_name)
+        keep.name_notes |= drop.name_notes
 
         keep.emails |= drop.emails
         keep.github_logins |= drop.github_logins

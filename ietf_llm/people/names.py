@@ -37,20 +37,66 @@ def name_key(name: str) -> str:
     to key on (`-`) keys as itself, so such names don't all collide on "".
     """
     text = _strip_latin_accents(name).strip()
-    stripped = text
-    while True:
-        shorter = _TRAILING_PAREN_RE.sub("", stripped)
-        if shorter == stripped:
-            break
-        stripped = shorter
+    stripped, _ = _split_notes(text)
     # A name that is nothing but a parenthetical keeps it: better an odd key
     # than every such name colliding on "".
-    text = (stripped or text).casefold()
+    text = _first_last((stripped or text).casefold())
+    return _SEPARATOR_RE.sub(" ", text).strip() or text
+
+
+def _split_notes(text: str) -> "tuple[str, Set[str]]":
+    """Split trailing `(…)` groups off a name, returning the rest and the
+    groups (casefolded)."""
+    notes: Set[str] = set()
+    while True:
+        match = _TRAILING_PAREN_RE.search(text)
+        if match is None:
+            return text, notes
+        notes.add(match.group(0).strip(" ()").casefold())
+        text = text[: match.start()]
+
+
+def _first_last(text: str) -> str:
+    """Reorder a single `Last, First` comma; anything else is returned as is."""
     if text.count(",") == 1 and "@" not in text:
         last, first = (part.strip() for part in text.split(","))
         if last and first and first.rstrip(".") not in _NAME_SUFFIXES:
-            text = f"{first} {last}"
-    return _SEPARATOR_RE.sub(" ", text).strip() or text
+            return f"{first} {last}"
+    return text
+
+
+def trailing_notes(name: str) -> Set[str]:
+    """The trailing parentheticals of a name (`Eric Vyncke (evyncke)` ->
+    `{"evyncke"}`), casefolded."""
+    return _split_notes(name.strip())[1]
+
+
+def notes_conflict(name: str, known: Set[str]) -> bool:
+    """True when `name` and what is already known of a Person both carry
+    parentheticals and share none: `John Smith (Cisco)` and `John Smith
+    (Google)` read as two people, though the key is the same. A name with no
+    parenthetical conflicts with nothing."""
+    incoming = trailing_notes(name)
+    return bool(incoming and known and incoming.isdisjoint(known))
+
+
+def is_decorated(name: str) -> bool:
+    """True if the spelling carries a parenthetical or needs `Last, First`
+    reordering, i.e. is not how the name would be displayed."""
+    bare, notes = _split_notes(name.strip())
+    return bool(notes) or _first_last(bare) != bare
+
+
+def cleaner_name(current: str, incoming: str) -> str:
+    """Of two spellings that key alike, the one to display: an undecorated
+    spelling replaces a decorated one, otherwise `current` stands."""
+    if (
+        name_key(current) == name_key(incoming)
+        and is_decorated(current)
+        and not is_decorated(incoming)
+    ):
+        return incoming
+    return current
 
 
 def _strip_latin_accents(name: str) -> str:

@@ -130,7 +130,62 @@ def test_mail_names_differing_in_form_are_one_person() -> None:
     assert deen is not None
     assert deen.message_count == 2
     assert deen.emails == {"glenn.deen@nbcuni.com", "gdeen@example.net"}
-    assert r.canonical_for_email("Éric Vyncke <>") == "Eric Vyncke (evyncke)"
+    assert r.canonical_for_email("Éric Vyncke <>") == "Éric Vyncke"
+
+
+def test_same_name_with_different_parentheticals_stays_two_people() -> None:
+    r = Registry()
+    r.add_email_message('"John Smith (Cisco)" <john@cisco.example>', None)
+    r.add_email_message('"John Smith (Google)" <john@google.example>', None)
+    assert len(r.persons) == 2
+    # A later message with no parenthetical still lands on the first-seen
+    # holder of the name, as before; one sharing a parenthetical lands on it.
+    r.add_email_message('"Smith, John (Cisco)" <jsmith@cisco.example>', None)
+    assert len(r.persons) == 2
+    assert r.persons[0].emails == {"john@cisco.example", "jsmith@cisco.example"}
+
+
+def test_parenthetical_conflict_does_not_steal_the_name_entry() -> None:
+    r = Registry()
+    cisco = r.add_email_message('"John Smith (Cisco)" <john@cisco.example>', None)
+    r.add_email_message('"John Smith (Google)" <john@google.example>', None)
+    assert r.person_for_name("John Smith") is cisco
+
+
+def test_clean_spelling_replaces_a_decorated_one() -> None:
+    r = Registry()
+    r.add_email_message('"Dellaert, Philippe" <pdellaert@example.org>', None)
+    r.add_email_message("Eric Vyncke (evyncke) <evyncke@cisco.com>", None)
+    r.add_email_message("Philippe Dellaert <philippe@example.net>", None)
+    r.add_email_message("Éric Vyncke <evyncke@cisco.com>", None)
+    assert sorted(p.canonical_name for p in r.persons) == [
+        "Philippe Dellaert",
+        "Éric Vyncke",
+    ]
+
+
+def test_decorated_spelling_is_kept_when_it_is_all_there_is() -> None:
+    r = Registry()
+    r.add_email_message('"Deen, Glenn (Comcast Cable)" <glenn.deen@nbcuni.com>', None)
+    r.add_email_message("Glenn Deen <gdeen@example.net>", None)
+    assert [p.canonical_name for p in r.persons] == ["Glenn Deen"]
+    r2 = Registry()
+    r2.add_email_message("Eric Vyncke (evyncke) <evyncke@cisco.com>", None)
+    assert r2.persons[0].canonical_name == "Eric Vyncke (evyncke)"
+
+
+def test_merge_prefers_the_clean_spelling_but_never_a_login() -> None:
+    r = Registry()
+    mail = r.add_email_message('"Levy, Jo" <jlevy@nortonlaw.com>', None)
+    r.add_github_author("Jo-Levy")
+    link_github_logins_by_name(r, Verbosity.QUIET)
+    assert mail is not None and len(r.persons) == 1
+    assert mail.canonical_name == "Levy, Jo"
+    r2 = Registry()
+    deen = r2.add_email_message('"Deen, Glenn" <glenn.deen@nbcuni.com>', None)
+    r2.add_github_author("gitnnelg")
+    assert r2.link_github_identity("gitnnelg", "Glenn Deen", []) == "linked"
+    assert deen is not None and deen.canonical_name == "Glenn Deen"
 
 
 def test_github_real_name_links_across_name_forms() -> None:
