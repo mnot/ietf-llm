@@ -247,14 +247,17 @@ Key invariants:
   - **Names match on a folded key, not the display string** (`people.names.name_key`):
     case, diacritics, hyphens, `Last, First` order and a trailing parenthetical
     are ignored, so `Deen, Glenn (Comcast Cable)`, `Glenn Deen` and `Éric
-    Vyncke` / `Eric Vyncke (evyncke)` each resolve to one `Person`. Two
-    same-named people whose parentheticals differ (`John Smith (Cisco)`,
-    `John Smith (Google)`) are merged too: the parenthetical is not evidence of
-    a different person, and the registry already merged same-named senders
-    before it was stripped. The key is for lookup only: where two
-    spellings meet, the undecorated one becomes the displayed canonical name,
-    but a decorated name that is the only one seen is kept, as its
-    parenthetical may be the only trace of an affiliation. A
+    Vyncke` / `Eric Vyncke (evyncke)` each resolve to one `Person`. This
+    includes same-named senders whose parentheticals differ (`John Smith
+    (Cisco)`, `John Smith (Google)`): a parenthetical is not treated as
+    evidence of a different person. Before the key, only identical display
+    strings merged, so this widens an existing name-only merge (issue #265
+    specifies it). The key is for lookup only: where two spellings of a
+    mail-derived name meet, the undecorated one becomes the displayed canonical
+    name, but a decorated name that is the only one seen is kept, as its
+    parenthetical may be the only trace of an affiliation. Names from
+    Datatracker or a draft are authoritative and overwrite the canonical name
+    regardless. A
     GitHub login that is itself a two-word name (`Jo-Levy`) is linked to the
     mailing-list `Person` of that name as the last, weakest pass. Initial plus
     surname (`L. Le Meur`) is deliberately **not** matched: a wrong merge is

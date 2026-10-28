@@ -140,8 +140,8 @@ def test_mail_names_differing_in_form_are_one_person() -> None:
 
 
 def test_same_name_with_different_parentheticals_is_one_person() -> None:
-    # The issue strips a trailing parenthetical before lookup; a differing one
-    # is not treated as evidence of a second person.
+    # #265 strips a trailing parenthetical before lookup; a differing one is
+    # not treated as evidence of a second person.
     r = Registry()
     r.add_email_message('"John Smith (Cisco)" <john@cisco.example>', None)
     r.add_email_message('"John Smith (Google)" <john@google.example>', None)
@@ -182,6 +182,52 @@ def test_name_suffix_case_does_not_matter_for_decoration() -> None:
     assert cleaner_name("John Smith, JR. (Cisco)", "John Smith, JR.") == (
         "John Smith, JR."
     )
+
+
+def test_cleaner_name_only_moves_to_a_cleaner_spelling_of_the_same_name() -> None:
+    # Same name, decorated -> undecorated: replaced.
+    assert cleaner_name("Smith, John (Cisco)", "John Smith") == "John Smith"
+    # A different name is never adopted.
+    assert cleaner_name("Smith, John", "Bob Jones") == "Smith, John"
+    # Clean over clean, and decorated over decorated: current stands.
+    assert cleaner_name("Éric Vyncke", "Eric Vyncke") == "Éric Vyncke"
+    assert cleaner_name("Smith, John", "John Smith (Cisco)") == "Smith, John"
+
+
+def test_a_different_name_arriving_by_email_does_not_rename() -> None:
+    r = Registry()
+    r.add_email_message('"Smith, John" <a@x.example>', None)
+    r.add_email_message("Bob Jones <a@x.example>", None)
+    assert [p.canonical_name for p in r.persons] == ["Smith, John"]
+
+
+def test_merge_adopts_the_clean_spelling_only_for_the_same_name() -> None:
+    def merged(keep_name: str, drop_name: str) -> str:
+        r = Registry()
+        keep, drop = Person(canonical_name=keep_name), Person(canonical_name=drop_name)
+        r.persons.extend([keep, drop])
+        r.merge_into(keep, drop)
+        return keep.canonical_name
+
+    assert merged("Dellaert, Philippe", "Philippe Dellaert") == "Philippe Dellaert"
+    assert merged("Smith, John", "Bob Jones") == "Smith, John"
+    assert merged("Éric Vyncke", "Eric Vyncke") == "Éric Vyncke"
+    assert merged("Smith, John", "John Smith (Cisco)") == "Smith, John"
+
+
+def test_merge_repoints_every_name_the_dropped_person_was_indexed_under() -> None:
+    r = Registry()
+    keep = r.add_email_message("Jo Levy <jlevy@nortonlaw.com>", None)
+    drop = r.add_email_message('"Levy, Joanna" <joanna@example.org>', None)
+    # An authoritative name changes drop's canonical name, leaving the
+    # spelling it was first indexed under as an alias.
+    r.add_datatracker_role("Joanna R. Levy", "joanna@example.org", "Chair")
+    assert keep is not None and drop is not None and keep is not drop
+    assert drop.canonical_name == "Joanna R. Levy"
+    r.merge_into(keep, drop)
+    assert r.person_for_name("Levy, Joanna") is keep
+    assert r.add_email_message('"Levy, Joanna" <new@example.org>', None) is keep
+    assert r.persons == [keep]
 
 
 def test_decorated_spelling_is_kept_when_it_is_all_there_is() -> None:

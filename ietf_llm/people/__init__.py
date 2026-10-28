@@ -61,9 +61,7 @@ from ..gather.sources.datatracker import fetch_wg_roles
 from ..gather.sources.document_authors import fetch_document_authors
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
-from ..gather.sources.postal import (
-    parse_document_year,
-)
+from ..gather.sources.postal import parse_document_year
 from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir, get_wg_file_cache_dir
 from ..text import _parse_date
@@ -470,6 +468,12 @@ class Registry:
             self._by_email[email_addr] = keep
         for gh_login in drop.github_logins:
             self._by_github[gh_login] = keep
+        # Every spelling `drop` was indexed under, not just its canonical one:
+        # a stale entry would route later messages and role lookups to a
+        # Person that is no longer in the registry.
+        for key, holder in self._by_name.items():
+            if holder is drop:
+                self._by_name[key] = keep
         if drop.canonical_name:
             self._by_name[name_key(drop.canonical_name)] = keep
         self._by_name[name_key(keep.canonical_name)] = keep

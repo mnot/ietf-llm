@@ -4,8 +4,10 @@
 differ only in case, diacritics, hyphenation, `Last, First` order or a
 trailing parenthetical (`Deen, Glenn (Comcast Cable)`, `Eric Vyncke
 (evyncke)`) share a key and so resolve to one Person. The key is for lookup
-only. Where two spellings of one name meet, `cleaner_name` picks the one to display: an
-undecorated spelling over a decorated one.
+only. Where two spellings of one name meet, `cleaner_name` picks the one to
+display: an undecorated spelling over a decorated one. Names that
+Datatracker or a draft supplies are authoritative and overwrite the canonical
+name outright, so the preference governs mail-derived spellings only.
 
 `is_role_account` separates mailboxes and bots (`internet-drafts@ietf.org`,
 `The IESG`, `Repository Activity Summary Bot`) from people, so the digest
