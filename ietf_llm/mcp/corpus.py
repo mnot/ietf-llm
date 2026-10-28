@@ -33,7 +33,7 @@ from .common import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 _NEXT_TOOLS_HINT = (
@@ -494,7 +494,7 @@ def tool_which_corpus(query: str, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def list_corpora() -> str:
         """List the IETF/IRTF efforts gathered locally by ietf-llm —

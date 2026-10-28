@@ -26,7 +26,7 @@ from .common import (
 from .drafts import _resolve_issue_file
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 def _digest_kind_for_file(wg: str, file: str) -> Optional[str]:  # noqa: ARG001
@@ -386,7 +386,7 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
 # --- MCP server wiring -------------------------------------------------------
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def get_chunk_text(
         corpus: str,

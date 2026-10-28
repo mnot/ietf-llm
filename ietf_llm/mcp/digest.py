@@ -17,7 +17,7 @@ from .common import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 @_requires_corpus
@@ -129,7 +129,7 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
     return "".join(chunks)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpus: str,

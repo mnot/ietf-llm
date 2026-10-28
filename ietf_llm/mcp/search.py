@@ -20,7 +20,7 @@ from .common import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 #: Upper bound on `k` for search_corpus, so a huge value can't return
@@ -665,7 +665,7 @@ def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
     return kept, dropped
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         corpus: str,

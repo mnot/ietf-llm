@@ -727,7 +727,7 @@ def _session_section() -> str:
 async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     """Run a blocking `tool_*` function in a worker thread.
 
-    FastMCP invokes sync tool functions directly on the asyncio event
+    MCPServer invokes sync tool functions directly on the asyncio event
     loop, so any blocking work (embedding-model load, a numpy matmul
     over every chunk, a large file read, a heavy tally) freezes the
     whole server for its duration — it can't read stdin or answer

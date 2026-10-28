@@ -656,9 +656,9 @@ def test_embed_settings_resolve_like_a_gather(isolated_home: Path, monkeypatch: 
 def test_the_tools_are_registered() -> None:
     import asyncio  # pylint: disable=import-outside-toplevel
 
-    from mcp.server.fastmcp import FastMCP  # pylint: disable=import-outside-toplevel
+    from mcp.server.mcpserver import MCPServer  # pylint: disable=import-outside-toplevel
 
-    server = FastMCP("t")
+    server = MCPServer("t")
     tools.register(server)
     names = {t.name for t in asyncio.run(server.list_tools())}
     assert {"get_group_info", "search_groups", "list_milestones", "group_timeline"} <= names

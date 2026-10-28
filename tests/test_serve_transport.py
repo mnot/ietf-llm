@@ -8,10 +8,26 @@ from __future__ import annotations
 from ietf_llm import mcp
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from starlette.testclient import TestClient
 
 from ietf_llm import __version__, freshness
+
+
+_HEADERS = {
+    "Accept": "application/json, text/event-stream",
+    "Content-Type": "application/json",
+}
+_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "t", "version": "1"},
+    },
+}
 
 
 def test_csv_env_splits_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,18 +52,15 @@ def test_any_host_accepted_when_unset_end_to_end(
     # With no allow-list, an arbitrary Host (what a proxy may forward) must not
     # be rejected — the regression this guards against is a silent 421.
     monkeypatch.delenv("IETF_LLM_MCP_ALLOWED_HOSTS", raising=False)
-    server = FastMCP(
-        "ietf-llm", instructions="x",
-        transport_security=mcp.serve._transport_security_settings(),
-    )
-    headers = {"Accept": "application/json, text/event-stream",
-               "Content-Type": "application/json"}
-    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-    with TestClient(server.streamable_http_app()) as client:
+    # Built through `_http_app`: in the 2.x SDK the security settings are
+    # arguments to `streamable_http_app()`, so dropping them there 421s every
+    # fronted deployment while the settings function itself still passes.
+    app = mcp.serve._http_app(MCPServer("ietf-llm", instructions="x"))
+    with TestClient(app) as client:
         resp = client.post(
-            "/mcp", json=body, headers={**headers, "Host": "public.example.org"}
+            "/mcp", json=_INITIALIZE, headers={**_HEADERS, "Host": "public.example.org"}
         )
-    assert resp.status_code != 421
+    assert resp.status_code == 200
 
 
 def test_transport_security_on_when_hosts_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,19 +95,19 @@ def test_stateless_can_be_disabled(
     assert mcp.serve._stateless_http_enabled() is False
 
 
-def test_stateless_setting_flows_to_fastmcp(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stateless_setting_reaches_the_http_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Observable on the wire: a stateful server hands out an Mcp-Session-Id.
+    def session_id() -> "str | None":
+        app = mcp.serve._http_app(MCPServer("ietf-llm", instructions="x"))
+        with TestClient(app) as client:
+            resp = client.post("/mcp", json=_INITIALIZE, headers=_HEADERS)
+        assert resp.status_code == 200
+        return resp.headers.get("mcp-session-id")
+
     monkeypatch.delenv("IETF_LLM_MCP_STATELESS", raising=False)
-    server = FastMCP(
-        "ietf-llm", instructions="x",
-        stateless_http=mcp.serve._stateless_http_enabled(),
-    )
-    assert server.settings.stateless_http is True
+    assert session_id() is None
     monkeypatch.setenv("IETF_LLM_MCP_STATELESS", "0")
-    server = FastMCP(
-        "ietf-llm", instructions="x",
-        stateless_http=mcp.serve._stateless_http_enabled(),
-    )
-    assert server.settings.stateless_http is False
+    assert session_id() is not None
 
 
 def test_log_verbosity_default_quiet_on_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,10 +204,9 @@ def test_posture_reports_gather(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_handshake_reports_ietf_llm_version() -> None:
     # serverInfo.version must be ietf-llm's own version, not the mcp SDK
-    # version FastMCP falls back to when its lowlevel server is left unset.
-    server = FastMCP("ietf-llm")
-    server._mcp_server.version = __version__
-    opts = server._mcp_server.create_initialization_options()
+    # version MCPServer falls back to when `version` is left unset.
+    server = MCPServer("ietf-llm", version=__version__)
+    opts = server._lowlevel_server.create_initialization_options()
     assert opts.server_version == __version__
 
 
@@ -209,18 +221,15 @@ def test_disallowed_host_is_rejected_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("IETF_LLM_MCP_ALLOWED_HOSTS", "good.example.org")
-    server = FastMCP(
-        "ietf-llm",
-        instructions="x",
-        transport_security=mcp.serve._transport_security_settings(),
-    )
-    headers = {"Accept": "application/json, text/event-stream",
-               "Content-Type": "application/json"}
-    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    app = mcp.serve._http_app(MCPServer("ietf-llm", instructions="x"))
     # The session manager validates inside its lifespan task group, so drive
     # the app as a context manager (which runs the lifespan).
-    with TestClient(server.streamable_http_app()) as client:
-        bad = client.post("/mcp", json=body, headers={**headers, "Host": "evil.example.org"})
-        good = client.post("/mcp", json=body, headers={**headers, "Host": "good.example.org"})
+    with TestClient(app) as client:
+        bad = client.post(
+            "/mcp", json=_INITIALIZE, headers={**_HEADERS, "Host": "evil.example.org"}
+        )
+        good = client.post(
+            "/mcp", json=_INITIALIZE, headers={**_HEADERS, "Host": "good.example.org"}
+        )
     assert bad.status_code == 421  # Misdirected Request: Invalid Host header
-    assert good.status_code != 421  # reaches the handler (a real Host)
+    assert good.status_code == 200  # reaches the handler (a real Host)

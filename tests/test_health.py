@@ -30,7 +30,7 @@ class _FakeServer:
     """streamable_http_app() returns a plain Starlette app, so /health can
     be exercised without the real MCP session-manager lifespan."""
 
-    def streamable_http_app(self) -> Any:
+    def streamable_http_app(self, **_kwargs: Any) -> Any:
         return Starlette(routes=[])
 
 

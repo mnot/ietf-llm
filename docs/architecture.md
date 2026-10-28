@@ -461,7 +461,7 @@ ietf_llm/
 │   └── skill_install.py    # --install-skills (multi-harness) + pristine-only auto-update
 ├── export.py               # mirror / NotebookLM export logic (used by cli.export)
 ├── mcp/                    # `ietf-llm-mcp` server (`mcp:main`), one module per tool domain
-│   ├── server.py               # FastMCP construction + main() + tool registration
+│   ├── server.py               # MCPServer construction + main() + tool registration
 │   ├── common.py               # shared scaffolding (@_requires_corpus, _offload,
 │   │                           # freshness/grounding/nudge helpers)
 │   ├── serve.py                # HTTP transport, /health, /metrics, serve-config validation
@@ -1246,7 +1246,7 @@ needs them at boot rather than on the first user-facing search.
 The default transport is the custom threaded-writer **stdio** path (see
 `mcp/stdio.py`, which sidesteps an upstream loop-blocking write).
 Setting `IETF_LLM_MCP_TRANSPORT=http` serves standard MCP **Streamable
-HTTP** instead — FastMCP's `streamable_http_app()` under uvicorn, with
+HTTP** instead — MCPServer's `streamable_http_app()` under uvicorn, with
 `GET /health` (readiness) and `GET /metrics` (Prometheus scrape) routes
 added — for a shared deployment serving many clients from one process.
 Concurrency is safe because every tool opens its own read-only sqlite

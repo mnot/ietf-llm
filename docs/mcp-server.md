@@ -160,6 +160,11 @@ affinity — the right shape for this read-mostly server. Set `IETF_LLM_MCP_STAT
 `false`/`no`/`off`) for stateful per-client sessions. The setting is ignored by the stdio
 transport. The boot posture banner reports the effective value.
 
+The server speaks the 2026-07-28 MCP revision (`server/discover`, no `initialize` handshake) and
+still answers `initialize` for 2025-era clients, so one deployment serves both. 2026-07-28 clients
+are stateless whatever this setting says; it only governs the older ones. That revision adds
+`Mcp-Method` / `Mcp-Name` request headers, which a fronting proxy must pass through.
+
 ### Host / Origin allow-list
 
 By default the server does **no** `Host`-header validation: it assumes a proxy or firewall in front

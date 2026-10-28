@@ -19,7 +19,7 @@ from ..paths import (
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 #: Line cap for a single gathered minutes read, so a pathological transcript-
@@ -281,7 +281,7 @@ def _render_meeting_sessions(corpus: str, meeting: str) -> str:
     return "\n".join(lines)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def list_meetings(corpus: str) -> str:
         """List a corpus's gathered meetings — each meeting code with its date
@@ -307,7 +307,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_read_minutes, corpus, meeting)
 
 
-def register_live(server: "FastMCP") -> None:
+def register_live(server: "MCPServer") -> None:
     @server.tool()
     async def meeting_schedule(corpus: str, meeting: str = "") -> str:
         """A group's **live** meeting schedule from Datatracker — its session

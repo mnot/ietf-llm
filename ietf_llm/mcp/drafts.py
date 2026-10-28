@@ -15,7 +15,7 @@ from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_fre
 from .rfc_text import normalise_section
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
     from ..live_lookup.reviews import ReviewRecord  # pragma: no cover
 
@@ -543,7 +543,7 @@ def tool_draft_status(name: str) -> str:
     return "\n".join(lines)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def draft_authors(name: str) -> str:
         """The authors/editors of a draft, with contact emails — for a
@@ -819,7 +819,7 @@ def tool_review_record(name: str) -> str:
     return "\n".join(lines)
 
 
-def register_live(server: "FastMCP") -> None:
+def register_live(server: "MCPServer") -> None:
     @server.tool()
     async def draft_status(name: str) -> str:
         """**First call for where an IETF draft actually stands** — prefer

@@ -29,7 +29,7 @@ and the upstream reader is correct.
 This is a drop-in replacement for `stdio_server`: same yield contract
 (`read_stream`, `write_stream`), used the same way by the lowlevel
 `Server.run`. We don't monkey-patch anything; we reach the lowlevel
-server via `FastMCP._mcp_server` and pass our streams to it directly.
+server via `MCPServer._lowlevel_server` and pass our streams to it directly.
 
 Observability: `queue_state()` returns a snapshot of queue depth,
 high-water mark, bytes/items written, time the loop has spent blocked
@@ -178,7 +178,9 @@ async def stdio_server_threaded_writer(
                 async for line in stdin:
                     debug_log.log_event(0, "reader_line", nbytes=len(line))
                     try:
-                        message = types.JSONRPCMessage.model_validate_json(line)
+                        message = types.jsonrpc_message_adapter.validate_json(
+                            line, by_name=False
+                        )
                     except Exception as exc:  # pylint: disable=broad-except
                         await read_stream_writer.send(exc)
                         debug_log.log_event(0, "reader_dispatched", parse_error=True)

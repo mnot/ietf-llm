@@ -12,7 +12,7 @@ from ..paths import digest_path
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 @_requires_corpus
@@ -231,7 +231,7 @@ def tool_find_message_citations(
     return _with_freshness(wg, "\n".join(lines))
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def find_citations(corpus: str, draft_name: str) -> str:
         """Find every mailing-list thread, GitHub issue or pull request in

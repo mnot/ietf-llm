@@ -33,10 +33,10 @@ dependencies = [
     # serve / index against a remote OpenAI-compatible endpoint instead.
     "llm",
     "numpy",
-    # We use the FastMCP bundled in the SDK (`mcp.server.fastmcp`), which 2.0
-    # removed; the floor is the oldest release with `transport_security`.
-    # Lifting the ceiling means porting off it -- issue #202.
-    "mcp>=1.10,<2",
+    # `mcp.server.mcpserver.MCPServer` (FastMCP's successor) arrived in 2.0.0,
+    # the oldest stable release; 1.x does not provide it. 2.x speaks the
+    # 2026-07-28 protocol revision and still serves the 2025-era ones.
+    "mcp>=2,<3",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
     # OS-trust-store TLS verification, so a corporate proxy root the machine

@@ -42,7 +42,7 @@ from ..singletons.rfcs import rfc_num_to_name
 from .common import _offload
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 #: The corpus name the imported RFC series is installed under.
 RFC_CORPUS = "rfcs"
@@ -320,7 +320,7 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
     return "\n".join(parts)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         query: str,

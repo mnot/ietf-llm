@@ -152,7 +152,10 @@ def _http_app(server: Any) -> Any:
     /health is the human-glance readiness view (R18); /metrics is the
     Prometheus scrape view (issue #40). Neither makes an upstream call.
     """
-    app = server.streamable_http_app()
+    app = server.streamable_http_app(
+        stateless_http=_stateless_http_enabled(),
+        transport_security=_transport_security_settings(),
+    )
     app.add_route("/health", _health_endpoint, methods=["GET"])
     app.add_route("/metrics", _metrics_endpoint, methods=["GET"])
     return app
@@ -183,7 +186,8 @@ def _stateless_http_enabled() -> bool:
     requests, so any replica behind a load balancer can answer any request with
     no session affinity — the right shape for this read-mostly server, and what
     a horizontally-scaled deployment wants. Set `IETF_LLM_MCP_STATELESS=0`
-    (or false/no/off) to restore stateful sessions. stdio ignores this.
+    (or false/no/off) to restore stateful sessions for 2025-era clients;
+    2026-07-28 clients are stateless regardless. stdio ignores this.
     """
     raw = os.environ.get("IETF_LLM_MCP_STATELESS", "").strip().lower()
     if not raw:
@@ -427,7 +431,7 @@ def _run_http(server: Any) -> None:
     """Serve the MCP server over Streamable HTTP (R8).
 
     Binds to IETF_LLM_MCP_HOST / IETF_LLM_MCP_PORT (defaults
-    127.0.0.1:8000). FastMCP's streamable_http_app() is a standard
+    127.0.0.1:8000). MCPServer's streamable_http_app() is a standard
     MCP-spec Streamable HTTP ASGI app, so a fronting proxy can be
     near-transparent. uvicorn ships transitively with `mcp`. The custom
     threaded-writer transport is stdio-specific and does not apply here.
