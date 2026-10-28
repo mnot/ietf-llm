@@ -977,10 +977,11 @@ Concretely, the gather layer reads from the API for:
   resolving to the latest rendered markdown / text / PDF.
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
-  `datatracker_history.py`). Chair appointments come from the
-  `info_changed` entries of `group/groupevent` ("Chairs changed to A, B
-  from A"), which hold exact dates and names but only changes since the log
-  began; a group's founding chairs have no event.
+  `datatracker_history.py`). Chair appointments and departures come
+  from the `info_changed` entries of `group/groupevent` ("Chairs changed to
+  A, B from A"), which hold exact dates and names but only changes since the
+  log began; a group's founding chairs have no appointment event. Names are
+  mapped to the people registry's spelling where it knows them.
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
