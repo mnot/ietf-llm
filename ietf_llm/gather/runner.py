@@ -763,17 +763,27 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 "gathering from scratch"
             )
 
-        # Restore the gather accelerator caches (datatracker ETag store, GitHub /
-        # datatracker identity maps) so a fresh replica revalidates instead of
-        # re-hitting rate-limited upstreams (issue #82). A no-op on the local
-        # backend; best-effort, like the seed above.
-        try:
-            for problem in store.hydrate_gather_caches(corpus):
-                _note(problem)
-        except Exception as err:  # pylint: disable=broad-except
-            _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
+        # Deferred like the other store imports in this module.
+        # pylint: disable-next=import-outside-toplevel
+        from ..store.corpus import GatherCacheRestoreError
 
         try:
+            # Restore the gather accelerator caches (datatracker ETag store,
+            # GitHub / datatracker identity maps) so a fresh replica revalidates
+            # instead of re-hitting rate-limited upstreams (issue #82), and the
+            # IMAP mail cache so it doesn't re-download the archive (issue #260).
+            # A no-op on the local backend; best-effort like the seed above,
+            # except that an unfetchable mail chunk fails the gather before any
+            # stage runs: publishing without it would drop the threads built from
+            # that mail, and a retry can succeed.
+            try:
+                for problem in store.hydrate_gather_caches(corpus):
+                    _note(problem)
+            except GatherCacheRestoreError:
+                raise
+            except Exception as err:  # pylint: disable=broad-except
+                _note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
+
             ok = pipeline.run_pipeline(
                 spec, _progress, _note, lambda: _cancel_requested(corpus)
             )

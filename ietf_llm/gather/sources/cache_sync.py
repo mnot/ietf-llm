@@ -40,10 +40,16 @@ single writer:
     in the cache. A differing UIDVALIDITY epoch replaces the stored mail only
     when this gather's sync confirmed the local epoch with the server.
 
-Best-effort throughout: a sync failure must never fail a gather (it just means a
-cold rebuild next time), matching how `_save_cache`/`_HttpCache.flush` already
-swallow their own write errors. Each cache syncs independently, so one cache's
-failure never skips the others.
+Best-effort throughout, with one exception: a sync failure doesn't fail a gather
+(it just means a cold rebuild next time), matching how
+`_save_cache`/`_HttpCache.flush` already swallow their own write errors, and each
+cache syncs independently, so one cache's failure never skips the others. The
+exception is a stored IMAP chunk that can't be fetched. A rebuild from what's
+left would publish a version without the threads whose mail didn't come back
+(the thread writer deletes any thread file it doesn't regenerate), so `hydrate`
+raises `GatherCacheRestoreError` and the gather fails; the next one retries.
+Failures a retry can't fix (a chunk or index that is missing or corrupt) are
+notes, since failing would wedge the corpus: persist rebuilds them from local.
 """
 
 from __future__ import annotations
@@ -54,10 +60,12 @@ import json
 import os
 import re
 import tarfile
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
+import zlib
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from ...paths import get_cache_dir
 from ...singletons.catalog import catalog_index_dir
+from ...store.corpus import GatherCacheRestoreError
 from ...store.kv import ABSENT, KvStore
 from . import (
     datatracker,
@@ -95,8 +103,9 @@ MergeFn = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
 def hydrate(kv: KvStore, corpus: str) -> List[str]:
     """Pull the persisted caches into the local cache dir before a gather, so the
     gather revalidates (304s) and reuses identity lookups instead of re-fetching.
-    Never raises; returns notes for the failures that change what the gather
-    produces (see `_restore_imap`)."""
+    Returns notes for failures worth surfacing. Raises `GatherCacheRestoreError`,
+    after restoring everything else, if stored IMAP mail couldn't be fetched (see
+    `_restore_imap`); nothing else here raises."""
     _restore(
         kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
     )
@@ -112,7 +121,9 @@ def hydrate(kv: KvStore, corpus: str) -> List[str]:
     _restore(kv, _DATATRACKER_PEOPLE_KEY, datatracker_people.cache_path())
     _restore_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
     problems: List[str] = []
-    _restore_imap(kv, corpus, problems)
+    fatal = _restore_imap(kv, corpus, problems)
+    if fatal:
+        raise GatherCacheRestoreError("; ".join(fatal + problems))
     return problems
 
 
@@ -262,16 +273,26 @@ def _chunk_key(prefix: str, chunk: int) -> str:
     return f"{prefix}chunk-{chunk}.tar.gz"
 
 
+class _CorruptIndex(ValueError):
+    """The stored index isn't readable as one."""
+
+
 def _load_imap_index(kv: KvStore, key: str) -> _ImapIndex:
-    """The stored index, or an empty one if none is stored yet. Raises on a
-    corrupt index: callers skip the list rather than treat the store as empty
-    and overwrite chunks they can no longer account for."""
+    """The stored index, or an empty one if none is stored yet. Raises
+    `_CorruptIndex` on a corrupt one (callers skip the list rather than treat the
+    store as empty and overwrite chunks they can no longer account for), and
+    whatever the store raises if it can't be read."""
     record = kv.get(key)
     if record is None:
         return _ImapIndex(None, {})
-    parsed = json.loads(record[0])
-    chunks = {int(c): {int(u) for u in uids} for c, uids in parsed["chunks"].items()}
-    epoch = parsed.get("uidvalidity")
+    try:
+        parsed = json.loads(record[0])
+        chunks = {
+            int(c): {int(u) for u in uids} for c, uids in parsed["chunks"].items()
+        }
+        epoch = parsed.get("uidvalidity")
+    except (ValueError, KeyError, TypeError, AttributeError) as err:
+        raise _CorruptIndex(f"unreadable index {key}") from err
     return _ImapIndex(str(epoch) if epoch else None, chunks)
 
 
@@ -328,46 +349,56 @@ def _unpack_chunk(blob: bytes) -> Dict[int, bytes]:
     return members
 
 
-def _restore_imap(kv: KvStore, corpus: str, problems: List[str]) -> None:
-    """Restore every stored list's mail into the local IMAP cache. Never raises;
-    a failure on one list or chunk never skips the rest, and is reported in
-    `problems` -- a chunk that doesn't come back means mail outside the search
-    window is absent when threads are rebuilt, and the thread writer deletes any
-    thread file it doesn't regenerate."""
+def _restore_imap(kv: KvStore, corpus: str, problems: List[str]) -> List[str]:
+    """Restore every stored list's mail into the local IMAP cache. A failure on
+    one list or chunk never skips the rest. Returns what couldn't be fetched
+    because the store errored (a retry may succeed); `hydrate` fails the gather
+    on those. What a retry can't fix -- a chunk or index that is missing or
+    corrupt -- goes in `problems` as a note. Either way mail older than the
+    search window would be absent when threads are rebuilt, and the thread
+    writer deletes any thread file it doesn't regenerate."""
+    fatal: List[str] = []
     prefix = _IMAP_PREFIX.format(corpus=corpus)
     try:
         names = kv.list_children(prefix)
     except Exception as err:  # pylint: disable=broad-except
-        problems.append(f"IMAP mail cache not restored (listing failed: {err})")
-        return
+        return [f"IMAP mail cache not restored (listing failed: {err})"]
     root = _imap_root(corpus)
     for name in names:
         if os.path.basename(name) != name or name.startswith("."):
             continue
         try:
-            failed = _restore_imap_list(
+            failed, lost = _restore_imap_list(
                 kv, f"{prefix}{name}/", os.path.join(root, name)
             )
-        except Exception as err:  # pylint: disable=broad-except
+        except _CorruptIndex as err:
             problems.append(f"IMAP mail cache for '{name}' not restored ({err})")
             continue
+        except Exception as err:  # pylint: disable=broad-except
+            fatal.append(f"IMAP mail cache for '{name}' not restored ({err})")
+            continue
         if failed:
-            problems.append(
-                f"IMAP mail cache for '{name}': {failed} stored chunk(s) failed to "
-                "restore; mail older than the search window may be missing from "
-                "this gather's threads until the next gather"
+            fatal.append(
+                f"IMAP mail cache for '{name}': {failed} stored chunk(s) could "
+                "not be fetched"
             )
+        if lost:
+            problems.append(
+                f"IMAP mail cache for '{name}': {lost} stored chunk(s) missing "
+                "or unreadable; the next persist rebuilds them from this host"
+            )
+    return fatal
 
 
-def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> int:
-    """Restore one list; returns how many stored chunks couldn't be fetched."""
+def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Tuple[int, int]:
+    """Restore one list; returns `(fetch failures, chunks missing or corrupt)`."""
     index = _load_imap_index(kv, prefix + _IMAP_INDEX)
     local_epoch = mbox.read_uidvalidity(list_dir)
     if _epochs_differ(local_epoch, index.uidvalidity):
         # The local cache is from a different epoch than the stored one; its
         # UIDs name different messages, so mixing them would corrupt both. The
         # sync's own UIDVALIDITY check settles which side is current.
-        return 0
+        return 0, 0
     if local_epoch is None and index.uidvalidity is not None:
         os.makedirs(list_dir, exist_ok=True)
         _atomic_write(
@@ -375,23 +406,29 @@ def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> int:
             index.uidvalidity.encode("ascii"),
         )
     local = _local_chunks(list_dir)
-    failed = 0
+    failed = lost = 0
     for chunk, uids in sorted(index.chunks.items()):
         # A warm host already holding the chunk's mail fetches nothing.
         if uids <= local.get(chunk, set()):
             continue
         try:
             record = kv.get(_chunk_key(prefix, chunk))
-            if record is None:
-                failed += 1
-                continue
-            for uid, data in _unpack_chunk(record[0]).items():
-                path = os.path.join(list_dir, f"{uid}.eml")
-                if not os.path.exists(path):
-                    _atomic_write(path, data)
         except Exception:  # pylint: disable=broad-except
             failed += 1
-    return failed
+            continue
+        if record is None:
+            lost += 1
+            continue
+        try:
+            members = _unpack_chunk(record[0])
+        except (tarfile.TarError, EOFError, OSError, zlib.error):
+            lost += 1
+            continue
+        for uid, data in members.items():
+            path = os.path.join(list_dir, f"{uid}.eml")
+            if not os.path.exists(path):
+                _atomic_write(path, data)
+    return failed, lost
 
 
 def _persist_imap(kv: KvStore, corpus: str, problems: List[str]) -> None:

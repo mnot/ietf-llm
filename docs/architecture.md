@@ -857,7 +857,9 @@ write-throughs its own entry, so it never serves config it just wrote.
   and the per-list IMAP mail cache (`corpora/<name>/gather-cache/imap/<list>/`,
   lease-serialised, see below) — so an ephemeral host revalidates rather than
   re-hitting rate-limited upstreams after scale-to-zero (issues #82, #260); no-ops
-  on local, all best-effort. `_rfc/` stays ephemeral by design: it mirrors a CDN
+  on local. Best-effort — a sync failure means a cold rebuild, never a failed
+  gather — with one exception: stored IMAP mail the store errors on fetching
+  fails the gather before any stage runs (below). `_rfc/` stays ephemeral by design: it mirrors a CDN
   rather than a rate-limited API (a restart re-fetches it for bandwidth, not API
   quota). The IMAP mail is round-tripped even though it is large, because thread
   reconstruction re-reads *every* cached message and deletes thread files it does
@@ -1320,10 +1322,21 @@ only when this gather's sync confirmed the local epoch with the server
 IMAP sync failed -- leaves the store alone. When replacing, it invalidates the
 index before touching the chunks, so a failure part way never leaves an index
 vouching for another epoch's mail. A marker that isn't a bare number counts as
-absent. Restore and persist failures come back as gather notes
-(`hydrate_gather_caches` / `persist_gather_caches` return them), since a chunk
-that doesn't restore means mail older than the search window is missing when the
-threads are rebuilt.
+absent.
+
+This is the one place the gather-cache sync is **not** best-effort. A stored
+chunk the store errors on fetching (or an index it errors on reading, or a
+failed listing) raises `GatherCacheRestoreError` from `hydrate_gather_caches`,
+after everything else is restored, and the runner fails the gather before any
+stage runs: rebuilding from what is left would publish a version missing the
+threads whose mail didn't come back, since `write_thread_files` deletes any
+thread file it doesn't regenerate, and mail older than the search window exists
+nowhere else. The next gather retries, and nothing is published in between.
+What a retry can't fix -- a chunk object that is missing or unreadable, or a
+corrupt index -- is a gather note instead, because failing would wedge the
+corpus; persist rebuilds a missing chunk from local mail. Persist failures are
+notes too (`persist_gather_caches` returns them), and a persistent one means
+every fresh container does a full refetch.
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 

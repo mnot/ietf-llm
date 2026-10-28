@@ -180,7 +180,9 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   replaces a chunk with fewer messages, since mail outside the window lives only
   there, and replaces a stored epoch only when the gather's sync confirmed the
   local one with the server; see issue #260). These are gather-only (the read path never
-  touches them) and best-effort. `_rfc/` is deferred (non-rate-limited CDN
+  touches them) and best-effort — except that stored IMAP mail the store errors
+  on fetching raises `GatherCacheRestoreError` and fails the gather before any
+  stage runs (publishing without it would drop old threads). `_rfc/` is deferred (non-rate-limited CDN
   mirror). See issue #82.
   publish is the explicit write→read handoff (a compare-and-swap pointer flip),
   and the gather lease is cross-host. So on the cloud backend the reader-side vs

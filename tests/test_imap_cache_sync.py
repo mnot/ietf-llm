@@ -19,6 +19,7 @@ import pytest
 
 from ietf_llm.gather.sources import cache_sync, mbox
 from ietf_llm.log import Verbosity
+from ietf_llm.store.corpus import GatherCacheRestoreError
 from ietf_llm.store.kv import ANY, InMemoryKvStore, Record
 
 CHUNK = cache_sync._IMAP_CHUNK_UIDS
@@ -203,13 +204,14 @@ def test_corrupt_index_skips_the_list(monkeypatch, tmp_path):
     _mail(warm, [1, 2])
     kv.reset()
 
-    cache_sync.persist(kv, "moq")  # must not raise
+    assert cache_sync.persist(kv, "moq")  # reported, not raised
     assert kv.puts == []
-    cache_sync.hydrate(kv, "moq")  # nor here
+    problems = cache_sync.hydrate(kv, "moq")  # a note too, not a failure
+    assert len(problems) == 1 and "unreadable index" in problems[0]
     assert sorted(p.name for p in warm.glob("*.eml")) == ["1.eml", "2.eml"]
 
 
-def test_store_errors_never_fail_a_sync(monkeypatch, tmp_path):
+def test_store_errors_never_fail_persist_and_fail_hydrate_closed(monkeypatch, tmp_path):
     kv = _CountingKv()
     warm = _host(monkeypatch, tmp_path / "warm")
     _mail(warm, [1, 2])
@@ -220,8 +222,9 @@ def test_store_errors_never_fail_a_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(kv, "put", boom)
     monkeypatch.setattr(kv, "get", boom)
     monkeypatch.setattr(kv, "list_children", boom)
-    cache_sync.persist(kv, "moq")
-    cache_sync.hydrate(kv, "moq")
+    assert cache_sync.persist(kv, "moq")  # reported, not raised
+    with pytest.raises(GatherCacheRestoreError):
+        cache_sync.hydrate(kv, "moq")
 
 
 # --- UIDVALIDITY epoch ------------------------------------------------------
@@ -370,7 +373,10 @@ def test_chunk_packing_is_deterministic():
 # --- failures are reported, not swallowed -----------------------------------
 
 
-def test_failed_chunk_restore_is_reported(monkeypatch, tmp_path):
+def test_failed_chunk_fetch_fails_the_restore(monkeypatch, tmp_path):
+    # Publishing without that chunk's mail would delete the threads built from
+    # it, so a store error on a chunk is fatal -- after everything else is
+    # restored, so the failure is as small as it can be.
     kv = _CountingKv()
     warm = _host(monkeypatch, tmp_path / "warm")
     _mail(warm, [1, 2, CHUNK + 1])
@@ -385,13 +391,13 @@ def test_failed_chunk_restore_is_reported(monkeypatch, tmp_path):
         return real_get(key)
 
     monkeypatch.setattr(kv, "get", get)
-    problems = cache_sync.hydrate(kv, "moq")
-    assert len(problems) == 1
-    assert "'moq'" in problems[0] and "1 stored chunk(s) failed" in problems[0]
+    with pytest.raises(GatherCacheRestoreError) as info:
+        cache_sync.hydrate(kv, "moq")
+    assert "'moq'" in str(info.value) and "1 stored chunk(s) could not be fetched" in str(info.value)
     assert [p.name for p in cold.glob("*.eml")] == [f"{CHUNK + 1}.eml"]  # the rest came
 
 
-def test_failed_listing_is_reported(monkeypatch, tmp_path):
+def test_failed_listing_fails_the_restore(monkeypatch, tmp_path):
     kv = _CountingKv()
     _host(monkeypatch, tmp_path / "cold")
 
@@ -399,8 +405,55 @@ def test_failed_listing_is_reported(monkeypatch, tmp_path):
         raise OSError("down")
 
     monkeypatch.setattr(kv, "list_children", boom)
+    with pytest.raises(GatherCacheRestoreError, match="listing failed"):
+        cache_sync.hydrate(kv, "moq")
+
+
+def test_failed_index_fetch_fails_the_restore(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    warm = _host(monkeypatch, tmp_path / "warm")
+    _mail(warm, [1, 2])
+    cache_sync.persist(kv, "moq")
+
+    _host(monkeypatch, tmp_path / "cold")
+    real_get = kv.get
+
+    def get(key):
+        if key.endswith("index.json"):
+            raise OSError("bucket unreachable")
+        return real_get(key)
+
+    monkeypatch.setattr(kv, "get", get)
+    with pytest.raises(GatherCacheRestoreError, match="'moq' not restored"):
+        cache_sync.hydrate(kv, "moq")
+
+
+def test_a_missing_chunk_is_a_note_not_a_failure(monkeypatch, tmp_path):
+    # A retry can't bring back an object that isn't there; failing would wedge
+    # the corpus. Say so, and let persist rebuild the chunk from this host.
+    kv = _CountingKv()
+    warm = _host(monkeypatch, tmp_path / "warm")
+    _mail(warm, [1, 2, CHUNK + 1])
+    cache_sync.persist(kv, "moq")
+    kv.delete(PREFIX + "chunk-0.tar.gz")
+
+    cold = _host(monkeypatch, tmp_path / "cold")
     problems = cache_sync.hydrate(kv, "moq")
-    assert len(problems) == 1 and "listing failed" in problems[0]
+    assert len(problems) == 1 and "missing or unreadable" in problems[0]
+    assert [p.name for p in cold.glob("*.eml")] == [f"{CHUNK + 1}.eml"]
+
+
+def test_a_corrupt_chunk_is_a_note_not_a_failure(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    warm = _host(monkeypatch, tmp_path / "warm")
+    _mail(warm, [1, 2])
+    cache_sync.persist(kv, "moq")
+    kv.put(PREFIX + "chunk-0.tar.gz", b"not a gzip stream")
+
+    cold = _host(monkeypatch, tmp_path / "cold")
+    problems = cache_sync.hydrate(kv, "moq")
+    assert len(problems) == 1 and "missing or unreadable" in problems[0]
+    assert list(cold.glob("*.eml")) == []
 
 
 def test_failed_persist_is_reported(monkeypatch, tmp_path):
