@@ -17,17 +17,25 @@ from __future__ import annotations
 import argparse
 import copy
 import sys
-from typing import Optional
+from typing import Any, Dict, Optional
 
+from ..gather import lifecycle
 from ..gather.cli import build_parser
-from ..gather.sequencer import _gather_one, _persist_seed_toggle, embed_settings
+from ..gather.lifecycle import GatherBusy, GatherOutcome
+from ..gather.sequencer import (
+    _gather_one,
+    _persist_seed_toggle,
+    embed_settings,
+    preflight,
+)
 from ..gather.sources.catalog import ensure_catalog_index
 from ..gather.sources.groups import ensure_groups_index
 from ..gather.sources.repo_discovery import print_discovery
 from ..gather.sources.rfc_corpus import ensure_rfc_corpus
 from ..gather.sources.rfcs import ensure_rfc_index
-from ..log import Verbosity, graceful_keyboard_interrupt
+from ..log import LogLevel, Verbosity, graceful_keyboard_interrupt, log
 from ..months import months_request_error
+from ..store.corpus import get_corpus_store
 from . import list as cli_list
 from .completion import maybe_autocomplete, print_completion_snippet
 from .skill_install import install_skills, sync_if_pristine
@@ -111,6 +119,65 @@ def _housekeeping(
     ensure_groups_index(verbosity, force=forced, embed_model=embed_model, embed=embed)
     sync_if_pristine(verbosity)
     return reason
+
+
+#: The source flags a status record's `spec` carries, mirroring what
+#: `GatherSpec.to_dict` records for an MCP gather (only those set).
+_SPEC_FIELDS = (
+    "mailing_list",
+    "draft",
+    "github",
+    "github_label",
+    "exclude_github_label",
+    "author",
+    "new_drafts",
+    "months",
+    "add_mentioned_drafts",
+    "include_related_drafts",
+)
+
+
+def _status_spec(args: argparse.Namespace) -> Dict[str, Any]:
+    spec: Dict[str, Any] = {"corpus": args.wg}
+    for key in _SPEC_FIELDS:
+        value = getattr(args, key, None)
+        if value:
+            spec[key] = list(value) if isinstance(value, list) else value
+    return spec
+
+
+def _gather(args: argparse.Namespace, verbosity: Verbosity) -> Optional[GatherOutcome]:
+    """Gather `args.wg` through the store lifecycle: lease and fleet slot,
+    seed/hydrate, the stages, then publish — which on the cloud backend is what
+    makes the result visible at all (issue #258), and on the local backend is
+    a no-op. Returns the outcome, or None when another gatherer (an in-session
+    MCP gather here, or another host) already holds the corpus.
+
+    A mistyped name or a corpus that is not due is settled by `preflight`
+    first, against the store's published gather time, so it takes no lease,
+    slot or status record and downloads nothing."""
+    store = get_corpus_store()
+    pre = preflight(args, verbosity, gathered_at=store.gathered_at)
+    if pre.outcome is not None:
+        return pre.outcome
+    try:
+        return lifecycle.gather_and_publish(
+            store,
+            args.wg,
+            lambda progress, note: _gather_one(
+                args, verbosity, progress=progress, note_fn=note, pre=pre
+            ),
+            spec=_status_spec(args),
+            verbosity=verbosity,
+        )
+    except GatherBusy as busy:
+        log(
+            f"{busy}; not gathering it here. Check `gather_status` or re-run "
+            "once it finishes.",
+            verbosity,
+            level=LogLevel.STATUS,
+        )
+        return None
 
 
 @graceful_keyboard_interrupt
@@ -211,15 +278,23 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
         # B's merge — union'ing them into B's saved config and compounding on
         # each --all run — and would also suppress B's repo auto-discovery.
         base = vars(args)
+        failed = False
         for wg in targets:
             one = argparse.Namespace(**copy.deepcopy(base))
             one.wg = wg
-            _gather_one(one, verbosity)
+            # A sweep refreshes what needs refreshing: a corpus another gatherer
+            # is already refreshing (None) needs nothing from this run.
+            if _gather(one, verbosity) is GatherOutcome.UNUSABLE:
+                failed = True
     else:
-        _gather_one(args, verbosity)
+        # A named gather is a request for *this* invocation to do the work, so
+        # a corpus held elsewhere is a failure here, as is an unusable name.
+        failed = _gather(args, verbosity) in (None, GatherOutcome.UNUSABLE)
 
     model, embed = embed_settings(args)
     _housekeeping(verbosity, embed_model=model, embed=embed)
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":  # pragma: no cover

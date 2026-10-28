@@ -50,7 +50,7 @@ from .kv import KvStore
 _MANIFEST = "manifest.json"
 
 #: `extra_files` entries that may legitimately vanish between being listed
-#: (`gather.runner._index_extra_files`) and being read (`publish`'s upload
+#: (`gather.lifecycle.index_extra_files`) and being read (`publish`'s upload
 #: below): SQLite's own WAL/SHM checkpoint, entirely outside our control.
 #: Deliberately narrow — `embeddings.db` and `topics.json` vanishing is never
 #: benign and must still fail the publish loudly, same as a workspace file
@@ -432,7 +432,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 # is the corpus root, so all of that rode along with
                 # `embeddings.db` and is otherwise indistinguishable from it
                 # (issue #224). `INDEX_FILE_NAMES` is the one list shared with
-                # `gather.runner._index_extra_files`, the write side of this
+                # `gather.lifecycle.index_extra_files`, the write side of this
                 # same round trip.
                 new_names = {
                     name

@@ -22,6 +22,7 @@ import pytest
 from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import config, freshness, months, serve_metrics
 from ietf_llm.gather import runner as gather_runner
+from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.stages import stage_plan
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
@@ -274,7 +275,7 @@ def test_gather_one_returns_false_on_unusable_name(
 ) -> None:
     monkeypatch.setattr(main_mod, "_resolve_corpus_shape", lambda a, p, v: None)
     args = main_mod.build_parser().parse_args(["typo"])
-    assert main_mod._gather_one(args, Verbosity.QUIET) is False
+    assert main_mod._gather_one(args, Verbosity.QUIET) is GatherOutcome.UNUSABLE
 
 
 # --- runner ---------------------------------------------------------------

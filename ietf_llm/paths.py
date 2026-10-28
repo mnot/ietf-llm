@@ -60,7 +60,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 #: index machinery, not corpus content: the embeddings DB (`embeddings/
 #: storage.py`), its SQLite WAL/SHM sidecars, and the topic-routing sidecar
 #: (`embeddings/topics.py`). This is the one place both directions of the
-#: split-index round trip name the set — `gather.runner._index_extra_files`
+#: split-index round trip name the set — `gather.lifecycle.index_extra_files`
 #: (write: what a split `IETF_LLM_INDEX_DIR` uploads to a published version's
 #: root), `store.cloud.CloudCorpusStore.seed_workspace` (read: what to
 #: relocate back out of a freshly staged version into the index dir), and

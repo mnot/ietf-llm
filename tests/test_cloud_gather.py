@@ -15,6 +15,7 @@ from moto import mock_aws
 
 from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import corpus
+from ietf_llm.gather import lifecycle
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.store.corpus import get_corpus_store
 from ietf_llm.store.cloud import _clear_resolve_cache
@@ -148,7 +149,7 @@ def test_fleet_slot_blocks_a_gather_until_released(
     cloud_s3: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", "1")
-    monkeypatch.setattr(gather_runner, "_SLOT_POLL_S", 0.02)
+    monkeypatch.setattr(lifecycle, "SLOT_POLL_S", 0.02)
 
     def _fake_run_gather(argv: list[str], _v: object, progress: object = None, note_fn: object = None) -> bool:
         digests = Path(get_cache_dir()) / argv[0] / "files" / "digests"
@@ -259,3 +260,99 @@ def test_cloud_gather_fails_before_any_stage_when_stored_mail_cannot_be_fetched(
     assert "GatherCacheRestoreError" in status["error"] and "'tls'" in status["error"]
     assert ran == ["tls"]  # the second gather never reached a stage
     assert get_corpus_store().resolve_current("tls") == version  # nothing published
+
+# --- the CLI on the cloud backend (issue #258) ----------------------------
+
+
+def _quiet_cli_housekeeping(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm.cli import main as cli_main
+
+    for name in (
+        "ensure_rfc_index",
+        "ensure_rfc_corpus",
+        "ensure_catalog_index",
+        "ensure_groups_index",
+        "sync_if_pristine",
+    ):
+        monkeypatch.setattr(cli_main, name, lambda *a, **k: None)
+
+
+def test_cli_gather_publishes_to_the_cloud_store(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ietf-llm <corpus>` with the cloud backend selected must publish what it
+    gathered — before #258 it populated local scratch and stopped, leaving the
+    bucket untouched — and record the gather fleet-visibly as the CLI's."""
+    from ietf_llm.cli import main as cli_main
+    from ietf_llm.gather.lifecycle import GatherOutcome
+
+    _quiet_cli_housekeeping(monkeypatch)
+
+    def _fake_gather_one(args: object, _v: object, **_kw: object) -> GatherOutcome:
+        digests = Path(get_cache_dir()) / "tls" / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\nfrom the CLI\n")
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(cli_main, "_gather_one", _fake_gather_one)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls"])
+    cli_main.main()
+
+    store = get_corpus_store()
+    assert store.resolve_current("tls") is not None
+    cache = store.local_cache_dir("tls")
+    assert cache is not None
+    assert (Path(cache) / "digests" / "index.md").read_text() == "# Overview\nfrom the CLI\n"
+    status = store.get_gather_status("tls")
+    assert status is not None
+    assert status["state"] == "done" and status["driver"] == "cli"
+    # Lease and slot were released: another gather can start at once.
+    assert store.acquire_lease("tls", "someone-else", 10.0) is True
+
+
+def test_cli_gather_refused_while_another_host_holds_the_lease(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm.cli import main as cli_main
+
+    _quiet_cli_housekeeping(monkeypatch)
+    store = get_corpus_store()
+    assert store.acquire_lease("tls", "other-host:1:abcd", 1000.0) is True
+    monkeypatch.setattr(
+        cli_main,
+        "_gather_one",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not gather")),
+    )
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls"])
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main()
+    assert exc.value.code == 1
+    assert store.resolve_current("tls") is None
+
+
+def test_cli_gather_of_a_fresh_corpus_downloads_nothing(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep over a corpus that is not due must cost one small read: the
+    debounce answers from the published version's own timestamp, before the
+    workspace is seeded (which downloads the whole version)."""
+    from ietf_llm.cli import main as cli_main
+
+    _quiet_cli_housekeeping(monkeypatch)
+    store = get_corpus_store()
+    digests = Path(get_cache_dir()) / "tls" / "files" / "digests"
+    digests.mkdir(parents=True, exist_ok=True)
+    (digests / "index.md").write_text("# Overview\n")
+    first = store.publish("tls", str(Path(get_cache_dir()) / "tls"))
+    assert store.resolve_current("tls") == first
+
+    def forbidden(*_a: object, **_k: object) -> object:
+        raise AssertionError("a corpus that is not due must not be seeded")
+
+    monkeypatch.setattr(type(store), "seed_workspace", forbidden)
+    monkeypatch.setattr(cli_main, "_gather_one", forbidden)
+    monkeypatch.setattr(main_mod, "_resolve_corpus_shape", lambda *a, **k: (False, True))
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls"])
+    cli_main.main()
+    assert store.resolve_current("tls") == first
+    assert store.get_gather_status("tls") is None

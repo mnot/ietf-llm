@@ -88,6 +88,18 @@ holds everything: the immutable, versioned corpus content (`files/` + `embedding
 **control plane** (the version pointer, gather lease, status, the read-path access marker, and
 **per-WG config** keys).
 
+**Both gather drivers publish.** An in-session `start_gather` and the CLI (`ietf-llm <corpus>`,
+`ietf-llm --all`) run the same lifecycle (`gather/lifecycle.py`): take the corpus's lease and a
+fleet gather slot, seed the local workspace from the current published version, hydrate the
+accelerator caches, gather, then publish the result as a new version and persist the caches. The
+local cache on a cloud host is scratch — only what is published reaches readers — so a CLI gather
+that lands prints the version it published, and one whose corpus another host is already gathering
+is refused with a non-zero exit (a `--all` sweep just skips that corpus). A run the freshness
+debounce skips publishes nothing: the current version is already what it would upload. The
+debounce, like the check that a corpus name is real, is decided before the lease, the slot or the
+seed, from the published version's own timestamp — so a `--all` sweep pays one small read, not a
+download, for each corpus that is not due.
+
 **Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives
 in the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's
 lease and read with a plain GET. So **you do not need to share `IETF_LLM_CONFIG_DIR`** across
