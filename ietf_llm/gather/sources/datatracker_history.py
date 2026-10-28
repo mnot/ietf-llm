@@ -190,7 +190,10 @@ def _classify_group_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     if "charter approved" in desc_lower or "charter changed" in desc_lower:
         return ("charter-approved", desc or "Charter event")
     if type_slug == "changed_state":
-        return ("group-state", desc or "Group state changed")
+        return (
+            "group-state",
+            f"Group state: {desc}" if desc else "Group state: changed",
+        )
     return (None, "")
 
 

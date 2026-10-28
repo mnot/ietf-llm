@@ -424,3 +424,45 @@ def test_timeline_drops_empty_year_headings(tmp_path: Path) -> None:
     # Only one meeting (in 2026); 2025 has none, its heading shouldn't appear.
     assert "## 2025" not in out
     assert "## 2026" in out
+
+
+def test_timeline_filter_selects_each_datatracker_kind(tmp_path: Path) -> None:
+    # Titles come from the real classifiers, not hand-typed strings, so a
+    # reworded title that stops matching its kind marker fails here.
+    from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
+        datatracker_history as dh,
+    )
+
+    titles = {
+        "charter-approved": dh._classify_group_event(  # pylint: disable=protected-access
+            {"type": "changed_state", "desc": "Charter approved, group active"}
+        )[1],
+        "group-state": dh._classify_group_event(  # pylint: disable=protected-access
+            {"type": "changed_state", "desc": "Started group"}
+        )[1],
+        "doc-adopted": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "changed_state", "desc": "Adopted by WG", "doc": "/api/v1/doc/document/draft-a/"}
+        )[1],
+        "doc-iesg": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "iesg_approved", "doc": "/api/v1/doc/document/draft-b/"}
+        )[1],
+        "doc-rfc": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "published_rfc", "doc": "/api/v1/doc/document/draft-c/"}
+        )[1],
+        "doc-wglc": dh._classify_doc_event(  # pylint: disable=protected-access
+            {"type": "sent_last_call", "doc": "/api/v1/doc/document/draft-d/"}
+        )[1],
+        "chair-departed": "Chair stepped down: A B",
+        "ballot": "`draft-e`: Some AD → Discuss",
+    }
+    path = tmp_path / "wg-_timeline.md"
+    path.write_text(
+        "# wg: timeline\n\n## 2026\n\n"
+        + "".join(f"- **2026-01-01** — {t}\n" for t in titles.values())
+    )
+    for kind, title in titles.items():
+        out = query_digest(str(path), "timeline", event_kind=kind)
+        assert title in out, kind
+        for other_kind, other in titles.items():
+            if other_kind != kind and other_kind != "doc-wglc" and kind != "doc-wglc":
+                assert other not in out, (kind, other_kind)

@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 @dataclass
@@ -344,7 +344,7 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
             continue
         if event_kind:
             # Map our event kinds to substrings that distinguish them.
-            kind_markers = {
+            kind_markers: Dict[str, Union[str, Tuple[str, ...]]] = {
                 "draft-published": "published",
                 "issue-opened": "opened",
                 "issue-closed": "closed",
@@ -355,12 +355,23 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
                 # are not reliably matchable via substring.
                 "meeting": "meeting",
                 "wglc": "Last Call",
+                # Datatracker governance titles; the group-event and
+                # document-event ones are fixed phrases in
+                # `datatracker_history`, ballots render "doc: AD → position".
                 "chair-appointed": "Chair appointed",
                 "chair-departed": "Chair stepped down",
+                "charter-approved": ("charter approved", "charter changed"),
+                "group-state": "Group state",
+                "doc-adopted": "adopted by WG",
+                "doc-iesg": ("submitted to IESG", "approved by IESG"),
+                "doc-rfc": "published as RFC",
+                "doc-wglc": "WG Last Call issued",
+                "ballot": "→",
                 "adoption-call": "adoption",
             }
             marker = kind_markers.get(event_kind, event_kind)
-            if marker.lower() not in rest.lower():
+            markers = (marker,) if isinstance(marker, str) else marker
+            if not any(m.lower() in rest.lower() for m in markers):
                 continue
         kept_per_year[current_year].append(line)
 
