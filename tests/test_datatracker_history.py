@@ -452,6 +452,49 @@ def test_doc_events_tell_ietf_last_call_from_wg_last_call(
     ]
 
 
+def test_leaving_the_adopted_state_is_not_an_adoption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real httpbis shapes: only the state moved *to* counts.
+    doc = "/api/v1/doc/document/draft-ietf-wg-x/"
+    _stub_get_json(monkeypatch, {
+        "/doc/docevent/": {"objects": [
+            {"time": _now_minus(5), "type": "changed_state", "doc": doc,
+             "desc": "IETF WG state changed to <b>Adopted by a WG</b> from "
+                     "Candidate for WG Adoption"},
+            {"time": _now_minus(6), "type": "changed_state", "doc": doc,
+             "desc": "IETF WG state changed to <b>In WG Last Call</b> from "
+                     "Adopted by a WG"},
+            {"time": _now_minus(7), "type": "changed_state", "doc": doc,
+             "desc": "IETF WG state changed to <b>WG Document</b> from "
+                     "Adopted by a WG"},
+        ]},
+    })
+    events = datatracker_history.fetch_doc_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert sorted(e.kind for e in events) == ["doc-adopted", "doc-wglc"]
+
+
+def test_rg_last_call_is_reported_as_such(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {
+        "/doc/docevent/": {"objects": [
+            {"time": _now_minus(5), "type": "changed_state",
+             "doc": "/api/v1/doc/document/draft-irtf-rg-x/",
+             "desc": "IRTF state changed to <b>In RG Last Call</b> from "
+                     "Active RG Document"},
+        ]},
+    })
+    events = datatracker_history.fetch_doc_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert [(e.kind, e.title) for e in events] == [
+        ("doc-wglc", "`draft-irtf-rg-x`: RG Last Call issued"),
+    ]
+
+
 def test_doc_events_respects_months_cutoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

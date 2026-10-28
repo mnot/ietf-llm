@@ -225,11 +225,15 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
         return ("doc-iesg", f"`{doc_name}` {action}")
     # Adoption by WG is recorded as a state change with a recognisable
     # description; pattern-match defensively.
+    # Only the state moved *to* matters: "In WG Last Call from Adopted by a WG"
+    # is a Last Call, not an adoption.
     desc_lower = desc.lower()
-    if "adopted by" in desc_lower or "adopted as a working group" in desc_lower:
+    moved_to = re.split(r"\s+from\s+", desc_lower, maxsplit=1)[0]
+    if "adopted by" in moved_to or "adopted as a working group" in moved_to:
         return ("doc-adopted", f"`{doc_name}` adopted by WG")
     # `sent_last_call` is the IESG's IETF Last Call announcement; a WG (or RG)
-    # Last Call is only visible as the stream state moving to "In WG Last Call".
+    # Last Call is only visible as the stream state moving to "In WG Last
+    # Call" ("In RG Last Call"), reported under the same doc-wglc kind.
     if type_slug == "sent_last_call":
         return ("doc-lc", f"`{doc_name}`: IETF Last Call announced")
     match = _STREAM_LAST_CALL_RE.search(desc)
