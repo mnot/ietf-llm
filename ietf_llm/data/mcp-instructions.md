@@ -209,11 +209,13 @@ mail wrap. It also reads files the index does not hold (superseded draft
 revisions are not embedded), so it is the only way to find wording that was
 removed before publication.
 
-To see *which files* mention a term with a few example lines each, pass
-`max_per_file=N` (a small N such as 3) rather than making a `files_only` call
-and then a lines call. The cap is per file and applied before `limit`, so one
-noisy file cannot use up the listing; the footer still gives the full match
-counts and says how many lines each cap left out.
+To see example lines from many files in one call, pass `max_per_file=N` (a
+small N such as 3) instead of making a `files_only` call and then a lines call.
+The cap is per file and applied before `limit`, so one noisy file cannot use
+up the listing; `limit` still bounds the total lines, so with the default 50 and
+N=3 only about 17 files get lines. The footer keeps the full match counts,
+says how many lines each cap left out, and says how many matching files got no
+line (use `files_only` for the complete file list).
 
 The same tool answers this for the **published series**: `grep_corpus(
 corpus="rfcs", pattern=…)` scans the full text of every RFC and reports how

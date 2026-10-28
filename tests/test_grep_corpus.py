@@ -363,6 +363,44 @@ def test_max_per_file_and_limit_both_cut(isolated_home: Path) -> None:
     assert "## threads/c-quiet.md" not in out
 
 
+def _advice(out: str) -> str:
+    """The `Raise …` sentence of the footer, which names the caps to turn."""
+    return next(line for line in out.splitlines() if "Raise " in line)
+
+
+def test_footer_advises_only_the_cap_that_cut_lines(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    # Cap cut 38 lines, `limit` none: raise the cap, not `limit`.
+    cap_only = _advice(tool_grep_corpus("wg", "needle", limit=10, max_per_file=2))
+    assert "Raise `max_per_file`," in cap_only
+    assert "`limit`" not in cap_only
+    # Cap larger than every file cut nothing; `limit` did all the cutting.
+    limit_only_out = tool_grep_corpus("wg", "needle", limit=4, max_per_file=100)
+    assert "omitted by `max_per_file" not in limit_only_out
+    limit_only = _advice(limit_only_out)
+    assert "Raise `limit`" in limit_only
+    assert "`max_per_file`" not in limit_only
+    # Both cut: both are named.
+    both = _advice(tool_grep_corpus("wg", "needle", limit=3, max_per_file=2))
+    assert "`max_per_file` or `limit`" in both
+
+
+def test_footer_does_not_blame_the_cap_when_limit_binds(isolated_home: Path) -> None:
+    for name in "abcde":
+        write_cache_file(isolated_home, "wg", f"threads/{name}.md", "needle\n")
+    out = tool_grep_corpus("wg", "needle", limit=3, max_per_file=1)
+    assert "2 omitted by `limit`" in out
+    assert "`max_per_file=1`" not in out.split("capped:")[1]
+    assert "`max_per_file`" not in _advice(out)
+
+
+def test_no_footer_when_nothing_was_cut(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    out = tool_grep_corpus("wg", "needle", limit=200, max_per_file=100)
+    assert "Showing" not in out
+    assert "Raise" not in out
+
+
 def test_max_per_file_larger_than_any_file_changes_nothing(
     isolated_home: Path,
 ) -> None:
@@ -421,7 +459,7 @@ def test_max_per_file_ignored_under_files_only(isolated_home: Path) -> None:
 
 def test_invalid_max_per_file_is_refused(isolated_home: Path) -> None:
     _noisy_and_quiet(isolated_home)
-    for bad in (0, -1, "abc"):
+    for bad in (0, -1, "abc", True, False, float("inf"), float("nan")):
         out = tool_grep_corpus("wg", "needle", max_per_file=bad)  # type: ignore[arg-type]
         assert "`max_per_file` to be a positive integer" in out
         assert "matching line(s)" not in out

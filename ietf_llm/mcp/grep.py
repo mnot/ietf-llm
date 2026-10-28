@@ -452,13 +452,19 @@ def _hits_footer(
     unlisted = len(per_file) - len({hit.file for hit in hits})
     if unlisted:
         reasons.append(f"{unlisted} matching file(s) have no line listed")
+    # Advise only the cap that removed lines: raising one that cut nothing
+    # would change nothing, and raising `max_per_file` while `limit` is the
+    # binding cap would just spend the budget on fewer files.
+    raise_what: List[str] = []
+    if by_cap:
+        raise_what.append("`max_per_file`")
+    if by_limit:
+        raise_what.append(f"`limit` (max {_MAX_GREP_LIMIT})")
     return (
         f"\n_Showing {len(hits)} of {total} matching line(s) — the count is "
         f"the complete scan, only the listing is capped: {'; '.join(reasons)}. "
-        "Raise `max_per_file`"
-        + (f" or `limit` (max {_MAX_GREP_LIMIT})" if by_limit else "")
-        + ", narrow with `file_pattern`, or pass `files_only=True` for one "
-        "row per file._"
+        f"Raise {' or '.join(raise_what)}, narrow with `file_pattern`, or "
+        "pass `files_only=True` for one row per file._"
     )
 
 
@@ -896,9 +902,11 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
             'look for, e.g. `grep_corpus("httpbis", "8890")`.'
         )
     if max_per_file is not None:
+        # `True` would pass `int()` as 1, and `inf` raises OverflowError; neither
+        # is a line count the caller meant.
         try:
-            max_per_file = int(max_per_file)
-        except (TypeError, ValueError):
+            max_per_file = 0 if isinstance(max_per_file, bool) else int(max_per_file)
+        except (TypeError, ValueError, OverflowError):
             max_per_file = 0
         if max_per_file < 1:
             return (
@@ -1081,12 +1089,13 @@ def register(server: "FastMCP") -> None:
           - `limit`: cap on rendered rows — matching lines normally, files
             under `files_only` (default 50, max 200). The scan and the
             reported totals are always complete; only the listing is cut.
-          - `max_per_file=N`: show at most N matching lines per file, so one
-            call lists every matching file with a few example lines each
-            instead of one noisy file using up `limit`. Applied before
-            `limit`, which still bounds the total. Counts matching lines
-            only; `context` lines are extra. Totals and per-file counts stay
-            complete, and the listing says how many lines each cap omitted.
+          - `max_per_file=N`: show at most N matching lines per file, so
+            one noisy file cannot use up `limit` ahead of the others. Applied
+            before `limit`, which still bounds the total lines, so a small N
+            reaches more files but not necessarily all of them: the footer
+            says how many matching files got no line, and how many lines each
+            cap omitted. Counts matching lines only; `context` lines are
+            extra. Totals and per-file counts stay complete.
             Unset (default) means no per-file cap; must be at least 1.
             Gathered corpora only: ignored under `files_only`, and the RFC
             series already shows at most 3 sections per RFC.
