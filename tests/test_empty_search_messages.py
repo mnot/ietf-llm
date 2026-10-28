@@ -88,7 +88,7 @@ def test_search_empty_without_a_filter_does_not_suggest_a_regather(
     out = mcp.search.tool_search("wg", "mlkem")
     assert "no results" in out
     assert "index is present" in out
-    assert "no chunks matched" in out
+    assert "matched no chunks" in out
     assert "Loosen" not in out
     assert "re-gather" not in out and "start_gather" not in out
 
@@ -108,7 +108,7 @@ def test_read_topic_empty_cases(
     assert "re-gather" not in out
     # Index present, no filter.
     out = mcp.topic.tool_read_topic("wg", "mlkem")
-    assert "index is present" in out and "no chunks matched" in out
+    assert "index is present" in out and "matched no chunks" in out
     assert "Loosen" not in out and "re-gather" not in out
 
 
@@ -126,3 +126,59 @@ def test_find_related_empty_cases(
     assert "re-gather" not in out and "start_gather" not in out
     out = mcp.search.tool_find_related("wg", f, 0, since="2030-01-01")
     assert "since='2030-01-01'" in out and "or the index has no chunk 0" in out
+
+
+class _FailingModel:
+    def embed(self, _text: str) -> Iterable[float]:
+        raise RuntimeError("embedding backend down")
+
+    def embed_multi(self, texts: List[str]) -> Iterable[List[float]]:
+        raise RuntimeError("embedding backend down")
+
+
+def test_embedding_failure_is_not_reported_as_a_clean_miss(
+    isolated_home: Path,
+) -> None:
+    # Same index, same query: with a working model it finds chunks; when the
+    # query cannot be embedded `search()` returns [] and the message must not
+    # assert that nothing matched, nor that an author is absent.
+    _seed(isolated_home)
+    _build_with_stub("wg")
+    assert "score=" in mcp.search.tool_search("wg", "mlkem")  # control: hits exist
+    embeddings._MODEL_CACHE["stub"] = _FailingModel()  # pylint: disable=protected-access
+    for kwargs in ({}, {"author": "Alice"}):
+        out = mcp.search.tool_search("wg", "mlkem", **kwargs)
+        assert "score=" not in out
+        assert "could not be embedded" in out
+        assert "re-gather" not in out and "start_gather" not in out
+    out = mcp.search.tool_search("wg", "mlkem", author="Alice")
+    assert "check the spelling" in out  # pointer kept, without asserting a miss
+    assert "no chunks matched with author" in out and "or the query could not" in out
+    topic = mcp.topic.tool_read_topic("wg", "mlkem")
+    assert "could not be embedded" in topic
+
+
+def test_find_related_does_not_claim_an_embedding_failure(
+    isolated_home: Path,
+) -> None:
+    # find_related reads the seed's stored vector and never embeds a query.
+    _seed(isolated_home)
+    _build_with_stub("wg")
+    out = mcp.search.tool_find_related("wg", "threads/2026-04-10-mlkem.md", 99)
+    assert "embedded" not in out
+
+
+def test_find_related_empty_while_index_rebuilds(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm.gather import runner as gather_runner
+
+    _seed(isolated_home)
+    monkeypatch.setattr(
+        gather_runner, "local_inflight",
+        lambda wg: {"state": "running", "stage_index": 18, "stage_total": 19},
+    )
+    monkeypatch.setattr(mcp.common, "probe_index", lambda wg: False)
+    out = mcp.search.tool_find_related("wg", "threads/2026-04-10-mlkem.md", 0)
+    assert "being rebuilt" in out and "retry" in out
+    assert "may have no search index" not in out

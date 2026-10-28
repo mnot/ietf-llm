@@ -58,17 +58,23 @@ def _empty_search_message(
         )
         return f"({what} — {no_index})"
     active = [f"{name}={value!r}" for name, value in filters if value]
+    # `search()` also returns [] when the embedding model is unavailable or
+    # embedding the query fails, and the caller cannot tell the two apart.
     if not active:
-        return f"({what} — the search index is present, but no chunks matched{scope}.)"
+        return (
+            f"({what} — the search index is present, but the query matched no "
+            f"chunks{scope} or could not be embedded.)"
+        )
     hint = (
-        " `author=` matches the sender named in the chunk header; check how "
-        f'the name is spelled in `read_digest(corpus="{wg}", kind="people")`.'
+        " `author=` matches the sender named in the chunk header, so check the "
+        f'spelling of the name in `read_digest(corpus="{wg}", kind="people")`.'
         if any(name == "author" and value for name, value in filters)
         else ""
     )
     return (
         f"({what} — the search index is present, but no chunks matched with "
-        f"{', '.join(active)}{scope}. Loosen or drop a filter.{hint})"
+        f"{', '.join(active)}{scope}, or the query could not be embedded. "
+        f"Loosen or drop a filter.{hint})"
     )
 
 
@@ -368,6 +374,9 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
         verbose=Verbosity.QUIET,
     )
     if not hits:
+        rebuilding = _index_rebuilding_note(wg)
+        if rebuilding is not None:
+            return _with_freshness(wg, f"(no related chunks yet — {rebuilding})")
         seed = f"no chunk {chunk_idx} in {file}"
         if not probe_index(wg):
             no_index = (

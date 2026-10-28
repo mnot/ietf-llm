@@ -6,7 +6,7 @@ _gather_enabled / status formatting). The runner itself is stubbed.
 from __future__ import annotations
 from ietf_llm import mcp
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -365,7 +365,36 @@ def test_gather_status_renders_cancelled() -> None:
         }
     )
     assert "**tls**" in out and "cancelled" in out
-    assert "partial gather discarded" in out
+    assert "re-run to retry" in out
+
+
+def _backend_stop_texts(monkeypatch: pytest.MonkeyPatch, backend: str) -> Tuple[str, str]:
+    """(stop_gather reply, cancelled status line) under `backend`."""
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", backend)
+    monkeypatch.setattr(
+        gather_runner, "request_stop", lambda c, t: {"stopped": True, "corpus": c}
+    )
+    reply = mcp.gather.tool_stop_gather("tls", "tok")
+    line = mcp.gather._format_gather_status({"corpus": "tls", "state": "cancelled"})
+    return reply, line
+
+
+def test_stop_and_cancelled_text_differ_by_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Local: the gather wrote into the live cache, so a stop leaves those files.
+    # Cloud: nothing was published, so the corpus is as it was. Each backend's
+    # text must not make the other's claim.
+    local_reply, local_line = _backend_stop_texts(monkeypatch, "local")
+    cloud_reply, cloud_line = _backend_stop_texts(monkeypatch, "cloud")
+    for text in (local_reply, local_line):
+        assert "stay in place" in text
+        assert "discarded" not in text and "previous contents" not in text
+    for text in (cloud_reply, cloud_line):
+        assert "in place" not in text
+    assert "not published" in cloud_reply and "previous contents" in cloud_reply
+    assert "discarded" in cloud_line
+    assert local_reply != cloud_reply and local_line != cloud_line
 
 
 def test_gather_status_missing(monkeypatch: pytest.MonkeyPatch) -> None:

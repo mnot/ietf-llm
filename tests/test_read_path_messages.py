@@ -64,3 +64,38 @@ def test_session_guidance_follows_the_backend(
     assert "in place" in mcp.common._regather_read_clause()
     monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "cloud")
     assert "last published version" in mcp.common._regather_read_clause()
+
+
+def test_banner_stage_does_not_nest_parentheses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for backend in ("local", "cloud"):
+        monkeypatch.setenv("IETF_LLM_STORE_BACKEND", backend)
+        _running(monkeypatch)
+        note = mcp.common._inflight_refresh_note("wg")
+        assert note is not None
+        assert "stage 5/19: mail" in note
+        assert "((" not in note and "))" not in note
+
+
+def test_banner_does_not_cite_a_stamp_that_may_be_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # freshness_line() is None for a legacy cache with no gather sentinel, so
+    # the local banner must read sensibly without a stamp above it.
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", "local")
+    _running(monkeypatch)
+    note = mcp.common._inflight_refresh_note("wg")
+    assert note is not None
+    assert "the stamp above" not in note
+
+
+def test_banner_differs_by_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    notes = {}
+    for backend in ("local", "cloud"):
+        monkeypatch.setenv("IETF_LLM_STORE_BACKEND", backend)
+        _running(monkeypatch)
+        notes[backend] = str(mcp.common._inflight_refresh_note("wg"))
+    assert notes["local"] != notes["cloud"]
+    # Only the local backend writes in place; only cloud has a published version.
+    assert "in place" in notes["local"] and "in place" not in notes["cloud"]

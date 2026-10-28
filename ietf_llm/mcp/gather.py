@@ -16,6 +16,7 @@ from .common import (
     _gather_status_call,
     _offload,
     _stage_phrase,
+    _store_is_local,
     _tool_timeout_seconds,
 )
 
@@ -305,14 +306,28 @@ def tool_stop_gather(corpus: str, token: str) -> str:
     )
 
 
+def _stop_effect() -> str:
+    """What a stopped gather leaves behind, for the backend in use. Local: the
+    gather writes into the live cache, so a stop only ends the process and
+    whatever it already wrote stays. Cloud: nothing is visible until publish."""
+    if _store_is_local():
+        return (
+            "Files the gather already wrote stay in place (it writes into the "
+            "live cache); the search index stays the previous one."
+        )
+    return (
+        "The partial gather is not published, so the corpus keeps its "
+        "previous contents (if any)."
+    )
+
+
 def _format_stop_result(result: Dict[str, Any], corpus: str) -> str:
     """Render `gather_runner.request_stop`'s result dict as the tool's reply."""
     if result.get("stopped"):
         return (
             f"Requested stop for '{corpus}'. It ends at the next stage boundary "
             f'(download batch / stage); poll `gather_status(corpus="{corpus}")` '
-            "until it reports `cancelled`. The partial gather is not published, "
-            "so the corpus keeps its previous contents (if any)."
+            f"until it reports `cancelled`. {_stop_effect()}"
         )
     reason = result.get("reason")
     if reason == "not running":
@@ -326,6 +341,12 @@ def _format_stop_result(result: Dict[str, Any], corpus: str) -> str:
             "that began it."
         )
     return f"'{corpus}' is not a valid corpus name."
+
+
+def _cancelled_effect() -> str:
+    if _store_is_local():
+        return "files already written stay in place, search index unchanged"
+    return "partial gather discarded"
 
 
 def _format_gather_status(status: Dict[str, Any]) -> str:
@@ -362,7 +383,7 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
     if state == "interrupted":
         parts.append("the gather process ended before completion; re-run it")
     if state == "cancelled":
-        parts.append("stopped on request; partial gather discarded, re-run to retry")
+        parts.append(f"stopped on request; {_cancelled_effect()}, re-run to retry")
     if state == "failed" and status.get("error"):
         parts.append(f"error: {status['error']}")
     line = " · ".join(parts)
@@ -615,8 +636,10 @@ def register(server: "FastMCP") -> None:
         Cooperative and best-effort: the gather ends at its next stage
         boundary or download batch, so this reports that a stop was
         *requested* — poll `gather_status(corpus=...)` until it reports
-        `cancelled`. The partial download is discarded (not published), so a
-        previously-gathered snapshot of the corpus is left intact.
+        `cancelled`. On the cloud backend the partial gather is discarded (not
+        published), so the corpus keeps its previous contents. On the default
+        local backend the gather writes into the live cache, so files it
+        already wrote stay in place and only the search index is unchanged.
 
         Requires the `token` returned by the `start_gather` call that began
         this gather: it is the only capability that can stop it, so one

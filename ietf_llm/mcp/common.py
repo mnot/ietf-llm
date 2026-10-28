@@ -384,6 +384,19 @@ def _regather_read_clause() -> str:
     return "readers keep seeing the last published version until the gather publishes"
 
 
+def _banner_stage(status: Dict[str, Any]) -> str:
+    """The stage as the banner shows it, `stage 5/19: mail`. The banner already
+    sits in parentheses, so `_stage_phrase`'s own `(name)` would nest."""
+    idx = status.get("stage_index") or 0
+    total = status.get("stage_total")
+    stage = status.get("stage")
+    if total and idx:
+        return f"stage {idx}/{total}" + (f": {stage}" if stage else "")
+    if stage:
+        return f"stage: {stage}"
+    return "in progress"
+
+
 def _inflight_refresh_note(wg: str) -> Optional[str]:
     """One-line caveat when a gather for `wg` is running in this process *right
     now*, worded for what a reader can actually see on the active backend.
@@ -407,12 +420,12 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     status = gather_runner.local_inflight(wg)
     if not status:
         return None
-    where = _stage_phrase(status) or "in progress"
+    where = _banner_stage(status)
     poll = f'poll `gather_status(corpus="{wg}")`'
     if _store_is_local():
         return (
-            f"⚠ A refresh is running now ({where}) — the stamp above is the "
-            "previous gather's, files are updated in place (counts and file "
+            f"⚠ A refresh is running now ({where}) — any gather date shown is "
+            "the previous gather's, files are updated in place (counts and file "
             "lists can change between calls), and search uses the previous index "
             f"until it is swapped ({poll} for `done`)."
         )

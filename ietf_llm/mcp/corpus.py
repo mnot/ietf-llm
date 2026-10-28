@@ -610,7 +610,9 @@ def register(server: "FastMCP") -> None:
         themes especially, built from the embedding index in the gather's
         *final* stage — are complete only after `gather_status` reports `done`.
         A *first* gather **refuses** the read (no prior snapshot to serve); a
-        re-gather serves the previous, *stale* one. If you just called
+        re-gather stays readable but is mid-update (themes come from the
+        previous index; on the local backend other sections are rewritten in
+        place). If you just called
         `start_gather`, don't reason "overview only needs structural facts, so I
         can read it mid-gather" — the whole cache is still being written; wait
         for `done`.
