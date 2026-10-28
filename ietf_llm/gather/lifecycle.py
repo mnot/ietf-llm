@@ -375,7 +375,9 @@ def gather_and_publish(
 
     Raises `GatherBusy` when another gatherer holds the corpus; a pipeline or
     publish exception is recorded as `failed` and re-raised — the caller owns
-    the exit code. A `SKIPPED` or `UNUSABLE` outcome publishes nothing."""
+    the exit code. Only `GATHERED` publishes. The caller screens out an unusable
+    name or a corpus that is not due *before* calling this
+    (`sequencer.preflight`), so neither takes a lease, slot or status record."""
     owner = process_owner()
     workspace = os.path.join(get_cache_dir(), corpus)
 
@@ -407,13 +409,5 @@ def gather_and_publish(
         except BaseException as err:
             recorder.finish("failed", f"{type(err).__name__}: {err}"[:500])
             raise
-        if outcome is GatherOutcome.UNUSABLE:
-            recorder.finish(
-                "failed",
-                f"'{corpus}' is not a recognized Working Group / Research Group, "
-                "a known mailing list, a draft/repo set, or a synthetic (x-) "
-                "corpus.",
-            )
-        else:
-            recorder.finish("done")
+        recorder.finish("done")
         return outcome

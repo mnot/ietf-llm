@@ -145,6 +145,11 @@ def test_all_isolates_args_per_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
         return True
 
     monkeypatch.setattr(main_mod, "_gather_one", fake_gather_one)
+    monkeypatch.setattr(
+        main_mod,
+        "preflight",
+        lambda *a, **k: sequencer.Preflight(None, {}, False, True),
+    )
     monkeypatch.setattr(main_mod.sys, "argv", ["ietf-llm", "--all"])
     main_mod.main()
     # Under the bug, bb would arrive carrying ["aa/repo"].

@@ -46,6 +46,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .. import freshness, serve_metrics
@@ -659,7 +660,8 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     registry (the worker is a daemon, so a restart/kill would otherwise leave
     the record stuck), or another process — an `ietf-llm` CLI gather on this
     host — whose recorded pid is dead. The local backend is a single host, so
-    the pid is a sound liveness check there.
+    the pid is a sound liveness check there, provided the record is also recent
+    (a reused pid cannot keep a long-dead gather `running`).
     """
     if not valid_corpus_name(corpus):
         return None
@@ -679,13 +681,24 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     if result.get("state") in ("queued", "running"):
         pid = result.get("pid")
         if isinstance(pid, int) and pid != os.getpid():
-            tracked = _pid_alive(pid)
+            tracked = _pid_alive(pid) and _recently_updated(result)
         else:
             with _registry_lock:
                 tracked = corpus in _jobs
         if not tracked:
             result["state"] = "interrupted"
     return result
+
+
+def _recently_updated(status: Dict[str, Any]) -> bool:
+    """Whether a status record was written within the lease TTL. A pid alone
+    cannot vouch for a record: after a reboot or long uptime the writer's pid
+    may belong to an unrelated process. A record with no readable `updated`
+    stamp is taken at the pid's word."""
+    stamp = freshness.parse_iso(str(status.get("updated") or ""))
+    if stamp is None:
+        return True
+    return (datetime.now(timezone.utc) - stamp).total_seconds() <= lifecycle.LEASE_TTL
 
 
 def _pid_alive(pid: int) -> bool:

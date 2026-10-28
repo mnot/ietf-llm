@@ -14,6 +14,7 @@ import copy
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -30,7 +31,7 @@ from ..embeddings import (
     generate_topics,
     has_topics,
 )
-from ..freshness import local_last_gathered, parse_iso, record_gather
+from ..freshness import GatheredAt, local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
@@ -526,31 +527,37 @@ def run_gather(
     return outcome is not GatherOutcome.UNUSABLE
 
 
-def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
+@dataclass(frozen=True)
+class Preflight:
+    """What `preflight` decided about one corpus before any gather work.
+
+    `outcome` is `UNUSABLE` or `SKIPPED` when the run should stop there, and
+    None to proceed with the classification below."""
+
+    outcome: Optional[GatherOutcome]
+    persisted: Dict[str, Any]
+    synth: bool
+    group_backed: bool
+
+
+def preflight(
     args: argparse.Namespace,
     verbosity: Verbosity,
-    progress: Optional[ProgressFn] = None,
-    note_fn: Optional[Callable[[str], None]] = None,
-) -> GatherOutcome:
-    """Run the full gather pipeline for a single WG.
+    *,
+    gathered_at: Optional[GatheredAt] = None,
+) -> Preflight:
+    """Decide whether `args.wg` is worth gathering at all: classify the name,
+    then apply the reuse hint and the freshness debounce.
 
-    Loads the WG's persisted config first (so per-WG --github lists etc.
-    apply), then walks the gather stages in order. Mutates args in place
-    via config.merge; safe to call repeatedly with different args.wg
-    values for --all. Returns `GATHERED` when the stages ran, `SKIPPED`
-    when the freshness debounce or a reuse hint left the cache as it was
-    (success, but nothing new to publish), or `UNUSABLE` if the corpus
-    name resolved to nothing (logged). `progress`, when given, is called
-    as each stage begins (see `_stage_plan`).
+    Runs before a CLI gather takes its lease, fleet slot, status record or
+    seeded workspace, so a mistyped name or a corpus that is not due costs none
+    of them. `gathered_at` is where the debounce reads the last-gathered time
+    (the store's, since nothing is seeded yet); the default is the local
+    sentinel. Mutates `args` the way `_gather_one` always has (`--clear-config`,
+    a bare list name folded into `mailing_list`). `--force` bypasses the skips,
+    not the classification.
     """
     http_metrics.reset()  # fresh per-corpus egress accounting; see `http_metrics`
-
-    # Suppress regenerable / non-served bulk when the CLI flag (always set by
-    # an MCP gather via to_argv) OR a cloud backend asks for it (a cloud-served
-    # version is never grepped locally). Computed once, threaded as a boolean.
-    on_cloud = service_config.store_backend() == "cloud"
-    suppress_pdf = bool(args.no_pdf) or on_cloud
-    suppress_raw = bool(args.no_raw) or on_cloud
 
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
@@ -562,7 +569,7 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     shape = _resolve_corpus_shape(args, persisted, verbosity)
     if shape is None:
         # Unusable name (typo); _resolve_corpus_shape logged why.
-        return GatherOutcome.UNUSABLE
+        return Preflight(GatherOutcome.UNUSABLE, persisted, False, False)
     synth, group_backed = shape
 
     # Persist a --no-seed / --seed toggle before anything can short-circuit (a
@@ -574,10 +581,46 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # in persisted sources): a reuse hint when a new custom/synthetic corpus
     # duplicates an existing one, or a freshness debounce when a cached corpus
     # is refreshed too soon. --force runs anyway; a skip here is success.
-    skip = canonical.cli_gather_skip(args, synthetic=synth, group_backed=group_backed)
+    skip = canonical.cli_gather_skip(
+        args, synthetic=synth, group_backed=group_backed, gathered_at=gathered_at
+    )
     if skip is not None:
         log(skip, verbosity, level=LogLevel.STATUS)
-        return GatherOutcome.SKIPPED
+        return Preflight(GatherOutcome.SKIPPED, persisted, synth, group_backed)
+    return Preflight(None, persisted, synth, group_backed)
+
+
+def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
+    args: argparse.Namespace,
+    verbosity: Verbosity,
+    progress: Optional[ProgressFn] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
+    pre: Optional[Preflight] = None,
+) -> GatherOutcome:
+    """Run the full gather pipeline for a single WG.
+
+    Runs `preflight` first unless the caller already did (the CLI does, ahead
+    of its lease), then merges the WG's persisted config (so per-WG --github
+    lists etc. apply) and walks the gather stages in order. Mutates args in
+    place via config.merge; safe to call repeatedly with different args.wg
+    values for --all. Returns `GATHERED` when the stages ran, `SKIPPED`
+    when the freshness debounce or a reuse hint left the cache as it was
+    (success, but nothing new to publish), or `UNUSABLE` if the corpus
+    name resolved to nothing (logged). `progress`, when given, is called
+    as each stage begins (see `_stage_plan`).
+    """
+    # Suppress regenerable / non-served bulk when the CLI flag (always set by
+    # an MCP gather via to_argv) OR a cloud backend asks for it (a cloud-served
+    # version is never grepped locally). Computed once, threaded as a boolean.
+    on_cloud = service_config.store_backend() == "cloud"
+    suppress_pdf = bool(args.no_pdf) or on_cloud
+    suppress_raw = bool(args.no_raw) or on_cloud
+
+    if pre is None:
+        pre = preflight(args, verbosity)
+    if pre.outcome is not None:
+        return pre.outcome
+    persisted, synth, group_backed = pre.persisted, pre.synth, pre.group_backed
 
     # Validate the *new* CLI-provided --draft / --mailing-list / --github
     # values against their authoritative sources before config.merge

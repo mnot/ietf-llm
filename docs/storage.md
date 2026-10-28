@@ -95,7 +95,10 @@ accelerator caches, gather, then publish the result as a new version and persist
 local cache on a cloud host is scratch — only what is published reaches readers — so a CLI gather
 that lands prints the version it published, and one whose corpus another host is already gathering
 is refused with a non-zero exit (a `--all` sweep just skips that corpus). A run the freshness
-debounce skipped publishes nothing: the current version is already what it would upload.
+debounce skips publishes nothing: the current version is already what it would upload. The
+debounce, like the check that a corpus name is real, is decided before the lease, the slot or the
+seed, from the published version's own timestamp — so a `--all` sweep pays one small read, not a
+download, for each corpus that is not due.
 
 **Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives
 in the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's

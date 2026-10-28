@@ -727,7 +727,10 @@ version. `get_corpus_store()` picks the backend from service config
 the pipeline, publish and cache persistence after, the status record
 throughout — by both gatherers: the MCP runner wraps it with its queue and
 cooperative cancel, and the `ietf-llm` CLI runs it synchronously around
-`_gather_one`. Neither driver reaches the store any other way, so a CLI gather
+`_gather_one`, after `sequencer.preflight` has screened out an unusable name
+and a corpus the freshness debounce says is not due (against the store's
+`gathered_at`, so nothing is leased, seeded or recorded for either). Neither
+driver reaches the store any other way, so a CLI gather
 on the cloud backend publishes exactly as an in-session one does (issue #258).
 
 A corpus is not only its `files/` tree: the gather workspace *is* the corpus

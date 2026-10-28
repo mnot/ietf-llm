@@ -22,7 +22,12 @@ from typing import Any, Dict, Optional
 from ..gather import lifecycle
 from ..gather.cli import build_parser
 from ..gather.lifecycle import GatherBusy, GatherOutcome
-from ..gather.sequencer import _gather_one, _persist_seed_toggle, embed_settings
+from ..gather.sequencer import (
+    _gather_one,
+    _persist_seed_toggle,
+    embed_settings,
+    preflight,
+)
 from ..gather.sources.catalog import ensure_catalog_index
 from ..gather.sources.groups import ensure_groups_index
 from ..gather.sources.repo_discovery import print_discovery
@@ -146,13 +151,21 @@ def _gather(args: argparse.Namespace, verbosity: Verbosity) -> Optional[GatherOu
     seed/hydrate, the stages, then publish — which on the cloud backend is what
     makes the result visible at all (issue #258), and on the local backend is
     a no-op. Returns the outcome, or None when another gatherer (an in-session
-    MCP gather here, or another host) already holds the corpus."""
+    MCP gather here, or another host) already holds the corpus.
+
+    A mistyped name or a corpus that is not due is settled by `preflight`
+    first, against the store's published gather time, so it takes no lease,
+    slot or status record and downloads nothing."""
+    store = get_corpus_store()
+    pre = preflight(args, verbosity, gathered_at=store.gathered_at)
+    if pre.outcome is not None:
+        return pre.outcome
     try:
         return lifecycle.gather_and_publish(
-            get_corpus_store(),
+            store,
             args.wg,
             lambda progress, note: _gather_one(
-                args, verbosity, progress=progress, note_fn=note
+                args, verbosity, progress=progress, note_fn=note, pre=pre
             ),
             spec=_status_spec(args),
             verbosity=verbosity,
