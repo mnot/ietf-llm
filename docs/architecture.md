@@ -324,7 +324,12 @@ Key invariants:
   tools, not raw. `citations.md` is the draft → citing-thread/issue
   cross-reference; `message_citations.md` is the message → message graph
   (archive-permalink links resolved between gathered messages), read via
-  `find_message_citations`.
+  `find_message_citations`. `timeline.kinds.json` beside `timeline.md` lists
+  the kind of each row, in order, so `read_digest(event_kind=...)` selects rows
+  exactly instead of guessing from their text (issue and mail titles can
+  contain any phrase). The sidecar records a hash of the md it describes; a
+  digest without a sidecar, or one that no longer matches it, is matched on row
+  text.
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
   activity in the `--months` window.
@@ -1011,7 +1016,12 @@ Concretely, the gather layer reads from the API for:
   resolving to the latest rendered markdown / text / PDF.
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
-  `datatracker_history.py`).
+  `datatracker_history.py`). Chair appointments and departures come
+  from the `info_changed` entries of `group/groupevent` ("Chairs changed to
+  A, B from A"), which carry the names inline and are dated by when the
+  Datatracker record was edited, but only for changes since the log began; a
+  group's founding chairs have no appointment event. Names are mapped to the
+  people registry's spelling where it holds a clean one.
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
@@ -1489,10 +1499,11 @@ free of it and degrades to keyword matching.
 
 **What is in it.** Every `wg` and `rg` group in any state, with the current
 charter, milestones, and a timeline. The timeline is built from bulk feeds —
-group state changes, charter revisions and IESG approvals, milestone history, and
-RFC publications (joined offline from `_rfc/` by its `wg` field). It does not
-include chair changes (role history references group *history* snapshots, and
-names would need a second fan-out), draft adoption (per document), or meetings.
+group state changes, chair changes (the `info_changed` group events, so only
+changes since the Datatracker log began; a group's founding chairs have no
+event), charter revisions and IESG approvals, milestone history, and RFC
+publications (joined offline from `_rfc/` by its `wg` field). It does not include
+draft adoption (per document) or meetings.
 Milestone and charter dates before about 2014 reflect the Datatracker import, not
 the original event. The RFC events are joined from `_rfc/` when the group refresh
 runs (after the RFC mirror in housekeeping), so they are absent until the first

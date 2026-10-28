@@ -281,7 +281,9 @@ def register(server: "FastMCP") -> None:
         moved, completed or dropped, and the RFCs it published. Newest first,
         grouped by year; `year` narrows to one.
 
-        It does **not** cover chair changes, document adoption, or meetings.
+        Chair appointments and departures are included, as far back as the
+        Datatracker's event log goes (a group's founding chairs have no
+        event). It does **not** cover document adoption or meetings.
         For a group you have gathered, `read_digest` has a fuller timeline
         built from its own mail, drafts and meetings.
         """

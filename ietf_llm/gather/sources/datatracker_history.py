@@ -1,16 +1,15 @@
 """Fetch governance / lifecycle events for a WG from Datatracker.
 
-Three event sources, all best-effort against the public JSON API:
+Two event sources, both best-effort against the public JSON API:
 
   - **Group events** (`/api/v1/group/groupevent/`) — charter approvals,
-    state changes, formal milestones. Charter events ALWAYS appear in
-    the timeline regardless of the `--months` window (foundational
-    context); other group events respect the window.
-  - **Role history** (`/api/v1/group/rolehistory/`) — chair / AD
-    appointments and changes. ALWAYS included regardless of `--months`,
-    since who chaired the WG and when is permanent context.
-  - **Document events** (`/api/v1/doc/docevent/`) — adoption, WGLC
-    announcement, IESG submission, RFC publication. These are
+    state changes, chair appointments and departures. Charter and chair events ALWAYS
+    appear in the timeline regardless of the `--months` window
+    (foundational context); other group events respect the window.
+    The event log records changes only, so a group's founding chairs
+    (those already in place when it began) have no appointment event.
+  - **Document events** (`/api/v1/doc/docevent/`) — adoption, WG Last
+    Call, IETF Last Call, IESG submission, RFC publication. These are
     per-document and high-volume; they respect the `--months` cutoff.
 
 The output type is the shared `Event` dataclass from
@@ -24,9 +23,10 @@ already tolerates Datatracker being unreachable (see `people.py`).
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ...digest.events import Event
 from ...log import LogLevel, Verbosity, log
@@ -61,15 +61,25 @@ _GROUP_EVENT_KINDS = {
 
 
 def fetch_group_events(
-    wg: str, months: int, verbose: Verbosity = Verbosity.STATUS
+    wg: str,
+    months: int,
+    verbose: Verbosity = Verbosity.STATUS,
+    canonical_name: Optional[Callable[[str], str]] = None,
 ) -> List[Event]:
-    """Group-level events: charter approvals, state changes.
+    """Group-level events: charter approvals, state changes, chair changes.
 
-    Charter events are returned regardless of `months` (foundational);
-    other event kinds are filtered to the last `months` months.
+    Charter and chair events are returned regardless of `months`
+    (foundational); other event kinds are filtered to the last `months`
+    months. `canonical_name` maps a chair's logged name to the spelling
+    used elsewhere in the corpus.
     """
-    body = _get_json(f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=200")
-    if not body or "objects" not in body:
+    # Only these two types are classified below; the rest of a busy group's
+    # log (milestone changes, meeting notifications) is most of its rows.
+    objects = _paged_objects(
+        f"{_API_BASE}/group/groupevent/?group__acronym={wg}"
+        "&type__in=info_changed,changed_state&limit=500"
+    )
+    if not objects:
         log(
             f"No groupevent data for {wg} from Datatracker.",
             verbose,
@@ -79,9 +89,23 @@ def fetch_group_events(
 
     cutoff = _cutoff(months)
     out: List[Event] = []
-    for obj in body["objects"]:
+    for obj in objects:
         when = _parse_dt_time(obj.get("time"))
         if when is None:
+            continue
+        changes = chair_changes(obj)
+        if changes:
+            for kind, name in changes:
+                shown = canonical_name(name) if canonical_name else name
+                out.append(
+                    Event(
+                        when=when,
+                        kind=kind,
+                        title=chair_event_title(kind, shown),
+                        detail=None,
+                        link=None,
+                    )
+                )
             continue
         event_kind, title = _classify_group_event(obj)
         if event_kind is None:
@@ -102,48 +126,6 @@ def fetch_group_events(
     return out
 
 
-def fetch_role_history(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Event]:
-    """Chair (and other leadership) appointments through history.
-
-    Always returns the full history — chair appointments are permanent
-    context, and there are usually only a handful per WG.
-    """
-    body = _get_json(f"{_API_BASE}/group/rolehistory/?group__acronym={wg}&limit=200")
-    if not body or "objects" not in body:
-        log(
-            f"No rolehistory data for {wg} from Datatracker.",
-            verbose,
-            level=LogLevel.PROGRESS,
-        )
-        return []
-
-    out: List[Event] = []
-    for obj in body["objects"]:
-        role_url = obj.get("name") or ""
-        role_slug = _slug_from_url(role_url, "rolename")
-        # Chairs are the universally interesting role; ADs cycle for
-        # all WGs in the area so listing them here is noise. Tweak
-        # this set if other roles prove useful in practice.
-        if role_slug != "chair":
-            continue
-        when = _parse_dt_time(obj.get("time"))
-        if when is None:
-            continue
-        person_name = _person_name(obj.get("person"))
-        if not person_name:
-            continue
-        out.append(
-            Event(
-                when=when,
-                kind="chair-appointed",
-                title=f"Chair appointed: {person_name}",
-                detail=None,
-                link=None,
-            )
-        )
-    return out
-
-
 def fetch_doc_events(
     wg: str, months: int, verbose: Verbosity = Verbosity.STATUS
 ) -> List[Event]:
@@ -156,22 +138,12 @@ def fetch_doc_events(
     # `time__gte` filters server-side so we don't drag down a full
     # group's history just to discard most of it.
     cutoff_param = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    # Page through `meta.next`: a long-running WG's in-window history can
-    # exceed one 500-row page, and a single capped request would silently drop
-    # the overflow (likely the newest events, given default ordering).
-    path: Optional[str] = (
+    objects = _paged_objects(
         f"{_API_BASE}/doc/docevent/"
         f"?doc__group__acronym={wg}"
         f"&time__gte={cutoff_param}"
         "&limit=500"
     )
-    objects: List[Dict[str, Any]] = []
-    while path:
-        body = _get_json(path)
-        if not body:
-            break
-        objects.extend(body.get("objects") or [])
-        path = (body.get("meta") or {}).get("next") or None
     if not objects:
         log(
             f"No docevent data for {wg} from Datatracker.",
@@ -212,7 +184,10 @@ def _classify_group_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
       - referenced state (when type == changed_state)
     """
     type_slug = (obj.get("type") or "").strip()
-    desc = (obj.get("desc") or "").strip()
+    if type_slug == "changed_milestone":
+        # Milestone titles can quote a charter ("NTP WG Charter Approved").
+        return (None, "")
+    desc = _plain(obj.get("desc"))
     # Charter events: Datatracker emits a few different forms over its
     # history. Recognise by description rather than relying on a single
     # type slug.
@@ -220,10 +195,17 @@ def _classify_group_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
     if "charter approved" in desc_lower or "charter changed" in desc_lower:
         return ("charter-approved", desc or "Charter event")
     if type_slug == "changed_state":
-        if "state changed" in desc_lower or desc:
-            return ("group-state", desc or "Group state changed")
-        return ("group-state", "Group state changed")
+        return (
+            "group-state",
+            f"Group state: {desc}" if desc else "Group state: changed",
+        )
     return (None, "")
+
+
+#: "IETF WG state changed to <b>In WG Last Call</b> from WG Document"
+_STREAM_LAST_CALL_RE = re.compile(
+    r"state changed to <b>\s*In (WG|RG) Last Call\s*</b>", re.IGNORECASE
+)
 
 
 def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
@@ -243,22 +225,98 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
         return ("doc-iesg", f"`{doc_name}` {action}")
     # Adoption by WG is recorded as a state change with a recognisable
     # description; pattern-match defensively.
+    # Only the state moved *to* matters: "In WG Last Call from Adopted by a WG"
+    # is a Last Call, not an adoption.
     desc_lower = desc.lower()
-    if "adopted by" in desc_lower or "adopted as a working group" in desc_lower:
+    moved_to = re.split(r"\s+from\s+", desc_lower, maxsplit=1)[0]
+    if "adopted by" in moved_to or "adopted as a working group" in moved_to:
         return ("doc-adopted", f"`{doc_name}` adopted by WG")
-    # WGLC announcement event (some Datatracker eras use this slug, some
-    # surface it via desc). Prefer Datatracker over the mailing-list
-    # heuristic when we find it here.
-    if (
-        type_slug == "sent_last_call"
-        or "last call" in desc_lower
-        and "issued" in desc_lower
-    ):
-        return ("doc-wglc", f"`{doc_name}`: WG Last Call issued")
+    # `sent_last_call` is the IESG's IETF Last Call announcement; a WG (or RG)
+    # Last Call is only visible as the stream state moving to "In WG Last
+    # Call" ("In RG Last Call"), reported under the same doc-wglc kind.
+    if type_slug == "sent_last_call":
+        return ("doc-lc", f"`{doc_name}`: IETF Last Call announced")
+    match = _STREAM_LAST_CALL_RE.search(desc)
+    if match:
+        return ("doc-wglc", f"`{doc_name}`: entered {match.group(1).upper()} Last Call")
     return (None, "")
 
 
 # --- Helpers --------------------------------------------------------------
+
+
+def _paged_objects(path: str) -> List[Dict[str, Any]]:
+    """Every `objects` row of a Datatracker list endpoint, following `meta.next`.
+
+    A long-running WG's history can exceed one 500-row page; a single capped
+    request would silently drop the overflow (the oldest events, given the
+    default newest-first ordering).
+    """
+    objects: List[Dict[str, Any]] = []
+    next_path: Optional[str] = path
+    while next_path:
+        body = _get_json(next_path)
+        if not body:
+            if objects:
+                log(
+                    f"Datatracker: stopped paging at {next_path}; "
+                    "older rows are missing.",
+                    level=LogLevel.WARN,
+                )
+            break
+        objects.extend(body.get("objects") or [])
+        next_path = (body.get("meta") or {}).get("next") or None
+    return objects
+
+
+#: A chair change is recorded as an `info_changed` group event, e.g.
+#: "Chairs changed to <b>A, B</b> from A" ("Chair changed" when the
+#: group had one chair at the time).
+_CHAIRS_CHANGED_RE = re.compile(
+    r"^Chairs? changed to <b>(.*?)</b>(?:\s*from\s*(.*))?$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def chair_changes(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """(kind, name) for each chair added or removed by a chair-change event.
+
+    Additions come first, then departures. The event carries an exact
+    timestamp and both name lists inline. Names are HTML-escaped in the
+    description and can be encoded differently on the two sides, so both
+    are unescaped before comparing.
+    """
+    if (obj.get("type") or "").strip() != "info_changed":
+        return []
+    match = _CHAIRS_CHANGED_RE.match((obj.get("desc") or "").strip())
+    if not match:
+        return []
+    after = _name_list(match.group(1))
+    before = _name_list(match.group(2) or "")
+    return [("chair-appointed", n) for n in after if n not in before] + [
+        ("chair-departed", n) for n in before if n not in after
+    ]
+
+
+def chair_event_title(kind: str, name: str) -> str:
+    """The timeline row for one chair change."""
+    label = "appointed" if kind == "chair-appointed" else "stepped down"
+    return f"Chair {label}: {name}"
+
+
+def _name_list(text: str) -> List[str]:
+    """Distinct unescaped names from a comma-separated list, in order."""
+    out: List[str] = []
+    for name in text.split(","):
+        name = html.unescape(name).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _plain(value: Any) -> str:
+    """A Datatracker description with its markup stripped and entities decoded."""
+    return html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
 
 
 def _cutoff(months: int) -> datetime:
@@ -300,16 +358,3 @@ def _slug_from_url(url: str, expected_section: Optional[str] = None) -> Optional
     if expected_section and match.group(1) != expected_section:
         return None
     return match.group(2)
-
-
-def _person_name(person_url: Optional[str]) -> Optional[str]:
-    """Resolve a Datatracker person URL to a display name. One extra
-    HTTP call per chair appointment — acceptable; there are few chairs.
-    """
-    if not person_url:
-        return None
-    body = _get_json(person_url)
-    if not body:
-        return None
-    name = body.get("name") or body.get("ascii")
-    return str(name) if name else None

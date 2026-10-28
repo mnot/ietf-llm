@@ -398,6 +398,8 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
                 f"{size:>10}  (digest)     {relpath}  "
                 f"-> read_digest(wg, kind='{kind}')"
             )
+        elif relpath.endswith(".kinds.json"):
+            rows.append(f"{size:>10}  (sidecar)    {relpath}")
         else:
             # "not indexed" when the DB itself is empty (build hasn't
             # run yet); "no chunks" for the rare case of an indexed
