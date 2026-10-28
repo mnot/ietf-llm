@@ -156,7 +156,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   │       └── github-<repo-slug>.txt
 │   ├── embeddings.db                      # per-WG semantic index
 │   ├── topics.json                        # topic-map sidecar (cluster centroids + labels; overview themes)
-│   ├── materials.json                     # doc-name → rev last fetched (rev-gating)
+│   ├── materials.json                     # doc-name → rev last fetched (rev-gating) + format:<code>/<kind> layout stamps
 │   ├── documents.json                     # draft-name → {expires, state} (overview split + embed-skip)
 │   ├── last-gathered                      # ISO-8601 sentinel (freshness)
 │   └── gather-metrics.json                # last run's upstream HTTP load (egress metrics)
@@ -568,7 +568,7 @@ ietf_llm/
 │       ├── issue_files.py          # per-issue .md files
 │       ├── datatracker.py          # roles + paginated document listing via JSON API
 │       ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
-│       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
+│       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating), aggregate layout stamps
 │       ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
 │       ├── cache_sync.py           # cloud: round-trip gather accelerator caches (incl. IMAP mail) to the KvStore (#82, #260)
 │       ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
@@ -1085,6 +1085,22 @@ one `MeetingCluster` keyed by its start date (`interim<YYYYMMDD>`);
 materials merge into the canonical dir and interim transcripts (which
 carry no meeting number) are matched to a cluster by date span instead
 of orphaning. Numbered IETF meetings are never clustered.
+
+A cluster's `minutes.md` / `agenda.md` hold one block per *distinct* body.
+Chairs often attach one document to every session of an interim (or the
+Datatracker lists one document against two sessions of a numbered meeting), so
+`_process_cluster` hashes each stripped body and folds a repeat into the
+earlier block: one `## Sessions <date> (<number>, …); <date> (<number>)`
+heading and one `URL:` line per document, instead of the text once per
+session. Bodies that differ keep their own `## Session` block. Each aggregate's
+layout version is stamped in `materials.json` (`format:<code>/<kind>`), so a
+change to the layout (`_AGGREGATE_FORMAT`) regenerates every already-gathered
+file once; `_needs_rebuild` otherwise fires only on a document revision change.
+Only clusters with more than one link of a kind can change layout, so a file
+built from a single link is stamped without re-fetching. A rebuild that does
+not fetch every link keeps an existing file and stamps nothing (it would
+otherwise drop the failed sessions, whose unchanged revs would stop anything
+retrying them), so the next gather retries the whole cluster.
 
 ### `ietf-llm-export` always does a full export
 
