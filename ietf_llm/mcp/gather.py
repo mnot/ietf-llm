@@ -427,8 +427,13 @@ def register(server: "FastMCP") -> None:
         The corpus isn't queryable until `done`. While a **first** gather
         runs the read tools refuse (there's no prior snapshot to serve),
         telling you the stage and how many are left — so poll rather than
-        read early. A **re-gather** keeps serving the previous snapshot
-        (flagged as a refresh in progress), so querying it meanwhile is fine.
+        read early. A **re-gather** stays readable (responses are flagged as a
+        refresh in progress), but what you see depends on the backend. On the
+        default local backend the files are updated in place, so counts and
+        file lists (a `grep_corpus` scan, say) can change between calls; only
+        the search index is the previous one until it is swapped. On the cloud
+        backend readers see the last published version until the gather
+        publishes.
 
         The corpus **shape is inferred** from what you pass — you don't
         declare it:
