@@ -73,8 +73,11 @@ def fetch_group_events(
     months. `canonical_name` maps a chair's logged name to the spelling
     used elsewhere in the corpus.
     """
+    # Only these two types are classified below; the rest of a busy group's
+    # log (milestone changes, meeting notifications) is most of its rows.
     objects = _paged_objects(
-        f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=500"
+        f"{_API_BASE}/group/groupevent/?group__acronym={wg}"
+        "&type__in=info_changed,changed_state&limit=500"
     )
     if not objects:
         log(

@@ -63,8 +63,8 @@ def test_group_events_returns_charter_regardless_of_months(
             "objects": [
                 {
                     "time": _now_minus(365 * 5),
-                    "type": "added_comment",
-                    "desc": "Charter approved by IESG.",
+                    "type": "changed_state",
+                    "desc": "Charter approved, group active",
                 },
             ],
         },
@@ -119,14 +119,14 @@ def test_group_events_handles_missing_body(
 def test_group_events_ignores_uninteresting_types(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # "added_comment" with no charter wording is just housekeeping.
+    # An info_changed row that is neither a chair nor a charter change.
     _stub_get_json(monkeypatch, {
         "/group/groupevent/": {
             "objects": [
                 {
                     "time": _now_minus(5),
-                    "type": "added_comment",
-                    "desc": "Minor note from secretariat.",
+                    "type": "info_changed",
+                    "desc": "Resources changed to <b>webpage https://example.org/</b>",
                 },
             ],
         },
@@ -135,6 +135,14 @@ def test_group_events_ignores_uninteresting_types(
         "wg", months=12, verbose=Verbosity.QUIET,
     )
     assert events == []
+
+
+def test_group_events_query_only_the_types_it_classifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = _stub_get_json(monkeypatch, {"/group/groupevent/": {"objects": []}})
+    datatracker_history.fetch_group_events("wg", months=12, verbose=Verbosity.QUIET)
+    assert "type__in=info_changed,changed_state" in called[0]
 
 
 # --- chair appointments (group events) -----------------------------------
