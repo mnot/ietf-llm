@@ -486,6 +486,57 @@ def test_second_start_reports_already_running(
     _wait_terminal("httpbis")
 
 
+def test_restart_straight_after_a_terminal_status_is_accepted(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that sees `done` and re-calls `start` at once must not be told
+    "already running" while the worker is still releasing the lease and the
+    registry slot behind the terminal status. A slow lease release (a cloud
+    store round-trip) widens that window so the test hits it every time."""
+    from ietf_llm.store.corpus import LocalCorpusStore
+
+    class _SlowRelease(LocalCorpusStore):
+        def release_lease(self, corpus: str, owner: str) -> None:
+            time.sleep(0.3)
+            super().release_lease(corpus, owner)
+
+    _patch_store(monkeypatch, _SlowRelease())
+    ran: List[str] = []
+
+    def fake_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
+        ran.append(argv[0])
+        return True
+
+    monkeypatch.setattr(main_mod, "run_gather", fake_run)
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
+    assert _wait_terminal("tls")["state"] == "done"
+    # The terminal state is on disk; the worker is still inside release_lease.
+    assert gather_runner.local_inflight("tls") is None
+    second = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
+    assert second["started"] is True, second
+    deadline = time.time() + 5.0
+    while len(ran) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    assert ran == ["tls", "tls"]
+    _wait_terminal("tls")
+
+
+def test_start_gives_up_on_a_wedged_finish(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wait for a finishing job is bounded: a worker stuck in cleanup
+    yields the ordinary refusal rather than hanging the caller."""
+    monkeypatch.setattr(gather_runner, "_FINISH_WAIT_S", 0.05)
+    with gather_runner._registry_lock:
+        gather_runner._jobs["tls"] = "finishing"
+    try:
+        result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._jobs.pop("tls", None)
+    assert result == {"started": False, "reason": "already running", "corpus": "tls"}
+
+
 def _blocking_gather(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
     """Patch run_gather to block on the returned event, so a gather stays in
     flight while the test inspects the queue."""
