@@ -356,3 +356,73 @@ def test_cli_gather_of_a_fresh_corpus_downloads_nothing(
     cli_main.main()
     assert store.resolve_current("tls") == first
     assert store.get_gather_status("tls") is None
+
+
+def test_cli_clear_cache_wipes_the_stores_copy_of_the_mail_too(
+    cloud_s3: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ietf-llm tls --clear-cache` on the cloud backend: the old mail is gone
+    from this host and from the store, so neither this gather nor a later fresh
+    container gets it back, and what the gather fetched afresh is what persists."""
+    from ietf_llm.cli import main as cli_main
+    from ietf_llm.gather.lifecycle import GatherOutcome
+    from ietf_llm.gather.sources import cache_sync
+
+    _quiet_cli_housekeeping(monkeypatch)
+
+    def _gather_one(args: object, _v: object, **_kw: object) -> GatherOutcome:
+        mail = _imap_dir("tls")
+        mail.mkdir(parents=True, exist_ok=True)
+        for uid in fresh_uids:
+            (mail / f"{uid}.eml").write_text(f"Message-Id: <{uid}@x>\n\nbody\n")
+        (mail / ".uidvalidity").write_text("7")
+        digests = Path(get_cache_dir()) / "tls" / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\n")
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(cli_main, "_gather_one", _gather_one)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls"])
+    fresh_uids = (1, 2, 700)
+    seen: list[list[str]] = []
+    cli_main.main()  # the first gather: mail now stored
+
+    kv = get_corpus_store()._kv  # type: ignore[attr-defined]
+    assert any("gather-cache/imap/tls/" in key for key in _stored_keys(kv))
+
+    def _gather_after_clear(args: object, _v: object, **_kw: object) -> GatherOutcome:
+        mail = _imap_dir("tls")
+        seen.append(sorted(p.name for p in mail.glob("*.eml")) if mail.exists() else [])
+        assert not (Path(get_cache_dir()) / "tls" / "files" / "digests").exists()
+        mail.mkdir(parents=True, exist_ok=True)
+        (mail / "5.eml").write_text("Message-Id: <5@x>\n\nbody\n")
+        (mail / ".uidvalidity").write_text("7")
+        digests = Path(get_cache_dir()) / "tls" / "files" / "digests"
+        digests.mkdir(parents=True, exist_ok=True)
+        (digests / "index.md").write_text("# Overview\n")
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(cli_main, "_gather_one", _gather_after_clear)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls", "--clear-cache"])
+    cli_main.main()
+    assert seen[-1] == []  # nothing from before was restored
+
+    shutil.rmtree(Path(get_cache_dir()) / "imap-cache")  # a fresh container
+    assert cache_sync.hydrate(kv, "tls") == []
+    assert sorted(p.name for p in _imap_dir("tls").glob("*.eml")) == ["5.eml"]
+
+
+def _stored_keys(kv: object) -> list[str]:
+    from ietf_llm.store.kv import KvStore
+
+    assert isinstance(kv, KvStore)
+    found: list[str] = []
+
+    def walk(prefix: str) -> None:
+        for name in kv.list_children(prefix):
+            if kv.get(prefix + name) is not None:
+                found.append(prefix + name)
+            walk(f"{prefix}{name}/")
+
+    walk("corpora/tls/")
+    return found

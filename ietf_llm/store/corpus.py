@@ -309,6 +309,14 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         failure must never fail the gather."""
         return []
 
+    def clear_gather_caches(self, corpus: str) -> None:
+        """Delete the gather state the store holds for `corpus` between gathers
+        (`--clear-cache`), so the next gather can't restore it: on the cloud
+        backend the mailing-list mail and the per-corpus conditional-GET store.
+        Called under the gather lease. Raises if the store can't be cleared --
+        the caller must not carry on as if it had been. Default no-op: the local
+        backend's caches are plain files the caller removes itself."""
+
     # --- write-side gather lease (default: no-op single writer) -----------
 
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:

@@ -494,6 +494,14 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
 
         return cache_sync.persist(self._kv, corpus)
 
+    def clear_gather_caches(self, corpus: str) -> None:
+        if self._kv is None:
+            return
+        # pylint: disable-next=import-outside-toplevel
+        from ..gather.sources import cache_sync
+
+        cache_sync.clear(self._kv, corpus)
+
     def routing_fleet_table(self) -> Optional[Dict[str, Dict[str, Any]]]:
         # One GET of the fleet key routes the whole fleet — no per-corpus version
         # materialisation. publish() merged each corpus's entry. An empty dict

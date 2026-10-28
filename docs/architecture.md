@@ -1308,7 +1308,14 @@ live path can't replace.
 
 `imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
 store is expensive to refetch and shouldn't be lost when a WG's
-exported `files/` are cleared. Thread reconstruction walks it directly.
+exported `files/` are rewritten. Thread reconstruction walks it directly.
+`--clear-cache` is the one thing that removes it (`lifecycle.clear_local_state`),
+because a user who asks for a clean slate has to get one: a corrupt or unwanted
+list would otherwise survive every re-gather. On the cloud backend the same flag
+deletes the corpus's stored copies first (`CorpusStore.clear_gather_caches`, under
+the gather lease: the IMAP units and the per-corpus ETag store), since hydrate
+would restore them and persist would fold the stored mail back in. The clear
+raises rather than degrading, and the workspace isn't seeded just to be wiped.
 
 Each list dir also holds `.uidvalidity`, the IMAP UIDVALIDITY epoch the cached
 `<uid>.eml` files were fetched under. A UID names a message only within one

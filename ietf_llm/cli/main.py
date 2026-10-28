@@ -169,6 +169,7 @@ def _gather(args: argparse.Namespace, verbosity: Verbosity) -> Optional[GatherOu
             ),
             spec=_status_spec(args),
             verbosity=verbosity,
+            fresh=args.clear_cache,
         )
     except GatherBusy as busy:
         log(

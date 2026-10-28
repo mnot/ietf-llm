@@ -56,6 +56,9 @@ class _SpyStore(LocalCorpusStore):
         self.calls.append("seed")
         return None
 
+    def clear_gather_caches(self, corpus: str) -> None:
+        self.calls.append("clear")
+
     def hydrate_gather_caches(self, corpus: str) -> List[str]:
         self.calls.append("hydrate")
         return []
@@ -162,6 +165,61 @@ def test_unrestorable_mail_cache_fails_before_the_pipeline_runs(isolated_home: P
     assert store.calls[-2:] == ["release_slot", "release_lease"]
     final = store.statuses[-1]
     assert final["state"] == "failed" and "GatherCacheRestoreError" in final["error"]
+
+
+def test_fresh_starts_from_nothing_before_anything_is_restored(isolated_home: Path) -> None:
+    # --clear-cache: the store's state goes first (under the lease), this host's
+    # with it, and the workspace is not seeded only to be wiped.
+    store = _SpyStore()
+    mail = Path(isolated_home) / ".cache" / "ietf-llm" / "imap-cache" / "tls" / "tls"
+    mail.mkdir(parents=True)
+    (mail / "1.eml").write_text("Message-Id: <1@x>\n\nbody\n")
+    seen: List[bool] = []
+
+    def pipeline(progress: Any, note: Any) -> GatherOutcome:
+        seen.append(mail.exists())
+        return GatherOutcome.GATHERED
+
+    assert (
+        lifecycle.gather_and_publish(
+            store, "tls", pipeline, spec={"corpus": "tls"},
+            verbosity=Verbosity.QUIET, fresh=True,
+        )
+        is GatherOutcome.GATHERED
+    )
+    assert store.calls == [
+        "acquire_lease", "acquire_slot", "clear", "hydrate",
+        "publish", "persist", "release_slot", "release_lease",
+    ]
+    assert seen == [False]
+
+
+def test_not_fresh_clears_nothing_and_seeds(isolated_home: Path) -> None:
+    store = _SpyStore()
+    _run(store, GatherOutcome.GATHERED)
+    assert "clear" not in store.calls and "seed" in store.calls
+
+
+def test_a_clear_that_fails_fails_the_gather(isolated_home: Path) -> None:
+    class _Stuck(_SpyStore):
+        def clear_gather_caches(self, corpus: str) -> None:
+            raise OSError("bucket unreachable")
+
+    ran: List[str] = []
+
+    def pipeline(progress: Any, note: Any) -> GatherOutcome:
+        ran.append("pipeline")
+        return GatherOutcome.GATHERED
+
+    store = _Stuck()
+    with pytest.raises(OSError, match="unreachable"):
+        lifecycle.gather_and_publish(
+            store, "tls", pipeline, spec={"corpus": "tls"},
+            verbosity=Verbosity.QUIET, fresh=True,
+        )
+    assert ran == [] and "publish" not in store.calls
+    assert store.calls[-2:] == ["release_slot", "release_lease"]
+    assert store.statuses[-1]["state"] == "failed"
 
 
 def test_publish_error_records_failed_and_reraises(isolated_home: Path) -> None:

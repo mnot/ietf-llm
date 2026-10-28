@@ -170,6 +170,29 @@ def persist(kv: KvStore, corpus: str) -> List[str]:
     return problems
 
 
+def clear(kv: KvStore, corpus: str) -> None:
+    """Delete this corpus's stored gather caches (`--clear-cache`): the ETag store
+    and all the IMAP mail, archives included. Unlike hydrate and persist this
+    raises on a store error, since the caller asked for the state to be gone and
+    a half-done clear would let the next hydrate bring it back. Per-corpus keys
+    only: the shared identity maps and the catalog are other corpora's too."""
+    kv.delete(_HTTP_CACHE_KEY.format(corpus=corpus))
+    prefix = _IMAP_PREFIX.format(corpus=corpus)
+    for name in kv.list_children(prefix):
+        _clear_imap_unit(kv, f"{prefix}{name}/")
+
+
+def _clear_imap_unit(kv: KvStore, prefix: str) -> None:
+    """Delete a list's stored units, the index before its chunks so a failure
+    part way leaves an index naming fewer chunks, never a chunk-less index claim."""
+    children = kv.list_children(prefix)
+    for name in sorted(children, key=lambda child: child != _IMAP_INDEX):
+        if _EPOCH_DIR.match(name):
+            _clear_imap_unit(kv, f"{prefix}{name}/")
+        else:
+            kv.delete(prefix + name)
+
+
 # --- per-cache operations -------------------------------------------------
 
 
