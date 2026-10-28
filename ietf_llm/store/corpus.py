@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextvars
 import importlib
+import ntpath
 import os
 import posixpath
 import threading
@@ -79,6 +80,10 @@ def clean_relpath(relpath: str) -> Optional[str]:
     reported present."""
     rel = posixpath.normpath(relpath.replace(os.sep, "/"))
     if rel in ("", ".") or rel.startswith("/") or rel == ".." or rel.startswith("../"):
+        return None
+    # A drive-qualified path ("C:/x") is not absolute to posixpath, but
+    # `os.path.join` would let it replace `files/` on a host that has drives.
+    if os.path.splitdrive(rel)[0] or ntpath.splitdrive(rel)[0]:
         return None
     return rel
 
@@ -469,10 +474,13 @@ class LocalCorpusStore(CorpusStore):
     def has_file(self, corpus: str, relpath: str) -> bool:
         rel = clean_relpath(relpath)
         files = self.local_cache_dir(corpus)
-        return (
-            rel is not None
-            and files is not None
-            and os.path.isfile(os.path.join(files, rel))
+        if rel is None or files is None:
+            return False
+        # A symlink out of files/ is a file `read_file_section` refuses (its
+        # realpath check), so it must not read as present here.
+        path = os.path.realpath(os.path.join(files, rel))
+        return path.startswith(os.path.realpath(files) + os.sep) and os.path.isfile(
+            path
         )
 
     def local_corpus_dir(self, corpus: str) -> Optional[str]:

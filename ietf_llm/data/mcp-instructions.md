@@ -180,9 +180,9 @@ whether this one is, and gives the `read_file_section` call if so. When it says
 the body is **not reachable from here**, you cannot quote or characterise that
 RFC — say so rather than reconstructing it from memory, which is exactly where
 confident wrong readings come from. That answer is about what this server can
-reach, not about what exists: no gathered corpus here holds it, though one
-that was never gathered with `--rfcs` may, so report it as "I can't read it",
-never as "it isn't available".
+reach, not about what exists: the RFC is published, but no corpus gathered
+here holds its text (or, rarely, the server failed to check one), so report it
+as "I can't read it", never as "it isn't available".
 
 ## Saying something was **never** said
 

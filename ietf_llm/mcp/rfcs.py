@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextvars
 import re
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from .. import serve_metrics
+from ..log import LogLevel, log
 from ..paths import DIR_DRAFTS
 from ..store.blobs import parallel_each
 from ..store.corpus import get_corpus_store
@@ -49,9 +51,12 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
         return owner, relpath
     rest = [wg for wg in corpora if wg != owner]
     held: Dict[str, bool] = {}
+    # A worker thread starts with an empty context, so a version pin (a
+    # ContextVar) would not reach it; run each ask in a copy of ours.
+    contexts = {wg: contextvars.copy_context() for wg in rest}
 
     def _ask(wg: str) -> None:
-        held[wg] = _corpus_has(wg, relpath)
+        held[wg] = contexts[wg].run(_corpus_has, wg, relpath)
 
     parallel_each(_ask, rest)
     for wg in rest:
@@ -73,7 +78,8 @@ def _corpus_has(wg: str, relpath: str) -> bool:
         return serve_metrics.timed_store(
             "has_file", lambda: get_corpus_store().has_file(wg, relpath)
         )
-    except Exception:  # pylint: disable=broad-except
+    except Exception as err:  # pylint: disable=broad-except
+        log(f"has_file({wg!r}, {relpath!r}) failed: {err!r}", level=LogLevel.WARN)
         return False
 
 
@@ -207,8 +213,8 @@ def register(server: "FastMCP") -> None:
         call), or this server cannot reach it. In the second case do not
         characterise what the RFC says — you have its title and its
         reference graph, not its text. Note the claim is about reach, not
-        existence: on a shared deployment the body may well be published
-        somewhere in the fleet without being readable from here.
+        existence: no gathered corpus on this server holds the body, but the
+        RFC text itself is published.
 
         Reads a local mirror of the RFC series. If the number is missing
         and that mirror is stale, it is refreshed live before answering,

@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, T
 from .. import freshness
 from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
 from ..paths import INDEX_FILE_NAMES, get_index_dir
-from .blobs import BlobStore, parallel_each
+from .blobs import BlobStore, blob_concurrency, parallel_each
 from .control import KvControlPlane
 from .corpus import (
     CorpusStore,
@@ -112,7 +112,10 @@ def store_config_key() -> Tuple[Any, ...]:
     under one key is interchangeable with any other built under an equal key.
     `get_corpus_store` memoizes on it, so an input added to `build_cloud_store`
     (or read by `S3Bucket`) must be added here too, or a change to it would keep
-    serving the old store."""
+    serving the old store. The `AWS_*` credential, region and profile variables
+    are also read when the client is built but are left out: the process
+    environment is fixed in a deployment, and instance-role credentials refresh
+    themselves."""
     # pylint: disable-next=import-outside-toplevel
     from ..config import service as service_config
 
@@ -123,6 +126,8 @@ def store_config_key() -> Tuple[Any, ...]:
         service_config.retain_versions(),
         # Read by `S3Bucket` straight from the environment.
         os.environ.get("IETF_LLM_STORE_ENDPOINT_URL") or None,
+        # Sizes the client's connection pool.
+        blob_concurrency(),
     )
 
 

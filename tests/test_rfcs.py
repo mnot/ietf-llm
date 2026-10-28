@@ -955,6 +955,73 @@ def test_a_corpus_that_cannot_answer_does_not_fail_the_lookup(
     assert 'read_file_section("other", "drafts/rfc300.txt")' in out
 
 
+def test_a_failing_corpus_is_logged(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["broken"])
+
+    def _boom(corpus: str, relpath: str) -> bool:
+        raise RuntimeError("object store unreachable")
+
+    monkeypatch.setattr(store, "has_file", _boom)
+    assert "not reachable from here" in mcp_rfcs._render_rfc_live("300")
+    assert "object store unreachable" in capsys.readouterr().err
+
+
+def test_a_version_pin_reaches_the_sweep_workers(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm.store.corpus import (  # pylint: disable=import-outside-toplevel
+        pin_corpus_version,
+        pinned_version,
+    )
+
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["aaa", "bbb"])
+    seen: Dict[str, Optional[str]] = {}
+
+    def _has_file(corpus: str, relpath: str) -> bool:
+        seen[corpus] = pinned_version(corpus)
+        return False
+
+    monkeypatch.setattr(store, "has_file", _has_file)
+    with pin_corpus_version("aaa", "v1"), pin_corpus_version("bbb", "v2"):
+        mcp_rfcs._cached_body("300")
+    assert seen == {"aaa": "v1", "bbb": "v2"}
+
+
+def test_a_cold_cloud_replica_finds_a_published_body_without_staging(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End to end through a real CloudCorpusStore: the body is published, the
+    # replica has staged nothing, and the note still points at it.
+    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
+    from ietf_llm.store.blobs import FileBlobStore  # pylint: disable=import-outside-toplevel
+    from ietf_llm.store.cloud import CloudCorpusStore  # pylint: disable=import-outside-toplevel
+    from ietf_llm.store.control import KvControlPlane  # pylint: disable=import-outside-toplevel
+    from ietf_llm.store.kv import InMemoryKvStore  # pylint: disable=import-outside-toplevel
+
+    _seed(isolated_home)
+    ws = isolated_home / "ws"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "rfc300.txt").write_text("prose")
+    (ws / "embeddings.db").write_text("db")
+    scratch = isolated_home / "scratch"
+    store = CloudCorpusStore(
+        KvControlPlane(InMemoryKvStore()),
+        FileBlobStore(str(isolated_home / "bucket")),
+        str(scratch),
+    )
+    store.publish("other", str(ws), version="v1")
+    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
+    monkeypatch.setattr(mcp_rfcs, "get_corpus_store", lambda: store)
+
+    out = mcp_rfcs._render_rfc_live("300")
+    assert 'read_file_section("other", "drafts/rfc300.txt")' in out
+    assert not scratch.exists()
+
+
 def test_a_reference_written_as_a_name_still_resolves() -> None:
     """Observed live: RFC 9786's normative refs carry `"RFC9785"` where all
     9,797 other entries carry `"9785"`. `int()` on that raised, which aborted

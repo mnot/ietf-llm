@@ -89,6 +89,19 @@ def test_get_absent_raises_file_not_found(s3_bucket: None) -> None:
         store.get("tls/v1/ghost.md")
 
 
+def test_get_other_errors_still_propagate(s3_bucket: None) -> None:
+    class _Throttled:
+        def get_object(self, **_kw: object) -> None:
+            raise ClientError(
+                {"Error": {"Code": "SlowDown", "Message": "slow"}}, "GetObject"
+            )
+
+    store = S3BlobStore("s3://test-bucket/base")
+    store._s3 = _Throttled()  # type: ignore[assignment]
+    with pytest.raises(ClientError):
+        store.get("k.md")
+
+
 def test_unsafe_key_rejected(s3_bucket: None) -> None:
     store = S3BlobStore("s3://test-bucket/base")
     with pytest.raises(ValueError):

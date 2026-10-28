@@ -59,6 +59,7 @@ def test_cloud_store_is_reused_under_unchanged_config(
         ("IETF_LLM_RESOLVE_TTL", "0"),
         ("IETF_LLM_RETAIN_VERSIONS", "5"),
         ("IETF_LLM_STORE_ENDPOINT_URL", "http://localhost:9000"),
+        ("IETF_LLM_S3_CONCURRENCY", "3"),
     ],
 )
 def test_cloud_store_rebuilt_when_config_changes(
