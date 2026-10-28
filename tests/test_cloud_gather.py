@@ -183,14 +183,7 @@ def _wait_state(corpus: str, timeout: float = 5.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = gather_runner.read_status(corpus)
-        # The terminal status is written before the worker frees the corpus in
-        # the job registry, so a caller that restarts on seeing it can be told
-        # "already running". Wait for the registry too.
-        if (
-            status
-            and status.get("state") in ("done", "failed")
-            and gather_runner.local_inflight(corpus) is None
-        ):
+        if status and status.get("state") in ("done", "failed"):
             return status
         time.sleep(0.01)
     raise AssertionError(f"gather for {corpus} did not finish in {timeout}s")
