@@ -246,3 +246,119 @@ def test_format_marker_regenerates_an_old_layout_file_once(
     fetches.clear()
     _run(monkeypatch, cluster, texts, manifest, fetches)
     assert not fetches
+
+
+def _old_layout_file(cluster: MeetingCluster, bodies: Dict[str, str]) -> str:
+    """Write a minutes file as the pre-dedupe writer left it; return its path."""
+    out = minutes_path(get_wg_file_cache_dir(WG), CODE)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    text = f"# Meeting Materials: {CODE} ({WG})\n\n"
+    for session in cluster.sessions:
+        link = session["links"][0]
+        text += f"## Session {session['date']} ({session['number']})\n"
+        text += f"URL: {link['url']}\n\n{bodies[link['url']]}\n\n---\n\n"
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return out
+
+
+def _two_distinct() -> MeetingCluster:
+    return _cluster(
+        [
+            _session("interim-2025-aipref-01", "2025-04-08", "minutes", "m-01"),
+            _session("interim-2025-aipref-02", "2025-04-09", "minutes", "m-02"),
+        ]
+    )
+
+
+def _stamped(manifest: Dict[str, str]) -> bool:
+    return any(key.startswith("format:") for key in manifest)
+
+
+def test_failed_fetch_keeps_the_complete_file_and_is_retried(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cluster = _two_distinct()
+    texts = {"https://dt/m-01": BODY, "https://dt/m-02": OTHER}
+    out = _old_layout_file(cluster, texts)
+    before = _read(out)
+    manifest = {"m-01": "00", "m-02": "00"}
+
+    # Forced (unstamped) rebuild with the second session failing to fetch.
+    _run(monkeypatch, cluster, {"https://dt/m-01": BODY}, manifest)
+    assert _read(out) == before  # not truncated
+    assert not _stamped(manifest)
+
+    # The next gather retries the whole cluster and converts it.
+    fetches: List[str] = []
+    _run(monkeypatch, cluster, texts, manifest, fetches)
+    assert sorted(fetches) == ["https://dt/m-01", "https://dt/m-02"]
+    assert _read(out).count(BODY) == 1
+    assert _read(out).count(OTHER) == 1
+    assert _stamped(manifest)
+
+
+def test_failed_fetch_on_a_revision_change_keeps_the_old_file(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Already converted; m-01 is revised upstream while m-02 fails to fetch.
+    cluster = _two_distinct()
+    texts = {"https://dt/m-01": BODY, "https://dt/m-02": OTHER}
+    manifest = _run(monkeypatch, cluster, texts)  # complete and stamped
+    out = minutes_path(get_wg_file_cache_dir(WG), CODE)
+    before = _read(out)
+    manifest["m-01"] = "stale"  # upstream rev "00" now differs from this
+
+    _run(monkeypatch, cluster, {"https://dt/m-01": BODY + " revised"}, manifest)
+    assert _read(out) == before
+    assert manifest["m-01"] == "stale"  # still looks changed, so it retries
+
+
+def test_partial_first_write_stays_unstamped_and_completes_later(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cluster = _two_distinct()
+    manifest = _run(monkeypatch, cluster, {"https://dt/m-01": BODY})
+    out = minutes_path(get_wg_file_cache_dir(WG), CODE)
+    assert BODY in _read(out)
+    assert OTHER not in _read(out)
+    assert not _stamped(manifest)
+
+    texts = {"https://dt/m-01": BODY, "https://dt/m-02": OTHER}
+    _run(monkeypatch, cluster, texts, manifest)
+    assert OTHER in _read(out)
+    assert _stamped(manifest)
+
+
+def test_lone_link_file_is_stamped_without_refetching(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cluster = _cluster([_session("IETF 125", "2026-03-14", "minutes", "m-01")])
+    out = _old_layout_file(cluster, {"https://dt/m-01": BODY})
+    before = _read(out)
+    manifest = {"m-01": "00"}
+    fetches: List[str] = []
+    _run(monkeypatch, cluster, {"https://dt/m-01": BODY}, manifest, fetches)
+    assert not fetches
+    assert _read(out) == before
+    assert manifest[f"format:{CODE}/minutes"] == "2"
+
+
+def test_same_url_on_two_sessions_is_still_rebuilt(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two links to one URL: the old file holds the body twice, so stamping
+    # alone would leave the duplicate.
+    link = {"type": "minutes", "url": "https://dt/m-100", "docname": "m-100"}
+    cluster = _cluster(
+        [{"number": "IETF 100", "date": "2017-11-11", "links": [link, dict(link)]}]
+    )
+    out = minutes_path(get_wg_file_cache_dir(WG), CODE)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    block = f"## Session 2017-11-11 (IETF 100)\nURL: {link['url']}\n\n{BODY}\n\n---\n\n"
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(f"# Meeting Materials: {CODE} ({WG})\n\n{block}{block}")
+    fetches: List[str] = []
+    _run(monkeypatch, cluster, {link["url"]: BODY}, {"m-100": "00"}, fetches)
+    assert fetches
+    assert _read(out).count(BODY) == 1

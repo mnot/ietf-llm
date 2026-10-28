@@ -532,6 +532,11 @@ def _process_cluster(
         if not links:
             continue
         fmt_key = _format_key(code, kind)
+        # A lone link renders as one block in every layout so far, so an
+        # existing file needs no refetch to be current; just stamp it.
+        # Revisit when bumping _AGGREGATE_FORMAT.
+        if len(links) == 1 and os.path.isfile(out_file):
+            manifest[fmt_key] = _AGGREGATE_FORMAT
         if not _needs_rebuild(out_file, links, revs, manifest, fmt_key):
             log(
                 f"Skipping {code} {kind}: unchanged.",
@@ -570,6 +575,19 @@ def _process_cluster(
                     fetched.append(link)
         parts.extend(_render_block(block) for block in blocks)
 
+        # A partial fetch must not replace a complete file: the sessions that
+        # failed would be dropped, and their revs (unchanged, so already in
+        # the manifest) would stop anything retrying them. Keep the old file
+        # and change nothing, so the next gather retries the whole cluster.
+        incomplete = len(fetched) < len(links)
+        if incomplete and os.path.isfile(out_file):
+            log(
+                f"Keeping {out_file}: not every {kind} fetched.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            continue
+
         # Only write if a session actually contributed content (the header
         # alone is ~3 short lines); otherwise the meeting has no agenda /
         # no minutes yet and we leave the file absent.
@@ -583,7 +601,10 @@ def _process_cluster(
                 docname = link["docname"]
                 if docname in revs:
                     manifest[docname] = revs[docname]
-            manifest[fmt_key] = _AGGREGATE_FORMAT
+            # A partial file (first write, nothing to lose) stays unstamped,
+            # so the next gather rebuilds it.
+            if not incomplete:
+                manifest[fmt_key] = _AGGREGATE_FORMAT
 
 
 def _cleanup_absorbed_dirs(

@@ -1067,6 +1067,11 @@ session. Bodies that differ keep their own `## Session` block. Each aggregate's
 layout version is stamped in `materials.json` (`format:<code>/<kind>`), so a
 change to the layout (`_AGGREGATE_FORMAT`) regenerates every already-gathered
 file once; `_needs_rebuild` otherwise fires only on a document revision change.
+Only clusters with more than one link of a kind can change layout, so a file
+built from a single link is stamped without re-fetching. A rebuild that does
+not fetch every link keeps an existing file and stamps nothing (it would
+otherwise drop the failed sessions, whose unchanged revs would stop anything
+retrying them), so the next gather retries the whole cluster.
 
 ### `ietf-llm-export` always does a full export
 
