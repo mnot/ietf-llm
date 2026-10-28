@@ -311,6 +311,122 @@ def test_limit_is_clamped_to_the_hard_cap(isolated_home: Path) -> None:
     assert f"Showing {_MAX_GREP_LIMIT} of {_MAX_GREP_LIMIT + 50}" in out
 
 
+# --- max_per_file ------------------------------------------------------------
+
+
+def _noisy_and_quiet(home: Path) -> None:
+    """`a-noisy` sorts first and holds 40 hits; three quiet files follow."""
+    write_cache_file(home, "wg", "threads/a-noisy.md", "needle noisy\n" * 40)
+    for name in ("b", "c", "d"):
+        write_cache_file(home, "wg", f"threads/{name}-quiet.md", "x\nneedle quiet\n")
+
+
+def test_noisy_file_starves_the_rest_without_the_cap(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    out = tool_grep_corpus("wg", "needle", limit=10)
+    assert "needle quiet" not in out
+    assert "## threads/b-quiet.md" not in out
+
+
+def test_max_per_file_lists_every_file(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    out = tool_grep_corpus("wg", "needle", limit=10, max_per_file=2)
+    for name in ("a-noisy", "b-quiet", "c-quiet", "d-quiet"):
+        assert f"## threads/{name}.md" in out
+    assert out.count("needle noisy") == 2
+    assert out.count("needle quiet") == 3
+
+
+def test_max_per_file_keeps_full_counts_and_attributes_omissions(
+    isolated_home: Path,
+) -> None:
+    _noisy_and_quiet(isolated_home)
+    out = tool_grep_corpus("wg", "needle", limit=10, max_per_file=2)
+    assert "43 matching line(s) in 4 file(s)" in out
+    # Per-file true count survives the cap.
+    assert "2 of 40 matching line(s) in this file shown" in out
+    # Cap omitted 38; limit (10) is not reached by the 5 lines left.
+    assert "Showing 5 of 43" in out
+    assert "38 omitted by `max_per_file=2` (1 file(s) had more)" in out
+    assert "omitted by `limit`" not in out
+
+
+def test_max_per_file_and_limit_both_cut(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    out = tool_grep_corpus("wg", "needle", limit=3, max_per_file=2)
+    # After the cap: 2 + 3 quiet = 5 lines; limit 3 keeps 2 noisy + 1 quiet.
+    assert "Showing 3 of 43" in out
+    assert "38 omitted by `max_per_file=2`" in out
+    assert "2 omitted by `limit`" in out
+    assert "2 matching file(s) have no line listed" in out
+    assert "## threads/b-quiet.md" in out
+    assert "## threads/c-quiet.md" not in out
+
+
+def test_max_per_file_larger_than_any_file_changes_nothing(
+    isolated_home: Path,
+) -> None:
+    _noisy_and_quiet(isolated_home)
+    plain = tool_grep_corpus("wg", "needle", limit=200)
+    capped = tool_grep_corpus("wg", "needle", limit=200, max_per_file=500)
+    assert capped == plain
+
+
+def test_unset_max_per_file_is_unchanged(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "threads/many.md", "needle\n" * 30)
+    out = tool_grep_corpus("wg", "needle", limit=5)
+    assert "Showing 5 of 30 matching line(s)" in out
+    assert "max_per_file" not in out
+    assert "in this file shown" not in out
+
+
+def test_max_per_file_counts_matches_not_context(isolated_home: Path) -> None:
+    write_cache_file(
+        isolated_home,
+        "wg",
+        "threads/ctx.md",
+        "before\nneedle 1\nmid\nneedle 2\nafter\n",
+    )
+    out = tool_grep_corpus("wg", "needle", max_per_file=1, context=2)
+    # One matching line is listed; its context lines are extra, not counted.
+    assert "2: needle 1" in out
+    assert "before" in out
+    assert "4- needle 2" in out  # the unlisted match shows only as context
+    assert "1 of 2 matching line(s) in this file shown" in out
+
+
+def test_max_per_file_retains_bounded_hits(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "threads/many.md", "needle\n" * 5000)
+    captured: list[int] = []
+    real_render = grep._render_hits
+
+    def _spy(wg, hits, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(len(hits))
+        return real_render(wg, hits, *args, **kwargs)
+
+    grep._render_hits = _spy  # type: ignore[assignment]
+    try:
+        out = tool_grep_corpus("wg", "needle", limit=50, max_per_file=3)
+    finally:
+        grep._render_hits = real_render  # type: ignore[assignment]
+    assert captured == [3]
+    assert "5000 matching line(s)" in out
+
+
+def test_max_per_file_ignored_under_files_only(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    capped = tool_grep_corpus("wg", "needle", files_only=True, max_per_file=1)
+    assert capped == tool_grep_corpus("wg", "needle", files_only=True)
+
+
+def test_invalid_max_per_file_is_refused(isolated_home: Path) -> None:
+    _noisy_and_quiet(isolated_home)
+    for bad in (0, -1, "abc"):
+        out = tool_grep_corpus("wg", "needle", max_per_file=bad)  # type: ignore[arg-type]
+        assert "`max_per_file` to be a positive integer" in out
+        assert "matching line(s)" not in out
+
+
 def test_files_only_is_one_row_per_file(isolated_home: Path) -> None:
     _seed(isolated_home)
     out = tool_grep_corpus("wg", "fail closed", files_only=True)

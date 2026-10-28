@@ -209,6 +209,12 @@ mail wrap. It also reads files the index does not hold (superseded draft
 revisions are not embedded), so it is the only way to find wording that was
 removed before publication.
 
+To see *which files* mention a term with a few example lines each, pass
+`max_per_file=N` (a small N such as 3) rather than making a `files_only` call
+and then a lines call. The cap is per file and applied before `limit`, so one
+noisy file cannot use up the listing; the footer still gives the full match
+counts and says how many lines each cap left out.
+
 The same tool answers this for the **published series**: `grep_corpus(
 corpus="rfcs", pattern=…)` scans the full text of every RFC and reports how
 many it scanned, so "this wording appears nowhere in the RFC series" becomes a
