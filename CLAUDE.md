@@ -174,7 +174,11 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   `corpora/<name>/gather-cache/` (lease-serialised, plain RMW), the shared
   GitHub/datatracker identity maps at `fleet/gather-cache/` (CAS-merge), and the
   effort catalog (`_catalog/`) at `fleet/catalog/` (a shared fleet singleton, one
-  key per file, last-writer-wins). These are gather-only (the read path never
+  key per file, last-writer-wins), and the per-list IMAP `.eml` cache at
+  `corpora/<name>/gather-cache/imap/<list>/` (lease-serialised; gzip-tar chunks of
+  512 UIDs + an `index.json` carrying the UIDVALIDITY epoch — persist never
+  replaces a chunk with fewer messages, since mail outside the window lives only
+  there; see issue #260). These are gather-only (the read path never
   touches them) and best-effort. `_rfc/` is deferred (non-rate-limited CDN
   mirror). See issue #82.
   publish is the explicit write→read handoff (a compare-and-swap pointer flip),

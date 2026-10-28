@@ -27,6 +27,17 @@ single writer:
     fleet prefix; the restored sidecars let the next gather revalidate (304)
     rather than re-fetch. (`_rfc/` — the same shape but a non-rate-limited CDN
     mirror — is deferred; see issue #82.)
+  - `imap-cache/<corpus>/<list>/` — the raw `.eml` mail. Thread reconstruction
+    re-reads *every* cached message and deletes thread files it doesn't
+    regenerate, so a fresh host needs the whole archive back, not just what is
+    new. Sharded **per corpus** (lease-serialised, so no CAS) into gzip-tar
+    chunks of `_IMAP_CHUNK_UIDS` consecutive UIDs, so a restore is tens of GETs
+    rather than one per message, plus a per-list `index.json` naming each
+    chunk's UIDs and the UIDVALIDITY epoch. A chunk's UIDs are not frozen (a
+    wider `--months` window fills in older ones), so persist re-uploads any
+    chunk whose UID set changed, and never overwrites a stored chunk with fewer
+    messages than it holds: mail that has aged out of the window survives only
+    in the cache.
 
 Best-effort throughout: a sync failure must never fail a gather (it just means a
 cold rebuild next time), matching how `_save_cache`/`_HttpCache.flush` already
@@ -36,16 +47,36 @@ failure never skips the others.
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
-from typing import Any, Callable, Dict, Optional
+import re
+import tarfile
+from typing import Any, Callable, Dict, NamedTuple, Optional, Set
 
+from ...paths import get_cache_dir
 from ...singletons.catalog import catalog_index_dir
 from ...store.kv import ABSENT, KvStore
-from . import datatracker, datatracker_github, datatracker_people, github_users
+from . import (
+    datatracker,
+    datatracker_github,
+    datatracker_people,
+    github_users,
+    mbox,
+)
 
 #: Per-corpus key — lease-serialised single writer, so a plain RMW is safe.
 _HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
+#: Per-corpus prefix for the IMAP mail cache: `<list>/index.json` plus
+#: `<list>/chunk-<n>.tar.gz`. Same single-writer (lease) reasoning as above.
+_IMAP_PREFIX = "corpora/{corpus}/gather-cache/imap/"
+_IMAP_INDEX = "index.json"
+#: Consecutive UIDs per chunk. Messages run ~10-30 KB, so a chunk is a few MB
+#: compressed: big enough that a large list is tens of objects, small enough
+#: that the tail chunk a gather touches is cheap to re-upload.
+_IMAP_CHUNK_UIDS = 512
+_EML_NAME = re.compile(r"^(\d+)\.eml$")
 #: Shared fleet keys — concurrent writers, so persist uses a CAS-merge.
 _GITHUB_USERS_KEY = "fleet/gather-cache/github-users.json"
 _DATATRACKER_GITHUB_KEY = "fleet/gather-cache/datatracker-github.json"
@@ -78,6 +109,7 @@ def hydrate(kv: KvStore, corpus: str) -> None:
     _restore(kv, _DATATRACKER_GITHUB_KEY, datatracker_github.cache_path())
     _restore(kv, _DATATRACKER_PEOPLE_KEY, datatracker_people.cache_path())
     _restore_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
+    _restore_imap(kv, corpus)
 
 
 def persist(kv: KvStore, corpus: str) -> None:
@@ -113,6 +145,7 @@ def persist(kv: KvStore, corpus: str) -> None:
         datatracker_people.merge_cache,
     )
     _persist_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
+    _persist_imap(kv, corpus)
 
 
 # --- per-cache operations -------------------------------------------------
@@ -201,6 +234,204 @@ def _persist_tree(kv: KvStore, prefix: str, local_dir: str) -> None:
         path = os.path.join(local_dir, name)
         if os.path.isfile(path):
             _put_plain(kv, prefix + name, path)
+
+
+# --- IMAP mail cache (per corpus, chunked) --------------------------------
+
+
+class _ImapIndex(NamedTuple):
+    """What a list's stored chunks hold: the UIDVALIDITY epoch they were fetched
+    under (None if unknown) and the UIDs in each chunk."""
+
+    uidvalidity: Optional[str]
+    chunks: Dict[int, Set[int]]
+
+
+def _imap_root(corpus: str) -> str:
+    return os.path.join(get_cache_dir(), "imap-cache", corpus)
+
+
+def _chunk_key(prefix: str, chunk: int) -> str:
+    return f"{prefix}chunk-{chunk}.tar.gz"
+
+
+def _load_imap_index(kv: KvStore, key: str) -> _ImapIndex:
+    """The stored index, or an empty one if none is stored yet. Raises on a
+    corrupt index: callers skip the list rather than treat the store as empty
+    and overwrite chunks they can no longer account for."""
+    record = kv.get(key)
+    if record is None:
+        return _ImapIndex(None, {})
+    parsed = json.loads(record[0])
+    chunks = {int(c): {int(u) for u in uids} for c, uids in parsed["chunks"].items()}
+    epoch = parsed.get("uidvalidity")
+    return _ImapIndex(str(epoch) if epoch else None, chunks)
+
+
+def _dump_imap_index(index: _ImapIndex) -> bytes:
+    payload = {
+        "uidvalidity": index.uidvalidity,
+        "chunks": {str(c): sorted(uids) for c, uids in sorted(index.chunks.items())},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _local_chunks(list_dir: str) -> Dict[int, Set[int]]:
+    """The cached UIDs under `list_dir`, grouped by chunk."""
+    chunks: Dict[int, Set[int]] = {}
+    try:
+        names = os.listdir(list_dir)
+    except OSError:
+        return chunks
+    for name in names:
+        match = _EML_NAME.match(name)
+        if match:
+            uid = int(match.group(1))
+            chunks.setdefault(uid // _IMAP_CHUNK_UIDS, set()).add(uid)
+    return chunks
+
+
+def _read_epoch(list_dir: str) -> Optional[str]:
+    data = _read(os.path.join(list_dir, mbox.UIDVALIDITY_FILE))
+    if data is None:
+        return None
+    return data.decode("ascii", "replace").strip() or None
+
+
+def _epochs_differ(local: Optional[str], stored: Optional[str]) -> bool:
+    """Both epochs known and unequal. An unknown side matches anything: the
+    sync adopts a cache that has no marker, so there is nothing to contradict."""
+    return local is not None and stored is not None and local != stored
+
+
+def _pack_chunk(members: Dict[int, bytes]) -> bytes:
+    """Deterministic gzip tar of `<uid>.eml` members (no timestamps), so the same
+    mail always yields the same bytes."""
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:
+            for uid, data in sorted(members.items()):
+                info = tarfile.TarInfo(f"{uid}.eml")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _unpack_chunk(blob: bytes) -> Dict[int, bytes]:
+    members: Dict[int, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        for member in tar:
+            match = _EML_NAME.match(member.name)
+            handle = tar.extractfile(member) if match and member.isreg() else None
+            if match and handle is not None:
+                members[int(match.group(1))] = handle.read()
+    return members
+
+
+def _restore_imap(kv: KvStore, corpus: str) -> None:
+    """Restore every stored list's mail into the local IMAP cache. Never raises;
+    a failure on one list or chunk never skips the rest."""
+    prefix = _IMAP_PREFIX.format(corpus=corpus)
+    try:
+        names = kv.list_children(prefix)
+    except Exception:  # pylint: disable=broad-except
+        return
+    root = _imap_root(corpus)
+    for name in names:
+        if os.path.basename(name) != name or name.startswith("."):
+            continue
+        try:
+            _restore_imap_list(kv, f"{prefix}{name}/", os.path.join(root, name))
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+
+def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> None:
+    index = _load_imap_index(kv, prefix + _IMAP_INDEX)
+    local_epoch = _read_epoch(list_dir)
+    if _epochs_differ(local_epoch, index.uidvalidity):
+        # The local cache is from a different epoch than the stored one; its
+        # UIDs name different messages, so mixing them would corrupt both. The
+        # sync's own UIDVALIDITY check settles which side is current.
+        return
+    if local_epoch is None and index.uidvalidity is not None:
+        os.makedirs(list_dir, exist_ok=True)
+        _atomic_write(
+            os.path.join(list_dir, mbox.UIDVALIDITY_FILE),
+            index.uidvalidity.encode("ascii"),
+        )
+    local = _local_chunks(list_dir)
+    for chunk, uids in sorted(index.chunks.items()):
+        # A warm host already holding the chunk's mail fetches nothing.
+        if uids <= local.get(chunk, set()):
+            continue
+        try:
+            record = kv.get(_chunk_key(prefix, chunk))
+            if record is None:
+                continue
+            for uid, data in _unpack_chunk(record[0]).items():
+                path = os.path.join(list_dir, f"{uid}.eml")
+                if not os.path.exists(path):
+                    _atomic_write(path, data)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+
+def _persist_imap(kv: KvStore, corpus: str) -> None:
+    """Upload each local list's mail as chunks. Never raises; a failure on one
+    list never skips the rest."""
+    prefix = _IMAP_PREFIX.format(corpus=corpus)
+    root = _imap_root(corpus)
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return
+    for name in names:
+        if os.path.isdir(os.path.join(root, name)):
+            try:
+                _persist_imap_list(kv, f"{prefix}{name}/", os.path.join(root, name))
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
+def _persist_imap_list(kv: KvStore, prefix: str, list_dir: str) -> None:
+    local = _local_chunks(list_dir)
+    if not local:
+        return
+    stored = _load_imap_index(kv, prefix + _IMAP_INDEX)
+    epoch = _read_epoch(list_dir)
+    # A newer local epoch supersedes everything stored: the old chunks' UIDs
+    # name different messages now. Otherwise stored chunks are kept and only
+    # ever grown.
+    superseded = _epochs_differ(epoch, stored.uidvalidity)
+    base = {} if superseded else stored.chunks
+    chunks = dict(base)
+    for chunk, uids in sorted(local.items()):
+        have = base.get(chunk, set())
+        if uids == have:
+            continue
+        members: Dict[int, bytes] = {}
+        for uid in uids:
+            data = _read(os.path.join(list_dir, f"{uid}.eml"))
+            if data is not None:
+                members[uid] = data
+        if not uids >= have:
+            # The store holds mail this host lacks (a partial hydrate, say):
+            # fold it in rather than overwrite it with less. A failed fetch
+            # raises, abandoning the list with the stored chunk untouched.
+            record = kv.get(_chunk_key(prefix, chunk))
+            if record is not None:
+                for uid, data in _unpack_chunk(record[0]).items():
+                    members.setdefault(uid, data)
+        kv.put(_chunk_key(prefix, chunk), _pack_chunk(members))
+        chunks[chunk] = set(members)
+    index = _ImapIndex(epoch or stored.uidvalidity, chunks)
+    if index != stored:
+        # Chunks first, index last: a crash in between leaves chunks the index
+        # doesn't list yet, which the next persist re-covers.
+        kv.put(prefix + _IMAP_INDEX, _dump_imap_index(index))
+    for chunk in stored.chunks.keys() - chunks.keys():
+        kv.delete(_chunk_key(prefix, chunk))
 
 
 # --- local file helpers ---------------------------------------------------

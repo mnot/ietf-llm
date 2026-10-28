@@ -544,7 +544,7 @@ ietf_llm/
 │       ├── json_store.py           # tolerant read + atomic write for the JSON manifests below
 │       ├── materials_manifest.py   # materials.json: doc-name → rev last fetched (rev-gating)
 │       ├── documents_manifest.py   # documents.json: draft-name → {expires, state} (overview + embed-skip)
-│       ├── cache_sync.py           # cloud: round-trip gather accelerator caches to the KvStore (issue #82)
+│       ├── cache_sync.py           # cloud: round-trip gather accelerator caches (incl. IMAP mail) to the KvStore (#82, #260)
 │       ├── _mirror.py              # shared singleton-mirror plumbing (TTL / conditional GET / sidecars)
 │       ├── rfcs.py                 # ensure_rfc_index: mirror the rfc.fyi RFC-series JSON → _rfc/
 │       ├── catalog.py              # ensure_catalog_index: mirror the Datatracker group list → _catalog/
@@ -853,14 +853,17 @@ write-throughs its own entry, so it never serves config it just wrote.
   accelerator caches through the `KvStore` — the datatracker ETag store sharded
   per corpus (`corpora/<name>/gather-cache/`, lease-serialised plain RMW), the
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
-  the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins)
-  — so an ephemeral host revalidates rather than re-hitting rate-limited upstreams
-  after scale-to-zero (issue #82); no-ops on local, all best-effort. The large
-  caches stay ephemeral by design: `imap-cache/` is per-corpus and its mail is
-  already published as version content, and `_rfc/` mirrors a CDN rather than a
-  rate-limited API (a restart re-fetches it for bandwidth, not API quota), so only
-  the rate-limited, shared, or per-corpus-lease-serialised caches above are
-  round-tripped.
+  the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins),
+  and the per-list IMAP mail cache (`corpora/<name>/gather-cache/imap/<list>/`,
+  lease-serialised, see below) — so an ephemeral host revalidates rather than
+  re-hitting rate-limited upstreams after scale-to-zero (issues #82, #260); no-ops
+  on local, all best-effort. `_rfc/` stays ephemeral by design: it mirrors a CDN
+  rather than a rate-limited API (a restart re-fetches it for bandwidth, not API
+  quota). The IMAP mail is round-tripped even though it is large, because thread
+  reconstruction re-reads *every* cached message and deletes thread files it does
+  not regenerate — a fresh host holding only the new mail would publish a version
+  that has lost the old threads — and the published version holds the rendered
+  threads, not the raw `.eml` they are rebuilt from.
   Both planes are **object-store only**. The control plane is the only
   linearizable, cross-host state, and it holds **no corpus content** (that lives in
   the version blobs): every *control* key is either a *published fact* (pointer,
@@ -1293,6 +1296,25 @@ live path can't replace.
 `imap-cache/<wg>/<list>/` rather than under `<wg>/`: the raw `.eml`
 store is expensive to refetch and shouldn't be lost when a WG's
 exported `files/` are cleared. Thread reconstruction walks it directly.
+
+Each list dir also holds `.uidvalidity`, the IMAP UIDVALIDITY epoch the cached
+`<uid>.eml` files were fetched under. A UID names a message only within one
+epoch, so when the server reports a different value the sync discards that
+list's cached mail and refetches (a stale `<uid>.eml` would otherwise satisfy
+the "already cached" check for a different message). A cache with no marker is
+adopted as-is.
+
+On the cloud backend the cache is round-tripped (`cache_sync.py`) so a fresh
+container doesn't re-download the archive. Per list it stores `index.json` (the
+epoch and each chunk's UIDs) plus gzip-tar chunks of 512 consecutive UIDs, so a
+restore is tens of GETs rather than one per message. A chunk's membership is not
+frozen — a wider `--months` window fills in old UIDs — so persist re-uploads any
+chunk whose UID set differs from the index, and never replaces a stored chunk
+with one holding fewer messages (it folds the stored mail in): mail outside the
+window exists only in the cache. Hydrate fetches a chunk only when the local
+cache lacks some of its UIDs, so a warm host pays the index GETs alone, and it
+leaves a list alone when the local and stored epochs differ. A newer local epoch
+replaces the stored chunks and deletes the stale ones.
 
 ### Cross-corpus singletons: the RFC series and the effort catalog
 

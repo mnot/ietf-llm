@@ -36,6 +36,9 @@ IMAP_TIMEOUT = 60
 # without turning a genuinely-down server into a long stall. A folder that
 # won't select is *not* retried — that's a wrong list name, not a transient.
 IMAP_RETRIES = 1
+# Per-list file recording the IMAP UIDVALIDITY the cached `<uid>.eml` files were
+# fetched under. UIDs only name a message within one UIDVALIDITY epoch.
+UIDVALIDITY_FILE = ".uidvalidity"
 
 
 def validate_list_names(
@@ -257,6 +260,53 @@ def _download_batches(
     return new_count
 
 
+def _server_uidvalidity(mail: imaplib.IMAP4_SSL) -> Optional[str]:
+    """UIDVALIDITY the server reported for the selected folder, or `None` if it
+    didn't (or sent something unparseable)."""
+    try:
+        _, data = mail.response("UIDVALIDITY")
+    except (imaplib.IMAP4.error, OSError):
+        return None
+    raw = data[0] if data else None
+    if isinstance(raw, bytes) and raw.strip().isdigit():
+        return raw.strip().decode()
+    return None
+
+
+def _reconcile_uidvalidity(
+    mail: imaplib.IMAP4_SSL, cache_dir: str, verbose: Verbosity
+) -> None:
+    """Drop the cached messages when the folder's UIDVALIDITY has changed.
+
+    A changed value means the server renumbered the folder, so a cached
+    `<uid>.eml` may be a different message from the one now at that UID — and
+    the "already cached" check would then skip fetching the real one. The cache
+    is cleared and refetched rather than trusted. A cache with no recorded epoch
+    (first sync, or one that predates the marker) is adopted as-is."""
+    current = _server_uidvalidity(mail)
+    if current is None:
+        return
+    marker = os.path.join(cache_dir, UIDVALIDITY_FILE)
+    try:
+        with open(marker, "r", encoding="ascii") as handle:
+            previous: Optional[str] = handle.read().strip()
+    except OSError:
+        previous = None
+    if previous == current:
+        return
+    if previous is not None:
+        log(
+            f"  UIDVALIDITY changed ({previous} -> {current}); "
+            "discarding the cached messages for this list.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        for name in os.listdir(cache_dir):
+            if name.endswith(".eml"):
+                os.remove(os.path.join(cache_dir, name))
+    write_if_changed(marker, current)
+
+
 class _FolderSelectError(Exception):
     """The IMAP folder for a list couldn't be selected. Almost always a wrong
     or renamed list name rather than a transient fault, so it isn't retried."""
@@ -329,6 +379,7 @@ def _imap_sync_attempt(
         status, _ = mail.select(folder, readonly=True)
         if status != "OK":
             raise _FolderSelectError(folder)
+        _reconcile_uidvalidity(mail, cache_dir, verbose)
         search_criteria = "ALL"
         if months:
             since_date = (datetime.now() - timedelta(days=30 * months)).strftime(
