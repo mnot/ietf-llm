@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,55 @@ def format_filename(name: str) -> str:
 # immutable — both stay skip-if-exists, so we don't pay to list their
 # (numerous) revisions every gather.
 _REV_GATED_KINDS = ("minutes", "agenda")
+
+#: Layout version of the minutes / agenda aggregates, recorded per file in
+#: the materials manifest. Bump it to regenerate every already-gathered
+#: aggregate once, since `_needs_rebuild` otherwise fires only on a
+#: document revision change. 2: sessions sharing an identical body are
+#: written once under a merged heading.
+_AGGREGATE_FORMAT = "2"
+
+
+def _format_key(code: str, kind: str) -> str:
+    """Manifest key recording the layout version of one aggregate. The
+    colon keeps it clear of document names, which share the manifest."""
+    return f"format:{code}/{kind}"
+
+
+@dataclass
+class _Block:
+    """One distinct body in an aggregate, with every session and URL that
+    carried it."""
+
+    body: str
+    sessions: List[Tuple[str, str]] = field(default_factory=list)  # (date, number)
+    urls: List[str] = field(default_factory=list)
+
+    def add(self, date: str, number: str, url: str) -> None:
+        if (date, number) not in self.sessions:
+            self.sessions.append((date, number))
+        if url not in self.urls:
+            self.urls.append(url)
+
+
+def _block_heading(sessions: List[Tuple[str, str]]) -> str:
+    """`## Session <date> (<number>)` for one session; for several, one
+    `## Sessions` heading naming each, grouped by date."""
+    if len(sessions) == 1:
+        date, number = sessions[0]
+        return f"## Session {date} ({number})\n"
+    by_date: Dict[str, List[str]] = {}
+    for date, number in sessions:
+        numbers = by_date.setdefault(date, [])
+        if number not in numbers:
+            numbers.append(number)
+    groups = "; ".join(f"{date} ({', '.join(nums)})" for date, nums in by_date.items())
+    return f"## Sessions {groups}\n"
+
+
+def _render_block(block: _Block) -> str:
+    urls = "".join(f"URL: {url}\n" for url in block.urls)
+    return f"{_block_heading(block.sessions)}{urls}\n{block.body}\n\n---\n\n"
 
 
 @dataclass
@@ -398,14 +448,17 @@ def _needs_rebuild(
     links: List[Dict[str, Any]],
     revs: Dict[str, str],
     manifest: Dict[str, str],
+    format_key: str,
 ) -> bool:
     """Whether a minutes / agenda aggregate must be re-fetched & rebuilt.
 
-    True if the output file is missing, or any constituent document's
-    current revision differs from what we last wrote (manifest). A doc
-    with no known current rev (not in `revs`) is treated as changed so
-    we don't silently freeze it."""
+    True if the output file is missing, was written under an older
+    layout (`format_key` not stamped at `_AGGREGATE_FORMAT`), or any
+    constituent document's current revision differs from what we last
+    wrote (manifest)."""
     if not os.path.isfile(out_file):
+        return True
+    if manifest.get(format_key) != _AGGREGATE_FORMAT:
         return True
     for link in links:
         docname = link["docname"]
@@ -478,7 +531,8 @@ def _process_cluster(
         ]
         if not links:
             continue
-        if not _needs_rebuild(out_file, links, revs, manifest):
+        fmt_key = _format_key(code, kind)
+        if not _needs_rebuild(out_file, links, revs, manifest, fmt_key):
             log(
                 f"Skipping {code} {kind}: unchanged.",
                 verbose,
@@ -488,19 +542,33 @@ def _process_cluster(
 
         parts: List[str] = _header(title)
         fetched: List[Dict[str, Any]] = []
+        # Sessions often point at one shared document (or re-upload the
+        # same text), so a body already written for this cluster is not
+        # repeated: its session joins the earlier block instead.
+        blocks: List[_Block] = []
+        by_digest: Dict[str, _Block] = {}
+        texts: Dict[str, Optional[str]] = {}
         for session in cluster.sessions:
             session_date = session.get("date", "")
             for link in session["links"]:
                 if link["type"] != kind:
                     continue
-                content = _fetch_text(link["url"], verbose)
+                url = link["url"]
+                # A document attached to several sessions is listed once
+                # per session; fetch it once.
+                if url not in texts:
+                    texts[url] = _fetch_text(url, verbose)
+                content = texts[url]
                 if content:
-                    # Headed per-session so multi-session clusters stay
-                    # legible (same-day sessions get the number too).
-                    parts.append(f"## Session {session_date} ({session['number']})\n")
-                    parts.append(f"URL: {link['url']}\n\n")
-                    parts.append(content.strip() + "\n\n---\n\n")
+                    body = content.strip()
+                    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+                    block = by_digest.get(digest)
+                    if block is None:
+                        block = by_digest[digest] = _Block(body)
+                        blocks.append(block)
+                    block.add(session_date, session["number"], url)
                     fetched.append(link)
+        parts.extend(_render_block(block) for block in blocks)
 
         # Only write if a session actually contributed content (the header
         # alone is ~3 short lines); otherwise the meeting has no agenda /
@@ -515,6 +583,7 @@ def _process_cluster(
                 docname = link["docname"]
                 if docname in revs:
                     manifest[docname] = revs[docname]
+            manifest[fmt_key] = _AGGREGATE_FORMAT
 
 
 def _cleanup_absorbed_dirs(
