@@ -1457,8 +1457,8 @@ free of it and degrades to keyword matching.
 charter, milestones, and a timeline. The timeline is built from bulk feeds —
 group state changes, charter revisions and IESG approvals, milestone history, and
 RFC publications (joined offline from `_rfc/` by its `wg` field). It does not
-include chair changes (role history references group *history* snapshots, and
-names would need a second fan-out), draft adoption (per document), or meetings.
+include chair changes (a gathered corpus reads them from each group's
+`groupevent` log; the mirror would need that log as a bulk feed), draft adoption (per document), or meetings.
 Milestone and charter dates before about 2014 reflect the Datatracker import, not
 the original event. The RFC events are joined from `_rfc/` when the group refresh
 runs (after the RFC mirror in housekeeping), so they are absent until the first

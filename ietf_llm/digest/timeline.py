@@ -48,7 +48,6 @@ from ..gather.sources.ballots import (
 from ..gather.sources.datatracker_history import (
     fetch_doc_events,
     fetch_group_events,
-    fetch_role_history,
 )
 from ..gather.sources.github import iter_issue_archives
 from ..gather.sources.mail_threads import Thread, build_threads, thread_slug
@@ -434,7 +433,7 @@ def build_events(
     # no group record to query.
     if group_backed:
         dt_events: List[Event] = []
-        # Four independent queries against slow endpoints. Overlapped, not
+        # Three independent queries against slow endpoints. Overlapped, not
         # unbounded: the per-host governor still caps what datatracker sees.
         parent = http_metrics.current()
 
@@ -446,17 +445,13 @@ def build_events(
             finally:
                 http_metrics.set_current(previous)
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             f_group = pool.submit(_bound, fetch_group_events, wg, months, verbose)
-            f_roles = pool.submit(_bound, fetch_role_history, wg, verbose)
             f_docs = pool.submit(_bound, fetch_doc_events, wg, months, verbose)
             # IESG ballot positions -> per-draft ballot file, which
             # read_digest(event_kind="ballot") addresses directly.
-            f_ballots = pool.submit(
-                _bound, fetch_ballots, wg, months, verbose=verbose
-            )
+            f_ballots = pool.submit(_bound, fetch_ballots, wg, months, verbose=verbose)
         dt_events.extend(f_group.result())
-        dt_events.extend(f_roles.result())
         dt_events.extend(f_docs.result())
         ballots = f_ballots.result()
         write_ballot_files(cache_dir, ballots, verbose=verbose)

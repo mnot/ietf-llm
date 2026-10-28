@@ -329,12 +329,11 @@ def test_datatracker_workers_share_http_metrics(
         return []
 
     monkeypatch.setattr(timeline, "fetch_group_events", fetch)
-    monkeypatch.setattr(timeline, "fetch_role_history", fetch)
     monkeypatch.setattr(timeline, "fetch_doc_events", fetch)
     monkeypatch.setattr(timeline, "fetch_ballots", fetch)
 
     try:
         build_events("wg", str(isolated_home), Registry())
-        assert http_metrics.current().host_requests["datatracker.ietf.org"] == 4
+        assert http_metrics.current().host_requests["datatracker.ietf.org"] == 3
     finally:
         http_metrics.reset()

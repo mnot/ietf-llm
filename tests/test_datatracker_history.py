@@ -137,77 +137,133 @@ def test_group_events_ignores_uninteresting_types(
     assert events == []
 
 
-# --- fetch_role_history ---------------------------------------------------
+# --- chair appointments (group events) -----------------------------------
 
 
-def test_role_history_returns_chair_appointments_full_history(
+def _chair_event(days: int, desc: str, type_slug: str = "info_changed") -> Dict[str, Any]:
+    # Shape of a live /group/groupevent/ row (httpbis, tls).
+    return {
+        "id": 1,
+        "group": "/api/v1/group/group/1/",
+        "time": _now_minus(days),
+        "type": type_slug,
+        "desc": desc,
+        "by": "/api/v1/person/person/1/",
+    }
+
+
+def _chair_titles(events: List[Any]) -> List[str]:
+    return [e.title for e in events if e.kind == "chair-appointed"]
+
+
+def test_chair_change_emits_only_the_newly_appointed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A chair appointment from 10 years ago should still appear —
-    # chairs are permanent context, policy (2).
     _stub_get_json(monkeypatch, {
-        "/group/rolehistory/": {
-            "objects": [
-                {
-                    "time": _now_minus(365 * 10),
-                    "name": "/api/v1/name/rolename/chair/",
-                    "person": "/api/v1/person/person/12345/",
-                },
-            ],
-        },
-        "/person/person/12345/": {"name": "Mark Nottingham"},
+        "/group/groupevent/": {"objects": [_chair_event(
+            30,
+            "Chairs changed to <b>Mark Nottingham, Patrick McManus</b> "
+            "from Mark Nottingham",
+        )]},
     })
-    events = datatracker_history.fetch_role_history(
-        "wg", verbose=Verbosity.QUIET,
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
     )
-    assert len(events) == 1
-    assert events[0].kind == "chair-appointed"
-    assert "Mark Nottingham" in events[0].title
+    assert _chair_titles(events) == ["Chair appointed: Patrick McManus"]
 
 
-def test_role_history_ignores_non_chair_roles(
+def test_chair_events_ignore_months_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # ADs cycle for all WGs in an area — listing every AD rotation
-    # is noise. We deliberately surface chairs only.
+    # Who chaired and when is permanent context, like charter approvals.
     _stub_get_json(monkeypatch, {
-        "/group/rolehistory/": {
-            "objects": [
-                {
-                    "time": _now_minus(30),
-                    "name": "/api/v1/name/rolename/ad/",
-                    "person": "/api/v1/person/person/99/",
-                },
-            ],
-        },
+        "/group/groupevent/": {"objects": [_chair_event(
+            365 * 10, "Chair changed to <b>A B, C D</b> from A B",
+        )]},
     })
-    events = datatracker_history.fetch_role_history(
-        "wg", verbose=Verbosity.QUIET,
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert _chair_titles(events) == ["Chair appointed: C D"]
+
+
+def test_chair_change_with_no_prior_chairs_appoints_everyone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [_chair_event(
+            30, "Chairs changed to <b>A B, C D</b> from ",
+        )]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert _chair_titles(events) == ["Chair appointed: A B", "Chair appointed: C D"]
+
+
+def test_chair_removal_and_duplicate_names_emit_nothing_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A departure appoints nobody; a name repeated in the old list (seen
+    # in real tls data) must not make an existing chair look new.
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [
+            _chair_event(30, "Chairs changed to <b>A B</b> from A B, C D"),
+            _chair_event(60, "Chairs changed to <b>A B, C D</b> from A B, C D, A B"),
+        ]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert _chair_titles(events) == []
+
+
+def test_other_info_changes_are_not_chair_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADs cycle for every WG in an area; listing them is noise.
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [
+            _chair_event(30, "Area Director changed to <b>Mike Bishop</b> "
+                         "from Francesca Palombini"),
+            _chair_event(31, "Info Changed"),
+            _chair_event(32, "Chairs changed to <b>A B</b> from ",
+                         type_slug="added_comment"),
+        ]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
     )
     assert events == []
 
 
-def test_role_history_handles_unresolvable_person(
+def test_group_events_follow_pagination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Person endpoint returns None → skip rather than emit a
-    # nameless "Chair appointed: " row.
-    _stub_get_json(monkeypatch, {
-        "/group/rolehistory/": {
-            "objects": [
-                {
-                    "time": _now_minus(30),
-                    "name": "/api/v1/name/rolename/chair/",
-                    "person": "/api/v1/person/person/77/",
-                },
-            ],
-        },
-        "/person/person/77/": None,
-    })
-    events = datatracker_history.fetch_role_history(
-        "wg", verbose=Verbosity.QUIET,
+    # Chair and charter events are the oldest rows, so they sit on the
+    # last page of a busy group.
+    page1 = {
+        "meta": {"next": "/api/v1/group/groupevent/?offset=500"},
+        "objects": [_chair_event(5, "sent scheduled notification", "sent_notification")],
+    }
+    page2 = {
+        "meta": {"next": None},
+        "objects": [_chair_event(
+            365 * 9, "Chairs changed to <b>A B</b> from "
+        )],
+    }
+    called: List[str] = []
+
+    def fake(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        called.append(path_or_url)
+        return page2 if "offset=500" in path_or_url else page1
+
+    monkeypatch.setattr(datatracker_history, "_get_json", fake)
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
     )
-    assert events == []
+    assert len(called) == 2
+    assert _chair_titles(events) == ["Chair appointed: A B"]
 
 
 # --- fetch_doc_events -----------------------------------------------------

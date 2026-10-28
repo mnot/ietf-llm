@@ -1,14 +1,11 @@
 """Fetch governance / lifecycle events for a WG from Datatracker.
 
-Three event sources, all best-effort against the public JSON API:
+Two event sources, all best-effort against the public JSON API:
 
   - **Group events** (`/api/v1/group/groupevent/`) — charter approvals,
-    state changes, formal milestones. Charter events ALWAYS appear in
-    the timeline regardless of the `--months` window (foundational
-    context); other group events respect the window.
-  - **Role history** (`/api/v1/group/rolehistory/`) — chair / AD
-    appointments and changes. ALWAYS included regardless of `--months`,
-    since who chaired the WG and when is permanent context.
+    state changes, chair appointments. Charter and chair events ALWAYS
+    appear in the timeline regardless of the `--months` window
+    (foundational context); other group events respect the window.
   - **Document events** (`/api/v1/doc/docevent/`) — adoption, WGLC
     announcement, IESG submission, RFC publication. These are
     per-document and high-volume; they respect the `--months` cutoff.
@@ -63,13 +60,16 @@ _GROUP_EVENT_KINDS = {
 def fetch_group_events(
     wg: str, months: int, verbose: Verbosity = Verbosity.STATUS
 ) -> List[Event]:
-    """Group-level events: charter approvals, state changes.
+    """Group-level events: charter approvals, state changes, chair appointments.
 
-    Charter events are returned regardless of `months` (foundational);
-    other event kinds are filtered to the last `months` months.
+    Charter and chair events are returned regardless of `months`
+    (foundational); other event kinds are filtered to the last `months`
+    months.
     """
-    body = _get_json(f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=200")
-    if not body or "objects" not in body:
+    objects = _paged_objects(
+        f"{_API_BASE}/group/groupevent/?group__acronym={wg}&limit=500"
+    )
+    if not objects:
         log(
             f"No groupevent data for {wg} from Datatracker.",
             verbose,
@@ -79,9 +79,22 @@ def fetch_group_events(
 
     cutoff = _cutoff(months)
     out: List[Event] = []
-    for obj in body["objects"]:
+    for obj in objects:
         when = _parse_dt_time(obj.get("time"))
         if when is None:
+            continue
+        chairs = _chairs_appointed(obj)
+        if chairs:
+            out.extend(
+                Event(
+                    when=when,
+                    kind="chair-appointed",
+                    title=f"Chair appointed: {name}",
+                    detail=None,
+                    link=None,
+                )
+                for name in chairs
+            )
             continue
         event_kind, title = _classify_group_event(obj)
         if event_kind is None:
@@ -102,48 +115,6 @@ def fetch_group_events(
     return out
 
 
-def fetch_role_history(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Event]:
-    """Chair (and other leadership) appointments through history.
-
-    Always returns the full history — chair appointments are permanent
-    context, and there are usually only a handful per WG.
-    """
-    body = _get_json(f"{_API_BASE}/group/rolehistory/?group__acronym={wg}&limit=200")
-    if not body or "objects" not in body:
-        log(
-            f"No rolehistory data for {wg} from Datatracker.",
-            verbose,
-            level=LogLevel.PROGRESS,
-        )
-        return []
-
-    out: List[Event] = []
-    for obj in body["objects"]:
-        role_url = obj.get("name") or ""
-        role_slug = _slug_from_url(role_url, "rolename")
-        # Chairs are the universally interesting role; ADs cycle for
-        # all WGs in the area so listing them here is noise. Tweak
-        # this set if other roles prove useful in practice.
-        if role_slug != "chair":
-            continue
-        when = _parse_dt_time(obj.get("time"))
-        if when is None:
-            continue
-        person_name = _person_name(obj.get("person"))
-        if not person_name:
-            continue
-        out.append(
-            Event(
-                when=when,
-                kind="chair-appointed",
-                title=f"Chair appointed: {person_name}",
-                detail=None,
-                link=None,
-            )
-        )
-    return out
-
-
 def fetch_doc_events(
     wg: str, months: int, verbose: Verbosity = Verbosity.STATUS
 ) -> List[Event]:
@@ -156,22 +127,12 @@ def fetch_doc_events(
     # `time__gte` filters server-side so we don't drag down a full
     # group's history just to discard most of it.
     cutoff_param = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    # Page through `meta.next`: a long-running WG's in-window history can
-    # exceed one 500-row page, and a single capped request would silently drop
-    # the overflow (likely the newest events, given default ordering).
-    path: Optional[str] = (
+    objects = _paged_objects(
         f"{_API_BASE}/doc/docevent/"
         f"?doc__group__acronym={wg}"
         f"&time__gte={cutoff_param}"
         "&limit=500"
     )
-    objects: List[Dict[str, Any]] = []
-    while path:
-        body = _get_json(path)
-        if not body:
-            break
-        objects.extend(body.get("objects") or [])
-        path = (body.get("meta") or {}).get("next") or None
     if not objects:
         log(
             f"No docevent data for {wg} from Datatracker.",
@@ -261,6 +222,53 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
 # --- Helpers --------------------------------------------------------------
 
 
+def _paged_objects(path: str) -> List[Dict[str, Any]]:
+    """Every `objects` row of a Datatracker list endpoint, following `meta.next`.
+
+    A long-running WG's history can exceed one 500-row page; a single capped
+    request would silently drop the overflow (the oldest events, given the
+    default newest-first ordering).
+    """
+    objects: List[Dict[str, Any]] = []
+    next_path: Optional[str] = path
+    while next_path:
+        body = _get_json(next_path)
+        if not body:
+            break
+        objects.extend(body.get("objects") or [])
+        next_path = (body.get("meta") or {}).get("next") or None
+    return objects
+
+
+#: A chair change is recorded as an `info_changed` group event, e.g.
+#: "Chairs changed to <b>A, B</b> from A" ("Chair changed" when the
+#: group had one chair at the time).
+_CHAIRS_CHANGED_RE = re.compile(
+    r"^Chairs? changed to <b>(.*?)</b>\s*from\s*(.*)$", re.IGNORECASE | re.DOTALL
+)
+
+
+def _chairs_appointed(obj: Dict[str, Any]) -> List[str]:
+    """Names newly in the chair set of a chair-change group event, else [].
+
+    `rolehistory` carries no timestamps, so appointments are read off the
+    group event that recorded the change rather than reconstructed from
+    group snapshots.
+    """
+    if (obj.get("type") or "").strip() != "info_changed":
+        return []
+    match = _CHAIRS_CHANGED_RE.match((obj.get("desc") or "").strip())
+    if not match:
+        return []
+    before = {name.strip() for name in match.group(2).split(",")}
+    out: List[str] = []
+    for name in match.group(1).split(","):
+        name = name.strip()
+        if name and name not in before and name not in out:
+            out.append(name)
+    return out
+
+
 def _cutoff(months: int) -> datetime:
     """tz-aware cutoff `months` months before now. 30-day approximation
     is fine for digest purposes (events near the boundary are not
@@ -300,16 +308,3 @@ def _slug_from_url(url: str, expected_section: Optional[str] = None) -> Optional
     if expected_section and match.group(1) != expected_section:
         return None
     return match.group(2)
-
-
-def _person_name(person_url: Optional[str]) -> Optional[str]:
-    """Resolve a Datatracker person URL to a display name. One extra
-    HTTP call per chair appointment — acceptable; there are few chairs.
-    """
-    if not person_url:
-        return None
-    body = _get_json(person_url)
-    if not body:
-        return None
-    name = body.get("name") or body.get("ascii")
-    return str(name) if name else None
