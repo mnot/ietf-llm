@@ -498,17 +498,27 @@ class LocalCorpusStore(CorpusStore):
         return freshness.local_last_gathered(corpus)
 
 
+#: The one memoized cloud store: `{store_config_key(): store}`, holding at most
+#: one entry. Reusing it keeps one boto3 client (and its connection pool) per
+#: process instead of one per call; a changed config is a different key, so it
+#: replaces the entry rather than serving a store built for the old config.
+_CLOUD_STORE: Dict[Tuple[Any, ...], CorpusStore] = {}
+_CLOUD_STORE_LOCK = threading.Lock()
+
+
 def get_corpus_store() -> CorpusStore:
     """The `CorpusStore` selected by service config.
 
     `store_backend` (env `IETF_LLM_STORE_BACKEND` > global config > `local`)
     chooses the backend: `local` (the laptop / single-box default, today's
     behaviour) or `cloud` (a SQL control plane + object-store blob plane; see
-    `corpus_store_cloud`). Constructed per call — both backends are cheap,
-    stateless handles that open no connection until used. An unrecognised
-    backend value **raises** rather than silently falling back to local — so a
-    typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead of writing to
-    a local cache and never publishing to the fleet."""
+    `corpus_store_cloud`). The local store is a stateless handle, built per
+    call. The cloud store owns an S3 client, so it is memoized on the config it
+    was built from (`cloud.store_config_key`): repeated calls under unchanged
+    config share one store, and a changed config builds a fresh one. An
+    unrecognised backend value **raises** rather than silently falling back to
+    local — so a typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead
+    of writing to a local cache and never publishing to the fleet."""
     backend = service_config.store_backend()
     if backend == "local":
         return LocalCorpusStore()
@@ -518,7 +528,15 @@ def get_corpus_store() -> CorpusStore:
         # from here, so a static back-import would be a cycle. The cloud
         # machinery stays out of the default local path entirely.
         cloud = importlib.import_module(f"{__package__}.cloud")
-        return cast(CorpusStore, cloud.build_cloud_store())
+        key = cloud.store_config_key()
+        with _CLOUD_STORE_LOCK:
+            store = _CLOUD_STORE.get(key)
+            if store is None:
+                # An under-configured build raises and leaves the cache as it was.
+                store = cast(CorpusStore, cloud.build_cloud_store())
+                _CLOUD_STORE.clear()
+                _CLOUD_STORE[key] = store
+            return store
     raise ValueError(
         f"unrecognised IETF_LLM_STORE_BACKEND={backend!r} (expected 'local' or 'cloud')"
     )

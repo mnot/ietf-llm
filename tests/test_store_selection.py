@@ -44,6 +44,57 @@ def test_cloud_backend_selected(
     assert isinstance(get_corpus_store(), CloudCorpusStore)
 
 
+def test_cloud_store_is_reused_under_unchanged_config(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _select_cloud(isolated_home / "store", monkeypatch)
+    assert get_corpus_store() is get_corpus_store()
+
+
+@pytest.mark.parametrize(
+    "var, value",
+    [
+        ("IETF_LLM_STORE_URL", "s3://other-bucket/prefix"),
+        ("IETF_LLM_SCRATCH_DIR", "elsewhere"),
+        ("IETF_LLM_RESOLVE_TTL", "0"),
+        ("IETF_LLM_RETAIN_VERSIONS", "5"),
+        ("IETF_LLM_STORE_ENDPOINT_URL", "http://localhost:9000"),
+    ],
+)
+def test_cloud_store_rebuilt_when_config_changes(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, var: str, value: str
+) -> None:
+    _select_cloud(isolated_home / "store", monkeypatch)
+    first = get_corpus_store()
+    monkeypatch.setenv(var, value)
+    second = get_corpus_store()
+    assert second is not first
+    assert get_corpus_store() is second
+
+
+def test_failed_build_does_not_displace_the_cached_store(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _select_cloud(isolated_home / "store", monkeypatch)
+    first = get_corpus_store()
+    monkeypatch.delenv("IETF_LLM_SCRATCH_DIR")
+    with pytest.raises(ValueError):
+        get_corpus_store()
+    monkeypatch.setenv("IETF_LLM_SCRATCH_DIR", str(isolated_home / "store" / "scratch"))
+    assert get_corpus_store() is first
+
+
+def test_concurrent_first_calls_build_one_store(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor  # pylint: disable=import-outside-toplevel
+
+    _select_cloud(isolated_home / "store", monkeypatch)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        stores = list(pool.map(lambda _: get_corpus_store(), range(32)))
+    assert len({id(s) for s in stores}) == 1
+
+
 def test_cloud_under_configured_raises(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -752,7 +752,9 @@ questions and otherwise stays out of the way. **Read side** — `local_cache_dir
 consumers then read through the `paths.py` helpers exactly as before. **Write
 side** — `publish(corpus, workspace)` makes a gathered tree the new current
 version. `get_corpus_store()` picks the backend from service config
-(`IETF_LLM_STORE_BACKEND`, default `local`). The write side is driven through
+(`IETF_LLM_STORE_BACKEND`, default `local`); the cloud store holds an S3 client,
+so it is built once and reused for as long as the config it was built from is
+unchanged (`cloud.store_config_key`), and rebuilt when any of it changes. The write side is driven through
 `gather/lifecycle.py` — lease and fleet slot, seed and cache hydration before
 the pipeline, publish and cache persistence after, the status record
 throughout — by both gatherers: the MCP runner wraps it with its queue and

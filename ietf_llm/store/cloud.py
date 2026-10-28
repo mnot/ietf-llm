@@ -104,6 +104,25 @@ def _versions_prefix(corpus: str) -> str:
     return f"corpora/{corpus}/versions/"
 
 
+def store_config_key() -> Tuple[Any, ...]:
+    """Everything `build_cloud_store` reads, as a comparable tuple: a store built
+    under one key is interchangeable with any other built under an equal key.
+    `get_corpus_store` memoizes on it, so an input added to `build_cloud_store`
+    (or read by `S3Bucket`) must be added here too, or a change to it would keep
+    serving the old store."""
+    # pylint: disable-next=import-outside-toplevel
+    from ..config import service as service_config
+
+    return (
+        service_config.store_url(),
+        service_config.scratch_dir(),
+        service_config.resolve_ttl(),
+        service_config.retain_versions(),
+        # Read by `S3Bucket` straight from the environment.
+        os.environ.get("IETF_LLM_STORE_ENDPOINT_URL") or None,
+    )
+
+
 def build_cloud_store() -> "CloudCorpusStore":
     """Construct the cloud backend from service config, or raise ValueError if it
     is selected but under-configured. The control plane and the blob plane share
