@@ -341,12 +341,35 @@ def test_datatracker_workers_share_http_metrics(
 
 def test_chair_names_follow_the_registry_spelling(
     isolated_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from ietf_llm.digest import timeline as tl  # pylint: disable=import-outside-toplevel
-
+    del isolated_home
     registry = Registry()
     registry.add_datatracker_role("Zoë Example", None, "Chair")
-    canonical = tl._canonical_names(registry)  # pylint: disable=protected-access
+    canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
     assert canonical("Zoe Example") == "Zoë Example"
     assert canonical("Nobody Known") == "Nobody Known"
+
+
+def test_chair_names_ignore_a_worse_registry_spelling(
+    isolated_home: Path,
+) -> None:
+    # Mail-derived spellings seen for former chairs in real caches.
+    del isolated_home
+    registry = Registry()
+    for spelling in ("avri doria", "Scharf, Michael", "Nancy Cam-Winget (ncamwing)"):
+        registry.add_email_message(f'"{spelling}" <x{len(spelling)}@example.org>', None)
+    canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
+    assert canonical("Avri Doria") == "Avri Doria"
+    assert canonical("Michael Scharf") == "Michael Scharf"
+    assert canonical("Nancy Cam-Winget") == "Nancy Cam-Winget"
+
+
+def test_chair_logged_by_email_resolves_through_the_registry(
+    isolated_home: Path,
+) -> None:
+    del isolated_home
+    registry = Registry()
+    registry.add_datatracker_role("Barbara Stark", "bs7652@att.com", "Chair")
+    canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
+    assert canonical("bs7652@att.com") == "Barbara Stark"
+    assert canonical("unknown@example.org") == "unknown@example.org"

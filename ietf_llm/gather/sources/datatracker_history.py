@@ -182,7 +182,10 @@ def _classify_group_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
       - referenced state (when type == changed_state)
     """
     type_slug = (obj.get("type") or "").strip()
-    desc = (obj.get("desc") or "").strip()
+    if type_slug == "changed_milestone":
+        # Milestone titles can quote a charter ("NTP WG Charter Approved").
+        return (None, "")
+    desc = _plain(obj.get("desc"))
     # Charter events: Datatracker emits a few different forms over its
     # history. Recognise by description rather than relying on a single
     # type slug.
@@ -293,6 +296,11 @@ def _name_list(text: str) -> List[str]:
         if name and name not in out:
             out.append(name)
     return out
+
+
+def _plain(value: Any) -> str:
+    """A Datatracker description with its markup stripped and entities decoded."""
+    return html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
 
 
 def _cutoff(months: int) -> datetime:

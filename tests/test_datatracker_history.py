@@ -472,3 +472,63 @@ def test_parse_dt_time_attaches_utc() -> None:
     # Malformed input returns None rather than raising.
     assert _parse_dt_time("nope") is None
     assert _parse_dt_time(None) is None
+
+
+def test_milestone_events_quoting_the_charter_are_not_charter_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real ntp row: the milestone title mentions the charter.
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [_chair_event(
+            365 * 5,
+            'Deleted milestone "NTP WG Charter Approved", not present in '
+            "approved charter",
+            type_slug="changed_milestone",
+        )]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert events == []
+
+
+def test_group_state_title_has_markup_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {
+        "/group/groupevent/": {"objects": [_chair_event(
+            30,
+            "State changed to <b>Concluded</b> from Active",
+            type_slug="changed_state",
+        )]},
+    })
+    events = datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert [e.title for e in events] == [
+        "Group state: State changed to Concluded from Active"
+    ]
+
+
+def test_a_failed_later_page_logs_a_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    page1 = {
+        "meta": {"next": "/api/v1/group/groupevent/?offset=500"},
+        "objects": [_chair_event(5, "x", "sent_notification")],
+    }
+
+    def fake(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        return None if "offset=500" in path_or_url else page1
+
+    messages: List[str] = []
+    monkeypatch.setattr(
+        datatracker_history, "log",
+        lambda msg, *a, **kw: messages.append(msg),
+    )
+    monkeypatch.setattr(datatracker_history, "_get_json", fake)
+    datatracker_history.fetch_group_events(
+        "wg", months=12, verbose=Verbosity.QUIET,
+    )
+    assert any("stopped paging" in m for m in messages)
+    del capsys

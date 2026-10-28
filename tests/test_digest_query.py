@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from ietf_llm.log import Verbosity
+
 from ietf_llm.digest.query import (
     Section,
     filter_rows,
@@ -426,13 +430,26 @@ def test_timeline_drops_empty_year_headings(tmp_path: Path) -> None:
     assert "## 2026" in out
 
 
-def test_timeline_filter_selects_each_datatracker_kind(tmp_path: Path) -> None:
+def test_timeline_filter_selects_each_datatracker_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Titles come from the real classifiers, not hand-typed strings, so a
     # reworded title that stops matching its kind marker fails here.
     from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
         datatracker_history as dh,
     )
 
+    chair_event = {
+        "time": "2026-01-01T00:00:00Z",
+        "type": "info_changed",
+        "desc": "Chair changed to <b>C D</b> from A B, C D",
+    }
+    monkeypatch.setattr(
+        dh, "_get_json", lambda path, timeout=10.0: {"objects": [chair_event]}
+    )
+    chair_titles = [
+        e.title for e in dh.fetch_group_events("wg", 12, Verbosity.QUIET)
+    ]
     titles = {
         "charter-approved": dh._classify_group_event(  # pylint: disable=protected-access
             {"type": "changed_state", "desc": "Charter approved, group active"}
@@ -452,7 +469,9 @@ def test_timeline_filter_selects_each_datatracker_kind(tmp_path: Path) -> None:
         "doc-wglc": dh._classify_doc_event(  # pylint: disable=protected-access
             {"type": "sent_last_call", "doc": "/api/v1/doc/document/draft-d/"}
         )[1],
-        "chair-departed": "Chair stepped down: A B",
+        "chair-departed": chair_titles[0],
+        # Row shape the writer gives an I-D Action thread: title, then link.
+        "draft-published": "`draft-f-06` published · threads/2026/x.md",
         "ballot": "`draft-e`: Some AD → Discuss",
     }
     path = tmp_path / "wg-_timeline.md"
@@ -464,5 +483,5 @@ def test_timeline_filter_selects_each_datatracker_kind(tmp_path: Path) -> None:
         out = query_digest(str(path), "timeline", event_kind=kind)
         assert title in out, kind
         for other_kind, other in titles.items():
-            if other_kind != kind and other_kind != "doc-wglc" and kind != "doc-wglc":
+            if other_kind != kind:
                 assert other not in out, (kind, other_kind)

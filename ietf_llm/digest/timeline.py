@@ -20,7 +20,7 @@ sources, each contributing dated events:
     Adoption). Used as a fallback when Datatracker has no
     corresponding authoritative event.
   - **Datatracker governance** — charter approvals, chair
-    appointments, group state changes, document adoption / IESG /
+    appointments and departures, group state changes, document adoption / IESG /
     RFC publication. Charter and chair events ignore the `--months`
     cutoff (foundational context); document events respect it.
 
@@ -55,6 +55,7 @@ from ..gather.sources.session_polls import discover_local_polls
 from ..gather.sources.transcript_context import transcript_context
 from ..log import LogLevel, Verbosity, log
 from ..net import http_metrics
+from ..people.names import is_decorated
 from ..paths import (
     DIR_MEETINGS,
     digest_path,
@@ -398,11 +399,23 @@ def _thread_link(thread: Thread) -> str:
 
 
 def _canonical_names(registry: Registry) -> Callable[[str], str]:
-    """Chair names as the people digest spells them, else as logged."""
+    """Chair names as the people digest spells them, else as logged.
+
+    The registry holds a mail-derived spelling for anyone whose Datatracker
+    role has lapsed, which can be worse than the logged name (all lowercase,
+    `Last, First`, a `(handle)` suffix); those are not adopted. A chair logged
+    by email address is resolved through the registry when it knows it.
+    """
 
     def canonical(name: str) -> str:
-        person = registry.person_for_name(name)
-        return person.canonical_name if person else name
+        if "@" in name:
+            person = registry.person_for_email(name.lower())
+        else:
+            person = registry.person_for_name(name)
+        spelling = person.canonical_name if person else name
+        if "@" in spelling or spelling == spelling.lower() or is_decorated(spelling):
+            return name
+        return spelling
 
     return canonical
 
@@ -421,7 +434,7 @@ def build_events(
     """Collect events from every source and return them sorted desc.
 
     `months` bounds the Datatracker document-event window; group-level
-    events (charter, chair appointments) ignore it per policy. The
+    events (charter, chair changes) ignore it per policy. The
     mailing-list-derived events are implicitly bounded by whatever
     `--months` was used when the mail was fetched.
 

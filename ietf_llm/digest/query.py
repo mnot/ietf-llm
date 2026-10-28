@@ -345,7 +345,9 @@ def _filter_timeline(text: str, filters: Dict[str, Any]) -> str:
         if event_kind:
             # Map our event kinds to substrings that distinguish them.
             kind_markers: Dict[str, Union[str, Tuple[str, ...]]] = {
-                "draft-published": "published",
+                # The I-D Action row ends "published · <thread link>"; RFC
+                # publication rows ("published as RFC") have no link.
+                "draft-published": " published · ",
                 "issue-opened": "opened",
                 "issue-closed": "closed",
                 # The timeline writer renders a session as its label
