@@ -415,7 +415,7 @@ def _filter_timeline(
                 "doc-iesg": ("submitted to IESG", "approved by IESG"),
                 "doc-rfc": "published as RFC",
                 "doc-lc": "IETF Last Call announced",
-                "doc-wglc": ("WG Last Call issued", "RG Last Call issued"),
+                "doc-wglc": ("entered WG Last Call", "entered RG Last Call"),
                 "ballot": "→",
                 "adoption-call": "adoption",
             }

@@ -238,7 +238,7 @@ def _classify_doc_event(obj: Dict[str, Any]) -> tuple[Optional[str], str]:
         return ("doc-lc", f"`{doc_name}`: IETF Last Call announced")
     match = _STREAM_LAST_CALL_RE.search(desc)
     if match:
-        return ("doc-wglc", f"`{doc_name}`: {match.group(1).upper()} Last Call issued")
+        return ("doc-wglc", f"`{doc_name}`: entered {match.group(1).upper()} Last Call")
     return (None, "")
 
 

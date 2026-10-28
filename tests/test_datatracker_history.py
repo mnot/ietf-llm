@@ -448,7 +448,7 @@ def test_doc_events_tell_ietf_last_call_from_wg_last_call(
     )
     assert sorted((e.kind, e.title) for e in events) == [
         ("doc-lc", "`draft-ietf-wg-x`: IETF Last Call announced"),
-        ("doc-wglc", "`draft-ietf-wg-x`: WG Last Call issued"),
+        ("doc-wglc", "`draft-ietf-wg-x`: entered WG Last Call"),
     ]
 
 
@@ -491,7 +491,7 @@ def test_rg_last_call_is_reported_as_such(
         "wg", months=12, verbose=Verbosity.QUIET,
     )
     assert [(e.kind, e.title) for e in events] == [
-        ("doc-wglc", "`draft-irtf-rg-x`: RG Last Call issued"),
+        ("doc-wglc", "`draft-irtf-rg-x`: entered RG Last Call"),
     ]
 
 

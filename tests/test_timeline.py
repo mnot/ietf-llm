@@ -398,7 +398,7 @@ def test_event_kind_filter_is_exact_on_a_written_digest(
         ("wglc", "WG Last Call thread: \"adoption of Last Call text\"", "threads/c.md"),
         ("adoption-call", "Adoption call thread: \"x\"", "threads/d.md"),
         ("doc-lc", "`draft-e`: IETF Last Call announced", None),
-        ("doc-wglc", "`draft-e`: WG Last Call issued", None),
+        ("doc-wglc", "`draft-e`: entered WG Last Call", None),
     ]
     events = [
         Event(
