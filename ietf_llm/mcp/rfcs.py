@@ -2,28 +2,23 @@
 
 from __future__ import annotations
 
-import os
 import re
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
-from ..paths import DIR_DRAFTS, drafts_dir
-from ..store.corpus import VersionVanished
+from .. import serve_metrics
+from ..paths import DIR_DRAFTS
+from ..store.blobs import parallel_each
+from ..store.corpus import get_corpus_store
 from ..singletons.rfcs import (
     is_stale_miss,
     render_rfc,
     render_search,
     working_group,
 )
-from .common import _files_dir, _list_wgs, _materialised_files_dir, _offload
+from .common import _list_wgs, _offload
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP  # pragma: no cover
-
-
-def _has_body(cache: Optional[str], filename: str) -> bool:
-    return cache is not None and os.path.isfile(
-        os.path.join(drafts_dir(cache), filename)
-    )
 
 
 def _cached_body(number: str) -> Optional[Tuple[str, str]]:
@@ -33,46 +28,53 @@ def _cached_body(number: str) -> Optional[Tuple[str, str]]:
     They land on disk only when a corpus that published the RFC was gathered
     with `--rfcs`, as `drafts/rfcNNNN.txt`.
 
-    Two lookups, because on the cloud backend resolving a corpus's files dir
-    *materialises* that version's blobs onto scratch:
-
-    1. The publishing WG's own corpus, resolved the forcing way. That is the
-       overwhelmingly likely holder and it is exactly one corpus, so it is
-       worth the one materialisation.
-    2. Every gathered corpus, resolved the *non*-forcing way — an RFC can be
-       cached under a corpus that did not publish it, and the WG is unknown
-       for the legacy and independent streams. Sweeping this with the forcing
-       resolver would download the whole fleet on a metadata lookup.
-
-    So on cloud a body in an unstaged corpus reads as absent. That is the
-    honest answer for a read path that must not fetch, and `_body_note` says
-    "not reachable from here" rather than claiming it does not exist.
-    Corpora are visited in a stable order so the pointer doesn't move between
-    calls; on the local backend both resolvers are the same directory and the
-    result is exactly as before.
+    Asks each gathered corpus whether it holds the file (`_corpus_has`), which on
+    the cloud backend is answered from the version's manifest: exact, and
+    without staging the version. The publishing WG goes first, since it is the
+    overwhelmingly likely holder and a hit there ends the lookup; the rest are
+    asked concurrently, because on a cold replica each is a round trip. Among
+    them the first in sorted order wins, so the pointer doesn't move between
+    calls. The caller reads the bytes with `read_file_section`, which is where
+    a cloud version is staged — only for the corpus that has the file.
     """
     match = re.search(r"\d+", str(number))
     if not match:
         return None
-    filename = f"rfc{int(match.group(0))}.txt"
     # The relpath goes back to the model as a `read_file_section` argument,
     # so it stays `/`-separated whatever the host separator is.
-    relpath = f"{DIR_DRAFTS}/{filename}"
+    relpath = f"{DIR_DRAFTS}/rfc{int(match.group(0))}.txt"
     corpora = sorted(_list_wgs())
     owner = working_group(number)
-    if owner and owner in corpora:
-        try:
-            if _has_body(_files_dir(owner), filename):
-                return owner, relpath
-        # A version that vanished mid-request (VersionVanished) or resolves to
-        # nothing (FileNotFoundError) is a reason to fall through to the sweep,
-        # not to fail a metadata lookup outright.
-        except (FileNotFoundError, VersionVanished):
-            pass
-    for wg in corpora:
-        if wg != owner and _has_body(_materialised_files_dir(wg), filename):
+    if owner is not None and owner in corpora and _corpus_has(owner, relpath):
+        return owner, relpath
+    rest = [wg for wg in corpora if wg != owner]
+    held: Dict[str, bool] = {}
+
+    def _ask(wg: str) -> None:
+        held[wg] = _corpus_has(wg, relpath)
+
+    parallel_each(_ask, rest)
+    for wg in rest:
+        if held[wg]:
             return wg, relpath
     return None
+
+
+def _corpus_has(wg: str, relpath: str) -> bool:
+    """Whether `wg` holds `relpath` in its `files/` tree, asked of the store's
+    `has_file` -- which never stages the version, unlike resolving its dir.
+
+    A corpus that cannot answer is one that does not hold it. This only
+    decorates a metadata lookup (`_body_note`), so a version that vanished
+    mid-request, or a store hiccup on a corpus unrelated to the RFC, must not
+    fail it; the note then says the body is not reachable from here.
+    """
+    try:
+        return serve_metrics.timed_store(
+            "has_file", lambda: get_corpus_store().has_file(wg, relpath)
+        )
+    except Exception:  # pylint: disable=broad-except
+        return False
 
 
 def _body_note(number: str) -> str:

@@ -46,10 +46,15 @@ class S3BlobStore(BlobStore):
 
     def get(self, key: str) -> bytes:
         bkt = self._b
-        obj = bkt.call(
-            "read an object",
-            lambda: self._s3.get_object(Bucket=bkt.bucket, Key=bkt.key(key)),
-        )
+        try:
+            obj = bkt.call(
+                "read an object",
+                lambda: self._s3.get_object(Bucket=bkt.bucket, Key=bkt.key(key)),
+            )
+        except ClientError as err:
+            if err.response.get("Error", {}).get("Code") in NOT_FOUND:
+                raise FileNotFoundError(key) from err
+            raise
         return cast(bytes, obj["Body"].read())
 
     def exists(self, key: str) -> bool:

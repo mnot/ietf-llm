@@ -71,7 +71,7 @@ class BlobStore(ABC):
 
     @abstractmethod
     def get(self, key: str) -> bytes:
-        """The bytes stored at `key`; raises if absent."""
+        """The bytes stored at `key`; raises FileNotFoundError if absent."""
 
     @abstractmethod
     def exists(self, key: str) -> bool:

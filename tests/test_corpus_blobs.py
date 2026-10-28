@@ -106,3 +106,9 @@ def test_parallel_each_serial_when_disabled(
     order: list[int] = []
     parallel_each(order.append, [3, 1, 2])
     assert order == [3, 1, 2]  # serial preserves submission order
+
+
+def test_get_absent_raises_file_not_found(tmp_path: Path) -> None:
+    store = FileBlobStore(str(tmp_path / "bucket"))
+    with pytest.raises(FileNotFoundError):
+        store.get("tls/v1/ghost.md")

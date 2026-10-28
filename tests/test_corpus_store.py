@@ -106,3 +106,27 @@ def test_local_gathered_at_reads_last_gathered_sentinel(isolated_home: Path) -> 
     assert store.gathered_at("httpbis") is None
     record_gather("httpbis")
     assert store.gathered_at("httpbis") is not None
+
+
+def test_local_has_file(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "httpbis", "drafts/rfc9110.txt", "prose")
+    store = LocalCorpusStore()
+    assert store.has_file("httpbis", "drafts/rfc9110.txt") is True
+    assert store.has_file("httpbis", "drafts/rfc1.txt") is False
+    assert store.has_file("httpbis", "drafts") is False  # a dir is not a file
+    assert store.has_file("ghost", "drafts/rfc9110.txt") is False
+
+
+def test_has_file_refuses_paths_outside_files(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "httpbis", "drafts/rfc9110.txt", "prose")
+    (isolated_home / ".cache" / "ietf-llm" / "httpbis" / "last-gathered").write_text("x")
+    store = LocalCorpusStore()
+    for bad in ("", ".", "/etc/passwd", "../last-gathered", "drafts/../../last-gathered"):
+        assert store.has_file("httpbis", bad) is False
+    # A path that wanders but stays inside files/ is the same file.
+    assert store.has_file("httpbis", "drafts/../drafts/rfc9110.txt") is True
+
+
+def test_has_file_never_creates_the_corpus(isolated_home: Path) -> None:
+    LocalCorpusStore().has_file("ghost", "drafts/rfc1.txt")
+    assert not (isolated_home / ".cache" / "ietf-llm" / "ghost").exists()

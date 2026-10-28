@@ -83,6 +83,12 @@ def test_no_prefix_locator(s3_bucket: None) -> None:
     assert store.list_prefix("") == ["k.md"]
 
 
+def test_get_absent_raises_file_not_found(s3_bucket: None) -> None:
+    store = S3BlobStore("s3://test-bucket/base")
+    with pytest.raises(FileNotFoundError):
+        store.get("tls/v1/ghost.md")
+
+
 def test_unsafe_key_rejected(s3_bucket: None) -> None:
     store = S3BlobStore("s3://test-bucket/base")
     with pytest.raises(ValueError):

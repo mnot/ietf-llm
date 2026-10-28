@@ -779,6 +779,26 @@ a gather (`materials.json`, and `documents.json`'s embedding-skip reader) stay o
 the workspace path: they describe the tree being built, which is not yet
 published.
 
+`has_file(corpus, relpath)` is the existence check for a caller that does not
+want the bytes: is `relpath` (inside `files/`, the same path `read_file_section`
+takes) in the corpus's current version? The local backend stats the file. The
+cloud backend answers from the version's manifest — the list of every file the
+version holds, already stored as a blob in the version prefix — with one small
+GET, instead of `local_cache_dir`'s staging of the whole version (`files/` and
+`embeddings.db`, ~230 MB for `httpbis`). The result is exact: no false negative
+for a corpus that happens not to be staged (what the non-fetching
+`materialised_cache_dir` gives), and no reason to special-case one corpus.
+Versions are immutable, so a fetched manifest is kept per corpus for as long as
+that version is the one asked about, and a newer version replaces it; a version
+already staged is checked on disk instead. This is why the cloud store is
+memoized: the cache lives on the store. It is the storage seam's own read — the
+same class as `local_cache_dir` — not a new networked-read exception. `get_rfc_info`'s
+body note uses it, asking the publishing WG first and the rest concurrently, so a
+metadata lookup never downloads a corpus; `read_file_section` is where the bytes
+are staged, and only for the corpus that has the file. (`mcp/drafts.py`'s
+`_find_latest_draft_file` has the same sweep shape but needs a listing and then
+the bytes, so it is not served by this.)
+
 `documents.json` reads through `local_corpus_dir` (a request already committed to
 materialising the corpus for a real read). The `last-gathered` / `seed-source`
 sentinels (`freshness.py`) instead read through `materialised_corpus_dir` — the

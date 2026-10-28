@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextvars
 import importlib
 import os
+import posixpath
 import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -69,6 +70,17 @@ class VersionVanished(FileNotFoundError):
         self.corpus = corpus
         self.old_version = old_version
         self.new_version = new_version
+
+
+def clean_relpath(relpath: str) -> Optional[str]:
+    """`relpath` as a normalised `/`-separated path inside a corpus's `files/`
+    tree, or None when it is empty, absolute or climbs out of it. Both backends
+    answer `has_file` from this, so a name that could not be read is never
+    reported present."""
+    rel = posixpath.normpath(relpath.replace(os.sep, "/"))
+    if rel in ("", ".") or rel.startswith("/") or rel == ".." or rel.startswith("../"):
+        return None
+    return rel
 
 
 def _local_files_dir(corpus: str) -> str:
@@ -162,6 +174,21 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         Callers read it through the `paths.py` helpers. Read-only — never
         creates the directory. The local backend returns the existing tree; a
         cloud backend materialises the version's blobs here first.
+        """
+
+    @abstractmethod
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        """True if the current version of `corpus` holds `relpath`, a path inside
+        its `files/` tree (what `local_cache_dir` points at; the same relpath
+        `read_file_section` takes). False for an absent corpus, an absent file,
+        or a path that is not inside `files/`.
+
+        Exact, and answered without fetching the version's content: a caller
+        that only needs to know whether a file is there must not pay for the
+        bytes of a corpus it will never read. `local_cache_dir` stages the whole
+        version on the cloud backend (`files/` and `embeddings.db`), which is
+        the cost this method exists to avoid. Read-only — never creates
+        anything. Honours the request pin like the other read accessors.
         """
 
     @abstractmethod
@@ -438,6 +465,15 @@ class LocalCorpusStore(CorpusStore):
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         files = _local_files_dir(corpus)
         return files if os.path.isdir(files) else None
+
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        rel = clean_relpath(relpath)
+        files = self.local_cache_dir(corpus)
+        return (
+            rel is not None
+            and files is not None
+            and os.path.isfile(os.path.join(files, rel))
+        )
 
     def local_corpus_dir(self, corpus: str) -> Optional[str]:
         # `<cache>/<corpus>` — pure path composition, no existence check and no
