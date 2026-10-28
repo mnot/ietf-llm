@@ -16,7 +16,13 @@ from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 from ietf_llm.people import Person, Registry, build_registry, write_people_digest
 from ietf_llm.people.linking import link_github_logins_by_name
-from ietf_llm.people.names import is_role_account, login_as_name, name_key
+from ietf_llm.people.names import (
+    cleaner_name,
+    is_decorated,
+    is_role_account,
+    login_as_name,
+    name_key,
+)
 
 from conftest import make_issue, write_eml, write_github_archive
 
@@ -145,6 +151,59 @@ def test_same_name_with_different_parentheticals_stays_two_people() -> None:
     assert r.persons[0].emails == {"john@cisco.example", "jsmith@cisco.example"}
 
 
+CISCO = '"John Smith (Cisco)" <{}@cisco.example>'
+GOOGLE = '"John Smith (Google)" <{}@google.example>'
+
+
+@pytest.mark.parametrize("cisco_first", [True, False])
+def test_namesakes_stay_two_people_across_new_addresses(cisco_first: bool) -> None:
+    # Each namesake keeps being recognised by name when it writes from an
+    # address the registry has not seen, whichever arrived first.
+    r = Registry()
+    order = [CISCO, GOOGLE] if cisco_first else [GOOGLE, CISCO]
+    for template in order:
+        r.add_email_message(template.format("a"), None)
+    for template in order:
+        r.add_email_message(template.format("b"), None)
+        r.add_email_message(template.format("c"), None)
+    assert len(r.persons) == 2
+    assert sorted(len(p.emails) for p in r.persons) == [3, 3]
+
+
+def test_a_bare_name_from_one_namesake_does_not_take_the_name_over() -> None:
+    r = Registry()
+    cisco = r.add_email_message(CISCO.format("a"), None)
+    google = r.add_email_message(GOOGLE.format("b"), None)
+    r.add_email_message('"John Smith" <b@google.example>', None)
+    assert r.add_email_message(CISCO.format("c"), None) is cisco
+    assert r.add_email_message(GOOGLE.format("d"), None) is google
+    assert len(r.persons) == 2
+    assert cisco is not None and cisco.canonical_name == "John Smith (Cisco)"
+
+
+def test_role_lookup_by_canonical_name_stays_with_the_right_namesake() -> None:
+    r = Registry()
+    cisco = r.add_email_message(CISCO.format("a"), None)
+    google = r.add_email_message(GOOGLE.format("b"), None)
+    assert cisco is not None and google is not None
+    cisco.roles.add("Chair")
+    assert r.person_for_name(cisco.canonical_name) is cisco
+    assert r.person_for_name(google.canonical_name) is google
+    assert r.role_tag(google.canonical_name) is None
+    assert r.canonical_for_email(GOOGLE.format("z")) == "John Smith (Google)"
+
+
+def test_merging_a_namesake_does_not_leave_stale_name_entries() -> None:
+    r = Registry()
+    cisco = r.add_email_message(CISCO.format("a"), None)
+    google = r.add_email_message(GOOGLE.format("b"), None)
+    g2 = r.add_email_message(GOOGLE.format("c"), None)
+    assert cisco is not None and google is not None and g2 is google
+    r.merge_into(google, cisco)
+    assert r.person_for_name("John Smith (Cisco)") is google
+    assert len(r.persons) == 1
+
+
 def test_parenthetical_conflict_does_not_steal_the_name_entry() -> None:
     r = Registry()
     cisco = r.add_email_message('"John Smith (Cisco)" <john@cisco.example>', None)
@@ -162,6 +221,29 @@ def test_clean_spelling_replaces_a_decorated_one() -> None:
         "Philippe Dellaert",
         "Éric Vyncke",
     ]
+
+
+@pytest.mark.parametrize("clean_first", [True, False])
+def test_clean_spelling_wins_in_either_arrival_order(clean_first: bool) -> None:
+    r = Registry()
+    headers = ["Eric Vyncke <a@x.example>", '"Vyncke, Eric (evyncke)" <b@x.example>']
+    for header in headers if clean_first else reversed(headers):
+        r.add_email_message(header, None)
+    assert [p.canonical_name for p in r.persons] == ["Eric Vyncke"]
+
+
+def test_clean_spelling_is_not_an_all_lowercase_one() -> None:
+    r = Registry()
+    r.add_email_message('"Kandoi, Nikhil" <a@x.example>', None)
+    r.add_email_message("nikhil kandoi <b@x.example>", None)
+    assert [p.canonical_name for p in r.persons] == ["Kandoi, Nikhil"]
+
+
+def test_name_suffix_case_does_not_matter_for_decoration() -> None:
+    assert not is_decorated("John Smith, JR.")
+    assert cleaner_name("John Smith, JR. (Cisco)", "John Smith, JR.") == (
+        "John Smith, JR."
+    )
 
 
 def test_decorated_spelling_is_kept_when_it_is_all_there_is() -> None:

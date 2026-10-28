@@ -3,8 +3,11 @@
 `name_key` is what `Registry._by_name` is keyed on: two display names that
 differ only in case, diacritics, hyphenation, `Last, First` order or a
 trailing parenthetical (`Deen, Glenn (Comcast Cable)`, `Eric Vyncke
-(evyncke)`) share a key and so resolve to one Person. It is a lookup key
-only; canonical names are left as the sources spell them.
+(evyncke)`) share a key and so resolve to one Person, unless both carry
+parentheticals and share none (`John Smith (Cisco)` / `John Smith
+(Google)`), which keeps namesakes apart. The key is for lookup only. Where
+two spellings of one name meet, `cleaner_name` picks the one to display: an
+undecorated spelling over a decorated one.
 
 `is_role_account` separates mailboxes and bots (`internet-drafts@ietf.org`,
 `The IESG`, `Repository Activity Summary Bot`) from people, so the digest
@@ -60,7 +63,7 @@ def _first_last(text: str) -> str:
     """Reorder a single `Last, First` comma; anything else is returned as is."""
     if text.count(",") == 1 and "@" not in text:
         last, first = (part.strip() for part in text.split(","))
-        if last and first and first.rstrip(".") not in _NAME_SUFFIXES:
+        if last and first and first.rstrip(".").casefold() not in _NAME_SUFFIXES:
             return f"{first} {last}"
     return text
 
@@ -89,11 +92,14 @@ def is_decorated(name: str) -> bool:
 
 def cleaner_name(current: str, incoming: str) -> str:
     """Of two spellings that key alike, the one to display: an undecorated
-    spelling replaces a decorated one, otherwise `current` stands."""
+    spelling replaces a decorated one, otherwise `current` stands. An
+    all-lowercase spelling never replaces a cased one: a handle-like
+    `nikhil kandoi` is no improvement on `Kandoi, Nikhil`."""
     if (
         name_key(current) == name_key(incoming)
         and is_decorated(current)
         and not is_decorated(incoming)
+        and not (incoming.islower() and not current.islower())
     ):
         return incoming
     return current

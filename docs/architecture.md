@@ -247,8 +247,14 @@ Key invariants:
   - **Names match on a folded key, not the display string** (`people.names.name_key`):
     case, diacritics, hyphens, `Last, First` order and a trailing parenthetical
     are ignored, so `Deen, Glenn (Comcast Cable)`, `Glenn Deen` and `Éric
-    Vyncke` / `Eric Vyncke (evyncke)` each resolve to one `Person`. The key is
-    for lookup only; the canonical name stays as its source spelled it. A
+    Vyncke` / `Eric Vyncke (evyncke)` each resolve to one `Person`. The one
+    exception is namesakes: two names that both carry a parenthetical and
+    share none (`John Smith (Cisco)`, `John Smith (Google)`) stay two people,
+    each indexed under its parenthetical as well as the plain key (first
+    holder of the plain key wins). The key is for lookup only: where two
+    spellings meet, the undecorated one becomes the displayed canonical name,
+    but a decorated name that is the only one seen is kept, as its
+    parenthetical may be the only trace of an affiliation. A
     GitHub login that is itself a two-word name (`Jo-Levy`) is linked to the
     mailing-list `Person` of that name as the last, weakest pass. Initial plus
     surname (`L. Le Meur`) is deliberately **not** matched: a wrong merge is

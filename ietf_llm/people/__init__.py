@@ -62,14 +62,18 @@ from ..gather.sources.document_authors import fetch_document_authors
 from ..gather.sources.draft_authors import latest_draft_paths, parse_authors
 from ..gather.sources.github import iter_issue_archives
 from ..gather.sources.postal import (
-    locality_key,
-    names_an_organisation,
     parse_document_year,
 )
 from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir, get_wg_file_cache_dir
 from ..text import _parse_date
-from .affiliation import INLINE_CAP, capped, group_affiliations, overflow_note
+from .affiliation import (
+    INLINE_CAP,
+    capped,
+    group_affiliations,
+    note_localities,
+    overflow_note,
+)
 from .digest import _format_affiliations, write_people_digest
 from .linking import (
     link_github_logins_by_name,
@@ -261,11 +265,8 @@ class Registry:
         # 1. Look up by email; that's the strongest signal.
         person = self._by_email.get(addr) if addr else None
         # 2. Fall back to display name.
-        by_name_conflict = False
         if person is None and name:
-            person = self._by_name.get(name_key(name))
-            if person is not None and notes_conflict(name, person.name_notes):
-                person, by_name_conflict = None, True
+            person = self._lookup_name(name)
 
         if person is None:
             # Brand new actor.
@@ -283,22 +284,48 @@ class Registry:
                 person.canonical_name = name
         elif name and _looks_like_email(person.canonical_name):
             person.canonical_name = name
-        if name:
-            person.canonical_name = cleaner_name(person.canonical_name, name)
-            person.name_notes |= trailing_notes(name)
 
         if addr:
             person.emails.add(addr)
             self._by_email[addr] = person
             if "@" in addr:
                 person.email_domains.add(addr.rsplit("@", 1)[-1])
-        if name and not by_name_conflict:
-            self._by_name[name_key(name)] = person
+        if name:
+            # Only the holder of the plain key may take the cleaner spelling:
+            # a namesake kept apart by its parenthetical must stay distinct.
+            if self._claim_name(name, person):
+                person.canonical_name = cleaner_name(person.canonical_name, name)
+            person.name_notes |= trailing_notes(name)
         if raw_from:
             person.raw_from_headers.add(raw_from)
         person.message_count += 1
         person.touch_date(date)
         return person
+
+    def _lookup_name(self, name: str) -> Optional[Person]:
+        """The Person a display name refers to. A parenthetical the Person
+        was indexed under (`John Smith (Google)`) is tried first; the plain
+        key is refused when it belongs to a namesake whose parenthetical
+        disagrees (`John Smith (Cisco)`)."""
+        key = name_key(name)
+        for note in sorted(trailing_notes(name)):
+            found = self._by_name.get(f"{key}|{note}")
+            if found is not None:
+                return found
+        found = self._by_name.get(key)
+        if found is not None and notes_conflict(name, found.name_notes):
+            return None
+        return found
+
+    def _claim_name(self, name: str, person: Person) -> bool:
+        """Index `person` under `name`: its parentheticals always, the plain
+        key only if nobody holds it (first holder wins). Returns whether the
+        plain key is `person`'s."""
+        key = name_key(name)
+        holder = self._by_name.setdefault(key, person)
+        for note in trailing_notes(name):
+            self._by_name[f"{key}|{note}"] = person
+        return holder is person
 
     def add_github_company(self, login: str, company: Optional[str]) -> None:
         """Record a GitHub user's self-reported `company` field as an
@@ -476,9 +503,10 @@ class Registry:
             self._by_email[email_addr] = keep
         for gh_login in drop.github_logins:
             self._by_github[gh_login] = keep
-        if drop.canonical_name:
-            self._by_name[name_key(drop.canonical_name)] = keep
-        self._by_name[name_key(keep.canonical_name)] = keep
+        for key, holder in self._by_name.items():
+            if holder is drop:
+                self._by_name[key] = keep
+        self._by_name.setdefault(name_key(keep.canonical_name), keep)
         self.persons = [person for person in self.persons if person is not drop]
 
     def add_document_author(
@@ -533,7 +561,7 @@ class Registry:
                 person.affiliations[f"draft:{document}"] = stripped
                 if year is not None:
                     person.affiliation_years[f"draft:{document}"] = year
-        _note_localities(person, organization, address_lines)
+        note_localities(person, organization, address_lines)
         return person
 
     def add_datatracker_role(
@@ -579,9 +607,8 @@ class Registry:
         name, addr = parse_from_header(raw_from)
         if addr and addr in self._by_email:
             return self._by_email[addr].canonical_name
-        if name and name_key(name) in self._by_name:
-            return self._by_name[name_key(name)].canonical_name
-        return name
+        found = self._lookup_name(name) if name else None
+        return found.canonical_name if found else name
 
     def canonical_for_github(self, login: str) -> Optional[str]:
         person = self._by_github.get(login.strip())
@@ -593,7 +620,7 @@ class Registry:
         GitHub login and want the role-bearing Person back."""
         if not canonical_name:
             return None
-        return self._by_name.get(name_key(canonical_name))
+        return self._lookup_name(canonical_name)
 
     def person_for_email(self, address: str) -> Optional[Person]:
         """Look up a Person by an (already-normalised) email address. Used by
@@ -685,40 +712,6 @@ class Registry:
                 p.canonical_name,
             ),
         )
-
-
-def _note_localities(
-    person: Person,
-    organization: Optional[str],
-    address_lines: Optional[Iterable[str]],
-) -> None:
-    """Record the block's address lines as places this person writes.
-
-    Two kinds of line are deliberately *not* recorded, because a locality
-    suppresses the same string wherever else it appears as an
-    organisation — so a wrong entry here silently deletes a real
-    employer, the failure mode the whole screening exists to avoid:
-
-      - **the block's own organisation.** Authors often repeat it inside
-        their postal address ("University of Auckland" as both the
-        organisation and a line of the address beneath it). Left in, it
-        would suppress itself.
-      - **anything that names an organisation.** Institution and
-        department swap slots between drafts — "Department of Computer
-        Science" over "University of Auckland" in one, the university in
-        the organisation slot in the next — and whichever landed in the
-        address would erase the other.
-
-    A city that gets skipped by these is only a missed suppression: the
-    value still renders, which is visible and fixable. A wrongly recorded
-    locality is not.
-    """
-    org_place = locality_key(organization) if organization else ""
-    for line in address_lines or ():
-        key = locality_key(line)
-        if not key or key == org_place or names_an_organisation(line):
-            continue
-        person.localities.add(key)
 
 
 def _looks_like_email(name: str) -> bool:

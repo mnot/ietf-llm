@@ -47,9 +47,10 @@ def _consolidate_groups(
     """Merge each group of Persons that resolved to one Datatracker person id.
 
     The survivor is the most-active member (messages + issues), tie-broken by
-    canonical name, so the more-established display name wins. Canonical-name
-    handling stays merge-only — `merge_into` adopts the absorbed name only when
-    the survivor's is still email-ish — so recognised names don't churn.
+    canonical name, so the more-established display name wins. `merge_into`
+    adopts the absorbed name only when the survivor's is still email-ish, or
+    when the absorbed spelling is the undecorated form of the same name
+    (`Philippe Dellaert` over `Dellaert, Philippe`); otherwise names don't churn.
     Returns the number of merges performed.
     """
     merged = 0
