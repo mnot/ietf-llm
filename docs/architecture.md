@@ -244,6 +244,29 @@ Key invariants:
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
+  - **Names match on a folded key, not the display string** (`people.names.name_key`):
+    case, diacritics, hyphens, `Last, First` order and a trailing parenthetical
+    are ignored, so `Deen, Glenn (Comcast Cable)`, `Glenn Deen` and `Éric
+    Vyncke` / `Eric Vyncke (evyncke)` each resolve to one `Person`. This
+    includes same-named senders whose parentheticals differ (`John Smith
+    (Cisco)`, `John Smith (Google)`): a parenthetical is not treated as
+    evidence of a different person. Before the key, only identical display
+    strings merged, so this widens an existing name-only merge (issue #265
+    specifies it). The key is for lookup only: where two spellings of a
+    mail-derived name meet, the undecorated one becomes the displayed canonical
+    name, but a decorated name that is the only one seen is kept, as its
+    parenthetical may be the only trace of an affiliation. Names from
+    Datatracker or a draft are authoritative and overwrite the canonical name
+    regardless. A
+    GitHub login that is itself a two-word name (`Jo-Levy`) is linked to the
+    mailing-list `Person` of that name as the last, weakest pass. Initial plus
+    surname (`L. Le Meur`) is deliberately **not** matched: a wrong merge is
+    worse than a split.
+  - **Role and automated accounts are listed apart** (`names.is_role_account`):
+    function mailboxes (`internet-drafts@`, the Secretariat, the RFC Editor),
+    `noreply` senders and bots get their own labelled section of the people
+    digest rather than rows among the participants. Anyone holding a
+    Datatracker role or a document credit is never reclassified.
   - **Affiliation comes from Datatracker, not from the draft text**
     (`gather.sources.document_authors`). The Authors' Addresses block has no
     markup separating an author's organisation from their street address, so an
@@ -489,6 +512,7 @@ ietf_llm/
 │   ├── __init__.py         # actor/identity registry (roles, affiliations, domains)
 │   ├── affiliation.py      # collapse near-duplicate orgs, rank by recency, cap
 │   ├── linking.py          # attach GitHub logins to identities (Datatracker, then name)
+│   ├── names.py            # name keys for identity lookup; role-account detection
 │   ├── meetings.py         # link-only meeting participation (attendance id / speaker name)
 │   ├── digest.py           # render the _people.md digest
 │   └── positions.py        # heuristic position / poll / chair-statement extraction

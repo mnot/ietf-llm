@@ -199,6 +199,11 @@ def register(server: "FastMCP") -> None:
                             for "most contested lately".
              | "people"   — participants. Filters: role (substring,
                             e.g. "Chair"), min_messages, limit.
+                            Function mailboxes and bots (the
+                            Secretariat, internet-drafts@, "Repository
+                            Activity Summary Bot") are in their own
+                            "Role and automated accounts" section, not
+                            among the participants.
              | "timeline" — chronological events. Filters: since/until,
                             event_kind (drafts: "draft-published";
                             issues: "issue-opened" / "issue-closed";

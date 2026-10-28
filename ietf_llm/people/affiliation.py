@@ -32,9 +32,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Set
 
-from ..gather.sources.postal import locality_key
+from ..gather.sources.postal import locality_key, names_an_organisation
 
 if TYPE_CHECKING:
     from . import Person
@@ -172,3 +172,37 @@ def capped(
 def overflow_note(dropped: int) -> str:
     """Trailing marker for affiliations a cap left out."""
     return f" (+{dropped} earlier)" if dropped else ""
+
+
+def note_localities(
+    person: Person,
+    organization: Optional[str],
+    address_lines: Optional[Iterable[str]],
+) -> None:
+    """Record the block's address lines as places this person writes.
+
+    Two kinds of line are deliberately *not* recorded, because a locality
+    suppresses the same string wherever else it appears as an
+    organisation — so a wrong entry here silently deletes a real
+    employer, the failure mode the whole screening exists to avoid:
+
+      - **the block's own organisation.** Authors often repeat it inside
+        their postal address ("University of Auckland" as both the
+        organisation and a line of the address beneath it). Left in, it
+        would suppress itself.
+      - **anything that names an organisation.** Institution and
+        department swap slots between drafts — "Department of Computer
+        Science" over "University of Auckland" in one, the university in
+        the organisation slot in the next — and whichever landed in the
+        address would erase the other.
+
+    A city that gets skipped by these is only a missed suppression: the
+    value still renders, which is visible and fixable. A wrongly recorded
+    locality is not.
+    """
+    org_place = locality_key(organization) if organization else ""
+    for line in address_lines or ():
+        key = locality_key(line)
+        if not key or key == org_place or names_an_organisation(line):
+            continue
+        person.localities.add(key)
