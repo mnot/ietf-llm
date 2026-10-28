@@ -165,6 +165,10 @@ still answers `initialize` for 2025-era clients, so one deployment serves both. 
 are stateless whatever this setting says; it only governs the older ones. That revision adds
 `Mcp-Method` / `Mcp-Name` request headers, which a fronting proxy must pass through.
 
+Stateful mode (`IETF_LLM_MCP_STATELESS=0`) also takes the SDK defaults: sessions idle out after 30
+minutes, at most 10,000 are held, and a request body over 4 MiB gets a 413. The server advertises no
+`subscriptions/listen` stream, so a long-lived client connection never holds a replica open at shutdown.
+
 ### Host / Origin allow-list
 
 By default the server does **no** `Host`-header validation: it assumes a proxy or firewall in front

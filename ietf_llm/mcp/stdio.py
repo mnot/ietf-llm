@@ -22,9 +22,11 @@ thread. The loop never awaits a kernel write, so a slow client can
 never stall the event loop — until the queue itself fills, which is
 named, logged, and bounded.
 
-The reader half is unchanged from upstream — backpressure on the
-inbound side doesn't have the same single-serialization-point problem,
-and the upstream reader is correct.
+The reader half follows upstream (plus debug markers) — backpressure
+on the inbound side doesn't have the same single-serialization-point
+problem. Unlike upstream's `stdio_server`, this transport does not claim
+fds 0 and 1 to divert stray stdout to stderr, so nothing in-process may
+print to stdout.
 
 This is a drop-in replacement for `stdio_server`: same yield contract
 (`read_stream`, `write_stream`), used the same way by the lowlevel
@@ -210,7 +212,7 @@ async def stdio_server_threaded_writer(
             async with write_stream_reader:
                 async for session_message in write_stream_reader:
                     json_text = session_message.message.model_dump_json(
-                        by_alias=True, exclude_none=True
+                        by_alias=True, exclude_unset=True
                     )
                     data = (json_text + "\n").encode("utf-8")
                     try:

@@ -376,8 +376,15 @@ def main() -> None:  # pylint: disable=too-many-locals
     # report as `serverInfo.version` (what `claude mcp`, Cursor, etc. display);
     # left unset it would be the `mcp` SDK's. The HTTP knobs (stateless
     # sessions, Host/Origin allow-list) are applied in `serve._http_app`.
+    # `subscriptions=False`: the tool list is static and there are no
+    # resources, so there is nothing to push; left on, 2026-07-28 clients are
+    # offered `subscriptions/listen`, whose open stream stops uvicorn from
+    # shutting down on SIGTERM.
     server = MCPServer(
-        "ietf-llm", instructions=server_instructions, version=__version__
+        "ietf-llm",
+        instructions=server_instructions,
+        version=__version__,
+        subscriptions=False,
     )
 
     # --- register the read-only, always-on tools ---

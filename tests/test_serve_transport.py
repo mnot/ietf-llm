@@ -30,6 +30,24 @@ _INITIALIZE = {
 }
 
 
+_MODERN_HEADERS = {
+    **_HEADERS,
+    "MCP-Protocol-Version": "2026-07-28",
+    "Mcp-Method": "server/discover",
+}
+_DISCOVER = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "server/discover",
+    "params": {
+        "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }
+    },
+}
+
+
 def test_csv_env_splits_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IETF_LLM_X", " a.example , , b.example:* ")
     assert mcp.serve._csv_env("IETF_LLM_X") == ["a.example", "b.example:*"]
@@ -233,3 +251,35 @@ def test_disallowed_host_is_rejected_end_to_end(
         )
     assert bad.status_code == 421  # Misdirected Request: Invalid Host header
     assert good.status_code == 200  # reaches the handler (a real Host)
+
+
+def test_2026_07_28_discover_end_to_end() -> None:
+    # The request Claude clients open with, and the one mcp 1.x answered with a
+    # 400 (#259). The version and routing brain must arrive without `initialize`.
+    app = mcp.serve._http_app(
+        MCPServer("ietf-llm", instructions="ROUTING-BRAIN", version=__version__)
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp", json=_DISCOVER, headers={**_MODERN_HEADERS, "Host": "any.example.org"}
+        )
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["instructions"] == "ROUTING-BRAIN"
+    assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["version"] == __version__
+
+
+def test_disallowed_host_is_rejected_on_the_2026_07_28_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IETF_LLM_MCP_ALLOWED_HOSTS", "good.example.org")
+    app = mcp.serve._http_app(MCPServer("ietf-llm", instructions="x"))
+    with TestClient(app) as client:
+        bad = client.post(
+            "/mcp", json=_DISCOVER, headers={**_MODERN_HEADERS, "Host": "evil.example.org"}
+        )
+        good = client.post(
+            "/mcp", json=_DISCOVER, headers={**_MODERN_HEADERS, "Host": "good.example.org"}
+        )
+    assert bad.status_code == 421
+    assert good.status_code == 200
