@@ -91,7 +91,9 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `read_topic` (chronological narrative), `find_related` (by example),
   `grep_corpus` (exact string / regex).
 - **Catalogue:** `read_digest` (filtered issue / pull-request / thread / people /
-  timeline tables), `list_labels` (label names WITH the repo's own description
+  timeline tables; a filter the kind does not support is rejected, not
+  ignored; `kind="people"` takes `org=` for the Affiliation column and
+  `email_domain=` for address domains, which are separate signals), `list_labels` (label names WITH the repo's own description
   of each), `list_files`.
 - **Meetings:** `list_meetings` (gathered), `read_minutes` (minutes + poll
   tallies + attendance count for one), `meeting_schedule` (live schedule).

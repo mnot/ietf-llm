@@ -262,6 +262,16 @@ Key invariants:
     mailing-list `Person` of that name as the last, weakest pass. Initial plus
     surname (`L. Le Meur`) is deliberately **not** matched: a wrong merge is
     worse than a split.
+  - **Affiliation and email domain are filtered separately.**
+    `read_digest(kind="people", org=…)` matches the Affiliation column only (the
+    organisation names, not the `draft` / `github` provenance marks);
+    `email_domain=…` matches the domains of a row's addresses (the `Email domain`
+    column, or the address columns on a digest gathered before that column
+    existed), exact or as a parent of a subdomain. Neither is a proxy for the
+    other, and each ends with a count of participant rows that carry no such
+    signal, so a short result is not read as absence. The tool rejects, rather
+    than ignores, a filter its `kind` does not support
+    (`digest.query.SUPPORTED_FILTERS`).
   - **Role and automated accounts are listed apart** (`names.is_role_account`):
     function mailboxes (`internet-drafts@`, the Secretariat, the RFC Editor),
     `noreply` senders and bots get their own labelled section of the people
