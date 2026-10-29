@@ -45,11 +45,10 @@ from .storage import (
     FLOAT32_CODEC,
     VectorCodec,
     _SCHEMA_VERSION,
-    _connect_ro,
     _db_path,
-    _db_path_ro,
     _open_db,
     _pack,
+    _try_connect_ro,
     _unpack_matrix,
     chunk_hash,
     discard_build_db,
@@ -840,9 +839,9 @@ def index_model(wg: str) -> Optional[str]:
     not bit-identical across runtimes). Read-only: never creates or
     migrates the DB.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return None
-    conn = _connect_ro(wg)
     try:
         row = conn.execute("SELECT value FROM meta WHERE key='model'").fetchone()
     except sqlite3.Error:
@@ -926,18 +925,18 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
     read). Shared by `search` and `related`.
 
     Read-only path: the index is built and migrated by gather
-    (build_index); the server never writes. `_connect_ro` avoids the
+    (build_index); the server never writes. `_try_connect_ro` avoids the
     makedirs / WAL / ALTER-TABLE migration `_open_db` performs, which is
     unnecessary for a query and unsafe against an immutable index.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         log(
             f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
             verbose,
             level=LogLevel.ERROR,
         )
         return None
-    conn = _connect_ro(wg)
     # An index predating this version may lack columns the query selects. We
     # cannot migrate on a read-only connection -- but for the cheap, additive
     # steps we can do it on a fresh write connection first and carry on, so a
@@ -956,15 +955,13 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
                 verbose,
                 level=LogLevel.PROGRESS,
             )
-            return _connect_ro(wg)
-        conn = _connect_ro(wg)
+            return _try_connect_ro(wg)
         log(
             f"Embeddings index for {wg} is an older schema; re-run "
             f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
             verbose,
             level=LogLevel.ERROR,
         )
-        conn.close()
         return None
     return conn
 
