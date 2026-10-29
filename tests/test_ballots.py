@@ -503,7 +503,7 @@ def test_former_balloters_are_listed_but_not_counted(
     text = render_ballot(out[0])
     assert "**Tally:** 1 Yes" in text
     assert "DISCUSS" not in text.split("## Former balloters")[0]
-    assert "Bob Smith (former AD) — DISCUSS" in text
+    assert "Bob Smith (former balloter) — DISCUSS" in text
     # The departed AD's body is not presented as a live objection.
     assert "Departed." not in text
 
@@ -558,7 +558,7 @@ def test_role_list_failure_leaves_a_good_ballot_file_untouched(
     timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
     path = Path(cache) / "ballots" / "draft-foo.md"
     good = path.read_text(encoding="utf-8")
-    assert "**Tally:** 1 Yes" in good and "Carol Lee (former AD)" in good
+    assert "**Tally:** 1 Yes" in good and "Carol Lee (former balloter)" in good
 
     _stub_get_json(monkeypatch, {**responses, "group__acronym=iesg": None})
     timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
@@ -579,7 +579,7 @@ def test_ballot_of_only_former_balloters_says_so(
     text = render_ballot(out[0])
     assert "**Tally:**" not in text
     assert "No current balloter holds a position" in text
-    assert "Carol Lee (former AD)" in text
+    assert "Carol Lee (former balloter)" in text
 
 
 def test_charter_ballot_is_headed_as_one(

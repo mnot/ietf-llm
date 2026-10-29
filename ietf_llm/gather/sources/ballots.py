@@ -585,7 +585,7 @@ def render_ballot(ballot: Ballot) -> str:
         )
         for pos in sorted(former, key=lambda p: p.name):
             out.append(
-                f"- {pos.name} (former AD) — {pos.pos_label} — "
+                f"- {pos.name} (former balloter) — {pos.pos_label} — "
                 f"{pos.when.strftime('%Y-%m-%d')}"
                 + (f" (on -{pos.rev})" if pos.rev else "")
             )

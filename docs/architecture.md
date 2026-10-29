@@ -355,13 +355,14 @@ Key invariants:
   ballots. If the scoping, history or role-list fetch fails, the ballot
   files are left as the last gather wrote them (a guess at who is current
   would rewrite them wrongly); only a successful answer of "no activity"
-  removes them. The timeline digest, rebuilt from events, has no ballot
-  rows after such a gather until the next good one. The newest ballot is
-  the one with the latest position event, so between a ballot being
-  opened and its first vote the previous ballot still shows.
-  `review_record` applies the newest-ballot rule live, but not the
-  former-balloter rule, so the two can differ on a departed AD's
-  position.
+  removes them. Accepted limitations: a first-ever gather during a
+  role-list outage writes no ballot files; the timeline digest, rebuilt
+  from events, has no ballot rows after a failed gather until the next
+  good one; and the newest ballot is the one with the latest position
+  event, so between a ballot being opened and its first vote the
+  previous ballot still shows. `review_record` applies the newest-ballot
+  rule live, but not the former-balloter rule, so the two can differ on a
+  departed AD's position.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
   version, and vector dimension; a change to any forces a rebuild, and the model
   id is read back at query time to resolve the same backend. The `chunks` table
