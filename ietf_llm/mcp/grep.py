@@ -40,6 +40,7 @@ from ..regexscan import (
     elide,
     run_bounded,
     scan_files,
+    split_lines,
 )
 from .common import (
     _append_participation_nudge,
@@ -145,7 +146,7 @@ def _context_lines(
     if lines is None:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                lines = fh.read().splitlines()
+                lines = split_lines(fh.read())
         except OSError:
             lines = []
         cache[path] = lines
