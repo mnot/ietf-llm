@@ -423,9 +423,33 @@ def tool_get_draft(
     return _draft_by_section(path, section, capped)
 
 
+_ISSUE_NUMBER_RE = re.compile(r"[0-9]+")
+#: `owner/repo`, or the slug the digests and `list_files` show
+#: (`owner-repo`); a bare slug may not be only dots, since it is a directory name.
+_REPO_RE = re.compile(r"[\w-]+/[\w.-]+|(?!\.+$)[\w.-]+", re.ASCII)
+
+
+def _issue_ref_error(number: str, repo: str) -> Optional[str]:
+    """Both become path components under `issues/` and `pulls/`."""
+    if _ISSUE_NUMBER_RE.fullmatch(number) is None:
+        return f"'{number}' is not an issue or PR number."
+    if repo and _REPO_RE.fullmatch(repo) is None:
+        return f"'{repo}' is not an owner/repo name."
+    return None
+
+
 def _resolve_issue_file(
     cache: str, number: str, repo: str
 ) -> Tuple[Optional[str], str]:
+    """`_lookup_issue_file` behind a check that `number` and `repo` are what
+    they claim to be, since they are joined into a path."""
+    bad_ref = _issue_ref_error(number, repo)
+    if bad_ref:
+        return None, bad_ref
+    return _lookup_issue_file(cache, number, repo)
+
+
+def _lookup_issue_file(cache: str, number: str, repo: str) -> Tuple[Optional[str], str]:
     """Resolve a per-issue *or* per-PR file by number, within `repo` if given
     else searched across every gathered repo. Returns (path, note); path is
     None with an actionable note on a miss or an ambiguous number.

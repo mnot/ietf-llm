@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..months import months_request_caution, months_request_error
+from ..paths import valid_corpus_name
 from . import debug_log
 from .common import (
     _corpus_exists,
@@ -146,7 +147,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a corpus name to gather (e.g. a WG shortname like `tls`)."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return (
             f"'{corpus}' is not a valid corpus name. Use letters, digits, "
             "'.', '-' or '_' (no path separators or spaces), starting with a "
@@ -271,7 +272,7 @@ def tool_gather_status(
     wait_started = time.monotonic()
     if corpus:
         corpus = corpus.strip()
-        if not gather_runner.valid_corpus_name(corpus):
+        if not valid_corpus_name(corpus):
             return f"'{corpus}' is not a valid corpus name."
         status = gather_runner.read_status(corpus)
         if status is None:
@@ -299,7 +300,7 @@ def tool_stop_gather(corpus: str, token: str) -> str:
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide the corpus name of the gather to stop."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
     return _format_stop_result(
         gather_runner.request_stop(corpus, (token or "").strip()), corpus
@@ -396,8 +397,6 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
 
 
 def tool_suggest_github_repos(corpus: str) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
     from ..gather.sources.repo_discovery import (  # pylint: disable=import-outside-toplevel
         discover_group_repos,
         format_discovery,
@@ -406,7 +405,7 @@ def tool_suggest_github_repos(corpus: str) -> str:
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a Working Group shortname (e.g. `tls`) to discover repos for."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
     return format_discovery(discover_group_repos(corpus))
 

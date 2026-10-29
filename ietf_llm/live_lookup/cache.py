@@ -22,6 +22,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import quote
 
 import requests
 
@@ -53,6 +54,15 @@ def _ttl_seconds() -> float:
     except ValueError:
         return _DEFAULT_TTL
     return ttl if ttl >= 0 else _DEFAULT_TTL
+
+
+def document_url(name: str) -> Optional[str]:
+    """The API URL for one Datatracker document, or None for a name that would
+    not stay one path segment (`.` and `..` survive percent-encoding and are
+    collapsed by the HTTP client)."""
+    if not name or set(name) == {"."}:
+        return None
+    return f"{_API_BASE}/doc/document/{quote(name, safe='')}/?format=json"
 
 
 def _now_utc() -> datetime.datetime:

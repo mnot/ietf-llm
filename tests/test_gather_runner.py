@@ -22,6 +22,7 @@ import pytest
 from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import config, freshness, months, serve_metrics
 from ietf_llm.gather import runner as gather_runner
+from ietf_llm.paths import valid_corpus_name
 from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.stages import stage_plan
 from ietf_llm.log import Verbosity
@@ -930,7 +931,7 @@ def test_start_no_overlap_gathers(
     "name", ["tls", "httpbis", "last-call", "x-webbotauth", "draft.foo_bar", "a"]
 )
 def test_valid_corpus_name_accepts_real_names(name: str) -> None:
-    assert gather_runner.valid_corpus_name(name) is True
+    assert valid_corpus_name(name) is True
 
 
 @pytest.mark.parametrize(
@@ -941,7 +942,7 @@ def test_valid_corpus_name_accepts_real_names(name: str) -> None:
     ],
 )
 def test_valid_corpus_name_rejects_unsafe(name: str) -> None:
-    assert gather_runner.valid_corpus_name(name) is False
+    assert valid_corpus_name(name) is False
 
 
 def test_start_rejects_traversal_without_writing(
