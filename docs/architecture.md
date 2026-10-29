@@ -1051,7 +1051,10 @@ Concretely, the gather layer reads from the API for:
   alternate-archive resource here.
 - **Charter** — revision from the document API, then the published
   plain-text artifact at `www.ietf.org/charter/<doc>-<rev>.txt`
-  (the datatracker doc page is HTML-only).
+  (the datatracker doc page is HTML-only). While a group is rechartering the
+  document's revision is a dashed working draft (`03-02`); `charter.txt`
+  holds the approved base revision (`03`) and a header line names the
+  proposal.
 - **Documents** — WG drafts, RFCs, session polls — via
   `/api/v1/doc/document/?group__acronym=<wg>&type=…`, paginated through
   `datatracker.iter_group_documents`.
@@ -1060,7 +1063,11 @@ Concretely, the gather layer reads from the API for:
   and the linked meeting/material objects (`meetings.get_meeting_links`).
   Material *content* is fetched from its canonical URL
   (`/meeting/<n>/materials/<docname>`) with `Accept: text/markdown`,
-  resolving to the latest rendered markdown / text / PDF.
+  resolving to the latest rendered markdown / text / PDF. A non-`text/*`
+  agenda or minutes (a PDF upload) is written as a one-line pointer, not
+  decoded. Slide PDFs are capped at 50 MB and 300 extracted pages, and each
+  `.pdf.txt` carries a meeting-context header that is refreshed in place
+  (the source `.pdf` may have been dropped).
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
   `datatracker_history.py`). Chair appointments and departures come
