@@ -21,7 +21,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import quote
 
 import requests
@@ -106,7 +106,15 @@ _cache: Dict[str, _CacheEntry] = {}
 _cache_lock = threading.Lock()
 
 
-def _fetch_json(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+#: `(connect, read)` timeouts for a live fetch, in seconds. There is no retry
+#: (see `_fetch_json`), so these bound a tool call: an unreachable host costs
+#: at most ~5s to connect, a stalled response ~10s.
+_FETCH_TIMEOUT: Tuple[float, float] = (5.0, 10.0)
+
+
+def _fetch_json(
+    url: str, timeout: Union[float, Tuple[float, float]] = _FETCH_TIMEOUT
+) -> Optional[Dict[str, Any]]:
     """GET a Datatracker JSON URL: the decoded dict, None for a 404, else raise.
 
     None means Datatracker answered that the resource does not exist — the
@@ -118,10 +126,15 @@ def _fetch_json(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
 
     No disk cache and no ETag store — the read path writes nothing. Uses the
     shared rate governor (`governed_get`) so a burst of agenda lookups stays
-    polite to Datatracker.
+    polite to Datatracker, but with `retrying=False`: a caller is waiting, and
+    the shared session's retries (honouring `Retry-After`) can hold a call for
+    a minute or more. A failure is cheap to report ("could not reach") and the
+    stale-cache fallback in `_cached_json` already covers the blip.
     """
     try:
-        response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=timeout)
+        response = governed_get(
+            url, retrying=False, headers=dict(DEFAULT_HEADERS), timeout=timeout
+        )
         response.raise_for_status()
         body = response.json()
         if not isinstance(body, dict):

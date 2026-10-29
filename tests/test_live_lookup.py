@@ -1132,3 +1132,68 @@ def test_upcoming_is_judged_in_the_meetings_own_timezone(monkeypatch):
     found, _, error = live_lookup.fetch_upcoming_meetings("aipref")
     assert error is None
     assert [m.number for m in found] == ["interim-2026-a-01"]  # UTC one is over
+
+
+# --- No retry on the live path ----------------------------------------------
+
+
+def _wire(monkeypatch, behave):
+    """Run the real `_fetch_json` over a fake `governed_get`; return its calls."""
+    calls: list = []
+
+    def _get(url, **kwargs):
+        calls.append((url, kwargs))
+        return behave(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _REAL_FETCH_JSON)
+    monkeypatch.setattr(live_lookup.cache, "governed_get", _get)
+    live_lookup._reset_cache()
+    return calls
+
+
+def _serve(url):
+    body = _canned(url)
+    return _FakeResponse(404 if body is None else 200, body)
+
+
+def test_live_fetch_is_non_retrying_with_bounded_timeouts(monkeypatch):
+    calls = _wire(monkeypatch, _serve)
+    live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
+    assert calls
+    for _, kwargs in calls:
+        assert kwargs["retrying"] is False
+        assert kwargs["timeout"] == live_lookup.cache._FETCH_TIMEOUT
+    connect, read = live_lookup.cache._FETCH_TIMEOUT
+    assert 0 < connect <= 10 and 0 < read <= 30
+
+
+def test_a_connection_error_is_not_retried_and_reads_as_an_outage(monkeypatch):
+    def _refuse(url):
+        raise requests.ConnectionError("refused")
+
+    calls = _wire(monkeypatch, _refuse)
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert len(calls) == 1  # one attempt at the document, and no second try
+    assert _UNREACHABLE in out and "last tried just now" in out
+    assert "no document named" not in out
+
+
+def test_an_outage_serves_the_stale_entry_with_its_age(monkeypatch):
+    state = {"up": True}
+
+    def _flaky(url):
+        if state["up"]:
+            return _serve(url)
+        raise requests.ConnectionError("refused")
+
+    _wire(monkeypatch, _flaky)
+    assert "Agenda eligibility" in tool_draft_status("draft-ietf-httpbis-foo")
+    state["up"] = False
+    monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")  # everything cached is now stale
+    real_now = live_lookup.cache._now_utc
+    monkeypatch.setattr(
+        live_lookup.cache, "_now_utc", lambda: real_now() + datetime.timedelta(hours=2)
+    )
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert "Agenda eligibility" in out and _UNREACHABLE not in out
+    assert "fetched 7200s ago" in out

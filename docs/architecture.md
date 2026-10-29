@@ -1400,6 +1400,13 @@ failed with no cached entry (fresh or stale) to fall back on. The tools say
 `fetch_review_record` and `reconcile_active_drafts` raise `LiveUnavailable`;
 the meeting fetches return it in their existing `error` slot.
 
+The live fetch uses `governed_get(..., retrying=False)` with a `(5s, 10s)`
+connect/read timeout (`_FETCH_TIMEOUT`), for the reason given for `get_rfc_info`
+below: the shared session's retries honour `Retry-After` and can hold a tool
+call for a minute or more, whereas a failed fetch here already has a good
+answer — a stale cache entry if one exists, otherwise an honest "could not
+reach Datatracker". The host governor still applies.
+
 `get_rfc_info` takes the same exception, for a different reason and in a different
 shape. The `_rfc/` mirror is only refreshed by a gather, so between gathers it
 goes stale — and a miss against a stale mirror has two indistinguishable
