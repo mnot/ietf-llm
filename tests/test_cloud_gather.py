@@ -23,6 +23,9 @@ from ietf_llm.store.cloud import _clear_resolve_cache
 from ietf_llm.paths import get_cache_dir
 from ietf_llm.store.kv_s3 import S3KvStore
 
+# These tests stub `run_gather` / the stages, which only works in-process.
+pytestmark = pytest.mark.usefixtures("gather_in_process")
+
 
 def _wait_done(corpus: str, timeout: float = 5.0) -> None:
     deadline = time.time() + timeout

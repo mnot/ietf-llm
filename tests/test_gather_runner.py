@@ -28,6 +28,9 @@ from ietf_llm.gather.stages import stage_plan
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
+# These tests stub `run_gather` / the stages, which only works in-process.
+pytestmark = pytest.mark.usefixtures("gather_in_process")
+
 
 # --- to_argv suppression flags --------------------------------------------
 

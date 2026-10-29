@@ -1354,7 +1354,21 @@ deadline couldn't fire) and "still gathering" was indistinguishable from "server
 dead". Off-process, the worker only blocks on the pipe (GIL released) and the
 server stays responsive; a stalled read now times out cleanly, and its timeout
 message names the running stage. Cancellation (`stop_gather`) terminates the
-child; a child crash fails one gather instead of the whole server.
+child; a child crash fails one gather instead of the whole server. Under
+`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (tests that stub
+it by monkeypatch; the rest of the suite, including the cloud cache round trip,
+runs a real child). Reads during a **first** gather refuse (naming
+the stage and how many are left) since there is no prior snapshot. A re-gather
+stays readable, and what a reader sees depends on the backend. On the **cloud**
+backend it is the previous published version until the new one is ready. On the
+**local** backend `publish` is a no-op and the gather writes into the live
+cache, so *files* change in place: counts and file lists (a `grep_corpus` scan,
+say) can differ between calls. The in-flight banner says so, per backend. The
+*search index* is previous-until-swapped on both, and that needs the index build
+to be **atomic**: the build writes a scratch DB (seeded from the live index, so
+it stays incremental) and `os.replace`s it into place as a standalone
+(DELETE-journal) file, so a reader never sees a half-populated index — see
+"Writers are write-if-changed and atomic".
 
 The cloud gather-cache sync straddles that boundary, so it is split along it with
 nothing shared in process memory. The worker (`cache_sync.hydrate` / `persist`)
@@ -1379,20 +1393,7 @@ A child that dies on an unhandled exception sends one last `error` record (type
 and a truncated, single-line message) down the pipe before it exits non-zero, and
 the worker appends it to the failure it raises. The child's stderr is inherited,
 so on a cloud deployment it never reaches whoever is reading `gather_status`;
-this puts the cause in the status record's `error` field, which is fleet-visible. Under
-`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
-which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
-the stage and how many are left) since there is no prior snapshot. A re-gather
-stays readable, and what a reader sees depends on the backend. On the **cloud**
-backend it is the previous published version until the new one is ready. On the
-**local** backend `publish` is a no-op and the gather writes into the live
-cache, so *files* change in place: counts and file lists (a `grep_corpus` scan,
-say) can differ between calls. The in-flight banner says so, per backend. The
-*search index* is previous-until-swapped on both, and that needs the index build
-to be **atomic**: the build writes a scratch DB (seeded from the live index, so
-it stays incremental) and `os.replace`s it into place as a standalone
-(DELETE-journal) file, so a reader never sees a half-populated index — see
-"Writers are write-if-changed and atomic".
+this puts the cause in the status record's `error` field, which is fleet-visible.
 
 ### The networked read exception: live Datatracker lookups and get_rfc_info
 

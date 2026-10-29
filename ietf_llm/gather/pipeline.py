@@ -13,9 +13,11 @@ holding the GIL but not competing for CPU, so the child is also niced
 (`_limit_child_cpu`) — a local embedding build can't peg every core and starve
 the server.
 
-Under `IETF_LLM_GATHER_INPROCESS` (the test suite, which stubs `run_gather` by
-monkeypatch — invisible across a process boundary) it calls `run_gather`
-directly in this process instead.
+Under `IETF_LLM_GATHER_INPROCESS` (tests that stub `run_gather` by monkeypatch,
+which is invisible across a process boundary) it calls `run_gather` directly in
+this process instead. That hides anything that has to cross the boundary, so
+tests opt in one module at a time, and the cloud cache sync is tested through a
+real child.
 
 This module deliberately does not import `runner`: the cancel check comes
 in as a callback and cancellation raises `GatherCancelled` (defined here,
@@ -93,8 +95,8 @@ def _gather_in_process() -> bool:
     """Whether to run the pipeline in this process instead of a subprocess.
 
     Off in production (a child isolates a CPU-heavy stage from the server); on
-    under `IETF_LLM_GATHER_INPROCESS` for the test suite, which stubs the
-    pipeline by monkeypatch — invisible across a process boundary."""
+    under `IETF_LLM_GATHER_INPROCESS` for tests that stub the pipeline by
+    monkeypatch — invisible across a process boundary."""
     return os.environ.get("IETF_LLM_GATHER_INPROCESS", "").strip().lower() in (
         "1",
         "true",

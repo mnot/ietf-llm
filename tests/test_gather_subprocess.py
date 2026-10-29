@@ -1,7 +1,7 @@
 """Real-subprocess coverage for the gather runner's out-of-process pipeline.
 
-The rest of the suite runs the pipeline in-process (the `_gather_in_process`
-autouse fixture) so it can stub `run_gather`. These tests exercise the actual
+The tests that stub `run_gather` run the pipeline in-process (the
+`gather_in_process` fixture). These tests exercise the actual
 subprocess machinery — the child's progress protocol, the parent's streaming
 pump, the exit-code mapping, and cancellation — without touching the network:
 the child protocol is driven with a stubbed `run_gather`, and the parent pump is
@@ -275,7 +275,6 @@ def test_gather_status_error_names_what_the_child_hit(
     monkeypatch.setattr(
         gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
     )
-    monkeypatch.delenv("IETF_LLM_GATHER_INPROCESS", raising=False)
     monkeypatch.setenv("FAKE_EXIT", "1")
     monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
 
