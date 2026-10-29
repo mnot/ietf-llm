@@ -22,11 +22,13 @@ Threading uses the same approach every mail client does:
      to the last entry of `References`).
   3. Messages whose parent isn't in our archive (because it was posted
      elsewhere or pre-dates our retention window) become thread roots.
-  4. As a safety net, root messages that share a normalised subject
-     get merged together when they fall within `SUBJECT_MERGE_WINDOW` of
-     the conversation's last message. Catches cases where someone
-     "replied" by composing a new message without preserving References,
-     without chaining a recurring subject into one multi-year thread.
+  4. As a safety net, a root whose subject carries a `Re:`/`Fwd:` prefix
+     is merged into an earlier same-subject conversation if it falls
+     within `SUBJECT_MERGE_WINDOW` of that conversation's last message.
+     Catches cases where someone "replied" by composing a new message
+     without preserving References. Prefix-less roots (a weekly digest,
+     an `I-D Action:` notice) are new conversations and are never merged,
+     so a recurring subject doesn't chain into one multi-year thread.
 
 One file per thread:
 
@@ -53,7 +55,7 @@ from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
 from ...paths import get_cache_dir, thread_path, threads_dir
 from ...people import Registry
-from ...text import _normalize_subject, _parse_date, _short_addr
+from ...text import _has_reply_prefix, _normalize_subject, _parse_date, _short_addr
 from .mbox import extract_text_content
 
 
@@ -478,13 +480,11 @@ def _has_quoted_text(body: str) -> bool:
 
 
 #: How long after a conversation's last message a same-subject root may still be
-#: folded into it by the subject fallback. Recurring subjects (weekly digests,
-#: `I-D Action:` notices, errata reports) would otherwise chain years of
-#: unrelated mail into one thread; a reply composed as a new message arrives
-#: within days or weeks of the thread it belongs to. Measured from the
-#: conversation's *last* message, so a series with gaps under the window (a
-#: weekly digest) still chains; `_mergeable_cluster` is the one place the rule
-#: lives, should it need a bound from the first message or a `Re:` test.
+#: folded into it by the subject fallback, on top of the reply-prefix test in
+#: `_mergeable_cluster`. A reply composed as a new message arrives within days
+#: or weeks of the thread it belongs to; a longer gap is a new conversation that
+#: happens to share a subject. Measured from the conversation's *last* message,
+#: so it bounds gaps, not total span.
 SUBJECT_MERGE_WINDOW = timedelta(days=60)
 
 
@@ -507,9 +507,18 @@ def _mergeable_cluster(
     candidates: List[_SubjectCluster], msg: Message
 ) -> Optional[_SubjectCluster]:
     """The most recent cluster `msg` (dated no earlier than any cluster root)
-    may join: it started within `SUBJECT_MERGE_WINDOW` of the cluster's last
-    message. An undated cluster or message can't be placed in time, so it joins
-    the most recent cluster as the fallback always did."""
+    may join, or `None` to start a new thread. This is the one place the
+    subject-fallback rule lives.
+
+    Only a root whose raw subject carries a reply or forward prefix is a
+    candidate: someone replying by composing a new message keeps the `Re:`,
+    whereas a weekly digest, an `I-D Action:` notice or an errata report reuses
+    its subject verbatim and is a new item each time, however close the last
+    one. A candidate must also start within `SUBJECT_MERGE_WINDOW` of the
+    cluster's last message. An undated cluster or message can't be placed in
+    time, so it joins the most recent cluster."""
+    if not _has_reply_prefix(msg.subject):
+        return None
     for cluster in reversed(candidates):
         if msg.date is None or cluster.last is None:
             return cluster

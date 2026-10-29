@@ -404,7 +404,7 @@ def test_subject_fallback_merges_orphan_reply(isolated_home: Path) -> None:
     assert len(threads[0].members) == 2
 
 
-def _orphan(isolated_home: Path, uid: int, date: str, subject: str = "Weekly digest") -> None:
+def _orphan(isolated_home: Path, uid: int, date: str, subject: str = "Re: Weekly digest") -> None:
     _write_eml(
         isolated_home, "wg", uid,
         subject=subject, sender="Bot <bot@x>", date=date,
@@ -424,6 +424,25 @@ def test_subject_fallback_merges_roots_ten_days_apart(isolated_home: Path) -> No
     _orphan(isolated_home, 1, "Mon, 01 Jan 2025 10:00:00 +0000")
     _orphan(isolated_home, 2, "Fri, 11 Jan 2025 10:00:00 +0000")
     assert [len(t.members) for t in build_threads("wg")] == [2]
+
+
+def test_subject_fallback_ignores_roots_without_a_reply_prefix(isolated_home: Path) -> None:
+    # A weekly digest reuses its subject verbatim, a week apart: each one is a
+    # new conversation, not a reply to the last.
+    for uid in range(1, 5):
+        _orphan(
+            isolated_home, uid, f"Mon, {uid * 7:02d} Jan 2025 10:00:00 +0000",
+            subject="Weekly digest",
+        )
+    assert [len(t.members) for t in build_threads("wg")] == [1, 1, 1, 1]
+
+
+def test_subject_fallback_prefix_may_follow_a_list_tag(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2025 10:00:00 +0000", subject="[wg] Topic")
+    _orphan(isolated_home, 2, "Fri, 11 Jan 2025 10:00:00 +0000", subject="[wg] Re: Topic")
+    _orphan(isolated_home, 3, "Sat, 12 Jan 2025 10:00:00 +0000", subject="[wg] Topic")
+    # The tagged reply joins; the second bare "[wg] Topic" is a new item.
+    assert sorted(len(t.members) for t in build_threads("wg")) == [1, 2]
 
 
 def test_subject_fallback_window_runs_from_the_last_message(isolated_home: Path) -> None:
@@ -446,8 +465,8 @@ def test_subject_fallback_window_runs_from_the_last_message(isolated_home: Path)
 
 
 def test_subject_fallback_chains_a_series_of_close_roots(isolated_home: Path) -> None:
-    # Fifty days apart each, 100 days end to end: each is within the window of
-    # the one before, so the weekly-ish series stays one conversation while a
+    # Replies (they carry "Re:") fifty days apart each: each is within the
+    # window of the one before, so the series stays one conversation while a
     # gap past the window starts a new one.
     _orphan(isolated_home, 1, "Wed, 01 Jan 2025 10:00:00 +0000")
     _orphan(isolated_home, 2, "Thu, 20 Feb 2025 10:00:00 +0000")

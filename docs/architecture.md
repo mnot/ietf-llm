@@ -193,9 +193,11 @@ Key invariants:
   skipped by `grep_corpus` unless asked for — the threads hold the same text).
   `threads/<date>-<slug>.md` is one file per reconstructed thread — built from
   RFC 5322 In-Reply-To / References headers with a normalised-subject safety
-  net (it only folds a root into a conversation whose last message is within
-  60 days, so a recurring subject is split wherever activity pauses for longer;
-  a series with shorter gaps, such as a weekly digest, still chains), quoted
+  net (it only folds a root whose subject carries a `Re:`/`Fwd:` prefix, and
+  only into a conversation whose last message is within 60 days, so a
+  recurring subject that is reused verbatim -- a weekly digest, `I-D Action:`
+  notices -- becomes one thread per item rather than one for the list's whole
+  life), quoted
   runs collapsed, and per-message headers in **UTC** (so the
   chunker's date re-parse sorts). `<date>` is the thread's *first* message, so
   it can lag the last-activity date; the overview surfaces the actual `File`
