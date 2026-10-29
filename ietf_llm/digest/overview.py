@@ -299,7 +299,7 @@ def _load_citation_counts(cache_dir: str) -> dict[str, int]:
 
 
 #: The columns the overview's open-issues table declares, by lowercased name.
-#: The issues digest carries more (Participants, Dup-of, File, Summary); rows
+#: The issues digest carries more (Participants, Dup-of, File, LLM summary); rows
 #: are projected down to these or the wider rows spill past the 7-column header
 #: and break the rendered table.
 _OPEN_ISSUE_COLUMNS = ["#", "state", "title", "labels", "comments", "updated", "author"]
@@ -501,7 +501,7 @@ def _label_frequencies(cache_dir: str, wg: str) -> List[tuple[str, int]]:
 
 def _recent_threads(cache_dir: str, wg: str, limit: int) -> Tuple[List[List[str]], str]:
     """Recent threads plus the actual label of the 6th column. The threads
-    writer emits `File` (no summariser) or `Summary` (summariser active) there;
+    writer emits `File` (no summariser) or `LLM summary` (summariser active) there;
     returning the real label lets the caller's header match the cell contents
     instead of hardcoding `File`."""
     threads_path = _digest_path(cache_dir, wg, "threads")

@@ -22,7 +22,7 @@ from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, github_dir, pull_path, remove_stale_digest
 from ..people import Registry
 from .helpers import _state_is_open
-from .summarizer import _Summarizer
+from .summarizer import SUMMARY_COLUMN, _Summarizer
 
 _PULL_PROMPT = (
     "Summarize this IETF working group GitHub pull request in ONE sentence "
@@ -103,10 +103,10 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
                 fh.write(
                     "| # | State | Title | Labels | Comments | Reviews | "
                     "Updated | Author | Merged by | Commit | Closes | File | "
-                    "Summary |\n"
+                    f"{SUMMARY_COLUMN} |\n"
                     "|---|-------|-------|--------|----------|---------|"
                     "---------|--------|-----------|--------|--------|------|"
-                    "---------|\n"
+                    "-------------|\n"
                 )
             else:
                 fh.write(
