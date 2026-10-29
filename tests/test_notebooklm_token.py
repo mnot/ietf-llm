@@ -72,3 +72,23 @@ def test_existing_world_readable_token_is_tightened(
     )
     token = _get(tmp_path, monkeypatch)
     assert _mode(token) == 0o600
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="needs O_NOFOLLOW")
+def test_symlinked_token_is_not_written_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "elsewhere.json"
+    target.write_text("untouched", encoding="utf-8")
+    os.chmod(target, 0o644)
+    os.symlink(target, tmp_path / "token.json")
+
+    def _unreadable(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("bad")
+
+    monkeypatch.setattr(
+        notebooklm.Credentials, "from_authorized_user_file", _unreadable
+    )
+    _get(tmp_path, monkeypatch)
+    assert target.read_text(encoding="utf-8") == "untouched"
+    assert _mode(target) == 0o644

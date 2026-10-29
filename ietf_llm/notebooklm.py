@@ -101,7 +101,10 @@ def get_credentials(
         try:
             # The file holds a refresh token: owner-only, including when an
             # earlier run already created it with the umask's permissions.
-            token_fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # Where the platform has O_NOFOLLOW, a symlinked token path fails
+            # rather than being chmod'd and written through.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+            token_fd = os.open(token_path, flags, 0o600)
             with os.fdopen(token_fd, "w", encoding="utf-8") as token_fh:
                 os.chmod(token_path, 0o600)
                 token_fh.write(creds.to_json())
