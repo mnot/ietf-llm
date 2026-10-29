@@ -55,8 +55,7 @@ _MAX_CONTEXT = 5
 #: alongside its text (a slide deck, an image). Decoding them with
 #: `errors="replace"` would not crash, but it would burn time and could
 #: produce meaningless "matches" out of mojibake.
-#: The `.kinds.json` digest sidecar is machine data, not corpus text, and an
-#: atomic-write temp is a possibly partial file a killed gather left behind.
+#: The `.kinds.json` digest sidecar is machine data, not corpus text.
 _SKIP_SUFFIXES = (
     ".pdf",
     ".png",
@@ -67,7 +66,6 @@ _SKIP_SUFFIXES = (
     ".gz",
     ".db",
     ".kinds.json",
-    TMP_SUFFIX,
 )
 
 #: Directories holding a second copy of material that already has a
@@ -232,6 +230,8 @@ def _eligible(
     derived = 0
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
+            if name.endswith(TMP_SUFFIX):
+                continue  # a killed gather's partial temp: not a skipped binary
             path = os.path.join(dirpath, name)
             if not os.path.isfile(path):
                 continue

@@ -226,8 +226,9 @@ _DOWNLOAD_WORKERS = 8
 
 def _is_cached(filepath: str) -> bool:
     """True if a non-empty file is already there. A zero-length one is a
-    leftover from a write that died before the first byte landed (or from an
-    older non-atomic writer); treating it as absent re-fetches it."""
+    leftover from an older non-atomic writer, or from an unsynced rename after
+    power loss (`atomic_open` does not fsync, so a process kill cannot produce
+    one); treating it as absent re-fetches it."""
     try:
         return os.path.getsize(filepath) > 0
     except OSError:
@@ -246,8 +247,13 @@ def _download_one(url: str, filepath: str, verbose: Verbosity) -> Optional[str]:
     if not res:
         return None
     try:
+        text = str(res.text)
+        if not text:
+            # A 2xx with an empty body is not a document; writing it would
+            # leave a zero-length file that `_is_cached` re-fetches every gather.
+            return None
         with atomic_open(filepath) as out_fh:
-            out_fh.write(str(res.text))
+            out_fh.write(text)
     except OSError as err:
         log(f"Error writing {filepath}: {err}", verbose, level=LogLevel.ERROR)
         return None

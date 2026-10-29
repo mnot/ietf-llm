@@ -142,3 +142,14 @@ def test_zero_length_existing_file_is_refetched(tmp_path: Path) -> None:
     assert [os.path.basename(fp) for _u, fp in tasks] == ["draft-ietf-wg-x-05.txt"]
     (tmp_path / "draft-ietf-wg-x-05.txt").write_text("content")
     assert drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True) == []
+
+
+def test_download_one_empty_body_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An empty 2xx body must not be cached as a zero-length file, which
+    # `_is_cached` would treat as absent and refetch on every gather.
+    monkeypatch.setattr(drafts, "fetch_resource", lambda url, headers=None: _Resp(""))
+    target = tmp_path / "draft-x-01.txt"
+    assert drafts._download_one("https://h/x", str(target), Verbosity.QUIET) is None
+    assert os.listdir(tmp_path) == []
