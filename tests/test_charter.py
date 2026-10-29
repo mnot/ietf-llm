@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
+from ietf_llm.digest.overview import _charter_excerpt
 from ietf_llm.gather.sources import charter
 from ietf_llm.log import Verbosity
 
@@ -67,3 +68,30 @@ def test_no_charter_document_writes_nothing(
 ) -> None:
     text, requested = _run(monkeypatch, tmp_path, None)
     assert not text and not requested
+
+
+MISSION = (
+    "The MASQUE Working Group develops mechanisms to tunnel proxied traffic "
+    "over HTTP, preserving the semantics of the underlying protocols."
+)
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"rev": "03-02", "states": RECHARTER},  # recharter note
+        {"rev": "00-03", "states": RECHARTER},  # never-approved note
+        {"rev": "03", "states": APPROVED},
+    ],
+)
+def test_overview_excerpt_is_the_mission_for_every_header_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, doc: Dict[str, Any]
+) -> None:
+    # Writer -> reader: drive the real writer, read it through the overview.
+    monkeypatch.setattr(charter, "get_group_type", lambda _wg: "ietf")
+    monkeypatch.setattr(charter, "_get_json", lambda _path: doc)
+    monkeypatch.setattr(
+        charter, "fetch_resource", lambda _url: SimpleNamespace(text=MISSION)
+    )
+    charter.process_charter("masque", str(tmp_path / "charter.txt"), Verbosity.QUIET)
+    assert _charter_excerpt(str(tmp_path)) == MISSION
