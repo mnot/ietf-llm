@@ -126,25 +126,26 @@ def _derive_eligibility(
     """Collapse the raw states into the agenda-eligibility signal.
 
     published → past the WG, has an RFC number or a `RFC` draft state.
-    dead → expired, replaced, or a Dead WG Document. in-iesg → any IESG
-    processing state beyond `I-D Exists`, or a stream state of `sub-pub`
-    (handed to the IESG, which has not picked it up yet). in-wg → `I-D
-    Exists` or an active draft with no IESG state.
+    dead → expired, replaced, or a Dead WG Document; or a lapsed `expires`
+    on a draft not in IESG processing. in-iesg → any IESG processing state
+    beyond `I-D Exists`, or a stream state of `sub-pub` (handed to the IESG,
+    which has not picked it up yet). in-wg → `I-D Exists` or an active draft
+    with no IESG state.
     """
     ds = (draft_state or "").strip().lower()
     iesg = (iesg_state or "").strip().lower()
     stream_slug = (stream_state_slug or "").strip().lower()
     if rfc_number or ds == "rfc":
         return "published"
-    if (
-        ds in ("expired", "replaced", "repl")
-        or iesg == "dead"
-        or stream_slug == "dead"
-        or _is_past(expires)
-    ):
+    if ds in ("expired", "replaced", "repl") or iesg == "dead" or stream_slug == "dead":
         return "dead"
     if (iesg and iesg != "i-d exists") or stream_slug == "sub-pub":
         return "in-iesg"
+    # After the IESG test: Datatracker suspends expiry once a draft is past
+    # `I-D Exists` but leaves `expires` in the past, so a lapsed date only means
+    # dead for a draft still in (or never past) the WG.
+    if _is_past(expires):
+        return "dead"
     if iesg == "i-d exists" or ds == "active":
         return "in-wg"
     return "unknown"

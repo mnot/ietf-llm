@@ -341,7 +341,12 @@ def test_draft_status_unknown_doc():
 
 
 def test_draft_status_rfc_ed_queue_is_in_iesg(monkeypatch):
-    doc = dict(_DOC_ACTIVE, states=["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"])
+    # Datatracker leaves `expires` in the past once a draft is in the queue.
+    doc = dict(
+        _DOC_ACTIVE,
+        states=["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"],
+        expires="2022-09-05T22:09:01Z",
+    )
     monkeypatch.setattr(
         live_lookup.cache,
         "_fetch_json",
@@ -923,3 +928,64 @@ def test_overview_live_outage_is_not_a_clean_reconciliation(monkeypatch):
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
     out = _overview_section(monkeypatch, True)
     assert _UNREACHABLE in out and "match Datatracker" not in out
+
+
+# --- Eligibility: a lapsed `expires` past I-D Exists (#283) ------------------
+
+_LAPSED = "2022-09-05T22:09:01Z"
+
+
+@pytest.mark.parametrize(
+    "draft,iesg,stream,expected",
+    [
+        ("Active", "RFC Ed Queue", "sub-pub", "in-iesg"),
+        ("Active", "AD Evaluation", None, "in-iesg"),
+        ("Active", "IESG Evaluation", None, "in-iesg"),
+        ("Active", "I-D Exists", "sub-pub", "in-iesg"),
+        ("Active", "I-D Exists", "wg-doc", "dead"),
+        ("Active", None, None, "dead"),
+        ("Expired", "AD Evaluation", None, "dead"),
+        ("Active", "Dead", None, "dead"),
+    ],
+)
+def test_a_lapsed_expiry_only_means_dead_outside_iesg_processing(
+    draft, iesg, stream, expected
+):
+    assert live_lookup._derive_eligibility(draft, iesg, _LAPSED, None, stream) == expected
+
+
+def test_draft_status_ad_evaluation_with_lapsed_expiry_is_in_iesg(monkeypatch):
+    monkeypatch.setitem(
+        _STATES,
+        "/api/v1/doc/state/48/",
+        {
+            "name": "AD Evaluation",
+            "slug": "ad-eval",
+            "type": "/api/v1/doc/statetype/draft-iesg/",
+        },
+    )
+    _stub_doc(
+        monkeypatch,
+        states=["/api/v1/doc/state/1/", "/api/v1/doc/state/48/"],
+        expires=_LAPSED,
+    )
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert "past the WG (IESG processing)" in out
+    assert "expired or replaced" not in out
+
+
+def test_reconcile_labels_a_lapsed_draft_in_the_queue_in_iesg(monkeypatch):
+    drafts = {
+        "meta": {"next": None},
+        "objects": [_adopted("draft-ietf-httpbis-bar", _PAST_WG, _LAPSED)],
+    }
+
+    def _stub(url, timeout=10.0):
+        return drafts if "group__acronym=httpbis&type=draft" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    recon, _ = live_lookup.reconcile_active_drafts(
+        "httpbis", ["draft-ietf-httpbis-bar"]
+    )
+    assert recon.advanced == [("draft-ietf-httpbis-bar", "RFC Ed Queue (in-iesg)")]
