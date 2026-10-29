@@ -1111,7 +1111,9 @@ would never be repaired; a zero-length one is treated as absent), enriched
 transcripts, the cross-corpus identity caches and `gather-metrics.json`; and the
 `_rfc/` and `_catalog/` mirror bodies and ETag sidecars (`gather.sources._mirror`),
 the slide-deck `.pdf.txt` text and the GitHub issues `.txt`. A zero-length or
-unreadable `.pdf.txt` is re-extracted rather than trusted on its mtime. The temp
+unreadable `.pdf.txt` is re-extracted rather than trusted on its mtime, and a
+failed re-extraction removes the stale `.pdf.txt` rather than leave the previous
+deck's text searchable. The temp
 is dot-prefixed (`.<name>.<pid>.<n>.tmp`) and `.tmp` files are skipped by
 `list_files`, `grep_corpus`, the cloud publish walk and the seed bundle, so a
 gather killed mid-write cannot leak a partial file into reads or a published version.
@@ -1119,8 +1121,11 @@ gather killed mid-write cannot leak a partial file into reads or a published ver
 A killed writer still leaves its temp on disk, so each gather starts (after any
 seed install, before the first stage) by sweeping them:
 `atomicio.sweep_stale_tmp` deletes `atomic_open` temps older than an hour. It
-matches only the temp name pattern, never follows or removes a symlink, and
-leaves younger temps alone because a concurrent gather may still be writing
+matches only the temp name pattern, skips a directory it is pointed at that is
+itself a symlink (so a cache root that is a symlink is not swept at that level,
+though the corpus and shared directories under it still are), never follows or
+removes a symlink below the directory it walks, and leaves younger temps alone
+because a concurrent gather may still be writing
 them. It covers the corpus directory, its `imap-cache/<corpus>/` mail cache and
 the shared dirs gathers write into (the cache root's identity caches, `_rfc/`,
 `_catalog/`, `_groups/`). The sweep is best-effort (errors are logged, never

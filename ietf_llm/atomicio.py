@@ -265,7 +265,7 @@ TMP_SUFFIX = ".tmp"
 STALE_TMP_SECONDS = 3600.0
 
 #: Exactly the names `_atomic_tmp_path` produces.
-_ATOMIC_TMP_RE = re.compile(r"^\..+\.\d+\.\d+" + re.escape(TMP_SUFFIX) + r"$")
+_ATOMIC_TMP_RE = re.compile(r"\..+\.\d+\.\d+" + re.escape(TMP_SUFFIX))
 
 
 def _atomic_tmp_path(path: str) -> str:
@@ -350,12 +350,17 @@ def sweep_stale_tmp(
     invisible to readers (dot-prefixed, skipped by every walker) but never
     reclaimed. Only names `_atomic_tmp_path` generates are touched, and only
     once their mtime is past `max_age`, because a concurrent gather may be
-    writing a younger one right now. Symlinks are neither deleted nor followed,
-    so the walk cannot leave `root` through a planted link. This module cannot
-    log, so the caller reports what came back.
+    writing a younger one right now. Nothing at or below `root` is followed
+    through a symlink: a symlinked `root` is skipped (reported in the errors),
+    and below it a symlink, to a file or a directory, is neither deleted nor
+    descended into, so the walk cannot leave `root` through a planted link.
+    (A symlink in a parent of `root` is not examined.) This module cannot log,
+    so the caller reports what came back.
     """
     removed: List[str] = []
     errors: List[str] = []
+    if os.path.islink(root):
+        return removed, [f"{root}: is a symlink; not swept"]
     cutoff = (time.time() if now is None else now) - max_age
     pending = [root]
     while pending:
@@ -387,7 +392,7 @@ def sweep_stale_tmp(
 
 def _is_stale_tmp(entry: "os.DirEntry[str]", cutoff: float) -> bool:
     return bool(
-        _ATOMIC_TMP_RE.match(entry.name)
+        _ATOMIC_TMP_RE.fullmatch(entry.name)
         and entry.is_file(follow_symlinks=False)
         and entry.stat(follow_symlinks=False).st_mtime < cutoff
     )

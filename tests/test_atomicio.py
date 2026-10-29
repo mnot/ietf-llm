@@ -441,3 +441,26 @@ def test_sweep_missing_root_is_empty_and_unreadable_dir_is_reported(
     finally:
         locked.chmod(0o700)
     assert removed == [] and len(errors) == 1 and "locked" in errors[0]
+
+
+def test_sweep_name_match_is_exact(tmp_path: Path) -> None:
+    # `$` would match before a trailing newline; the pattern must not.
+    odd = tmp_path / ".x.1.2.tmp\n"
+    odd.write_text("x")
+    past = time.time() - 30 * 86400
+    os.utime(odd, (past, past))
+    assert sweep_stale_tmp(str(tmp_path)) == ([], [])
+    assert odd.exists()
+
+
+def test_sweep_skips_a_symlinked_root_and_says_so(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    old = _leak(real, "a.md", age=2 * STALE_TMP_SECONDS)
+    link = tmp_path / "link"
+    os.symlink(real, link)
+    removed, errors = sweep_stale_tmp(str(link))
+    assert removed == [] and len(errors) == 1 and "symlink" in errors[0]
+    assert old.exists()
+    # The real directory is still swept when named directly.
+    assert sweep_stale_tmp(str(real))[0] == [str(old)]

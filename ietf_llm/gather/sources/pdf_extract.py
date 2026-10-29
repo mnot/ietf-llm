@@ -293,8 +293,11 @@ def extract_all_pdfs(
                     swept += 1
             except Exception as exc:  # pylint: disable=broad-except
                 failed += 1
-                # The write is atomic, so any prior .txt is intact; a stale
-                # one is older than its .pdf and so is retried next gather.
+                # Whatever .txt is still here is stale, empty or unreadable
+                # (`_needs_extraction` said so), so drop it: it must not stay
+                # searchable under the new .pdf, nor look current if a later
+                # rewrite (a header refresh) bumps its mtime.
+                _remove_if_exists(txt_path)
                 log(
                     f"PDF extraction failed for {relpath}: "
                     f"{type(exc).__name__}: {exc}",

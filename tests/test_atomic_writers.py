@@ -204,20 +204,41 @@ def test_pdf_extract_one_failing_mid_write_keeps_old_txt(
     assert sorted(os.listdir(tmp_path)) == ["slides.pdf", "slides.pdf.txt"]
 
 
-def test_pdf_failed_reextraction_keeps_the_stale_txt_and_retries(
+def test_pdf_failed_reextraction_leaves_no_stale_txt_and_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pdf = _slide(tmp_path)
+    _slide(tmp_path)
     txt = tmp_path / "slides.pdf.txt"
-    txt.write_text("OLD TEXT")
+    txt.write_text("OLD DECK BODY")
+    pdf = tmp_path / "slides.pdf"
     os.utime(pdf, (time.time() + 60, time.time() + 60))  # the deck was replaced
     monkeypatch.setattr(pdf_extract, "extract_pdf_text", lambda _p: "a \ud800 b\n")
     assert extract_all_pdfs(str(tmp_path)) == []
-    assert txt.read_text() == "OLD TEXT"
-    # Still older than its .pdf, so the next gather tries again.
+    # The previous deck's text must not stay searchable under the new .pdf, nor
+    # survive to be "refreshed" into looking current (a header rewrite bumps mtime).
+    assert not txt.exists()
+    assert os.listdir(tmp_path) == ["slides.pdf"]
     monkeypatch.undo()
     assert extract_all_pdfs(str(tmp_path)) == [str(txt)]
     assert "Hello AIPREF" in txt.read_text()
+
+
+def test_pdf_stale_txt_whose_header_is_rewritten_is_still_reextracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An mtime bump by any later rewrite of a stale .txt (the PR #324 header
+    refresh does this through `write_if_changed`) must not make it look
+    current: the failed extraction has already removed it."""
+    pdf = _slide(tmp_path)
+    txt = tmp_path / "slides.pdf.txt"
+    txt.write_text("OLD DECK BODY")
+    os.utime(pdf, (time.time() + 60, time.time() + 60))
+    monkeypatch.setattr(pdf_extract, "extract_pdf_text", lambda _p: "a \ud800 b\n")
+    extract_all_pdfs(str(tmp_path))
+    assert not txt.exists()  # nothing left for a rewrite to bump
+    assert pdf_extract._needs_extraction(  # pylint: disable=protected-access
+        str(pdf), str(txt)
+    )
 
 
 def test_pdf_zero_length_txt_is_reextracted(tmp_path: Path) -> None:
