@@ -233,10 +233,14 @@ def clear_local_state(corpus: str, workspace: str) -> None:
 
     for path in index_extra_files(corpus, workspace).values():
         os.remove(path)
-    for tree in (workspace, os.path.join(get_cache_dir(), "imap-cache", corpus)):
+    for tree in (
+        workspace,
+        os.path.join(get_cache_dir(), "imap-cache", corpus),
+        datatracker.http_cache_path(corpus),
+    ):
         shutil.rmtree(tree, ignore_errors=True)
     try:
-        os.remove(datatracker.http_cache_path(corpus))
+        os.remove(datatracker.legacy_http_cache_path(corpus))
     except FileNotFoundError:
         pass
 

@@ -800,7 +800,7 @@ def test_a_stray_file_beside_the_lists_does_not_abort_hydrate(monkeypatch, tmp_p
     datatracker_key = "corpora/moq/gather-cache/http-cache.json"
     kv.put(datatracker_key, b'{"u": {"etag": "e", "body": "{}", "last_used": 1}}')
     assert cache_sync.hydrate(kv, "moq") == []
-    assert os.path.exists(cache_sync.datatracker.http_cache_path("moq"))
+    assert os.path.exists(cache_sync.datatracker.legacy_http_cache_path("moq"))
 
 
 def test_an_unwritable_confirmation_is_logged(monkeypatch, tmp_path, capsys):
