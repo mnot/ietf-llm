@@ -198,12 +198,11 @@ def _db_path_ro(wg: str) -> str:
 _BUSY_TIMEOUT_S = 30.0
 
 
-def _connect(path: str, *, write: bool = False) -> sqlite3.Connection:
-    """Open the index DB with a busy timeout. Writers also switch the DB
+def _connect(path: str) -> sqlite3.Connection:
+    """Open the index DB for writing, with a busy timeout. Switches the DB
     to WAL (persistent), which lets readers proceed during a write."""
     conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S)
-    if write:
-        conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -231,10 +230,12 @@ def _connect_ro(wg: str) -> sqlite3.Connection:
     database that every later read would then trip over. Callers that treat
     "no index" as an ordinary answer use ``_try_connect_ro``.
 
-    ``mode=ro`` still lets SQLite create the WAL's ``-shm`` sidecar on a
-    writable index dir, which a checkpointed WAL database needs in order to be
-    read -- correct for the local CLI and for a writable (tmpfs) served index.
-    For an immutable replica on a read-only mount, set
+    Current builds publish in DELETE journal mode, so a read leaves no
+    sidecars. A legacy WAL-mode index on a writable dir makes SQLite create
+    ``-shm`` and ``-wal`` and leave them behind on close (the next
+    ``promote_build_db`` clears them); that is harmless, and it is why a
+    read-only mount needs a different mode. For an immutable replica on a
+    read-only mount, set
     ``IETF_LLM_INDEX_IMMUTABLE=1`` (see ``_index_immutable``): SQLite then
     reads the file directly, skipping WAL/-shm and locking. Only safe when
     nothing rewrites the file in place.
@@ -267,7 +268,7 @@ def _try_connect_ro(wg: str) -> Optional[sqlite3.Connection]:
 def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
     path = path or _db_path(wg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = _connect(path, write=True)
+    conn = _connect(path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             id         INTEGER PRIMARY KEY,

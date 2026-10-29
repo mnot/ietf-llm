@@ -227,6 +227,39 @@ def test_immutable_read_returns_hits(isolated_home: Path, monkeypatch) -> None:
     assert hits
 
 
+def _sidecars(wg: str) -> list:  # type: ignore[type-arg]
+    return sorted(
+        n
+        for n in os.listdir(os.path.dirname(_db_path(wg)))
+        if n.endswith(("-wal", "-shm"))
+    )
+
+
+def test_read_of_a_built_index_leaves_no_sidecars(isolated_home: Path) -> None:
+    # Current builds publish in DELETE journal mode, so a mode=ro reader on a
+    # writable dir has nothing to create.
+    _build("wg", isolated_home)
+    assert _sidecars("wg") == []
+    assert search("wg", "q", k=5, verbose=Verbosity.QUIET)
+    assert embeddings.probe_index("wg")
+    assert _sidecars("wg") == []
+
+
+def test_immutable_read_works_on_a_read_only_dir(
+    isolated_home: Path, monkeypatch
+) -> None:
+    _build("wg", isolated_home)
+    monkeypatch.setenv("IETF_LLM_INDEX_IMMUTABLE", "1")
+    _seed_model()
+    d = os.path.dirname(_db_path("wg"))
+    os.chmod(d, 0o555)
+    try:
+        assert search("wg", "q", k=5, verbose=Verbosity.QUIET)
+        assert embeddings.probe_index("wg")
+    finally:
+        os.chmod(d, 0o755)
+
+
 # --- readiness probe opens a real index ------------------------------------
 
 

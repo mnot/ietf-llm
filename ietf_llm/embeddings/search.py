@@ -45,7 +45,6 @@ from .storage import (
     FLOAT32_CODEC,
     VectorCodec,
     _SCHEMA_VERSION,
-    _connect_ro,
     _db_path,
     _open_db,
     _pack,
@@ -926,7 +925,7 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
     read). Shared by `search` and `related`.
 
     Read-only path: the index is built and migrated by gather
-    (build_index); the server never writes. `_connect_ro` avoids the
+    (build_index); the server never writes. `_try_connect_ro` avoids the
     makedirs / WAL / ALTER-TABLE migration `_open_db` performs, which is
     unnecessary for a query and unsafe against an immutable index.
     """
@@ -956,15 +955,13 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
                 verbose,
                 level=LogLevel.PROGRESS,
             )
-            return _connect_ro(wg)
-        conn = _connect_ro(wg)
+            return _try_connect_ro(wg)
         log(
             f"Embeddings index for {wg} is an older schema; re-run "
             f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
             verbose,
             level=LogLevel.ERROR,
         )
-        conn.close()
         return None
     return conn
 
