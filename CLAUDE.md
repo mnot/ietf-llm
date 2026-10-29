@@ -170,8 +170,9 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   and the one cross-corpora key — the gather-slot semaphore — at `fleet/slots`.
   The same bucket also holds the **gather accelerator caches** (`gather/sources/cache_sync.py`),
   hydrated before a gather and persisted after so an ephemeral host doesn't re-hit
-  rate-limited upstreams: `.http-cache.json` sharded per corpus at
-  `corpora/<name>/gather-cache/` (lease-serialised, plain RMW), the shared
+  rate-limited upstreams: the ETag store (a directory of per-URL gzip bodies plus
+  an index, `http_cache.py`) sharded per corpus as one tar at
+  `corpora/<name>/gather-cache/http-cache.tar` (lease-serialised, plain RMW), the shared
   GitHub/datatracker identity maps at `fleet/gather-cache/` (CAS-merge), and the
   effort catalog (`_catalog/`) at `fleet/catalog/` (a shared fleet singleton, one
   key per file, last-writer-wins), and the per-list IMAP `.eml` cache at

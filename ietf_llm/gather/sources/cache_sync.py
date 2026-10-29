@@ -3,16 +3,30 @@ ephemeral host (scale-to-zero) doesn't rebuild them by re-hitting rate-limited
 upstreams after its scratch is wiped (issue #82).
 
 Only the cloud CorpusStore backend calls in; the local backend keeps these
-caches on persistent disk and needs no sync. The caches have different
-contention profiles, so each is scoped to the unit that already guarantees a
-single writer:
+caches on persistent disk and needs no sync.
 
-  - `.http-cache.json` — the datatracker ETag store. Sharded **per corpus** under
-    that corpus's prefix. #85's per-corpus gather lease serialises writers across
-    the fleet, and `bind_gather_corpus` binds a per-corpus ETag store to *this
-    thread* so the runner's up-to-N concurrent in-process gathers each write their
-    own corpus file (not one shared root file). Together that makes hydrate ->
-    gather -> flush -> persist a plain read-modify-write — no CAS, no lost delta.
+This module is the *filesystem* half and runs in the process that owns the
+lease: `hydrate` restores the stored caches to disk before the gather, `persist`
+reads them off disk and uploads after. It holds no gather-time state. The gather
+itself may run in another process (the MCP runner's child), so what it computes
+reaches `persist` only as files: the ETag store flushed to the `http_cache_path`
+directory (`datatracker.gather_http_cache`), and the per-list `.verified-uidvalidity`
+sidecar the IMAP sync writes (`mbox.record_verified`).
+
+The caches have different contention profiles, so each is scoped to the unit that
+already guarantees a single writer:
+
+  - The datatracker ETag store (a directory: an index plus one gzip file per
+    cached body; see `http_cache`), stored as **one tar** (`http-cache.tar`; the
+    bodies are already compressed, so the tar is not). Sharded **per corpus**
+    under that corpus's prefix. #85's per-corpus gather lease serialises writers across
+    the fleet, and the gather binds a per-corpus ETag store to its thread so the
+    runner's up-to-N concurrent in-process gathers each write their own corpus
+    store (not one shared root one). Together that makes hydrate -> gather ->
+    persist a plain read-modify-write — no CAS, no lost delta. A blob stored
+    before the directory layout (`http-cache.json`, one JSON object holding
+    every body) is restored to where the store looks for it to migrate, and
+    deleted once the tar is stored.
   - `_github-users.json` / `_datatracker-github.json` / `_datatracker-people.json`
     — corpus-independent identity maps, **shared** at a fleet prefix. Two
     different-corpus gathers can run at once, so persist does a bounded
@@ -45,7 +59,7 @@ single writer:
 
 Best-effort throughout, with one exception: a sync failure doesn't fail a gather
 (it just means a cold rebuild next time), matching how
-`_save_cache`/`_HttpCache.flush` already swallow their own write errors, and each
+`_save_cache`/`HttpCache.flush` already swallow their own write errors, and each
 cache syncs independently, so one cache's failure never skips the others. The
 exception is a stored IMAP chunk that can't be fetched. A rebuild from what's
 left would publish a version without the threads whose mail didn't come back
@@ -75,11 +89,20 @@ from . import (
     datatracker_github,
     datatracker_people,
     github_users,
+    http_cache,
     mbox,
 )
 
 #: Per-corpus key — lease-serialised single writer, so a plain RMW is safe.
-_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
+_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.tar"
+#: Beside the store's own files: what the stored tar held when this host last
+#: matched it (restored from it, or uploaded). Never packed.
+_SYNCED_NAME = ".synced.json"
+#: How far an entry's `last_used` may move past the stored one before that alone
+#: earns an upload.
+_TOUCH_GRACE = 86400.0
+#: What earlier versions stored there: one JSON blob of every cached body.
+_LEGACY_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
 #: Per-corpus prefix for the IMAP mail cache: `<list>/index.json` plus
 #: `<list>/chunk-<n>.tar.gz`. Same single-writer (lease) reasoning as above.
 _IMAP_PREFIX = "corpora/{corpus}/gather-cache/imap/"
@@ -111,19 +134,10 @@ def hydrate(kv: KvStore, corpus: str) -> List[str]:
     after restoring everything else, if stored IMAP mail couldn't be fetched (see
     `_restore_imap`); nothing else here raises."""
     # A UIDVALIDITY confirmation is good for one gather, from here to persist.
-    # One left over from an earlier gather in this process would let persist
-    # replace the stored mail on the strength of a check this gather never made.
+    # One left over from an earlier gather would let persist replace the stored
+    # mail on the strength of a check this gather never made.
     mbox.forget_verified(corpus)
-    _restore(
-        kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
-    )
-    # Bind this thread's ETag store to the freshly-hydrated per-corpus file. The
-    # runner gathers up to N corpora concurrently, one per worker thread, so a
-    # per-thread per-corpus store is what keeps them off one shared file.
-    try:
-        datatracker.bind_gather_corpus(corpus)
-    except Exception:  # pylint: disable=broad-except
-        pass
+    _restore_http_cache(kv, corpus)
     _restore(kv, _GITHUB_USERS_KEY, github_users.cache_path())
     _restore(kv, _DATATRACKER_GITHUB_KEY, datatracker_github.cache_path())
     _restore(kv, _DATATRACKER_PEOPLE_KEY, datatracker_people.cache_path())
@@ -138,21 +152,7 @@ def hydrate(kv: KvStore, corpus: str) -> List[str]:
 def persist(kv: KvStore, corpus: str) -> List[str]:
     """Push the caches back to durable storage after a gather. Never raises;
     returns notes for failures worth surfacing (see `_persist_imap`)."""
-    # The ETag store flushes only at interpreter exit, which never fires between
-    # gathers in the serve worker — force it so the file reflects this gather.
-    try:
-        datatracker.flush_http_cache()
-    except Exception:  # pylint: disable=broad-except
-        pass
-    _put_plain(
-        kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
-    )
-    # Unbind this thread's per-corpus store (release it; the next gather on this
-    # reused worker binds its own).
-    try:
-        datatracker.bind_gather_corpus(None)
-    except Exception:  # pylint: disable=broad-except
-        pass
+    _persist_http_cache(kv, corpus)
     _cas_merge(
         kv, _GITHUB_USERS_KEY, github_users.cache_path(), github_users.merge_cache
     )
@@ -181,6 +181,7 @@ def clear(kv: KvStore, corpus: str) -> None:
     a half-done clear would let the next hydrate bring it back. Per-corpus keys
     only: the shared identity maps and the catalog are other corpora's too."""
     kv.delete(_HTTP_CACHE_KEY.format(corpus=corpus))
+    kv.delete(_LEGACY_HTTP_CACHE_KEY.format(corpus=corpus))
     prefix = _IMAP_PREFIX.format(corpus=corpus)
     for name in kv.list_children(prefix):
         _clear_imap_unit(kv, f"{prefix}{name}/")
@@ -208,6 +209,163 @@ def _restore(kv: KvStore, key: str, path: str) -> None:
         if record is None:
             return
         _atomic_write(path, record[0])
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+# --- ETag store (per corpus, one tar) -------------------------------------
+
+
+def _pack_http_cache(directory: str) -> Optional[bytes]:
+    """The store at `directory` as a deterministic tar (no timestamps): its body
+    files, then its index. None if there is no readable index, so a store that
+    was never written, or is corrupt, never replaces the stored copy."""
+    entries = http_cache.read_index(directory)
+    if not entries:
+        return None
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        names = sorted({entry["file"] for entry in entries.values()})
+        for name in names + [http_cache.INDEX_NAME]:
+            data = _read(os.path.join(directory, name))
+            if data is None:  # a body the index names but the disk lost
+                continue
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _unpack_http_cache(blob: bytes, directory: str) -> None:
+    """Restore a packed store into `directory`. Only files of the store's own
+    shape are taken, whatever the archive names, and the index goes in last and
+    only if the whole archive read cleanly, so a truncated one leaves an index
+    that still describes what is there. Sparse members are skipped (their real
+    size is not their size in the archive), and the files taken are capped in
+    number and total size at what a store may hold, so a malformed archive can
+    neither fill the disk nor memory; it raises."""
+    index: Optional[bytes] = None
+    count = total = 0
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
+        for member in tar:
+            if not member.isreg() or member.issparse():
+                continue
+            if member.name != http_cache.INDEX_NAME and not (
+                http_cache.BODY_NAME.match(member.name)
+            ):
+                continue
+            count += 1
+            total += member.size
+            if (
+                count > http_cache.MAX_ENTRIES + 1
+                or total > http_cache.MAX_BYTES + http_cache.INDEX_ALLOWANCE
+            ):
+                raise ValueError("stored ETag archive exceeds the store's bounds")
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            if member.name == http_cache.INDEX_NAME:
+                index = handle.read()
+            elif http_cache.BODY_NAME.match(member.name):
+                _atomic_write(os.path.join(directory, member.name), handle.read())
+    if index is not None:
+        _atomic_write(os.path.join(directory, http_cache.INDEX_NAME), index)
+
+
+def _synced_path(directory: str) -> str:
+    return os.path.join(directory, _SYNCED_NAME)
+
+
+def _read_synced(directory: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """What the stored tar held when this host last matched it, or None."""
+    synced = _read_json(_synced_path(directory))
+    if synced is None:
+        return None
+    return {
+        url: entry
+        for url, entry in synced.items()
+        if isinstance(url, str) and isinstance(entry, dict)
+    }
+
+
+def _write_synced(directory: str, entries: Dict[str, Dict[str, Any]]) -> None:
+    snapshot = {
+        url: {key: entry.get(key) for key in ("etag", "file", "last_used")}
+        for url, entry in entries.items()
+    }
+    _atomic_write(
+        _synced_path(directory),
+        json.dumps(snapshot, sort_keys=True).encode("utf-8"),
+    )
+
+
+def _differs_from_synced(
+    current: Dict[str, Dict[str, Any]], synced: Optional[Dict[str, Dict[str, Any]]]
+) -> bool:
+    """Whether the local store holds something the stored tar does not: a URL
+    added or gone, a changed ETag or body, or an entry last used more than
+    `_TOUCH_GRACE` after the stored time. A gather revalidates (and so touches)
+    nearly every entry; re-uploading the whole store for that alone would cost
+    its full size in egress per gather. The stored `last_used` therefore lags by
+    up to a day, which the 90-day age eviction does not notice."""
+    if synced is None or current.keys() != synced.keys():
+        return True
+    for url, entry in current.items():
+        old = synced[url]
+        if entry["etag"] != old.get("etag") or entry["file"] != old.get("file"):
+            return True
+        used, was = entry["last_used"], old.get("last_used")
+        if not isinstance(was, (int, float)) or used - was > _TOUCH_GRACE:
+            return True
+    return False
+
+
+def _restore_http_cache(kv: KvStore, corpus: str) -> None:
+    """Restore the corpus's ETag store to disk. A store with nothing in the tar
+    form yet gets the older single-file blob, if any, placed where the store
+    migrates it from -- unless this host already holds a store of its own. Best
+    effort: any error leaves local state as it was (and persist uploading)."""
+    directory = datatracker.http_cache_path(corpus)
+    try:
+        # Whatever this host last matched no longer describes what it is about
+        # to hold; persist uploads unless the restore below re-establishes it.
+        os.remove(_synced_path(directory))
+    except OSError:
+        pass
+    try:
+        record = kv.get(_HTTP_CACHE_KEY.format(corpus=corpus))
+        if record is not None:
+            _unpack_http_cache(record[0], directory)
+            restored = http_cache.read_index(directory)
+            if restored is not None:
+                _write_synced(directory, restored)
+        elif http_cache.read_index(directory) is None:
+            _restore(
+                kv,
+                _LEGACY_HTTP_CACHE_KEY.format(corpus=corpus),
+                datatracker.legacy_http_cache_path(corpus),
+            )
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+def _persist_http_cache(kv: KvStore, corpus: str) -> None:
+    """Upload the corpus's ETag store if it holds anything the stored tar does
+    not (see `_differs_from_synced`; CAS-free: the caller holds the per-corpus
+    gather lease), then drop the older blob it supersedes. Never raises."""
+    directory = datatracker.http_cache_path(corpus)
+    try:
+        current = http_cache.read_index(directory)
+        if current is None or not _differs_from_synced(
+            current, _read_synced(directory)
+        ):
+            return
+        blob = _pack_http_cache(directory)
+        if blob is None:
+            return
+        kv.put(_HTTP_CACHE_KEY.format(corpus=corpus), blob)
+        _write_synced(directory, current)
+        kv.delete(_LEGACY_HTTP_CACHE_KEY.format(corpus=corpus))
     except Exception:  # pylint: disable=broad-except
         pass
 

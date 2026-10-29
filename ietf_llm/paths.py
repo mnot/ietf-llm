@@ -134,7 +134,11 @@ def seed_index_cache_path() -> str:
 
 
 def get_wg_file_cache_dir(wg_name: str) -> str:
-    """Get the local file cache directory for a Working Group."""
+    """Get the local file cache directory for a Working Group, creating it.
+
+    For the gather path only, which builds the corpus. A reader (MCP tools,
+    export) must resolve through `CorpusStore.local_cache_dir`, which never
+    creates: here a mistyped corpus name becomes a junk corpus."""
     cache_dir = os.path.join(get_cache_dir(), wg_name, "files")
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)

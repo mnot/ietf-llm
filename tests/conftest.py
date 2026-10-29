@@ -21,15 +21,51 @@ from typing import Any, Iterable
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _gather_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run the gather pipeline in-process during tests, not in a subprocess.
+@pytest.fixture
+def gather_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the gather pipeline in-process, not in a subprocess.
 
-    Production spawns a child so a CPU-heavy stage can't stall the server, but
-    the suite drives gather by monkeypatching `run_gather` / the stages, which a
-    separate process would not see. The real subprocess path has its own test
-    (`test_gather_subprocess.py`), which clears this flag explicitly."""
+    Production spawns a child so a CPU-heavy stage can't stall the server, but a
+    test that stubs `run_gather` or the stages by monkeypatch needs the pipeline
+    in its own process: the patch is invisible across a process boundary. Only
+    those tests opt in (module-level `pytestmark`), because a child is where the
+    cache sync's state has to cross a boundary, and an in-process run hides every
+    bug there. The real child path is `real_gather_child` below."""
     monkeypatch.setenv("IETF_LLM_GATHER_INPROCESS", "1")
+
+
+@pytest.fixture
+def real_gather_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let a test run the gather pipeline in a real child process (see
+    `_no_stray_gather_child`), with the in-process flag cleared."""
+    monkeypatch.delenv("IETF_LLM_GATHER_INPROCESS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_stray_gather_child(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail fast if a test would start a real gather child without asking for one.
+
+    A forgotten opt-in would otherwise run the real pipeline in a subprocess,
+    against the network. Tests that substitute their own `_child_command`, or
+    that request `real_gather_child`, are unaffected."""
+    if "real_gather_child" in request.fixturenames:
+        return
+    from ietf_llm.gather import pipeline  # pylint: disable=import-outside-toplevel
+
+    def _refuse(_spec: object) -> list[str]:
+        raise AssertionError(
+            "this test would spawn a real gather child; use the "
+            "`gather_in_process` fixture (stubbed pipeline) or "
+            "`real_gather_child` (the actual subprocess)"
+        )
+
+    monkeypatch.setattr(pipeline, "_child_command", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_seed_network(monkeypatch: pytest.MonkeyPatch) -> None:
     # Never reach the real seed store over the network during tests (the baked
     # default IETF_LLM_SEED_URL is a live host). Seed tests opt in by setting it
     # to a local file store; the disable tests set it explicitly.
@@ -37,13 +73,15 @@ def _gather_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_seed_catalog() -> None:
+def _reset_seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     """Clear the seed-catalog in-process refresh throttle before each test — it is
     process-global, so it would otherwise leak across the per-test isolated caches
-    and suppress a legitimate refresh."""
+    and suppress a legitimate refresh. The background refresh runs inline so tests
+    are deterministic."""
     from ietf_llm.seed import catalog  # pylint: disable=import-outside-toplevel
 
     catalog.reset_state()
+    monkeypatch.setattr(catalog, "RUN_INLINE", True)
 
 
 @pytest.fixture(autouse=True)

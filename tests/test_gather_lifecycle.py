@@ -548,3 +548,61 @@ def test_cli_all_unusable_exits_nonzero_after_the_sweep(
         cli_main.main()
     assert exc.value.code == 1
     assert seen == ["bb"]  # the sweep finished before exiting
+
+
+def test_cli_all_continues_past_a_raising_corpus_and_exits_nonzero(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A publish / backend fault in one corpus must not leave the rest of the
+    # sweep stale; the exit status still reports it.
+    _quiet_housekeeping(monkeypatch)
+    monkeypatch.setattr(cli_main.cli_list, "all_corpora", lambda: ["aa", "bb", "cc"])
+    _patch_store(monkeypatch, _SpyStore())
+    _fake_preflight(monkeypatch)
+    seen: List[str] = []
+
+    def fake(args: argparse.Namespace, _v: Any, **kw: Any) -> GatherOutcome:
+        seen.append(args.wg)
+        if args.wg == "bb":
+            raise RuntimeError("503 from the bucket")
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(cli_main, "_gather_one", fake)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "--all"])
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main()
+    assert exc.value.code == 1
+    assert seen == ["aa", "bb", "cc"]
+
+
+def test_cli_single_corpus_still_raises(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_housekeeping(monkeypatch)
+    _patch_store(monkeypatch, _SpyStore())
+    _fake_preflight(monkeypatch)
+
+    def boom(*_a: Any, **_k: Any) -> GatherOutcome:
+        raise RuntimeError("503 from the bucket")
+
+    monkeypatch.setattr(cli_main, "_gather_one", boom)
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "tls"])
+    with pytest.raises(RuntimeError):
+        cli_main.main()
+
+
+def test_cli_all_refuses_clear_cache(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_housekeeping(monkeypatch)
+    monkeypatch.setattr(cli_main.cli_list, "all_corpora", lambda: ["aa"])
+    _patch_store(monkeypatch, _SpyStore())
+    monkeypatch.setattr(
+        cli_main,
+        "_gather",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not gather")),
+    )
+    monkeypatch.setattr(cli_main.sys, "argv", ["ietf-llm", "--all", "--clear-cache"])
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main()
+    assert exc.value.code == 2

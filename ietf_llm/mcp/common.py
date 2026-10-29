@@ -19,7 +19,7 @@ from .. import coverage, serve_metrics
 from ..access_stamp import note_access
 from ..config import service as service_config
 from ..digest.query import parse_md_tables
-from ..embeddings import probe_index
+from ..embeddings import IndexUnreadable, probe_index
 from ..freshness import (
     deployment_mode,
     freshness_line,
@@ -827,6 +827,10 @@ async def _run_offloaded(
         )
         try:
             result = fn(*args, **kwargs)
+        except IndexUnreadable as exc:
+            # Present but unreadable: a clear message, not "no index".
+            debug_log.log_event(req_id, "thread_error", error=str(exc)[:500])
+            return exc.tool_message()
         except BaseException as exc:  # pylint: disable=broad-except
             debug_log.log_event(
                 req_id,

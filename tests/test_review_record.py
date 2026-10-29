@@ -495,3 +495,22 @@ def test_unknown_document_is_reported(urls) -> None:
 
 def test_empty_name_is_refused(urls) -> None:
     assert "Provide a draft name" in tool_review_record("  ")
+
+
+def test_positions_from_a_closed_ballot_are_not_current(monkeypatch, urls) -> None:
+    """A re-balloted draft's history carries the old ballot's rows. A DISCUSS
+    on the closed ballot must not appear as a standing position, nor count
+    toward what the ballot examined."""
+    old, new = "/api/v1/doc/ballotdocevent/1/", "/api/v1/doc/ballotdocevent/2/"
+    _stub_positions(
+        monkeypatch,
+        [
+            _position(10, "discuss", "05", "2026-01-03T10:00:00Z", ballot=old, discuss="x"),
+            _position(11, "yes", "05", "2026-01-04T10:00:00Z", ballot=old),
+            _position(10, "yes", "08", "2026-08-12T10:00:00Z", ballot=new),
+        ],
+    )
+    out = _record()
+    assert "## Ballot (1 positions)" in out
+    assert "DISCUSS" not in out
+    assert "**Ballot:** 1 against -08" in out
