@@ -1362,8 +1362,10 @@ dead". Off-process, the worker only blocks on the pipe (GIL released) and the
 server stays responsive; a stalled read now times out cleanly, and its timeout
 message names the running stage. Cancellation (`stop_gather`) terminates the
 child; a child crash fails one gather instead of the whole server. Under
-`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
-which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
+`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (tests that stub
+it by monkeypatch). The cloud cache round trip is tested through a real child
+process (`tests/test_cloud_gather_child.py`, with the network and stage bodies
+replaced), and a test that would spawn one unasked fails. Reads during a **first** gather refuse (naming
 the stage and how many are left) since there is no prior snapshot. A re-gather
 stays readable, and what a reader sees depends on the backend. On the **cloud**
 backend it is the previous published version until the new one is ready. On the
@@ -1375,6 +1377,31 @@ to be **atomic**: the build writes a scratch DB (seeded from the live index, so
 it stays incremental) and `os.replace`s it into place as a standalone
 (DELETE-journal) file, so a reader never sees a half-populated index — see
 "Writers are write-if-changed and atomic".
+
+The cloud gather-cache sync straddles that boundary, so it is split along it with
+nothing shared in process memory. The worker (`cache_sync.hydrate` / `persist`)
+only moves files: hydrate restores `.http-cache/<corpus>.json` and the IMAP units
+to disk before the child starts, persist reads them off disk after it exits. What
+the gather computes comes back as files too. The child binds its ETag store to
+`http_cache_path(corpus)` itself, around the stages (`_gather_one`, under the
+cloud backend; `datatracker.gather_http_cache`), and flushes it before it exits.
+The IMAP sync records the UIDVALIDITY the server confirmed in a per-list
+`.verified-uidvalidity` sidecar, which persist reads in place of any in-process
+state. The CLI runs the same code in one process, so both drivers behave alike.
+
+The child also reports what it did. Its exit code carries the `GatherOutcome`
+(0 gathered, 3 unusable name, 4 skipped), and the worker publishes only on
+`GATHERED`: a child whose preflight found the seeded workspace fresh leaves it
+untouched, and uploading it again would write an identical version. The
+freshness debounce at `start_gather` reads the store's `gathered_at` rather than
+the local sentinel, so a replica that has not seeded the corpus yet declines a
+fresh one up front instead of downloading it to find that out.
+
+A child that dies on an unhandled exception sends one last `error` record (type
+and a truncated, single-line message) down the pipe before it exits non-zero, and
+the worker appends it to the failure it raises. The child's stderr is inherited,
+so on a cloud deployment it never reaches whoever is reading `gather_status`;
+this puts the cause in the status record's `error` field, which is fleet-visible.
 
 ### The networked read exception: live Datatracker lookups and get_rfc_info
 
@@ -1477,8 +1504,11 @@ the stored main unit's epoch differs from the local cache's, hydrate restores it
 into its own `epoch-<stored>/` dir instead of mixing UIDs that name different
 messages. Epochs are labels, not an order, so persist replaces the stored main
 unit only when this gather's sync confirmed the local epoch with the server
-(`mbox.verified_uidvalidity`); a differing, unconfirmed epoch -- a warm host whose
-IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+(`mbox.verified_uidvalidity`, read from the list's `.verified-uidvalidity`
+sidecar: the sync runs in the gather child, so the confirmation has to cross the
+process boundary as a file, and hydrate deletes it at the start of every gather so
+a stale one can't vouch for a check this gather never made); a differing,
+unconfirmed epoch -- a warm host whose IMAP sync failed -- leaves the store alone. When it does replace, it first makes
 sure the old epoch's mail is stored as an archive unit (filling the local
 `epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
 list if that fails), then invalidates the old index before touching the chunks,
