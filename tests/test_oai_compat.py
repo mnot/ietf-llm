@@ -165,8 +165,38 @@ def test_redact_userinfo():
     assert oai_compat.redact_userinfo(_SECRET_URL) == (
         "https://***@host.example/v1/embeddings"
     )
-    plain = "https://host.example/a@b"
-    assert oai_compat.redact_userinfo(plain) == plain
+    for plain in (
+        "https://host.example/a@b",
+        "https://host.example/x?e=a@b",
+        "https://host.example?e=a@b",
+        "https://host.example/x#a@b",
+    ):
+        assert oai_compat.redact_userinfo(plain) == plain
+
+
+def test_redact_userinfo_covers_an_at_sign_in_the_password():
+    out = oai_compat.redact_userinfo("see https://u:p@ss@host.example/x now")
+    assert out == "see https://***@host.example/x now"
+    assert "ss" not in out
+
+
+def test_a_clean_error_keeps_its_chain():
+    import requests
+
+    inner = OSError("urllib3 detail")
+
+    def boom(*_a, **_k):
+        try:
+            raise inner
+        except OSError as err:
+            raise requests.ConnectionError("cannot reach host.example") from err
+
+    with pytest.raises(requests.ConnectionError) as info:
+        oai_compat.post_json_with_retry(
+            "https://host.example/v1", {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=boom),
+        )
+    assert info.value.__cause__ is inner
 
 
 def test_auth_error_message_redacts_the_url():

@@ -59,6 +59,16 @@ def test_summary_is_capped() -> None:
     assert out.endswith("…")
 
 
+def test_cap_counts_the_escaped_pipes() -> None:
+    out = _summarizer(_Model("|" * 400)).summarize("p")
+    assert len(out.replace("|", "\\|")) <= _MAX_SUMMARY_CHARS
+
+
+def test_a_summary_at_the_limit_is_untouched() -> None:
+    exact = "x" * _MAX_SUMMARY_CHARS
+    assert _summarizer(_Model(exact)).summarize("p") == exact
+
+
 def test_short_summary_is_untouched() -> None:
     assert _summarizer(_Model('"Fine."')).summarize("p") == "Fine."
 

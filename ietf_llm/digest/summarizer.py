@@ -21,7 +21,8 @@ from .remote_summarizer import is_remote_summarize_model, load_openai_compat_cha
 #: "Generating digests..." and the first "Wrote ... digest" line.
 _PROGRESS_SECS = 20.0
 
-#: Longest summary written into a digest. The model's input is raw issue and
+#: Longest summary written into a digest, counted after the callers escape each
+#: `|` to `\|` (so a cell never exceeds it). The model's input is raw issue and
 #: thread text, so an unbounded reply is an unbounded channel into the digest
 #: that `overview` and `read_digest` surface.
 _MAX_SUMMARY_CHARS = 300
@@ -34,6 +35,19 @@ _MAX_CONSECUTIVE_FAILURES = 3
 #: Header of the digest column the summary is written into. The label tells a
 #: reader (human or model) that the cell is model output, not the record.
 SUMMARY_COLUMN = "LLM summary"
+
+
+def _cap(text: str) -> str:
+    """`text` cut to `_MAX_SUMMARY_CHARS` as written into a table cell, where
+    each `|` costs two characters (the callers escape it)."""
+    if len(text) + text.count("|") <= _MAX_SUMMARY_CHARS:
+        return text
+    used = 0
+    for i, char in enumerate(text):
+        used += 2 if char == "|" else 1
+        if used > _MAX_SUMMARY_CHARS - 1:  # one character kept for the ellipsis
+            return text[:i].rstrip() + "…"
+    return text
 
 
 def _llm_setup_help(model_name: str, underlying_error: str) -> str:
@@ -147,8 +161,7 @@ class _Summarizer:
             # Strip surrounding quotes if any
             if len(text) > 2 and text[0] in "\"'" and text[-1] == text[0]:
                 text = text[1:-1]
-            if len(text) > _MAX_SUMMARY_CHARS:
-                text = text[: _MAX_SUMMARY_CHARS - 1].rstrip() + "…"
+            text = _cap(text)
             self._failures = 0
             self._note_progress()
             return text

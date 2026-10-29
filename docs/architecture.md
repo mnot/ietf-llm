@@ -1228,7 +1228,8 @@ every row) or the index is not ours to write (`_index_immutable`; a
 published replica upgrades by being republished). Any failure falls back to
 the previous behaviour, which is to tell the user to gather. That includes a
 build holding the index lock (it holds it for the whole embed): the upgrade
-takes the lock non-blocking and does not wait.
+polls the lock for two seconds, enough for a concurrent reader's upgrade to
+finish, then gives up rather than wait out the build.
 
 `corpus.routing` deliberately does **not** use it: its confidence floor is an
 absolute calibrated threshold, and a prefixed query moves the distribution

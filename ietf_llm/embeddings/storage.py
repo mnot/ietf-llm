@@ -25,6 +25,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
@@ -663,6 +664,10 @@ def load_centroids(
 #: nullable column.
 _AUTO_UPGRADE_FROM = 9
 
+#: How long a reader waits for the index lock before giving up on the upgrade.
+_UPGRADE_LOCK_WAIT_S = 2.0
+_UPGRADE_LOCK_POLL_S = 0.05
+
 
 def try_upgrade_schema(wg: str, current: int) -> bool:
     """Bring `wg`'s index up to the current schema for a *reader*.
@@ -689,16 +694,23 @@ def try_upgrade_schema(wg: str, current: int) -> bool:
     path = _db_path_ro(wg)
     if not os.access(os.path.dirname(path) or ".", os.W_OK):
         return False
-    try:
-        # The same lock a build takes, so a reader upgrading and a gather
-        # starting cannot both migrate at once. A build holds it for the whole
-        # embed, so a reader must not wait: it reports the older schema instead.
-        with file_lock(path + ".lock", blocking=False):
-            conn = _open_db(wg, path=path)
-            conn.close()
-    except (sqlite3.Error, OSError, LockHeld):
-        return False
-    return True
+    # The same lock a build takes, so a reader upgrading and a gather starting
+    # cannot both migrate at once. A build holds it for the whole embed, so wait
+    # only briefly: long enough for a concurrent reader's millisecond upgrade to
+    # finish (the lock conflicts even within one process), not for a build.
+    deadline = time.monotonic() + _UPGRADE_LOCK_WAIT_S
+    while True:
+        try:
+            with file_lock(path + ".lock", blocking=False):
+                conn = _open_db(wg, path=path)
+                conn.close()
+            return True
+        except LockHeld:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_UPGRADE_LOCK_POLL_S)
+        except (sqlite3.Error, OSError):
+            return False
 
 
 def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:

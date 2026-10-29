@@ -156,6 +156,28 @@ def test_topics_without_a_stamp_are_stale_against_a_stamped_index(
     assert topics_stale("wg")
 
 
+def test_an_index_without_a_build_id_is_never_stale(isolated_home: Path) -> None:
+    """An index built before ids were stamped must not re-cluster on upgrade,
+    whatever its sidecar holds (or lacks)."""
+    import sqlite3  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        _db_path,
+        write_topics,
+    )
+
+    _seed(isolated_home, "wg")
+    conn = sqlite3.connect(_db_path("wg"))
+    conn.execute("DELETE FROM meta WHERE key='build_id'")
+    conn.commit()
+    conn.close()
+    assert not topics_stale("wg")  # no sidecar at all
+    write_topics("wg", {"version": 1, "clusters": []})  # an unstamped one
+    assert not topics_stale("wg")
+    write_topics("wg", {"version": 1, "clusters": [], "index_build_id": "old"})
+    assert not topics_stale("wg")
+
+
 def test_overview_renders_themes(isolated_home: Path) -> None:
     _seed(isolated_home, "wg")
     generate_topics("wg", verbose=Verbosity.QUIET)

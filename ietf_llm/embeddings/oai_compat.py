@@ -48,7 +48,9 @@ def _shared_session() -> "requests.Session":
     return _SESSION
 
 
-_USERINFO_RE = re.compile(r"(?<=://)[^/@\s]+@")
+#: Greedy to the last "@" before the path, query or fragment, so a password
+#: containing a literal "@" is redacted whole.
+_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
 
 
 def redact_userinfo(text: str) -> str:
@@ -63,7 +65,7 @@ def redact_userinfo(text: str) -> str:
 
 def _redacted(err: requests.RequestException) -> requests.RequestException:
     """``err`` itself when its message is clean, else a same-typed copy with
-    the userinfo removed (chained from nothing, so the original text is gone)."""
+    the userinfo removed."""
     message = str(err)
     clean = redact_userinfo(message)
     if clean == message:
@@ -210,7 +212,11 @@ def post_json_with_retry(
             resp = post(url, headers=headers, json=payload, timeout=timeout)
         except requests.RequestException as err:
             if attempt >= max_retries:
-                raise _redacted(err) from None
+                clean = _redacted(err)
+                if clean is err:
+                    raise
+                # No chaining: the original exception carries the credentials.
+                raise clean from None
             _sleep_backoff(attempt, None)
             attempt += 1
             continue
@@ -230,7 +236,10 @@ def _raise_for_status(resp: requests.Response) -> None:
     try:
         resp.raise_for_status()
     except requests.HTTPError as err:
-        raise _redacted(err) from None
+        clean = _redacted(err)
+        if clean is err:
+            raise
+        raise clean from None
 
 
 def _auth_error_message(url: str, resp: requests.Response, auth_hint: str) -> str:
