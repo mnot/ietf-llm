@@ -493,6 +493,10 @@ _META_SCALE = "vector_scale"
 META_SOURCE_MODEL = "vector_source_model"
 META_SOURCE_BUILD = "rfc_index_build"
 META_SOURCE_COMMIT = "rfc_index_commit"
+#: Fresh on every build that changed the index. A sidecar derived from the index
+#: (the topic map) records it, so a crash between promoting a build and writing
+#: the sidecar is detectable: the stamp no longer matches.
+META_BUILD_ID = "build_id"
 
 
 @dataclass(frozen=True)

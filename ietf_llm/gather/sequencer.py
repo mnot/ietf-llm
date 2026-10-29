@@ -29,6 +29,7 @@ from ..embeddings import (
     build_index,
     generate_topics,
     has_topics,
+    topics_stale,
 )
 from ..freshness import GatheredAt, local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
@@ -909,9 +910,10 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         # otherwise good gather. Recomputing is O(corpus) k-means, so skip it when
         # the index didn't change and a sidecar already exists — the recompute is
         # dead CPU on a no-op re-gather or a seeded corpus whose delta was zero
-        # (issue #190).
+        # (issue #190) — unless the sidecar was derived from an earlier build
+        # (a crash after the index was promoted but before the map was written).
         tracker.begin("topic map")
-        if index_changed or not has_topics(args.wg):
+        if index_changed or not has_topics(args.wg) or topics_stale(args.wg):
             try:
                 generate_topics(args.wg, verbose=verbosity)
             except Exception as err:  # pylint: disable=broad-except

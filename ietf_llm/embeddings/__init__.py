@@ -46,7 +46,7 @@ from .storage import (
     section_outline,
     section_rows,
 )
-from .topics import build_topics, generate_topics, has_topics
+from .topics import build_topics, generate_topics, has_topics, topics_stale
 
 __all__ = [
     # Public surface
@@ -69,6 +69,7 @@ __all__ = [
     "read_topics",
     "section_outline",
     "section_rows",
+    "topics_stale",
     "related",
     "search",
     # Used by ietf_llm/mcp/server.py for pre-warming
