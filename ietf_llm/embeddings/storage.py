@@ -1032,6 +1032,9 @@ def find_chunks_by_url(
         conn.close()
 
 
+_MESSAGE_KEY_BATCH = 200
+
+
 def get_messages(
     wg: str, items: Iterable[Tuple[str, int]]
 ) -> Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]]:
@@ -1049,30 +1052,31 @@ def get_messages(
     if conn is None:
         return {}
     try:
-        # SQLite has no native (a,b) IN ((...),(...)) shortcut for many
-        # pairs, but the chunks table is small enough that a single
-        # SELECT with a per-pair WHERE OR chain is fine — and we cap
-        # the caller (k≤40-ish) so the IN-list never explodes.
-        clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(keys))
-        args: List[object] = []
-        for file, idx in keys:
-            args.extend([file, idx])
-        # sub_idx=0 holds the full message body and span, so each
-        # (file, chunk_idx) yields exactly one row — the whole message,
-        # not a fragment.
-        cur = conn.execute(
-            "SELECT file, chunk_idx, title, text, chunk_date, url "
-            f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
-            args,
-        )
         out: Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]] = {}
-        for row in cur.fetchall():
-            out[(str(row[0]), int(row[1]))] = (
-                _clean_title(str(row[2])),
-                str(row[3]),
-                str(row[4]) if row[4] is not None else None,
-                str(row[5]) if row[5] is not None else None,
+        # SQLite has no (a,b) IN ((...),(...)) form for older versions, so each
+        # batch is an OR chain. Batching keeps it under both the expression-depth
+        # limit (~1000 terms) and the variable limit (999 on old builds).
+        for i in range(0, len(keys), _MESSAGE_KEY_BATCH):
+            batch = keys[i : i + _MESSAGE_KEY_BATCH]
+            clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(batch))
+            args: List[object] = []
+            for file, idx in batch:
+                args.extend([file, idx])
+            # sub_idx=0 holds the full message body and span, so each
+            # (file, chunk_idx) yields exactly one row — the whole message,
+            # not a fragment.
+            cur = conn.execute(
+                "SELECT file, chunk_idx, title, text, chunk_date, url "
+                f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
+                args,
             )
+            for row in cur.fetchall():
+                out[(str(row[0]), int(row[1]))] = (
+                    _clean_title(str(row[2])),
+                    str(row[3]),
+                    str(row[4]) if row[4] is not None else None,
+                    str(row[5]) if row[5] is not None else None,
+                )
         return out
     finally:
         conn.close()
