@@ -94,7 +94,8 @@ will not do any of it, now or by configuration:
 - **No authn/z.** No login, no API key, no per-client identity. Widen `IETF_LLM_MCP_HOST` to
   `0.0.0.0` only behind a proxy that authenticates.
 - **No rate limiting.** Nothing caps request rate or concurrency beyond the per-call tool deadline
-  (`IETF_LLM_TOOL_TIMEOUT`). One client can saturate CPU.
+  (`IETF_LLM_TOOL_TIMEOUT`) and, for `grep_corpus` only, a small worker pool
+  (`IETF_LLM_SCAN_CONCURRENCY`). One client can still saturate CPU.
 - **No quota or budget cap.** `search_corpus` and `read_topic` each make a metered, paid
   `/v1/embeddings` call per request — no budget ceiling, no circuit breaker, no query-embedding
   cache. A busy or hostile client runs up the embedding bill.
@@ -127,6 +128,7 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | `IETF_LLM_LOG_FORMAT` | `text` or `json` | `text` |
 | `IETF_LLM_LOG_LEVEL` | serve verbosity: `quiet` / `status` / `verbose` | `status` on HTTP, `quiet` on stdio |
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds (`0` disables) | `120` |
+| `IETF_LLM_SCAN_CONCURRENCY` | worker slots for `grep_corpus`, separate from the general pool, so a flood of scans queues against itself | `4` |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry | off |
 
 **Retrieval**

@@ -709,9 +709,25 @@ Grouped by job:
   names them, and the skip is reported so the denominator stays honest. The
   line view is bounded twice: `max_per_file` (optional) keeps at most N
   matching lines per file, then `limit` bounds the total. The per-file cap is
-  applied first, at retention time in `_scan_file`, so a noisy file cannot
-  starve the files sorted after it; counts stay complete and the footer
-  attributes omitted lines to the cap that removed them. Hits
+  applied first, at retention time in `regexscan._scan_file`, so a noisy file
+  cannot starve the files sorted after it; counts stay complete and the footer
+  attributes omitted lines to the cap that removed them.
+
+  **A caller's regex is bounded; a literal is not.** `re` runs a pattern in one
+  uninterruptible C call, so a catastrophic one (`(\w|\w)*X`) cannot be
+  stopped in a thread — `_offload` can only abandon the worker, which keeps
+  burning CPU and holding its pool slot (issue #293). With `regex=True`, both
+  backends therefore hand the scan to a child process (`python -m
+  ietf_llm.regexscan`, stdlib-only so it starts fast and stays torch-free) and
+  the parent kills it at the budget: 20s for a gathered corpus, and the RFC
+  series' own `_RFC_SCAN_BUDGET_S`. The child stops itself at the budget
+  between files / sections (the reply then says how far it got), is killed
+  `KILL_SLACK_S` later if one match call never returns (no counts survive), and
+  arms `SIGALRM` as a backstop should the server die mid-scan. Either way the
+  reply is "INCOMPLETE SCAN", never a zero. The parent owns all store state
+  (cache dir, RFC index path) and never runs the user's pattern itself: the
+  child returns finished, already-elided lines. A literal pattern is escaped, so
+  it cannot backtrack catastrophically and scans in-process. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
 
@@ -765,8 +781,12 @@ Grouped by job:
 
 Every wrapper offloads its blocking `tool_*` body to a worker thread
 with a per-call deadline (`IETF_LLM_TOOL_TIMEOUT`, default 120s) so a
-stuck call fails fast instead of hanging to the client ceiling, and
-guards against an unknown corpus name (a read-only existence check, so a
+stuck call fails fast instead of hanging to the client ceiling.
+`grep_corpus`, the one tool whose work can run for tens of seconds, draws its
+worker from its own `anyio.CapacityLimiter` (`IETF_LLM_SCAN_CONCURRENCY`,
+default 4) rather than anyio's 40-token default pool, so a flood of scans
+queues against itself instead of starving every other tool. The wrappers also
+guard against an unknown corpus name (a read-only existence check, so a
 typo neither creates a cache dir nor returns a hollow result).
 
 The full routing brain (`data/mcp-instructions.md`) is handed to compliant

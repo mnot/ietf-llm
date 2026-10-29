@@ -234,7 +234,11 @@ def _connect_ro(wg: str) -> sqlite3.Connection:
     then reads the file directly, skipping WAL/-shm and locking. Only safe
     when nothing rewrites the file in place.
     """
-    path = _db_path_ro(wg)
+    return _connect_ro_at(_db_path_ro(wg))
+
+
+def _connect_ro_at(path: str) -> sqlite3.Connection:
+    """`_connect_ro` for an already-resolved DB path."""
     if _index_immutable():
         uri = f"{Path(os.path.abspath(path)).as_uri()}?immutable=1"
         return sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_S)
@@ -787,9 +791,17 @@ def iter_sections(
     of the series and call the silence proof. Raising is what lets it say the
     scan failed.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    yield from iter_sections_at(_db_path_ro(wg), files)
+
+
+def iter_sections_at(
+    path: str, files: Optional[Iterable[str]] = None
+) -> Generator[Tuple[str, Optional[str], str, str], None, None]:
+    """`iter_sections` over an already-resolved DB path — for a scan in a child
+    process, which must not re-resolve the path through the corpus store."""
+    if not os.path.exists(path):
         return
-    conn = _connect_ro(wg)
+    conn = _connect_ro_at(path)
     try:
         sql = "SELECT file, section, title, text FROM chunks "
         params: List[Any] = []
