@@ -76,8 +76,9 @@ _WEAK_SCAN_CHARS = 800
 # opener is checked by `_support_confidence`: a bare "I agree" is often
 # sub-point agreement that the rest of the sentence then qualifies, so only
 # `I agree with|that this|to` can be high, and any hedge in the same sentence
-# ("LGTM, but …") drops a match to low. "Support" counts only as the whole
-# line — mid-sentence "support …" is usually a verb ("support FTP URIs").
+# ("LGTM, but …"), or a negative word after an "I agree", drops a match to
+# low. "Support" counts as strong only as the whole line — mid-sentence
+# "support …" is usually a verb ("support FTP URIs"); see `_SUPPORT_IDIOM`.
 _STRONG_SUPPORT = re.compile(
     r"""^\s*(?:
         (?P<bare>\+1\s*[.!]?\s*$)                           # bare +1
@@ -94,6 +95,26 @@ _STRONG_SUPPORT = re.compile(
     )
     """,
     re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+
+# Capitalised "Support for -04 …" / "Support -" / "support adopting this work"
+# are real votes in call-for-adoption and last-call threads, but too close to
+# the verb ("Support for X is lacking") to rank with the strong openers: low
+# confidence.
+_SUPPORT_IDIOM = re.compile(
+    r"""^\s*(?:
+        (?-i:Support)\s*(?:for\b|[-–—:])
+      | support\s+(?:adopt(?:ing|ion)|publication|the\s+draft
+                   |this\s+(?:work|draft|document|proposal))\b
+    )""",
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+# "I agree that this is a terrible idea" has no hedge word but is not support:
+# agreement with something negative is at best ambiguous.
+_NEGATIVE_AGREE_RE = re.compile(
+    r"\b(?:terrible|awful|bad|wrong|mistake|worse|harmful|dangerous|broken|flawed"
+    r"|unwise|useless|pointless|objections?|concerns?|problems?|issues?)\b",
+    re.IGNORECASE,
 )
 
 _STRONG_OPPOSE = re.compile(
@@ -153,7 +174,10 @@ def _support_confidence(match: re.Match[str], text: str) -> str:
         return "high"
     if match.group("agree") and not match.group("agree_ok"):
         return "low"
-    if HEDGE_RE.search(rest_of_sentence(text, match.end())):
+    rest = rest_of_sentence(text, match.end())
+    if HEDGE_RE.search(rest):
+        return "low"
+    if match.group("agree") and _NEGATIVE_AGREE_RE.search(rest):
         return "low"
     return "high"
 
@@ -263,7 +287,7 @@ def extract_position(  # pylint: disable=too-many-return-statements
     """Return (label, confidence, excerpt, poll_choice) for one message
     body. `poll_choice` is only non-None when label == "poll".
     `allow_bare_hash` is forwarded to the poll detector (see
-    `_extract_poll_choice`); callers pass False for GitHub issue / PR files.
+    `poll_choice.extract_poll_choice`); callers pass False for GitHub issue / PR files.
 
     Order of precedence:
       1. Strong conditional (overrides plain support if both match)
@@ -307,6 +331,9 @@ def extract_position(  # pylint: disable=too-many-return-statements
         )
     if oppose_match:
         return ("oppose", "high", _excerpt_for(oppose_match, leading_text), None)
+    idiom = _SUPPORT_IDIOM.search(leading_text)
+    if idiom:
+        return ("support", "low", _excerpt_for(idiom, leading_text), None)
 
     # Weak patterns — scan a bigger window in the body proper, marked
     # low confidence so the consumer can weight accordingly. A negated hit

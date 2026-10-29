@@ -1,6 +1,6 @@
 """The message-section header regex is shared: every writer's real output must
 parse identically through the chunker, the position tally, the reply graph and
-the message-citation resolver, so `[N]` and the sender cannot drift apart.
+the message-citation resolver (thread files only), so `[N]` and the sender cannot drift apart.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from ietf_llm.gather.sources.mail_threads import (
     THREAD_MSG_HEADER_RE,
     write_thread_files,
 )
+from ietf_llm.gather.sources.message_citations import build_resolver
 from ietf_llm.gather.sources.pull_files import write_pull_files
 from ietf_llm.log import Verbosity
 from ietf_llm.mcp.topic import _parse_reply_graph
@@ -21,6 +22,14 @@ from ietf_llm.people.positions import tally_thread
 
 from conftest import make_issue, make_pull, make_review, write_github_archive
 from test_mail_threads import _write_eml
+
+
+def _write_archived(isolated_home: Path, uid: int, **kwargs: str) -> None:
+    """`_write_eml` plus an `Archived-At` header, so the thread file carries the
+    `_Archived-At:_` line the citation resolver indexes on."""
+    path = _write_eml(isolated_home, "wg", uid, **kwargs)
+    url = f"<https://mailarchive.ietf.org/arch/msg/wg/tok{uid}/>"
+    path.write_bytes(f"Archived-At: {url}\r\n".encode() + path.read_bytes())
 
 
 def _headers(text: str) -> list[tuple[int, str]]:
@@ -42,23 +51,23 @@ def _agree(text: str, filename: str) -> list[tuple[int, str]]:
     return headers
 
 
-def test_mail_thread_writer_output_parses_in_chunker_and_tally(
+def test_mail_thread_writer_output_parses_in_every_reader(
     isolated_home: Path,
 ) -> None:
-    _write_eml(
-        isolated_home, "wg", 1,
+    _write_archived(
+        isolated_home, 1,
         subject="Cookie partitioning", sender="Alice <a@x>",
         date="Mon, 01 Jan 2025 10:00:00 +0000", message_id="<a@x>",
         body="Should we partition cookies?",
     )
-    _write_eml(
-        isolated_home, "wg", 2,
+    _write_archived(
+        isolated_home, 2,
         subject="Re: Cookie partitioning", sender="Bob <b@x>",
         date="Tue, 02 Jan 2025 10:00:00 +0000", message_id="<b@x>",
         in_reply_to="<a@x>", body="+1",
     )
-    _write_eml(
-        isolated_home, "wg", 3,
+    _write_archived(
+        isolated_home, 3,
         subject="Re: Cookie partitioning", sender="Carol <c@x>",
         date="Wed, 03 Jan 2025 10:00:00 +0000", message_id="<c@x>",
         in_reply_to="<b@x>", body="I object to this.",
@@ -68,6 +77,10 @@ def test_mail_thread_writer_output_parses_in_chunker_and_tally(
     text = Path(path).read_text()
     assert _agree(text, "threads/x.md") == [(1, "Alice"), (2, "Bob"), (3, "Carol")]
     assert _parse_reply_graph(text) == {1: [2], 2: [3]}
+    refs = build_resolver(cache).values()
+    assert sorted((r.chunk_idx, r.sender) for r in refs) == [
+        (1, "Alice"), (2, "Bob"), (3, "Carol"),
+    ]
 
 
 def test_issue_writer_output_parses_in_chunker_and_tally(isolated_home: Path) -> None:
