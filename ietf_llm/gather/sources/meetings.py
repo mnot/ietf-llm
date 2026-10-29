@@ -677,12 +677,19 @@ def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
     older ones — both pass through untouched. Without the header it
     would serve the HTML doc-viewer page; a few older minutes are also
     authored directly in HTML even with the header. We clean any HTML
-    response down to readable text so the corpus stays LLM-friendly."""
+    response down to readable text so the corpus stays LLM-friendly.
+    Anything that is not `text/*` (a PDF-uploaded agenda) becomes a
+    one-line pointer rather than decoded binary."""
     log(f"Fetching {url}...", verbose, level=LogLevel.PROGRESS)
     res = fetch_resource(url, headers={"Accept": "text/markdown"})
     if not res:
         return None
-    if "text/html" in res.headers.get("Content-Type", "").lower():
+    ctype = res.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if ctype and not ctype.startswith("text/"):
+        # A PDF (or other binary) upload would decode to mojibake; say what it
+        # is. The block header already carries the URL.
+        return f"[Non-text material ({ctype}); text not extracted.]"
+    if ctype == "text/html":
         cleaned = clean_html(res.text)
         return cleaned or None
     return str(res.text)
