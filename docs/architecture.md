@@ -1129,7 +1129,11 @@ servers) can run at once. The safety model:
   Every read opens `mode=ro` (`storage._connect_ro`), so a read can never
   create an index: an absent one raises `sqlite3.OperationalError`, which
   `_try_connect_ro` turns into "no index" (a zero-byte file left by older
-  versions counts as absent too). Current indexes are published in DELETE
+  versions counts as absent too). Only absence reads that way: a present
+  index that cannot be opened or read (permissions, a non-database file, a
+  lock) raises `IndexUnreadable`, a typed `OperationalError` subclass that the
+  tool boundary (`mcp.common._offload`) reports as "exists but cannot be read"
+  instead of "no index"; `probe_index` still answers False for it. Current indexes are published in DELETE
   journal mode and a read leaves no sidecars; a legacy WAL-mode index on a
   writable dir still gets `-shm`/`-wal` created (and left behind) by a
   `mode=ro` reader, until the next swap clears them.

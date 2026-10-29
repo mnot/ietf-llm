@@ -250,19 +250,67 @@ def _open_ro(path: str) -> sqlite3.Connection:
     return sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_S)
 
 
+class IndexUnreadable(sqlite3.OperationalError):
+    """The index file is present but cannot be opened or read (permissions,
+    corruption, a lock that outlasts the busy timeout).
+
+    Distinct from "no index", which readers answer with an empty result: this
+    one propagates to the tool boundary (`mcp.common._offload`), which says the
+    index is unreadable. A `sqlite3.OperationalError` so it stays typed for
+    callers that distinguish a miss from a failure; `__cause__` is the
+    underlying `OSError` / `sqlite3.Error`.
+    """
+
+    def __init__(self, wg: str, cause: BaseException) -> None:
+        super().__init__(f"search index for '{wg}' is unreadable: {cause}")
+        self.wg = wg
+
+    def tool_message(self) -> str:
+        return (
+            f"The search index for '{self.wg}' exists but cannot be read "
+            f"({self.__cause__}). This is a local permission, corruption or "
+            "locking problem, not a missing index; tell the user rather than "
+            "retrying."
+        )
+
+
+def _path_is_absent(path: str) -> bool:
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _try_connect_ro(wg: str) -> Optional[sqlite3.Connection]:
     """`_connect_ro`, or None when the corpus has no index to read.
 
-    A zero-byte file counts as absent: earlier versions let a read create one,
-    and it has no tables, so it is never a servable index.
+    "No index" is a missing file or a zero-byte one (earlier versions let a
+    read create one; it has no tables, so it is never servable). Anything else
+    that stops the index opening -- permissions, a corrupt file, a lock --
+    raises `IndexUnreadable` rather than reading as absent. SQLite reports a
+    missing file under ``mode=ro`` as ``OperationalError: unable to open
+    database file``, so absence is decided by checking the path after the
+    failure, not by the error text.
     """
     path = _db_path_ro(wg)
     try:
         if os.path.getsize(path) == 0:
             return None
-        return _open_ro(path)
-    except (OSError, sqlite3.OperationalError):
-        return None
+        conn = _open_ro(path)
+    except (OSError, sqlite3.OperationalError) as err:
+        if _path_is_absent(path):
+            return None
+        raise IndexUnreadable(wg, err) from err
+    try:
+        # Opening is lazy; reading the header is what rejects a non-database.
+        conn.execute("PRAGMA schema_version").fetchone()
+    except sqlite3.Error as err:
+        conn.close()
+        raise IndexUnreadable(wg, err) from err
+    return conn
 
 
 def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
@@ -1143,7 +1191,10 @@ def probe_index(wg: str) -> bool:
     (needs ``IETF_LLM_INDEX_IMMUTABLE``), or a truncated / corrupt file --
     which a bare directory stat would miss.
     """
-    conn = _try_connect_ro(wg)
+    try:
+        conn = _try_connect_ro(wg)
+    except IndexUnreadable:
+        return False
     if conn is None:
         return False
     try:

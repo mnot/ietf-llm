@@ -5,9 +5,11 @@ suggests a re-gather. Nothing here reads the real cache.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import sqlite3
 from pathlib import Path
-from typing import Iterable, List
+from typing import Callable, Iterable, List
 
 import pytest
 
@@ -105,7 +107,52 @@ def test_zero_byte_index_left_by_an_older_version_reads_as_absent(
     for _ in range(2):
         assert "--embed" in mcp.search.tool_search("wg", "mlkem")
     assert storage.chunk_counts("wg") == {}
+    assert not storage.probe_index("wg")
     assert "threads/2026-04-10-mlkem.md" in mcp.corpus.tool_list_files("wg")
+
+
+def _offloaded(fn: Callable[..., str], *args: str) -> str:
+    return asyncio.run(mcp.common._offload(fn, *args))  # pylint: disable=protected-access
+
+
+def test_corrupt_index_is_unreadable_not_absent(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    db = Path(_db_path("wg"))
+    db.parent.mkdir(parents=True, exist_ok=True)
+    db.write_bytes(b"this is not a sqlite database" * 10)
+    with pytest.raises(embeddings.IndexUnreadable) as excinfo:
+        storage._try_connect_ro("wg")  # pylint: disable=protected-access
+    assert isinstance(excinfo.value, sqlite3.OperationalError)  # stays typed
+    assert isinstance(excinfo.value.__cause__, sqlite3.DatabaseError)
+    with pytest.raises(embeddings.IndexUnreadable):
+        mcp.search.tool_search("wg", "mlkem")
+    assert not storage.probe_index("wg")  # the readiness probe reports failure
+    out = _offloaded(mcp.search.tool_search, "wg", "mlkem")
+    assert "exists but cannot be read" in out and "--embed" not in out
+    assert db.read_bytes().startswith(b"this is not")  # untouched
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_permission_denied_index_is_unreadable_not_absent(
+    isolated_home: Path,
+) -> None:
+    _seed(isolated_home)
+    _build_with_stub("wg")
+    db = Path(_db_path("wg"))
+    db.chmod(0)
+    try:
+        with pytest.raises(embeddings.IndexUnreadable) as excinfo:
+            storage._try_connect_ro("wg")  # pylint: disable=protected-access
+        assert isinstance(excinfo.value, sqlite3.OperationalError)
+        with pytest.raises(embeddings.IndexUnreadable):
+            mcp.search.tool_search("wg", "mlkem")
+        assert not storage.probe_index("wg")
+        out = _offloaded(mcp.search.tool_search, "wg", "mlkem")
+        assert "exists but cannot be read" in out and "--embed" not in out
+        out = _offloaded(mcp.corpus.tool_list_files, "wg")
+        assert "exists but cannot be read" in out
+    finally:
+        db.chmod(0o644)
 
 
 def test_search_empty_with_a_filter_names_the_filters(
