@@ -279,7 +279,9 @@ def _positions(doc_name: str) -> Tuple[List[PositionRow], datetime.datetime, boo
 
     The endpoint returns one row per position *change*, so collapsing is not
     optional: without it a balloter who revised a DISCUSS to No Objection
-    appears twice, in both states.
+    appears twice, in both states. It also spans every ballot the document
+    has had, so only the newest ballot's rows are kept; a DISCUSS from a
+    closed one is not current.
     """
     rows, fetched, answered = _objects(
         f"{_API_BASE}/doc/ballotpositiondocevent/"
@@ -288,8 +290,11 @@ def _positions(doc_name: str) -> Tuple[List[PositionRow], datetime.datetime, boo
     if not rows:
         return [], fetched, answered
 
+    newest = max(rows, key=lambda row: str(row.get("time") or "")).get("ballot")
     latest: Dict[str, Dict[str, Any]] = {}
     for row in rows:
+        if row.get("ballot") != newest:
+            continue
         balloter = row.get("balloter") or row.get("by") or ""
         when = str(row.get("time") or "")
         if not balloter or not when:
