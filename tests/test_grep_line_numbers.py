@@ -234,3 +234,23 @@ def test_excerpts_context_is_not_split_at_a_form_feed() -> None:
     assert excerpts(text, matcher, 1, 5) == [
         ["\x0cInternet-Draft header", "needle", "tail"]
     ]
+
+
+@pytest.mark.parametrize("regex", [False, True])
+def test_anchor_matches_only_at_a_real_line_start(
+    isolated_home: Path, regex: bool
+) -> None:
+    # Older drafts put the page footer and next header on one line, with the
+    # form feed between them. `^` follows `\n` alone, so the header is not at
+    # a line start there, whether the pattern runs in-process or in the child.
+    body = (
+        "[Page 1]\x0cInternet-Draft  Widget  October 2026\n"
+        "text\n"
+        "Internet-Draft  Widget  real line start\n"
+    )
+    write_cache_file(isolated_home, "wg", "drafts/draft-x-00.txt", body)
+    anchored = tool_grep_corpus("wg", "^Internet-Draft", regex=True)
+    assert [n for n, _ in _hits(anchored)] == [3]
+    plain = tool_grep_corpus("wg", "Internet-Draft", regex=regex)
+    assert [n for n, _ in _hits(plain)] == [1, 3]
+    assert _assert_round_trip("wg", "drafts/draft-x-00.txt", plain, "Internet-Draft") == 2

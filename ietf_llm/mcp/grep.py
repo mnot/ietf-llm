@@ -724,8 +724,12 @@ def register(server: "MCPServer") -> None:
         result — the zero-match reply says so. `file_pattern` globs the corpus
         filename, which is `rfc9111.txt`.
 
-        **Everywhere else, a match is within one line.** A phrase broken
-        across a mail wrap will not match. Search the most distinctive single
+        **Everywhere else, a match is within one line.** A line is what lies
+        between `\n`s, exactly as `read_file_section` and the chunk spans count
+        them, so the line numbers here can be passed straight to them. A form
+        feed (the page break in a draft) does not end a line, so `^` anchors
+        only after a real newline. A phrase broken across a mail wrap will not
+        match. Search the most distinctive single
         token — `8890`, not `RFC 8890` — then widen once you have the files.
 
         A zero over `issues/` / `pulls/` also reports **where the GitHub
