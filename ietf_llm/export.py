@@ -41,12 +41,13 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .atomicio import write_if_changed
 from .datatracker_api import get_wg_title
 from .log import LogLevel, Verbosity, log
-from .paths import get_wg_file_cache_dir
+from .paths import readable_corpus_name
+from .store.corpus import LocalCorpusStore
 
 # Files we mirror / upload. JSON archives are internal and excluded;
 # PDFs aren't supported by the downstream sinks (NotebookLM wants text).
@@ -207,6 +208,25 @@ def _bundle_issues(paths: List[str], kind: str = "issues") -> str:
     return "".join(parts)
 
 
+def _existing_cache_dir(wg: str, verbose: Verbosity) -> Optional[str]:
+    """The corpus's `files/` dir, or None (after logging) if it is not gathered.
+
+    Resolved through the local store, which never creates the directory (a
+    mistyped name must not materialise a junk corpus, nor reach the destination
+    prune) and, like `local_staleness_warning`, ignores the ambient store
+    backend: export mirrors this host's cache."""
+    cache_dir = (
+        LocalCorpusStore().local_cache_dir(wg) if readable_corpus_name(wg) else None
+    )
+    if cache_dir is None:
+        log(
+            f"No cache for {wg}. Run `ietf-llm {wg}` first.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+    return cache_dir
+
+
 def directory(
     wg: str,
     destination: str,
@@ -225,17 +245,22 @@ def directory(
     reducing the source count for NotebookLM. Pass `bundle=False` for
     the fully granular dump.
     """
-    cache_dir = get_wg_file_cache_dir(wg)
-    if not os.path.isdir(cache_dir):
+    cache_dir = _existing_cache_dir(wg, verbose)
+    if cache_dir is None:
+        return 0
+
+    sources = _exportable_files(cache_dir, bundle=bundle)
+    if not sources:
+        # Pruning against an empty source set would delete every text file in
+        # the destination.
         log(
-            f"No cache for {wg}. Run `ietf-llm {wg}` first.",
+            f"Nothing to export for {wg}; destination left untouched.",
             verbose,
             level=LogLevel.ERROR,
         )
         return 0
 
     os.makedirs(destination, exist_ok=True)
-    sources = _exportable_files(cache_dir, bundle=bundle)
     source_names = {flat for _content, flat, _kind in sources}
 
     changes = 0
@@ -304,13 +329,8 @@ def notebooklm(
         )
         return 0
 
-    cache_dir = get_wg_file_cache_dir(wg)
-    if not os.path.isdir(cache_dir):
-        log(
-            f"No cache for {wg}. Run `ietf-llm {wg}` first.",
-            verbose,
-            level=LogLevel.ERROR,
-        )
+    cache_dir = _existing_cache_dir(wg, verbose)
+    if cache_dir is None:
         return 0
 
     log("Exporting to NotebookLM...", verbose, level=LogLevel.STATUS)

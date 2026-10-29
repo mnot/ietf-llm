@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ietf_llm import export
 from ietf_llm.log import Verbosity
 
@@ -95,6 +97,54 @@ def test_no_cache_returns_zero(isolated_home: Path, tmp_path: Path) -> None:
     dest = tmp_path / "dest"
     changes = export.directory("wg-never-gathered", str(dest), verbose=Verbosity.QUIET)
     assert changes == 0
+
+
+def test_typo_name_creates_no_corpus_and_spares_destination(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    # A mistyped corpus must not be materialised as an empty corpus, and the
+    # prune must never run against it: the destination's notes survive.
+    _mk_corpus(isolated_home)
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    (dest / "todo.txt").write_text("mine")
+    changes = export.directory("wgg", str(dest), verbose=Verbosity.QUIET)
+    assert changes == 0
+    assert sorted(p.name for p in dest.iterdir()) == ["notes.md", "todo.txt"]
+    cache = isolated_home / ".cache" / "ietf-llm"
+    assert sorted(p.name for p in cache.iterdir()) == ["wg"]
+
+
+def test_unsafe_name_is_refused(isolated_home: Path, tmp_path: Path) -> None:
+    dest = tmp_path / "dest"
+    assert export.directory("../wg", str(dest), verbose=Verbosity.QUIET) == 0
+    assert not dest.exists()
+
+
+def test_empty_corpus_does_not_prune_destination(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    # A corpus that exists but has nothing exportable yields an empty source
+    # set; pruning against it would wipe the destination.
+    write_cache_file(isolated_home, "wg", "github/x.json", "{}")  # excluded
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    assert export.directory("wg", str(dest), verbose=Verbosity.QUIET) == 0
+    assert (dest / "notes.md").read_text() == "mine"
+
+
+def test_notebooklm_typo_name_creates_no_corpus(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    # The NotebookLM sink resolves the corpus before any auth or network.
+    pytest.importorskip("google_auth_oauthlib")
+    assert export.notebooklm(
+        "wgg", "proj", str(tmp_path / "c.json"), str(tmp_path / "t.json"),
+        verbose=Verbosity.QUIET,
+    ) == 0
+    assert not (isolated_home / ".cache" / "ietf-llm" / "wgg").exists()
 
 
 # --- Bundling (default) ---------------------------------------------------
