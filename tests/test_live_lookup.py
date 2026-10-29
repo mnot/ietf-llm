@@ -702,3 +702,37 @@ def test_reconcile_clean_when_aligned(monkeypatch):
     )
     assert recon.advanced == []
     assert recon.revived == []
+
+
+@pytest.mark.parametrize("fetch", ["fetch_draft_status", "fetch_review_record"])
+def test_a_draft_name_cannot_add_path_segments_to_the_api_url(monkeypatch, fetch):
+    urls: list[str] = []
+
+    def _record(url, timeout=10.0):
+        urls.append(url)
+        return None
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _record)
+    getattr(live_lookup, fetch)("draft-x/../../../person/email")
+    assert urls
+    assert all("/../" not in u and "/person/" not in u for u in urls)
+    assert "%2F" in urls[0]
+
+
+@pytest.mark.parametrize("fetch", ["fetch_draft_status", "fetch_review_record"])
+@pytest.mark.parametrize("name", ["..", ".", "..."])
+def test_a_dots_only_draft_name_makes_no_request(monkeypatch, fetch, name):
+    urls: list[str] = []
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: urls.append(url))
+    record, _ = getattr(live_lookup, fetch)(name)
+    assert record is None and urls == []
+
+
+@pytest.mark.parametrize(
+    "meeting", ["interim-/../../../person/email", "interim-x&format=xml", "interim-", "interim-a b", "126/../x"]
+)
+def test_a_meeting_id_cannot_add_url_segments_or_parameters(monkeypatch, meeting):
+    urls: list[str] = []
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: urls.append(url))
+    out = tool_meeting_schedule("httpbis", meeting)
+    assert urls == [] and "Provide a numbered IETF meeting" in out

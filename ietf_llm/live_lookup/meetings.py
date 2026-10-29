@@ -11,6 +11,7 @@ otherwise guessable) interim ids. Both go through the write-free
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,13 +19,15 @@ from ..gather.sources.meetings import _uri_id
 from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, _parse_utc
 
 _MEETECHO = "https://meetings.conf.meetecho.com"
+_INTERIM_RE = re.compile(r"interim-[A-Za-z0-9-]+", re.IGNORECASE)
 
 
 def is_interim_number(meeting: str) -> bool:
     """True if `meeting` is an interim id (`interim-2026-aipref-05`) rather
     than a numbered IETF meeting (`126`). Datatracker keys both kinds the
-    same way in `agenda.json`, but the Meetecho URL and label differ."""
-    return (meeting or "").strip().lower().startswith("interim-")
+    same way in `agenda.json`, but the Meetecho URL and label differ. The id
+    goes into URLs, so it is only ever letters, digits and hyphens."""
+    return _INTERIM_RE.fullmatch((meeting or "").strip()) is not None
 
 
 def meeting_id_label(meeting: str) -> str:

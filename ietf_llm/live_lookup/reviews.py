@@ -44,7 +44,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
 from ..gather.sources.citations import normalize_draft_name
-from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc
+from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, document_url
 
 #: Ballot position slug → label, the full vocabulary of
 #: `/api/v1/name/ballotpositionname/`. The last four are the IAB / IRSG
@@ -353,7 +353,10 @@ def fetch_review_record(
     than rendered as a document nobody has reviewed.
     """
     canonical = normalize_draft_name(name)
-    doc, fetched = _cached_json(f"{_API_BASE}/doc/document/{canonical}/?format=json")
+    url = document_url(canonical)
+    if url is None:
+        return None, _now_utc()
+    doc, fetched = _cached_json(url)
     if doc is None or not doc.get("name"):
         return None, fetched
 

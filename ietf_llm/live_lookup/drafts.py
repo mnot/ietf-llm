@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..gather.sources.citations import normalize_draft_name
-from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, _parse_utc
+from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, _parse_utc, document_url
 
 
 @dataclass
@@ -188,7 +188,10 @@ def fetch_draft_status(name: str) -> Tuple[Optional[DraftStatus], datetime.datet
     `expires`/`rfc_number` fields corroborate and a note flags the gap.
     """
     canonical = normalize_draft_name(name)
-    doc, fetched = _cached_json(f"{_API_BASE}/doc/document/{canonical}/?format=json")
+    url = document_url(canonical)
+    if url is None:
+        return None, _now_utc()
+    doc, fetched = _cached_json(url)
     if doc is None or not doc.get("name"):
         return None, fetched
 
