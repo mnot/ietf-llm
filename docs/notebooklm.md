@@ -44,6 +44,10 @@ Drag the directory's contents into NotebookLM as sources. Per-thread mailing lis
 per-issue GitHub records are bundled by year / repo to stay under NotebookLM's 50-source free /
 300-source Plus limit.
 
+`ietf-llm-export` exits 1 for a corpus that has not been gathered (or a name that cannot be one),
+touching neither the destination nor any config. A gathered corpus with nothing exportable exits 0
+after saying so, and leaves the destination alone.
+
 ## Exporting to NotebookLM Enterprise
 
 If you have Google Workspace Enterprise with NotebookLM enabled, `ietf-llm-export` can create the

@@ -13,9 +13,11 @@ holding the GIL but not competing for CPU, so the child is also niced
 (`_limit_child_cpu`) — a local embedding build can't peg every core and starve
 the server.
 
-Under `IETF_LLM_GATHER_INPROCESS` (the test suite, which stubs `run_gather` by
-monkeypatch — invisible across a process boundary) it calls `run_gather`
-directly in this process instead.
+Under `IETF_LLM_GATHER_INPROCESS` (tests that stub `run_gather` by monkeypatch,
+which is invisible across a process boundary) it calls `run_gather` directly in
+this process instead. That hides anything that has to cross the boundary, so
+tests opt in one module at a time, and the cloud cache sync is tested through a
+real child.
 
 This module deliberately does not import `runner`: the cancel check comes
 in as a callback and cancellation raises `GatherCancelled` (defined here,
@@ -29,12 +31,14 @@ import atexit
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ..log import Verbosity
+from .lifecycle import GatherOutcome
 
 if TYPE_CHECKING:
     from .runner import GatherSpec
@@ -48,10 +52,24 @@ _CHILD_POLL_S = 4.0
 _CHILD_TERM_GRACE_S = 5.0
 
 #: Exit code the gather subprocess uses for "the corpus name was unusable"
-#: (`run_gather` returned False), as opposed to a crash — so a bad name still
-#: reads as the actionable "not a recognized corpus" message. The child imports
-#: this so the two sides of the protocol can't drift.
+#: (`GatherOutcome.UNUSABLE`), as opposed to a crash — so a bad name still
+#: reads as the actionable "not a recognized corpus" message.
 CHILD_EXIT_UNUSABLE = 3
+
+#: Exit code for `GatherOutcome.SKIPPED`: the child found nothing to do (the
+#: corpus is fresh, or a reuse hint applies) and left the workspace as it was, so
+#: the parent must not publish it.
+CHILD_EXIT_SKIPPED = 4
+
+#: The exit code the child reports for each outcome (0 is `GATHERED`), and the
+#: inverse the parent reads back. Both sides use these so the protocol can't
+#: drift; any other code is a crash.
+OUTCOME_EXIT_CODES = {
+    GatherOutcome.GATHERED: 0,
+    GatherOutcome.UNUSABLE: CHILD_EXIT_UNUSABLE,
+    GatherOutcome.SKIPPED: CHILD_EXIT_SKIPPED,
+}
+_EXIT_CODE_OUTCOMES = {code: outcome for outcome, code in OUTCOME_EXIT_CODES.items()}
 
 #: A stage-progress callback (name, index, total, detail), a one-line note
 #: callback, and a "has a stop been requested?" predicate — matching the
@@ -78,8 +96,8 @@ def _gather_in_process() -> bool:
     """Whether to run the pipeline in this process instead of a subprocess.
 
     Off in production (a child isolates a CPU-heavy stage from the server); on
-    under `IETF_LLM_GATHER_INPROCESS` for the test suite, which stubs the
-    pipeline by monkeypatch — invisible across a process boundary."""
+    under `IETF_LLM_GATHER_INPROCESS` for tests that stub the pipeline by
+    monkeypatch — invisible across a process boundary."""
     return os.environ.get("IETF_LLM_GATHER_INPROCESS", "").strip().lower() in (
         "1",
         "true",
@@ -93,15 +111,15 @@ def run_pipeline(
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
-) -> bool:
+) -> GatherOutcome:
     """Run the gather pipeline for `spec`, feeding `progress`/`note` exactly as
     the in-process path always did. In production this drives a child process
     and streams its progress back; under the in-process test flag it calls
     `run_gather` directly.
 
-    Returns True on success, False if the corpus name was unusable. Raises
-    `GatherCancelled` if a stop is honoured, and `RuntimeError` if the
-    subprocess dies unexpectedly."""
+    Returns what the gather did (see `GatherOutcome`): only `GATHERED` leaves a
+    tree worth publishing. Raises `GatherCancelled` if a stop is honoured, and
+    `RuntimeError` if the subprocess dies unexpectedly."""
     if _gather_in_process():
         # pylint: disable-next=import-outside-toplevel
         from . import sequencer as gather_main
@@ -147,10 +165,11 @@ def _run_pipeline_child(
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
-) -> bool:
+) -> GatherOutcome:
     """Spawn the gather as a child process and stream its progress records back
     into `progress`/`note` until it exits. The worker thread blocks on the
-    child's pipe (GIL released), so the server stays responsive throughout."""
+    child's pipe (GIL released), so the server stays responsive throughout. The
+    child's exit code carries its `GatherOutcome`."""
     corpus = spec.corpus
     read_fd, write_fd = os.pipe()
     env = dict(os.environ)
@@ -173,18 +192,34 @@ def _run_pipeline_child(
         _children[corpus] = proc
     try:
         # Owns + closes read_fd.
-        _pump_child(corpus, proc, read_fd, progress, note, cancel_requested)
+        child_error = _pump_child(
+            corpus, proc, read_fd, progress, note, cancel_requested
+        )
         rc = proc.wait()
     finally:
         _terminate_child(proc)  # no-op if it already exited; kills on the cancel path
         with _children_lock:
             if _children.get(corpus) is proc:
                 del _children[corpus]
-    if rc == 0:
-        return True
-    if rc == CHILD_EXIT_UNUSABLE:
-        return False  # bad corpus name — same as run_gather returning False
-    raise RuntimeError(f"gather subprocess for {corpus!r} exited with code {rc}")
+    outcome = _EXIT_CODE_OUTCOMES.get(rc)
+    if outcome is not None:
+        return outcome
+    detail = f": {child_error}" if child_error else ""
+    raise RuntimeError(f"gather subprocess for {corpus!r} {_describe_exit(rc)}{detail}")
+
+
+def _describe_exit(rc: int) -> str:
+    """How a child ended, for the status record. A negative code is a signal,
+    and a signal leaves no error record (nothing runs after SIGKILL), so name it:
+    an OOM kill in the embedding stage is the likeliest cloud failure."""
+    if rc >= 0:
+        return f"exited with code {rc}"
+    try:
+        name = signal.Signals(-rc).name
+    except ValueError:
+        name = f"signal {-rc}"
+    hint = "; possibly out of memory" if name == "SIGKILL" else ""
+    return f"was killed by {name}{hint}"
 
 
 def _pump_child(
@@ -194,9 +229,11 @@ def _pump_child(
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
-) -> None:
+) -> Optional[str]:
     """Feed the child's progress records into `progress`/`note` until it closes
     the pipe, checking for a cancel between records and on an idle tick.
+    Returns the child's last `error` record as `Type: message`, if it sent one
+    (see `child.main`).
 
     A daemon reader thread does the blocking line reads (GIL released) and hands
     records to this thread over a queue; this thread applies them and owns the
@@ -220,6 +257,7 @@ def _pump_child(
 
     reader = threading.Thread(target=_reader, name=f"gather-pipe-{corpus}", daemon=True)
     reader.start()
+    child_error: Optional[str] = None
     while True:
         try:
             record = records.get(timeout=_CHILD_POLL_S)
@@ -229,11 +267,14 @@ def _pump_child(
                 raise GatherCancelled(corpus) from None
             continue
         if record is None:
-            return  # reader hit EOF; the child is finishing
+            return child_error  # reader hit EOF; the child is finishing
         if cancel_requested():
             _terminate_child(proc)
             raise GatherCancelled(corpus)
-        _apply_record(record, progress, note)
+        if record.get("t") == "error":
+            child_error = f"{record.get('type')}: {record.get('msg')}"
+        else:
+            _apply_record(record, progress, note)
 
 
 def _parse_record(line: str) -> Optional[Dict[str, Any]]:

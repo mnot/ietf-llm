@@ -44,6 +44,13 @@ def _reset_http_caches():
     datatracker._DEFAULT_CACHE = None
 
 
+def _gather_stores(corpus: str, url: str, etag: str, body: str = "{}") -> None:
+    """Stand in for a gather that fetched `url`: the gather-time ETag binding,
+    flushed to the per-corpus file when it ends."""
+    with datatracker.gather_http_cache(corpus):
+        datatracker._active_http_cache().store(url, etag, body)
+
+
 def _cache_dir(monkeypatch, path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("IETF_LLM_CACHE_DIR", str(path))
@@ -59,30 +66,28 @@ def test_http_cache_roundtrip_across_a_cold_start(monkeypatch, tmp_path):
     kv = InMemoryKvStore()
     url = "https://datatracker.ietf.org/api/v1/group/?format=json"
     _cache_dir(monkeypatch, tmp_path / "warm")
-    # Bind the per-corpus store (as hydrate would) and record an entry.
-    datatracker.bind_gather_corpus("tls")
-    datatracker._active_http_cache().store(url, "etag-1", '{"hit": true}')
-    cache_sync.persist(kv, "tls")  # flushes + uploads, then unbinds
+    _gather_stores("tls", url, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")  # uploads what the gather left on disk
 
     # Cold host: fresh, empty cache dir; nothing local.
     _cache_dir(monkeypatch, tmp_path / "cold")
-    cache_sync.hydrate(kv, "tls")  # restores the per-corpus file + binds "tls"
+    cache_sync.hydrate(kv, "tls")  # restores the per-corpus file; binds nothing
 
     assert os.path.exists(datatracker.http_cache_path("tls"))
-    restored = datatracker._active_http_cache().get(url)
+    assert datatracker._active_http_cache() is datatracker._default_http_cache()
+    with datatracker.gather_http_cache("tls"):
+        restored = datatracker._active_http_cache().get(url)
     assert restored is not None and restored["etag"] == "etag-1"
 
 
 def test_http_cache_is_sharded_per_corpus(monkeypatch, tmp_path):
     kv = InMemoryKvStore()
     _cache_dir(monkeypatch, tmp_path / "a")
-    datatracker.bind_gather_corpus("alpha")
-    datatracker._active_http_cache().store("u-a", "etag-a", "{}")
+    _gather_stores("alpha", "u-a", "etag-a")
     cache_sync.persist(kv, "alpha")
 
     _cache_dir(monkeypatch, tmp_path / "b")
-    datatracker.bind_gather_corpus("beta")
-    datatracker._active_http_cache().store("u-b", "etag-b", "{}")
+    _gather_stores("beta", "u-b", "etag-b")
     cache_sync.persist(kv, "beta")
 
     # Each corpus has its own key; beta's gather did not clobber alpha's delta.
@@ -267,8 +272,7 @@ class _RaisingKv(KvStore):
 
 def test_sync_swallows_kvstore_errors(monkeypatch, tmp_path):
     _cache_dir(monkeypatch, tmp_path / "host")
-    datatracker.bind_gather_corpus("tls")
-    datatracker._active_http_cache().store("u", "e", "{}")
+    _gather_stores("tls", "u", "e")
     # A broken store never fails persist, nor hydrate of the accelerator caches;
     # the one thing hydrate raises for is stored IMAP mail it couldn't list or
     # fetch (see test_imap_cache_sync).
@@ -297,8 +301,7 @@ def test_cloud_seam_delegates_to_sync(monkeypatch, tmp_path):
         kv=kv,
     )
     _cache_dir(monkeypatch, tmp_path / "host")
-    datatracker.bind_gather_corpus("tls")
-    datatracker._active_http_cache().store("u", "e", "{}")
+    _gather_stores("tls", "u", "e")
     store.persist_gather_caches("tls")
     assert kv.get("corpora/tls/gather-cache/http-cache.json") is not None
 
@@ -311,3 +314,58 @@ def test_cloud_seam_without_kv_is_noop(tmp_path):
     )
     store.hydrate_gather_caches("tls")  # kv is None -> no-op, no raise
     store.persist_gather_caches("tls")
+
+
+# --- the gather-time half: binding and flushing the ETag store ---------------
+
+
+def _run_gather_one(monkeypatch, corpus: str, backend: str, seen: dict):
+    """Drive the real `_gather_one` wrapper with a stage body that records which
+    ETag store is active and fetches one URL through it."""
+    from argparse import Namespace
+
+    from ietf_llm.gather import sequencer
+    from ietf_llm.log import Verbosity
+
+    def stages(args, verbosity, progress, note_fn, pre):
+        seen["store"] = datatracker._active_http_cache()
+        seen["store"].store("u", "etag-1", "{}")
+        return sequencer.GatherOutcome.GATHERED
+
+    monkeypatch.setenv("IETF_LLM_STORE_BACKEND", backend)
+    monkeypatch.setattr(
+        sequencer, "preflight", lambda *a, **k: sequencer.Preflight(None, {}, False, False)
+    )
+    monkeypatch.setattr(sequencer, "_gather_stages", stages)
+    return sequencer._gather_one(Namespace(wg=corpus), Verbosity.QUIET)
+
+
+def test_a_cloud_gather_binds_and_flushes_the_corpus_etag_file(monkeypatch, tmp_path):
+    _cache_dir(monkeypatch, tmp_path / "host")
+    seen: dict = {}
+    _run_gather_one(monkeypatch, "tls", "cloud", seen)
+
+    assert seen["store"] is not datatracker._default_http_cache()
+    on_disk = json.loads(Path(datatracker.http_cache_path("tls")).read_text())
+    assert on_disk["u"]["etag"] == "etag-1"
+    # Unbound again, so the next gather on this reused thread starts clean.
+    assert datatracker._active_http_cache() is datatracker._default_http_cache()
+
+
+def test_a_local_gather_leaves_the_default_etag_store_alone(monkeypatch, tmp_path):
+    _cache_dir(monkeypatch, tmp_path / "host")
+    seen: dict = {}
+    _run_gather_one(monkeypatch, "tls", "local", seen)
+
+    assert seen["store"] is datatracker._default_http_cache()
+    assert not os.path.exists(datatracker.http_cache_path("tls"))
+
+
+def test_the_etag_file_is_flushed_when_the_stages_raise(monkeypatch, tmp_path):
+    _cache_dir(monkeypatch, tmp_path / "host")
+    with pytest.raises(RuntimeError):
+        with datatracker.gather_http_cache("tls"):
+            datatracker._active_http_cache().store("u", "etag-1", "{}")
+            raise RuntimeError("stage blew up")
+    assert "u" in json.loads(Path(datatracker.http_cache_path("tls")).read_text())
+    assert datatracker._active_http_cache() is datatracker._default_http_cache()

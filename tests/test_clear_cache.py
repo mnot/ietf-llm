@@ -135,10 +135,9 @@ def _persisted(kv: InMemoryKvStore, corpus: str, monkeypatch: pytest.MonkeyPatch
     archive = home / "imap-cache" / corpus / "moq" / "epoch-7"
     archive.mkdir()
     (archive / "9.eml").write_text("Message-Id: <9@x>\n\nbody\n")
-    datatracker.bind_gather_corpus(corpus)
-    datatracker._active_http_cache().store("u", "etag", "{}")
+    with datatracker.gather_http_cache(corpus):
+        datatracker._active_http_cache().store("u", "etag", "{}")
     cache_sync.persist(kv, corpus)
-    datatracker.bind_gather_corpus(None)
 
 
 def test_clear_deletes_a_corporas_stored_state_and_nothing_else(

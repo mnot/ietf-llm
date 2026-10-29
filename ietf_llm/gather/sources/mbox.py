@@ -272,41 +272,79 @@ def _download_batches(
     return new_count
 
 
-#: UIDVALIDITY values the server reported in this process, by list cache dir.
+#: Per-list sidecar recording the UIDVALIDITY the server reported *this gather*.
 #: Lets the cloud persist tell "this gather confirmed the local cache's epoch
 #: with the server" from "the cache is whatever an earlier run left" -- only the
-#: former may replace stored mail. Scoped to one gather: `forget_verified` drops
-#: a corpus's entries when its gather starts, and each list's sync drops its
-#: own before reaching the server, so a gather that never syncs a list (its
-#: discovery failed, or the list left the corpus) can't inherit the confirmation
-#: an earlier gather in this process recorded.
-_VERIFIED: Dict[str, str] = {}
+#: former may replace stored mail. A file rather than process memory because the
+#: sync runs in the gather child and the persist in the server that spawned it.
+#: Scoped to one gather: `forget_verified` deletes a corpus's sidecars when its
+#: gather starts, and each list's sync deletes its own before reaching the
+#: server, so a gather that never syncs a list (its discovery failed, or the
+#: list left the corpus) can't inherit an earlier gather's confirmation.
+VERIFIED_FILE = ".verified-uidvalidity"
 
 
 def verified_uidvalidity(cache_dir: str) -> Optional[str]:
     """The epoch the server confirmed for `cache_dir` during this gather's sync,
     or `None` if the sync didn't reach the server (or hasn't run)."""
-    return _VERIFIED.get(cache_dir)
+    return _read_epoch(os.path.join(cache_dir, VERIFIED_FILE))
+
+
+def record_verified(cache_dir: str, epoch: str) -> None:
+    """Record that the server confirmed `epoch` for `cache_dir` this gather. A
+    write failure leaves the epoch unconfirmed, the safe side for persist."""
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        write_if_changed(os.path.join(cache_dir, VERIFIED_FILE), epoch)
+    except OSError as err:
+        # Without this, persist's later "was not confirmed" points at the IMAP
+        # server when the cause is the disk.
+        log(
+            f"could not record the confirmed UIDVALIDITY for {cache_dir}: {err}; "
+            "the cloud persist will not replace stored mail for this list",
+            level=LogLevel.WARN,
+        )
+
+
+def clear_verified(cache_dir: str) -> None:
+    """Drop `cache_dir`'s confirmation, if any."""
+    try:
+        os.remove(os.path.join(cache_dir, VERIFIED_FILE))
+    except FileNotFoundError:
+        pass
 
 
 def forget_verified(wg_name: str) -> None:
     """Drop every confirmation recorded for `wg_name`'s lists, so a new gather
     starts with none."""
-    root = os.path.join(get_cache_dir(), "imap-cache", wg_name) + os.sep
-    for cache_dir in [d for d in _VERIFIED if d.startswith(root)]:
-        del _VERIFIED[cache_dir]
+    root = os.path.join(get_cache_dir(), "imap-cache", wg_name)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    for name in names:
+        list_dir = os.path.join(root, name)
+        # A stray file here must not abort the caller (hydrate).
+        if os.path.isdir(list_dir):
+            clear_verified(list_dir)
+
+
+def _read_epoch(path: str) -> Optional[str]:
+    """The bare-number epoch in `path`, or `None` if it is missing or holds
+    anything else."""
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    return text.decode("ascii") if text.isdigit() else None
 
 
 def read_uidvalidity(cache_dir: str) -> Optional[str]:
     """The epoch recorded for a list's cache, or `None` if there is no usable
     marker. A marker that isn't a bare number counts as absent, so a corrupt one
     is adopted over rather than read as a changed epoch."""
-    try:
-        with open(os.path.join(cache_dir, UIDVALIDITY_FILE), "rb") as handle:
-            text = handle.read().strip()
-    except OSError:
-        return None
-    return text.decode("ascii") if text.isdigit() else None
+    return _read_epoch(os.path.join(cache_dir, UIDVALIDITY_FILE))
 
 
 def _server_uidvalidity(mail: imaplib.IMAP4_SSL) -> Optional[str]:
@@ -358,7 +396,7 @@ def _reconcile_uidvalidity(
                 os.replace(os.path.join(cache_dir, name), os.path.join(archive, name))
     if previous != current:
         write_if_changed(os.path.join(cache_dir, UIDVALIDITY_FILE), current)
-    _VERIFIED[cache_dir] = current
+    record_verified(cache_dir, current)
 
 
 class _FolderSelectError(Exception):
@@ -564,7 +602,7 @@ def _sync_one_list(
 
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
-    _VERIFIED.pop(cache_dir, None)
+    clear_verified(cache_dir)
     window = f"the last {months} month(s)" if months else "all history"
     for attempt in range(IMAP_RETRIES + 1):
         try:

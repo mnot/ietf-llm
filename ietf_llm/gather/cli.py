@@ -74,7 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Refresh every gathered corpus the configured store knows about, "
         "using each one's persisted gather config. Mutually exclusive with a "
-        "positional NAME argument; --clear-config is refused in this mode.",
+        "positional NAME argument; --clear-config and --clear-cache are refused in "
+        "this mode. Exits non-zero if any corpus failed to gather.",
     )
     parser.add_argument(
         "--used-within",

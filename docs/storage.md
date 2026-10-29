@@ -219,7 +219,10 @@ The chartered-group mirror (`_groups/`, behind `get_group_info` / `search_groups
 its refresh is skipped on the cloud backend, those tools report "not gathered yet" there, and
 `find_efforts` falls back to the active-only catalog. It is
 automatic and best-effort — a sync failure just means a cold rebuild, never a failed gather, except that stored IMAP mail the store errors on fetching fails the gather before any stage runs (publishing without it would drop the threads built from it) — and
-there is nothing to configure. For the per-cache cloud keys, their write-conflict policies (RMW /
+there is nothing to configure. The server hydrates and persists these as plain files; the gather child
+(the MCP `start_gather` path runs the pipeline in a subprocess) reads and writes the same files, so a
+gather's ETag entries and its per-list `.verified-uidvalidity` sidecar (the IMAP epoch the server
+confirmed, which gates replacing stored mail) are what persist uploads. For the per-cache cloud keys, their write-conflict policies (RMW /
 CAS-merge / last-writer-wins), and which caches stay ephemeral, see
 [architecture.md](architecture.md#the-storage-seam-corpusstore-local-default-cloud-pluggable)
 (issue #82).

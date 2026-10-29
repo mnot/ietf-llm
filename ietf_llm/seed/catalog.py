@@ -47,6 +47,10 @@ _lock = threading.Lock()
 _LAST_ATTEMPT: Optional[float] = None
 _IN_FLIGHT = False
 
+#: Test hook: do the background refresh synchronously instead of on a daemon
+#: thread. Not configuration.
+RUN_INLINE = False
+
 
 def refresh_mirror() -> None:
     """Bring the mirror up to date, stale-while-revalidate (see module docstring).
@@ -132,10 +136,9 @@ def _start_background(seed_url: str) -> None:
         finally:
             _end_attempt()
 
-    # Run inline when the suite forces synchronous background work (the same
-    # signal gather uses), so tests are deterministic; a real daemon thread
-    # otherwise, so `list_corpora` returns without waiting.
-    if os.environ.get("IETF_LLM_GATHER_INPROCESS"):
+    # Run inline under the test flag, so tests are deterministic; a real daemon
+    # thread otherwise, so `list_corpora` returns without waiting.
+    if RUN_INLINE:
         _run()
     else:
         threading.Thread(target=_run, name="seed-catalog-refresh", daemon=True).start()

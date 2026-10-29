@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -94,8 +95,8 @@ _CACHE_MAX_ENTRIES = 10000
 
 class _HttpCache:
     """Lazy ETag store. Loaded from disk on first use and flushed atomically
-    (once at interpreter exit for the process-default store, or explicitly by the
-    cloud gather-cache sync for a per-corpus store) — so a gather does one write,
+    (once at interpreter exit for the process-default store, or explicitly when a
+    cloud gather ends for a per-corpus store) — so a gather does one write,
     not one per cached URL. Stale and excess entries are evicted at flush time;
     see the module comment above for the policy."""
 
@@ -107,11 +108,11 @@ class _HttpCache:
         self._dest = dest
         self._entries: Optional[Dict[str, Dict[str, Any]]] = None
         self._dirty = False
-        # Per-corpus stores are flushed explicitly by the cloud sync, so they
-        # skip atexit — that keeps a dropped per-corpus store collectable (an
-        # atexit-registered bound method would pin it for the life of the
-        # process). The process-default store has no explicit flush, so it does
-        # register atexit.
+        # Per-corpus stores are flushed explicitly when their gather ends
+        # (`gather_http_cache`), so they skip atexit -- that keeps a dropped
+        # per-corpus store collectable (an atexit-registered bound method would
+        # pin it for the life of the process). The process-default store has no
+        # explicit flush, so it does register atexit.
         self._persist_at_exit = persist_at_exit
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
@@ -186,10 +187,10 @@ class _HttpCache:
 _DEFAULT_CACHE: Optional[_HttpCache] = None
 _default_lock = threading.Lock()
 
-#: The active per-corpus ETag store for *this thread*. The runner gathers up to
-#: N corpora concurrently, one per worker thread; binding the store per thread
-#: keeps two concurrent gathers off one shared store and one shared file. Set by
-#: the cloud gather-cache sync at hydrate; unset means "use the default store".
+#: The active per-corpus ETag store for *this thread*. A gather runs on one
+#: thread, and the runner's worker threads are reused, so the binding is
+#: per thread and scoped to one gather (`gather_http_cache`). Unset means "use
+#: the default store".
 _active = threading.local()
 
 
@@ -221,22 +222,42 @@ def http_cache_path(corpus: Optional[str] = None) -> str:
 
 
 def bind_gather_corpus(corpus: Optional[str]) -> None:
-    """Bind this thread's ETag store to `corpus`'s own file — a *fresh* instance,
-    so it reloads the just-hydrated per-corpus file rather than carrying stale
-    in-memory entries from a prior gather on this reused worker thread. Pass None
-    to unbind (back to the process-default store) and release the per-corpus one.
-    Called by the cloud gather-cache sync; a no-op concern on the local CLI,
-    which never binds and so shares the default store as before."""
+    """Bind this thread's ETag store to `corpus`'s own file -- a *fresh*
+    instance, so it reloads the file on disk rather than carrying stale in-memory
+    entries from a prior gather on this reused worker thread. Pass None to unbind
+    (back to the process-default store) and release the per-corpus one."""
     _active.cache = (
         _HttpCache(http_cache_path(corpus), persist_at_exit=False) if corpus else None
     )
 
 
 def flush_http_cache() -> None:
-    """Force this thread's active ETag store to disk now. The store otherwise
-    flushes only at interpreter exit, which never fires between gathers in the
-    long-lived serve worker — so the cloud sync calls this before persisting."""
+    """Force this thread's active ETag store to disk now. A per-corpus store
+    never flushes at exit, so `gather_http_cache` calls this when its gather ends."""
     _active_http_cache().flush()
+
+
+@contextmanager
+def gather_http_cache(corpus: Optional[str]) -> Iterator[None]:
+    """Run one gather against `corpus`'s own ETag file, then flush it.
+
+    The cloud gather-cache sync restores `http_cache_path(corpus)` before the
+    gather and uploads it after, in a different process when the pipeline runs in
+    the gather child. The file is the only thing they share, so the binding
+    belongs here, around the gather itself, in whichever process runs it. `None`
+    leaves the process-default store alone: the local backend keeps one shared
+    file on persistent disk and syncs nothing."""
+    if not corpus:
+        yield
+        return
+    bind_gather_corpus(corpus)
+    try:
+        yield
+    finally:
+        try:
+            flush_http_cache()
+        finally:
+            bind_gather_corpus(None)
 
 
 def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
