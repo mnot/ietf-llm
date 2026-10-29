@@ -50,8 +50,10 @@ from .common import (
 from .grep_common import (
     _MAX_GREP_LIMIT,
     _REGEX_SCAN_BUDGET_S,
+    _SCAN_FAILED_REPLY,
     _incomplete_scan_head,
     _mode_phrase,
+    _note_scan_stop,
 )
 from .grep_rfc import _grep_rfc_corpus
 from .rfc_text import RFC_CORPUS
@@ -528,6 +530,9 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     )
 
 
+_FILE_SCAN_KEYS = ("hits", "per_file", "total", "scanned", "complete")
+
+
 def _run_scan(
     matcher: "re.Pattern[str]",
     regex: bool,
@@ -553,6 +558,7 @@ def _run_scan(
                 "per_file_cap": max_per_file,
             },
             _REGEX_SCAN_BUDGET_S,
+            _FILE_SCAN_KEYS,
         ),
     )
 
@@ -592,6 +598,7 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     try:
         scan = _run_scan(matcher, regex, eligible, keep, max_per_file)
     except ScanTimedOut:
+        _note_scan_stop("timeout")
         # No counts survive a kill, and a partial denominator supports no
         # negative, so say only that the scan did not finish.
         return _with_freshness(
@@ -605,7 +612,8 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
             ),
         )
     except ScanFailed as exc:
-        return f"The regex scan failed ({exc}). Nothing can be concluded from this."
+        _note_scan_stop("failed", exc)
+        return _SCAN_FAILED_REPLY
     if not scan["complete"]:
         return _with_freshness(
             wg,

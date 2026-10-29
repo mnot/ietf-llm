@@ -10,11 +10,10 @@ import functools
 import os
 import re
 import time
-import weakref
-from asyncio import AbstractEventLoop, get_running_loop
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio
+from anyio.lowlevel import RunVar
 
 from .. import coverage, serve_metrics
 from ..access_stamp import note_access
@@ -734,11 +733,9 @@ def _session_section() -> str:
 #: itself and cannot starve every other tool.
 _SCAN_CONCURRENCY_DEFAULT = 4
 
-#: One limiter per event loop (anyio limiters bind to the loop that first uses
-#: them, and the test suite runs many loops in one process).
-_scan_limiters: (
-    "weakref.WeakKeyDictionary[AbstractEventLoop, anyio.CapacityLimiter]"
-) = weakref.WeakKeyDictionary()
+#: The scan limiter, one per event loop (anyio limiters bind to the loop that
+#: first uses them, and the test suite runs many loops in one process).
+_scan_limiter_var: "RunVar[anyio.CapacityLimiter]" = RunVar("ietf_llm_scan_limiter")
 
 
 def _scan_concurrency() -> int:
@@ -753,12 +750,12 @@ def _scan_concurrency() -> int:
 
 def _scan_limiter() -> anyio.CapacityLimiter:
     """The scan-class limiter for the running event loop."""
-    loop = get_running_loop()
-    limiter = _scan_limiters.get(loop)
-    if limiter is None:
+    try:
+        return _scan_limiter_var.get()
+    except LookupError:
         limiter = anyio.CapacityLimiter(_scan_concurrency())
-        _scan_limiters[loop] = limiter
-    return limiter
+        _scan_limiter_var.set(limiter)
+        return limiter
 
 
 async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:

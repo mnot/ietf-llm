@@ -19,7 +19,13 @@ from ..regexscan import (
     run_bounded,
     scan_sections,
 )
-from .grep_common import _MAX_GREP_LIMIT, _incomplete_scan_head, _mode_phrase
+from .grep_common import (
+    _MAX_GREP_LIMIT,
+    _SCAN_FAILED_REPLY,
+    _incomplete_scan_head,
+    _mode_phrase,
+    _note_scan_stop,
+)
 from .rfc_text import RFC_CORPUS, provenance_line, status_note
 
 # --- the RFC series ----------------------------------------------------------
@@ -224,6 +230,17 @@ def _rfc_scan_scope(
     return narrowed, None
 
 
+_SECTION_SCAN_KEYS = (
+    "sections",
+    "total",
+    "matching_sections",
+    "per_file",
+    "hits",
+    "stopped_early",
+    "error",
+)
+
+
 def _run_scan(
     matcher: "re.Pattern[str]",
     regex: bool,
@@ -252,6 +269,7 @@ def _run_scan(
                     "matches_per_section": _RFC_MATCHES_PER_SECTION,
                 },
                 _RFC_SCAN_BUDGET_S,
+                _SECTION_SCAN_KEYS,
             ),
         )
     return scan_sections(
@@ -308,15 +326,14 @@ def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     try:
         scan = _run_scan(matcher, regex, scoped, keep, context)
     except ScanTimedOut:
+        _note_scan_stop("timeout")
         # The kill leaves no counts to report; same rule as a stopped scan.
         return _incomplete_reply(
             pattern, mode, "no result was recovered", "an unknown number of sections"
         )
     except ScanFailed as exc:
-        return (
-            f"The regex scan of the RFC series failed ({exc}). **Nothing can be "
-            "concluded from this.** Retry, or narrow with `file_pattern`."
-        )
+        _note_scan_stop("failed", exc)
+        return _SCAN_FAILED_REPLY
     sections = scan["sections"]
     if scan["error"] is not None:
         # An incomplete scan must never render as absence. Whatever was found

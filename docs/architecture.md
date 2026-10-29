@@ -718,13 +718,17 @@ Grouped by job:
   stopped in a thread — `_offload` can only abandon the worker, which keeps
   burning CPU and holding its pool slot (issue #293). With `regex=True`, both
   backends therefore hand the scan to a child process (`python -m
-  ietf_llm.regexscan`, stdlib-only so it starts fast and stays torch-free) and
+  ietf_llm.regexscan`, which imports neither torch nor the MCP server, so it
+  starts in tens of milliseconds — a few hundred for an RFC scan, which loads numpy) and
   the parent kills it at the budget: 20s for a gathered corpus, and the RFC
   series' own `_RFC_SCAN_BUDGET_S`. The child stops itself at the budget
   between files / sections (the reply then says how far it got), is killed
   `KILL_SLACK_S` later if one match call never returns (no counts survive), and
   arms `SIGALRM` as a backstop should the server die mid-scan. Either way the
-  reply is "INCOMPLETE SCAN", never a zero. The parent owns all store state
+  reply is "INCOMPLETE SCAN", never a zero; a child that crashes or answers
+  with garbage gets a fixed "nothing can be concluded" reply (its stderr goes to
+  the server log, not the client). Kills and failures are logged at WARN and
+  counted in `ietf_llm_grep_scan_stops_total{reason}`. The parent owns all store state
   (cache dir, RFC index path) and never runs the user's pattern itself: the
   child returns finished, already-elided lines. A literal pattern is escaped, so
   it cannot backtrack catastrophically and scans in-process. Hits
