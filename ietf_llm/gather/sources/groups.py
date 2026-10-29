@@ -32,12 +32,7 @@ from ...atomicio import write_if_changed
 from ...config import service as service_config
 from ...freshness import record_gather
 from ...log import LogLevel, Verbosity, log
-from ...net import (
-    DEFAULT_HEADERS,
-    governed_get,
-    http_error_detail,
-    http_metrics,
-)
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...paths import get_index_dir
 from ...singletons import groups as reader
 from . import _mirror
@@ -112,14 +107,12 @@ def _fetch_all(url: str, verbosity: Verbosity) -> Optional[List[Dict[str, Any]]]
             response.raise_for_status()
             body = response.json()
         except (requests.RequestException, ValueError) as err:
-            http_metrics.record(next_url, 0, 0, error=True)
             log(
                 f"Groups: fetch {next_url} failed: {http_error_detail(err)}",
                 verbosity,
                 LogLevel.PROGRESS,
             )
             return None
-        http_metrics.record(next_url, response.status_code, len(response.content))
         objects.extend(o for o in body.get("objects") or [] if isinstance(o, dict))
         nxt = (body.get("meta") or {}).get("next")
         next_url = f"https://datatracker.ietf.org{nxt}" if nxt else None
@@ -516,20 +509,15 @@ def _fetch_charter(doc: str, rev: str) -> Optional[str]:
     try:
         response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=_TIMEOUT)
     except requests.RequestException as err:
-        http_metrics.record(url, 0, 0, error=True)
         log(
             f"Groups: fetch {url} failed: {http_error_detail(err)}", level=LogLevel.WARN
         )
         return None
-    size = len(response.content)
     if response.status_code in _ABSENT_STATUSES:
-        http_metrics.record(url, response.status_code, size, error=True)
         return ""
     if not response.ok or not response.text:
-        http_metrics.record(url, response.status_code, size, error=True)
         log(f"Groups: fetch {url} returned {response.status_code}", level=LogLevel.WARN)
         return None
-    http_metrics.record(url, response.status_code, size)
     return response.text
 
 

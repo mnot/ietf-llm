@@ -24,7 +24,6 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
-from ...net import http_metrics
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...paths import get_cache_dir
@@ -262,7 +261,6 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
     try:
         response = governed_get(url, headers=headers, timeout=timeout)
     except requests.RequestException as err:
-        http_metrics.record(url, 0, 0, error=True)
         log(
             f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
             level=LogLevel.WARN,
@@ -270,21 +268,16 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         return _decode_cached(entry)
 
     if response.status_code == 304:
-        http_metrics.record(url, 304, len(response.content))
         return _decode_cached(entry)
     try:
         response.raise_for_status()
         result = response.json()
     except (requests.RequestException, ValueError) as err:
-        http_metrics.record(
-            url, response.status_code, len(response.content), error=True
-        )
         log(
             f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
             level=LogLevel.WARN,
         )
         return _decode_cached(entry)
-    http_metrics.record(url, response.status_code, len(response.content))
     if not isinstance(result, dict):
         return None
     etag = response.headers.get("ETag")

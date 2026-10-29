@@ -35,7 +35,7 @@ import requests
 from ... import config
 from ...datatracker_api import get_group_resources
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, http_session
+from ...net import DEFAULT_HEADERS, governed_get
 from .drafts import get_wg_documents
 
 #: How recently a repo must have been pushed to (and have issue activity) to
@@ -128,7 +128,7 @@ class _GhClient:
         if self.token:
             headers["Authorization"] = f"token {self.token}"
         try:
-            resp = http_session().get(url, headers=headers, params=params, timeout=30)
+            resp = governed_get(url, headers=headers, params=params, timeout=30)
         except requests.RequestException:
             self.incidents.add("unreachable")
             return None, None
