@@ -177,15 +177,21 @@ not part of the document: check for it before treating what you have as the
 whole section. The same banner appears on `get_issue`.
 
 **RFC text is the exception: `get_rfc_info` does not return it.** It is catalogue
-metadata — title, status, reference graph. An RFC body is on disk only when a
-corpus that published it was gathered with `--rfcs`; `get_rfc_info`'s last line says
-whether this one is, and gives the `read_file_section` call if so. When it says
-the body is **not reachable from here**, you cannot quote or characterise that
-RFC — say so rather than reconstructing it from memory, which is exactly where
-confident wrong readings come from. That answer is about what this server can
-reach, not about what exists: the RFC is published, but no corpus gathered
-here holds its text (or, rarely, the server failed to check one), so report it
-as "I can't read it", never as "it isn't available".
+metadata — title, status, reference graph — and ends every entry with a `Body:`
+line saying where the text can be read. There are three cases:
+
+- **The RFC text corpus holds it** (the usual case): the line points at
+  `get_rfc_section("<number>")` for the outline and `get_rfc_section("<number>",
+  "<section>")` to read one.
+- **Only a gathered corpus holds it**, because that corpus was gathered with
+  `--rfcs`: the line names the corpus and gives the `read_file_section` call.
+- **Neither does**: the line says the body is **not reachable from here**. You
+  cannot quote or characterise that RFC — say so rather than reconstructing it
+  from memory, which is exactly where confident wrong readings come from. That
+  answer is about what this server can reach, not about what exists: the RFC is
+  published, but no corpus installed here holds its text (or, rarely, the
+  server failed to check one), so report it as "I can't read it", never as "it
+  isn't available".
 
 ## Saying something was **never** said
 

@@ -750,9 +750,11 @@ Grouped by job:
 - **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(rfc)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
-  text. A body is on disk only where a corpus that published the RFC was
-  gathered with `--rfcs`, so `get_rfc_info` ends every entry by saying whether this
-  one is (with the `read_file_section` call) or is not reachable — a
+  text. `get_rfc_info` ends every entry with a body note (`_body_note`) naming
+  which of three cases holds: the RFC full-text corpus has it (the note points
+  at `get_rfc_section`, the usual case); failing that, a corpus gathered with
+  `--rfcs` holds a copy (the note gives the `read_file_section` call); or
+  neither does, and the note says the body is not reachable from here. A
   well-formed metadata response otherwise reads as the document itself
   (issue #218).
 - **Live chair-workflow facts (gated, networked):** `meeting_schedule`,

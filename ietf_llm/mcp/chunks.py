@@ -430,22 +430,34 @@ def register(server: "MCPServer") -> None:
 
     @server.tool()
     async def get_by_url(corpus: str, url: str) -> str:
-        """Resolve a citation URL to its cached chunk in a corpus.
-        Accepts the URL forms that actually appear in the corpus:
+        """Resolve a citation URL to its cached content in a corpus.
 
-        - Mailing-list message permalinks of the form
-          `https://www.w3.org/mid/<message-id>` — this is the
-          `Archived-At:` URL shown on every thread message (NOT
-          `mailarchive.ietf.org/arch/msg/...`, which is not what the
-          archive stamps into the messages).
-        - GitHub issue URLs (e.g.
-          `https://github.com/<owner>/<repo>/issues/<N>`).
+        Use this whenever you meet an archive permalink in a message body,
+        a footnote, or another tool's output and want the gathered record
+        behind it; don't conclude "not in the corpus" from a bare URL
+        without trying here first.
 
-        Matches exactly against the URL stamped at index time, so pass
-        the URL as it appears in the data (a `w3.org/mid` link straight
-        from a message header resolves; a hand-built archive URL will
-        not). Returns the chunk text — same shape as `get_chunk_text`.
-        Use it when the user pastes, or a chunk cites, such a URL.
+        Matching tolerates the incidental spelling differences a mail
+        client adds (trailing slash, `http`/`https`, leading `www.`,
+        `<...>` wrapping, `#fragment`). By URL kind:
+
+        - **Mailing-list `Archived-At:` permalink** matches one message and
+          returns that chunk, the same shape as `get_chunk_text`. The stored
+          form varies by list: most IETF lists use
+          `https://mailarchive.ietf.org/arch/msg/<list>/<token>`, some (e.g.
+          httpbis) use `https://www.w3.org/mid/<message-id>`. Both resolve;
+          paste whichever form you have.
+        - **GitHub issue or pull-request URL** (`.../issues/N`, `.../pull/N`)
+          returns the whole per-issue / per-PR file, not just its header.
+          Pull-request files are not embedded, so they are read from disk.
+        - **Draft or charter URL**: a draft's
+          `https://datatracker.ietf.org/doc/<name>/` page or a charter's
+          `Source:` URL returns the file's concatenated content.
+
+        One gap: a `mailarchive.ietf.org/arch/msg/<token>` link does not
+        resolve against a message stored under its `www.w3.org/mid` form
+        (or the reverse); the opaque token and the Message-ID cannot be
+        converted into each other. Same list, different identifier scheme.
         """
         return await _offload(tool_get_by_url, corpus, url)
 
