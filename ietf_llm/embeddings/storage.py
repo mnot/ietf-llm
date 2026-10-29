@@ -17,6 +17,8 @@ the cache root; see paths.get_index_dir), with two tables:
 from __future__ import annotations
 
 import base64
+import contextlib
+import contextvars
 import ctypes
 import hashlib
 import json
@@ -175,11 +177,38 @@ def discard_build_db(wg: str) -> None:
     _remove_db_files(_db_building_path(wg))
 
 
+#: Set by `index_reads_from_workspace`: reads resolve to the workspace index.
+_READS_FROM_WORKSPACE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ietf_llm_index_reads_from_workspace", default=False
+)
+
+
+@contextlib.contextmanager
+def index_reads_from_workspace() -> Generator[None, None, None]:
+    """Make this context's index reads (`_db_path_ro` and everything built on
+    it) resolve to the gather workspace index that `build_index` just wrote.
+
+    A gather's own post-build steps (the topic map) must see the index they
+    are about to publish. On the cloud store `_db_path_ro` would otherwise
+    stage the previously *published* version -- stale content, and a full
+    download of it per gather. The flag is a `ContextVar`, so it is scoped to
+    the calling thread/task (a concurrently served read is unaffected) and is
+    reset on exit, including on error."""
+    token = _READS_FROM_WORKSPACE.set(True)
+    try:
+        yield
+    finally:
+        _READS_FROM_WORKSPACE.reset(token)
+
+
 def _db_path_ro(wg: str) -> str:
     """The index DB path for a *read*, resolved through the corpus store so a
     cloud reader replica serves the current version's `embeddings.db`
     (materialised onto local scratch) instead of an empty local index dir. The
-    local backend returns `<index_root>/<wg>`, so local reads are unchanged."""
+    local backend returns `<index_root>/<wg>`, so local reads are unchanged.
+    Inside `index_reads_from_workspace` it is the workspace path instead."""
+    if _READS_FROM_WORKSPACE.get():
+        return _db_path(wg)
     from ..store.corpus import (  # pylint: disable=import-outside-toplevel
         get_corpus_store,
     )
