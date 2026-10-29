@@ -74,8 +74,8 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
   group name, list, or tracked author), then exit.
 - `--all` — refresh every gathered corpus the configured store knows about, each with its own
   persisted config (no positional NAME; `--clear-config` and `--clear-cache` are refused). A
-  corpus that fails does not stop the sweep; the exit status is non-zero if any did. On the cloud backend this is
-  the whole fleet, not just this host's local cache — see [Storage &
+  corpus that fails does not stop the sweep; the exit status is non-zero if any did. On the cloud
+  backend this is the whole fleet, not just this host's local cache — see [Storage &
   locations](storage.md#the-cloud-backend).
 - `--all --used-within DAYS` — restrict `--all` to corpora **read within the last DAYS days** (via
   the MCP read tools). A corpus with no recorded access falls back to its last-gathered time, so a

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from ietf_llm import export
+from ietf_llm.cli import export as cli_export
 from ietf_llm.log import Verbosity
 
 from conftest import write_cache_file
@@ -145,6 +146,47 @@ def test_notebooklm_typo_name_creates_no_corpus(
         verbose=Verbosity.QUIET,
     ) == 0
     assert not (isolated_home / ".cache" / "ietf-llm" / "wgg").exists()
+
+
+def _run_cli(monkeypatch: pytest.MonkeyPatch, *argv: str) -> None:
+    monkeypatch.setattr("sys.argv", ["ietf-llm-export", *argv])
+    cli_export.main()
+
+
+def test_cli_typo_name_persists_nothing(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The CLI saves per-corpus config as a side effect of resolving flags; a
+    # mistyped name must not get as far as that, nor create a cache dir.
+    _mk_corpus(isolated_home)
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    _run_cli(monkeypatch, "wgg", "--destination", str(dest), "-q")
+    assert (dest / "notes.md").read_text() == "mine"
+    config_dir = isolated_home / ".config" / "ietf-llm"
+    assert not (config_dir / "wgg").exists()
+    cache = isolated_home / ".cache" / "ietf-llm"
+    assert sorted(p.name for p in cache.iterdir()) == ["wg"]
+
+
+def test_cli_unsafe_name_exits_cleanly_and_writes_nothing(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "dest"
+    _run_cli(monkeypatch, "../outside", "--destination", str(dest), "-q")
+    assert not dest.exists()
+    assert not (isolated_home / ".config" / "outside").exists()
+    assert not (isolated_home / ".config" / "ietf-llm" / "outside").exists()
+
+
+def test_cli_known_corpus_still_exports(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mk_corpus(isolated_home)
+    dest = tmp_path / "dest"
+    _run_cli(monkeypatch, "wg", "--destination", str(dest), "-q")
+    assert (dest / "charter.txt").exists()
 
 
 # --- Bundling (default) ---------------------------------------------------

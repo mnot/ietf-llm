@@ -91,6 +91,18 @@ def main() -> None:
     maybe_autocomplete(parser)
     args = parser.parse_args()
 
+    verbosity = Verbosity.STATUS
+    if args.quiet:
+        verbosity = Verbosity.QUIET
+    elif args.verbose:
+        verbosity = Verbosity.VERBOSE
+
+    # Before anything keyed on the name: config.merge persists a per-corpus
+    # file, and the freshness check builds a path from it, so a typo or an
+    # unsafe name would otherwise leave state behind (or escape the config dir).
+    if export.existing_cache_dir(args.wg, verbosity) is None:
+        return
+
     config.merge(
         args,
         wg=args.wg,
@@ -102,12 +114,6 @@ def main() -> None:
             "token_file": default_token,
         },
     )
-
-    verbosity = Verbosity.STATUS
-    if args.quiet:
-        verbosity = Verbosity.QUIET
-    elif args.verbose:
-        verbosity = Verbosity.VERBOSE
 
     if not args.destination and not args.create:
         print(

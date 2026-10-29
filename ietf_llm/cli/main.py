@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import copy
 import sys
+import traceback
 from typing import Any, Dict, Optional
 
 from ..gather import lifecycle
@@ -302,6 +303,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
                     verbosity,
                     level=LogLevel.ERROR,
                 )
+                log(traceback.format_exc(), verbosity, level=LogLevel.PROGRESS)
                 failed = True
     else:
         # A named gather is a request for *this* invocation to do the work, so

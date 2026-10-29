@@ -208,7 +208,7 @@ def _bundle_issues(paths: List[str], kind: str = "issues") -> str:
     return "".join(parts)
 
 
-def _existing_cache_dir(wg: str, verbose: Verbosity) -> Optional[str]:
+def existing_cache_dir(wg: str, verbose: Verbosity) -> Optional[str]:
     """The corpus's `files/` dir, or None (after logging) if it is not gathered.
 
     Resolved through the local store, which never creates the directory (a
@@ -245,7 +245,7 @@ def directory(
     reducing the source count for NotebookLM. Pass `bundle=False` for
     the fully granular dump.
     """
-    cache_dir = _existing_cache_dir(wg, verbose)
+    cache_dir = existing_cache_dir(wg, verbose)
     if cache_dir is None:
         return 0
 
@@ -329,7 +329,7 @@ def notebooklm(
         )
         return 0
 
-    cache_dir = _existing_cache_dir(wg, verbose)
+    cache_dir = existing_cache_dir(wg, verbose)
     if cache_dir is None:
         return 0
 
