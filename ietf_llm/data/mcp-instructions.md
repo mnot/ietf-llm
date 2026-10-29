@@ -174,7 +174,7 @@ room, not a decision — consensus is the chair's to declare.
 everything beneath it). Reach for those rather than paging from line 1. When a
 read is cut short it says so in a `PARTIAL READ` banner at both ends, which is
 not part of the document: check for it before treating what you have as the
-whole section. The same banner appears on `get_issue`.
+whole section. The same banner appears on `get_issue` and `read_file_section`.
 
 **RFC text is the exception: `get_rfc_info` does not return it.** It is catalogue
 metadata — title, status, reference graph — and ends every entry with a `Body:`

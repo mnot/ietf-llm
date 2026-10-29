@@ -383,14 +383,16 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
     end = start - 1
     total = 0
     cut = False
+    line_cut = False
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for total, line in enumerate(fh, 1):
             if total < start or cut:
                 continue
             text = line.rstrip("\n")
+            sep = 1 if out else 0  # the join newline, not owed by the first line
             if total >= start + max_lines:
                 cut = True
-            elif len(text) + 1 > budget:
+            elif len(text) + sep > budget:
                 cut = True
                 if not out:
                     # A single line over the whole budget (pasted base64, a
@@ -398,14 +400,27 @@ def _read_section(path: str, start_line: int, max_lines: int) -> str:
                     # since a silently shortened line is a misquote.
                     out.append(text[:budget] + " …[line truncated]")
                     end = total
+                    line_cut = True
             else:
                 out.append(text)
-                budget -= len(text) + 1
+                budget -= len(text) + sep
                 end = total
     body = "\n".join(out)
     if not cut:
         return body
-    notice = _truncation_notice(start, end, total)
+    if line_cut:
+        # The rest of the line is unreachable by `start_line`, so the usual
+        # "continue from the next line" banner would misstate what was read.
+        notice = (
+            f"**PARTIAL READ — line {end} is longer than the "
+            f"{_MAX_WINDOW_CHARS:,}-character budget and was cut; the rest of "
+            "it cannot be reached with `start_line`."
+        )
+        if end < total:
+            notice += f" The lines after it start at `start_line={end + 1}`."
+        notice += "**"
+    else:
+        notice = _truncation_notice(start, end, total)
     return f"{notice}\n\n{body}\n\n{notice}"
 
 
@@ -501,9 +516,9 @@ def register(server: "MCPServer") -> None:
         per call; the caller can raise `max_lines` up to a hard cap of 5000.
         A result is also cut at about 40,000 characters, whichever bound
         comes first, so a thread with a pasted log can't blow the context
-        window. A cut read opens and closes with a `PARTIAL READ` banner
-        naming the `start_line` to continue from; the banner is not part of
-        the file. Prefer `search_corpus` / `get_chunk_text` for very large
+        window. A cut read carries a `PARTIAL READ` banner before and after
+        the file text, naming the `start_line` to continue from; the banner
+        is not part of the file. Prefer `search_corpus` / `get_chunk_text` for very large
         files.
         """
         return await _offload(

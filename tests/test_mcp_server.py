@@ -80,7 +80,29 @@ def test_read_file_section_cuts_a_single_oversized_line(isolated_home: Path) -> 
     out = mcp.chunks.tool_read_file_section("wg", "blob.txt", start_line=2)
     assert len(out) < mcp.drafts._MAX_WINDOW_CHARS + 1000
     assert "…[line truncated]" in out
+    # The banner says the line was cut and points past it, not into it.
+    assert "line 2 is longer than" in out
+    assert "cannot be reached with `start_line`" in out
     assert "start_line=3" in out
+    assert "% of the file" not in out
+
+
+def test_read_file_section_oversized_last_line_has_no_dead_end(
+    isolated_home: Path,
+) -> None:
+    blob = "A" * (mcp.drafts._MAX_WINDOW_CHARS * 2)
+    write_cache_file(isolated_home, "wg", "blob.txt", f"before\n{blob}")
+    out = mcp.chunks.tool_read_file_section("wg", "blob.txt", start_line=2)
+    assert "line 2 is longer than" in out
+    assert "start_line=" not in out
+
+
+def test_read_file_section_line_of_exactly_the_budget_is_not_cut(
+    isolated_home: Path,
+) -> None:
+    line = "B" * mcp.drafts._MAX_WINDOW_CHARS
+    write_cache_file(isolated_home, "wg", "exact.txt", line)
+    assert mcp.chunks.tool_read_file_section("wg", "exact.txt") == line
 
 
 def test_read_file_section_small_file_has_no_banner(isolated_home: Path) -> None:
