@@ -162,7 +162,9 @@ def test_cli_typo_name_persists_nothing(
     dest = tmp_path / "notes"
     dest.mkdir()
     (dest / "notes.md").write_text("mine")
-    _run_cli(monkeypatch, "wgg", "--destination", str(dest), "-q")
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(monkeypatch, "wgg", "--destination", str(dest), "-q")
+    assert exc.value.code == 1
     assert (dest / "notes.md").read_text() == "mine"
     config_dir = isolated_home / ".config" / "ietf-llm"
     assert not (config_dir / "wgg").exists()
@@ -174,7 +176,9 @@ def test_cli_unsafe_name_exits_cleanly_and_writes_nothing(
     isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "dest"
-    _run_cli(monkeypatch, "../outside", "--destination", str(dest), "-q")
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(monkeypatch, "../outside", "--destination", str(dest), "-q")
+    assert exc.value.code == 1
     assert not dest.exists()
     assert not (isolated_home / ".config" / "outside").exists()
     assert not (isolated_home / ".config" / "ietf-llm" / "outside").exists()
@@ -187,6 +191,37 @@ def test_cli_known_corpus_still_exports(
     dest = tmp_path / "dest"
     _run_cli(monkeypatch, "wg", "--destination", str(dest), "-q")
     assert (dest / "charter.txt").exists()
+
+
+def test_cli_empty_corpus_exits_zero(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Gathered but nothing exportable is not an unknown corpus: exit 0, and the
+    # destination is left alone.
+    write_cache_file(isolated_home, "wg", "github/x.json", "{}")  # excluded
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    _run_cli(monkeypatch, "wg", "--destination", str(dest), "-q")
+    assert (dest / "notes.md").read_text() == "mine"
+
+
+def test_notebooklm_empty_corpus_creates_no_notebook(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("google_auth_oauthlib")
+    from ietf_llm import notebooklm  # pylint: disable=import-outside-toplevel
+
+    def forbidden(*_a: object, **_k: object) -> None:
+        raise AssertionError("must not authenticate or create a notebook")
+
+    monkeypatch.setattr(notebooklm, "get_credentials", forbidden)
+    monkeypatch.setattr(notebooklm, "create_notebook", forbidden)
+    write_cache_file(isolated_home, "wg", "github/x.json", "{}")  # excluded
+    assert export.notebooklm(
+        "wg", "proj", str(tmp_path / "c.json"), str(tmp_path / "t.json"),
+        verbose=Verbosity.QUIET,
+    ) == 0
 
 
 # --- Bundling (default) ---------------------------------------------------

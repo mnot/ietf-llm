@@ -333,6 +333,16 @@ def notebooklm(
     if cache_dir is None:
         return 0
 
+    sources = _exportable_files(cache_dir, bundle=bundle)
+    if not sources:
+        # Before auth, so no login happens and no empty notebook is created.
+        log(
+            f"Nothing to export for {wg}; no notebook created.",
+            verbose,
+            level=LogLevel.ERROR,
+        )
+        return 0
+
     log("Exporting to NotebookLM...", verbose, level=LogLevel.STATUS)
 
     creds = get_credentials(credentials_file, token_file, verbose=verbose)
@@ -347,7 +357,6 @@ def notebooklm(
         log("Failed to create notebook.", verbose, level=LogLevel.ERROR)
         return 0
 
-    sources = _exportable_files(cache_dir, bundle=bundle)
     # Stage bundle contents to temp files so upload_source's existing
     # file-based path keeps working without growing a bytes-uploading
     # cousin. Each upload reads from the staged file, then we clean up.

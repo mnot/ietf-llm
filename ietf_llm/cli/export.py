@@ -16,6 +16,10 @@ Per project policy, every export is complete and fresh — there is no
 incremental / delta mode. To get a fresh NotebookLM with current state,
 re-run this and create a new notebook (delete the old one in the UI).
 
+Exit status is 1 when the corpus has not been gathered (or the name is not a
+valid corpus name); a gathered corpus with nothing exportable exits 0 after
+logging that nothing was exported.
+
 Per-corpus flags are persisted in ~/.config/ietf-llm/<name>/export.json so you
 don't have to repeat them. Use `ietf-llm <name> --clear-config` to reset.
 """
@@ -101,7 +105,7 @@ def main() -> None:
     # file, and the freshness check builds a path from it, so a typo or an
     # unsafe name would otherwise leave state behind (or escape the config dir).
     if export.existing_cache_dir(args.wg, verbosity) is None:
-        return
+        sys.exit(1)
 
     config.merge(
         args,
