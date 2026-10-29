@@ -20,6 +20,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, FrozenSet, Optional
 
+from ...atomicio import atomic_open
+
 #: A `remote, local -> merged` union supplied by each cache module.
 MergeFn = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
 #: A no-arg reload of a cache's on-disk file, with that cache's own semantics.
@@ -70,15 +72,15 @@ def now_iso() -> str:
 
 
 def save(path: str, cache: Dict[str, Any]) -> None:
-    """Persist `cache` to `path` atomically (tmp + rename, so a crash mid-write
-    can't corrupt the file). Best-effort: a write failure just means the next
+    """Persist `cache` to `path` atomically (`atomic_open`: a per-writer temp,
+    so a crash mid-write can't corrupt the file and two gather processes
+    sharing this cross-corpus file never clobber each other's temp).
+    Best-effort: a write failure just means the next
     gather repeats the work."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with atomic_open(path) as fh:
             json.dump(cache, fh, indent=2, sort_keys=True)
-        os.replace(tmp, path)
     except OSError:
         pass
 

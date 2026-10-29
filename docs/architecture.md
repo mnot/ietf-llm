@@ -1105,7 +1105,13 @@ eligibility rules change (an existing cache sheds the now-skipped
 revisions on its next gather, no `--rebuild` needed).
 
 Every-gather corpus writes also go through `atomicio.atomic_open` (temp +
-`os.replace`), so the write is atomic — see the concurrency note below.
+`os.replace`), so the write is atomic — see the concurrency note below. That
+includes fetched draft and RFC bodies (which are skip-if-cached, so a torn file
+would never be repaired; a zero-length one is treated as absent), enriched
+transcripts, the cross-corpus identity caches and `gather-metrics.json`. The temp
+is dot-prefixed (`.<name>.<pid>.<n>.tmp`) and `.tmp` files are skipped by
+`list_files`, `grep_corpus`, the cloud publish walk and the seed bundle, so a
+gather killed mid-write cannot leak a partial file into reads or a published version.
 
 ### Concurrency: gathers and servers can overlap
 

@@ -3,6 +3,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
+from ...atomicio import atomic_open
 from ...net import http_metrics
 from ...datatracker_api import get_group_type
 from ...log import LogLevel, Verbosity, log
@@ -223,6 +224,16 @@ def validate_draft_names(
 _DOWNLOAD_WORKERS = 8
 
 
+def _is_cached(filepath: str) -> bool:
+    """True if a non-empty file is already there. A zero-length one is a
+    leftover from a write that died before the first byte landed (or from an
+    older non-atomic writer); treating it as absent re-fetches it."""
+    try:
+        return os.path.getsize(filepath) > 0
+    except OSError:
+        return False
+
+
 def _download_one(url: str, filepath: str, verbose: Verbosity) -> Optional[str]:
     """Fetch one document to `filepath`; return the path if written, else None.
     Caller guarantees the file is not already cached."""
@@ -235,7 +246,7 @@ def _download_one(url: str, filepath: str, verbose: Verbosity) -> Optional[str]:
     if not res:
         return None
     try:
-        with open(filepath, "w", encoding="utf-8") as out_fh:
+        with atomic_open(filepath) as out_fh:
             out_fh.write(str(res.text))
     except OSError as err:
         log(f"Error writing {filepath}: {err}", verbose, level=LogLevel.ERROR)
@@ -290,7 +301,7 @@ def _revision_tasks(
     for rev in revs:
         rev_str = f"{rev:02d}"
         filepath = os.path.join(out_dir, f"{draft_name}-{rev_str}.txt")
-        if os.path.exists(filepath):
+        if _is_cached(filepath):
             continue
         url = f"https://www.ietf.org/archive/id/{draft_name}-{rev_str}.txt"
         tasks.append((url, filepath))
@@ -435,7 +446,7 @@ def process_documents(
                 r_name = str(rfc["name"])
                 r_num = str(rfc["number"])
                 filepath = os.path.join(out_dir, f"{r_name}.txt")
-                if os.path.exists(filepath):
+                if _is_cached(filepath):
                     continue
                 url = f"https://www.rfc-editor.org/rfc/rfc{r_num}.txt"
                 tasks.append((url, filepath))
