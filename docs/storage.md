@@ -114,7 +114,10 @@ on each host.
 works against AWS S3, Cloudflare R2, or MinIO. The store **must support conditional writes**
 (`If-Match` / `If-None-Match`) — that is what makes the control-plane compare-and-swap safe;
 without it, two concurrent gathers could both believe they hold the lease. **Confirm this on your
-target** before relying on it.
+target** before relying on it. AWS S3 also answers *overlapping* conditional writes to one key with
+`409 ConditionalRequestConflict` rather than `412`; the store treats both as a lost compare-and-swap
+and retries, but whether R2 and MinIO return the same code is **unconfirmed** — check how your
+endpoint reports a lost race, and open an issue if it is something other than `412` / `409`.
 
 **The `s3` extra.** `pipx install 'ietf-llm[s3]'`. For a non-AWS endpoint set
 `IETF_LLM_STORE_ENDPOINT_URL` (e.g. your R2 or MinIO endpoint); leave it unset for AWS.

@@ -29,8 +29,16 @@ _T = TypeVar("_T")
 #: Error codes meaning the object is absent.
 NOT_FOUND = ("404", "NoSuchKey", "NotFound")
 
-#: Error codes meaning a conditional write's precondition did not hold.
-PRECONDITION_FAILED = ("PreconditionFailed", "412")
+#: Error codes meaning a conditional write lost its compare-and-swap: the
+#: precondition did not hold (412), or — S3 documents this for overlapping
+#: conditional writes to one key — another write was in flight (409). botocore
+#: does not retry a 409, so the control plane's own retry loops must see both.
+PRECONDITION_FAILED = (
+    "PreconditionFailed",
+    "412",
+    "ConditionalRequestConflict",
+    "409",
+)
 
 #: Codes meaning credentials are missing, wrong, or lack access — a
 #: configuration problem, not a transient or not-found condition.

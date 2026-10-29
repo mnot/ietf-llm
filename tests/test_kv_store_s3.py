@@ -71,19 +71,32 @@ def test_list_children_via_delimiter(bucket: S3Bucket) -> None:
 
 
 class _PreconditionClient:
-    """A stub S3 client whose put rejects the precondition (412)."""
+    """A stub S3 client whose put rejects the precondition."""
+
+    def __init__(self, code: str = "PreconditionFailed") -> None:
+        self.code = code
 
     def put_object(self, **_kw: object) -> None:
-        raise ClientError(
-            {"Error": {"Code": "PreconditionFailed", "Message": "no"}}, "PutObject"
-        )
+        raise ClientError({"Error": {"Code": self.code, "Message": "no"}}, "PutObject")
 
 
-def test_failed_precondition_returns_none(bucket: S3Bucket) -> None:
+@pytest.mark.parametrize(
+    "code", ["PreconditionFailed", "412", "ConditionalRequestConflict", "409"]
+)
+def test_failed_precondition_returns_none(bucket: S3Bucket, code: str) -> None:
+    # S3 answers an overlapping conditional write with a 409, which botocore
+    # does not retry: it must read as a lost CAS so the retry loops handle it.
     kv = S3KvStore(bucket)
-    bucket.client = _PreconditionClient()  # type: ignore[assignment]
+    bucket.client = _PreconditionClient(code)  # type: ignore[assignment]
     assert kv.put("k", b"1", expect=ABSENT) is None
     assert kv.put("k", b"1", expect='"deadbeef"') is None
+
+
+def test_other_client_errors_still_raise(bucket: S3Bucket) -> None:
+    kv = S3KvStore(bucket)
+    bucket.client = _PreconditionClient("InternalError")  # type: ignore[assignment]
+    with pytest.raises(ClientError):
+        kv.put("k", b"1", expect=ABSENT)
 
 
 class _CapturingClient:
