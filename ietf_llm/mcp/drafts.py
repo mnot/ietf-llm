@@ -3,12 +3,12 @@ get_issue, draft_status, review_record."""
 
 from __future__ import annotations
 
-import contextvars
 import os
 import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from ..freshness import gather_suggestion
+from ..log import LogLevel, log
 from ..gather.sources.citations import normalize_draft_name
 from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import DIR_DRAFTS, drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
@@ -60,7 +60,11 @@ def _newest_revision(wg: str, pattern: "re.Pattern[str]") -> Optional[Tuple[int,
     """
     try:
         names = _list_corpus_files(wg, DIR_DRAFTS)
-    except FileNotFoundError:
+    except Exception as err:  # pylint: disable=broad-except
+        # A corpus that cannot answer holds nothing for this lookup; one bad
+        # manifest or store hiccup must not fail it for every draft (as
+        # `rfcs._corpus_has`).
+        log(f"list_files({wg!r}, {DIR_DRAFTS!r}) failed: {err!r}", level=LogLevel.WARN)
         return None
     hits = [
         (int(match.group(1)), fname)
@@ -74,7 +78,8 @@ def _find_latest_draft_file(name: str) -> Optional[str]:
     """Locate the highest-revision cached `.txt` for a draft, or None.
 
     The owning group's corpus is asked first, since it is where a draft is
-    gathered, and a hit there ends the lookup. Otherwise every gathered corpus
+    gathered, and a hit there ends the lookup: the owner's copy wins even if
+    another corpus caches a newer revision. Otherwise every gathered corpus
     is asked concurrently, and the highest revision found wins (the first in
     sorted order on a tie, so the answer doesn't move between calls). Only the
     corpus holding the winner is then staged (`_files_dir`): on the cloud
@@ -94,12 +99,9 @@ def _find_latest_draft_file(name: str) -> Optional[str]:
     if found is None:
         corpora = [wg for wg in corpora if wg not in owners]
         best: Dict[str, Tuple[int, str]] = {}
-        # A worker thread starts with an empty context, so a version pin (a
-        # ContextVar) would not reach it; run each ask in a copy of ours.
-        contexts = {wg: contextvars.copy_context() for wg in corpora}
 
         def _ask(wg: str) -> None:
-            hit = contexts[wg].run(_newest_revision, wg, pattern)
+            hit = _newest_revision(wg, pattern)
             if hit is not None:
                 best[wg] = hit
 
@@ -123,9 +125,9 @@ def tool_draft_authors(name: str) -> str:
     """Render a draft's authors/editors with contact emails, from the cache.
 
     Reads the Authors' Addresses section of the newest cached revision (the
-    same text gather already parses) — no network. Returns what the draft
-    itself records; a chair may know a better working address from mail and
-    can override.
+    same text gather already parses; the owning WG's corpus is preferred) — no
+    network. Returns what the draft itself records; a chair may know a better
+    working address from mail and can override.
     """
     from ..gather.sources.draft_authors import (  # pylint: disable=import-outside-toplevel
         parse_authors,
@@ -476,8 +478,9 @@ def tool_get_draft(
     start_line: Optional[int] = None,
     max_lines: int = _DRAFT_MAX_LINES,
 ) -> str:
-    """The newest cached revision of draft `name`: its outline, one section of
-    it, or a verbatim line window."""
+    """The cached copy of draft `name` (its newest revision there): its outline,
+    one section of it, or a verbatim line window. The owning WG's corpus is
+    preferred; another corpus's copy is used only when the owner has none."""
     path = _find_latest_draft_file(name)
     if path is None:
         return (
@@ -642,7 +645,8 @@ def register(server: "MCPServer") -> None:
         call-for-presenters or to reach a draft's owners.
 
         Reads the Authors' Addresses section of the newest **cached** revision
-        of the draft (across all gathered corpora); offline, no network. Each
+        of the draft, preferring the owning WG's corpus over other gathered
+        corpora that cache it; offline, no network. Each
         entry gives the name, role (author/editor), organisation, and the
         email the draft itself lists. The owning corpus (the draft's WG) must
         be gathered. These are draft-stated addresses — a chair may have a
@@ -675,8 +679,10 @@ def register(server: "MCPServer") -> None:
         start_line: Optional[int] = None,
         max_lines: int = 2000,
     ) -> str:
-        """Verbatim text of a cached Internet-Draft by name (newest cached
-        revision, across all gathered corpora).
+        """Verbatim text of a cached Internet-Draft by name (its newest cached
+        revision). The owning WG's corpus is preferred even if another gathered
+        corpus caches a newer revision; other corpora are consulted only when
+        the owner has none.
 
         Use this to quote a draft's ACTUAL wording — to ground a review, a
         citation, or a contribution in primary text rather than a search

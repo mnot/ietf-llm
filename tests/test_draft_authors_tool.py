@@ -101,3 +101,21 @@ def test_owner_candidates_handle_hyphenated_acronyms():
     # The draft's own name keeps at least one token, so a corpus named for it
     # is not mistaken for the owner.
     assert owners("draft-ietf-tls", corpora) == []
+
+
+def test_a_failing_corpus_does_not_fail_the_lookup(isolated_home, monkeypatch):
+    """One corpus whose listing raises (an S3 error, a bad manifest) is treated
+    as holding nothing, for the owner and the non-owner sweep alike."""
+    write_cache_file(isolated_home, "xother", "drafts/draft-ietf-xtest-foo-03.txt")
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-bar-00.txt")
+    write_cache_file(isolated_home, "xbad", "drafts/draft-ietf-xtest-foo-09.txt")
+    real = mcp.drafts._list_corpus_files
+
+    def _flaky(wg: str, subdir: str):
+        if wg in ("xbad", "xtest"):
+            raise RuntimeError("boom")
+        return real(wg, subdir)
+
+    monkeypatch.setattr(mcp.drafts, "_list_corpus_files", _flaky)
+    path = mcp.drafts._find_latest_draft_file("draft-ietf-xtest-foo")
+    assert path is not None and path.endswith("xother/files/drafts/draft-ietf-xtest-foo-03.txt")
