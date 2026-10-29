@@ -222,6 +222,7 @@ class _ShortFetch(imaplib.IMAP4.error):
         super().__init__(f"{missing} of {requested} requested message(s) not fetched")
         self.missing = missing
         self.requested = requested
+        self.written = requested - missing
         self.uids: List[str] = []
 
 
@@ -253,8 +254,11 @@ def _download_batches(
         status, msg_data = mail.uid("fetch", batch_str, "(RFC822)")
 
         if status != "OK" or not msg_data:
+            reply = msg_data[0] if msg_data else b""
+            text = reply.decode("utf-8", "replace") if isinstance(reply, bytes) else ""
+            detail = f": {text}" if text else ""
             log(
-                f"  FETCH of {len(batch)} message(s) returned {status!r}.",
+                f"  FETCH of {len(batch)} message(s) returned {status!r}{detail}.",
                 verbose,
                 level=LogLevel.WARN,
             )
@@ -634,11 +638,13 @@ def _sync_one_list(
     os.makedirs(cache_dir, exist_ok=True)
     clear_verified(cache_dir)
     window = f"the last {months} month(s)" if months else "all history"
+    fetched_before_retry = 0
     for attempt in range(IMAP_RETRIES + 1):
         try:
             uids, new_count, freshness = _imap_sync_attempt(
                 list_name, months, cache_dir, verbose, on_progress
             )
+            new_count += fetched_before_retry
         except _FolderSelectError:
             report(
                 f"Mailing list '{list_name}': no such folder on the IETF IMAP "
@@ -648,6 +654,7 @@ def _sync_one_list(
             )
             return []
         except _ShortFetch as short:
+            fetched_before_retry += short.written
             if attempt < IMAP_RETRIES:
                 log(
                     f"  {short} on '{list_name}'; retrying...",

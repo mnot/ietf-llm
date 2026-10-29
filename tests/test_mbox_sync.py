@@ -247,7 +247,10 @@ def test_a_no_on_one_batch_is_retried_and_the_second_pass_fills_it(monkeypatch, 
     uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
     assert uids == ["1", "2", "3", "4", "5"]
     assert sorted(p.name for p in cache.glob("*.eml")) == [f"{n}.eml" for n in range(1, 6)]
-    assert len(notes) == 1 and "5 message(s)" in notes[0] and "could not" not in notes[0]
+    # The retry found nothing left to fetch; the note still counts the first
+    # pass's messages.
+    assert len(notes) == 1 and "5 message(s)" in notes[0] and "(5 new)" in notes[0]
+    assert "could not" not in notes[0]
     assert mbox.verified_uidvalidity(str(cache)) == "7"
 
 
