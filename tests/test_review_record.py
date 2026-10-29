@@ -433,6 +433,11 @@ def test_a_failed_fetch_is_not_rendered_as_an_empty_record(monkeypatch, urls) ->
     # None of the absence claims may appear.
     assert "none requested" not in out
     assert "not opened" not in out
+    # Nor may the section bodies, which render separately from the verdict.
+    assert "No review has been requested" not in out
+    assert "No ballot has been opened" not in out
+    assert "## Reviews\n\n_Not retrieved" in out
+    assert "## Ballot\n\n_Not retrieved" in out
     assert "Nothing in this record has examined" not in out
 
 

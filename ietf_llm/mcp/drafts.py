@@ -834,6 +834,8 @@ def tool_review_record(name: str) -> str:
     if record.reviews:
         lines += ["", f"## Reviews ({len(record.reviews)})", ""]
         lines += _review_rows(record)
+    elif "reviews" in record.unavailable:
+        lines += ["", "## Reviews", "", "_Not retrieved: Datatracker did not answer._"]
     else:
         lines += ["", "## Reviews", "", "_No review has been requested._"]
     if record.positions:
@@ -846,6 +848,8 @@ def tool_review_record(name: str) -> str:
                 "\n_A DISCUSS holds publication. Its text is in the gathered "
                 f"`ballots/{record.name}.md` — read that for the substance._"
             )
+    elif "ballot" in record.unavailable:
+        lines += ["", "## Ballot", "", "_Not retrieved: Datatracker did not answer._"]
     else:
         lines += ["", "## Ballot", "", "_No ballot has been opened._"]
     lines.append("")
