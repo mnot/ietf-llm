@@ -220,14 +220,13 @@ def test_slide_context_ietf_meeting(tmp_path: Path) -> None:
     # code is read from the path, not the filename.
     relpath = (
         "meetings/ietf124/slides/"
-        "slides-124-aipref-vocabulary-status-update-01.pdf"
+        "slides-124-aipref-vocabulary-status-update.pdf"
     )
     ctx = slide_context(relpath, str(tmp_path))
     assert ctx is not None
     assert ctx.meeting == "ietf124"
     assert ctx.label == "IETF 124 meeting"
     assert ctx.topic_slug == "vocabulary-status-update"
-    assert ctx.version == "01"
     assert ctx.date == "2025-11-05"
     assert ctx.minutes_file == "meetings/ietf124/minutes.md"
 
@@ -238,7 +237,7 @@ def test_slide_context_interim(tmp_path: Path) -> None:
     )
     relpath = (
         "meetings/interim2025aipref08/slides/"
-        "slides-interim-2025-aipref-08-sessa-draft-status-update-00.pdf"
+        "slides-interim-2025-aipref-08-sessa-draft-status-update.pdf"
     )
     ctx = slide_context(relpath, str(tmp_path))
     assert ctx is not None
@@ -259,7 +258,7 @@ def test_slide_context_handles_missing_minutes(tmp_path: Path) -> None:
     # The meeting dir exists but minutes.md doesn't — code is still
     # extracted from the path.
     (tmp_path / "meetings" / "ietf124" / "slides").mkdir(parents=True)
-    relpath = "meetings/ietf124/slides/slides-124-aipref-overview-00.pdf"
+    relpath = "meetings/ietf124/slides/slides-124-aipref-overview.pdf"
     ctx = slide_context(relpath, str(tmp_path))
     assert ctx is not None
     assert ctx.label == "IETF 124 meeting"
@@ -271,7 +270,7 @@ def test_extracted_txt_includes_meeting_context_header(tmp_path: Path) -> None:
     _seed_meeting(tmp_path, "ietf124", "Date: 2025-11-05 21:00")
     pdf_path = (
         tmp_path / "meetings" / "ietf124" / "slides"
-        / "slides-124-aipref-overview-00.pdf"
+        / "slides-124-aipref-overview.pdf"
     )
     pdf_path.write_bytes(MINIMAL_PDF)
     extract_all_pdfs(str(tmp_path))
@@ -287,7 +286,7 @@ def test_stubbed_unextractable_still_carries_context(tmp_path: Path) -> None:
     _seed_meeting(tmp_path, "ietf124", "Date: 2025-11-05")
     pdf_path = (
         tmp_path / "meetings" / "ietf124" / "slides"
-        / "slides-124-aipref-whiteboard-00.pdf"
+        / "slides-124-aipref-whiteboard.pdf"
     )
     pdf_path.write_bytes(b"\x00 not a valid pdf")
     extract_all_pdfs(str(tmp_path))
@@ -296,3 +295,71 @@ def test_stubbed_unextractable_still_carries_context(tmp_path: Path) -> None:
     # meeting it would have come from.
     assert "**Meeting:** IETF 124 meeting" in txt
     assert "No extractable text" in txt
+
+
+def test_slide_context_for_the_writers_real_names(tmp_path: Path) -> None:
+    # `_download_slide` saves `<docname>.pdf`, and a doc name has no revision.
+    _seed_meeting(tmp_path, "ietf125", "Date: 2026-03-14 09:00")
+    ctx = slide_context(
+        "meetings/ietf125/slides/slides-125-httpbis-moqpack.pdf", str(tmp_path)
+    )
+    assert ctx is not None
+    assert ctx.topic_slug == "moqpack"
+    assert ctx.date == "2026-03-14"
+
+
+def test_trailing_digits_are_part_of_the_topic(tmp_path: Path) -> None:
+    ctx = slide_context(
+        "meetings/ietf125/slides/slides-125-acme-profiles-draft-ietf-acme-profiles-00.pdf",
+        str(tmp_path),
+    )
+    assert ctx is not None
+    assert ctx.topic_slug == "profiles-draft-ietf-acme-profiles-00"
+
+
+def test_header_refresh_repairs_an_old_headerless_extract(tmp_path: Path) -> None:
+    # A `.pdf.txt` written before the filename fix has a bare `# name` header;
+    # with the `.pdf` dropped (suppressed mode) it cannot be re-extracted, so
+    # the header is rewritten around the existing body.
+    _seed_meeting(tmp_path, "ietf125", "Date: 2026-03-14 09:00")
+    txt = (
+        tmp_path / "meetings" / "ietf125" / "slides"
+        / "slides-125-httpbis-moqpack.pdf.txt"
+    )
+    txt.write_text(
+        "# slides-125-httpbis-moqpack.pdf\n\n\n## Page 1\n\nHello MOQ\n"
+    )
+    extract_all_pdfs(str(tmp_path), suppress_pdf=True)
+    out = txt.read_text()
+    assert "**Meeting:** IETF 125 meeting (2026-03-14)" in out
+    assert "**Topic slug:** `moqpack`" in out
+    assert out.endswith("## Page 1\n\nHello MOQ\n")
+    # Stable on the next run.
+    before = txt.stat().st_mtime_ns
+    extract_all_pdfs(str(tmp_path), suppress_pdf=True)
+    assert txt.stat().st_mtime_ns == before
+
+
+def test_header_refresh_replaces_a_versioned_topic_line(tmp_path: Path) -> None:
+    _seed_meeting(tmp_path, "ietf125", "Date: 2026-03-14")
+    txt = (
+        tmp_path / "meetings" / "ietf125" / "slides"
+        / "slides-125-httpbis-for-ietf-124.pdf.txt"
+    )
+    txt.write_text(
+        "# slides-125-httpbis-for-ietf-124.pdf\n\n"
+        "**Meeting:** IETF 125 meeting\n"
+        "**Topic slug:** `for-ietf` (v124)\n\n\n## Page 1\n\nbody\n"
+    )
+    extract_all_pdfs(str(tmp_path))
+    out = txt.read_text()
+    assert "(v124)" not in out
+    assert "**Topic slug:** `for-ietf-124`" in out
+    assert out.count("**Meeting:**") == 1
+
+
+def test_header_refresh_ignores_foreign_text_files(tmp_path: Path) -> None:
+    other = tmp_path / "notes.pdf.txt"
+    other.write_text("something else entirely\n")
+    extract_all_pdfs(str(tmp_path))
+    assert other.read_text() == "something else entirely\n"

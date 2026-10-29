@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
 from ...paths import meeting_code_for_relpath, meeting_label, minutes_path
 
@@ -57,14 +58,12 @@ def _strip_surrogates(text: str) -> str:
 
 # --- Slide context inference ----------------------------------------------
 
-# Slide file naming (post-reorg): the meeting code lives in the path
-# as `meetings/<code>/slides/<filename>.pdf`, so we no longer need to
-# parse it out of the filename. The filename itself still carries
-# `slides-<session-code>-<topic>-<NN>.pdf` from Datatracker.
-_SLIDE_BASENAME_RE = re.compile(
-    r"^slides-(?P<middle>.+?)-(?P<version>\d+)\.pdf$",
-    re.IGNORECASE,
-)
+# Slide file naming: the meeting code lives in the path as
+# `meetings/<code>/slides/<filename>.pdf`, so it is not parsed out of the
+# filename. The filename is the Datatracker document name, which carries no
+# revision (`slides-125-httpbis-moqpack.pdf`); a trailing number is part of
+# the topic (`...-for-ietf-124`), not a version.
+_SLIDE_BASENAME_RE = re.compile(r"^slides-(?P<middle>.+)\.pdf$", re.IGNORECASE)
 
 # Strip the leading session code from the topic slug. The session code
 # typically repeats the meeting identifier ("124-aipref-" or
@@ -84,7 +83,6 @@ class SlideContext:
     meeting: str  # "ietf124" or "interim2025aipref08"
     label: str  # "IETF 124 meeting" / "Interim 2025 #08"
     topic_slug: str  # "vocabulary-status-update"
-    version: str  # "01"
     date: Optional[str] = None  # YYYY-MM-DD from companion minutes file
     minutes_file: Optional[str] = None  # `ietf124-minutes.md`
 
@@ -132,10 +130,10 @@ def slide_context(
     """Infer meeting + topic context for a slide PDF.
 
     `pdf_relpath` is the path relative to cache_dir, e.g.
-    `meetings/ietf124/slides/slides-124-aipref-overview-00.pdf`.
-    The meeting code comes from the path; topic + version come from
-    the filename. Returns None if the basename doesn't follow the
-    `slides-…-NN.pdf` convention.
+    `meetings/ietf124/slides/slides-124-aipref-overview.pdf`.
+    The meeting code comes from the path, the topic from the filename.
+    Returns None if the basename doesn't follow the `slides-….pdf`
+    convention.
     """
     basename = os.path.basename(pdf_relpath)
     match = _SLIDE_BASENAME_RE.match(basename)
@@ -145,14 +143,12 @@ def slide_context(
     if not meeting:
         return None
     middle = match.group("middle")
-    version = match.group("version")
     minutes_rel = _find_minutes_relpath(cache_dir, meeting)
     date = _read_meeting_date(cache_dir, minutes_rel) if minutes_rel else None
     return SlideContext(
         meeting=meeting,
         label=_meeting_label(meeting),
         topic_slug=_clean_topic(middle),
-        version=version,
         date=date,
         minutes_file=minutes_rel,
     )
@@ -166,11 +162,42 @@ def _render_slide_header(name: str, context: Optional[SlideContext]) -> str:
     if context.date:
         meeting_text += f" ({context.date})"
     lines.append(f"**Meeting:** {meeting_text}")
-    lines.append(f"**Topic slug:** `{context.topic_slug}` (v{context.version})")
+    lines.append(f"**Topic slug:** `{context.topic_slug}`")
     if context.minutes_file:
         lines.append(f"**Minutes:** `{context.minutes_file}`")
     lines.append("")
     return "\n".join(lines) + "\n"
+
+
+_HEADER_LINE_RE = re.compile(r"^\*\*(?:Meeting|Topic slug|Minutes):\*\*")
+
+
+def refresh_header(txt_path: str, cache_dir: str) -> bool:
+    """Rewrite a `.pdf.txt`'s header to what `_render_slide_header` would
+    write now, keeping the extracted body. Returns True if it changed.
+
+    Extraction cannot be redone for a deck whose source `.pdf` was dropped
+    (`suppress_pdf`), and the body does not depend on the header, so a header
+    change (filename parsing fixed, minutes file arrived since) is applied to
+    the text in place. Files not in the writer's `# name` form are left alone.
+    """
+    name = os.path.basename(txt_path)[: -len(".txt")]
+    try:
+        with open(txt_path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+    lines = text.split("\n")
+    if lines[0] != f"# {name}":
+        return False
+    body_start = 1
+    while body_start < len(lines) and (
+        not lines[body_start].strip() or _HEADER_LINE_RE.match(lines[body_start])
+    ):
+        body_start += 1
+    relpath = os.path.relpath(txt_path[: -len(".txt")], cache_dir)
+    header = _render_slide_header(name, slide_context(relpath, cache_dir))
+    return write_if_changed(txt_path, header + "\n" + "\n".join(lines[body_start:]))
 
 
 def _output_path(pdf_path: str) -> str:
@@ -255,8 +282,15 @@ def extract_all_pdfs(
     skipped_empty = 0
     failed = 0
     swept = 0
+    refreshed = 0
     for dirpath, _dirnames, filenames in os.walk(cache_dir):
         for name in sorted(filenames):
+            if name.lower().endswith(".pdf.txt"):
+                # Includes decks whose .pdf was dropped, which the
+                # extraction pass below never sees.
+                if refresh_header(os.path.join(dirpath, name), cache_dir):
+                    refreshed += 1
+                continue
             if not name.lower().endswith(".pdf"):
                 continue
             pdf_path = os.path.join(dirpath, name)
@@ -300,12 +334,12 @@ def extract_all_pdfs(
                     level=LogLevel.STATUS,
                 )
 
-    if written or failed or swept:
+    if written or failed or swept or refreshed:
         sweep_note = f", {swept} .pdf dropped" if suppress_pdf else ""
         log(
             f"PDF extraction: {len(written)} files "
             f"({skipped_empty} with no extractable text, {failed} failed"
-            f"{sweep_note})",
+            f"{sweep_note}), {refreshed} headers refreshed",
             verbose,
             level=LogLevel.STATUS,
         )
