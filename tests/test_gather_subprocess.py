@@ -115,6 +115,36 @@ def test_child_emits_progress_notes_and_success_code(
     assert rc == 0
 
 
+def test_child_reports_an_unhandled_error_before_dying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_fd, write_fd = os.pipe()
+
+    def exploding_run_gather(argv, _verbosity, progress=None, note_fn=None):  # type: ignore[no-untyped-def]
+        raise ValueError("bad\nthing " + "x" * 1000)
+
+    monkeypatch.setattr(gather_child, "run_gather", exploding_run_gather)
+    monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
+    raised: list = []
+
+    def _go() -> None:
+        try:
+            gather_child.main()
+        except ValueError as err:
+            raised.append(err)  # re-raised, so the traceback still reaches stderr
+
+    thread = threading.Thread(target=_go)
+    thread.start()
+    with os.fdopen(read_fd, "r", encoding="utf-8") as pipe:
+        lines = [json.loads(line) for line in pipe if line.strip()]
+    thread.join()
+    assert len(raised) == 1
+    assert [r["t"] for r in lines] == ["error"]
+    assert lines[0]["type"] == "ValueError"
+    assert lines[0]["msg"].startswith("bad thing xxx")  # one line
+    assert len(lines[0]["msg"]) == gather_child._ERROR_MSG_MAX
+
+
 def test_child_unusable_corpus_maps_to_distinct_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -142,6 +172,9 @@ def _fake_child(tmp_path: Path) -> Path:
         "w.write(json.dumps({'t':'progress','name':'charter',"
         "'index':1,'total':2,'detail':None})+chr(10)); w.flush()\n"
         "w.write(json.dumps({'t':'note','msg':'hi'})+chr(10)); w.flush()\n"
+        "if os.environ.get('FAKE_ERROR'):\n"
+        "    w.write(json.dumps({'t':'error','type':'ValueError',"
+        "'msg':os.environ['FAKE_ERROR']})+chr(10)); w.flush()\n"
         "if os.environ.get('FAKE_SLEEP'): time.sleep(30)\n"
         "w.close()\n"
         "sys.exit(int(os.environ.get('FAKE_EXIT','0')))\n"
@@ -198,6 +231,22 @@ def test_parent_maps_unusable_and_crash_exit_codes(
         _collect(GatherSpec(corpus="wg"))
 
 
+def test_parent_carries_the_childs_error_into_the_crash_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(
+        gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
+    )
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
+    with pytest.raises(RuntimeError) as crash:
+        _collect(GatherSpec(corpus="wg"))
+    assert "exited with code 1: ValueError: no route to datatracker" in str(
+        crash.value
+    )
+
+
 def test_parent_cancellation_terminates_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -216,3 +265,27 @@ def test_parent_cancellation_terminates_child(
     # registered child behind.
     assert time.monotonic() - started < 20
     assert "wg" not in gather_pipeline._children
+
+
+def test_gather_status_error_names_what_the_child_hit(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fleet-visible record, not just the exception the worker raises.
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(
+        gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
+    )
+    monkeypatch.delenv("IETF_LLM_GATHER_INPROCESS", raising=False)
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
+
+    assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
+    deadline = time.time() + 10
+    status = gather_runner.read_status("tls")
+    while time.time() < deadline and (
+        status is None or status.get("state") not in ("done", "failed")
+    ):
+        time.sleep(0.02)
+        status = gather_runner.read_status("tls")
+    assert status is not None and status["state"] == "failed"
+    assert "ValueError: no route to datatracker" in status["error"]

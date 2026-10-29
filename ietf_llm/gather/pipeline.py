@@ -189,7 +189,9 @@ def _run_pipeline_child(
         _children[corpus] = proc
     try:
         # Owns + closes read_fd.
-        _pump_child(corpus, proc, read_fd, progress, note, cancel_requested)
+        child_error = _pump_child(
+            corpus, proc, read_fd, progress, note, cancel_requested
+        )
         rc = proc.wait()
     finally:
         _terminate_child(proc)  # no-op if it already exited; kills on the cancel path
@@ -199,7 +201,10 @@ def _run_pipeline_child(
     outcome = _EXIT_CODE_OUTCOMES.get(rc)
     if outcome is not None:
         return outcome
-    raise RuntimeError(f"gather subprocess for {corpus!r} exited with code {rc}")
+    detail = f": {child_error}" if child_error else ""
+    raise RuntimeError(
+        f"gather subprocess for {corpus!r} exited with code {rc}{detail}"
+    )
 
 
 def _pump_child(
@@ -209,9 +214,11 @@ def _pump_child(
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
-) -> None:
+) -> Optional[str]:
     """Feed the child's progress records into `progress`/`note` until it closes
     the pipe, checking for a cancel between records and on an idle tick.
+    Returns the child's last `error` record as `Type: message`, if it sent one
+    (see `child.main`).
 
     A daemon reader thread does the blocking line reads (GIL released) and hands
     records to this thread over a queue; this thread applies them and owns the
@@ -235,6 +242,7 @@ def _pump_child(
 
     reader = threading.Thread(target=_reader, name=f"gather-pipe-{corpus}", daemon=True)
     reader.start()
+    child_error: Optional[str] = None
     while True:
         try:
             record = records.get(timeout=_CHILD_POLL_S)
@@ -244,11 +252,14 @@ def _pump_child(
                 raise GatherCancelled(corpus) from None
             continue
         if record is None:
-            return  # reader hit EOF; the child is finishing
+            return child_error  # reader hit EOF; the child is finishing
         if cancel_requested():
             _terminate_child(proc)
             raise GatherCancelled(corpus)
-        _apply_record(record, progress, note)
+        if record.get("t") == "error":
+            child_error = f"{record.get('type')}: {record.get('msg')}"
+        else:
+            _apply_record(record, progress, note)
 
 
 def _parse_record(line: str) -> Optional[Dict[str, Any]]:

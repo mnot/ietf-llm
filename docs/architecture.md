@@ -1373,7 +1373,13 @@ The child also reports what it did. Its exit code carries the `GatherOutcome`
 untouched, and uploading it again would write an identical version. The
 freshness debounce at `start_gather` reads the store's `gathered_at` rather than
 the local sentinel, so a replica that has not seeded the corpus yet declines a
-fresh one up front instead of downloading it to find that out. Under
+fresh one up front instead of downloading it to find that out.
+
+A child that dies on an unhandled exception sends one last `error` record (type
+and a truncated, single-line message) down the pipe before it exits non-zero, and
+the worker appends it to the failure it raises. The child's stderr is inherited,
+so on a cloud deployment it never reaches whoever is reading `gather_status`;
+this puts the cause in the status record's `error` field, which is fleet-visible. Under
 `IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
 which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
 the stage and how many are left) since there is no prior snapshot. A re-gather

@@ -16,7 +16,8 @@ argv `GatherSpec.to_argv()` produces for the in-process path.
 Exit codes: the `GatherOutcome` run_gather returned, as `pipeline.OUTCOME_EXIT_CODES`
 maps it (0 = gathered, 3 = the corpus name was unusable, 4 = skipped, nothing to
 publish); anything else = an unhandled error (traceback on the inherited
-stderr) or a signal (the parent terminates the child to cancel).
+stderr, and an `error` record on the pipe so the parent's status can say what
+failed) or a signal (the parent terminates the child to cancel).
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ from typing import Any, Optional
 from ..log import Verbosity
 from .pipeline import OUTCOME_EXIT_CODES
 from .sequencer import run_gather
+
+#: Longest exception message sent to the parent. The parent's status record
+#: truncates again; this keeps one runaway message from filling the pipe.
+_ERROR_MSG_MAX = 300
 
 
 def _renice() -> None:
@@ -89,6 +94,17 @@ def main() -> None:
         outcome = run_gather(
             sys.argv[1:], Verbosity.STATUS, progress=_progress, note_fn=_note
         )
+    except Exception as err:
+        # stderr is inherited and lost to a fleet operator; the parent's status
+        # record is what `gather_status` shows, so say what failed there.
+        _emit(
+            {
+                "t": "error",
+                "type": type(err).__name__,
+                "msg": " ".join(str(err).split())[:_ERROR_MSG_MAX],
+            }
+        )
+        raise
     finally:
         # Close the writer so the parent's reader sees EOF and stops pumping,
         # even if run_gather raises (the traceback still reaches stderr).
