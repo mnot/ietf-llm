@@ -240,3 +240,46 @@ def test_embed_progress_withholds_early_eta() -> None:
     seen: List[str] = []
     _embed_progress(5, 100, _time.time() - 10, Verbosity.QUIET, seen.append)
     assert seen == ["5% embedded"]
+
+
+def test_chunker_version_change_rewrites_rows_without_reembedding(
+    isolated_home: Path,
+) -> None:
+    # A chunker bump that leaves chunk text alone (e.g. corrected line numbers)
+    # must refresh the stored rows but embed nothing: the per-chunk hash reuse
+    # keeps every vector.
+    stub = _CountingStub()
+    embeddings._MODEL_CACHE["stub"] = stub  # noqa
+    write_cache_file(isolated_home, "wg", "threads/t.md", _THREAD_HEAD + _MSG1 + _MSG2)
+    write_cache_file(isolated_home, "wg", "drafts/draft-x.txt", "\n\n\nbody text\n")
+    assert _build("wg") is True
+    before = _chunk_rows("wg", "threads/t.md")
+
+    # Age the index to an older chunker and give its draft row a stale span.
+    conn = sqlite3.connect(_db_path("wg"))
+    conn.execute("UPDATE meta SET value='0' WHERE key='chunker_version'")
+    conn.execute("UPDATE chunks SET start_line=99 WHERE file='drafts/draft-x.txt'")
+    conn.commit()
+    conn.close()
+
+    stub.embedded.clear()
+    assert _build("wg") is True  # rewritten, so topic maps etc. recompute
+    assert not any(
+        t != "dimension probe" and ("message body" in t or "body text" in t)
+        for t in stub.embedded
+    )
+    assert _chunk_rows("wg", "threads/t.md") == before
+
+    conn = sqlite3.connect(_db_path("wg"))
+    try:
+        (start,) = conn.execute(
+            "SELECT start_line FROM chunks WHERE file='drafts/draft-x.txt'"
+        ).fetchone()
+        (version,) = conn.execute(
+            "SELECT value FROM meta WHERE key='chunker_version'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert start != 99  # the row was rewritten by the re-chunk
+    assert version != "0"
+    assert _build("wg") is False  # and the next build is a no-op again

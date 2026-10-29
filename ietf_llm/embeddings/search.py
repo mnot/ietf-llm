@@ -339,12 +339,16 @@ def _flush_window(
     chunks all landed. `window` is `(plan_pos, chunk_idx, text)` triples into
     `plans`; the whole window goes to one `embed_multi` call, which lets
     sentence-transformers length-sort it for tight padding. A file with a chunk
-    in a failed call is not yielded (no hash stamp → retried next run)."""
-    if not window:
+    in a failed call is not yielded (no hash stamp → retried next run). A file
+    whose chunks were all reused has nothing to embed but is still yielded, so
+    its rows are rewritten and stamped."""
+    if not plans:
         return
     results: List[List[Any]] = [[None] * len(plan.texts) for plan in plans]
     try:
-        vectors = list(model.embed_multi([text for _, _, text in window]))
+        vectors = (
+            list(model.embed_multi([text for _, _, text in window])) if window else []
+        )
     except Exception as err:  # pylint: disable=broad-except
         # The window failed (OOM, a provider error); drop the files it touched
         # so none is stamped half-embedded, and keep going.
@@ -532,23 +536,26 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         )
         rebuild = True
 
-    # A chunker change alters chunk boundaries but not the model id, so the
-    # model check above can't catch it. Record the chunker version and
-    # rebuild on mismatch, so an upgrade that changes how text is cut
-    # transparently re-chunks + re-embeds each WG on its next gather. A
-    # pre-versioning index (an existing `model` row but no `chunker_version`)
-    # counts as a mismatch — it was built by the old char-window chunker.
+    # A chunker change alters how text is cut (or the line spans stored with
+    # it) but not the model id, so the model check above can't catch it.
+    # Record the chunker version and, on mismatch, re-chunk every file on this
+    # gather. Stored vectors are kept: they are keyed by the hash of the text
+    # embedded, so a chunk whose text survives the change is reused and only
+    # genuinely new text is embedded (a metadata-only change costs no embeds).
+    # A pre-versioning index (an existing `model` row but no `chunker_version`)
+    # counts as a mismatch -- it was built by the old char-window chunker.
     cur.execute("SELECT value FROM meta WHERE key='chunker_version'")
     row = cur.fetchone()
     existing_chunker = row[0] if row else None
+    rechunk = False
     if existing_model and existing_chunker != CHUNKER_VERSION:
         log(
             f"Chunker changed ({existing_chunker or 'pre-v2'} -> "
-            f"{CHUNKER_VERSION}); rebuilding index.",
+            f"{CHUNKER_VERSION}); re-chunking index.",
             verbose,
             level=LogLevel.STATUS,
         )
-        rebuild = True
+        rechunk = True
 
     # Probe the embedding dimension up front (one embed; negligible against
     # a bulk build). Recording it is provenance beyond the model-id string;
@@ -582,6 +589,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     if rebuild:
         cur.execute("DELETE FROM chunks")
         cur.execute("DELETE FROM meta")
+    elif rechunk:
+        # Dropping the per-file content stamps makes every file replan; the
+        # rows stay so _plan_file can reuse their vectors by chunk hash.
+        cur.execute("DELETE FROM meta WHERE key LIKE 'hash:%'")
 
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('model', ?)", (model_name,)
@@ -635,7 +646,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # Did the vector set change this run? A rebuild or a prune already changed it;
     # any written file below sets it too. Lets the caller skip the topic-map
     # recompute when nothing changed (issue #190).
-    changed = rebuild or bool(orphans)
+    changed = rebuild or rechunk or bool(orphans)
 
     # Content hashes for every eligible file, computed once and reused by both
     # the pending-count pass and the embed pass below, so each file is read at
