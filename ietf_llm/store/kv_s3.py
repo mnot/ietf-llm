@@ -57,7 +57,13 @@ class S3KvStore(KvStore):
         try:
             resp = bkt.call("write an object", lambda: bkt.client.put_object(**params))
         except ClientError as err:
-            if err.response.get("Error", {}).get("Code") in PRECONDITION_FAILED:
+            # Only a conditional put can lose a compare-and-swap; an unconditional
+            # one that fails must surface, not read as a CAS it never asked for.
+            lost = expect is not ANY
+            if (
+                lost
+                and err.response.get("Error", {}).get("Code") in PRECONDITION_FAILED
+            ):
                 return None
             raise
         return str(resp["ETag"])

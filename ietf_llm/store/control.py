@@ -110,7 +110,14 @@ class KvControlPlane:
         clock = time.time() if now is None else now
         key = _lease_key(corpus)
         record = self._kv.get(key)
-        new = _dumps({"owner": owner, "acquired_at": clock, "expires_at": clock + ttl})
+        new = _dumps(
+            {
+                "owner": owner,
+                "acquired_at": clock,
+                "expires_at": clock + ttl,
+                "ttl": ttl,
+            }
+        )
         if record is None:
             return self._kv.put(key, new, expect=ABSENT) is not None
         held, token = _loads(record)
@@ -122,12 +129,14 @@ class KvControlPlane:
     def _touch_lease(
         self, corpus: str, owner: str, ttl: Optional[float], clock: float
     ) -> bool:
-        """Rewrite `owner`'s lease record under compare-and-swap — extending it
-        to `clock + ttl`, or leaving it as it is when `ttl` is None — and report
-        whether `owner` still held it. A lost CAS is retried against a fresh read:
-        the only other writer of a live lease is its owner's other thread (the
-        heartbeat vs. a publish), and a CAS lost to that must not read as a lost
-        lease. A different owner on the record is the real answer."""
+        """Extend `owner`'s lease record to `clock + ttl` under compare-and-swap
+        (`ttl` None: by the span the record itself was granted for, never
+        shortening it) and report whether `owner` still held it. The bytes always
+        change, so the object store's ETag does too and the write is a real CAS
+        against a taker's `acquire_lease`. A lost CAS is retried against a fresh
+        read: the only other writer of a live lease is its owner's other thread
+        (the heartbeat vs. a publish), and a CAS lost to that must not read as a
+        lost lease. A different owner on the record is the real answer."""
         key = _lease_key(corpus)
         for _ in range(_CAS_RETRIES):
             record = self._kv.get(key)
@@ -137,7 +146,11 @@ class KvControlPlane:
             if held["owner"] != owner:
                 return False
             if ttl is not None:
+                held["ttl"] = ttl
                 held["expires_at"] = clock + ttl
+            else:
+                span = held.get("ttl") or held["expires_at"] - held["acquired_at"]
+                held["expires_at"] = max(held["expires_at"], clock + span)
             if self._kv.put(key, _dumps(held), expect=token) is not None:
                 return True
         return False
@@ -154,11 +167,15 @@ class KvControlPlane:
 
     def confirm_lease(self, corpus: str, owner: str) -> bool:
         """Whether `owner` holds the lease *right now*, proven by a compare-and-
-        swap rewrite of the record rather than a read: a taker's `acquire_lease`
-        and this write race on the record's token, so exactly one wins. Expiry is
-        not consulted — an unclaimed lapsed lease is still `owner`'s, and the
-        publisher's pointer compare-and-swap is what orders it against any later
-        taker."""
+        swap write rather than a read, which also extends the lease by the span
+        it was granted for. The extension is what makes it a CAS on an object
+        store (the ETag is a hash of the body, so a byte-identical rewrite would
+        not change it and a taker holding the old token would still win), and it
+        keeps the flip and the reap that follows under a live lease. A taker's
+        `acquire_lease` and this write race on the record, so exactly one wins.
+        Expiry is not consulted: an unclaimed lapsed lease is still `owner`'s
+        and is revived; the publisher's pointer compare-and-swap, not the clock,
+        orders it against any later taker."""
         return self._touch_lease(corpus, owner, None, time.time())
 
     def release_lease(self, corpus: str, owner: str) -> None:

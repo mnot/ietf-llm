@@ -95,9 +95,9 @@ accelerator caches, gather, then publish the result as a new version and persist
 local cache on a cloud host is scratch — only what is published reaches readers — so a CLI gather
 that lands prints the version it published, and one whose corpus another host is already gathering
 is refused with a non-zero exit (a `--all` sweep just skips that corpus). A gather that loses its
-lease — a renewal refused because another host took the corpus over after a lapse, or three renewals
-in a row failing against the store — stops at its next checkpoint and publishes nothing; `publish`
-itself refuses to flip the pointer unless the publisher still holds the lease and nobody else has
+lease — a renewal refused because another host took the corpus over after a lapse, or the
+store failing three renewals in a row, or for three quarters of the TTL — stops at its next
+checkpoint and publishes nothing; `publish` itself refuses to flip the pointer unless the publisher still holds the lease and nobody else has
 moved the pointer since it started. A run the freshness debounce skips publishes nothing: the
 current version is already what it would upload. The debounce, like the check that a corpus name is
 real, is decided before the lease, the slot or the seed, from the published version's own timestamp

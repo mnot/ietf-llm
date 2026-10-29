@@ -3,7 +3,9 @@ fleet slots, and status. Mirrors the old SQL control-plane behaviour."""
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from typing import Callable, List, Optional
 
 from ietf_llm.store.control import KvControlPlane
@@ -224,16 +226,37 @@ def test_confirm_lease_and_the_expired_holder() -> None:
     assert cp.confirm_lease("tls", "a") is True
     assert cp.confirm_lease("tls", "b") is False
     # A lapsed lease still names its owner until someone takes it.
-    assert cp.lease_holder("tls", now=5000.0) is None
-    assert cp.lease_holder("tls", now=5000.0, expired_ok=True) == "a"
+    later = time.time() + 5000.0
+    assert cp.lease_holder("tls", now=later) is None
+    assert cp.lease_holder("tls", now=later, expired_ok=True) == "a"
 
 
-def test_confirm_lease_does_not_extend_the_lease() -> None:
+def test_confirm_lease_extends_the_lease_by_its_own_span() -> None:
+    # Half the lease is gone when the publisher confirms; the flip and the reap
+    # after it must still run under a live lease, so a taker is held off for a
+    # fresh span from the confirm, not from the original grant.
     cp = _cp()
-    cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+    t0 = time.time()
+    cp.acquire_lease("tls", "a", ttl=100.0, now=t0 - 50)
+    assert cp.acquire_lease("tls", "b", ttl=100.0, now=t0 + 60) is True  # lapsed at t0+50
+    cp = _cp()
+    cp.acquire_lease("tls", "a", ttl=100.0, now=t0 - 50)
     assert cp.confirm_lease("tls", "a") is True
-    # Still expires at 1100: a taker is admitted exactly when it would have been.
-    assert cp.acquire_lease("tls", "b", ttl=100.0, now=1101.0) is True
+    assert cp.acquire_lease("tls", "b", ttl=100.0, now=t0 + 60) is False
+    assert cp.acquire_lease("tls", "b", ttl=100.0, now=t0 + 101) is True
+
+
+def test_confirm_lease_never_shortens_and_changes_the_record() -> None:
+    kv = InMemoryKvStore()
+    cp = KvControlPlane(kv)
+    cp.acquire_lease("tls", "a", ttl=100.0, now=time.time() + 10_000)  # far future
+    before = kv.get("corpora/tls/lease")
+    assert cp.confirm_lease("tls", "a") is True
+    after = kv.get("corpora/tls/lease")
+    assert before is not None and after is not None
+    # Not shortened below the grant; (the token changes: see the S3 test for the
+    # byte-level proof that a real ETag does too).
+    assert json.loads(after[0])["expires_at"] >= json.loads(before[0])["expires_at"]
 
 
 def test_confirm_lease_survives_a_concurrent_heartbeat_renewal() -> None:

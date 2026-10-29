@@ -943,8 +943,9 @@ write-throughs its own entry, so it never serves config it just wrote.
   The flip is fenced against a publisher that has lost its gather lease: `publish`
   reads the pointer token, checks the lease still names the publisher (before the
   upload, so a zombie refuses early), uploads, re-proves the lease by a
-  compare-and-swap rewrite of its record (a taker's `acquire_lease` races that
-  write on the same token, so one of the two loses), then flips the pointer
+  compare-and-swap that also extends it (the record's bytes, hence its ETag,
+  change, so a taker's `acquire_lease` and this write race and exactly one loses,
+  and the flip and the reap after it run under a live lease), then flips the pointer
   conditionally on the token it read first. Either check failing raises
   `LeaseLost` and flips nothing; the staged blobs are orphans the next publish's
   reap collects. Expiry is deliberately not consulted at the flip: a lapsed lease
@@ -1157,8 +1158,9 @@ servers) can run at once. The safety model:
   A lease is only as good as its holder noticing it has lost it, so the heartbeat
   (`gather.lifecycle.LeaseWatch`, one per gather; the runner's single heartbeat
   keeps one per job) never lets a store error end it, and marks the gather's lease
-  lost when a renewal is refused (another host holds it) or three renewals in a row
-  error — while a quarter of the TTL is still left. A gather with a lost lease
+  lost when a renewal is refused (another host holds it), three renewals in a row
+  error, or none has succeeded for three quarters of the TTL (the deadline does not
+  depend on how long a failing call takes to give up). A gather with a lost lease
   stops at its next progress checkpoint (the runner also ends the child process
   through the cancel predicate), will not publish, will not persist the
   accelerator caches, and records `failed` locally only: the fleet status record

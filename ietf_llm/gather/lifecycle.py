@@ -48,12 +48,15 @@ LEASE_TTL = 3600.0
 #: slow renew or a stalled stage still refreshes in time.
 LEASE_HEARTBEAT_S = 900.0
 
-#: Consecutive failed lease renewals (the store erroring, as opposed to refusing)
-#: after which a gather treats its lease as lost. At the heartbeat interval the
-#: third failure lands 45 minutes after the last good renewal, with a quarter of
-#: the TTL still to run — so the gather stops while it is still the only writer,
-#: not after another host has had time to take over.
+#: A gather treats its lease as lost when the store errors (as opposed to
+#: refusing) on this many renewals in a row, or when no renewal has succeeded for
+#: `LEASE_STALE_FRACTION` of the TTL, whichever comes first. The count alone is
+#: per beat, so a store that hangs on each call (botocore retries, timeouts)
+#: would stretch three failures past the TTL; the deadline does not depend on how
+#: long a failed call takes. Either way the gather stops while it is probably
+#: still the only writer, not after another host has had time to take over.
 LEASE_RENEW_MAX_FAILURES = 3
+LEASE_STALE_FRACTION = 0.75
 
 #: How often a gather waiting for a fleet slot retries the slot pool.
 SLOT_POLL_S = 5.0
@@ -123,15 +126,22 @@ def status_path(corpus: str) -> str:
 class LeaseWatch:
     """One gather's view of its lease: the heartbeat feeds it renewals and the
     gather reads `lost`. Set when a renewal is refused (another gatherer holds
-    the lease now) or `LEASE_RENEW_MAX_FAILURES` renewals in a row error — either
-    way the gather must stop and must not publish, because it may no longer be
-    the only writer. Sticky: a later successful renewal does not un-lose it."""
+    the lease now), `LEASE_RENEW_MAX_FAILURES` renewals in a row error, or none
+    has succeeded for `LEASE_STALE_FRACTION` of the TTL — in each case the gather
+    must stop and must not publish, because it may no longer be the only writer.
+    Sticky: a later successful renewal does not un-lose it. `clock` is a
+    monotonic-seconds source (a test seam)."""
 
-    def __init__(self, corpus: str) -> None:
+    def __init__(
+        self, corpus: str, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.corpus = corpus
         self.lost = threading.Event()
         self.reason = ""
         self._failures = 0
+        self._clock = clock
+        # The lease was just acquired, which counts as the first renewal.
+        self._last_success = clock()
 
     def _lose(self, reason: str) -> None:
         self.reason = reason
@@ -159,10 +169,14 @@ class LeaseWatch:
                 Verbosity.STATUS,
                 level=LogLevel.WARN,
             )
+            silent = self._clock() - self._last_success
             if self._failures >= LEASE_RENEW_MAX_FAILURES:
                 self._lose(f"{self._failures} consecutive renewal failures")
+            elif silent >= LEASE_STALE_FRACTION * LEASE_TTL:
+                self._lose(f"no successful renewal for {silent:.0f}s")
             return
         self._failures = 0
+        self._last_success = self._clock()
         if not held:
             self._lose("another gatherer now holds it")
 

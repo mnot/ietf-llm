@@ -48,6 +48,13 @@ class _Store(LocalCorpusStore):
             raise self.publish_error
         return "v1"
 
+    def release_gather_slot(self, owner: str) -> None:
+        self.calls.append("release_slot")
+
+    def seed_workspace(self, corpus: str, dest_root: str) -> Optional[str]:
+        self.calls.append("seed")
+        return None
+
     def persist_gather_caches(self, corpus: str) -> List[str]:
         self.calls.append("persist")
         return []
@@ -83,6 +90,40 @@ def test_watch_tolerates_isolated_errors_but_not_persistent_ones() -> None:
     store.renew_result = boom  # the third consecutive error
     watch.renew(store, "me")
     assert watch.lost.is_set() and "consecutive" in watch.reason
+
+
+def test_watch_marks_lost_by_deadline_however_slow_each_failure_was() -> None:
+    # Two slow failures (each a long botocore retry) already span three quarters
+    # of the TTL: the count of failures is not what protects the lease.
+    now = [0.0]
+    store, watch = _Store(), LeaseWatch("tls", clock=lambda: now[0])
+    boom = OSError("timeout")
+    store.renew_result = True
+    now[0] = 900.0
+    watch.renew(store, "me")  # a good renewal restarts the clock
+    store.renew_result = boom
+    now[0] = 900.0 + 2000.0
+    watch.renew(store, "me")  # first failure, 2000s since the last success
+    assert not watch.lost.is_set()
+    now[0] = 900.0 + 0.75 * lifecycle.LEASE_TTL
+    watch.renew(store, "me")  # second failure, at the deadline
+    assert watch.lost.is_set() and "no successful renewal" in watch.reason
+
+
+def test_watch_deadline_counts_from_acquisition_and_resets_on_success() -> None:
+    now = [100.0]
+    store, watch = _Store(), LeaseWatch("tls", clock=lambda: now[0])
+    boom = OSError("x")
+    store.renew_result = boom
+    now[0] = 100.0 + 0.75 * lifecycle.LEASE_TTL - 1
+    watch.renew(store, "me")
+    assert not watch.lost.is_set()  # just inside the deadline
+    store.renew_result = True
+    watch.renew(store, "me")  # recovers
+    store.renew_result = boom
+    now[0] += 0.75 * lifecycle.LEASE_TTL - 1
+    watch.renew(store, "me")
+    assert not watch.lost.is_set()
 
 
 def test_watch_is_sticky() -> None:
@@ -382,6 +423,39 @@ def test_runner_lease_lost_while_queued_for_a_slot(
     status = _wait_terminal("tls")
     assert status["state"] == "failed" and "lost" in status["error"]
     assert "failed" not in store.states()
+
+
+@pytest.mark.usefixtures("gather_in_process")
+def test_runner_lease_lost_while_queued_with_a_free_slot(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lease went while the job sat in the queue and a slot is free when the
+    worker reaches it, so the slot-wait loop is skipped: the job must still not
+    write `running` over the new holder's fleet record, seed, or start a child."""
+    store = _Store()
+    store.slot_free = True
+    _patch_store(monkeypatch, store)
+
+    def never(*a: Any, **k: Any) -> GatherOutcome:
+        raise AssertionError("a gather that lost its lease must not run")
+
+    monkeypatch.setattr(sequencer, "run_gather", never)
+    watch = LeaseWatch("tls")
+    store.renew_result = False
+    watch.renew(store, "me")
+    assert watch.lost.is_set()
+    with gather_runner._registry_lock:
+        gather_runner._lease_watches["tls"] = watch
+    try:
+        gather_runner._run_one(store, "me", gather_runner.GatherSpec(corpus="tls"))
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._lease_watches.pop("tls", None)
+    assert store.statuses == []  # nothing, not even `running`, reached the fleet
+    assert "seed" not in store.calls and "publish" not in store.calls
+    assert store.calls.count("release_slot") == 1
+    status = gather_runner.read_status("tls")
+    assert status is not None and status["state"] == "failed" and "lost" in status["error"]
 
 
 def test_heartbeat_marks_only_the_job_whose_lease_went(

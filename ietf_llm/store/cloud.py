@@ -775,8 +775,9 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         )
         # Flip the pointer last. If this raises, the staged blobs are orphaned and
         # the prior version stays current — never a torn read. The lease is
-        # re-proven by a compare-and-swap on its record (a taker's acquire races
-        # that write on the same token, so one of them loses) and the pointer
+        # re-proven by a compare-and-swap that also extends it (a taker's acquire
+        # races that write on the record, so one of them loses; the extension
+        # keeps the flip and reap under a live lease) and the pointer
         # flips only if still at the token read above, so a publisher that
         # stalled past its lease cannot overwrite a newer gather's version.
         if lease_owner is not None and not self._control.confirm_lease(

@@ -92,6 +92,36 @@ def test_failed_precondition_returns_none(bucket: S3Bucket, code: str) -> None:
     assert kv.put("k", b"1", expect='"deadbeef"') is None
 
 
+def test_unconditional_put_does_not_swallow_a_conflict(bucket: S3Bucket) -> None:
+    # Status, access and config writes are unconditional: a 409 there is a real
+    # failure, not a lost compare-and-swap, and must not be dropped silently.
+    kv = S3KvStore(bucket)
+    bucket.client = _PreconditionClient("ConditionalRequestConflict")  # type: ignore[assignment]
+    with pytest.raises(ClientError):
+        kv.put("corpora/tls/status", b"{}")
+
+
+def test_confirm_lease_changes_the_etag(bucket: S3Bucket) -> None:
+    """S3 derives the ETag from the body. A byte-identical rewrite would leave
+    the token unchanged, and a taker who read the record before the rewrite would
+    still win its If-Match: the re-proof would be no stronger than a read."""
+    from ietf_llm.store.control import KvControlPlane
+
+    kv = S3KvStore(bucket)
+    cp = KvControlPlane(kv)
+    assert cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+    before = kv.get("corpora/tls/lease")
+    assert before is not None
+    assert cp.confirm_lease("tls", "a") is True
+    after = kv.get("corpora/tls/lease")
+    assert after is not None
+    assert after[1] != before[1]
+    # A renewal changes it too, so the heartbeat and a publish really do race.
+    assert cp.renew_lease("tls", "a", ttl=100.0, now=2000.0) is True
+    renewed = kv.get("corpora/tls/lease")
+    assert renewed is not None and renewed[1] != after[1]
+
+
 def test_other_client_errors_still_raise(bucket: S3Bucket) -> None:
     kv = S3KvStore(bucket)
     bucket.client = _PreconditionClient("InternalError")  # type: ignore[assignment]

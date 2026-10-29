@@ -617,6 +617,16 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             return
         _write_status(store, status)
         time.sleep(lifecycle.SLOT_POLL_S)
+    # The lease may have gone while this job sat in the queue and a slot was free
+    # when the worker reached it, which skips the loop above. Stop before the
+    # first `running` write (the fleet record is the new holder's) and before the
+    # seed and the child. The slot is ours by now, so it is released here.
+    if watch.lost.is_set():
+        try:
+            _fail_lease_lost(store, status, watch, corpus)
+        finally:
+            store.release_gather_slot(slot_owner)
+        return
     # Gather lifecycle for /metrics: started once we go `running`, finished in
     # the outer `finally` below. `run_start` stays None until then so the
     # finally only records (and balances the in-flight gauge) for a gather that
