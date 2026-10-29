@@ -304,3 +304,44 @@ def test_gather_status_error_names_what_the_child_hit(
         status = gather_runner.read_status("tls")
     assert status is not None and status["state"] == "failed"
     assert "ValueError: no route to datatracker" in status["error"]
+
+
+def test_lost_lease_terminates_a_silent_child_without_publishing(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child deep in a silent stage emits nothing, so only the pump's idle-tick
+    cancel check can stop it: a lost lease must reach it through that check."""
+    from ietf_llm.store import corpus as corpus_store
+    from ietf_llm.store.corpus import LocalCorpusStore
+
+    class _Store(LocalCorpusStore):
+        published = False
+        renew = True
+
+        def renew_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+            return self.renew
+
+        def publish(self, corpus: str, workspace: str, *, extra_files=None, lease_owner=None) -> str:  # type: ignore[no-untyped-def]
+            self.published = True
+            return "v1"
+
+    store = _Store()
+    monkeypatch.setattr(corpus_store, "get_corpus_store", lambda: store)
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)])
+    monkeypatch.setattr(gather_pipeline, "_CHILD_POLL_S", 0.05)
+    monkeypatch.setenv("FAKE_SLEEP", "1")  # the child would otherwise run 30s
+
+    assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
+    deadline = time.time() + 10
+    while time.time() < deadline and "tls" not in gather_pipeline._children:
+        time.sleep(0.01)
+    store.renew = False
+    gather_runner._heartbeat_once(gather_runner._owner())
+    status = gather_runner.read_status("tls")
+    while time.time() < deadline and (status is None or status.get("state") not in ("done", "failed", "cancelled")):
+        time.sleep(0.02)
+        status = gather_runner.read_status("tls")
+    assert status is not None and status["state"] == "failed" and "lost" in status["error"]
+    assert not store.published
+    assert "tls" not in gather_pipeline._children
