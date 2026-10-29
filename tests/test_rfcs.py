@@ -94,6 +94,28 @@ def _reset_reader_cache() -> Any:
     rfcs._CACHE = None
 
 
+def test_load_rekeys_on_every_file_not_just_rfcs_json(isolated_home: Path) -> None:
+    # The writer replaces rfcs.json, refs.json and tags.json one at a time. A
+    # reader between replaces parses a mixed set; it must not stay pinned to it
+    # once the rest have landed, even though rfcs.json's mtime never moves again.
+    rfc_dir = _seed(isolated_home)
+    first = rfcs._load()  # pylint: disable=protected-access
+    assert first is not None
+    assert rfcs._load() is first  # pylint: disable=protected-access
+    new_refs = {"100": {"normative": [], "informative": ["200"]}}
+    path = rfc_dir / "refs.json"
+    path.write_text(json.dumps(new_refs), encoding="utf-8")
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    second = rfcs._load()  # pylint: disable=protected-access
+    assert second is not first
+    assert second is not None and second.refs == new_refs
+    tags = rfc_dir / "tags.json"
+    st = tags.stat()
+    os.utime(tags, ns=(st.st_atime_ns, st.st_mtime_ns + 7_000_000_000))
+    assert rfcs._load() is not second  # pylint: disable=protected-access
+
+
 # --- Reader: search --------------------------------------------------------
 
 
