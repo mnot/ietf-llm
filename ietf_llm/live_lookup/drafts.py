@@ -299,15 +299,16 @@ class DraftReconciliation:
 def _iter_group_adopted_drafts(
     wg: str,
 ) -> Tuple[List[Dict[str, Any]], datetime.datetime]:
-    """All `draft-ietf-<wg>-*` documents Datatracker associates with the group.
+    """All `draft-(ietf|irtf)-<wg>-*` documents Datatracker associates with
+    the group (`irtf` for a research group's adopted drafts).
 
-    Pages `meta.next` (bounded), keeping only adopted WG drafts so the
+    Pages `meta.next` (bounded), keeping only adopted group drafts so the
     individual drafts a group also touches don't leak in. Each object carries
     `name`/`expires` directly, so no per-doc state resolution is needed for
     the active-or-not check the caller makes. Raises `LiveUnavailable` if any
     page could not be fetched: a partial listing would report a clean match.
     """
-    prefix = f"draft-ietf-{wg}-"
+    prefixes = (f"draft-ietf-{wg}-", f"draft-irtf-{wg}-")
     objects: List[Dict[str, Any]] = []
     url: Optional[str] = (
         f"{_API_BASE}/doc/document/?group__acronym={wg}&type=draft&limit=200&format=json"
@@ -321,7 +322,9 @@ def _iter_group_adopted_drafts(
         if not body:
             break
         for obj in body.get("objects") or []:
-            if isinstance(obj, dict) and str(obj.get("name") or "").startswith(prefix):
+            if isinstance(obj, dict) and str(obj.get("name") or "").startswith(
+                prefixes
+            ):
                 objects.append(obj)
         nxt = (body.get("meta") or {}).get("next")
         url = f"{_DT_BASE}{nxt}" if isinstance(nxt, str) and nxt else None

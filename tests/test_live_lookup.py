@@ -953,6 +953,12 @@ def test_overview_live_outage_is_not_a_clean_reconciliation(monkeypatch):
     assert _UNREACHABLE in out and "match Datatracker" not in out
 
 
+def test_overview_live_on_a_closed_gate_says_it_is_unavailable(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    assert "unavailable on this server" in _overview_section(monkeypatch, True)
+    assert _overview_section(monkeypatch, False) == ""
+
+
 # --- Eligibility: a lapsed `expires` past I-D Exists (#283) ------------------
 
 _LAPSED = "2022-09-05T22:09:01Z"
@@ -1012,6 +1018,30 @@ def test_reconcile_labels_a_lapsed_draft_in_the_queue_in_iesg(monkeypatch):
         "httpbis", ["draft-ietf-httpbis-bar"]
     )
     assert recon.advanced == [("draft-ietf-httpbis-bar", "RFC Ed Queue (in-iesg)")]
+
+
+def test_reconcile_covers_a_research_group_corpus(monkeypatch):
+    drafts = {
+        "meta": {"next": None},
+        "objects": [
+            _adopted("draft-irtf-cfrg-foo", _PAST_WG, "2027-01-01T00:00:00Z"),
+            _adopted("draft-irtf-cfrg-new", _IN_WG, "2027-06-01T00:00:00Z"),
+            _adopted("draft-ietf-cfrg-bar", _IN_WG, "2027-06-01T00:00:00Z"),
+            _adopted("draft-someone-cfrg-idea", _IN_WG, "2027-06-01T00:00:00Z"),
+        ],
+    }
+
+    def _stub(url, timeout=10.0):
+        return drafts if "group__acronym=cfrg&type=draft" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    recon, _ = live_lookup.reconcile_active_drafts("cfrg", ["draft-irtf-cfrg-foo"])
+    assert [n for n, _ in recon.advanced] == ["draft-irtf-cfrg-foo"]
+    assert [n for n, _ in recon.revived] == [
+        "draft-ietf-cfrg-bar",
+        "draft-irtf-cfrg-new",
+    ]
 
 
 # --- Meetings: cancelled / rescheduled rows, and the meeting in progress -----
