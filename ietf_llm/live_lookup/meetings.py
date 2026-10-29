@@ -16,7 +16,15 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..gather.sources.meetings import _uri_id
-from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, _parse_utc
+from .cache import (
+    _API_BASE,
+    _DT_BASE,
+    LiveUnavailable,
+    _cached_json,
+    _now_utc,
+    _parse_utc,
+    unreachable_note,
+)
 
 _MEETECHO = "https://meetings.conf.meetecho.com"
 _INTERIM_RE = re.compile(r"interim-[A-Za-z0-9-]+", re.IGNORECASE)
@@ -98,7 +106,9 @@ def _meeting_timezone(meeting: str) -> Optional[str]:
     The `?number=` filter accepts an interim id as well as a numbered
     meeting, so this serves both (a virtual interim's zone is usually UTC).
     """
-    body, _ = _cached_json(f"{_API_BASE}/meeting/meeting/?number={meeting}&format=json")
+    body, _, _ = _cached_json(
+        f"{_API_BASE}/meeting/meeting/?number={meeting}&format=json"
+    )
     if not body:
         return None
     objects = body.get("objects") or []
@@ -179,7 +189,8 @@ def fetch_meeting_sessions(
     Returns `(sessions, fetched_at, error)`. `error` is a human message when
     the agenda could not be read or has no published rows yet; `sessions` is
     then empty. An *empty* list with no error means the group simply has no
-    session at that meeting.
+    session at that meeting. An unreachable Datatracker gets its own "could
+    not reach" message, never the no-agenda one.
     """
     meeting = str(meeting).strip()
     is_interim = is_interim_number(meeting)
@@ -189,12 +200,16 @@ def fetch_meeting_sessions(
     if is_interim:
         meeting = meeting.lower()
     label = meeting_id_label(meeting)
-    agenda, fetched = _cached_json(f"{_DT_BASE}/meeting/{meeting}/agenda.json")
+    agenda, fetched, answered = _cached_json(
+        f"{_DT_BASE}/meeting/{meeting}/agenda.json"
+    )
+    if not answered:
+        return [], fetched, unreachable_note(f"the agenda for {label}", fetched)
     if agenda is None:
         return (
             [],
             fetched,
-            f"Could not fetch the agenda for {label} from Datatracker "
+            f"Datatracker has no agenda for {label} "
             "(no published agenda yet, or the meeting id is wrong).",
         )
     rows = agenda.get(meeting)
@@ -223,6 +238,9 @@ class UpcomingMeeting:
 def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str]]:
     """Batch-resolve meeting ids → `{number: (kind, date)}` via `id__in`.
 
+    Raises `LiveUnavailable` if a batch could not be fetched, so a failure
+    never reads as "no upcoming meetings".
+
     The read-path twin of `gather.sources.meetings._batch_fetch_meetings`: same
     `id__in` batching, but on the write-free `_cached_json` (not gather's
     on-disk ETag store) and keyed by meeting *number* (the caller builds
@@ -233,10 +251,12 @@ def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str]]:
     ordered = sorted(set(ids))
     for start in range(0, len(ordered), 100):
         chunk = ordered[start : start + 100]
-        body, _ = _cached_json(
+        body, fetched, answered = _cached_json(
             f"{_API_BASE}/meeting/meeting/?id__in={','.join(chunk)}"
             "&limit=100&format=json"
         )
+        if not answered:
+            raise LiveUnavailable(fetched)
         for meeting in (body or {}).get("objects") or []:
             number = meeting.get("number")
             if number is None:
@@ -256,25 +276,29 @@ def fetch_upcoming_meetings(
     drillable by passing its `number` back to `fetch_meeting_sessions`. Walks
     the most-recent page of the group's sessions (future meetings carry the
     newest session ids) and batch-resolves their meeting metadata; the read
-    stays date-level (cheap), with full per-session times on the drill-in.
+    stays date-level (cheap), with full per-session times on the drill-in. An
+    unreachable Datatracker is reported as such, never as an empty calendar.
     """
     today = _now_utc().date().isoformat()
-    body, fetched = _cached_json(
+    body, fetched, answered = _cached_json(
         f"{_API_BASE}/meeting/session/?group__acronym={corpus}"
         "&limit=100&order_by=-id&format=json"
     )
-    if body is None:
+    if not answered:
         return (
             [],
             fetched,
-            f"Could not fetch {corpus}'s sessions from Datatracker.",
+            unreachable_note(f"{corpus}'s sessions", fetched),
         )
     ids: List[str] = []
-    for sess in body.get("objects") or []:
+    for sess in (body or {}).get("objects") or []:
         uri = sess.get("meeting")
         if uri:
             ids.append(_uri_id(str(uri)))
-    meetings = _resolve_meetings(ids)
+    try:
+        meetings = _resolve_meetings(ids)
+    except LiveUnavailable as err:
+        return [], err.tried_at, unreachable_note(f"{corpus}'s meetings", err.tried_at)
     upcoming = [
         UpcomingMeeting(
             number=number,

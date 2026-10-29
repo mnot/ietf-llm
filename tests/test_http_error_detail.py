@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import pytest
 import requests
 
 from ietf_llm.gather.sources import datatracker
@@ -100,7 +101,8 @@ def test_live_fetch_json_warns_with_ray_id(monkeypatch: Any, capsys: Any) -> Non
     # Same for the live-lookup fetch seam, whose failures were also silent.
     monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
     monkeypatch.setattr(live_cache, "governed_get", _blocked)
-    assert live_cache._fetch_json(_URL) is None  # pylint: disable=protected-access
+    with pytest.raises(requests.RequestException):
+        live_cache._fetch_json(_URL)  # pylint: disable=protected-access
     err_out = capsys.readouterr().err
     assert "[WARN]" in err_out
     assert "(Cloudflare Ray ID: deadbeefcafef00d-SYD)" in err_out

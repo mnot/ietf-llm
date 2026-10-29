@@ -534,7 +534,12 @@ def tool_draft_status(name: str) -> str:
             "(the version suffix is optional)."
         )
 
-    status, fetched = live_lookup.fetch_draft_status(name)
+    try:
+        status, fetched = live_lookup.fetch_draft_status(name)
+    except live_lookup.LiveUnavailable as err:
+        return live_lookup.unreachable_note(
+            f"`{normalize_draft_name(name)}`", err.tried_at
+        )
     if status is None:
         canonical = normalize_draft_name(name)
         return (
@@ -808,7 +813,12 @@ def tool_review_record(name: str) -> str:
             "Provide a draft name, e.g. `draft-ietf-httpbis-no-vary-search` "
             "(the version suffix is optional)."
         )
-    record, fetched = live_lookup.fetch_review_record(name)
+    try:
+        record, fetched = live_lookup.fetch_review_record(name)
+    except live_lookup.LiveUnavailable as err:
+        return live_lookup.unreachable_note(
+            f"`{normalize_draft_name(name)}`", err.tried_at
+        )
     if record is None:
         canonical = normalize_draft_name(name)
         return (

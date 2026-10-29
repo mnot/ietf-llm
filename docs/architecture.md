@@ -1389,6 +1389,17 @@ default read path pulls in neither it nor `requests`), torch-free, and always
 via the Datatracker REST API, never a scraped page. Its offline cousin
 `draft_authors` needs no network and is always registered.
 
+The fetch seam is tri-state, because these tools' payloads are claims of
+absence ("no such document", "no reviews", "no upcoming meetings") and an outage
+must never be rendered as one. `_fetch_json` returns `None` only for an HTTP
+404 and raises on every other failure; `_cached_json` turns that into
+`(body, fetched_at, answered)`, where `answered` is False only when the fetch
+failed with no cached entry (fresh or stale) to fall back on. The tools say
+"could not reach Datatracker (last tried …)" for that case and keep the
+"no document named …" wording for a 404. `fetch_draft_status`,
+`fetch_review_record` and `reconcile_active_drafts` raise `LiveUnavailable`;
+the meeting fetches return it in their existing `error` slot.
+
 `get_rfc_info` takes the same exception, for a different reason and in a different
 shape. The `_rfc/` mirror is only refreshed by a gather, so between gathers it
 goes stale — and a miss against a stale mirror has two indistinguishable

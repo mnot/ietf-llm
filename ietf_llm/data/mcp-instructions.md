@@ -104,6 +104,9 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
   on the IESG side), `review_record` (live — who reviewed or balloted, and on
   **which revision**), `draft_authors`, `get_draft` (verbatim text).
+  A live tool that says it **could not reach Datatracker** has given no
+  answer: that is an outage, not evidence the draft, review or meeting does
+  not exist. Retry rather than reporting it as missing.
 - **Before reviewing or commenting on a draft at WGLC / Last Call / a
   telechat, call `review_record`.** It says whether any review or ballot
   position has been cast against the *current* revision. A revision posted
