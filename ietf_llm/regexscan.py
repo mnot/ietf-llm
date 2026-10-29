@@ -8,10 +8,13 @@ child process (`python -m ietf_llm.regexscan`) that the parent kills at the
 budget. A literal pattern has no such failure mode and is scanned in-process
 by the same functions.
 
-This module is deliberately stdlib-only and lives outside `ietf_llm.mcp`: the
-child imports it, and importing that package would drag in the whole MCP
-server for every scan. Results are plain JSON-able dicts so the in-process and
-child paths share one shape. The parent never runs the user's pattern on the
+This module lives outside `ietf_llm.mcp` and imports only the standard library
+at top level: the child imports it, and importing that package would drag in
+the whole MCP server for every scan. A `sections` scan additionally imports
+`embeddings.storage` (and so numpy), still without torch or the MCP server.
+
+Results are plain JSON-able dicts so the in-process and child paths share one
+shape. The parent never runs the user's pattern on the
 child path — the child returns finished, already-elided lines.
 """
 
@@ -35,6 +38,7 @@ from typing import (
     Sequence,
     Tuple,
     TypedDict,
+    cast,
 )
 
 #: Longest rendered line before it is elided. Draft text wraps at ~72 columns,
@@ -53,7 +57,14 @@ class ScanTimedOut(Exception):
 
 
 class ScanFailed(Exception):
-    """The child exited abnormally for a reason other than the budget."""
+    """The child exited abnormally, or answered with something unusable.
+
+    The message is fixed and safe to show a client; `detail` carries the
+    child's stderr tail (server paths, tracebacks) for the server log only."""
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__("the scan process failed")
+        self.detail = detail
 
 
 def elide(line: str, matcher: Optional["re.Pattern[str]"] = None) -> str:
@@ -295,17 +306,22 @@ def scan_sections(  # pylint: disable=too-many-arguments,too-many-positional-arg
 # --- the child process --------------------------------------------------------
 
 
-def run_bounded(request: Dict[str, Any], budget_s: float) -> Dict[str, Any]:
+def run_bounded(
+    request: Dict[str, Any], budget_s: float, required: Sequence[str] = ()
+) -> Dict[str, Any]:
     """Run one scan `request` in a child process and return its result dict.
 
     The child stops itself at `budget_s`; if it has not answered `KILL_SLACK_S`
     later (stuck inside one regex call) it is killed. Raises `ScanTimedOut` for
-    either, `ScanFailed` for any other abnormal exit. The child is always
+    either, `ScanFailed` for any other abnormal exit or an answer that is not a
+    JSON object carrying the `required` keys. The child is always
     reaped before this returns, so a timed-out scan leaves nothing running.
 
     `request` is `{"kind": "files" | "sections", "pattern": str, "flags": int,
     ...}`; see `_child_main` for the per-kind fields."""
-    payload = json.dumps({**request, "budget": budget_s}).encode("utf-8")
+    payload = json.dumps(
+        {**request, "budget": budget_s, "alarm_s": _alarm_seconds(budget_s)}
+    ).encode("utf-8")
     with subprocess.Popen(
         [sys.executable, "-m", "ietf_llm.regexscan"],
         stdin=subprocess.PIPE,
@@ -328,17 +344,33 @@ def run_bounded(request: Dict[str, Any], budget_s: float) -> Dict[str, Any]:
         raise ScanTimedOut()
     if proc.returncode != 0:
         tail = err.decode("utf-8", "replace").strip()[-300:]
-        raise ScanFailed(f"scan process exited {proc.returncode}: {tail}")
-    result: Dict[str, Any] = json.loads(out)
-    return result
+        raise ScanFailed(f"exit {proc.returncode}: {tail}")
+    try:
+        result = json.loads(out)
+    except ValueError as exc:
+        raise ScanFailed(f"unparseable output: {out[:100]!r}") from exc
+    if not isinstance(result, dict):
+        raise ScanFailed(f"unexpected output type {type(result).__name__}")
+    missing = [key for key in required if key not in result]
+    if missing:
+        raise ScanFailed(f"output lacks {missing}")
+    return cast(Dict[str, Any], result)
 
 
-def _arm_self_destruct(budget_s: float) -> None:
-    """Have the kernel kill this process if it outlives its budget by a wide
-    margin, so a parent that died mid-scan cannot leave a runaway regex behind.
-    POSIX only; elsewhere the parent's kill is the only bound."""
+def _alarm_seconds(budget_s: float) -> int:
+    """How long the child may live: well past the parent's own kill at
+    `budget_s + KILL_SLACK_S`, so the alarm only ever fires once the parent is
+    gone."""
+    return max(1, int(budget_s + 2 * KILL_SLACK_S) + 1)
+
+
+def _arm_self_destruct(seconds: int) -> None:
+    """Have the kernel kill this process after `seconds`, so a parent that died
+    mid-scan cannot leave a runaway regex behind. The default `SIGALRM` action
+    ends a process stuck inside a C regex call too. POSIX only; elsewhere the
+    parent's kill is the only bound."""
     if hasattr(signal, "alarm"):
-        signal.alarm(max(1, int(budget_s + 2 * KILL_SLACK_S) + 1))
+        signal.alarm(seconds)
 
 
 def _renice() -> None:
@@ -358,7 +390,7 @@ def _child_main() -> int:
     `keep`, `context`, `check_every`, `per_file_cap` and `matches_per_section`."""
     request = json.load(sys.stdin)
     budget = float(request["budget"])
-    _arm_self_destruct(budget)
+    _arm_self_destruct(int(request["alarm_s"]))
     _renice()
     deadline = time.monotonic() + budget
     matcher = re.compile(request["pattern"], int(request["flags"]))
