@@ -602,7 +602,8 @@ ietf_llm/
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
-│       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
+│       ├── mbox.py                 # IMAP sync + per-year .txt; --mailing-list extras
+│       ├── imap_fetch.py           # FETCH into the per-list cache; halves a short batch to find undeliverable UIDs
 │       ├── mail_threads.py         # reconstruct per-thread .md files
 │       ├── github.py               # archive.json (gh-pages) or REST API
 │       ├── github_schema.py        # normalise the archive's shape (download and read)
@@ -1513,9 +1514,13 @@ unit only when this gather's sync confirmed the local epoch with the server
 sidecar: the sync runs in the gather child, so the confirmation has to cross the
 process boundary as a file, and hydrate deletes it at the start of every gather so
 a stale one can't vouch for a check this gather never made); a differing,
-unconfirmed epoch -- a warm host whose IMAP sync failed, or one whose FETCHes
-left some requested messages unwritten after the retry (the sync deletes the
-sidecar and notes the shortfall) -- leaves the store alone. When it does replace, it first makes
+unconfirmed epoch -- a warm host whose IMAP sync failed before the server
+confirmed the epoch -- leaves the store alone. The sidecar says only that the
+server's epoch matched the local one, so FETCHes that left some requested
+messages unwritten (reported with the undeliverable UIDs, once a refused batch
+has been halved to find them) and a connection that dropped mid-download leave it
+in place: the old epoch is archived before the stored main unit is replaced, and
+a failed archive abandons the list, so a partial new epoch cannot lose mail. When it does replace, it first makes
 sure the old epoch's mail is stored as an archive unit (filling the local
 `epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
 list if that fails), then invalidates the old index before touching the chunks,

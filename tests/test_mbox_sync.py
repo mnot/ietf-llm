@@ -201,12 +201,16 @@ class _FetchImap:
     """IMAP4_SSL stand-in for a real `_imap_sync_attempt` (so `_download_batches`
     runs). `fetch_plan` is consumed one entry per FETCH, then repeats "ok":
     "ok", "no" (a `NO` reply), or "drop-last" (an OK reply that omits the final
-    UID of the batch)."""
+    UID of the request). `bad` is a set of UIDs the server never delivers: any
+    FETCH that names one is answered `NO`, as for a corrupt message. `all_no`
+    refuses every FETCH."""
 
-    def __init__(self, uids, fetch_plan):
+    def __init__(self, uids, fetch_plan=(), bad=(), all_no=False):
         self._uids = uids
         self._plan = list(fetch_plan)
-        self.fetches = 0
+        self._bad = set(bad)
+        self._all_no = all_no
+        self.fetches: list[list[int]] = []
 
     def login(self, *_a):
         return ("OK", [b""])
@@ -220,11 +224,11 @@ class _FetchImap:
     def uid(self, command, *args):
         if command == "search":
             return ("OK", [b" ".join(str(u).encode() for u in self._uids)])
-        self.fetches += 1
-        mode = self._plan.pop(0) if self._plan else "ok"
-        if mode == "no":
-            return ("NO", [b"try again"])
         wanted = [int(u) for u in args[0].split(",")]
+        self.fetches.append(wanted)
+        mode = self._plan.pop(0) if self._plan else "ok"
+        if mode == "no" or self._all_no or self._bad & set(wanted):
+            return ("NO", [b"try again"])
         if mode == "drop-last":
             wanted = wanted[:-1]
         return ("OK", [(f"{u} (UID {u} RFC822 {{5}}".encode(), f"m{u}".encode()) for u in wanted])
@@ -233,8 +237,8 @@ class _FetchImap:
         return ("BYE", [b""])
 
 
-def _sync(monkeypatch, tmp_path, fake):
-    monkeypatch.setattr(mbox, "BATCH_SIZE", 2)
+def _sync(monkeypatch, tmp_path, fake, batch=2):
+    monkeypatch.setattr(mbox, "BATCH_SIZE", batch)
     monkeypatch.setattr(mbox.imaplib, "IMAP4_SSL", lambda *_a, **_k: fake)
     notes: list[str] = []
     uids = mbox._sync_one_list("wg", "wg", 12, Verbosity.QUIET, note_fn=notes.append)
@@ -242,11 +246,15 @@ def _sync(monkeypatch, tmp_path, fake):
     return uids, notes, cache
 
 
+def _emls(cache):
+    return sorted(int(p.name[:-4]) for p in cache.glob("*.eml"))
+
+
 def test_a_no_on_one_batch_is_retried_and_the_second_pass_fills_it(monkeypatch, tmp_path):
     fake = _FetchImap([1, 2, 3, 4, 5], ["ok", "no"])  # batch 2 of 3 refused once
     uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
     assert uids == ["1", "2", "3", "4", "5"]
-    assert sorted(p.name for p in cache.glob("*.eml")) == [f"{n}.eml" for n in range(1, 6)]
+    assert _emls(cache) == [1, 2, 3, 4, 5]
     # The retry found nothing left to fetch; the note still counts the first
     # pass's messages.
     assert len(notes) == 1 and "5 message(s)" in notes[0] and "(5 new)" in notes[0]
@@ -254,22 +262,65 @@ def test_a_no_on_one_batch_is_retried_and_the_second_pass_fills_it(monkeypatch, 
     assert mbox.verified_uidvalidity(str(cache)) == "7"
 
 
-def test_a_batch_refused_every_time_is_reported_and_not_verified(monkeypatch, tmp_path):
-    # Batches {1,2} {3,4} {5}: the middle one is refused on both attempts.
-    fake = _FetchImap([1, 2, 3, 4, 5], ["ok", "no", "ok", "no"])
+def test_an_undeliverable_uid_costs_only_itself(monkeypatch, tmp_path):
+    uids_in = list(range(1, 201))
+    fake = _FetchImap(uids_in, bad={137})
+    uids, notes, cache = _sync(monkeypatch, tmp_path, fake, batch=200)
+    assert uids == [str(u) for u in uids_in]
+    assert _emls(cache) == [u for u in uids_in if u != 137]
+    assert len(notes) == 1
+    assert "1 message(s)" in notes[0] and "undeliverable UIDs: 137" in notes[0]
+    assert "others not isolated" not in notes[0]
+    # Isolated in the final attempt only, within the request cap.
+    assert len(fake.fetches) <= 2 + mbox.BISECT_MAX_REQUESTS
+    # The epoch the server confirmed stays confirmed.
+    assert mbox.verified_uidvalidity(str(cache)) == "7"
+
+
+def test_two_undeliverable_uids_are_both_isolated(monkeypatch, tmp_path):
+    uids_in = list(range(1, 201))
+    fake = _FetchImap(uids_in, bad={5, 190})
+    _, notes, cache = _sync(monkeypatch, tmp_path, fake, batch=200)
+    assert _emls(cache) == [u for u in uids_in if u not in (5, 190)]
+    assert "2 message(s)" in notes[0] and "undeliverable UIDs: 5, 190" in notes[0]
+
+
+def test_isolation_is_skipped_on_a_first_attempt_that_will_be_retried(monkeypatch, tmp_path):
+    # One refusal that clears: the retry's plain pass fetches it; nothing was bisected.
+    fake = _FetchImap([1, 2, 3, 4], ["no"])
+    _, notes, cache = _sync(monkeypatch, tmp_path, fake, batch=4)
+    assert _emls(cache) == [1, 2, 3, 4]
+    assert len(fake.fetches) == 2 and "could not" not in notes[0]
+
+
+def test_a_server_refusing_everything_stays_within_the_request_cap(monkeypatch, tmp_path):
+    fake = _FetchImap(list(range(1, 201)), all_no=True)
+    uids, notes, cache = _sync(monkeypatch, tmp_path, fake, batch=200)
+    assert uids == [str(u) for u in range(1, 201)]
+    assert _emls(cache) == []
+    # attempt 1: one batch; attempt 2: the batch plus at most the bisect cap.
+    assert len(fake.fetches) <= 2 + mbox.BISECT_MAX_REQUESTS
+    assert len(notes) == 1 and "200 message(s)" in notes[0]
+    assert "undeliverable" not in notes[0]  # nothing was isolated within the cap
+    assert mbox.verified_uidvalidity(str(cache)) == "7"
+
+
+def test_a_batch_refused_every_time_is_reported_and_stays_verified(monkeypatch, tmp_path):
+    # Batches {1,2} {3,4} {5}: UID 3 is never delivered.
+    fake = _FetchImap([1, 2, 3, 4, 5], bad={3})
     uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
     assert uids == ["1", "2", "3", "4", "5"]  # the window; what arrived is threaded
-    assert sorted(p.name for p in cache.glob("*.eml")) == ["1.eml", "2.eml", "5.eml"]
+    assert _emls(cache) == [1, 2, 4, 5]
     assert len(notes) == 1
-    assert "2 message(s)" in notes[0] and "could not be fetched" in notes[0]
+    assert "1 message(s)" in notes[0] and "could not be fetched" in notes[0]
+    assert "undeliverable UIDs: 3" in notes[0]
     assert "5 message(s) in" not in notes[0]  # not reported as a clean sync
-    assert mbox.verified_uidvalidity(str(cache)) is None
-    assert not (cache / mbox.VERIFIED_FILE).exists()
+    # The sync confirmed the epoch with the server; a shortfall doesn't undo that.
+    assert mbox.verified_uidvalidity(str(cache)) == "7"
 
 
 def test_an_ok_reply_that_omits_a_uid_counts_as_short(monkeypatch, tmp_path):
-    fake = _FetchImap([1, 2, 3], ["drop-last", "drop-last", "drop-last", "drop-last"])
-    uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
+    fake = _FetchImap([1, 2, 3], ["drop-last"] * 12)
+    uids, notes, _ = _sync(monkeypatch, tmp_path, fake)
     assert uids == ["1", "2", "3"]
     assert len(notes) == 1 and "could not be fetched" in notes[0]
-    assert mbox.verified_uidvalidity(str(cache)) is None
