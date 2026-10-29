@@ -644,9 +644,16 @@ def test_hedge_in_the_same_sentence_drops_support_to_low() -> None:
     ):
         label, conf, _excerpt, _poll = extract_position(body)
         assert (label, conf) == ("support", "low"), body
-    # A hedge in a later sentence does not qualify the opener.
+    # A next sentence that opens with a contrast marker walks it back ...
+    for body in (
+        "I support adoption. However, there are nits below.\n",
+        "I support adoption.\n\nThat said, section 4 needs work.\n",
+    ):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert (label, conf) == ("support", "low"), body
+    # ... but an ordinary next sentence, even one containing "but", does not.
     label, conf, _excerpt, _poll = extract_position(
-        "I support adoption. However, there are nits below.\n"
+        "I support adoption. We have implemented it, but only in a branch.\n"
     )
     assert (label, conf) == ("support", "high")
 
@@ -784,3 +791,21 @@ def test_abbreviation_does_not_end_the_hedge_scope() -> None:
         "I support adoption, e.g. as in 3.2, but not in 4.\n"
     )
     assert (label, conf) == ("support", "low")
+
+
+def test_summary_reports_high_and_low_confidence_separately() -> None:
+    text = (
+        "# T\n\n## Messages\n\n"
+        "### [1] 2026-05-01 10:00 — A\n\n+1\n\n"
+        "### [2] 2026-05-02 10:00 — B\n\nI support adoption.\n\n"
+        "### [3] 2026-05-03 10:00 — C\n\nI agree.\n\n"
+        "### [4] 2026-05-04 10:00 — D\n\nI object to this.\n\n"
+        "### [5] 2026-05-05 10:00 — E\n\nThis looks good to me.\n"
+    )
+    positions, summary = tally_thread(text)
+    assert summary["support"] == 4  # the label count still folds them
+    out = render_tally("threads/t.md", positions, summary)
+    assert "- Support: **2** high confidence, **2** low confidence" in out
+    assert "- Oppose: **1** high confidence, **0** low confidence" in out
+    assert "## Support (2 high, 2 low)" in out
+    assert "## Oppose (1)" in out

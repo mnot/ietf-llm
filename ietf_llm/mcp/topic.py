@@ -532,6 +532,10 @@ def tool_tally_positions(wg: str, file: str) -> str:
     caveat on the poll counts. Check the rows against the messages before
     quoting a split.
 
+    Support and oppose are reported as separate high- and low-confidence
+    counts (low = hedged, bare `I agree.`, or idiom-only matches such as
+    `Support for …`); quote them separately, never as one total.
+
     The support/oppose tally is a **keyword heuristic** (`+1`, `-1`,
     `I support`, `I object`, `LGTM`, `DISCUSS`, near the message start). It is
     low-recall and **misses prose-form positions**, which is how IETF
@@ -541,6 +545,12 @@ def tool_tally_positions(wg: str, file: str) -> str:
     messages themselves. Never quote a low-coverage count as the level of
     support. Each row is enriched with role / affiliation from the people
     digest when known.
+
+    Known limitations (keyword matching, accepted): `I agree with Martin that
+    …` followed by a negative claim that uses none of the listed negative words
+    stays high-confidence support; a negation *after* a poll marker (`option 2,
+    not 3`) is not seen; and a negation more than a couple of words before an
+    intent phrase is not seen either.
     """
     cache_dir = _files_dir(wg)
     if not file_supports_tally(file):

@@ -37,6 +37,22 @@ def rest_of_sentence(text: str, start: int) -> str:
     return text[start : end.start() if end else len(text)]
 
 
+# A sentence that opens with an explicit contrast marker walks back the one
+# before it ("I support adoption. However, ..."). Deliberately short:
+# only unambiguous markers, since this lowers confidence on real votes.
+_CONTRAST_OPENER_RE = re.compile(
+    r"[.!?\s]*(?:however|but|that\s+said|although|though|except|unless)\b",
+    re.IGNORECASE,
+)
+
+
+def contrast_follows(text: str, start: int) -> bool:
+    """Whether the sentence after the one containing `start` opens with a
+    contrast marker."""
+    end = _SENTENCE_END_RE.search(text, start)
+    return end is not None and _CONTRAST_OPENER_RE.match(text, end.start()) is not None
+
+
 def _negated(text: str, start: int) -> bool:
     """Whether the phrase beginning at `start` is directly negated."""
     return _NEGATION_BEFORE_RE.search(text[max(0, start - 16) : start]) is not None
