@@ -1126,6 +1126,11 @@ servers) can run at once. The safety model:
   `immutable=1`) — the only way to read a WAL DB from a read-only mount,
   where the `-shm` sidecar otherwise can't be created. search() closes
   its connection on every return so a query never pins the WAL.
+  Every read opens `mode=ro` (`storage._connect_ro`), so a read can never
+  create an index: an absent one raises `sqlite3.OperationalError`, which
+  `_try_connect_ro` turns into "no index" (a zero-byte file left by older
+  versions counts as absent too). `mode=ro` does not stop SQLite creating the
+  WAL `-shm` sidecar on a writable dir, which the local CLI relies on.
 - **Corpus files.** Atomic writes (above) mean a reader sees the old
   bytes or the new, never a truncated file. Skip-if-exists files
   (drafts, RFCs, transcripts, slide text) are written once and not

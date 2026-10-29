@@ -31,7 +31,7 @@ from conftest import write_cache_file
 
 # The package __init__ re-exports `search` (the function), shadowing the
 # submodule attribute -- so fetch the module object via importlib to patch
-# the names search() resolved at import (`_connect_ro`, `file_lock`).
+# the names search() resolved at import (`_try_connect_ro`, `file_lock`).
 search_mod = importlib.import_module("ietf_llm.embeddings.search")
 
 
@@ -73,14 +73,17 @@ class _ConnProxy:
 
 def _spy_connections(monkeypatch) -> list:  # type: ignore[no-untyped-def]
     proxies: list = []
-    real = search_mod._connect_ro  # pylint: disable=protected-access
+    real = search_mod._try_connect_ro  # pylint: disable=protected-access
 
     def spy(wg: str):  # type: ignore[no-untyped-def]
-        p = _ConnProxy(real(wg))
+        conn = real(wg)
+        if conn is None:
+            return None
+        p = _ConnProxy(conn)
         proxies.append(p)
         return p
 
-    monkeypatch.setattr(search_mod, "_connect_ro", spy)
+    monkeypatch.setattr(search_mod, "_try_connect_ro", spy)
     return proxies
 
 

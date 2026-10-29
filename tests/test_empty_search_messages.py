@@ -5,13 +5,16 @@ suggests a re-gather. Nothing here reads the real cache.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Iterable, List
 
 import pytest
 
 from ietf_llm import embeddings, mcp
+from ietf_llm.embeddings import storage
 from ietf_llm.embeddings.search import build_index
+from ietf_llm.embeddings.storage import _db_path
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
@@ -50,6 +53,59 @@ def test_search_empty_without_an_index_blames_the_index(
     assert "no results" in out
     assert "may have no search index" in out
     assert "start_gather" in out
+
+
+@pytest.mark.parametrize("immutable", [False, True])
+def test_reads_never_create_an_index(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, immutable: bool
+) -> None:
+    # `probe_index` runs on every empty search; opening the DB used to
+    # materialise a zero-byte file, and the next read then raised "no such
+    # table". Nothing here stubs the probe.
+    if immutable:
+        monkeypatch.setenv("IETF_LLM_INDEX_IMMUTABLE", "1")
+    _seed(isolated_home)  # corpus exists; no index built
+    db = Path(_db_path("wg"))
+    for _ in range(2):
+        out = mcp.search.tool_search("wg", "mlkem")
+        assert "no results" in out and "--embed" in out
+        assert not db.exists()
+    assert "no related chunks" in mcp.search.tool_find_related("wg", "threads/x.md", 0)
+    assert not storage.probe_index("wg")
+    assert storage.chunk_counts("wg") == {}
+    assert storage.get_chunk("wg", "threads/x.md", 0) is None
+    assert storage.read_meta("wg", ["model"]) == {}
+    assert embeddings.index_model("wg") is None
+    assert mcp.corpus.tool_list_files("wg")
+    assert not db.exists()
+
+
+def test_connect_ro_cannot_create_or_write(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    db = Path(_db_path("wg"))
+    with pytest.raises(sqlite3.OperationalError):
+        storage._connect_ro("wg")  # pylint: disable=protected-access
+    assert not db.exists()
+    _build_with_stub("wg")
+    conn = storage._connect_ro("wg")  # pylint: disable=protected-access
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE intruder (x)")
+    finally:
+        conn.close()
+
+
+def test_zero_byte_index_left_by_an_older_version_reads_as_absent(
+    isolated_home: Path,
+) -> None:
+    _seed(isolated_home)
+    db = Path(_db_path("wg"))
+    db.parent.mkdir(parents=True, exist_ok=True)
+    db.touch()
+    for _ in range(2):
+        assert "--embed" in mcp.search.tool_search("wg", "mlkem")
+    assert storage.chunk_counts("wg") == {}
+    assert "threads/2026-04-10-mlkem.md" in mcp.corpus.tool_list_files("wg")
 
 
 def test_search_empty_with_a_filter_names_the_filters(
@@ -178,7 +234,6 @@ def test_find_related_empty_while_index_rebuilds(
         gather_runner, "local_inflight",
         lambda wg: {"state": "running", "stage_index": 18, "stage_total": 19},
     )
-    monkeypatch.setattr(mcp.common, "probe_index", lambda wg: False)
     out = mcp.search.tool_find_related("wg", "threads/2026-04-10-mlkem.md", 0)
     assert "being rebuilt" in out and "retry" in out
     assert "may have no search index" not in out
