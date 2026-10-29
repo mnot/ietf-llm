@@ -34,7 +34,7 @@ import numpy as np
 
 from .. import serve_metrics
 from ..atomicio import file_lock
-from ..paths import get_index_dir
+from ..paths import checked_corpus, get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
 #: databases forward via ALTER TABLE so users don't have to re-embed,
@@ -58,7 +58,7 @@ def _db_path(wg: str) -> str:
     # The index root defaults to the cache root but can be pointed at fast
     # / RAM-backed storage (tmpfs) via IETF_LLM_INDEX_DIR; see get_index_dir.
     # This is the *write* path (build_index); reads go through _db_path_ro.
-    return os.path.join(get_index_dir(), wg, "embeddings.db")
+    return os.path.join(get_index_dir(), checked_corpus(wg), "embeddings.db")
 
 
 def _db_building_path(wg: str) -> str:

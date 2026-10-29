@@ -23,9 +23,10 @@ from ..freshness import (
     freshness_line,
     gather_enabled,
     gather_suggestion,
+    unknown_corpus_message,
 )
 from ..log import LogLevel, Verbosity, log
-from ..paths import digest_path
+from ..paths import digest_path, readable_corpus_name, valid_corpus_name
 from ..people.positions import file_supports_tally
 from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from . import debug_log
@@ -169,7 +170,7 @@ def _corpus_exists(wg: str) -> bool:
     """True if `wg` has a cache directory. Read-only: unlike
     `get_wg_file_cache_dir`, it never creates one — so a typo'd corpus
     name is not silently materialised by a query."""
-    return serve_metrics.timed_store(
+    return readable_corpus_name(wg) and serve_metrics.timed_store(
         "corpus_exists", lambda: get_corpus_store().corpus_exists(wg)
     )
 
@@ -192,15 +193,15 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
 
     @functools.wraps(fn)
     def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
+        # Before any path is built: `os.path.join` drops the cache root for an
+        # absolute name, and `..` climbs out of it.
+        if not readable_corpus_name(wg):
+            return unknown_corpus_message(wg)
         version = serve_metrics.timed_store(
             "resolve_current", lambda: get_corpus_store().resolve_current(wg)
         )
         if version is None:
-            return (
-                f"Unknown corpus '{wg}'. Nothing is cached under that name — "
-                f"{gather_suggestion(wg, purpose='to gather it')}, or call "
-                "`list_corpora` to see what is available."
-            )
+            return unknown_corpus_message(wg)
 
         def _guarded_call() -> str:
             # Refuse rather than serve half-built content while a corpus's
@@ -351,7 +352,7 @@ def _timeout_inflight_note(
     # pylint: disable-next=import-outside-toplevel
     from ..gather import runner as gather_runner
 
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return None
     status = gather_runner.local_inflight(corpus)
     if not status:

@@ -636,7 +636,24 @@ tool domain (`corpus`, `search`, `digest`, `topic`, …) plus `common` for the
 shared scaffolding, `serve` for the HTTP/transport surface, and `server` for
 construction + `main()`. The routing —
 which tool for which question, with worked examples — lives in
-`data/mcp-instructions.md` (below); this is just the map. Grouped by job:
+`data/mcp-instructions.md` (below); this is just the map.
+
+Every tool argument that becomes a path component is checked before any path
+is built. Corpus names go through `paths.readable_corpus_name` (in
+`@_requires_corpus`, `_corpus_exists` and `find_related`): one plain segment,
+not hidden, no control characters. Gathering is stricter
+(`paths.valid_corpus_name`: letters, digits, `.`, `-`, `_`), but reading only
+refuses what is not a name, so a corpus the CLI gathered under a custom label
+stays readable. Meeting codes are matched
+by `_MEETING_RE` in `mcp/meetings.py`, and `get_issue`'s `number` and `repo` by
+patterns in `mcp/drafts.py`. A name that fails reads as a miss or a short
+message naming the rule. `paths.checked_corpus` backs that up where a name
+becomes a path or key (the stores, the freshness sentinels, the control-plane
+keys, the index path): it raises `ValueError` for anything that could leave its
+parent directory. Mailing-list names are held to the same kind of rule in
+`mbox.normalize_list_name`, and interim meeting ids and draft names are
+constrained before they reach a Datatracker URL.
+Grouped by job:
 
 - **Orient:** `list_corpora`, `overview`, `list_labels`, `list_files`, and the
   two on-demand norms tools `read_ietf_interpretation_norms` /

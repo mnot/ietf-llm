@@ -180,6 +180,62 @@ def is_synthetic_wg(name: str) -> bool:
     return name.startswith("x-")
 
 
+# Gathering is strict about corpus names: one safe path segment of letters,
+# digits, `.`, `-` and `_`, starting with an alphanumeric. Real corpus names (WG
+# shortnames, list names, `x-` synthetics) all satisfy it. Reading is looser
+# (`readable_corpus_name`), so a corpus the CLI gathered under an unusual label
+# stays readable.
+_VALID_CORPUS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_MAX_CORPUS_LEN = 128
+
+
+def valid_corpus_name(name: str) -> bool:
+    """True if `name` is a safe single path segment usable as a cache dir."""
+    return (
+        bool(name)
+        and len(name) <= _MAX_CORPUS_LEN
+        and _VALID_CORPUS.fullmatch(name) is not None
+    )
+
+
+def readable_corpus_name(name: str) -> bool:
+    """True if `name` may be looked up as a corpus by a read tool: one plain
+    path segment (see `is_plain_segment`) that is not hidden and has no control
+    characters. Looser than `valid_corpus_name`, which gathering requires, so
+    that a corpus the CLI gathered under a custom label is still readable;
+    every name it refuses is one that could leave the cache or is not a name."""
+    return (
+        len(name) <= _MAX_CORPUS_LEN
+        and is_plain_segment(name)
+        and not name.startswith(".")
+        and name.isprintable()
+    )
+
+
+def is_plain_segment(name: str) -> bool:
+    """True if `name` is one path component that cannot leave its parent: not
+    empty, not `.`/`..`, no separator of either flavour, no NUL. The
+    store-level check, looser still than `readable_corpus_name`."""
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and not any(c in name for c in ("/", "\\", "\0"))
+    )
+
+
+def checked_corpus(corpus: str) -> str:
+    """`corpus` unchanged, or ValueError if it could not be one path component.
+
+    The stores, the freshness sentinels, the control-plane keys and the index
+    path all build paths or keys from a corpus name, and `os.path.join` discards
+    everything before an absolute component. The MCP boundary rejects bad names
+    first; this keeps a caller that forgot to from reading or writing outside
+    the cache."""
+    if not is_plain_segment(corpus):
+        raise ValueError(f"not a valid corpus name: {corpus!r}")
+    return corpus
+
+
 # Top-level subdirectories under <wg>/files/.
 DIR_DIGESTS = "digests"
 DIR_DRAFTS = "drafts"

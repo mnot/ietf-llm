@@ -39,6 +39,7 @@ IMAP_RETRIES = 1
 # Per-list file recording the IMAP UIDVALIDITY the cached `<uid>.eml` files were
 # fetched under. UIDs only name a message within one UIDVALIDITY epoch.
 UIDVALIDITY_FILE = ".uidvalidity"
+_LIST_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 # Where a list's cached messages go when the server renumbers the folder:
 # `<list>/epoch-<old UIDVALIDITY>/`. Their UIDs no longer name anything on the
 # server, but the messages are still real mail (and the only copy of anything
@@ -65,7 +66,7 @@ def validate_list_names(
         norm = normalize_list_name(raw)
         if not norm:
             log(
-                f"--mailing-list {raw!r}: empty name; not persisting.",
+                f"--mailing-list {raw!r}: not a mailing list name; not persisting.",
                 verbose,
                 level=LogLevel.STATUS,
             )
@@ -108,12 +109,14 @@ def normalize_list_name(raw: str) -> str:
 
     Whitespace stripped; case lowered to match IMAP folder convention.
     Used by both `--mailing-list` argument parsing and the sync entry
-    point so callers can pass either form.
+    point so callers can pass either form. A name that is not a plain
+    list name (it becomes a directory and an IMAP folder) comes back
+    empty, which callers already treat as "no list".
     """
     cleaned = raw.strip().lower()
     if "@" in cleaned:
         cleaned = cleaned.split("@", 1)[0]
-    return cleaned
+    return cleaned if _LIST_NAME_RE.fullmatch(cleaned) else ""
 
 
 def extract_text_content(msg: EmailMessage) -> str:
@@ -635,7 +638,7 @@ def sync_mailing_list(
     list_names: List[str] = []
     seen: set[str] = set()
     if auto_discover:
-        auto = get_mailing_list_name(wg_name)
+        auto = normalize_list_name(get_mailing_list_name(wg_name) or "")
         if auto:
             list_names.append(auto)
             seen.add(auto)

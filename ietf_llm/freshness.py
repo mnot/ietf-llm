@@ -60,7 +60,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
-from .paths import get_cache_dir
+from .paths import checked_corpus, get_cache_dir, readable_corpus_name
 
 #: Cache older than this prompts the warning. Picked to be long enough
 #: that day-to-day reading doesn't constantly nag, but short enough that
@@ -179,6 +179,22 @@ def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) ->
     return f"{cmd} {purpose}".rstrip() if purpose else cmd
 
 
+def unknown_corpus_message(corpus: str) -> str:
+    """What a read tool says for a corpus that is not cached, or whose name
+    could not be one (no gather command is suggested for that: it would not
+    run)."""
+    if not readable_corpus_name(corpus):
+        return (
+            f"{corpus[:80]!r} is not a valid corpus name: it must be a single "
+            "plain name, not a path. Call `list_corpora` to see what is available."
+        )
+    return (
+        f"Unknown corpus '{corpus}'. Nothing is cached under that name — "
+        f"{gather_suggestion(corpus, purpose='to gather it')}, or call "
+        "`list_corpora` to see what is available."
+    )
+
+
 def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
     """The sentinel path in the local gather *workspace* — `<cache>/<wg>/name`.
 
@@ -186,7 +202,7 @@ def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
     publish, into the tree that becomes the new version, never into an
     already-materialised (immutable) one. See `_read_sentinel_path` for the
     read side."""
-    return os.path.join(get_cache_dir(), wg, name)
+    return os.path.join(get_cache_dir(), checked_corpus(wg), name)
 
 
 def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str]:

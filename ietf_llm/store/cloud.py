@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, T
 
 from .. import freshness
 from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
-from ..paths import INDEX_FILE_NAMES, get_index_dir
+from ..paths import INDEX_FILE_NAMES, checked_corpus, get_index_dir
 from .blobs import BlobStore, blob_concurrency, parallel_each
 from .control import KvControlPlane
 from .corpus import (
@@ -99,12 +99,12 @@ def _version_time(version: str) -> Optional[datetime]:
 
 def _content_prefix(corpus: str, version: str) -> str:
     """The blob prefix holding one version's immutable content (and manifest)."""
-    return f"corpora/{corpus}/versions/{version}/"
+    return f"corpora/{checked_corpus(corpus)}/versions/{version}/"
 
 
 def _versions_prefix(corpus: str) -> str:
     """The blob prefix under which every one of `corpus`'s version trees lives."""
-    return f"corpora/{corpus}/versions/"
+    return f"corpora/{checked_corpus(corpus)}/versions/"
 
 
 def store_config_key() -> Tuple[Any, ...]:
@@ -240,6 +240,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # refreshes its own entry immediately (see `publish`). Concurrent misses
         # may each resolve within the window — no single-flight, which a short
         # TTL makes cheap.
+        checked_corpus(corpus)
         if self._resolve_ttl <= 0:
             return self._control.resolve_current(corpus)
         key = (self._cache_key, corpus)
@@ -297,7 +298,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         Versions are immutable, so a materialised copy is reusable — only fetch
         on a miss. Raises FileNotFoundError if the version's blobs are absent or
         incomplete (e.g. reaped by version GC)."""
-        dest_root = os.path.join(self._scratch, corpus, version)
+        dest_root = os.path.join(self._scratch, checked_corpus(corpus), version)
         if not os.path.isdir(dest_root):
             self._materialise_version(corpus, version, dest_root)
         return dest_root

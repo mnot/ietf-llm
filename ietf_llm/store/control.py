@@ -29,6 +29,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..paths import checked_corpus
 from .kv import ABSENT, KvStore, Record
 
 _CORPORA = "corpora/"
@@ -38,27 +39,27 @@ _CAS_RETRIES = 8
 
 
 def _pointer_key(corpus: str) -> str:
-    return f"corpora/{corpus}/pointer"
+    return f"corpora/{checked_corpus(corpus)}/pointer"
 
 
 def _lease_key(corpus: str) -> str:
-    return f"corpora/{corpus}/lease"
+    return f"corpora/{checked_corpus(corpus)}/lease"
 
 
 def _status_key(corpus: str) -> str:
-    return f"corpora/{corpus}/status"
+    return f"corpora/{checked_corpus(corpus)}/status"
 
 
 def _access_key(corpus: str) -> str:
-    return f"corpora/{corpus}/access"
+    return f"corpora/{checked_corpus(corpus)}/access"
 
 
 def _config_prefix(corpus: str) -> str:
-    return f"corpora/{corpus}/config/"
+    return f"corpora/{checked_corpus(corpus)}/config/"
 
 
 def _config_key(corpus: str, scope: str) -> str:
-    return f"corpora/{corpus}/config/{scope}"
+    return f"corpora/{checked_corpus(corpus)}/config/{scope}"
 
 
 def _loads(record: Record) -> Tuple[Any, str]:

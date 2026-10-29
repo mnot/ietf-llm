@@ -41,7 +41,6 @@ import hashlib
 import json
 import os
 import queue
-import re
 import secrets
 import threading
 import time
@@ -53,7 +52,7 @@ from .. import freshness, serve_metrics
 from ..corpus import canonical
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
-from ..paths import get_cache_dir
+from ..paths import get_cache_dir, valid_corpus_name
 from . import lifecycle, pipeline
 
 # `GatherCancelled` lives in `pipeline` (the raiser) and is re-exported here so
@@ -76,15 +75,6 @@ _CANCEL_TOKEN_BYTES = 9
 #: Default bound on this host's pending-gather backlog (queued + running);
 #: overflow is refused so a runaway caller cannot pile up unbounded work.
 _DEFAULT_QUEUE_MAX = 16
-
-# A corpus name becomes a cache directory, so it must be a single safe path
-# segment: letters/digits/`.`/`-`/`_`, starting with an alphanumeric. This
-# bars path separators, `..`, leading dots/dashes, and whitespace — the
-# write-side mirror of the read-side `_safe_path` guard, applied *before*
-# any path is built. Real corpus names (WG shortnames, list names, `x-`
-# synthetics) all satisfy it; unusual custom labels still go via the CLI.
-_VALID_CORPUS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_MAX_CORPUS_LEN = 128
 
 # This host runs up to N gathers at once (the per-host cap, N =
 # service_config.gather_max_inflight()): a pool of N worker threads drains a
@@ -134,13 +124,6 @@ def _cancel_requested(corpus: str) -> bool:
         return True
     status = read_status(corpus)
     return bool(status and status.get("cancel_requested"))
-
-
-def valid_corpus_name(name: str) -> bool:
-    """True if `name` is a safe single path segment usable as a cache dir."""
-    return (
-        bool(name) and len(name) <= _MAX_CORPUS_LEN and bool(_VALID_CORPUS.match(name))
-    )
 
 
 @dataclass

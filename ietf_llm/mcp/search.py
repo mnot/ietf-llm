@@ -6,8 +6,9 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import index_model, probe_index, related, search
-from ..freshness import gather_enabled, staleness_warning
+from ..freshness import gather_enabled, staleness_warning, unknown_corpus_message
 from ..log import Verbosity
+from ..paths import readable_corpus_name
 from .common import (
     _corpus_exists,
     _grounding_frame,
@@ -327,6 +328,18 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     return _with_freshness(wg, f"{frame}\n{body}" if frame else body)
 
 
+def _related_refusal(
+    wg: str, since: Optional[str], until: Optional[str]
+) -> Optional[str]:
+    if not readable_corpus_name(wg):
+        return unknown_corpus_message(wg)
+    for field, value in (("since", since), ("until", until)):
+        date_error = _invalid_date_message(value, field)
+        if date_error:
+            return date_error
+    return None
+
+
 def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     wg: str,
     file: str,
@@ -342,10 +355,11 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
     diversify: bool = True,
     collapse_versions: bool = True,
 ) -> str:
-    for field, value in (("since", since), ("until", until)):
-        date_error = _invalid_date_message(value, field)
-        if date_error:
-            return date_error
+    # Not behind `_requires_corpus` (a missing index is an answer here, not an
+    # unknown corpus), but it still reaches the index dir by name.
+    refusal = _related_refusal(wg, since, until)
+    if refusal:
+        return refusal
     try:
         k = max(1, min(int(k), _MAX_SEARCH_K))
     except (TypeError, ValueError):

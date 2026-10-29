@@ -35,7 +35,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
 from .. import freshness
 from ..config import service as service_config
-from ..paths import cached_wg_names, get_cache_dir, get_index_dir
+from ..paths import cached_wg_names, checked_corpus, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local
 #: cache is single-version (the live tree on disk), so the value is opaque — it
@@ -91,7 +91,7 @@ def clean_relpath(relpath: str) -> Optional[str]:
 def _local_files_dir(corpus: str) -> str:
     """The `<cache>/<corpus>/files` path under the local cache root. Pure path
     construction — does not touch the filesystem (so it never creates a dir)."""
-    return os.path.join(get_cache_dir(), corpus, "files")
+    return os.path.join(get_cache_dir(), checked_corpus(corpus), "files")
 
 
 #: Request-scoped pinned versions: corpus -> version. Set once at the MCP tool
@@ -490,7 +490,7 @@ class LocalCorpusStore(CorpusStore):
         # is: a root artifact is read straight off disk, so an absent corpus
         # simply reads as an absent file (which is what the callers expect) and
         # a gather can read what it has already written before `files/` exists.
-        return os.path.join(get_cache_dir(), corpus)
+        return os.path.join(get_cache_dir(), checked_corpus(corpus))
 
     def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
         # The base class default (`return self.local_corpus_dir(corpus)`)
@@ -508,7 +508,7 @@ class LocalCorpusStore(CorpusStore):
         # The live index dir — `<index_root>/<corpus>` — exactly where
         # `_db_path` has always resolved it, so local read behaviour is
         # unchanged. Returned even if no DB exists yet (search handles that).
-        return os.path.join(get_index_dir(), corpus)
+        return os.path.join(get_index_dir(), checked_corpus(corpus))
 
     def publish(
         self,

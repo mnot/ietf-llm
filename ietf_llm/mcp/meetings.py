@@ -15,6 +15,7 @@ from ..paths import (
     minutes_path,
     polls_dir,
     transcripts_dir,
+    valid_corpus_name,
 )
 from .common import _files_dir, _offload, _requires_corpus, _with_freshness
 
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
 #: Line cap for a single gathered minutes read, so a pathological transcript-
 #: sized minutes file cannot blow the context window in one call.
 _MINUTES_MAX_LINES = 2000
+
+#: A meeting code is one directory name (`ietf125`, `interim2026aipref05`).
+_MEETING_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _read_text_capped(path: str, max_lines: int, relpath: str = "") -> str:
@@ -155,7 +159,9 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
             f'`list_meetings("{wg}")` to see the gathered meetings and their '
             "codes.",
         )
-    path = minutes_path(cache, meeting)
+    # `meeting` becomes a directory name; a code that is not a plain segment
+    # cannot be one we gathered.
+    path = minutes_path(cache, meeting) if _MEETING_RE.fullmatch(meeting) else ""
     if not os.path.isfile(path):
         return _with_freshness(
             wg,
@@ -220,14 +226,11 @@ def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
     """
     from .. import live_lookup  # pylint: disable=import-outside-toplevel
 
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
-
     corpus = (corpus or "").strip()
     meeting = str(meeting or "").strip()
     if not corpus:
         return "Provide a Working Group shortname (e.g. `httpbis`)."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
     if not meeting:
         return _render_upcoming_meetings(corpus)
