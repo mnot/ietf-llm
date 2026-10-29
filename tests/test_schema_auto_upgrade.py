@@ -20,6 +20,7 @@ from typing import Iterable, List
 import pytest
 
 from ietf_llm import embeddings
+from ietf_llm.atomicio import file_lock
 from ietf_llm.embeddings.search import build_index, search
 from ietf_llm.embeddings.storage import (
     _AUTO_UPGRADE_FROM,
@@ -128,3 +129,14 @@ def test_a_current_index_is_not_touched(isolated_home: Path) -> None:
     before = os.path.getmtime(_db_path("wg"))
     assert search("wg", "stored response", k=1)
     assert os.path.getmtime(_db_path("wg")) == before
+
+
+def test_a_build_holding_the_lock_is_not_waited_for(isolated_home: Path) -> None:
+    """A gather embeds under the same lock for minutes. A reader finding it
+    held falls back to the older-schema message instead of hanging."""
+    _built(isolated_home)
+    _age_to(_AUTO_UPGRADE_FROM)
+    with file_lock(_db_path("wg") + ".lock"):
+        assert not try_upgrade_schema("wg", _AUTO_UPGRADE_FROM)
+        assert _schema() == _AUTO_UPGRADE_FROM
+    assert try_upgrade_schema("wg", _AUTO_UPGRADE_FROM)

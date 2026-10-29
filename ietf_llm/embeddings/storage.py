@@ -33,7 +33,7 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from .. import serve_metrics
-from ..atomicio import file_lock
+from ..atomicio import LockHeld, file_lock
 from ..paths import checked_corpus, get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
@@ -676,8 +676,9 @@ def try_upgrade_schema(wg: str, current: int) -> bool:
     (`_index_immutable` — a published replica upgrades by being republished,
     not by a reader mutating a materialised copy).
 
-    Returns True when the index is now current. Best-effort: any failure
-    returns False and the caller falls back to telling the user to gather.
+    Returns True when the index is now current. Best-effort: any failure,
+    including a build holding the lock, returns False and the caller falls
+    back to telling the user to gather.
     """
     if current < _AUTO_UPGRADE_FROM or _index_immutable():
         return False
@@ -686,11 +687,12 @@ def try_upgrade_schema(wg: str, current: int) -> bool:
         return False
     try:
         # The same lock a build takes, so a reader upgrading and a gather
-        # starting cannot both migrate at once.
-        with file_lock(path + ".lock"):
+        # starting cannot both migrate at once. A build holds it for the whole
+        # embed, so a reader must not wait: it reports the older schema instead.
+        with file_lock(path + ".lock", blocking=False):
             conn = _open_db(wg, path=path)
             conn.close()
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError, LockHeld):
         return False
     return True
 
