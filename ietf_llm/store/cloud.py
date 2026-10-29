@@ -34,9 +34,10 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, T
 
 from .. import freshness
 from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
+from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, checked_corpus, get_index_dir
 from .blobs import BlobStore, blob_concurrency, parallel_each
-from .control import KvControlPlane
+from .control import KvControlPlane, LeaseConflict
 from .corpus import (
     CorpusStore,
     LeaseLost,
@@ -691,6 +692,20 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 continue
             self._blobs.delete_prefix(_content_prefix(corpus, version))
 
+    def _discard_staged(self, prefix: str) -> None:
+        """Best-effort removal of a refused publish's own staged version. Only
+        for a publish that has definitely not flipped the pointer: nothing
+        references the prefix, so deleting it cannot hurt a reader."""
+        try:
+            self._blobs.delete_prefix(prefix)
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"store: could not remove the refused publish at {prefix}: "
+                f"{type(err).__name__}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.WARN,
+            )
+
     def publish(
         self,
         corpus: str,
@@ -780,11 +795,22 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # keeps the flip and reap under a live lease) and the pointer
         # flips only if still at the token read above, so a publisher that
         # stalled past its lease cannot overwrite a newer gather's version.
-        if lease_owner is not None and not self._control.confirm_lease(
-            corpus, lease_owner
-        ):
-            raise LeaseLost(corpus, "taken over during the upload; nothing published")
+        # A refusal is definitive (nothing was flipped), so the refused publish
+        # removes its own staged prefix: left behind, its newer id would rank as
+        # the "previous" version and the reap would drop the real one.
+        if lease_owner is not None:
+            try:
+                confirmed = self._control.confirm_lease(corpus, lease_owner)
+            except LeaseConflict:
+                self._discard_staged(prefix)
+                raise
+            if not confirmed:
+                self._discard_staged(prefix)
+                raise LeaseLost(
+                    corpus, "taken over during the upload; nothing published"
+                )
         if not self._control.set_current(corpus, version, expect=expect_pointer):
+            self._discard_staged(prefix)
             raise LeaseLost(
                 corpus, "the current version changed during publish; nothing flipped"
             )

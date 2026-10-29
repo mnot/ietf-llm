@@ -34,8 +34,18 @@ from .kv import ABSENT, ANY, KvStore, Record
 
 _CORPORA = "corpora/"
 _SLOTS_KEY = "fleet/slots"
-#: Bounded retries for the multi-writer compare-and-swap on `fleet/slots`.
+#: Bounded retries for a multi-writer compare-and-swap loop: `fleet/slots` and the
+#: lease record.
 _CAS_RETRIES = 8
+#: `expires_at` of a released lease (see `release_lease`): the owner stays on the
+#: record, which is what makes a zombie's later renewal or publish refusable.
+_RELEASED = 0.0
+
+
+class LeaseConflict(RuntimeError):
+    """The lease record could not be updated: every compare-and-swap in the retry
+    budget lost to a concurrent writer. Not an answer about who holds the lease
+    (that is `False`), so callers treat it as a store error, not a lost lease."""
 
 
 def _pointer_key(corpus: str) -> str:
@@ -136,14 +146,17 @@ class KvControlPlane:
         against a taker's `acquire_lease`. A lost CAS is retried against a fresh
         read: the only other writer of a live lease is its owner's other thread
         (the heartbeat vs. a publish), and a CAS lost to that must not read as a
-        lost lease. A different owner on the record is the real answer."""
+        lost lease. A different owner on the record is the real answer, as is
+        the release marker (`expires_at == 0.0`): a released lease is not
+        revived by a renewal that was already in flight. Raises `LeaseConflict`
+        when the retry budget is spent, which says nothing about ownership."""
         key = _lease_key(corpus)
         for _ in range(_CAS_RETRIES):
             record = self._kv.get(key)
             if record is None:
                 return False
             held, token = _loads(record)
-            if held["owner"] != owner:
+            if held["owner"] != owner or held["expires_at"] == _RELEASED:
                 return False
             if ttl is not None:
                 held["ttl"] = ttl
@@ -153,7 +166,10 @@ class KvControlPlane:
                 held["expires_at"] = max(held["expires_at"], clock + span)
             if self._kv.put(key, _dumps(held), expect=token) is not None:
                 return True
-        return False
+        raise LeaseConflict(
+            f"could not update the lease record for {corpus!r}: "
+            f"{_CAS_RETRIES} write conflicts in a row"
+        )
 
     def renew_lease(
         self, corpus: str, owner: str, ttl: float, now: Optional[float] = None
@@ -181,13 +197,23 @@ class KvControlPlane:
     def release_lease(self, corpus: str, owner: str) -> None:
         # Free the lease by stamping it expired (compare-and-swap on our token),
         # so release needs only a conditional PUT, never a conditional DELETE.
-        record = self._kv.get(_lease_key(corpus))
-        if record is None:
-            return
-        held, token = _loads(record)
-        if held["owner"] == owner:
-            held["expires_at"] = 0.0
-            self._kv.put(_lease_key(corpus), _dumps(held), expect=token)
+        # Retried like a renewal: a heartbeat landing between our read and write
+        # must not leave the lease standing for a full TTL.
+        key = _lease_key(corpus)
+        for _ in range(_CAS_RETRIES):
+            record = self._kv.get(key)
+            if record is None:
+                return
+            held, token = _loads(record)
+            if held["owner"] != owner or held["expires_at"] == _RELEASED:
+                return
+            held["expires_at"] = _RELEASED
+            if self._kv.put(key, _dumps(held), expect=token) is not None:
+                return
+        raise LeaseConflict(
+            f"could not release the lease for {corpus!r}: "
+            f"{_CAS_RETRIES} write conflicts in a row"
+        )
 
     def lease_holder(
         self, corpus: str, now: Optional[float] = None, *, expired_ok: bool = False

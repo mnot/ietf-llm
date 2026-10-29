@@ -1165,7 +1165,20 @@ servers) can run at once. The safety model:
   through the cancel predicate), will not publish, will not persist the
   accelerator caches, and records `failed` locally only: the fleet status record
   is now the new holder's, so it is not overwritten. The CLI and the MCP runner
-  apply the same fence.
+  apply the same fence. A renewal that cannot update the lease record because
+  every compare-and-swap in its retry budget lost (`LeaseConflict`) says nothing
+  about who holds the lease: it counts as a store error, not a lost lease. A
+  released lease (`expires_at == 0`, owner kept) refuses a renewal still in
+  flight, so a late heartbeat cannot revive it, and `release_lease` retries its
+  compare-and-swap like a renewal. A publish refused after staging deletes its
+  own version prefix (best-effort), so the orphan's newer id cannot rank as the
+  "previous" version and displace the real one in the reap.
+  Two limitations are accepted. `confirm_lease` revives a lapsed lease that has
+  no taker; the pointer compare-and-swap, not the clock, orders that publisher
+  against anyone who takes the lease later. And per-WG config
+  (`CloudConfigStore.set_config`) is written with plain puts during a gather and
+  is not fenced by the watch, so a zombie can write config until its next
+  progress checkpoint (config is last-writer-wins).
 
 ### `ietf-llm` (gather) has no `--update` flag
 

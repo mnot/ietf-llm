@@ -171,7 +171,10 @@ class LeaseWatch:
             )
             silent = self._clock() - self._last_success
             if self._failures >= LEASE_RENEW_MAX_FAILURES:
-                self._lose(f"{self._failures} consecutive renewal failures")
+                self._lose(
+                    f"{self._failures} consecutive renewal failures, the last "
+                    f"{type(err).__name__}: {err}"
+                )
             elif silent >= LEASE_STALE_FRACTION * LEASE_TTL:
                 self._lose(f"no successful renewal for {silent:.0f}s")
             return

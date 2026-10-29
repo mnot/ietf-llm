@@ -237,3 +237,72 @@ def test_zombie_and_holder_publishing_concurrently_never_let_the_zombie_win(tmp_
             t.join()
         assert len(errors) == 1, round_no
         assert store.resolve_current("tls") == "vB"
+
+
+# --- a refused publish removes its own staged version ----------------------
+
+
+def _versions(store: CloudCorpusStore) -> List[str]:
+    return store._list_versions("tls")  # pylint: disable=protected-access
+
+
+def _published_by_a(tmp_path: Path) -> Tuple[CloudCorpusStore, KvControlPlane, _HookedBlobs]:
+    """A holds the lease and has published v1 and v2, so v2 is current and v1 is
+    the "previous" version a stale replica may still be reading."""
+    store, control, blobs = _pair(tmp_path, trigger="manifest.json")
+    control.acquire_lease("tls", "A", ttl=3600.0, now=0.0)
+    store.publish("tls", _ws(tmp_path, "w1", "one"), version="v1", lease_owner="A")
+    blobs._fired = False  # re-arm the hook for the publish under test
+    store.publish("tls", _ws(tmp_path, "w2", "two"), version="v2", lease_owner="A")
+    blobs._fired = False
+    return store, control, blobs
+
+
+def test_refused_publish_leaves_no_orphan_to_displace_the_previous_version(tmp_path: Path) -> None:
+    """A lapses mid-publish and B takes over; A's refused publish carries the
+    newest id. Left behind, it would rank as "previous" and B's next publish
+    would reap the real previous version (v2) instead of it."""
+    store, control, blobs = _published_by_a(tmp_path)
+
+    def b_takes_over(key: str) -> None:
+        control.release_lease("tls", "A")
+        assert control.acquire_lease("tls", "B", ttl=3600.0)
+
+    blobs.hook = b_takes_over
+    with pytest.raises(LeaseLost):
+        store.publish("tls", _ws(tmp_path, "w3", "from A"), version="v3", lease_owner="A")
+    assert _versions(store) == ["v1", "v2"]  # A's staged v3 is gone
+    store.publish("tls", _ws(tmp_path, "w4", "from B"), version="v4", lease_owner="B")
+    # current + previous survive the reap; with the orphan kept, v3 would have
+    # ranked as previous and v2 been reaped.
+    assert _versions(store) == ["v2", "v4"]
+    assert _served(store) == "from B"
+
+
+def test_publish_refused_by_the_pointer_also_removes_its_staged_version(tmp_path: Path) -> None:
+    store, control, blobs = _published_by_a(tmp_path)
+    blobs.hook = lambda key: control.set_current("tls", "vX")
+    with pytest.raises(LeaseLost, match="changed during publish"):
+        store.publish("tls", _ws(tmp_path, "w3", "from A"), version="v3", lease_owner="A")
+    assert "v3" not in _versions(store)
+
+
+def test_a_failing_cleanup_does_not_mask_the_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, control, blobs = _pair(tmp_path, trigger="manifest.json")
+    control.acquire_lease("tls", "A", ttl=3600.0, now=0.0)
+    control.set_current("tls", "v0")
+    blobs.hook = lambda key: control.set_current("tls", "vX")
+
+    def boom(prefix: str) -> None:
+        raise OSError("bucket unreachable")
+
+    monkeypatch.setattr(blobs, "delete_prefix", boom)
+    with pytest.raises(LeaseLost):
+        store.publish("tls", _ws(tmp_path, "w", "x"), version="vA", lease_owner="A")
+    assert store.resolve_current("tls") == "vX"
+
+
+def test_a_successful_publish_keeps_its_version(tmp_path: Path) -> None:
+    store, _, _ = _published_by_a(tmp_path)
+    assert _versions(store) == ["v1", "v2"]
+    assert _served(store) == "two"

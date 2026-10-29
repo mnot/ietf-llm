@@ -126,6 +126,41 @@ def test_watch_deadline_counts_from_acquisition_and_resets_on_success() -> None:
     assert not watch.lost.is_set()
 
 
+def test_watch_says_the_record_could_not_be_updated_not_that_another_gatherer_has_it() -> None:
+    # A spent CAS-retry budget says nothing about who holds the lease: it counts
+    # as a store error, and the reason names the conflict.
+    from ietf_llm.store.control import KvControlPlane, LeaseConflict
+    from ietf_llm.store.kv import ANY, InMemoryKvStore
+
+    class _Losing(InMemoryKvStore):
+        losing = False
+
+        def put(self, key: str, value: bytes, *, expect: object = ANY) -> Optional[str]:
+            if self.losing and key.endswith("/lease"):
+                return None
+            return super().put(key, value, expect=expect)
+
+    kv = _Losing()
+    control = KvControlPlane(kv)
+    control.acquire_lease("tls", "me", ttl=3600.0)
+    kv.losing = True
+
+    class _Conflicted(_Store):
+        def renew_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+            return control.renew_lease(corpus, owner, ttl)
+
+    store, watch = _Conflicted(), LeaseWatch("tls")
+    for _ in range(lifecycle.LEASE_RENEW_MAX_FAILURES - 1):
+        watch.renew(store, "me")
+        assert not watch.lost.is_set()  # one conflict is not a lost lease
+    watch.renew(store, "me")
+    assert watch.lost.is_set()
+    assert "could not update the lease record" in watch.reason
+    assert "another gatherer" not in watch.reason
+    assert control.lease_holder("tls") == "me"
+    assert LeaseConflict.__name__ in watch.reason
+
+
 def test_watch_is_sticky() -> None:
     store, watch = _Store(), LeaseWatch("tls")
     store.renew_result = False

@@ -8,7 +8,9 @@ import threading
 import time
 from typing import Callable, List, Optional
 
-from ietf_llm.store.control import KvControlPlane
+import pytest
+
+from ietf_llm.store.control import KvControlPlane, LeaseConflict
 from ietf_llm.store.kv import ANY, InMemoryKvStore
 
 
@@ -344,3 +346,66 @@ def test_gather_slot_retries_a_lost_cas() -> None:
     kv.put = put_losing_once  # type: ignore[method-assign]
     assert cp.acquire_gather_slot("A", "tls", ttl=100.0, max_inflight=1, now=0.0) is True
     assert lost
+
+
+# --- release marker and release retry --------------------------------------
+
+
+def test_renew_and_confirm_refuse_a_released_lease() -> None:
+    # A renewal already in flight when the owner releases must not revive it.
+    cp = _cp()
+    cp.acquire_lease("tls", "a", ttl=100.0, now=time.time())
+    cp.release_lease("tls", "a")
+    assert cp.renew_lease("tls", "a", ttl=100.0) is False
+    assert cp.confirm_lease("tls", "a") is False
+    assert cp.lease_holder("tls") is None  # still free for the next gatherer
+    assert cp.acquire_lease("tls", "b", ttl=100.0) is True
+
+
+def test_release_survives_a_heartbeat_landing_first() -> None:
+    kv = _InterposedKv()
+    cp = KvControlPlane(kv)
+    cp.acquire_lease("tls", "a", ttl=100.0, now=time.time())
+    fired: List[str] = []
+
+    def heartbeat_lands(key: str) -> None:
+        if key.endswith("/lease") and not fired:
+            fired.append(key)
+            cp.renew_lease("tls", "a", ttl=100.0)
+
+    kv.before_put = heartbeat_lands
+    cp.release_lease("tls", "a")
+    assert fired
+    assert cp.lease_holder("tls") is None  # released, not left standing a TTL
+
+
+def test_release_leaves_a_taker_alone() -> None:
+    cp = _cp()
+    cp.acquire_lease("tls", "a", ttl=10.0, now=0.0)
+    cp.acquire_lease("tls", "b", ttl=100.0)
+    cp.release_lease("tls", "a")  # a zombie's cleanup
+    assert cp.lease_holder("tls") == "b"
+
+
+def test_exhausted_lease_cas_is_a_conflict_not_a_lost_lease() -> None:
+    class _Losing(InMemoryKvStore):
+        losing = False
+
+        def put(self, key: str, value: bytes, *, expect: object = ANY) -> Optional[str]:
+            if self.losing and key.endswith("/lease"):
+                return None  # every conditional write loses to "someone"
+            return super().put(key, value, expect=expect)
+
+    kv = _Losing()
+    cp = KvControlPlane(kv)
+    cp.acquire_lease("tls", "a", ttl=100.0, now=time.time())
+    kv.losing = True
+    for call in (
+        lambda: cp.renew_lease("tls", "a", ttl=100.0),
+        lambda: cp.confirm_lease("tls", "a"),
+        lambda: cp.release_lease("tls", "a"),
+    ):
+        with pytest.raises(LeaseConflict, match="write conflicts"):
+            call()
+    # The record still names us: nothing here said the lease was lost.
+    assert cp.lease_holder("tls") == "a"
