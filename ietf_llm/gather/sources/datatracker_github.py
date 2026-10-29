@@ -17,13 +17,23 @@ Cache (`~/.cache/ietf-llm/_datatracker-github.json`, shared across WGs
 because the mapping is WG-independent):
 
   - `"_index"`: `{ "<login-lowercased>": "<person resource_uri>" }` —
-    the global `github_username → person` map, walked once (paginated)
-    and reused. A login absent from the index means "nobody on
-    Datatracker claims it"; we record that as a `None` per-login entry
-    so we don't rebuild the index hunting for it.
+    the global `github_username → person` map, walked (paginated) and
+    reused until it is older than `identity_cache.INDEX_TTL_SECONDS` (7
+    days), when it is rebuilt (people add the resource after their first
+    gather). A login
+    absent from the index means "nobody on Datatracker claims it"; we
+    record that as a `None` per-login entry. A `None` is only a note: it is
+    checked against the current index each run (a dict lookup, no request),
+    so it never outlives a rebuild that finds the login.
   - per-login: `{ "name": ..., "emails": [...], "fetched_at": ... }` —
     the resolved real name and verified emails for a login we actually
-    needed. `null` when the login isn't in the index.
+    needed, looked up again once older than `identity_cache.TTL_SECONDS`
+    (30 days; at most `_MAX_REFRESH` entries, so 2x that many requests, per
+    call, so a cache that all aged out together does not become one burst).
+    A refresh that fails keeps the entry and adds `"checked_at"`; the entry
+    is not retried until that is itself a TTL old, so a deleted or merged
+    person does not cost a request and a slot every run. `null` when the
+    login isn't in the index.
 
 Best-effort throughout: a network error or unexpected response skips
 the login (returns nothing for it) and leaves the cache untouched so
@@ -50,6 +60,10 @@ _INDEX_KEY = "_index"
 _INDEX_STAMP_KEY = "_index_fetched_at"
 _EXTRESOURCE_PATH = "/api/v1/person/personextresource/?name=github_username&limit=100"
 _PERSON_ID_RE = re.compile(r"/person/(\d+)/?$")
+#: Expired per-login entries refreshed per call (two requests each); the rest
+#: keep their old value until a later call. Not a process-wide budget: the
+#: runner gathers corpora concurrently, each making its own call.
+_MAX_REFRESH = 50
 
 
 @dataclass
@@ -91,29 +105,55 @@ def resolve_via_datatracker(
 
     out: Dict[str, DTResolved] = {}
     n_requested = 0
+    n_refreshed = 0
     dirty = False
     for login in wanted:
         key = login.lower()
-        if key in cache:
-            entry = cache[key]
-            if isinstance(entry, dict):
-                out[login] = DTResolved(
-                    name=entry.get("name"),
-                    emails=list(entry.get("emails") or []),
-                )
-            # `None` entry means "confirmed not on Datatracker"; skip.
-            continue
+        entry = cache.get(key)
+        refreshing = False
+        if isinstance(entry, dict):
+            out[login] = DTResolved(
+                name=entry.get("name"),
+                emails=list(entry.get("emails") or []),
+            )
+            if not identity_cache.is_expired(entry.get("fetched_at")):
+                continue
+            if not identity_cache.is_expired(entry.get("checked_at")):
+                continue  # a recent refresh failed; back off
+            refreshing = True
         person_uri = index.get(key)
         if not person_uri:
-            # Not claimed by anyone on Datatracker. Record the miss so we
-            # don't re-check every gather.
-            cache[key] = None
-            dirty = True
+            if key not in cache:
+                # Not claimed by anyone on Datatracker. Note it; the index
+                # is consulted again next run, so this is not a decision.
+                cache[key] = None
+                dirty = True
+            # A resolved login that has since left the index keeps its entry.
             continue
+        if refreshing:
+            # Spent only on an entry that makes a request.
+            if n_refreshed >= _MAX_REFRESH:
+                continue
+            n_refreshed += 1
         resolved = _resolve_one(person_uri)
         n_requested += 1
         if resolved is None:
-            # Transient failure — don't cache, retry next run.
+            if refreshing and isinstance(entry, dict):
+                # Keep the old value, but don't retry (and spend a slot) next run.
+                entry["checked_at"] = identity_cache.now_iso()
+                dirty = True
+            # A first lookup that fails is not cached: retried next run.
+            continue
+        if (
+            refreshing
+            and isinstance(entry, dict)
+            and not (resolved.name or resolved.emails)
+            and (entry.get("name") or entry.get("emails"))
+        ):
+            # An empty answer is not evidence that the person lost their
+            # details: keep what we had and restart its clock.
+            entry["fetched_at"] = identity_cache.now_iso()
+            dirty = True
             continue
         cache[key] = {
             "name": resolved.name,
@@ -142,14 +182,22 @@ def _ensure_index(
     cache: Dict[str, Any], verbose: Verbosity
 ) -> Optional[Dict[str, str]]:
     """Return the cached `github_username → person_uri` index, building it
-    (one paginated walk of the personextresource endpoint) if absent.
+    (one paginated walk of the personextresource endpoint) if absent or older
+    than `INDEX_TTL_SECONDS`.
 
-    Returns None only when the index is absent AND the build fails, so the
-    caller can abort cleanly. A successfully built index is written back
-    into `cache` under `_INDEX_KEY`."""
+    A stale index is kept when the rebuild fails, in full or part way: it is
+    still better than none, or than a truncated one. Returns None only when
+    there is no index at all AND the build fails, so the caller can abort
+    cleanly. A successfully built index is written back into `cache` under
+    `_INDEX_KEY`."""
     existing = cache.get(_INDEX_KEY)
     if isinstance(existing, dict):
-        return existing
+        if not identity_cache.is_expired(
+            cache.get(_INDEX_STAMP_KEY), identity_cache.INDEX_TTL_SECONDS
+        ):
+            return existing
+    else:
+        existing = None
 
     index: Dict[str, str] = {}
     path: Optional[str] = _EXTRESOURCE_PATH
@@ -159,6 +207,8 @@ def _ensure_index(
         if not body:
             # First page failing means no index at all; bail. A later
             # page failing leaves a partial index, which is still useful.
+            if existing is not None:
+                return existing
             if pages == 0:
                 return None
             break
@@ -170,6 +220,10 @@ def _ensure_index(
         pages += 1
         path = (body.get("meta") or {}).get("next") or None
 
+    if existing is not None and len(index) * 2 < len(existing):
+        # An empty or near-empty walk of a healthy index is a bad response,
+        # not a mass un-claiming; keep the old one and try again next run.
+        return existing
     cache[_INDEX_KEY] = index
     cache[_INDEX_STAMP_KEY] = identity_cache.now_iso()
     _merge_save(cache)

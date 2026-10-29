@@ -5,9 +5,9 @@ Each cache module owns its path and its merge function. This owns the atomic
 write and the locked reload-merge-save that keeps the runner's concurrent
 same-process gathers from clobbering each other's local additions before they
 reach the store (issue #82 review). It also provides the common building blocks
-the keep-`None` caches share — `load` (parse, keeping `None` "confirmed-absent"
-markers), `union_newer_by_stamp` (the stamp-wins union their `merge_cache`
-functions are built on), and `now_iso` — so those modules don't each re-spell
+the datatracker caches share — `load` (parse, keeping any `None` notes),
+`union_newer_by_stamp` (the stamp-wins union their `merge_cache` functions are
+built on), `now_iso` and `is_expired` — so those modules don't each re-spell
 them. (`_github-users.json` keeps its own load/merge: it drops non-dict entries,
 different semantics.)
 """
@@ -30,9 +30,9 @@ LoadFn = Callable[[], Dict[str, Any]]
 
 def load(path: str) -> Dict[str, Any]:
     """Parse a cache file, returning `{}` on any read / parse error or a
-    non-dict top level. Keeps `None`-valued entries (the "confirmed-absent"
-    markers the datatracker caches store), so a recorded miss survives a
-    reload."""
+    non-dict top level. Keeps `None`-valued entries (the unstamped misses of
+    older caches, and the github cache's "not in the index" notes), so they
+    survive a reload."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -53,7 +53,7 @@ def union_newer_by_stamp(
     skip: FrozenSet[str] = frozenset(),
 ) -> Dict[str, Any]:
     """Union two identity maps, keeping the entry with the newer `fetched_at`
-    on a key both hold — so a stamped real resolution beats a bare `None` miss.
+    on a key both hold — so a stamped entry beats a bare `None`.
     Concurrent fleet gathers each add disjoint keys, so the union is what makes
     the round-trip lossless. `into` seeds the result for a caller that handles
     some keys specially first; `skip` names the keys to leave to that caller."""
@@ -66,9 +66,36 @@ def union_newer_by_stamp(
     return merged
 
 
+_STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+#: How long a recorded answer is trusted before it is looked up again. People
+#: add emails and `github_username` resources over time, so a miss cannot be
+#: kept forever; a month keeps the request volume to Datatracker small. Also
+#: the back-off after a failed refresh of a resolved entry.
+TTL_SECONDS = 30 * 24 * 3600
+
+#: The `github_username` index is shorter-lived: it is a handful of pages
+#: (mostly 304s), and its age bounds how long a newly claimed login stays
+#: unlinked.
+INDEX_TTL_SECONDS = 7 * 24 * 3600
+
+
 def now_iso() -> str:
     """UTC timestamp in the `fetched_at` format the identity caches store."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime(_STAMP_FORMAT)
+
+
+def is_expired(stamp: Any, ttl: float = TTL_SECONDS) -> bool:
+    """True when `stamp` (a `now_iso` string) is older than `ttl` seconds.
+    A missing or unparseable stamp counts as expired, so an entry written
+    before stamps existed is refreshed once rather than trusted forever."""
+    if not isinstance(stamp, str):
+        return True
+    try:
+        then = datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - then).total_seconds() >= ttl
 
 
 def save(path: str, cache: Dict[str, Any]) -> None:
