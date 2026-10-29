@@ -11,6 +11,7 @@ simulated by pointing the cache dir somewhere empty.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -784,3 +785,29 @@ def test_forget_verified_drops_every_lists_confirmation(monkeypatch, tmp_path):
     assert mbox.verified_uidvalidity(str(first)) is None
     assert mbox.verified_uidvalidity(str(second)) is None
     assert mbox.verified_uidvalidity(str(other_corpus)) == "7"
+
+
+def test_a_stray_file_beside_the_lists_does_not_abort_hydrate(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    (list_dir.parent / "stray.txt").write_text("not a list dir")
+    mbox.record_verified(str(list_dir), "7")
+
+    mbox.forget_verified("moq")  # must not raise NotADirectoryError
+    assert mbox.verified_uidvalidity(str(list_dir)) is None
+
+    # and hydrate gets past it to the rest of its work
+    datatracker_key = "corpora/moq/gather-cache/http-cache.json"
+    kv.put(datatracker_key, b'{"u": {"etag": "e", "body": "{}", "last_used": 1}}')
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert os.path.exists(cache_sync.datatracker.http_cache_path("moq"))
+
+
+def test_an_unwritable_confirmation_is_logged(monkeypatch, tmp_path, capsys):
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    monkeypatch.setattr(
+        mbox, "write_if_changed", lambda *a: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    mbox.record_verified(str(list_dir), "7")
+    assert mbox.verified_uidvalidity(str(list_dir)) is None
+    assert "disk full" in capsys.readouterr().err

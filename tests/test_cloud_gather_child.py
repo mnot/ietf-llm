@@ -169,3 +169,30 @@ def test_a_crashing_child_leaves_its_error_in_the_status(
     assert status["state"] == "failed"
     assert "exited with code 1: ValueError: datatracker said no" in status["error"]
     assert store.resolve_current("tls") is None
+
+
+def test_a_real_preflight_skip_reaches_the_parent_as_skipped(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Exit code 4 the way production reaches it: the child's own preflight sees
+    # a fresh last-gathered sentinel (what a seeded workspace carries) and stops.
+    # A synthetic corpus needs no group lookup, and the local backend needs no
+    # config-store round trip, so this stays off the network.
+    from ietf_llm import freshness
+    from ietf_llm.gather.lifecycle import GatherOutcome
+
+    monkeypatch.delenv("IETF_LLM_STORE_BACKEND", raising=False)
+    monkeypatch.setenv("FAKE_REAL_PREFLIGHT", "1")
+    monkeypatch.setenv("FAKE_LOG", str(isolated_home / "requests.jsonl"))
+    monkeypatch.setattr(
+        gather_pipeline,
+        "_child_command",
+        lambda spec: [sys.executable, "-I", str(_CHILD), *spec.to_argv()],
+    )
+    freshness.record_gather("x-demo")
+
+    outcome = gather_pipeline._run_pipeline_child(  # pylint: disable=protected-access
+        gather_runner.GatherSpec(corpus="x-demo"), lambda *a: None, lambda m: None, lambda: False
+    )
+    assert outcome is GatherOutcome.SKIPPED
+    assert not (isolated_home / "requests.jsonl").exists()  # no stage ran

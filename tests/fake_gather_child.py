@@ -13,6 +13,9 @@ are replaced:
   - The stages are `_stages`: one Datatracker request, one real per-list mail
     sync, and a digest file for the version to publish. `FAKE_OUTCOME=skipped`
     returns SKIPPED instead; `FAKE_RAISE` raises.
+  - Preflight is stubbed too (on the cloud backend it reads the config store
+    over the network) unless `FAKE_REAL_PREFLIGHT` is set, for a local-backend
+    child that should reach SKIPPED the way production does.
 """
 
 import json
@@ -83,8 +86,8 @@ def _stages(args, verbosity, progress, note_fn, pre):  # type: ignore[no-untyped
 
 datatracker.governed_get = _governed_get
 mbox._imap_sync_attempt = _attempt
-# Preflight reads the config store, which on the cloud backend is the network.
-sequencer.preflight = lambda *a, **k: sequencer.Preflight(None, {}, False, False)
+if not os.environ.get("FAKE_REAL_PREFLIGHT"):
+    sequencer.preflight = lambda *a, **k: sequencer.Preflight(None, {}, False, False)
 sequencer._gather_stages = _stages
 
 if __name__ == "__main__":

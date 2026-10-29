@@ -31,6 +31,7 @@ import atexit
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -204,9 +205,21 @@ def _run_pipeline_child(
     if outcome is not None:
         return outcome
     detail = f": {child_error}" if child_error else ""
-    raise RuntimeError(
-        f"gather subprocess for {corpus!r} exited with code {rc}{detail}"
-    )
+    raise RuntimeError(f"gather subprocess for {corpus!r} {_describe_exit(rc)}{detail}")
+
+
+def _describe_exit(rc: int) -> str:
+    """How a child ended, for the status record. A negative code is a signal,
+    and a signal leaves no error record (nothing runs after SIGKILL), so name it:
+    an OOM kill in the embedding stage is the likeliest cloud failure."""
+    if rc >= 0:
+        return f"exited with code {rc}"
+    try:
+        name = signal.Signals(-rc).name
+    except ValueError:
+        name = f"signal {-rc}"
+    hint = "; possibly out of memory" if name == "SIGKILL" else ""
+    return f"was killed by {name}{hint}"
 
 
 def _pump_child(

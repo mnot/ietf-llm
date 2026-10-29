@@ -296,8 +296,14 @@ def record_verified(cache_dir: str, epoch: str) -> None:
     try:
         os.makedirs(cache_dir, exist_ok=True)
         write_if_changed(os.path.join(cache_dir, VERIFIED_FILE), epoch)
-    except OSError:
-        pass
+    except OSError as err:
+        # Without this, persist's later "was not confirmed" points at the IMAP
+        # server when the cause is the disk.
+        log(
+            f"could not record the confirmed UIDVALIDITY for {cache_dir}: {err}; "
+            "the cloud persist will not replace stored mail for this list",
+            level=LogLevel.WARN,
+        )
 
 
 def clear_verified(cache_dir: str) -> None:
@@ -317,7 +323,10 @@ def forget_verified(wg_name: str) -> None:
     except OSError:
         return
     for name in names:
-        clear_verified(os.path.join(root, name))
+        list_dir = os.path.join(root, name)
+        # A stray file here must not abort the caller (hydrate).
+        if os.path.isdir(list_dir):
+            clear_verified(list_dir)
 
 
 def _read_epoch(path: str) -> Optional[str]:

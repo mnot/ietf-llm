@@ -1356,8 +1356,9 @@ server stays responsive; a stalled read now times out cleanly, and its timeout
 message names the running stage. Cancellation (`stop_gather`) terminates the
 child; a child crash fails one gather instead of the whole server. Under
 `IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (tests that stub
-it by monkeypatch; the rest of the suite, including the cloud cache round trip,
-runs a real child). Reads during a **first** gather refuse (naming
+it by monkeypatch). The cloud cache round trip is tested through a real child
+process (`tests/test_cloud_gather_child.py`, with the network and stage bodies
+replaced), and a test that would spawn one unasked fails. Reads during a **first** gather refuse (naming
 the stage and how many are left) since there is no prior snapshot. A re-gather
 stays readable, and what a reader sees depends on the backend. On the **cloud**
 backend it is the previous published version until the new one is ready. On the

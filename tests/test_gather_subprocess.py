@@ -175,6 +175,7 @@ def _fake_child(tmp_path: Path) -> Path:
         "if os.environ.get('FAKE_ERROR'):\n"
         "    w.write(json.dumps({'t':'error','type':'ValueError',"
         "'msg':os.environ['FAKE_ERROR']})+chr(10)); w.flush()\n"
+        "if os.environ.get('FAKE_KILL'): os.kill(os.getpid(), 9)\n"
         "if os.environ.get('FAKE_SLEEP'): time.sleep(30)\n"
         "w.close()\n"
         "sys.exit(int(os.environ.get('FAKE_EXIT','0')))\n"
@@ -245,6 +246,21 @@ def test_parent_carries_the_childs_error_into_the_crash_message(
     assert "exited with code 1: ValueError: no route to datatracker" in str(
         crash.value
     )
+
+
+def test_parent_names_the_signal_that_killed_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An OOM kill leaves no error record; the status must still say what it was.
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(
+        gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
+    )
+    monkeypatch.setenv("FAKE_KILL", "1")
+    with pytest.raises(RuntimeError, match="was killed by SIGKILL; possibly out of"):
+        _collect(GatherSpec(corpus="wg"))
+    assert gather_pipeline._describe_exit(-11) == "was killed by SIGSEGV"
+    assert gather_pipeline._describe_exit(1) == "exited with code 1"
 
 
 def test_parent_cancellation_terminates_child(
