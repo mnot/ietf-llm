@@ -13,6 +13,7 @@ Covers the contract:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -81,7 +82,8 @@ def test_unmatched_address_is_cached_miss(
     )
     assert out == {}
     cache = json.loads(_cache_file().read_text())
-    assert cache["unknown@y.example"] is None
+    assert cache["unknown@y.example"]["person"] is None
+    assert cache["unknown@y.example"]["fetched_at"]
 
 
 def test_second_pass_makes_no_requests(
@@ -103,6 +105,75 @@ def test_second_pass_makes_no_requests(
         ["mnot@mnot.net", "unknown@y.example"], verbose=Verbosity.QUIET
     )
     assert len(calls) == first
+
+
+def _age(entry_key: str, days: int) -> None:
+    """Backdate one cache entry's stamp by `days`."""
+    data = json.loads(_cache_file().read_text())
+    old = datetime.now(timezone.utc) - timedelta(days=days)
+    data[entry_key] = {
+        **(data[entry_key] or {}),
+        "fetched_at": old.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    _cache_file().write_text(json.dumps(data))
+
+
+def test_expired_miss_is_requeried_and_can_resolve(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mapping: Dict[str, str] = {}
+    calls: List[str] = []
+    _stub(monkeypatch, mapping=mapping, calls=calls)
+    assert dtp.resolve_addresses(["new@x.example"], verbose=Verbosity.QUIET) == {}
+    # The person registers the address later.
+    mapping["new@x.example"] = "/api/v1/person/person/7/"
+    # Within the TTL the recorded miss stands.
+    _age("new@x.example", 5)
+    assert dtp.resolve_addresses(["new@x.example"], verbose=Verbosity.QUIET) == {}
+    assert len(calls) == 1
+    # Past it, the address is asked about again.
+    _age("new@x.example", 45)
+    out = dtp.resolve_addresses(["new@x.example"], verbose=Verbosity.QUIET)
+    assert out == {"new@x.example": "/api/v1/person/person/7/"}
+    assert len(calls) == 2
+    assert json.loads(_cache_file().read_text())["new@x.example"]["person"]
+
+
+def test_legacy_bare_null_miss_is_requeried_once(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Misses written before they carried a stamp have no age to trust.
+    _cache_file().parent.mkdir(parents=True, exist_ok=True)
+    _cache_file().write_text(json.dumps({"old@x.example": None}))
+    calls: List[str] = []
+    _stub(monkeypatch, mapping={}, calls=calls)
+    dtp.resolve_addresses(["old@x.example"], verbose=Verbosity.QUIET)
+    assert len(calls) == 1
+    assert json.loads(_cache_file().read_text())["old@x.example"]["fetched_at"]
+    dtp.resolve_addresses(["old@x.example"], verbose=Verbosity.QUIET)
+    assert len(calls) == 1
+
+
+def test_old_hit_is_kept_without_requery(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[str] = []
+    _stub(
+        monkeypatch, mapping={"a@x.example": "/api/v1/person/person/1/"}, calls=calls
+    )
+    dtp.resolve_addresses(["a@x.example"], verbose=Verbosity.QUIET)
+    _age("a@x.example", 400)
+    out = dtp.resolve_addresses(["a@x.example"], verbose=Verbosity.QUIET)
+    assert out == {"a@x.example": "/api/v1/person/person/1/"}
+    assert len(calls) == 1
+
+
+def test_stamped_miss_does_not_displace_newer_hit_on_merge() -> None:
+    hit = {"person": "/api/v1/person/person/1/", "fetched_at": "2026-02-01T00:00:00Z"}
+    miss = {"person": None, "fetched_at": "2026-01-01T00:00:00Z"}
+    merged = dtp.merge_cache({"a": miss, "b": None}, {"a": hit, "b": miss})
+    assert merged["a"] == hit
+    assert merged["b"] == miss
 
 
 def test_transient_failure_not_cached(

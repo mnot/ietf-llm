@@ -252,7 +252,12 @@ Key invariants:
   multiple emails, GitHub logins — into one canonical `Person`, resolving
   addresses through Datatracker's curated email→person table (exact-match, so
   collision-free) and linking GitHub logins by each person's Datatracker
-  `github_username` profile (`people.linking`). A `Person` carries
+  `github_username` profile (`people.linking`). Both lookups are cached across
+  corpora (`_datatracker-people.json`, `_datatracker-github.json`); a "not on
+  Datatracker" answer and the `github_username` index are re-asked after 30
+  days (`identity_cache.TTL_SECONDS`), since people add addresses and profile
+  resources later, and an expired per-login entry is refreshed at most 50 at a
+  time per run. A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.

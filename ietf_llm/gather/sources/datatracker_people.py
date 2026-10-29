@@ -22,8 +22,12 @@ Cache (`~/.cache/ietf-llm/_datatracker-people.json`, shared across WGs
 because the mapping is WG-independent), per normalised address:
 
   - `{ "person": "<person resource_uri>", "fetched_at": ... }` — a hit.
-  - `null` — confirmed: Datatracker has no record of this address, so we
-    don't re-query it every gather.
+    An address does not move between people, so a hit is kept.
+  - `{ "person": null, "fetched_at": ... }` — Datatracker had no record of
+    this address, so we don't re-query it every gather. A miss is asked
+    again once it is older than `identity_cache.TTL_SECONDS`, since the
+    person may register the address later. A bare `null` (written before
+    misses were stamped) has no age and is re-queried once.
 
 Best-effort: a network error (None for a whole chunk) is not cached, so
 the next gather retries. Datatracker is not aggressively rate-limited and
@@ -74,12 +78,15 @@ def resolve_addresses(
     for addr in wanted:
         if addr in cache:
             entry = cache[addr]
-            if isinstance(entry, dict):
-                uri = entry.get("person")
-                if isinstance(uri, str):
-                    out[addr] = uri
-            # `None` entry means "confirmed not on Datatracker"; skip.
-            continue
+            uri = entry.get("person") if isinstance(entry, dict) else None
+            if isinstance(uri, str):
+                out[addr] = uri
+                continue
+            # A miss: trusted until it is old enough that it may have changed.
+            if isinstance(entry, dict) and not identity_cache.is_expired(
+                entry.get("fetched_at")
+            ):
+                continue
         to_query.append(addr)
 
     dirty = False
@@ -99,7 +106,7 @@ def resolve_addresses(
                 n_resolved += 1
             else:
                 # In the response but unmatched: Datatracker has no record.
-                cache[addr] = None
+                cache[addr] = {"person": None, "fetched_at": identity_cache.now_iso()}
             dirty = True
 
     if dirty:
@@ -149,9 +156,9 @@ def cache_path() -> str:
 
 def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]:
     """Merge two caches losslessly. Each holds per-address entries (`{person,
-    fetched_at}` for a hit, or `None` for "confirmed not on Datatracker"). The
-    shared stamp-wins union keeps the newer `fetched_at` on a shared address, so
-    a real resolution beats a bare `None` miss."""
+    fetched_at}`; `person` is null for a miss, and a legacy bare `None` is an
+    unstamped miss). The shared stamp-wins union keeps the newer `fetched_at`
+    on a shared address, so a later answer beats an earlier one."""
     return identity_cache.union_newer_by_stamp(remote, local)
 
 

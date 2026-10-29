@@ -66,9 +66,31 @@ def union_newer_by_stamp(
     return merged
 
 
+_STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+#: How long a recorded answer is trusted before it is looked up again. People
+#: add emails and `github_username` resources over time, so a miss (or the
+#: github_username index) cannot be kept forever; a month keeps the request
+#: volume to Datatracker small.
+TTL_SECONDS = 30 * 24 * 3600
+
+
 def now_iso() -> str:
     """UTC timestamp in the `fetched_at` format the identity caches store."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime(_STAMP_FORMAT)
+
+
+def is_expired(stamp: Any, ttl: float = TTL_SECONDS) -> bool:
+    """True when `stamp` (a `now_iso` string) is older than `ttl` seconds.
+    A missing or unparseable stamp counts as expired, so an entry written
+    before stamps existed is refreshed once rather than trusted forever."""
+    if not isinstance(stamp, str):
+        return True
+    try:
+        then = datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - then).total_seconds() >= ttl
 
 
 def save(path: str, cache: Dict[str, Any]) -> None:
