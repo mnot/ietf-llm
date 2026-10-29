@@ -29,6 +29,7 @@ from ..embeddings import (
     build_index,
     generate_topics,
     has_topics,
+    index_reads_from_workspace,
 )
 from ..freshness import GatheredAt, local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
@@ -913,7 +914,10 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         tracker.begin("topic map")
         if index_changed or not has_topics(args.wg):
             try:
-                generate_topics(args.wg, verbose=verbosity)
+                # Cluster the index just built, not the published version a
+                # cloud store would otherwise stage for reads.
+                with index_reads_from_workspace():
+                    generate_topics(args.wg, verbose=verbosity)
             except Exception as err:  # pylint: disable=broad-except
                 log(
                     f"Topic map skipped ({type(err).__name__}: {err}).",
