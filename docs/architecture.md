@@ -1133,7 +1133,10 @@ servers) can run at once. The safety model:
   index that cannot be opened or read (permissions, a non-database file, a
   lock) raises `IndexUnreadable`, a typed `OperationalError` subclass that the
   tool boundary (`mcp.common._offload`) reports as "exists but cannot be read"
-  instead of "no index"; `probe_index` still answers False for it. Current indexes are published in DELETE
+  instead of "no index"; `probe_index` still answers False for it. The one
+  multi-corpus tool that opens indexes, `search_corpora`, catches it per corpus:
+  the unreadable one is listed as "Skipped (index unreadable): <wg>: <cause>"
+  and the readable corpora still answer. Current indexes are published in DELETE
   journal mode and a read leaves no sidecars; a legacy WAL-mode index on a
   writable dir still gets `-shm`/`-wal` created (and left behind) by a
   `mode=ro` reader, until the next swap clears them.

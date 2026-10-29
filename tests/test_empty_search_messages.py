@@ -284,3 +284,48 @@ def test_find_related_empty_while_index_rebuilds(
     out = mcp.search.tool_find_related("wg", "threads/2026-04-10-mlkem.md", 0)
     assert "being rebuilt" in out and "retry" in out
     assert "may have no search index" not in out
+
+
+def _two_corpora(home: Path) -> None:
+    for wg in ("good", "bad"):
+        write_cache_file(
+            home, wg, "threads/2026-04-10-mlkem.md",
+            "# MLKEM\n\n## Messages\n\n"
+            "### [1] 2026-04-10 09:00 — Alice\n\nBody about MLKEM.\n",
+        )
+        _build_with_stub(wg)
+
+
+def test_search_corpora_skips_an_unreadable_index(isolated_home: Path) -> None:
+    _two_corpora(isolated_home)
+    Path(_db_path("bad")).write_bytes(b"not a sqlite database" * 10)
+    out = mcp.search.tool_search_corpora(["good", "bad"], "mlkem")
+    assert "corpus=good" in out and "corpus=bad" not in out
+    assert "Skipped (index unreadable): bad: " in out
+    assert "file is not a database" in out
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_search_corpora_skips_a_permission_denied_index(
+    isolated_home: Path,
+) -> None:
+    _two_corpora(isolated_home)
+    db = Path(_db_path("bad"))
+    db.chmod(0)
+    try:
+        out = mcp.search.tool_search_corpora(["bad", "good"], "mlkem")
+    finally:
+        db.chmod(0o644)
+    assert "corpus=good" in out
+    assert "Skipped (index unreadable): bad: " in out
+
+
+def test_search_corpora_all_unreadable_says_so(isolated_home: Path) -> None:
+    _two_corpora(isolated_home)
+    for wg in ("good", "bad"):
+        Path(_db_path(wg)).write_bytes(b"not a sqlite database" * 10)
+    out = mcp.search.tool_search_corpora(["good", "bad"], "mlkem")
+    assert "every requested corpus's index exists but cannot be read" in out
+    assert "no results" not in out
+    assert "Skipped (index unreadable): good: " in out
+    assert "Skipped (index unreadable): bad: " in out
