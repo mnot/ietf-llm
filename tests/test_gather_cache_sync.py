@@ -15,6 +15,8 @@ import json
 import os
 import tarfile
 import threading
+import time as _real_time
+import types
 from pathlib import Path
 from typing import List, Optional
 
@@ -249,7 +251,9 @@ def test_a_hostile_archive_writes_only_store_files(monkeypatch, tmp_path):
     cache_sync.hydrate(kv, "tls")
 
     store = Path(datatracker.http_cache_path("tls"))
-    assert sorted(p.name for p in store.iterdir()) == sorted(["index.json", name])
+    assert sorted(p.name for p in store.iterdir()) == sorted(
+        [".synced.json", "index.json", name]
+    )
     assert not (tmp_path / "escape.txt").exists()
     assert not (tmp_path / "cold" / "escape.txt").exists()
 
@@ -331,6 +335,118 @@ def test_hydrate_keeps_a_local_store_over_a_stored_blob(monkeypatch, tmp_path):
     index = http_cache.read_index(datatracker.http_cache_path("tls"))
     assert index is not None and set(index) == {"local"}
     assert not os.path.exists(datatracker.legacy_http_cache_path("tls"))
+
+
+class _PutLog(InMemoryKvStore):
+    """An in-memory store that remembers which keys were written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts: List[str] = []
+
+    def put(self, key, value, expect=ANY):
+        self.puts.append(key)
+        return super().put(key, value, expect=expect)
+
+
+def _later(monkeypatch, seconds: float) -> None:
+    """Make the ETag store's clock run `seconds` ahead."""
+    real = _real_time.time
+    monkeypatch.setattr(
+        http_cache, "time", types.SimpleNamespace(time=lambda: real() + seconds)
+    )
+
+
+def _revalidate_on_a_cold_host(kv, monkeypatch, tmp_path, name, url, action):
+    """hydrate, then a gather that runs `action(cache)` against the ETag store,
+    then persist; returns the stored tar bytes and the puts it took."""
+    _cache_dir(monkeypatch, tmp_path / name)
+    cache_sync.hydrate(kv, "tls")
+    before = len(kv.puts)
+    with datatracker.gather_http_cache("tls"):
+        action(datatracker._active_http_cache())
+    cache_sync.persist(kv, "tls")
+    return kv.get(_HTTP_KEY.format("tls"))[0], kv.puts[before:]
+
+
+_URL = "https://datatracker.ietf.org/api/v1/group/?format=json"
+
+
+def _seeded(tmp_path, monkeypatch):
+    kv = _PutLog()
+    _cache_dir(monkeypatch, tmp_path / "first")
+    _gather_stores("tls", _URL, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")
+    assert kv.puts == [_HTTP_KEY.format("tls")]
+    return kv, kv.get(_HTTP_KEY.format("tls"))[0]
+
+
+def test_a_gather_that_only_touches_entries_uploads_nothing(monkeypatch, tmp_path):
+    kv, stored = _seeded(tmp_path, monkeypatch)
+    _later(monkeypatch, 3600)  # revalidated an hour later: well inside the grace
+    tar, puts = _revalidate_on_a_cold_host(
+        kv, monkeypatch, tmp_path, "second", _URL, lambda cache: cache.get(_URL)
+    )
+    assert puts == []
+    assert tar == stored  # the very same bytes
+
+
+def test_a_gather_that_changes_a_body_uploads(monkeypatch, tmp_path):
+    kv, stored = _seeded(tmp_path, monkeypatch)
+    tar, puts = _revalidate_on_a_cold_host(
+        kv,
+        monkeypatch,
+        tmp_path,
+        "second",
+        _URL,
+        lambda cache: cache.store(_URL, "etag-2", '{"hit": "new"}'),
+    )
+    assert puts == [_HTTP_KEY.format("tls")]
+    assert tar != stored
+
+
+def test_a_gather_that_learns_a_new_url_uploads(monkeypatch, tmp_path):
+    kv, _ = _seeded(tmp_path, monkeypatch)
+    _, puts = _revalidate_on_a_cold_host(
+        kv,
+        monkeypatch,
+        tmp_path,
+        "second",
+        _URL,
+        lambda cache: cache.store("https://datatracker.ietf.org/x/", "e", "{}"),
+    )
+    assert puts == [_HTTP_KEY.format("tls")]
+
+
+def test_an_entry_last_used_over_a_day_later_uploads(monkeypatch, tmp_path):
+    kv, stored = _seeded(tmp_path, monkeypatch)
+    _later(monkeypatch, 86400 + 60)
+    tar, puts = _revalidate_on_a_cold_host(
+        kv, monkeypatch, tmp_path, "second", _URL, lambda cache: cache.get(_URL)
+    )
+    assert puts == [_HTTP_KEY.format("tls")]
+    assert tar != stored  # the stored last_used moved, so age eviction sees it
+
+
+def test_touches_accumulate_until_they_pass_a_day(monkeypatch, tmp_path):
+    """Each gather compares with what is *stored*, not with the last gather, so
+    several small touches cannot hide a stale stored timestamp."""
+    kv, _ = _seeded(tmp_path, monkeypatch)
+    for hours, uploads in ((10, 0), (20, 0), (30, 1)):
+        _later(monkeypatch, hours * 3600)
+        _, puts = _revalidate_on_a_cold_host(
+            kv, monkeypatch, tmp_path, f"h{hours}", _URL, lambda cache: cache.get(_URL)
+        )
+        assert len(puts) == uploads, hours
+
+
+def test_a_host_that_matches_nothing_stored_uploads(monkeypatch, tmp_path):
+    kv, _ = _seeded(tmp_path, monkeypatch)
+    # A gather on a host that never hydrated has no record of what is stored.
+    _cache_dir(monkeypatch, tmp_path / "unsynced")
+    _gather_stores("tls", _URL, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")
+    assert kv.puts.count(_HTTP_KEY.format("tls")) == 2
 
 
 # --- identity maps: shared CAS-merge --------------------------------------

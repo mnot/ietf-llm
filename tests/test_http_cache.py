@@ -306,31 +306,65 @@ def _write_legacy(entries: Any) -> None:
         json.dump(entries, fh)
 
 
+_DT = "https://datatracker.ietf.org/api/v1/"
+
+
 def test_a_single_file_blob_is_migrated(isolated_home: Path) -> None:
     used = time.time() - 3 * DAY
     _write_legacy(
         {
-            "u1": {"etag": "e1", "body": '{"a": 1}', "last_used": used},
-            "u2": {"etag": "e2", "body": '{"b": 2}'},  # predates last_used
+            _DT + "a/": {"etag": "e1", "body": '{"a": 1}', "last_used": used},
+            _DT + "b/": {"etag": "e2", "body": '{"b": 2}'},  # predates last_used
         }
     )
     cache = _new_cache()
-    entry = cache.get("u1")
+    entry = cache.get(_DT + "a/")
     assert entry is not None and entry["etag"] == "e1"
-    assert cache.body("u1") == '{"a": 1}'
-    assert cache.body("u2") == '{"b": 2}'
+    assert entry["last_used"] > used  # get() touched it; the stored value was kept
+    assert cache.body(_DT + "a/") == '{"a": 1}'
+    assert cache.body(_DT + "b/") == '{"b": 2}'
     cache.flush()
     assert not os.path.exists(_legacy())  # superseded once the index is on disk
     assert len(_bodies(_dest())) == 2
     reloaded = _new_cache()
-    assert reloaded.body("u2") == '{"b": 2}'
-    assert reloaded.get("u2") is not None
+    assert reloaded.body(_DT + "b/") == '{"b": 2}'
+    assert reloaded.get(_DT + "b/") is not None
+
+
+def test_migration_drops_malformed_entries_and_keeps_the_rest(
+    isolated_home: Path,
+) -> None:
+    """Real caches carry junk from old test runs (`https://x/api` -> `{"k": 1}`)
+    and a hand-edited or damaged blob can carry worse."""
+    good = _DT + "good/?format=json"
+    _write_legacy(
+        {
+            good: {"etag": "e", "body": '{"ok": true}', "last_used": 5.0},
+            "https://x/api?format=json": {"etag": 'W/"abc"', "body": '{"k": 1}'},
+            "u": {"etag": "e", "body": "{}"},
+            "": {"etag": "e", "body": "{}"},
+            "http://datatracker.ietf.org/api/v1/plain/": {"etag": "e", "body": "{}"},
+            _DT + "list/": {"etag": "e", "body": "[1, 2]"},
+            _DT + "text/": {"etag": "e", "body": "not json"},
+            _DT + "noetag/": {"etag": "", "body": "{}"},
+            _DT + "etagtype/": {"etag": 7, "body": "{}"},
+            _DT + "nobody/": {"etag": "e"},
+            _DT + "bodytype/": {"etag": "e", "body": {"a": 1}},
+            _DT + "notdict/": ["etag", "body"],
+        }
+    )
+    cache = _new_cache()
+    cache.get(good)
+    cache.flush()
+    assert set(_index(_dest())) == {good}
+    assert len(_bodies(_dest())) == 1  # no body files for the dropped ones either
+    assert _new_cache().body(good) == '{"ok": true}'
 
 
 def test_the_blob_is_kept_until_the_index_is_written(isolated_home: Path) -> None:
-    _write_legacy({"u": {"etag": "e", "body": "{}"}})
+    _write_legacy({_DT + "u/": {"etag": "e", "body": "{}"}})
     cache = _new_cache()
-    cache.get("u")  # loads and migrates, but nothing is flushed
+    cache.get(_DT + "u/")  # loads and migrates, but nothing is flushed
     assert os.path.exists(_legacy())
 
 
@@ -343,7 +377,7 @@ def test_the_blob_is_kept_until_the_index_is_written(isolated_home: Path) -> Non
         "[]",
         "[" * 100000,  # deep enough to overflow the parser's recursion limit
         '{"u": 5, "v": {"etag": 1, "body": "{}"}, "w": {"etag": "e"}}',
-        '{"u": {"etag": "e", "body": "\\ud800"}}',  # a lone surrogate
+        '{"https://datatracker.ietf.org/u": {"etag": "e", "body": "\\ud800"}}',  # a lone surrogate
     ],
 )
 def test_a_corrupt_blob_never_crashes_and_yields_nothing(
@@ -362,22 +396,22 @@ def test_a_corrupt_blob_never_crashes_and_yields_nothing(
 def test_a_blob_with_some_sound_entries_keeps_those(isolated_home: Path) -> None:
     _write_legacy(
         {
-            "bad": {"etag": 1, "body": "{}"},
-            "good": {"etag": "e", "body": '{"ok": true}', "last_used": "soon"},
+            _DT + "bad/": {"etag": 1, "body": "{}"},
+            _DT + "good/": {"etag": "e", "body": '{"ok": true}', "last_used": "soon"},
         }
     )
     cache = _new_cache()
-    assert cache.get("bad") is None
-    assert cache.body("good") == '{"ok": true}'  # an unusable timestamp is "now"
+    assert cache.get(_DT + "bad/") is None
+    assert cache.body(_DT + "good/") == '{"ok": true}'  # unusable timestamp: "now"
 
 
 def test_an_existing_index_wins_over_a_leftover_blob(isolated_home: Path) -> None:
     cache = _new_cache()
     cache.store("new", "e", "{}")
     cache.flush()
-    _write_legacy({"old": {"etag": "e", "body": "{}"}})
+    _write_legacy({_DT + "old/": {"etag": "e", "body": "{}"}})
     again = _new_cache()
-    assert again.get("old") is None
+    assert again.get(_DT + "old/") is None
     assert again.get("new") is not None
     again.flush()
     assert not os.path.exists(_legacy())

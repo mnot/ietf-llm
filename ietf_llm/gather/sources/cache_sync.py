@@ -95,6 +95,12 @@ from . import (
 
 #: Per-corpus key — lease-serialised single writer, so a plain RMW is safe.
 _HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.tar"
+#: Beside the store's own files: what the stored tar held when this host last
+#: matched it (restored from it, or uploaded). Never packed.
+_SYNCED_NAME = ".synced.json"
+#: How far an entry's `last_used` may move past the stored one before that alone
+#: earns an upload.
+_TOUCH_GRACE = 86400.0
 #: What earlier versions stored there: one JSON blob of every cached body.
 _LEGACY_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
 #: Per-corpus prefix for the IMAP mail cache: `<list>/index.json` plus
@@ -266,16 +272,73 @@ def _unpack_http_cache(blob: bytes, directory: str) -> None:
         _atomic_write(os.path.join(directory, http_cache.INDEX_NAME), index)
 
 
+def _synced_path(directory: str) -> str:
+    return os.path.join(directory, _SYNCED_NAME)
+
+
+def _read_synced(directory: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """What the stored tar held when this host last matched it, or None."""
+    synced = _read_json(_synced_path(directory))
+    if synced is None:
+        return None
+    return {
+        url: entry
+        for url, entry in synced.items()
+        if isinstance(url, str) and isinstance(entry, dict)
+    }
+
+
+def _write_synced(directory: str, entries: Dict[str, Dict[str, Any]]) -> None:
+    snapshot = {
+        url: {key: entry.get(key) for key in ("etag", "file", "last_used")}
+        for url, entry in entries.items()
+    }
+    _atomic_write(
+        _synced_path(directory),
+        json.dumps(snapshot, sort_keys=True).encode("utf-8"),
+    )
+
+
+def _differs_from_synced(
+    current: Dict[str, Dict[str, Any]], synced: Optional[Dict[str, Dict[str, Any]]]
+) -> bool:
+    """Whether the local store holds something the stored tar does not: a URL
+    added or gone, a changed ETag or body, or an entry last used more than
+    `_TOUCH_GRACE` after the stored time. A gather revalidates (and so touches)
+    nearly every entry; re-uploading the whole store for that alone would cost
+    its full size in egress per gather. The stored `last_used` therefore lags by
+    up to a day, which the 90-day age eviction does not notice."""
+    if synced is None or current.keys() != synced.keys():
+        return True
+    for url, entry in current.items():
+        old = synced[url]
+        if entry["etag"] != old.get("etag") or entry["file"] != old.get("file"):
+            return True
+        used, was = entry["last_used"], old.get("last_used")
+        if not isinstance(was, (int, float)) or used - was > _TOUCH_GRACE:
+            return True
+    return False
+
+
 def _restore_http_cache(kv: KvStore, corpus: str) -> None:
     """Restore the corpus's ETag store to disk. A store with nothing in the tar
     form yet gets the older single-file blob, if any, placed where the store
     migrates it from -- unless this host already holds a store of its own. Best
-    effort: any error leaves local state as it was."""
+    effort: any error leaves local state as it was (and persist uploading)."""
     directory = datatracker.http_cache_path(corpus)
+    try:
+        # Whatever this host last matched no longer describes what it is about
+        # to hold; persist uploads unless the restore below re-establishes it.
+        os.remove(_synced_path(directory))
+    except OSError:
+        pass
     try:
         record = kv.get(_HTTP_CACHE_KEY.format(corpus=corpus))
         if record is not None:
             _unpack_http_cache(record[0], directory)
+            restored = http_cache.read_index(directory)
+            if restored is not None:
+                _write_synced(directory, restored)
         elif http_cache.read_index(directory) is None:
             _restore(
                 kv,
@@ -287,14 +350,21 @@ def _restore_http_cache(kv: KvStore, corpus: str) -> None:
 
 
 def _persist_http_cache(kv: KvStore, corpus: str) -> None:
-    """Upload the corpus's ETag store unconditionally (CAS-free: the caller
-    holds the per-corpus gather lease), then drop the older blob it supersedes.
-    Never raises."""
+    """Upload the corpus's ETag store if it holds anything the stored tar does
+    not (see `_differs_from_synced`; CAS-free: the caller holds the per-corpus
+    gather lease), then drop the older blob it supersedes. Never raises."""
+    directory = datatracker.http_cache_path(corpus)
     try:
-        blob = _pack_http_cache(datatracker.http_cache_path(corpus))
+        current = http_cache.read_index(directory)
+        if current is None or not _differs_from_synced(
+            current, _read_synced(directory)
+        ):
+            return
+        blob = _pack_http_cache(directory)
         if blob is None:
             return
         kv.put(_HTTP_CACHE_KEY.format(corpus=corpus), blob)
+        _write_synced(directory, current)
         kv.delete(_LEGACY_HTTP_CACHE_KEY.format(corpus=corpus))
     except Exception:  # pylint: disable=broad-except
         pass

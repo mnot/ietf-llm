@@ -54,6 +54,10 @@ MAX_ENTRIES = 10000
 MAX_BYTES = 256 * 1024 * 1024
 #: What an archive of a store may hold beyond `MAX_BYTES` of bodies: its index.
 INDEX_ALLOWANCE = 32 * 1024 * 1024
+#: A legacy blob's entries are kept only for URLs the client can request: it
+#: fetches nothing but Datatracker. Earlier test runs left entries for made-up
+#: hosts in real caches.
+_MIGRATED_URL_PREFIX = "https://datatracker.ietf.org/"
 #: Unreferenced files younger than this are left alone: another process sharing
 #: the directory may have written them and not flushed its index yet.
 _ORPHAN_GRACE = 86400.0
@@ -76,6 +80,13 @@ def _atomic_write(path: str, data: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (ValueError, RecursionError):
+        return False
 
 
 def _float(value: Any, default: float) -> float:
@@ -195,9 +206,11 @@ class HttpCache:
             return self._entries
 
     def _migrate_legacy(self) -> Dict[str, Dict[str, Any]]:
-        """Re-store the entries of the old single-file blob, if there is one. A
-        blob that is corrupt, truncated or oddly shaped yields whatever entries
-        are sound (none, for unparseable JSON): a cache miss costs one refetch."""
+        """Re-store the sound entries of the old single-file blob, if there is
+        one: a Datatracker URL, a non-empty ETag, and a body that is a JSON
+        object. A blob that is corrupt, truncated or oddly shaped yields whatever
+        entries are sound (none, for unparseable JSON): a cache miss costs one
+        refetch, and junk is not carried into the new store."""
         if not self._legacy:
             return {}
         try:
@@ -212,8 +225,12 @@ class HttpCache:
         for url, raw in data.items():
             if not isinstance(url, str) or not isinstance(raw, dict):
                 continue
+            if not url.startswith(_MIGRATED_URL_PREFIX):
+                continue
             etag, body = raw.get("etag"), raw.get("body")
-            if not isinstance(etag, str) or not isinstance(body, str):
+            if not isinstance(etag, str) or not etag or not isinstance(body, str):
+                continue
+            if not _is_json_object(body):
                 continue
             written = self._write_body(url, etag, body)
             if written is not None:

@@ -961,7 +961,11 @@ write-throughs its own entry, so it never serves config it just wrote.
   `persist_gather_caches` (`gather/sources/cache_sync.py`) round-trip the gather
   accelerator caches through the `KvStore` — the datatracker ETag store sharded
   per corpus (`corpora/<name>/gather-cache/http-cache.tar`, one tar of the store
-  directory; lease-serialised plain RMW), the
+  directory; lease-serialised plain RMW; uploaded only when something beyond
+  `last_used` changed, or a `last_used` is over a day past the stored one, since
+  a gather touches nearly every entry and would otherwise re-send the whole store
+  each time, so the stored timestamps, and the 90-day age eviction that reads
+  them, have day granularity), the
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
   the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins),
   and the per-list IMAP mail cache (`corpora/<name>/gather-cache/imap/<list>/`,
@@ -1082,6 +1086,12 @@ affordances; we use all three:
   body turns out to be missing or corrupt is retried once without
   `If-None-Match` rather than reported as no data (which would end a paged
   listing early). An index written by a newer layout is left untouched.
+  Migration keeps only sound entries (a `https://datatracker.ietf.org/` URL, an
+  ETag, a body that is a JSON object); junk left in real caches by old test runs
+  is dropped. Known limit: two processes sharing the local `.http-cache/_shared`
+  directory each flush their own view of the index, last writer wins (as the
+  single file did), so one can lose the other's new entries; a union merge by URL
+  at flush is the place to start for #110.
   Covers the bulk of per-gather metadata (document lists, the meeting
   batch, roles). The materials *content* endpoint ignores conditional
   GET, so it is gated differently (below).
