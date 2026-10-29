@@ -369,7 +369,10 @@ Key invariants:
   k-means) is **skipped when the index didn't change** and a sidecar already
   exists — `build_index` returns whether anything was embedded or pruned, so a
   no-op re-gather (or a seeded corpus whose delta was zero) doesn't re-cluster for
-  nothing (#190).
+  nothing (#190). Each build that changes the index stamps a fresh `build_id`
+  into its `meta`, and the sidecar records the `index_build_id` it was derived
+  from; a mismatch (a crash after the index was promoted but before the map was
+  written) forces the recompute, so themes cannot describe a previous build.
 - **The centroids are reused, reader-side, for two cross-corpus jobs.**
   *Centroid routing* (`corpus/routing.py`, the `which_corpus` tool) scores each corpus
   as the max cosine of the query against its centroids and abstains below a
@@ -1223,7 +1226,9 @@ chunk of content, and declines outright when the step is expensive
 (`_AUTO_UPGRADE_FROM` — below it a migration rebuilds the table or hashes
 every row) or the index is not ours to write (`_index_immutable`; a
 published replica upgrades by being republished). Any failure falls back to
-the previous behaviour, which is to tell the user to gather.
+the previous behaviour, which is to tell the user to gather. That includes a
+build holding the index lock (it holds it for the whole embed): the upgrade
+takes the lock non-blocking and does not wait.
 
 `corpus.routing` deliberately does **not** use it: its confidence floor is an
 absolute calibrated threshold, and a prefixed query moves the distribution
@@ -1281,6 +1286,14 @@ Embedding is on by default (opt out with `--no-embed`) and tolerates a
 small local model fine; a bad summary is worse than none. Summarisation defers to whatever LLM the user configured via
 the `llm` package; without one, we print setup help rather than limp
 along. Deterministic digests ship without any setup.
+
+A summary is model output over raw issue and thread text, so it is treated as
+untrusted: each is capped at 300 characters, and its digest column is headed
+`LLM summary` (not `Summary`) so a reader can tell it from the record. The
+summariser disables itself after three consecutive failed calls, not the first
+(a single 5xx would otherwise cost the rest of the gather its summaries).
+Write-side: digests gathered earlier keep their uncapped `Summary` column until
+re-gathered with `--summarize`.
 
 ### The MCP server reads exclusively from the cache, off a daemon prewarm
 
