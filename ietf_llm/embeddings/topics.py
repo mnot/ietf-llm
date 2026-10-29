@@ -56,6 +56,10 @@ def topics_stale(wg: str) -> bool:
     keep the stale map until the content changed again. An index with no build
     id (built before ids were stamped) is not judged stale; its next change
     stamps one.
+
+    Only meaningful where the read path resolves to the workspace index (the
+    local backend): on cloud `read_meta` sees the previously published version,
+    so the stamp compares an old id with itself and never reports stale.
     """
     build_id = read_meta(wg, [META_BUILD_ID]).get(META_BUILD_ID)
     if build_id is None:

@@ -373,6 +373,13 @@ Key invariants:
   into its `meta`, and the sidecar records the `index_build_id` it was derived
   from; a mismatch (a crash after the index was promoted but before the map was
   written) forces the recompute, so themes cannot describe a previous build.
+  **Local backend only.** On a cloud re-gather the topic-map step reads the
+  index through the store-resolved read path (`_db_path_ro`), which is the
+  previously *published* version, not the workspace index the gather just built.
+  So `build_topics` clusters the old corpus (overview themes lag one gather
+  behind) and the stamp compares the old build id with itself, so it cannot
+  detect an interrupted topic step on cloud. Reading the workspace index for
+  this step would fix both; it is not done yet.
 - **The centroids are reused, reader-side, for two cross-corpus jobs.**
   *Centroid routing* (`corpus/routing.py`, the `which_corpus` tool) scores each corpus
   as the max cosine of the query against its centroids and abstains below a
