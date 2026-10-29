@@ -15,22 +15,22 @@ from pathlib import Path
 
 from ietf_llm.people.positions import (
     _SENDER_ROLE_SUFFIX,
-    _THREAD_MSG_RE,
     ChairStatement,
     extract_position,
     file_supports_tally,
     render_tally,
     tally_thread,
 )
+from ietf_llm.gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 from ietf_llm.paths import get_wg_file_cache_dir
 
 from conftest import write_cache_file
 
 
 def _sender_of(header_line: str) -> str:
-    match = _THREAD_MSG_RE.search(header_line)
+    match = THREAD_MSG_HEADER_RE.search(header_line)
     assert match is not None, header_line
-    return _SENDER_ROLE_SUFFIX.sub("", match.group(2)).strip()
+    return _SENDER_ROLE_SUFFIX.sub("", match.group("sender")).strip()
 
 
 def test_opener_annotation_does_not_pollute_sender() -> None:

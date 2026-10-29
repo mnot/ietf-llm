@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from ..digest.query import parse_md_tables
+from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 from ..paths import digest_path
 
 # Number of leading non-quoted lines we scan for the strong patterns.
@@ -300,29 +301,6 @@ class ChairStatement:
     role: str  # the role tag from the registry ("Chair", "Chair/Author")
 
 
-# Thread message section header (mirrors chunking.py's _THREAD_MSG_RE,
-# but rewritten here to capture the bits this module cares about: the
-# message number and the sender. Date isn't needed — we sort by file
-# order, which is already chronological.) The optional trailing italic
-# annotation a GitHub file appends to a section header must be consumed
-# here, or it leaks into the sender name and splits one person's
-# identity across the tally. Three forms exist:
-#   `_(opened issue)_`         — issue_files, on the opener
-#   `_(opened pull request)_`  — pull_files, on the opener
-#   `_(review: APPROVED)_`     — pull_files, on each rendered review
-# The review form is the one that bites hardest: a reviewer who also
-# comments would otherwise appear as two people, and one who reviews
-# twice with different verdicts as three. `_SENDER_ROLE_SUFFIX` does not
-# save us — these end in `_`, not `)`.
-# The date group is optional: a message whose timestamp rendered empty leaves
-# `### [N]  — Sender`, and a required date token would drop that message from
-# the tally (and the coverage denominator) entirely.
-_THREAD_MSG_RE = re.compile(
-    r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?)? — (.+?)"
-    r"(?:\s+_\((?:opened issue|opened pull request|review: [A-Z_]+)\)_)?"
-    r"(?: \(reply to \[\d+\]\))?$",
-    re.MULTILINE,
-)
 # Sender display includes a role tag in parens — e.g. "Alice (Chair)".
 # Strip that for the tally name; the role is recovered separately from
 # the Registry.
@@ -475,11 +453,11 @@ def _split_messages(text: str) -> List[Tuple[int, str, str]]:
     trailing `(Role)` suffix stripped. `body` is everything between
     this section's header and the next.
     """
-    matches = list(_THREAD_MSG_RE.finditer(text))
+    matches = list(THREAD_MSG_HEADER_RE.finditer(text))
     out: List[Tuple[int, str, str]] = []
     for i, match in enumerate(matches):
-        msg_idx = int(match.group(1))
-        sender_raw = match.group(2).strip()
+        msg_idx = int(match.group("idx"))
+        sender_raw = match.group("sender").strip()
         sender = _SENDER_ROLE_SUFFIX.sub("", sender_raw).strip()
         body_start = match.end()
         body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)

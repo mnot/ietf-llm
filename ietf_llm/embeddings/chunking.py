@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from ..gather.sources.documents_manifest import skip_embed_draft_names
 from ..gather.sources.drafts import normalize_draft_name
+from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 
 # Character budget per embedded chunk. The embedding model only embeds the
 # first ~512 tokens of whatever text it's given; anything past that is silently
@@ -196,13 +197,6 @@ _SUBJECT_RE = re.compile(r"^Subject:\s*(.+)$", re.MULTILINE)
 _FROM_RE = re.compile(r"^From:\s*(.+)$", re.MULTILINE)
 _DATE_RE = re.compile(r"^Date:\s*(.+)$", re.MULTILINE)
 _ISSUE_RE = re.compile(r"^Issue #(\d+):\s*(.+)$", re.MULTILINE)
-
-# Per-thread file message section header:
-#   "### [N] YYYY-MM-DD HH:MM — Sender (reply to [M])"
-_THREAD_MSG_RE = re.compile(
-    r"^### \[(\d+)\] (\S+(?:\s+\S+)?) — (.+?)(?: \(reply to \[\d+\]\))?$",
-    re.MULTILINE,
-)
 
 # Per-issue file labels line (issue_files._render_issue):
 #   "**Labels:** vocabulary, top-level, ready to close  "
@@ -550,7 +544,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     every chunk in the file, so search can filter by topic label.
     """
     line_starts = _build_line_index(text)
-    matches = list(_THREAD_MSG_RE.finditer(text))
+    matches = list(THREAD_MSG_HEADER_RE.finditer(text))
     chunks: List[Chunk] = []
 
     if not matches:
@@ -610,15 +604,15 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         body = text[start_off:end_off].strip()
         if not body:
             continue
-        # chunk_idx is the message number `[N]` (regex group 1), NOT a
+        # chunk_idx is the message number `[N]` (the `idx` group), NOT a
         # running counter — a long message that splits into several
         # sub_idx fragments must not push later messages' chunk_idx out of
         # step with the `[N]` the reply graph / position tally key on.
-        msg_idx = int(match.group(1))
+        msg_idx = int(match.group("idx"))
         # Title: "[N] DATE — Sender" without the leading `### `.
         title = match.group(0)[4:].strip()
-        # Date is group 2 in the regex (e.g. "2026-04-13 10:00").
-        chunk_date = _normalize_to_utc_iso(match.group(2))
+        # e.g. "2026-04-13 10:00"; absent when the header's timestamp is empty.
+        chunk_date = _normalize_to_utc_iso(match.group("date") or "")
         # Per-chunk URL: issue chunks inherit the file-level URL;
         # thread chunks have their own per-message Archived-At line.
         chunk_url = file_url if is_issue else _extract_thread_archived_at(body)

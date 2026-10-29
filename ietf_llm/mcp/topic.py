@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import get_messages, search
+from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 from ..log import Verbosity
 from ..people.positions import (
     extract_chair_statements,
@@ -30,16 +31,6 @@ from .search import _empty_search_message
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
-
-
-# Matches the thread message section header so we can build the reply
-# graph for include_replies. Mirrors `_THREAD_MSG_RE` in chunking.py but
-# captures the parent index instead of stripping it.
-_THREAD_REPLY_RE = re.compile(
-    r"^### \[(\d+)\] \S+(?:\s+\S+)? — .+? \(reply to \[(\d+)\]\)$",
-    re.MULTILINE,
-)
-
 
 # Cap on rendered messages so a runaway include_replies expansion can't
 # blow the context window. Sized at 3× the default k=20, so a typical
@@ -90,9 +81,11 @@ def _parse_reply_graph(text: str) -> Dict[int, List[int]]:
     order (= chronological order, since the file is written that way).
     """
     graph: Dict[int, List[int]] = {}
-    for match in _THREAD_REPLY_RE.finditer(text):
-        child = int(match.group(1))
-        parent = int(match.group(2))
+    for match in THREAD_MSG_HEADER_RE.finditer(text):
+        if match.group("reply_to") is None:
+            continue
+        child = int(match.group("idx"))
+        parent = int(match.group("reply_to"))
         graph.setdefault(parent, []).append(child)
     return graph
 
