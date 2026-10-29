@@ -283,3 +283,55 @@ def test_chunker_version_change_rewrites_rows_without_reembedding(
     assert start != 99  # the row was rewritten by the re-chunk
     assert version != "0"
     assert _build("wg") is False  # and the next build is a no-op again
+
+
+def test_fully_reused_rechunk_flushes_in_bounded_windows(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # A re-chunk that reuses every vector adds nothing to the to-embed count, so
+    # the window must also flush on a planned-file cap or the whole corpus is
+    # held unwritten until the end.
+    import importlib
+
+    search_mod = importlib.import_module("ietf_llm.embeddings.search")
+
+    stub = _CountingStub()
+    embeddings._MODEL_CACHE["stub"] = stub  # noqa
+    for n in range(11):
+        write_cache_file(
+            isolated_home, "wg", f"drafts/draft-x-{n:02d}.txt", f"\n\nbody {n} " * 300
+        )
+    assert _build("wg") is True
+
+    def _rows() -> List[tuple]:
+        conn = sqlite3.connect(_db_path("wg"))
+        try:
+            return conn.execute(
+                "SELECT file, chunk_idx, sub_idx, title, text, embedding, "
+                "start_line, end_line, chunk_hash FROM chunks "
+                "ORDER BY file, chunk_idx, sub_idx"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    before = _rows()
+    assert len(before) > 11  # multi-window drafts
+    conn = sqlite3.connect(_db_path("wg"))
+    conn.execute("UPDATE meta SET value='0' WHERE key='chunker_version'")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(search_mod, "_EMBED_BUFFER_FILES", 4)
+    sizes: List[int] = []
+    real = search_mod._flush_window  # pylint: disable=protected-access
+
+    def _spy(model, plans, window, mps_empty, verbose):  # type: ignore[no-untyped-def]
+        sizes.append(len(plans))
+        return real(model, plans, window, mps_empty, verbose)
+
+    monkeypatch.setattr(search_mod, "_flush_window", _spy)
+    stub.embedded.clear()
+    assert _build("wg") is True
+    assert len(sizes) > 1 and max(sizes) <= 4 and sum(sizes) == 11
+    assert not any("body" in t for t in stub.embedded)
+    assert _rows() == before

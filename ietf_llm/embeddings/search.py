@@ -93,6 +93,11 @@ _FLUSH_EVERY_FILES = 25
 #: streaming and crash-durable. Also the progress cadence. 512 gives ST a deep
 #: sort window while keeping each flush short.
 _EMBED_BUFFER = 512
+#: Also flush a window once it holds this many planned files. `_EMBED_BUFFER`
+#: counts only chunks to embed, so a run of fully-reused files (a re-chunk that
+#: keeps every vector) adds nothing to it and would otherwise sit in memory,
+#: unwritten, until the end of the corpus.
+_EMBED_BUFFER_FILES = 128
 
 
 def _mps_empty_cache() -> Optional[Callable[[], None]]:
@@ -397,7 +402,7 @@ def _stream_embed(
         pos = len(window_plans)
         window_plans.append(plan)
         window.extend((pos, li, text) for li, text in enumerate(plan.texts))
-        if len(window) >= _EMBED_BUFFER:
+        if len(window) >= _EMBED_BUFFER or len(window_plans) >= _EMBED_BUFFER_FILES:
             yield from _flush_window(model, window_plans, window, mps_empty, verbose)
             window_plans, window = [], []
     yield from _flush_window(model, window_plans, window, mps_empty, verbose)
