@@ -218,6 +218,20 @@ def _render_outline(number: str, rows: List[Tuple[str, str, int]]) -> str:
     return "\n".join(lines)
 
 
+def _clamp(name: str, value: Any, hi: int, default: int, notes: List[str]) -> int:
+    """`value` as an int in `[1, hi]`; a non-number falls back to `default`.
+    Anything changed is recorded in `notes` so the reply can say so."""
+    try:
+        wanted = int(value)
+    except (TypeError, ValueError):
+        notes.append(f"{name}={value!r} is not a number; using {default}")
+        return default
+    clamped = max(1, min(wanted, hi))
+    if clamped != wanted:
+        notes.append(f"{name} {wanted} clamped to {clamped}")
+    return clamped
+
+
 def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     query: str,
     rfc: Optional[str] = None,
@@ -225,9 +239,18 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
     sections_per_rfc: int = _SECTIONS_PER_RFC,
     snippet_chars: int = _SNIPPET_CHARS,
 ) -> str:
-    limit = max(1, min(int(limit), _MAX_LIMIT))
-    sections_per_rfc = max(1, min(int(sections_per_rfc), _MAX_SECTIONS_PER_RFC))
-    snippet_chars = max(1, min(int(snippet_chars), _MAX_SNIPPET_CHARS))
+    notes: List[str] = []
+    limit = _clamp("limit", limit, _MAX_LIMIT, 10, notes)
+    sections_per_rfc = _clamp(
+        "sections_per_rfc",
+        sections_per_rfc,
+        _MAX_SECTIONS_PER_RFC,
+        _SECTIONS_PER_RFC,
+        notes,
+    )
+    snippet_chars = _clamp(
+        "snippet_chars", snippet_chars, _MAX_SNIPPET_CHARS, _SNIPPET_CHARS, notes
+    )
     file_pattern = _rfc_file(rfc) if rfc else None
     if rfc and file_pattern is None:
         return f"'{rfc}' is not an RFC number."
@@ -285,6 +308,9 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
         "matched — read the section with `get_rfc_section` before quoting "
         "it._"
     )
+    if notes:
+        out.append("")
+        out.append(f"_Adjusted: {'; '.join(notes)}._")
     provenance = provenance_line()
     if provenance:
         out.append("")
@@ -369,7 +395,7 @@ def register(server: "MCPServer") -> None:
         search-within-this-RFC — useful when the document is large.
 
         Result size is clamped: `limit` to 50 RFCs, `sections_per_rfc` to 10
-        and `snippet_chars` to 2000.
+        and `snippet_chars` to 2000; the reply says when one was clamped.
 
         Results are **sections**, ranked by document. Snippets are the
         opening of each matched section, not the passage that matched, so
