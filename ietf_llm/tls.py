@@ -35,7 +35,9 @@ as environment-sensitive rather than universal — re-run the line above before
 concluding it has been fixed upstream, and note the design does not rest on it.
 
 So this module hands a context to the transports we own and leaves every other
-TLS client on the machine exactly as it was.
+TLS client on the machine exactly as it was. Those are the `requests` sessions,
+the seed fetch (`urllib`) and the IMAP mail fetch (`imaplib.IMAP4_SSL`, which
+verifies nothing unless it is handed a context).
 
 **Not injecting is not enough — someone else's injection poisons ours.** The
 trap belongs to the rebound global, not to whoever rebound it. An interpreter
