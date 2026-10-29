@@ -19,6 +19,7 @@ from ietf_llm.gather.sources.mail_threads import (
     thread_slug,
     write_thread_files,
 )
+from ietf_llm.gather.sources.message_citations import scan_message_citations
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
@@ -35,6 +36,7 @@ def _write_eml(
     in_reply_to: str = "",
     references: str = "",
     body: str = "body",
+    archived_at: str = "",
 ) -> Path:
     """Like the conftest helper but lets us set Message-Id / In-Reply-To."""
     imap_dir = (
@@ -50,6 +52,8 @@ def _write_eml(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
+    if archived_at:
+        msg["Archived-At"] = f"<{archived_at}>"
     msg.set_content(body)
     path = imap_dir / f"{uid}.eml"
     path.write_bytes(bytes(msg))
@@ -463,6 +467,92 @@ def test_split_threads_get_distinct_files_and_the_older_keeps_its_slug(
         "2024-01-01-weekly-digest.md",
         "2025-02-05-weekly-digest.md",
     ]
+
+
+def _thread_files(wg: str) -> dict[str, bytes]:
+    cache_dir = get_wg_file_cache_dir(wg)
+    paths = write_thread_files(wg, cache_dir, verbose=Verbosity.QUIET)
+    return {Path(p).name: Path(p).read_bytes() for p in paths}
+
+
+def _split_series(isolated_home: Path, uids: list[int]) -> None:
+    dates = [
+        "Mon, 01 Jan 2024 10:00:00 +0000",
+        "Fri, 05 Feb 2025 10:00:00 +0000",
+        "Sat, 11 Mar 2025 10:00:00 +0000",
+        "Wed, 01 Jan 2020 10:00:00 +0000",
+    ]
+    for uid, date in zip(uids, dates):
+        _orphan(isolated_home, uid, date)
+
+
+def test_split_output_is_stable_across_builds_and_uid_order(isolated_home: Path) -> None:
+    _split_series(isolated_home, [1, 2, 3, 4])
+    first = _thread_files("wg")
+    # A second gather over the same cache rewrites identical files.
+    assert _thread_files("wg") == first
+    assert len(first) == 3  # 2020, 2024, and the 2025 pair
+
+    # Same messages cached under a different UID order: same files, same bytes.
+    for eml in (isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list").glob("*.eml"):
+        eml.unlink()
+    _split_series(isolated_home, [4, 3, 2, 1])
+    assert _thread_files("wg") == first
+
+
+def test_tied_dates_merge_deterministically(isolated_home: Path) -> None:
+    same = "Mon, 01 Jan 2025 10:00:00 +0000"
+    _orphan(isolated_home, 1, same)
+    _orphan(isolated_home, 2, same)
+    first = _thread_files("wg")
+    assert len(first) == 1
+    # Swapping which UID each message arrived under changes nothing.
+    for eml in (isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list").glob("*.eml"):
+        eml.unlink()
+    _orphan(isolated_home, 2, same)
+    _orphan(isolated_home, 1, same)
+    assert _thread_files("wg") == first
+
+
+def test_undated_roots_join_the_latest_same_subject_thread(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2024 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 05 Feb 2025 10:00:00 +0000")
+    _orphan(isolated_home, 3, "")  # no Date header
+    threads = sorted(build_threads("wg"), key=lambda t: t.span[0].year)  # type: ignore[union-attr]
+    assert [len(t.members) for t in threads] == [1, 2]
+    assert any(m.date is None for m in threads[1].members)
+
+
+def test_only_undated_roots_form_one_thread(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "")
+    _orphan(isolated_home, 2, "")
+    assert [len(t.members) for t in build_threads("wg")] == [2]
+
+
+def test_message_citations_follow_a_resplit(isolated_home: Path) -> None:
+    # Alice's 2024 message is cited by a same-subject message 400 days later.
+    # Merged, both would sit in one thread file; split, the citation crosses
+    # files and the digest must say so.
+    url = "https://mailarchive.ietf.org/arch/msg/wg/TOKENA"
+    _write_eml(
+        isolated_home, "wg", 1, subject="Weekly digest", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2024 10:00:00 +0000", message_id="<a@x>",
+        archived_at=url, body="the origin",
+    )
+    _write_eml(
+        isolated_home, "wg", 2, subject="Weekly digest", sender="Bob <b@x>",
+        date="Fri, 05 Feb 2025 10:00:00 +0000", message_id="<b@x>",
+        archived_at="https://mailarchive.ietf.org/arch/msg/wg/TOKENB",
+        body=f"following up on {url}",
+    )
+    cache_dir = get_wg_file_cache_dir("wg")
+    write_thread_files("wg", cache_dir, verbose=Verbosity.QUIET)
+    cits = scan_message_citations(cache_dir)
+    resolved = [c for c in cits if c.target]
+    assert len(resolved) == 1
+    assert resolved[0].src_file == "threads/2025-02-05-weekly-digest.md"
+    assert resolved[0].target is not None
+    assert resolved[0].target.file == "threads/2024-01-01-weekly-digest.md"
 
 
 def test_crosspost_duplicate_msgid_does_not_loop(isolated_home: Path) -> None:

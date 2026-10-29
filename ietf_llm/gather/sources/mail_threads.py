@@ -481,7 +481,10 @@ def _has_quoted_text(body: str) -> bool:
 #: folded into it by the subject fallback. Recurring subjects (weekly digests,
 #: `I-D Action:` notices, errata reports) would otherwise chain years of
 #: unrelated mail into one thread; a reply composed as a new message arrives
-#: within days or weeks of the thread it belongs to.
+#: within days or weeks of the thread it belongs to. Measured from the
+#: conversation's *last* message, so a series with gaps under the window (a
+#: weekly digest) still chains; `_mergeable_cluster` is the one place the rule
+#: lives, should it need a bound from the first message or a `Re:` test.
 SUBJECT_MERGE_WINDOW = timedelta(days=60)
 
 
