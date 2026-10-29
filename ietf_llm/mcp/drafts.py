@@ -3,6 +3,7 @@ get_issue, draft_status, review_record."""
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -10,8 +11,16 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from ..freshness import gather_suggestion
 from ..gather.sources.citations import normalize_draft_name
 from ..gather.sources.documents_manifest import load_documents_manifest
-from ..paths import drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
-from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_freshness
+from ..paths import DIR_DRAFTS, drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
+from ..store.blobs import parallel_each
+from .common import (
+    _files_dir,
+    _list_corpus_files,
+    _list_wgs,
+    _offload,
+    _requires_corpus,
+    _with_freshness,
+)
 from .rfc_text import normalise_section
 
 if TYPE_CHECKING:
@@ -20,35 +29,94 @@ if TYPE_CHECKING:
     from ..live_lookup.reviews import ReviewRecord  # pragma: no cover
 
 
-def _find_latest_draft_file(name: str) -> Optional[str]:
-    """Locate the highest-revision cached `.txt` for a draft across all corpora.
+_OWNED_DRAFT_RE = re.compile(r"draft-(?:ietf|irtf)-([a-z0-9-]+)")
 
-    A draft name (e.g. `draft-ietf-httpbis-foo`) implies its WG but can be
-    cached under more than one corpus; this scans every gathered corpus's
-    `drafts/` dir and returns the newest revision found anywhere, or None.
-    Read-only — uses the same per-corpus files dir the read tools resolve.
+
+def _owner_candidates(base: str, corpora: List[str]) -> List[str]:
+    """Gathered corpora that could own `base`, most specific first.
+
+    `draft-ietf-<wg>-...` and `draft-irtf-<rg>-...` name their group, but a
+    group acronym may itself contain a hyphen, so every prefix of the remainder
+    is tried against the corpora that exist. Individual drafts name no group.
+    """
+    match = _OWNED_DRAFT_RE.fullmatch(base)
+    if match is None:
+        return []
+    parts = match.group(1).split("-")
+    known = set(corpora)
+    return [
+        acronym
+        for acronym in ("-".join(parts[:n]) for n in range(len(parts) - 1, 0, -1))
+        if acronym in known
+    ]
+
+
+def _newest_revision(wg: str, pattern: "re.Pattern[str]") -> Optional[Tuple[int, str]]:
+    """`(revision, filename)` of the highest cached revision in `wg`, or None.
+
+    Asked of the store's `list_files`, which on the cloud backend reads the
+    version's manifest rather than staging it, so a corpus that does not hold
+    the draft costs one small GET and no download.
+    """
+    try:
+        names = _list_corpus_files(wg, DIR_DRAFTS)
+    except FileNotFoundError:
+        return None
+    hits = [
+        (int(match.group(1)), fname)
+        for fname in names
+        if (match := pattern.match(fname.lower()))
+    ]
+    return max(hits) if hits else None
+
+
+def _find_latest_draft_file(name: str) -> Optional[str]:
+    """Locate the highest-revision cached `.txt` for a draft, or None.
+
+    The owning group's corpus is asked first, since it is where a draft is
+    gathered, and a hit there ends the lookup. Otherwise every gathered corpus
+    is asked concurrently, and the highest revision found wins (the first in
+    sorted order on a tie, so the answer doesn't move between calls). Only the
+    corpus holding the winner is then staged (`_files_dir`): on the cloud
+    backend a scan that staged each corpus would download the fleet to answer
+    one draft. Read-only.
     """
     base = normalize_draft_name(name)
     pattern = re.compile(rf"^{re.escape(base)}-(\d+)\.txt$")
-    best_version = -1
-    best_path: Optional[str] = None
-    for wg in _list_wgs():
-        try:
-            cache = _files_dir(wg)
-        except FileNotFoundError:
-            continue
-        ddir = drafts_dir(cache)
-        if not os.path.isdir(ddir):
-            continue
-        for fname in os.listdir(ddir):
-            match = pattern.match(fname.lower())
-            if not match:
-                continue
-            version = int(match.group(1))
-            if version > best_version:
-                best_version = version
-                best_path = os.path.join(ddir, fname)
-    return best_path
+    corpora = sorted(_list_wgs())
+    found: Optional[Tuple[str, str]] = None
+    owners = _owner_candidates(base, corpora)
+    for owner in owners:
+        hit = _newest_revision(owner, pattern)
+        if hit is not None:
+            found = (owner, hit[1])
+            break
+    if found is None:
+        corpora = [wg for wg in corpora if wg not in owners]
+        best: Dict[str, Tuple[int, str]] = {}
+        # A worker thread starts with an empty context, so a version pin (a
+        # ContextVar) would not reach it; run each ask in a copy of ours.
+        contexts = {wg: contextvars.copy_context() for wg in corpora}
+
+        def _ask(wg: str) -> None:
+            hit = contexts[wg].run(_newest_revision, wg, pattern)
+            if hit is not None:
+                best[wg] = hit
+
+        parallel_each(_ask, corpora)
+        top = -1
+        for wg in corpora:
+            if wg in best and best[wg][0] > top:
+                top = best[wg][0]
+                found = (wg, best[wg][1])
+    if found is None:
+        return None
+    wg, fname = found
+    try:
+        cache = _files_dir(wg)
+    except FileNotFoundError:
+        return None
+    return os.path.join(drafts_dir(cache), fname)
 
 
 def tool_draft_authors(name: str) -> str:

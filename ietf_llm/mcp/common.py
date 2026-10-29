@@ -92,6 +92,15 @@ def _materialised_files_dir(wg: str) -> Optional[str]:
     )
 
 
+def _list_corpus_files(wg: str, subdir: str) -> List[str]:
+    """Names of the files directly inside `files/<subdir>` of `wg`'s current
+    version, without staging it (the listing counterpart of the store's
+    `has_file`). For a sweep across corpora that wants to stage only the hit."""
+    return serve_metrics.timed_store(
+        "list_files", lambda: get_corpus_store().list_files(wg, subdir)
+    )
+
+
 def _safe_path(wg: str, file: str) -> Optional[str]:
     """Resolve `file` inside the corpus's file cache; refuse path escapes."""
     cache = _files_dir(wg)
