@@ -614,3 +614,119 @@ def test_tool_tally_positions_missing_file(isolated_home: Path) -> None:
         "wg", "threads/nonexistent.md",
     )
     assert "not found" in out.lower()
+
+
+# --- false-positive classes (issue #300) ----------------------------------
+
+
+def test_discuss_prose_is_not_an_oppose_ballot() -> None:
+    label, _conf, _excerpt, _poll = extract_position("Discuss this at the interim?\n")
+    assert label == "no-position"
+
+
+def test_agree_is_high_only_with_a_following_object_and_no_hedge() -> None:
+    for body in ("I agree with the proposal.\n", "I agree to that.\n"):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert (label, conf) == ("support", "high"), body
+    for body in (
+        "I agree.\n",
+        "I agree that HPACK is largely decouplable from HTTP/2.\n",
+        "I agree with the goal, but the mechanism is wrong.\n",
+    ):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert (label, conf) == ("support", "low"), body
+
+
+def test_hedge_in_the_same_sentence_drops_support_to_low() -> None:
+    for body in (
+        "I support this, although I have concerns about section 4.\n",
+        "LGTM, but maybe reorder the first paragraphs.\n",
+    ):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert (label, conf) == ("support", "low"), body
+    # A hedge in a later sentence does not qualify the opener.
+    label, conf, _excerpt, _poll = extract_position(
+        "I support adoption. However, there are nits below.\n"
+    )
+    assert (label, conf) == ("support", "high")
+
+
+def test_mid_sentence_support_verb_is_not_a_vote() -> None:
+    label, _conf, _excerpt, _poll = extract_position("support FTP URIs nowadays ;-)\n")
+    assert label == "no-position"
+    label, conf, _excerpt, _poll = extract_position("Support.\n")
+    assert (label, conf) == ("support", "high")
+
+
+def test_hash_cross_reference_is_not_a_poll_vote() -> None:
+    label, _conf, _excerpt, choice = extract_position(
+        "#12 is a duplicate of this one, closing.\n"
+    )
+    assert label != "poll" and choice is None
+    # A bare `#N` is a vote in a mailing-list thread but not in a GitHub file.
+    assert extract_position("#2\n")[0] == "poll"
+    label, _conf, _excerpt, choice = extract_position("#2\n", allow_bare_hash=False)
+    assert label != "poll" and choice is None
+    # Intent-anchored `#N` still counts there.
+    label, _conf, _excerpt, choice = extract_position(
+        "I prefer #2.\n", allow_bare_hash=False
+    )
+    assert (label, choice) == ("poll", "2")
+
+
+def test_negated_poll_intent_is_not_a_vote() -> None:
+    label, _conf, _excerpt, choice = extract_position("I'm not in favor of option 2.\n")
+    assert label != "poll" and choice is None
+
+
+def test_poll_row_with_qualifier_is_low_confidence() -> None:
+    label, conf, _excerpt, choice = extract_position(
+        "Option A would be my second choice; I actually dislike both.\n"
+    )
+    assert (label, conf, choice) == ("poll", "low", "A")
+    label, conf, _excerpt, choice = extract_position("I prefer 2 because it is simpler.\n")
+    assert (label, conf, choice) == ("poll", "high", "2")
+
+
+def test_negated_weak_support_is_not_support() -> None:
+    for body in (
+        "It is not yet ready to progress.\n",
+        "The text is not in good shape.\n",
+    ):
+        assert extract_position(body)[0] == "no-position", body
+
+
+def test_i_object_is_a_weak_oppose_that_cancels_weak_support() -> None:
+    label, _conf, _excerpt, _poll = extract_position(
+        "No objection to adopting, but I object to the current text.\n"
+    )
+    assert label == "no-position"
+    label, conf, _excerpt, _poll = extract_position(
+        "Thanks for the draft. Frankly, I do object to the second half.\n"
+    )
+    assert (label, conf) == ("oppose", "low")
+
+
+def _poll_thread() -> str:
+    lines = ["# Which option?\n", "## Messages\n"]
+    votes = ["Option 1.", "Option 2.", "Option 2 would be my second choice, honestly."]
+    for i, vote in enumerate(votes, 1):
+        lines.append(f"### [{i}] 2026-06-0{i} 09:00 — Person{i}\n")
+        lines.append(f"{vote}\n")
+    for i in range(4, 11):
+        lines.append(f"### [{i}] 2026-06-0{i % 9 + 1} 09:00 — Talker{i}\n")
+        lines.append("The scope here seems too broad for our charter.\n")
+    return "\n".join(lines)
+
+
+def test_poll_section_carries_confidence_and_low_coverage_caveat() -> None:
+    positions, summary = tally_thread(_poll_thread())
+    out = render_tally("threads/poll.md", positions, summary)
+    assert "Poll choices: **3**" in out
+    assert "1 low confidence" in out
+    assert "keyword matches" in out
+    # 3 of 10 classified = 30%: no caveat. Drop to 2 of 10 and it appears.
+    assert "Coverage is low" not in out
+    positions, summary = tally_thread(_poll_thread().replace("Option 1.", "Hmm."))
+    out = render_tally("threads/poll.md", positions, summary)
+    assert "Coverage is low (20%)" in out

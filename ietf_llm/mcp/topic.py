@@ -526,7 +526,11 @@ def tool_tally_positions(wg: str, file: str) -> str:
     procedural language (`rough consensus`, `consensus call`, `WGLC`,
     `adopting`, closure) surfaced at the top, the load-bearing messages in a long
     thread — and **option polls** (`option N` / `#N` / `I prefer N`), counted
-    per choice.
+    per choice. Poll rows are keyword matches too: each carries a confidence
+    tag, a line-start `#N` is read as a vote only in mailing-list threads (in
+    issue / PR files it is a cross-reference), and a low-coverage thread gets a
+    caveat on the poll counts. Check the rows against the messages before
+    quoting a split.
 
     The support/oppose tally is a **keyword heuristic** (`+1`, `-1`,
     `I support`, `I object`, `LGTM`, `DISCUSS`, near the message start). It is
@@ -549,7 +553,9 @@ def tool_tally_positions(wg: str, file: str) -> str:
     text = read_file_text(cache_dir, file)
     if text is None:
         return f"File not found in {wg} cache: `{file}`"
-    positions, summary = tally_thread(text)
+    # A line-start `#N` is a poll vote in a mailing-list thread but a
+    # cross-reference in a GitHub issue / PR.
+    positions, summary = tally_thread(text, file.lower().startswith("threads/"))
     if not positions:
         return (
             f"No messages found in `{file}`. The file may be empty or "

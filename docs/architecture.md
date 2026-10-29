@@ -544,7 +544,8 @@ ietf_llm/
 │   ├── names.py            # name keys for identity lookup; role-account detection
 │   ├── meetings.py         # link-only meeting participation (attendance id / speaker name)
 │   ├── digest.py           # render the _people.md digest
-│   └── positions.py        # heuristic position / poll / chair-statement extraction
+│   ├── poll_choice.py      # option-poll vote detection + hedge/negation helpers
+│   └── positions.py        # heuristic position / chair-statement extraction, tally rendering
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── log.py                  # stderr output leaf: log(), Verbosity/LogLevel, _use_color
@@ -591,7 +592,7 @@ ietf_llm/
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
 │       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
-│       ├── mail_threads.py         # reconstruct per-thread .md files
+│       ├── mail_threads.py         # reconstruct per-thread .md files; owns THREAD_MSG_HEADER_RE (the shared `### [N]` section-header parse)
 │       ├── github.py               # archive.json (gh-pages) or REST API
 │       ├── github_schema.py        # normalise the archive's shape (download and read)
 │       ├── github_users.py         # resolve logins → real name + company
