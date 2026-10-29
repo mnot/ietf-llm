@@ -728,7 +728,12 @@ Grouped by job:
   reply is "INCOMPLETE SCAN", never a zero; a child that crashes or answers
   with garbage gets a fixed "nothing can be concluded" reply (its stderr goes to
   the server log, not the client). Kills and failures are logged at WARN and
-  counted in `ietf_llm_grep_scan_stops_total{reason}`. The parent owns all store state
+  counted in `ietf_llm_grep_scan_stops_total{reason}`. The child is bounded in
+  time only: it has no memory cap (about 1.5 GB resident was measured for one
+  pathological pattern over a single very long line), and up to
+  `IETF_LLM_SCAN_CONCURRENCY` run at once, so deployments size for that. A
+  hostile client can hold all the scan slots (about 23s per call); other tools
+  are unaffected. Accepted limits (`docs/mcp-server.md`). The parent owns all store state
   (cache dir, RFC index path) and never runs the user's pattern itself: the
   child returns finished, already-elided lines. A literal pattern is escaped, so
   it cannot backtrack catastrophically and scans in-process. Hits
