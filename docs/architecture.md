@@ -222,6 +222,17 @@ Key invariants:
   are summarised in the header rather than given a section each. Archives
   without a `pulls` key (the REST fallback shape, used when a repo publishes no
   gh-pages `archive.json`) simply produce no PR tree.
+- **The REST fallback never writes a truncated issue.** Without a gh-pages
+  archive the issues come from the API, one comments request per issue. If paging
+  an issue's comments fails (a non-200, or a dropped connection) that issue keeps
+  its previously cached copy — it is not written with the comments fetched so
+  far, which would pass for the whole discussion and lose the closing comment —
+  and the other issues still update. A throttle (429, or 403 with a
+  `Retry-After`) stops the repo at once, as do three failures in a row, and every
+  issue not reached keeps its cached copy. The gather logs one warning with how
+  many issues were left stale and why (including the `Retry-After` when it is over
+  the transport's limit); they are retried next gather. An issue that was never
+  cached is skipped rather than written partial.
 - **An archive is third-party content, so it is schema-normalised.** The
   gh-pages `archive.json` is whatever the repo owner published, and its `repo`
   and each record's `number` could become path components. `github_schema`

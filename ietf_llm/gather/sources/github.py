@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -10,6 +11,7 @@ from ... import paths
 from ...atomicio import atomic_open
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
+from ...net.transport import RETRY_AFTER_MAX
 from .github_schema import load_archive, normalise_archive, valid_repo
 
 
@@ -319,8 +321,17 @@ def download_github_issues(
     if github_token:
         headers["Authorization"] = f"token {github_token}"
 
+    previous: Dict[Any, Dict[str, Any]] = {}
+    if os.path.exists(dest_path):
+        cached = load_archive(dest_path, verbose, level=LogLevel.PROGRESS)
+        previous = {i["number"]: i for i in (cached or {}).get("issues", [])}
+    report = _StaleReport()
     try:
-        all_issues = _fetch_all_issues(owner, repo, headers, verbose)
+        all_issues = _fetch_all_issues(
+            owner, repo, headers, verbose, previous=previous, report=report
+        )
+        if report.stale:
+            log(report.summary(f"{owner}/{repo}"), verbose, level=LogLevel.WARN)
         export_data = {
             "repo": f"{owner}/{repo}",
             "timestamp": datetime.now().isoformat(),
@@ -445,13 +456,102 @@ def _prune_github_orphans(
         )
 
 
-def _fetch_all_issues(
-    owner: str, repo_name: str, headers: Dict[str, str], verbose: Verbosity
+#: Consecutive comment-fetch failures after which a repo is given up on for
+#: this gather: a host that is down fails every issue the same way, slowly.
+_MAX_CONSECUTIVE_COMMENT_FAILURES = 3
+
+
+class _CommentsUnavailable(Exception):
+    """An issue's comments could not be fetched completely (a non-200 page or a
+    transport error). `rate_limited` means the whole repo is throttled, so
+    asking for other issues would only be refused too."""
+
+    def __init__(self, reason: str, rate_limited: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.rate_limited = rate_limited
+
+
+@dataclass
+class _StaleReport:
+    """Issues whose comments could not be fetched this gather, and why. Each is
+    left at its previously cached copy (or omitted if there is none) rather
+    than written with a truncated comment list."""
+
+    stale: List[Any] = field(default_factory=list)
+    omitted: int = 0
+    reasons: Dict[str, int] = field(default_factory=dict)
+    halted: Optional[str] = None
+
+    def add(self, number: Any, reason: str, kept: bool) -> None:
+        self.stale.append(number)
+        if not kept:
+            self.omitted += 1
+        self.reasons[reason] = self.reasons.get(reason, 0) + 1
+
+    def summary(self, repo: str) -> str:
+        why = "; ".join(
+            f"{reason} x{count}" if count > 1 else reason
+            for reason, count in self.reasons.items()
+        )
+        kept = len(self.stale) - self.omitted
+        detail = f"{kept} kept at their cached copy"
+        if self.omitted:
+            detail += f", {self.omitted} never cached so skipped"
+        text = (
+            f"GitHub {repo}: {len(self.stale)} issue(s) not refreshed ({detail}); "
+            f"comments could not be fetched: {why}"
+        )
+        if self.halted:
+            text += f"; stopped fetching this repo ({self.halted})"
+        return text + "; they will be retried on the next gather."
+
+
+def _comments_failure(res: Any) -> _CommentsUnavailable:
+    """Classify a non-200 comments response; a throttle names its Retry-After."""
+    status = res.status_code
+    headers = getattr(res, "headers", None) or {}
+    retry_after = headers.get("Retry-After")
+    limited = status == 429 or (
+        status == 403
+        and (retry_after is not None or headers.get("X-RateLimit-Remaining") == "0")
+    )
+    if not limited:
+        return _CommentsUnavailable(f"HTTP {status}")
+    reason = f"rate limited (HTTP {status}"
+    if retry_after is not None:
+        reason += f", Retry-After {retry_after}s"
+        try:
+            if float(retry_after) > RETRY_AFTER_MAX:
+                reason += f", over the {RETRY_AFTER_MAX}s limit"
+        except ValueError:
+            pass
+    return _CommentsUnavailable(reason + ")", rate_limited=True)
+
+
+def _fetch_all_issues(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    owner: str,
+    repo_name: str,
+    headers: Dict[str, str],
+    verbose: Verbosity,
+    previous: Optional[Dict[Any, Dict[str, Any]]] = None,
+    report: Optional[_StaleReport] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch all issues and their comments from GitHub API."""
-    all_issues = []
+    """Fetch all issues and their comments from GitHub API.
+
+    An issue whose comments cannot be fetched completely is not written with a
+    partial list: its `previous` cached copy is kept (an issue never cached is
+    omitted) and it is recorded in `report`; the other issues carry on. A
+    throttle on the repo, or repeated failures, stop the fetch there, keeping
+    the cached copy of every issue not yet reached.
+    """
+    previous = previous or {}
+    report = report if report is not None else _StaleReport()
+    all_issues: List[Dict[str, Any]] = []
+    seen: "set[Any]" = set()
+    failures = 0
     page = 1
-    while True:
+    while report.halted is None:
         api_url = (
             f"https://api.github.com/repos/{owner}/{repo_name}/issues"
             f"?state=all&page={page}&per_page=100"
@@ -467,8 +567,9 @@ def _fetch_all_issues(
             if "pull_request" in issue:
                 continue
 
+            number = issue.get("number")
             issue_data = {
-                "number": issue.get("number"),
+                "number": number,
                 "title": issue.get("title"),
                 "state": issue.get("state"),
                 "author": issue.get("user", {}).get("login"),
@@ -478,15 +579,43 @@ def _fetch_all_issues(
                 "comments": [],
             }
             if issue.get("comments", 0) > 0:
-                issue_data["comments"] = _fetch_issue_comments(
-                    issue.get("comments_url"), headers
-                )
+                if report.halted is not None:
+                    # Not asked for: the repo is throttled or down.
+                    report.add(number, report.halted, number in previous)
+                    if number in previous:
+                        all_issues.append(previous[number])
+                        seen.add(number)
+                    continue
+                try:
+                    issue_data["comments"] = _fetch_issue_comments(
+                        issue.get("comments_url"), headers
+                    )
+                    failures = 0
+                except _CommentsUnavailable as err:
+                    failures += 1
+                    report.add(number, err.reason, number in previous)
+                    if err.rate_limited:
+                        report.halted = err.reason
+                    elif failures >= _MAX_CONSECUTIVE_COMMENT_FAILURES:
+                        report.halted = f"{failures} failures in a row"
+                    # Keep the cached copy; never the truncated one.
+                    if number in previous:
+                        all_issues.append(previous[number])
+                        seen.add(number)
+                    continue
 
             all_issues.append(issue_data)
+            seen.add(number)
 
         page += 1
         if len(issues) < 100:
             break
+    if report.halted is not None:
+        # Issues beyond the point we stopped keep their cached copies.
+        for number, cached in previous.items():
+            if number not in seen:
+                all_issues.append(cached)
+                report.add(number, report.halted, True)
     return all_issues
 
 
@@ -498,18 +627,23 @@ def _fetch_issue_comments(
     GitHub's issue-comments endpoint defaults to 30 per page; without paging,
     an active issue's later comments were silently dropped — including the
     actual closing comment that downstream rendering uses as the resolution.
+    Raises `_CommentsUnavailable` if any page is not a 200 or the request
+    fails: a truncated list must not be mistaken for the whole discussion.
     """
     out: List[Dict[str, Any]] = []
     page = 1
     while True:
-        c_res = governed_get(
-            comments_url,
-            headers=headers,
-            params={"per_page": 100, "page": page},
-            timeout=30,
-        )
+        try:
+            c_res = governed_get(
+                comments_url,
+                headers=headers,
+                params={"per_page": 100, "page": page},
+                timeout=30,
+            )
+        except requests.RequestException as err:
+            raise _CommentsUnavailable(f"{type(err).__name__}") from err
         if c_res.status_code != 200:
-            break
+            raise _comments_failure(c_res)
         comments = c_res.json()
         if not comments:
             break
