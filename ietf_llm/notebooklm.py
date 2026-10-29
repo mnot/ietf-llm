@@ -99,7 +99,11 @@ def get_credentials(
 
         # Save credentials for next time
         try:
-            with open(token_path, "w", encoding="utf-8") as token_fh:
+            # The file holds a refresh token: owner-only, including when an
+            # earlier run already created it with the umask's permissions.
+            token_fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(token_fd, "w", encoding="utf-8") as token_fh:
+                os.chmod(token_path, 0o600)
                 token_fh.write(creds.to_json())
         except (IOError, ValueError) as err:
             log(
