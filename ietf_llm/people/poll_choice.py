@@ -21,7 +21,14 @@ HEDGE_RE = re.compile(
 _NEGATION_BEFORE_RE = re.compile(
     r"(?:\bnot|n't|\bnever)\s+(?:\w{1,6}\s+)?$", re.IGNORECASE
 )
-_SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)|\n")
+# A full stop after an abbreviation ("e.g. as in 3.2, but …") does not end the
+# sentence.
+_SENTENCE_END_RE = re.compile(
+    r"(?<!e\.g)(?<!i\.e)(?<!etc)(?<!Mr)(?<!Dr)[.!?](?:\s|$)|\n"
+)
+# Negation between an intent phrase and its marker ("preference is not
+# option 2", "definitely not #2"): the vote is against, not for, the choice.
+_NEGATION_IN_SPAN_RE = re.compile(r"\b(?:not|never)\b|n't", re.IGNORECASE)
 
 
 def rest_of_sentence(text: str, start: int) -> str:
@@ -176,9 +183,11 @@ def extract_poll_choice(
          (#1)`). Looser; the intent and marker can have descriptive
          text between them.
 
-    An intent phrase directly negated ("not in favor of option 2") is
-    not a vote. A qualifier later in the same sentence ("… my second
-    choice") keeps the vote but at "low" confidence.
+    An intent phrase directly negated ("not in favor of option 2"), or
+    negated between the intent and the marker ("preference is not option
+    2"), is not a vote. A qualifier later in the same sentence ("… my
+    second choice"), or a hedge between intent and marker, keeps the vote
+    but at "low" confidence.
 
     The choice is uppercased ("Option 2" / "#2" / "I want 2" → "2";
     "option b" → "B") so the renderer can aggregate by choice. The choice
@@ -202,8 +211,14 @@ def extract_poll_choice(
     for marker in _POLL_MARKER_RE.finditer(text):
         window_start = max(0, marker.start() - _POLL_INTENT_WINDOW)
         preceding = text[window_start : marker.start()]
-        if first_unnegated(_POLL_INTENT_RE, preceding) is not None:
-            choice = (marker.group("m_word") or marker.group("m_hash") or "").upper()
-            if choice:
-                return (choice, marker, _poll_confidence(text, marker))
+        intent = first_unnegated(_POLL_INTENT_RE, preceding)
+        if intent is None:
+            continue
+        between = preceding[intent.end() :]
+        if _NEGATION_IN_SPAN_RE.search(between):
+            continue
+        choice = (marker.group("m_word") or marker.group("m_hash") or "").upper()
+        if choice:
+            conf = "low" if HEDGE_RE.search(between) else _poll_confidence(text, marker)
+            return (choice, marker, conf)
     return None

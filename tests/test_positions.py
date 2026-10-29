@@ -730,3 +730,57 @@ def test_poll_section_carries_confidence_and_low_coverage_caveat() -> None:
     positions, summary = tally_thread(_poll_thread().replace("Option 1.", "Hmm."))
     out = render_tally("threads/poll.md", positions, summary)
     assert "Coverage is low (20%)" in out
+
+
+# --- reviewer follow-ups on #300 ------------------------------------------
+
+
+def test_capitalised_support_idioms_are_low_confidence_votes() -> None:
+    for body in (
+        "Support for -04 as Proposed Standard.\n",
+        "Support -\n",
+        "support adopting this work.\n",
+        "support publication of a standards-track document.\n",
+        "support the draft.\n",
+    ):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert (label, conf) == ("support", "low"), body
+    # The verb uses from #300 stay out.
+    for body in (
+        "support FTP URIs nowadays ;-)\n",
+        "support for sf-date?\n",
+        "support the same use cases.\n",
+        "support it. This is not equivalent to :scheme\n",
+    ):
+        assert extract_position(body)[0] == "no-position", body
+
+
+def test_agreeing_with_something_negative_is_not_high_support() -> None:
+    for body in (
+        "I agree that this is a terrible idea and should be dropped.\n",
+        "I agree with Martin that this is a terrible idea.\n",
+        "I agree with the objections raised so far.\n",
+    ):
+        label, conf, _excerpt, _poll = extract_position(body)
+        assert (label, conf) == ("support", "low"), body
+
+
+def test_negation_between_poll_intent_and_marker() -> None:
+    for body in (
+        "My preference is not option 2.\n",
+        "My preference isn't #2.\n",
+        "Definitely not option 2 for me.\n",
+    ):
+        label, _conf, _excerpt, choice = extract_position(body)
+        assert label != "poll" and choice is None, body
+    label, conf, _excerpt, choice = extract_position(
+        "My preference, however unpopular, is option 2.\n"
+    )
+    assert (label, conf, choice) == ("poll", "low", "2")
+
+
+def test_abbreviation_does_not_end_the_hedge_scope() -> None:
+    label, conf, _excerpt, _poll = extract_position(
+        "I support adoption, e.g. as in 3.2, but not in 4.\n"
+    )
+    assert (label, conf) == ("support", "low")
