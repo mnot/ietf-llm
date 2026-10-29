@@ -77,8 +77,11 @@ service, a gateway, a self-hosted vLLM / TEI) works; the URL and token are all t
 | `IETF_LLM_EMBED_HEADERS` | extra request headers as a JSON object (e.g. an API-gateway header alongside the token) |
 | `IETF_LLM_EMBED_BATCH` | inputs per request (default 96) |
 | `IETF_LLM_EMBED_TIMEOUT` | per-request timeout, seconds (default 10) |
-| `IETF_LLM_EMBED_RETRIES` | retries on `429` / `5xx`, with backoff (default 3) |
+| `IETF_LLM_EMBED_RETRIES` | retries on `429` / `5xx` for bulk ingest, with backoff (default 3) |
+| `IETF_LLM_EMBED_QUERY_RETRIES` | retries for the single query-time embed behind a search, capped at `IETF_LLM_EMBED_RETRIES` (default 1) |
 | `IETF_LLM_EMBED_CONCURRENCY` | files embedded in parallel during a gather (default 8, floor 1 = serial) |
+
+A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out: the request fails at once instead of tying up a worker thread.
 
 The token comes from the environment only and is never written to disk. Bulk ingest batches to
 `IETF_LLM_EMBED_BATCH` inputs per request and backs off on rate-limit / server errors. Because each
@@ -131,6 +134,8 @@ non-OpenAI providers remain available that way.
 | `IETF_LLM_SUMMARIZE_HEADERS` | extra request headers as a JSON object (e.g. an API-gateway header alongside the token) |
 | `IETF_LLM_SUMMARIZE_TIMEOUT` | per-request timeout, seconds (default 30) |
 | `IETF_LLM_SUMMARIZE_RETRIES` | retries on `429` / `5xx`, with backoff (default 3) |
+
+A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out: the request fails at once instead of tying up a worker thread.
 
 The token comes from the environment only and is never written to disk. Unlike the embedding model,
 the summariser id is **not** recorded in any index — summaries are plain text in the cache — so

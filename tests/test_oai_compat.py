@@ -8,6 +8,7 @@ env_float coercers.
 from __future__ import annotations
 
 import pytest
+import requests
 from types import SimpleNamespace
 
 from ietf_llm.embeddings import oai_compat
@@ -67,6 +68,80 @@ def test_backoff_jitters_on_exponential_path(monkeypatch):
     slept = _capture_backoff(monkeypatch, jitter=0.4)
     oai_compat._sleep_backoff(2, None)
     assert slept == [4.4]
+
+
+def test_backoff_refuses_retry_after_beyond_cap(monkeypatch):
+    # An hour-long Retry-After must not be slept on (it would pin a worker
+    # thread); the caller is told to give up instead.
+    slept = _capture_backoff(monkeypatch)
+    resp = _Resp(429)
+    resp.headers = {"Retry-After": "3600"}
+    assert oai_compat._sleep_backoff(0, resp) is False
+    assert slept == []
+    # Within the cap it sleeps, and the cap is per call.
+    resp.headers = {"Retry-After": "45"}
+    assert oai_compat._sleep_backoff(0, resp, 30.0) is False
+    assert oai_compat._sleep_backoff(0, resp, 60.0) is True
+    assert slept == [45.4]
+
+
+def test_post_gives_up_at_once_on_oversized_retry_after(monkeypatch):
+    slept = _capture_backoff(monkeypatch)
+    calls = {"n": 0}
+
+    def fake(url, headers, json, timeout):
+        calls["n"] += 1
+        resp = _Resp(429)
+        resp.headers = {"Retry-After": "3600"}
+        return resp
+
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
+    with pytest.raises(Exception):
+        oai_compat.post_json_with_retry(
+            "https://host/v1/embeddings", {}, {}, timeout=5.0, max_retries=3,
+        )
+    assert calls["n"] == 1 and slept == []
+
+
+def test_backoff_refuses_retry_after_beyond_cap(monkeypatch):
+    # An hour-long Retry-After must not be slept on (it would pin a worker
+    # thread); the caller is told to give up instead.
+    slept = _capture_backoff(monkeypatch)
+    resp = _Resp(429)
+    resp.headers = {"Retry-After": "3600"}
+    assert oai_compat._sleep_backoff(0, resp) is False
+    assert slept == []
+    # Within the cap it sleeps, and the cap is per call.
+    resp.headers = {"Retry-After": "45"}
+    assert oai_compat._sleep_backoff(0, resp, 30.0) is False
+    assert oai_compat._sleep_backoff(0, resp, 60.0) is True
+    assert slept == [45.4]
+
+
+def test_post_gives_up_at_once_on_oversized_retry_after(monkeypatch):
+    slept = _capture_backoff(monkeypatch)
+    calls = {"n": 0}
+
+    def _raise_429():
+        raise requests.HTTPError("429")
+
+    def fake(url, headers, json, timeout):
+        calls["n"] += 1
+        resp = _Resp(429)
+        resp.headers = {"Retry-After": "3600"}
+        resp.raise_for_status = _raise_429
+        return resp
+
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
+    with pytest.raises(requests.HTTPError):
+        oai_compat.post_json_with_retry(
+            "https://host/v1/embeddings", {}, {}, timeout=5.0, max_retries=3,
+        )
+    assert calls["n"] == 1 and slept == []
 
 
 def test_build_headers_bearer_and_map():
