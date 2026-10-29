@@ -192,3 +192,81 @@ def test_synthetic_corpus_with_no_list_is_not_noted(tmp_path):
         == []
     )
     assert notes == []
+
+
+# --- FETCH batches that don't deliver ----------------------------------------
+
+
+class _FetchImap:
+    """IMAP4_SSL stand-in for a real `_imap_sync_attempt` (so `_download_batches`
+    runs). `fetch_plan` is consumed one entry per FETCH, then repeats "ok":
+    "ok", "no" (a `NO` reply), or "drop-last" (an OK reply that omits the final
+    UID of the batch)."""
+
+    def __init__(self, uids, fetch_plan):
+        self._uids = uids
+        self._plan = list(fetch_plan)
+        self.fetches = 0
+
+    def login(self, *_a):
+        return ("OK", [b""])
+
+    def select(self, *_a, **_k):
+        return ("OK", [b"1"])
+
+    def response(self, name):
+        return (name, [b"7"])
+
+    def uid(self, command, *args):
+        if command == "search":
+            return ("OK", [b" ".join(str(u).encode() for u in self._uids)])
+        self.fetches += 1
+        mode = self._plan.pop(0) if self._plan else "ok"
+        if mode == "no":
+            return ("NO", [b"try again"])
+        wanted = [int(u) for u in args[0].split(",")]
+        if mode == "drop-last":
+            wanted = wanted[:-1]
+        return ("OK", [(f"{u} (UID {u} RFC822 {{5}}".encode(), f"m{u}".encode()) for u in wanted])
+
+    def logout(self):
+        return ("BYE", [b""])
+
+
+def _sync(monkeypatch, tmp_path, fake):
+    monkeypatch.setattr(mbox, "BATCH_SIZE", 2)
+    monkeypatch.setattr(mbox.imaplib, "IMAP4_SSL", lambda *_a, **_k: fake)
+    notes: list[str] = []
+    uids = mbox._sync_one_list("wg", "wg", 12, Verbosity.QUIET, note_fn=notes.append)
+    cache = tmp_path / "imap-cache" / "wg" / "wg"
+    return uids, notes, cache
+
+
+def test_a_no_on_one_batch_is_retried_and_the_second_pass_fills_it(monkeypatch, tmp_path):
+    fake = _FetchImap([1, 2, 3, 4, 5], ["ok", "no"])  # batch 2 of 3 refused once
+    uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
+    assert uids == ["1", "2", "3", "4", "5"]
+    assert sorted(p.name for p in cache.glob("*.eml")) == [f"{n}.eml" for n in range(1, 6)]
+    assert len(notes) == 1 and "5 message(s)" in notes[0] and "could not" not in notes[0]
+    assert mbox.verified_uidvalidity(str(cache)) == "7"
+
+
+def test_a_batch_refused_every_time_is_reported_and_not_verified(monkeypatch, tmp_path):
+    # Batches {1,2} {3,4} {5}: the middle one is refused on both attempts.
+    fake = _FetchImap([1, 2, 3, 4, 5], ["ok", "no", "ok", "no"])
+    uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
+    assert uids == ["1", "2", "3", "4", "5"]  # the window; what arrived is threaded
+    assert sorted(p.name for p in cache.glob("*.eml")) == ["1.eml", "2.eml", "5.eml"]
+    assert len(notes) == 1
+    assert "2 message(s)" in notes[0] and "could not be fetched" in notes[0]
+    assert "5 message(s) in" not in notes[0]  # not reported as a clean sync
+    assert mbox.verified_uidvalidity(str(cache)) is None
+    assert not (cache / mbox.VERIFIED_FILE).exists()
+
+
+def test_an_ok_reply_that_omits_a_uid_counts_as_short(monkeypatch, tmp_path):
+    fake = _FetchImap([1, 2, 3], ["drop-last", "drop-last", "drop-last", "drop-last"])
+    uids, notes, cache = _sync(monkeypatch, tmp_path, fake)
+    assert uids == ["1", "2", "3"]
+    assert len(notes) == 1 and "could not be fetched" in notes[0]
+    assert mbox.verified_uidvalidity(str(cache)) is None

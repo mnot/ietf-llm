@@ -1508,7 +1508,9 @@ unit only when this gather's sync confirmed the local epoch with the server
 sidecar: the sync runs in the gather child, so the confirmation has to cross the
 process boundary as a file, and hydrate deletes it at the start of every gather so
 a stale one can't vouch for a check this gather never made); a differing,
-unconfirmed epoch -- a warm host whose IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+unconfirmed epoch -- a warm host whose IMAP sync failed, or one whose FETCHes
+left some requested messages unwritten after the retry (the sync deletes the
+sidecar and notes the shortfall) -- leaves the store alone. When it does replace, it first makes
 sure the old epoch's mail is stored as an archive unit (filling the local
 `epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
 list if that fails), then invalidates the old index before touching the chunks,
