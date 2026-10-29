@@ -168,7 +168,8 @@ user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
 room, not a decision — consensus is the chair's to declare — and
 `tally_positions` rows, poll choices included, are keyword matches with a
-confidence tag, not a read of the messages: check them against the text.
+confidence tag, not a read of the messages: check them against the text, and
+quote its high- and low-confidence counts separately, never as one total.
 
 **A draft is bigger than one result.** `get_draft(name)` returns its
 **outline** — every section with its title and length — and

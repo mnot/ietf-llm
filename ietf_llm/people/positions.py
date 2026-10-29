@@ -46,6 +46,7 @@ from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 from ..paths import digest_path
 from .poll_choice import (
     HEDGE_RE,
+    contrast_follows,
     extract_poll_choice,
     first_unnegated,
     rest_of_sentence,
@@ -175,7 +176,7 @@ def _support_confidence(match: re.Match[str], text: str) -> str:
     if match.group("agree") and not match.group("agree_ok"):
         return "low"
     rest = rest_of_sentence(text, match.end())
-    if HEDGE_RE.search(rest):
+    if HEDGE_RE.search(rest) or contrast_follows(text, match.end()):
         return "low"
     if match.group("agree") and _NEGATIVE_AGREE_RE.search(rest):
         return "low"
@@ -570,6 +571,15 @@ def _render_poll_section(
     return out
 
 
+def _confidence_split(positions: List[Position], label: str) -> Tuple[int, int]:
+    """(high, low) counts for `label`. Low-confidence rows are hedged or
+    idiom-only matches, so they are reported beside the high count, never
+    folded into one headline number."""
+    rows = [p for p in positions if p.label == label]
+    low = sum(1 for p in rows if p.confidence == "low")
+    return len(rows) - low, low
+
+
 def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     file: str,
     positions: List[Position],
@@ -584,8 +594,6 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
     Either or both may be empty; missing entries are silently skipped.
     """
     total = len(positions)
-    s_count = summary.get("support", 0)
-    o_count = summary.get("oppose", 0)
     c_count = summary.get("conditional", 0)
     n_count = summary.get("no-position", 0)
     coverage_pct = int(100 * (total - n_count) / total) if total else 0
@@ -618,9 +626,15 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             "the counts to mean anything (see warning above; read the messages)._"
         )
     else:
-        out.append(f"- Support: **{s_count}**")
+        s_high, s_low = _confidence_split(positions, "support")
+        o_high, o_low = _confidence_split(positions, "oppose")
+        out.append(
+            f"- Support: **{s_high}** high confidence, **{s_low}** low confidence"
+        )
         out.append(f"- Conditional: **{c_count}**  (yes-but-only-if)")
-        out.append(f"- Oppose: **{o_count}**")
+        out.append(
+            f"- Oppose: **{o_high}** high confidence, **{o_low}** low confidence"
+        )
     if p_count:
         p_low = sum(1 for p in positions if p.label == "poll" and p.confidence == "low")
         low_note = f", {p_low} low confidence" if p_low else ""
@@ -672,7 +686,12 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
         # At low coverage the aggregate count is withheld in the summary; drop
         # it from the section header too so a quotable number does not leak here
         # while the grounded per-author rows below still show.
-        count = "" if _is_low_coverage(total, coverage_pct) else f" ({len(rows)})"
+        high, low = _confidence_split(positions, label)
+        count = (
+            ""
+            if _is_low_coverage(total, coverage_pct)
+            else f" ({high} high, {low} low)" if low else f" ({high})"
+        )
         out.append(f"## {title}{count}\n")
         for pos in rows:
             tag_bits: List[str] = []
