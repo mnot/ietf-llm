@@ -215,3 +215,15 @@ def test_chunks_large_address_lists(
     assert len(out) == 120
     # 120 addresses at 50/chunk → 3 requests.
     assert len(calls) == 3
+
+
+def test_hit_beats_a_newer_miss_on_merge_in_either_order() -> None:
+    hit = {"person": "/api/v1/person/person/1/", "fetched_at": "2026-02-01T00:00:00Z"}
+    miss = {"person": None, "fetched_at": "2026-03-01T00:00:00Z"}
+    assert dtp.merge_cache({"a": hit}, {"a": miss})["a"] == hit
+    assert dtp.merge_cache({"a": miss}, {"a": hit})["a"] == hit
+    newer = {
+        "person": "/api/v1/person/person/2/",
+        "fetched_at": "2026-04-01T00:00:00Z",
+    }
+    assert dtp.merge_cache({"a": hit}, {"a": newer})["a"] == newer

@@ -5,9 +5,9 @@ Each cache module owns its path and its merge function. This owns the atomic
 write and the locked reload-merge-save that keeps the runner's concurrent
 same-process gathers from clobbering each other's local additions before they
 reach the store (issue #82 review). It also provides the common building blocks
-the keep-`None` caches share — `load` (parse, keeping `None` "confirmed-absent"
-markers), `union_newer_by_stamp` (the stamp-wins union their `merge_cache`
-functions are built on), and `now_iso` — so those modules don't each re-spell
+the datatracker caches share — `load` (parse, keeping any `None` notes),
+`union_newer_by_stamp` (the stamp-wins union their `merge_cache` functions are
+built on), `now_iso` and `is_expired` — so those modules don't each re-spell
 them. (`_github-users.json` keeps its own load/merge: it drops non-dict entries,
 different semantics.)
 """
@@ -30,9 +30,9 @@ LoadFn = Callable[[], Dict[str, Any]]
 
 def load(path: str) -> Dict[str, Any]:
     """Parse a cache file, returning `{}` on any read / parse error or a
-    non-dict top level. Keeps `None`-valued entries (the "confirmed-absent"
-    markers the datatracker caches store), so a recorded miss survives a
-    reload."""
+    non-dict top level. Keeps `None`-valued entries (the unstamped misses of
+    older caches, and the github cache's "not in the index" notes), so they
+    survive a reload."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -53,7 +53,7 @@ def union_newer_by_stamp(
     skip: FrozenSet[str] = frozenset(),
 ) -> Dict[str, Any]:
     """Union two identity maps, keeping the entry with the newer `fetched_at`
-    on a key both hold — so a stamped real resolution beats a bare `None` miss.
+    on a key both hold — so a stamped entry beats a bare `None`.
     Concurrent fleet gathers each add disjoint keys, so the union is what makes
     the round-trip lossless. `into` seeds the result for a caller that handles
     some keys specially first; `skip` names the keys to leave to that caller."""

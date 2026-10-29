@@ -1084,3 +1084,16 @@ def test_one_bad_reference_does_not_abort_the_index(isolated_home: Path) -> None
     out = data.outbound_refs("RFC9786")
     assert out["normative"] == ["RFC9785"]  # the junk is dropped, not blank
     assert len(data.inbound_refs("RFC9785")) == 1
+
+
+def test_load_rekeys_on_a_replace_within_the_same_mtime(isolated_home: Path) -> None:
+    rfc_dir = _seed(isolated_home)
+    first = rfcs._load()  # pylint: disable=protected-access
+    path = rfc_dir / "refs.json"
+    before = path.stat()
+    new_refs = {"100": {"normative": ["200"], "informative": []}}
+    path.write_text(json.dumps(new_refs), encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))  # same tick
+    second = rfcs._load()  # pylint: disable=protected-access
+    assert second is not first
+    assert second is not None and second.refs == new_refs

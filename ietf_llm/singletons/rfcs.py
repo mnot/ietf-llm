@@ -214,7 +214,7 @@ class RfcData:
 
 # --- Memoised load (mtime-keyed so a re-gather is picked up live) ---------
 
-_CACHE: Optional[Tuple[Tuple[int, ...], RfcData]] = None
+_CACHE: Optional[Tuple[Tuple[Tuple[int, int, int], ...], RfcData]] = None
 
 
 def _load() -> Optional[RfcData]:
@@ -229,7 +229,10 @@ def _load() -> Optional[RfcData]:
     """
     global _CACHE  # pylint: disable=global-statement
     try:
-        key = tuple(os.stat(_rfc_file(name)).st_mtime_ns for name in RFC_FILES)
+        stats = [os.stat(_rfc_file(name)) for name in RFC_FILES]
+        # Inode and size too: an atomic replace within one mtime tick is
+        # still a different file.
+        key = tuple((st.st_mtime_ns, st.st_ino, st.st_size) for st in stats)
     except OSError:
         _CACHE = None
         return None

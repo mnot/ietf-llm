@@ -285,3 +285,94 @@ def test_refreshes_per_run_are_capped(
     out = dtg.resolve_via_datatracker(logins, verbose=Verbosity.QUIET)
     assert len(out) == n  # the unrefreshed ones still answer from the cache
     assert len([c for c in calls if "/email/" in c]) == cap
+
+
+def test_entries_missing_from_the_index_do_not_starve_real_refreshes(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = dtg._MAX_REFRESH  # pylint: disable=protected-access
+    old = "2020-01-01T00:00:00Z"
+    gone = [f"gone{i}" for i in range(cap + 10)]
+    cache: dict[str, Any] = {
+        "_index": {"live": "/api/v1/person/person/1/"},
+        "_index_fetched_at": dtg.identity_cache.now_iso(),
+        "live": {"name": "Old Name", "emails": ["old@x.example"], "fetched_at": old},
+    }
+    for login in gone:
+        cache[login] = {"name": "G", "emails": ["g@x.example"], "fetched_at": old}
+    _cache_file().parent.mkdir(parents=True, exist_ok=True)
+    _cache_file().write_text(json.dumps(cache))
+    _stub(
+        monkeypatch,
+        index=[("live", "/api/v1/person/person/1/")],
+        persons={"/api/v1/person/person/1/": "New Name"},
+        emails={"1": ["new@x.example"]},
+    )
+    out = dtg.resolve_via_datatracker(["live", *gone], verbose=Verbosity.QUIET)
+    assert out["live"].name == "New Name"
+    assert out["gone0"].emails == ["g@x.example"]  # kept, not refreshed
+
+
+def test_empty_refresh_keeps_the_good_entry_and_restamps_it(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emails: dict[str, list[str]] = {"1": ["a@x.example"]}
+    persons = {"/api/v1/person/person/1/": "Roberto Polli"}
+    _stub(
+        monkeypatch,
+        index=[("ioggstream", "/api/v1/person/person/1/")],
+        persons=persons,
+        emails=emails,
+    )
+    dtg.resolve_via_datatracker(["ioggstream"], verbose=Verbosity.QUIET)
+    _age_file("ioggstream", 40)
+    emails["1"] = []
+    persons["/api/v1/person/person/1/"] = ""
+    out = dtg.resolve_via_datatracker(["ioggstream"], verbose=Verbosity.QUIET)
+    assert out["ioggstream"].name == "Roberto Polli"
+    entry = json.loads(_cache_file().read_text())["ioggstream"]
+    assert entry["emails"] == ["a@x.example"]
+    assert not dtg.identity_cache.is_expired(entry["fetched_at"])
+
+
+def test_empty_walk_does_not_replace_a_healthy_index(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index = [(f"u{i}", f"/api/v1/person/person/{i}/") for i in range(10)]
+    _stub(monkeypatch, index=index)
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    _age_file("_index_fetched_at", 60)
+    stale = json.loads(_cache_file().read_text())["_index_fetched_at"]
+    del index[:]
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    cache = json.loads(_cache_file().read_text())
+    assert len(cache["_index"]) == 10
+    assert cache["_index_fetched_at"] == stale  # not restamped as fresh
+
+
+def test_multi_page_rebuild_replaces_the_stale_index(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub(monkeypatch, index=[("a", "/api/v1/person/person/1/")])
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    _age_file("_index_fetched_at", 60)
+
+    def pages(path: str, timeout: float = 10.0) -> Optional[dict[str, Any]]:  # noqa: ARG001
+        if path.endswith("page2"):
+            return {
+                "objects": [{"value": "c", "person": "/api/v1/person/person/3/"}],
+                "meta": {"next": None},
+            }
+        return {
+            "objects": [
+                {"value": "a", "person": "/api/v1/person/person/1/"},
+                {"value": "b", "person": "/api/v1/person/person/2/"},
+            ],
+            "meta": {"next": "/api/v1/page2"},
+        }
+
+    monkeypatch.setattr(dtg, "_get_json", pages)
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    cache = json.loads(_cache_file().read_text())
+    assert set(cache["_index"]) == {"a", "b", "c"}
+    assert not dtg.identity_cache.is_expired(cache["_index_fetched_at"])

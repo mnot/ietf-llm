@@ -158,8 +158,27 @@ def merge_cache(remote: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]
     """Merge two caches losslessly. Each holds per-address entries (`{person,
     fetched_at}`; `person` is null for a miss, and a legacy bare `None` is an
     unstamped miss). The shared stamp-wins union keeps the newer `fetched_at`
-    on a shared address, so a later answer beats an earlier one."""
-    return identity_cache.union_newer_by_stamp(remote, local)
+    on a shared address, so a later answer beats an earlier one, except that a
+    hit always beats a miss: hits are never re-asked, so a miss that displaced
+    one (a host that got an odd empty response, say) would cost the address
+    its person for a whole TTL."""
+    merged = identity_cache.union_newer_by_stamp(remote, local)
+    for addr, entry in merged.items():
+        if _person_of(entry):
+            continue
+        hits = [
+            e
+            for e in (remote.get(addr), local.get(addr))
+            if isinstance(e, dict) and _person_of(e)
+        ]
+        if hits:
+            merged[addr] = max(hits, key=lambda e: str(e.get("fetched_at", "")))
+    return merged
+
+
+def _person_of(entry: Any) -> Optional[str]:
+    uri = entry.get("person") if isinstance(entry, dict) else None
+    return uri if isinstance(uri, str) else None
 
 
 def _load_cache() -> Dict[str, Any]:

@@ -27,8 +27,8 @@ because the mapping is WG-independent):
   - per-login: `{ "name": ..., "emails": [...], "fetched_at": ... }` —
     the resolved real name and verified emails for a login we actually
     needed, looked up again once older than the TTL (at most
-    `_MAX_REFRESH` per run, so a cache that all aged out together does not
-    become one burst). `null` when the login isn't in the index.
+    `_MAX_REFRESH` entries, so 2x that many requests, per call, so a cache
+    that all aged out together does not become one burst). `null` when the login isn't in the index.
 
 Best-effort throughout: a network error or unexpected response skips
 the login (returns nothing for it) and leaves the cache untouched so
@@ -55,8 +55,9 @@ _INDEX_KEY = "_index"
 _INDEX_STAMP_KEY = "_index_fetched_at"
 _EXTRESOURCE_PATH = "/api/v1/person/personextresource/?name=github_username&limit=100"
 _PERSON_ID_RE = re.compile(r"/person/(\d+)/?$")
-#: Expired per-login entries refreshed per run; the rest keep their old value
-#: until a later run.
+#: Expired per-login entries refreshed per call (two requests each); the rest
+#: keep their old value until a later call. Not a process-wide budget: the
+#: runner gathers corpora concurrently, each making its own call.
 _MAX_REFRESH = 50
 
 
@@ -104,6 +105,7 @@ def resolve_via_datatracker(
     for login in wanted:
         key = login.lower()
         entry = cache.get(key)
+        refreshing = False
         if isinstance(entry, dict):
             out[login] = DTResolved(
                 name=entry.get("name"),
@@ -111,9 +113,7 @@ def resolve_via_datatracker(
             )
             if not identity_cache.is_expired(entry.get("fetched_at")):
                 continue
-            if n_refreshed >= _MAX_REFRESH:
-                continue
-            n_refreshed += 1
+            refreshing = True
         person_uri = index.get(key)
         if not person_uri:
             if key not in cache:
@@ -123,10 +123,26 @@ def resolve_via_datatracker(
                 dirty = True
             # A resolved login that has since left the index keeps its entry.
             continue
+        if refreshing:
+            # Spent only on an entry that makes a request.
+            if n_refreshed >= _MAX_REFRESH:
+                continue
+            n_refreshed += 1
         resolved = _resolve_one(person_uri)
         n_requested += 1
         if resolved is None:
             # Transient failure — don't cache, retry next run.
+            continue
+        if (
+            refreshing
+            and isinstance(entry, dict)
+            and not (resolved.name or resolved.emails)
+            and (entry.get("name") or entry.get("emails"))
+        ):
+            # An empty answer is not evidence that the person lost their
+            # details: keep what we had and restart its clock.
+            entry["fetched_at"] = identity_cache.now_iso()
+            dirty = True
             continue
         cache[key] = {
             "name": resolved.name,
@@ -136,8 +152,6 @@ def resolve_via_datatracker(
         dirty = True
         if resolved.name or resolved.emails:
             out[login] = resolved
-        else:
-            out.pop(login, None)
 
     if dirty:
         _merge_save(cache)
@@ -193,6 +207,10 @@ def _ensure_index(
         pages += 1
         path = (body.get("meta") or {}).get("next") or None
 
+    if existing is not None and len(index) * 2 < len(existing):
+        # An empty or near-empty walk of a healthy index is a bad response,
+        # not a mass un-claiming; keep the old one and try again next run.
+        return existing
     cache[_INDEX_KEY] = index
     cache[_INDEX_STAMP_KEY] = identity_cache.now_iso()
     _merge_save(cache)

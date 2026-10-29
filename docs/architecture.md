@@ -256,8 +256,9 @@ Key invariants:
   corpora (`_datatracker-people.json`, `_datatracker-github.json`); a "not on
   Datatracker" answer and the `github_username` index are re-asked after 30
   days (`identity_cache.TTL_SECONDS`), since people add addresses and profile
-  resources later, and an expired per-login entry is refreshed at most 50 at a
-  time per run. A `Person` carries
+  resources later, and expired per-login entries are refreshed at most 50
+  entries (100 requests) per corpus gather. A hit for an address is kept: it
+  always wins a merge over a miss. A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
