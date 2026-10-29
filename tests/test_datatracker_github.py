@@ -376,3 +376,100 @@ def test_multi_page_rebuild_replaces_the_stale_index(
     cache = json.loads(_cache_file().read_text())
     assert set(cache["_index"]) == {"a", "b", "c"}
     assert not dtg.identity_cache.is_expired(cache["_index_fetched_at"])
+
+
+def test_index_expires_after_seven_days_not_thirty(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[str] = []
+    _stub(monkeypatch, index=[("a", "/api/v1/person/person/1/")], calls=calls)
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    walks = len([c for c in calls if "personextresource" in c])
+    _age_file("_index_fetched_at", 6)
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    assert len([c for c in calls if "personextresource" in c]) == walks
+    _age_file("_index_fetched_at", 8)
+    dtg.resolve_via_datatracker(["zzz"], verbose=Verbosity.QUIET)
+    assert len([c for c in calls if "personextresource" in c]) == walks + 1
+
+
+def test_failed_refresh_backs_off_and_spends_no_slot(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = dtg._MAX_REFRESH  # pylint: disable=protected-access
+    old = "2020-01-01T00:00:00Z"
+    dead = [f"dead{i}" for i in range(cap)]
+    live_uri = "/api/v1/person/person/1/"
+    cache: dict[str, Any] = {
+        "_index": {login: f"/api/v1/person/person/9{i}/" for i, login in enumerate(dead)},
+        "_index_fetched_at": dtg.identity_cache.now_iso(),
+        "live": {"name": "Old", "emails": ["o@x.example"], "fetched_at": old},
+    }
+    cache["_index"]["live"] = live_uri
+    for login in dead:
+        cache[login] = {"name": "D", "emails": ["d@x.example"], "fetched_at": old}
+    _cache_file().parent.mkdir(parents=True, exist_ok=True)
+    _cache_file().write_text(json.dumps(cache))
+    calls: List[str] = []
+    # The dead people's records are gone (404 -> None); `live` resolves.
+    _stub(
+        monkeypatch,
+        index=[],
+        persons={live_uri: "Live Person"},
+        emails={"1": ["n@x.example"]},
+        calls=calls,
+    )
+    logins = [*dead, "live"]
+    out = dtg.resolve_via_datatracker(logins, verbose=Verbosity.QUIET)
+    # The failures kept their old values and were stamped; live was starved
+    # this run by the cap (dead ones came first).
+    assert out["dead0"].emails == ["d@x.example"]
+    stored = json.loads(_cache_file().read_text())
+    assert all("checked_at" in stored[d] for d in dead)
+    assert stored["dead0"]["fetched_at"] == old
+    assert stored["live"]["fetched_at"] == old
+    # Next run: the dead ones are backed off, so they cost no requests and no
+    # slot, and the live one is refreshed.
+    del calls[:]
+    out = dtg.resolve_via_datatracker(logins, verbose=Verbosity.QUIET)
+    assert out["live"].name == "Live Person"
+    assert len([c for c in calls if "/email/" in c]) == 1
+    assert out["dead0"].emails == ["d@x.example"]
+
+
+def test_back_off_ends_after_the_ttl(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uri = "/api/v1/person/person/1/"
+    old = "2020-01-01T00:00:00Z"
+    cache: dict[str, Any] = {
+        "_index": {"a": uri},
+        "_index_fetched_at": dtg.identity_cache.now_iso(),
+        "a": {
+            "name": "Old",
+            "emails": [],
+            "fetched_at": old,
+            "checked_at": (datetime.now(timezone.utc) - timedelta(days=31)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+        },
+    }
+    _cache_file().parent.mkdir(parents=True, exist_ok=True)
+    _cache_file().write_text(json.dumps(cache))
+    _stub(monkeypatch, index=[], persons={uri: "New"}, emails={"1": ["n@x.example"]})
+    out = dtg.resolve_via_datatracker(["a"], verbose=Verbosity.QUIET)
+    assert out["a"].name == "New"
+    assert "checked_at" not in json.loads(_cache_file().read_text())["a"]
+
+
+def test_checked_at_is_harmless_to_older_readers_and_merge() -> None:
+    entry = {
+        "name": "N",
+        "emails": ["e@x.example"],
+        "fetched_at": "2026-01-01T00:00:00Z",
+        "checked_at": "2026-02-01T00:00:00Z",
+    }
+    # An older reader reads name/emails only; a newer resolution still wins.
+    newer = {"name": "M", "emails": [], "fetched_at": "2026-03-01T00:00:00Z"}
+    assert dtg.merge_cache({"a": entry}, {"a": newer})["a"] == newer
+    assert dtg.merge_cache({"a": newer}, {"a": entry})["a"] == newer

@@ -69,10 +69,15 @@ def union_newer_by_stamp(
 _STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 #: How long a recorded answer is trusted before it is looked up again. People
-#: add emails and `github_username` resources over time, so a miss (or the
-#: github_username index) cannot be kept forever; a month keeps the request
-#: volume to Datatracker small.
+#: add emails and `github_username` resources over time, so a miss cannot be
+#: kept forever; a month keeps the request volume to Datatracker small. Also
+#: the back-off after a failed refresh of a resolved entry.
 TTL_SECONDS = 30 * 24 * 3600
+
+#: The `github_username` index is shorter-lived: it is a handful of pages
+#: (mostly 304s), and its age bounds how long a newly claimed login stays
+#: unlinked.
+INDEX_TTL_SECONDS = 7 * 24 * 3600
 
 
 def now_iso() -> str:

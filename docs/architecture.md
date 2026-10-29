@@ -254,11 +254,13 @@ Key invariants:
   collision-free) and linking GitHub logins by each person's Datatracker
   `github_username` profile (`people.linking`). Both lookups are cached across
   corpora (`_datatracker-people.json`, `_datatracker-github.json`); a "not on
-  Datatracker" answer and the `github_username` index are re-asked after 30
-  days (`identity_cache.TTL_SECONDS`), since people add addresses and profile
-  resources later, and expired per-login entries are refreshed at most 50
-  entries (100 requests) per corpus gather. A hit for an address is kept: it
-  always wins a merge over a miss. A `Person` carries
+  Datatracker" answer is re-asked after 30 days (`identity_cache.TTL_SECONDS`)
+  and the `github_username` index after 7 (`INDEX_TTL_SECONDS`), since people
+  add addresses and profile resources later. Resolved per-login entries are
+  refreshed after 30 days, at most 50 entries (100 requests) per corpus gather;
+  a refresh that fails keeps the old value and is not retried for another 30
+  days (`checked_at`). A hit for an address is kept: it always wins a merge
+  over a miss. A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
