@@ -97,7 +97,7 @@ class LiveUnavailable(Exception):
 
 @dataclass
 class _CacheEntry:
-    body: Optional[Dict[str, Any]]
+    body: Dict[str, Any]
     fetched_at: datetime.datetime
     monotonic: float
 
@@ -219,7 +219,7 @@ def _disk_put(
 
 def _stale_entry(
     url: str,
-) -> Optional[Tuple[Optional[Dict[str, Any]], datetime.datetime]]:
+) -> Optional[Tuple[Dict[str, Any], datetime.datetime]]:
     """Any previously-cached `(body, fetched_at)` for `url`, however old.
 
     The fetch-failure fallback: in-process first, then a stale disk entry — the

@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from ..gather.sources.citations import normalize_draft_name
 from .cache import (
@@ -311,7 +312,7 @@ def _iter_group_adopted_drafts(
     prefixes = (f"draft-ietf-{wg}-", f"draft-irtf-{wg}-")
     objects: List[Dict[str, Any]] = []
     url: Optional[str] = (
-        f"{_API_BASE}/doc/document/?group__acronym={wg}&type=draft&limit=200&format=json"
+        f"{_API_BASE}/doc/document/?group__acronym={quote(wg, safe='')}&type=draft&limit=200&format=json"
     )
     fetched = _now_utc()
     pages = 0
