@@ -6,10 +6,12 @@ import html
 import imaplib
 import os
 import re
+import ssl
 from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
 from typing import Callable, Dict, List, NamedTuple, Optional
 
+import certifi
 import requests
 
 from ...atomicio import atomic_open_binary, write_if_changed
@@ -17,6 +19,7 @@ from ...datatracker_api import get_mailing_list_name
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
 from ...paths import get_cache_dir, raw_dir, raw_mail_archive_path
+from ...tls import certificate_error, certificate_hint, system_trust_context
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993
@@ -404,6 +407,22 @@ def _folder_freshness(mail: imaplib.IMAP4_SSL) -> Optional[_FolderFreshness]:
         return None
 
 
+def _imap_ssl_context() -> ssl.SSLContext:
+    """A context that verifies the server certificate and hostname.
+
+    `imaplib.IMAP4_SSL` with no `ssl_context` builds an *unverified* one, so
+    this is never optional. Without the platform trust store (opted out, or
+    unusable here) it is OpenSSL's defaults plus certifi's bundle, which is
+    what `IETF_LLM_SYSTEM_TRUST_STORE=off` promises and the only anchors an
+    image without `ca-certificates` has.
+    """
+    context = system_trust_context()
+    if context is None:
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 def _imap_sync_attempt(
     list_name: str,
     months: Optional[int],
@@ -420,7 +439,9 @@ def _imap_sync_attempt(
     `_FolderSelectError` when the folder can't be selected (not retryable) and
     `imaplib.IMAP4.error` / `OSError` on a connection-level fault the caller may
     retry."""
-    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT)
+    mail = imaplib.IMAP4_SSL(
+        IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT, ssl_context=_imap_ssl_context()
+    )
     try:
         mail.login(IMAP_USER, IMAP_PASS)
         folder = f'"Shared Folders/{list_name}"'
@@ -556,17 +577,19 @@ def _sync_one_list(
             )
             return []
         except (imaplib.IMAP4.error, OSError) as err:
-            if attempt < IMAP_RETRIES:
+            # A certificate that fails verification will fail again.
+            bad_cert = certificate_error(err) is not None
+            if attempt < IMAP_RETRIES and not bad_cert:
                 log(
                     f"  IMAP error on '{list_name}' ({err}); retrying...",
                     verbose,
                     level=LogLevel.WARN,
                 )
                 continue
+            tried = "" if bad_cert else f" after {IMAP_RETRIES + 1} attempts"
             report(
-                f"Mailing list '{list_name}': IMAP sync failed after "
-                f"{IMAP_RETRIES + 1} attempts ({err}); no mail gathered "
-                "this run.",
+                f"Mailing list '{list_name}': IMAP sync failed{tried} "
+                f"({err}){certificate_hint(err)}; no mail gathered this run.",
                 LogLevel.ERROR,
             )
             return []

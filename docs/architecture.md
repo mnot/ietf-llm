@@ -521,7 +521,7 @@ ietf_llm/
 │   ├── drafts.py           # per-draft live status + overview reconciliation
 │   └── reviews.py          # review assignments joined to ballot positions, per revision
 ├── freshness.py            # last-gathered sentinel + staleness warnings
-├── tls.py                  # OS-trust-store SSLContext for our two transports only
+├── tls.py                  # OS-trust-store SSLContext for our transports (requests, urllib, IMAP)
 │                           # (never injected globally -- that breaks boto3/cloud);
 │                           # + recognising a cert-verification failure for error text
 ├── coverage.py             # reader-side window + source inventory (no network)
