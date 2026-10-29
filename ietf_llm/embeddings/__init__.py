@@ -34,6 +34,7 @@ from .models import (
 )
 from .search import Hit, build_index, index_model, related, search
 from .storage import (
+    IndexUnreadable,
     any_indexed_wg,
     chunk_counts,
     chunk_spans,
@@ -53,6 +54,7 @@ __all__ = [
     "DEFAULT_EMBED_MODEL",
     "Chunk",
     "Hit",
+    "IndexUnreadable",
     "any_indexed_wg",
     "build_index",
     "build_topics",
