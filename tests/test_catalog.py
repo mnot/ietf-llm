@@ -456,6 +456,34 @@ def test_writer_304_keeps_catalog_and_touches_mtime(
     assert cat_path.stat().st_mtime > old - 1000
 
 
+def test_writer_refuses_a_truncated_slice(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Datatracker caps limit=0 at 1000 rows; `meta.next` says there were more.
+    _install_stub(
+        monkeypatch,
+        lambda url, hdrs: _FakeResponse(200, _body_for(url), etag='W/"v1"'),
+    )
+    gather_catalog.ensure_catalog_index(force=True)
+    cat_path = (
+        isolated_home / ".cache" / "ietf-llm" / catalog.CATALOG_DIR / "catalog.json"
+    )
+    original = cat_path.read_bytes()
+
+    def truncated(url: str, hdrs: Any) -> _FakeResponse:  # noqa: ARG001
+        body = json.dumps(
+            {"meta": {"limit": 1000, "next": "/api/v1/group/group/?offset=1000"}, "objects": []}
+        ).encode("utf-8")
+        return _FakeResponse(200, body, etag='W/"v2"')
+
+    _install_stub(monkeypatch, truncated)
+    gather_catalog.ensure_catalog_index(force=True)
+    assert cat_path.read_bytes() == original
+    raw = cat_path.parent / "raw-active.json"
+    assert b"offset=1000" not in raw.read_bytes()
+    assert b"v2" not in (cat_path.parent / "raw-active.json.etag").read_bytes()
+
+
 def test_writer_ttl_guard_skips_network(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

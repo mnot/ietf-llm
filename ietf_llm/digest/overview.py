@@ -350,8 +350,12 @@ def _group_facts(cache_dir: str) -> "tuple[Optional[str], Optional[str], List[st
 #: A line of only rule characters (`====`, `----`), as our charter
 #: writer emits under the header. Skipped when picking the excerpt.
 _RULE_LINE_RE = re.compile(r"^[=_-]{3,}$")
-#: The header lines our charter writer prepends.
-_CHARTER_HEADER_RE = re.compile(r"^\s*(Working Group Charter:|Source:)", re.IGNORECASE)
+#: The header lines our charter writer prepends (`gather.sources.charter`).
+_CHARTER_HEADER_RE = re.compile(
+    r"^\s*(Working Group Charter:|Source:|Rechartering in progress:"
+    r"|Note: this charter was never approved)",
+    re.IGNORECASE,
+)
 
 
 def _charter_excerpt(
@@ -375,7 +379,7 @@ def _charter_excerpt(
     paragraphs = re.split(r"\n\s*\n", text.strip())
     for raw in paragraphs:
         # Drop the boilerplate our charter writer prepends — the
-        # `Working Group Charter:` / `Source:` lines and the `===` rule —
+        # header lines (`Working Group Charter:`, `Source:`, a recharter note) and the `===` rule —
         # before measuring. They carry no blank line between them, and
         # the rule alone is 80 chars, so without this the header block
         # clears the length gate and gets returned as the "excerpt".

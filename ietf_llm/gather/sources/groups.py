@@ -41,6 +41,7 @@ from ...net import (
 from ...paths import get_index_dir
 from ...singletons import groups as reader
 from . import _mirror
+from .charter import approved_rev
 from .datatracker_history import chair_changes, chair_event_title
 
 _API = "https://datatracker.ietf.org/api/v1"
@@ -235,31 +236,6 @@ def _plain(text: Any) -> str:
     return " ".join(_TAG_RE.sub("", str(text or "")).split())
 
 
-#: Datatracker charter state `approved`; its URI ends in this id.
-_CHARTER_APPROVED = "88"
-
-
-def _approved_rev(charter: Dict[str, Any]) -> Tuple[str, str]:
-    """`(revision of the approved charter, status)` for a charter document.
-
-    A plain revision (`09`) is an approved charter. A dashed one (`01-05`) is
-    a working revision: with a non-zero base, a recharter is in progress and
-    the approved text is the base revision (`01`); with base `00` the charter
-    was never approved. The status is "" when the document's latest revision
-    is the approved one, else `rechartering` or `unapproved`.
-    """
-    rev = str(charter.get("rev") or "")
-    approved_state = any(
-        _slug(s) == _CHARTER_APPROVED for s in charter.get("states") or []
-    )
-    if not rev or "-" not in rev or approved_state:
-        return rev, ""
-    base = rev.split("-", 1)[0]
-    if base.strip("0"):
-        return base, "rechartering"
-    return rev, "unapproved"
-
-
 def build_groups(
     groups: List[Dict[str, Any]],
     areas: List[Dict[str, Any]],
@@ -279,7 +255,7 @@ def build_groups(
             continue
         area, area_name = parents.get(obj.get("parent") or "", ("", ""))
         charter = revs.get(obj.get("resource_uri")) or {}
-        rev, status = _approved_rev(charter)
+        rev, status = approved_rev(charter)
         out.append(
             {
                 "acronym": acronym,

@@ -272,3 +272,130 @@ def test_download_slide_downloads_when_neither_exists(
     monkeypatch.setattr(meetings, "_download_if_pdf", fake_dl)
     assert _download_slide("https://x/deck.pdf", str(out), Verbosity.QUIET) is True
     assert called["n"] == 1
+
+
+def test_process_cluster_absorbs_the_first_sessions_legacy_dir(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # An un-clustered gather wrote `interim2026httpbis01/` for the first
+    # session; the cluster's date-based dir must receive its slides rather
+    # than the cleanup deleting them.
+    from ietf_llm.paths import get_wg_file_cache_dir  # pylint: disable=import-outside-toplevel
+
+    monkeypatch.setattr(meetings, "_download_slide", lambda *a, **k: False)
+    dest = get_wg_file_cache_dir("httpbis")
+    legacy = Path(dest) / "meetings" / "interim2026httpbis01" / "slides"
+    legacy.mkdir(parents=True)
+    (legacy / "slides-interim-2026-httpbis-01-deck.pdf.txt").write_text("deck")
+    rows = [_row("interim-2026-httpbis-01", "2026-04-14")]
+    clusters = cluster_meetings(rows)
+    for cluster in clusters:
+        meetings._process_cluster(  # pylint: disable=protected-access
+            cluster, "httpbis", dest, Verbosity.QUIET, {}, {}
+        )
+    meetings._cleanup_absorbed_dirs(  # pylint: disable=protected-access
+        dest, clusters, {c.code for c in clusters}
+    )
+    moved = Path(dest) / "meetings" / "interim20260414" / "slides"
+    assert (moved / "slides-interim-2026-httpbis-01-deck.pdf.txt").read_text() == "deck"
+    assert not (Path(dest) / "meetings" / "interim2026httpbis01").exists()
+
+
+# --- _download_if_pdf bounds ----------------------------------------------
+
+
+class _FakeStream:
+    def __init__(self, chunks: List[bytes], headers: Dict[str, str]) -> None:
+        self._chunks = chunks
+        self.headers = headers
+        self.closed = False
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def iter_content(self, chunk_size: int = 8192):  # noqa: ANN201,ARG002
+        yield from self._chunks
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _serve(monkeypatch, stream: _FakeStream) -> None:
+    session = type("S", (), {"get": lambda self, url, **kw: stream})()
+    monkeypatch.setattr(meetings, "http_session", lambda *a, **k: session)
+
+
+def _download(dest: Path) -> bool:
+    return meetings._download_if_pdf(  # pylint: disable=protected-access
+        "https://example.test/deck", str(dest), Verbosity.QUIET
+    )
+
+
+def test_download_writes_a_pdf_within_bounds(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream([b"%PDF", b"-1.4"], {"Content-Type": "application/pdf"})
+    _serve(monkeypatch, stream)
+    dest = tmp_path / "deck.pdf"
+    assert _download(dest)
+    assert dest.read_bytes() == b"%PDF-1.4" and stream.closed
+
+
+def test_download_refuses_a_declared_oversize(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream(
+        [b"x"],
+        {
+            "Content-Type": "application/pdf",
+            "Content-Length": str(meetings.MAX_PDF_BYTES + 1),
+        },
+    )
+    _serve(monkeypatch, stream)
+    dest = tmp_path / "deck.pdf"
+    assert not _download(dest)
+    assert not dest.exists() and stream.closed
+    # A stub stands in, so the next gather does not ask for it again.
+    assert "larger than 50 MB" in (tmp_path / "deck.pdf.txt").read_text()
+
+
+def test_download_abandons_an_undeclared_oversize(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(meetings, "MAX_PDF_BYTES", 10)
+    stream = _FakeStream([b"x" * 6, b"x" * 6], {"Content-Type": "application/pdf"})
+    _serve(monkeypatch, stream)
+    dest = tmp_path / "deck.pdf"
+    assert not _download(dest)
+    # No partial file or leftover temp: only the stub.
+    assert [p.name for p in tmp_path.iterdir()] == ["deck.pdf.txt"] and stream.closed
+
+
+def test_download_abandons_a_slow_transfer(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(meetings, "MAX_PDF_SECONDS", -1.0)
+    stream = _FakeStream([b"x", b"y"], {"Content-Type": "application/pdf"})
+    _serve(monkeypatch, stream)
+    assert not _download(tmp_path / "deck.pdf")
+    # Transient, so no stub: a later gather retries.
+    assert not list(tmp_path.iterdir()) and stream.closed
+
+
+def test_oversize_deck_is_not_requested_twice(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream(
+        [b"x"],
+        {
+            "Content-Type": "application/pdf",
+            "Content-Length": str(meetings.MAX_PDF_BYTES + 1),
+        },
+    )
+    asked: List[str] = []
+    session = type(
+        "S", (), {"get": lambda self, url, **kw: asked.append(url) or stream}
+    )()
+    monkeypatch.setattr(meetings, "http_session", lambda *a, **k: session)
+    for _ in range(2):
+        meetings._download_slide(  # pylint: disable=protected-access
+            "https://example.test/deck", str(tmp_path), Verbosity.QUIET
+        )
+    assert len(asked) == 1
+
+
+def test_download_closes_a_non_pdf_response(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream([b"<html>"], {"Content-Type": "text/html"})
+    _serve(monkeypatch, stream)
+    assert not _download(tmp_path / "d.pdf")
+    assert stream.closed

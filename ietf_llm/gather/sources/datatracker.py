@@ -443,19 +443,27 @@ def fetch_wg_roles(wg: str, verbose: Verbosity = Verbosity.STATUS) -> List[Role]
     a Role with the raw email local-part as the name; we never block
     the gather pipeline on this.
     """
-    roles_body = _get_json(f"{_API_BASE}/group/role/?group__acronym={wg}")
-    if not roles_body or "objects" not in roles_body:
-        log(
-            f"Could not fetch Datatracker roles for {wg}; skipping.",
-            verbose,
-            level=LogLevel.PROGRESS,
-        )
-        return []
+    # Tastypie's default page is 20 rows; follow `meta.next` so a group with
+    # more role rows than that keeps them all. A page that fails mid-way is a
+    # failure of the whole fetch, not a shorter list of roles.
+    role_rows: List[Dict[str, Any]] = []
+    path: Optional[str] = f"{_API_BASE}/group/role/?group__acronym={wg}&limit=200"
+    while path:
+        roles_body = _get_json(path)
+        if not roles_body or "objects" not in roles_body:
+            log(
+                f"Could not fetch Datatracker roles for {wg}; skipping.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            return []
+        role_rows.extend(roles_body["objects"])
+        path = (roles_body.get("meta") or {}).get("next") or None
 
     # First parse every role row, then resolve all the people in one
     # batched query (instead of one GET per person).
     parsed: List[Tuple[str, Optional[str], str]] = []  # (slug, email, person_url)
-    for obj in roles_body["objects"]:
+    for obj in role_rows:
         role_match = _ROLE_NAME_FROM_URL.search(obj.get("name", ""))
         if not role_match:
             continue

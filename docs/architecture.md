@@ -344,7 +344,25 @@ Key invariants:
   text.
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
-  activity in the `--months` window.
+  activity in the `--months` window. Only the document's newest
+  `BallotDocEvent` is read (each position event names its ballot), so a
+  recharter or a re-ballot never folds closed ballots into the tally.
+  Positions from people who are no longer on the IESG or IRSG are listed
+  under "Former balloters" and left out of the tally; the current set
+  comes from the `iesg` (role `ad`) and `irsg` group roles. A ballot whose
+  balloters have all left says so instead of showing a tally.
+  `charter-*` documents get the same treatment and are headed as charter
+  ballots. If the scoping, history or role-list fetch fails, the ballot
+  files are left as the last gather wrote them (a guess at who is current
+  would rewrite them wrongly); only a successful answer of "no activity"
+  removes them. Accepted limitations: a first-ever gather during a
+  role-list outage writes no ballot files; the timeline digest, rebuilt
+  from events, has no ballot rows after a failed gather until the next
+  good one; and the newest ballot is the one with the latest position
+  event, so between a ballot being opened and its first vote the
+  previous ballot still shows. `review_record` applies the newest-ballot
+  rule live, but not the former-balloter rule, so the two can differ on a
+  departed AD's position.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
   version, and vector dimension; a change to any forces a rebuild, and the model
   id is read back at query time to resolve the same backend. The `chunks` table
@@ -589,7 +607,7 @@ ietf_llm/
 │   ├── cli.py                  # build_parser: the `ietf-llm` gather argument parser
 │   ├── sequencer.py            # _gather_one / run_gather: walk one corpus through the gather stages
 │   └── sources/                # stage implementations: one module per thing gathered
-│       ├── charter.py              # charter text artifact (rev from doc API)
+│       ├── charter.py              # charter text artifact (approved rev from doc API; names a recharter proposal)
 │       ├── group_info.py           # group.md: name / status / area / Additional Resources
 │       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
@@ -1041,7 +1059,10 @@ Concretely, the gather layer reads from the API for:
   alternate-archive resource here.
 - **Charter** — revision from the document API, then the published
   plain-text artifact at `www.ietf.org/charter/<doc>-<rev>.txt`
-  (the datatracker doc page is HTML-only).
+  (the datatracker doc page is HTML-only). While a group is rechartering the
+  document's revision is a dashed working draft (`03-02`); `charter.txt`
+  holds the approved base revision (`03`) and a header line names the
+  proposal.
 - **Documents** — WG drafts, RFCs, session polls — via
   `/api/v1/doc/document/?group__acronym=<wg>&type=…`, paginated through
   `datatracker.iter_group_documents`.
@@ -1050,7 +1071,13 @@ Concretely, the gather layer reads from the API for:
   and the linked meeting/material objects (`meetings.get_meeting_links`).
   Material *content* is fetched from its canonical URL
   (`/meeting/<n>/materials/<docname>`) with `Accept: text/markdown`,
-  resolving to the latest rendered markdown / text / PDF.
+  resolving to the latest rendered markdown / text / PDF. A non-`text/*`
+  agenda or minutes (a PDF upload) is written as a one-line pointer, not
+  decoded. Slide PDFs are capped at 50 MB (a stub `.pdf.txt` records an oversize
+  deck so it is not requested again), 120 s per download (the host slot is
+  held throughout) and 300 extracted pages, and each
+  `.pdf.txt` carries a meeting-context header that is refreshed in place
+  (the source `.pdf` may have been dropped).
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
   `datatracker_history.py`). Chair appointments and departures come
@@ -1058,7 +1085,10 @@ Concretely, the gather layer reads from the API for:
   A, B from A"), which carry the names inline and are dated by when the
   Datatracker record was edited, but only for changes since the log began; a
   group's founding chairs have no appointment event. Names are mapped to the
-  people registry's spelling where it holds a clean one.
+  people registry's spelling where it holds a clean one. Ballot fetches
+  return "unreachable" (not "none") on failure, so a Datatracker outage
+  cannot clear the gathered ballot files; their scoping URL carries a
+  day-rounded cutoff so it can revalidate against the ETag cache.
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
