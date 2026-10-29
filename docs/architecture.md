@@ -1065,7 +1065,9 @@ Concretely, the gather layer reads from the API for:
   (`/meeting/<n>/materials/<docname>`) with `Accept: text/markdown`,
   resolving to the latest rendered markdown / text / PDF. A non-`text/*`
   agenda or minutes (a PDF upload) is written as a one-line pointer, not
-  decoded. Slide PDFs are capped at 50 MB and 300 extracted pages, and each
+  decoded. Slide PDFs are capped at 50 MB (a stub `.pdf.txt` records an oversize
+  deck so it is not requested again), 120 s per download (the host slot is
+  held throughout) and 300 extracted pages, and each
   `.pdf.txt` carries a meeting-context header that is refreshed in place
   (the source `.pdf` may have been dropped).
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,

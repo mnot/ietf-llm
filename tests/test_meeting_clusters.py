@@ -351,6 +351,8 @@ def test_download_refuses_a_declared_oversize(tmp_path: Path, monkeypatch) -> No
     dest = tmp_path / "deck.pdf"
     assert not _download(dest)
     assert not dest.exists() and stream.closed
+    # A stub stands in, so the next gather does not ask for it again.
+    assert "larger than 50 MB" in (tmp_path / "deck.pdf.txt").read_text()
 
 
 def test_download_abandons_an_undeclared_oversize(tmp_path: Path, monkeypatch) -> None:
@@ -359,8 +361,37 @@ def test_download_abandons_an_undeclared_oversize(tmp_path: Path, monkeypatch) -
     _serve(monkeypatch, stream)
     dest = tmp_path / "deck.pdf"
     assert not _download(dest)
-    # No partial file, and no leftover temp.
+    # No partial file or leftover temp: only the stub.
+    assert [p.name for p in tmp_path.iterdir()] == ["deck.pdf.txt"] and stream.closed
+
+
+def test_download_abandons_a_slow_transfer(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(meetings, "MAX_PDF_SECONDS", -1.0)
+    stream = _FakeStream([b"x", b"y"], {"Content-Type": "application/pdf"})
+    _serve(monkeypatch, stream)
+    assert not _download(tmp_path / "deck.pdf")
+    # Transient, so no stub: a later gather retries.
     assert not list(tmp_path.iterdir()) and stream.closed
+
+
+def test_oversize_deck_is_not_requested_twice(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream(
+        [b"x"],
+        {
+            "Content-Type": "application/pdf",
+            "Content-Length": str(meetings.MAX_PDF_BYTES + 1),
+        },
+    )
+    asked: List[str] = []
+    session = type(
+        "S", (), {"get": lambda self, url, **kw: asked.append(url) or stream}
+    )()
+    monkeypatch.setattr(meetings, "http_session", lambda *a, **k: session)
+    for _ in range(2):
+        meetings._download_slide(  # pylint: disable=protected-access
+            "https://example.test/deck", str(tmp_path), Verbosity.QUIET
+        )
+    assert len(asked) == 1
 
 
 def test_download_closes_a_non_pdf_response(tmp_path: Path, monkeypatch) -> None:

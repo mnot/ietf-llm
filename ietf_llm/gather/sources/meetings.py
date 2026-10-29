@@ -3,13 +3,14 @@ import json
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
-from ...atomicio import atomic_open_binary, write_if_changed
+from ...atomicio import atomic_open, atomic_open_binary, write_if_changed
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, http_session
 from ...net.http_governor import host_slot
@@ -652,14 +653,29 @@ def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
 #: only stops a pathological upload from filling the cache.
 MAX_PDF_BYTES = 50 * 1024 * 1024
 
+#: Wall-clock budget for one slide download. The per-host slot is held for the
+#: whole transfer and `timeout` only bounds each read, so a server that
+#: trickles bytes could otherwise pin one of datatracker's slots indefinitely.
+MAX_PDF_SECONDS = 120.0
+
+
+class _Abandon(Exception):
+    """A download that exceeded a bound; `oversize` marks a size breach."""
+
+    def __init__(self, oversize: bool) -> None:
+        super().__init__()
+        self.oversize = oversize
+
 
 def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
-    """Download `url` to `dest_path` if it serves a PDF no larger than
-    `MAX_PDF_BYTES`; returns True if it was written.
+    """Download `url` to `dest_path` if it serves a PDF within `MAX_PDF_BYTES`
+    and `MAX_PDF_SECONDS`; returns True if it was written.
 
-    The body is streamed so the size can be bounded, which means the per-host
-    slot (normally held by `governed_get` only until it returns) is held here
-    across the transfer instead."""
+    The body is streamed so it can be bounded, which means the per-host slot
+    (normally held by `governed_get` only until it returns) is held here
+    across the transfer instead. A deck over the size cap leaves a stub
+    `.pdf.txt` so later gathers do not request it again."""
+    deadline = time.monotonic() + MAX_PDF_SECONDS
     try:
         with host_slot(url):
             res = http_session().get(
@@ -671,20 +687,25 @@ def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
                 if "application/pdf" not in c_type:
                     return False
                 if _too_big(res.headers.get("Content-Length")):
-                    log(
-                        f"Skipping oversized PDF: {url}",
-                        verbose,
-                        level=LogLevel.PROGRESS,
-                    )
-                    return False
+                    raise _Abandon(oversize=True)
                 log(
                     f"Downloading PDF: {dest_path}...",
                     verbose,
                     level=LogLevel.PROGRESS,
                 )
-                return _write_bounded(res, dest_path, url, verbose)
+                _write_bounded(res, dest_path, deadline)
+                return True
             finally:
                 res.close()
+    except _Abandon as bound:
+        log(
+            f"Skipping {'oversized' if bound.oversize else 'too slow'} PDF: {url}",
+            verbose,
+            level=LogLevel.PROGRESS,
+        )
+        if bound.oversize:
+            _mark_oversize(dest_path, url)
+        return False
     except (requests.RequestException, OSError):
         return False
 
@@ -696,28 +717,33 @@ def _too_big(content_length: Optional[str]) -> bool:
         return False
 
 
-class _TooLarge(Exception):
-    pass
-
-
-def _write_bounded(
-    res: requests.Response, dest_path: str, url: str, verbose: Verbosity
-) -> bool:
-    """Stream `res` to `dest_path`, abandoning the file (nothing is left under
-    the final name) if more than `MAX_PDF_BYTES` arrive. Needed because
-    Content-Length may be absent or wrong."""
+def _write_bounded(res: requests.Response, dest_path: str, deadline: float) -> None:
+    """Stream `res` to `dest_path`; raises `_Abandon` (leaving nothing under
+    the final name) past `MAX_PDF_BYTES` or `deadline`. Content-Length may be
+    absent or wrong, so the bytes are counted as they arrive."""
     written = 0
+    with atomic_open_binary(dest_path) as pdf_fh:
+        for chunk in res.iter_content(chunk_size=8192):
+            written += len(chunk)
+            if written > MAX_PDF_BYTES:
+                raise _Abandon(oversize=True)
+            if time.monotonic() > deadline:
+                raise _Abandon(oversize=False)
+            pdf_fh.write(chunk)
+
+
+def _mark_oversize(pdf_path: str, url: str) -> None:
+    """Write the `.pdf.txt` stub that stands in for a deck that was too large
+    to fetch; `_download_slide` treats it as already handled."""
+    name = os.path.basename(pdf_path)
     try:
-        with atomic_open_binary(dest_path) as pdf_fh:
-            for chunk in res.iter_content(chunk_size=8192):
-                written += len(chunk)
-                if written > MAX_PDF_BYTES:
-                    raise _TooLarge()
-                pdf_fh.write(chunk)
-    except _TooLarge:
-        log(f"Skipping oversized PDF: {url}", verbose, level=LogLevel.PROGRESS)
-        return False
-    return True
+        with atomic_open(pdf_path + ".txt") as fh:
+            fh.write(
+                f"# {name}\n\n\n_Deck not downloaded: larger than "
+                f"{MAX_PDF_BYTES // (1024 * 1024)} MB. Source: {url}_\n"
+            )
+    except OSError:
+        pass
 
 
 def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
