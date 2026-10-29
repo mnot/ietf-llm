@@ -912,18 +912,20 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         # dead CPU on a no-op re-gather or a seeded corpus whose delta was zero
         # (issue #190).
         tracker.begin("topic map")
-        if index_changed or not has_topics(args.wg):
-            try:
-                # Cluster the index just built, not the published version a
-                # cloud store would otherwise stage for reads.
-                with index_reads_from_workspace():
+        try:
+            # The skip decision and the clustering both read the index; they
+            # must see the one just built, not the published version a cloud
+            # store would otherwise stage for reads. Keep any index-reading
+            # check (e.g. a staleness test) inside this block.
+            with index_reads_from_workspace():
+                if index_changed or not has_topics(args.wg):
                     generate_topics(args.wg, verbose=verbosity)
-            except Exception as err:  # pylint: disable=broad-except
-                log(
-                    f"Topic map skipped ({type(err).__name__}: {err}).",
-                    verbosity,
-                    level=LogLevel.PROGRESS,
-                )
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"Topic map skipped ({type(err).__name__}: {err}).",
+                verbosity,
+                level=LogLevel.PROGRESS,
+            )
 
     # Record successful gather so freshness checks (export warning,
     # MCP staleness banner) know when to nag. Best-effort; never fatal.

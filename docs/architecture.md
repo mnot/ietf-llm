@@ -370,11 +370,13 @@ Key invariants:
   exists — `build_index` returns whether anything was embedded or pruned, so a
   no-op re-gather (or a seeded corpus whose delta was zero) doesn't re-cluster for
   nothing (#190).
-  The stage reads the index the gather just built, under
-  `storage.index_reads_from_workspace()` (a `ContextVar`, so it is per-thread and
-  per-task): on the cloud store the ordinary read path would stage the previously
-  *published* version, clustering last gather's corpus and downloading it for
-  nothing.
+  The stage (its skip decision and the clustering) reads the index the gather
+  just built, under `storage.index_reads_from_workspace()` (a `ContextVar`, so it
+  is per-thread and per-task): on the cloud store the ordinary read path would
+  resolve to the previously *published* version, so the themes would cluster
+  last gather's corpus, and the version would be staged a second time (the
+  workspace was already seeded from it). Any new index-reading check in this
+  stage belongs inside that wrapper.
 - **The centroids are reused, reader-side, for two cross-corpus jobs.**
   *Centroid routing* (`corpus/routing.py`, the `which_corpus` tool) scores each corpus
   as the max cosine of the query against its centroids and abstains below a

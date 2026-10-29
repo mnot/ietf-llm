@@ -238,18 +238,57 @@ def test_context_does_not_leak_across_tasks() -> None:
 # --- wiring ----------------------------------------------------------------
 
 
-def test_gather_runs_topic_step_inside_the_wrapper(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+def test_gather_one_topic_step_reads_workspace_on_cloud(
+    isolated_home: Path, cloud: _SpyStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`_gather_one` (the CLI and the in-session gather child both reach it)
-    calls `generate_topics` with the workspace-read flag set, and clears it."""
+    drives the topic step against a stale published version: the sidecar
+    reflects the workspace corpus and nothing is staged for it. The skip
+    decision (`has_topics`, and any index-reading check added beside it) must
+    also run inside the wrapper, so it records the flag when it is consulted."""
+    _publish_v1_then_grow(isolated_home, cloud)
     _stub_pipeline(monkeypatch, (False, True))
     flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
-    observed: List[bool] = []
+    decision_flag: List[bool] = []
+    real_has_topics = main_mod.has_topics
+
+    def _has_topics(wg: str) -> bool:
+        decision_flag.append(flag.get())
+        return real_has_topics(wg)
+
+    staged_at: List[int] = []
+    # The workspace index is already rebuilt; "changed" forces the topic step.
     monkeypatch.setattr(
-        main_mod, "generate_topics", lambda *a, **k: observed.append(flag.get())
+        main_mod, "build_index", lambda *a, **k: staged_at.append(cloud.staged) or True
     )
+    monkeypatch.setattr(main_mod, "has_topics", _has_topics)
+    monkeypatch.setattr(
+        main_mod, "record_gather", lambda wg: staged_at.append(cloud.staged)
+    )
+
+    args = main_mod.build_parser().parse_args(["wg"])
+    main_mod._gather_one(args, Verbosity.QUIET)  # pylint: disable=protected-access
+
+    assert _n_docs_written() == 16
+    assert staged_at[0] == staged_at[1], "the topic step staged the published version"
+    assert flag.get() is False
+    # index_changed short-circuits `or`, so the decision need not consult it;
+    # when it does, it must be inside the wrapper.
+    assert all(decision_flag)
+
+
+def test_topic_decision_runs_inside_the_wrapper(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With an unchanged index the decision consults `has_topics`; pin that
+    this read happens with the workspace-read flag set."""
+    _stub_pipeline(monkeypatch, (False, True))
+    flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
+    seen: List[bool] = []
+    monkeypatch.setattr(main_mod, "build_index", lambda *a, **k: False)
+    monkeypatch.setattr(main_mod, "has_topics", lambda wg: seen.append(flag.get()) or True)
+    monkeypatch.setattr(main_mod, "generate_topics", lambda *a, **k: seen.append(False))
     args = main_mod.build_parser().parse_args(["myorg"])
     main_mod._gather_one(args, Verbosity.QUIET)  # pylint: disable=protected-access
-    assert observed == [True]
+    assert seen == [True]  # decision inside; has_topics True -> no clustering
     assert flag.get() is False
