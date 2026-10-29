@@ -298,8 +298,20 @@ def extract_all_pdfs(
             if name.lower().endswith(".pdf.txt"):
                 # Includes decks whose .pdf was dropped, which the
                 # extraction pass below never sees.
-                if refresh_header(os.path.join(dirpath, name), cache_dir):
-                    refreshed += 1
+                txt_file = os.path.join(dirpath, name)
+                try:
+                    if refresh_header(txt_file, cache_dir):
+                        refreshed += 1
+                except OSError as exc:
+                    # Same rule as a failed extraction: one unwritable file
+                    # must not abort the stage.
+                    failed += 1
+                    log(
+                        f"Header refresh failed for "
+                        f"{os.path.relpath(txt_file, cache_dir)}: {exc}",
+                        verbose,
+                        level=LogLevel.STATUS,
+                    )
                 continue
             if not name.lower().endswith(".pdf"):
                 continue

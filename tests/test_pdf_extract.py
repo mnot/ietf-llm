@@ -384,3 +384,19 @@ def test_extraction_stops_at_the_page_cap(
     text = extract_pdf_text(str(big))
     assert "## Page 2" in text and "## Page 3" not in text
     assert "stopped after 2 of 3 pages" in text
+
+
+def test_unwritable_header_does_not_abort_extraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = tmp_path / "aa.pdf.txt"
+    stale.write_text("# aa.pdf\n\n\n## Page 1\n\nbody\n")
+
+    def deny(_path: str, _content: str) -> bool:
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(pdf_extract, "write_if_changed", deny)
+    (tmp_path / "zz.pdf").write_bytes(MINIMAL_PDF)
+    written = extract_all_pdfs(str(tmp_path))
+    # The refresh failed, and the deck after it was still extracted.
+    assert str(tmp_path / "zz.pdf.txt") in written
