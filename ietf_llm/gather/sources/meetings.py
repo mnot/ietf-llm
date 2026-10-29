@@ -95,8 +95,8 @@ class MeetingCluster:
     Datatracker lists each interim *session* as its own row. A
     multi-day interim event (or several sessions on one day) is one
     meeting; we cluster contiguous-date interim rows into a single
-    `MeetingCluster` with one canonical `code` (the earliest
-    session's) and a date span. Numbered IETF meetings are never
+    `MeetingCluster` with one canonical `code` (`interim<YYYYMMDD>` of
+    the earliest session's date) and a date span. Numbered IETF meetings are never
     clustered — each is already one event, in its own singleton
     cluster.
 
@@ -104,7 +104,7 @@ class MeetingCluster:
     matching can ask "does this transcript's date fall in the span?".
     """
 
-    code: str  # canonical safe-code, e.g. "interim2026aipref05"
+    code: str  # canonical safe-code, e.g. "interim20260414"
     start: datetime
     end: datetime
     sessions: List[Dict[str, Any]] = field(default_factory=list)
@@ -490,8 +490,9 @@ def _process_cluster(
     os.makedirs(canonical, exist_ok=True)
 
     # Fold in any pre-existing per-session dirs (migration from the
-    # old one-dir-per-row layout).
-    for session in cluster.sessions[1:]:
+    # old one-dir-per-row layout). Every session's: the canonical code is
+    # date-based, so even the first session's old dir is a different one.
+    for session in cluster.sessions:
         _absorb_meeting_dir(
             meeting_dir(destination, _safe_meeting_code(session["number"])),
             canonical,

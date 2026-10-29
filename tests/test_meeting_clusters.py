@@ -272,3 +272,30 @@ def test_download_slide_downloads_when_neither_exists(
     monkeypatch.setattr(meetings, "_download_if_pdf", fake_dl)
     assert _download_slide("https://x/deck.pdf", str(out), Verbosity.QUIET) is True
     assert called["n"] == 1
+
+
+def test_process_cluster_absorbs_the_first_sessions_legacy_dir(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # An un-clustered gather wrote `interim2026httpbis01/` for the first
+    # session; the cluster's date-based dir must receive its slides rather
+    # than the cleanup deleting them.
+    from ietf_llm.paths import get_wg_file_cache_dir  # pylint: disable=import-outside-toplevel
+
+    monkeypatch.setattr(meetings, "_download_slide", lambda *a, **k: False)
+    dest = get_wg_file_cache_dir("httpbis")
+    legacy = Path(dest) / "meetings" / "interim2026httpbis01" / "slides"
+    legacy.mkdir(parents=True)
+    (legacy / "slides-interim-2026-httpbis-01-deck.pdf.txt").write_text("deck")
+    rows = [_row("interim-2026-httpbis-01", "2026-04-14")]
+    clusters = cluster_meetings(rows)
+    for cluster in clusters:
+        meetings._process_cluster(  # pylint: disable=protected-access
+            cluster, "httpbis", dest, Verbosity.QUIET, {}, {}
+        )
+    meetings._cleanup_absorbed_dirs(  # pylint: disable=protected-access
+        dest, clusters, {c.code for c in clusters}
+    )
+    moved = Path(dest) / "meetings" / "interim20260414" / "slides"
+    assert (moved / "slides-interim-2026-httpbis-01-deck.pdf.txt").read_text() == "deck"
+    assert not (Path(dest) / "meetings" / "interim2026httpbis01").exists()
