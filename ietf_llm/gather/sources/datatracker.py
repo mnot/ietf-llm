@@ -183,7 +183,10 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
         else f"https://datatracker.ietf.org{path_or_url}"
     )
     url = url + ("&format=json" if "?" in url else "?format=json")
+    return _get_url(url, timeout, retry=True)
 
+
+def _get_url(url: str, timeout: float, retry: bool) -> Optional[Dict[str, Any]]:
     cache = _active_http_cache()
     entry = cache.get(url)
 
@@ -206,7 +209,13 @@ def _get_json(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any
 
     if response.status_code == 304:
         http_metrics.record(url, 304, len(response.content))
-        return cached()
+        body = cached()
+        if body is None and entry and retry:
+            # The stored body is gone or unreadable (and now dropped): ask again
+            # unconditionally. None would read as "no data" and end a paged
+            # listing early.
+            return _get_url(url, timeout, retry=False)
+        return body
     try:
         response.raise_for_status()
         result = response.json()

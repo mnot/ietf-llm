@@ -119,7 +119,7 @@ def test_missing_url_is_none(isolated_home: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "junk", ["{broken", "[]", '{"version": 99, "entries": {}}', '{"version": 1}']
+    "junk", ["{broken", "[]", '{"entries": {}}', '{"version": 1}']
 )
 def test_tolerates_a_corrupt_index(isolated_home: Path, junk: str) -> None:
     os.makedirs(_dest())
@@ -132,6 +132,48 @@ def test_tolerates_a_corrupt_index(isolated_home: Path, junk: str) -> None:
     assert _new_cache().get("u") is not None
 
 
+def test_an_index_of_another_version_is_left_untouched(isolated_home: Path) -> None:
+    os.makedirs(_dest())
+    path = os.path.join(_dest(), INDEX_NAME)
+    future = json.dumps({"version": 99, "entries": {"u": {"etag": "e"}}})
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(future)
+    stray = os.path.join(_dest(), "d" * 64 + ".gz")
+    with open(stray, "wb") as fh:
+        fh.write(b"theirs")
+    old = time.time() - 2 * DAY
+    os.utime(stray, (old, old))
+    _write_legacy({"x": {"etag": "e", "body": "{}"}})
+
+    cache = _new_cache()
+    assert cache.get("u") is None
+    cache.store("v", "e", "{}")  # a no-op: nothing written to a store we can't read
+    cache.flush()
+
+    with open(path, encoding="utf-8") as fh:
+        assert fh.read() == future
+    assert _bodies(_dest()) == [os.path.basename(stray)]  # not swept, none added
+    assert os.path.exists(_legacy())  # nor migrated away
+
+
+def test_a_flushed_store_is_clean_until_it_changes(isolated_home: Path) -> None:
+    cache = _new_cache()
+    cache.store("u", "e", "{}")
+    cache.flush()
+    os.remove(os.path.join(_dest(), INDEX_NAME))
+    cache.flush()  # nothing changed since the last flush: no rewrite
+    assert not os.path.exists(os.path.join(_dest(), INDEX_NAME))
+    cache.store("v", "e", "{}")
+    cache.flush()
+    assert set(_index(_dest())) == {"u", "v"}
+
+
+def test_a_trailing_newline_is_not_a_body_file_name() -> None:
+    good = "a" * 64 + ".gz"
+    assert http_cache.BODY_NAME.match(good)
+    assert not http_cache.BODY_NAME.match(good + "\n")
+
+
 def test_an_index_entry_cannot_name_a_file_outside_the_store(
     isolated_home: Path,
 ) -> None:
@@ -141,6 +183,7 @@ def test_an_index_entry_cannot_name_a_file_outside_the_store(
     entries = {
         "u": {"etag": "e", "file": "../../escape.gz", "size": 1, "last_used": 1.0},
         "ok": {"etag": "e", "file": "a" * 64 + ".gz", "size": 1, "last_used": 1.0},
+        "nl": {"etag": "e", "file": "b" * 64 + ".gz\n", "size": 1, "last_used": 1.0},
     }
     with open(os.path.join(_dest(), INDEX_NAME), "w", encoding="utf-8") as fh:
         json.dump({"version": 1, "entries": entries}, fh)
@@ -400,14 +443,91 @@ def test_get_json_revalidates_and_reuses_the_stored_body(net: _Net) -> None:
     _fresh_process()
 
 
-def test_get_json_survives_a_304_whose_body_is_unreadable(net: _Net) -> None:
-    net.replies += [_Resp(200, '{"objects": [1]}', 'W/"v1"'), _Resp(304)]
+def _damage(how: str) -> None:
+    for name in _bodies(_dest()):
+        path = os.path.join(_dest(), name)
+        if how == "missing":
+            os.remove(path)
+        else:
+            with open(path, "wb") as fh:
+                fh.write(b"not gzip")
+
+
+def test_a_304_whose_body_is_corrupt_refetches(net: _Net) -> None:
+    net.replies += [
+        _Resp(200, '{"objects": [1]}', 'W/"v1"'),
+        _Resp(304),
+        _Resp(200, '{"objects": [1]}', 'W/"v1"'),
+    ]
     real_get_json(_URL)
     _fresh_process()
-    for name in _bodies(_dest()):
-        with open(os.path.join(_dest(), name), "wb") as fh:
-            fh.write(b"not gzip")
-    assert real_get_json(_URL) is None  # a miss, not a crash
+    _damage("corrupt")
+    # The 304 cannot be honoured, so the data is fetched afresh, unconditionally.
+    assert real_get_json(_URL) == {"objects": [1]}
+    assert "If-None-Match" in net.seen[1]
+    assert "If-None-Match" not in net.seen[2]
+    _fresh_process()
+
+
+def test_a_missing_body_file_is_not_revalidated(net: _Net) -> None:
+    net.replies += [
+        _Resp(200, '{"objects": [1]}', 'W/"v1"'),
+        _Resp(200, '{"objects": [1]}', 'W/"v1"'),
+    ]
+    real_get_json(_URL)
+    _fresh_process()
+    _damage("missing")
+    assert real_get_json(_URL) == {"objects": [1]}
+    assert "If-None-Match" not in net.seen[1]  # no ETag offered for a lost body
+    _fresh_process()
+
+
+def test_a_body_lost_between_get_and_read_refetches(
+    net: _Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process's sweep can remove the file after `get` found it."""
+    net.replies += [
+        _Resp(200, '{"objects": [1]}', 'W/"v1"'),
+        _Resp(304),
+        _Resp(200, '{"objects": [1]}', 'W/"v1"'),
+    ]
+    real_get_json(_URL)
+    _fresh_process()
+    store = datatracker._default_http_cache()
+    real_get = store.get
+
+    def get_then_lose_the_file(url: str) -> Any:
+        entry = real_get(url)
+        _damage("missing")
+        return entry
+
+    monkeypatch.setattr(store, "get", get_then_lose_the_file)
+    assert real_get_json(_URL) == {"objects": [1]}
+    assert "If-None-Match" not in net.seen[2]
+    _fresh_process()
+
+
+def test_an_unusable_304_body_does_not_truncate_a_paged_listing(
+    net: _Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(datatracker, "_get_json", real_get_json)
+    next_page = "https://datatracker.ietf.org/api/v1/doc/document/?offset=1&limit=1"
+    page1 = json.dumps({"objects": [{"n": 1}], "meta": {"next": next_page}})
+    page2 = json.dumps({"objects": [{"n": 2}], "meta": {"next": None}})
+    net.replies += [_Resp(200, page1, "e1"), _Resp(200, page2, "e2")]
+    first = list(datatracker.iter_group_documents("wg", "draft"))
+    assert [d["n"] for d in first] == [1, 2]
+    _fresh_process()
+
+    # Page two's body is unreadable; both pages still answer 304 to the revalidation.
+    store = datatracker._default_http_cache()
+    entry = store.get(next_page + "&format=json")
+    assert entry is not None
+    with open(os.path.join(_dest(), entry["file"]), "wb") as fh:
+        fh.write(b"not gzip")
+    net.replies += [_Resp(304), _Resp(304), _Resp(200, page2, "e2")]
+    again = list(datatracker.iter_group_documents("wg", "draft"))
+    assert [d["n"] for d in again] == [1, 2]
     _fresh_process()
 
 

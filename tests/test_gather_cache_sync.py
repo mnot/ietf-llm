@@ -239,6 +239,7 @@ def test_a_hostile_archive_writes_only_store_files(monkeypatch, tmp_path):
                 "../../escape.txt": b"x",
                 "/abs.txt": b"x",
                 "notes.txt": b"x",
+                "b" * 64 + ".gz\n": b"x",
                 name: b"body",
                 "index.json": json.dumps(index).encode(),
             }
@@ -251,6 +252,54 @@ def test_a_hostile_archive_writes_only_store_files(monkeypatch, tmp_path):
     assert sorted(p.name for p in store.iterdir()) == sorted(["index.json", name])
     assert not (tmp_path / "escape.txt").exists()
     assert not (tmp_path / "cold" / "escape.txt").exists()
+
+
+def _sparse_member(name: str, real_size: int) -> bytes:
+    """A GNU sparse tar member that stores 5 bytes and claims `real_size`."""
+    header = bytearray(512)
+    header[0 : len(name)] = name.encode()
+    header[100:108] = b"0000644\0"
+    header[108:116] = b"0000000\0"
+    header[116:124] = b"0000000\0"
+    header[124:136] = b"00000000005\0"
+    header[136:148] = b"00000000000\0"
+    header[156:157] = b"S"
+    header[257:265] = b"ustar  \0"
+    header[386:398] = b"%011o\0" % (real_size - 5)  # sparse map: one 5-byte extent
+    header[398:410] = b"%011o\0" % 5
+    header[483:495] = b"%011o\0" % real_size
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    return bytes(header) + b"hello".ljust(512, b"\0")
+
+
+def test_a_sparse_member_is_not_unpacked(monkeypatch, tmp_path):
+    name = "a" * 64 + ".gz"
+    blob = _sparse_member(name, 200 * 1024 * 1024) + b"\0" * 1024
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
+        [member] = tar.getmembers()
+        assert member.issparse()  # reports its real size, not the 5 bytes stored
+        assert member.size == 200 * 1024 * 1024
+    _cache_dir(monkeypatch, tmp_path / "cold")
+    cache_sync._unpack_http_cache(blob, str(tmp_path / "out"))
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_archive_past_the_store_bounds_is_refused(monkeypatch, tmp_path):
+    members = {f"{c}" * 64 + ".gz": b"x" * 100 for c in "abc"}
+    members["index.json"] = b"{}"
+    blob = _tar(members)
+    out = tmp_path / "out"
+
+    monkeypatch.setattr(http_cache, "MAX_ENTRIES", 2)  # three bodies + the index
+    with pytest.raises(ValueError):
+        cache_sync._unpack_http_cache(blob, str(out))
+    monkeypatch.setattr(http_cache, "MAX_ENTRIES", 10)
+    monkeypatch.setattr(http_cache, "MAX_BYTES", 250)
+    monkeypatch.setattr(http_cache, "INDEX_ALLOWANCE", 0)
+    with pytest.raises(ValueError):
+        cache_sync._unpack_http_cache(blob, str(out))
+    assert not (out / "index.json").exists()  # nothing claims what was refused
 
 
 def test_a_truncated_archive_leaves_the_local_index_alone(monkeypatch, tmp_path):

@@ -1078,7 +1078,10 @@ affordances; we use all three:
   since last use), then entry count (10,000), then compressed bytes
   (256 MB), keeping the most recently used. A single-file store from an
   earlier version is migrated on first load; a corrupt or truncated one
-  yields an empty store (a refetch), never a failed gather.
+  yields an empty store (a refetch), never a failed gather. A 304 whose stored
+  body turns out to be missing or corrupt is retried once without
+  `If-None-Match` rather than reported as no data (which would end a paged
+  listing early). An index written by a newer layout is left untouched.
   Covers the bulk of per-gather metadata (document lists, the meeting
   batch, roles). The materials *content* endpoint ignores conditional
   GET, so it is gated differently (below).

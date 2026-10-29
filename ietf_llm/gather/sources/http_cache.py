@@ -35,11 +35,14 @@ import time
 import zlib
 from typing import Any, Dict, Optional, Set, Tuple
 
+from ...log import LogLevel, log
+
 #: The index file inside a store directory.
 INDEX_NAME = "index.json"
 #: A body file's name: the SHA-256 of `<url>\0<etag>`. The ETag is in the hash so
 #: a fresh body never overwrites the one the on-disk index still describes.
-BODY_NAME = re.compile(r"^[0-9a-f]{64}\.gz$")
+# `\Z`, not `$`: `$` also matches before a trailing newline.
+BODY_NAME = re.compile(r"^[0-9a-f]{64}\.gz\Z")
 _INDEX_VERSION = 1
 
 #: Drop entries not requested within this many days (a generous window so an
@@ -49,6 +52,8 @@ MAX_AGE_DAYS = 90
 MAX_ENTRIES = 10000
 #: Hard cap on the compressed bodies' total size, enforced the same way.
 MAX_BYTES = 256 * 1024 * 1024
+#: What an archive of a store may hold beyond `MAX_BYTES` of bodies: its index.
+INDEX_ALLOWANCE = 32 * 1024 * 1024
 #: Unreferenced files younger than this are left alone: another process sharing
 #: the directory may have written them and not flushed its index yet.
 _ORPHAN_GRACE = 86400.0
@@ -105,15 +110,26 @@ def _clean_entries(raw: Any, now: float) -> Dict[str, Dict[str, Any]]:
     return entries
 
 
-def read_index(directory: str) -> Optional[Dict[str, Dict[str, Any]]]:
-    """The entries of the store at `directory`, or None if there is no readable
-    index (never written, or corrupt)."""
+def _read_index_file(directory: str) -> Optional[Dict[str, Any]]:
     try:
         with open(os.path.join(directory, INDEX_NAME), "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError, RecursionError):
         return None
-    if not isinstance(data, dict) or data.get("version") != _INDEX_VERSION:
+    return data if isinstance(data, dict) else None
+
+
+def _is_foreign(data: Optional[Dict[str, Any]]) -> bool:
+    """True for an index written in a layout this version does not know."""
+    version = data.get("version") if data else None
+    return isinstance(version, int) and version != _INDEX_VERSION
+
+
+def read_index(directory: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """The entries of the store at `directory`, or None if there is no readable
+    index (never written, corrupt, or of another version)."""
+    data = _read_index_file(directory)
+    if data is None or data.get("version") != _INDEX_VERSION:
         return None
     return _clean_entries(data.get("entries"), time.time())
 
@@ -145,6 +161,10 @@ class HttpCache:
         self._legacy = legacy
         self._entries: Optional[Dict[str, Dict[str, Any]]] = None
         self._dirty = False
+        self._registered_atexit = False
+        # An index of a version this code does not understand: the store is
+        # left exactly as found (empty to readers, unwritten, unswept).
+        self._foreign = False
         # Body files no entry names any more; deleted once the index that no
         # longer names them is on disk.
         self._dropped: Set[str] = set()
@@ -159,10 +179,19 @@ class HttpCache:
     def _load(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             if self._entries is None:
-                entries = read_index(self._dest)
-                if entries is None:
-                    entries = self._migrate_legacy()
-                self._entries = entries
+                data = _read_index_file(self._dest)
+                if _is_foreign(data):
+                    log(
+                        f"Datatracker: ETag store {self._dest} has an index from "
+                        "another version; leaving it untouched",
+                        level=LogLevel.WARN,
+                    )
+                    self._foreign = True
+                    self._entries = {}
+                elif data is not None and data.get("version") == _INDEX_VERSION:
+                    self._entries = _clean_entries(data.get("entries"), time.time())
+                else:
+                    self._entries = self._migrate_legacy()
             return self._entries
 
     def _migrate_legacy(self) -> Dict[str, Dict[str, Any]]:
@@ -199,12 +228,16 @@ class HttpCache:
 
     def _mark_dirty(self) -> None:
         with self._lock:
-            if not self._dirty:
-                self._dirty = True
-                if self._persist_at_exit:
-                    atexit.register(self.flush)
+            if self._foreign:
+                return
+            self._dirty = True
+            if self._persist_at_exit and not self._registered_atexit:
+                self._registered_atexit = True
+                atexit.register(self.flush)
 
     def _write_body(self, url: str, etag: str, body: str) -> Optional[Tuple[str, int]]:
+        if self._foreign:
+            return None
         name = body_file_name(url, etag)
         try:
             data = gzip.compress(body.encode("utf-8"), compresslevel=6, mtime=0)
@@ -310,6 +343,7 @@ class HttpCache:
                 )
             except OSError:
                 return
+            self._dirty = False
             self._remove_unreferenced()
 
     def _remove_unreferenced(self) -> None:

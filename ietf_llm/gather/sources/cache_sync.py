@@ -234,12 +234,27 @@ def _unpack_http_cache(blob: bytes, directory: str) -> None:
     """Restore a packed store into `directory`. Only files of the store's own
     shape are taken, whatever the archive names, and the index goes in last and
     only if the whole archive read cleanly, so a truncated one leaves an index
-    that still describes what is there."""
+    that still describes what is there. Sparse members are skipped (their real
+    size is not their size in the archive), and the files taken are capped in
+    number and total size at what a store may hold, so a malformed archive can
+    neither fill the disk nor memory; it raises."""
     index: Optional[bytes] = None
+    count = total = 0
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
         for member in tar:
-            if not member.isreg() or member.size > http_cache.MAX_BYTES:
+            if not member.isreg() or member.issparse():
                 continue
+            if member.name != http_cache.INDEX_NAME and not (
+                http_cache.BODY_NAME.match(member.name)
+            ):
+                continue
+            count += 1
+            total += member.size
+            if (
+                count > http_cache.MAX_ENTRIES + 1
+                or total > http_cache.MAX_BYTES + http_cache.INDEX_ALLOWANCE
+            ):
+                raise ValueError("stored ETag archive exceeds the store's bounds")
             handle = tar.extractfile(member)
             if handle is None:
                 continue
