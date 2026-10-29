@@ -132,9 +132,11 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   - `search_rfc_text` — what the documents **say**, semantically, over the
     full text of every RFC. Use it when the question is about content
     ("when must a cache not store a response"). Needs the RFC text corpus;
-    says so if it is not installed. **Semantic only** — it ranks by
-    similarity and never matches a string, so it cannot tell you which RFCs
-    contain an exact phrase. That is `grep_corpus(corpus="rfcs", …)`.
+    says so if it is not installed. A reply is bounded at about 40,000
+    characters; if it is cut, a `PARTIAL RESULT` banner at both ends says how
+    many sections were left out (narrow with `rfc=`, or lower `limit`).
+    **Semantic only** — it ranks by similarity and never matches a string, so
+    it cannot tell you which RFCs contain an exact phrase. That is `grep_corpus(corpus="rfcs", …)`.
   - `grep_corpus(corpus="rfcs", pattern=…)` — the same text, scanned
     **literally**. Use it for "which RFCs contain this exact sentence" and
     for any claim that some wording appears nowhere in the series. A literal

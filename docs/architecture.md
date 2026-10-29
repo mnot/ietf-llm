@@ -757,6 +757,12 @@ Grouped by job:
   neither does, and the note says the body is not reachable from here. A
   well-formed metadata response otherwise reads as the document itself
   (issue #218).
+  `search_rfc_text` bounds its own reply: `limit`, `sections_per_rfc` and
+  `snippet_chars` are clamped (50, 10, 2000), and because those do not bound
+  their product, the reply as a whole stops at about 40,000 characters (the
+  budget `get_draft` / `get_issue` / `read_file_section` use). A cut reply
+  opens and closes with a `PARTIAL RESULT` banner giving the number of
+  sections left out; the first section is always shown.
 - **Live chair-workflow facts (gated, networked):** `meeting_schedule`,
   `draft_status`, `review_record`, and `overview(corpus, live=True)` read
   *live* from Datatracker, so they share the gather gate (see "The networked

@@ -321,3 +321,49 @@ def test_search_non_numeric_size_falls_back_instead_of_raising(corpus: Path) -> 
     embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
     out = rfc_text.tool_search_rfc_text("caching", limit="lots")  # type: ignore[arg-type]
     assert "limit='lots' is not a number; using 10" in out
+
+
+def test_reply_is_cut_at_the_character_budget_and_says_so(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    _add_rfcs(30)
+    monkeypatch.setattr(rfc_text, "section_text", lambda _n, _s: "word " * 2000)
+    budget = rfc_text._MAX_REPLY_CHARS  # pylint: disable=protected-access
+    out = rfc_text.tool_search_rfc_text("caching", limit=50, snippet_chars=2000)
+
+    shown = out.count("\n## RFC ") + out.startswith("## RFC ")
+    matched = int(out.split(" RFCs matched")[0].rsplit("_", 1)[1])
+    omitted = int(out.split(" more section")[0].rsplit(" ", 1)[1])
+    assert 0 < shown < matched
+    assert f"showing {shown}." in out
+    # One section per RFC in this fixture, so every RFC not shown is one section.
+    assert omitted == min(50, matched) - shown
+    assert len(out) < budget + 2000
+    # The notice is at both ends, names the budget, and says how to narrow.
+    notice_lines = [ln for ln in out.splitlines() if "PARTIAL RESULT" in ln]
+    assert len(notice_lines) == 2
+    assert out.startswith(notice_lines[0]) and out.rstrip().endswith(notice_lines[1])
+    assert "40,000-character budget" in notice_lines[0]
+    assert "Narrow the query" in notice_lines[0] and "`limit`" in notice_lines[0]
+
+
+def test_a_small_reply_has_no_truncation_notice(corpus: Path) -> None:
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    out = rfc_text.tool_search_rfc_text("caching")
+    assert "PARTIAL RESULT" not in out and "budget" not in out
+
+
+def test_the_first_section_is_always_shown(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    monkeypatch.setattr(rfc_text, "_MAX_REPLY_CHARS", 10)
+    out = rfc_text.tool_search_rfc_text("caching", rfc="9111")
+    assert "## RFC 9111" in out and "showing 1." in out
