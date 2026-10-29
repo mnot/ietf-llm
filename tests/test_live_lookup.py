@@ -13,6 +13,7 @@ a slug.
 from __future__ import annotations
 from ietf_llm import mcp
 
+import datetime
 from typing import Any, Dict, Optional
 
 import pytest
@@ -34,6 +35,8 @@ _AGENDA_126 = {
     "126": [
         {
             "group": {"acronym": "httpbis"},
+            "status": "sched",
+            "objtype": "session",
             "start": "2026-07-23T07:00:00Z",
             "duration": "1:30:00",
             "location": "Park Suite 1",
@@ -56,6 +59,26 @@ _AGENDA_126 = {
             "duration": "1:00:00",
             "location": "Hall A",
             "session_id": 40003,
+        },
+        # Datatracker keeps these in the agenda: a cancelled session, and the
+        # vacated slot of a session moved elsewhere. Neither is happening.
+        {
+            "group": {"acronym": "dinrg"},
+            "status": "canceled",
+            "objtype": "session",
+            "start": "2026-07-21T09:00:00Z",
+            "duration": "1:00:00",
+            "location": "Grand Klimt Hall 2",
+            "session_id": 40004,
+        },
+        {
+            "group": {"acronym": "tls"},
+            "status": "resched",
+            "objtype": "session",
+            "start": "2026-07-22T09:00:00Z",
+            "duration": "1:00:00",
+            "location": "Hall B",
+            "session_id": 40005,
         },
     ]
 }
@@ -989,3 +1012,59 @@ def test_reconcile_labels_a_lapsed_draft_in_the_queue_in_iesg(monkeypatch):
         "httpbis", ["draft-ietf-httpbis-bar"]
     )
     assert recon.advanced == [("draft-ietf-httpbis-bar", "RFC Ed Queue (in-iesg)")]
+
+
+# --- Meetings: cancelled / rescheduled rows, and the meeting in progress -----
+
+
+def test_a_cancelled_session_is_not_listed():
+    sessions, _, error = live_lookup.fetch_meeting_sessions("dinrg", "126")
+    assert error is None and sessions == []
+    assert "No session for `dinrg`" in tool_meeting_schedule("dinrg", "126")
+
+
+def test_the_vacated_slot_of_a_rescheduled_session_is_not_listed():
+    sessions, _, error = live_lookup.fetch_meeting_sessions("tls", "126")
+    assert error is None and sessions == []
+
+
+def test_row_liveness_predicate():
+    live = live_lookup.meetings._is_live_row
+    assert live({"status": "sched", "objtype": "session"})
+    assert live({})  # an older shape without the keys
+    assert not live({"status": "canceled", "objtype": "session"})
+    assert not live({"status": "resched", "objtype": "session"})
+    assert not live({"status": "sched", "objtype": "break"})
+    assert not live(None)
+
+
+def test_a_meeting_in_progress_is_still_upcoming(monkeypatch):
+    monkeypatch.setattr(
+        live_lookup.meetings,
+        "_now_utc",
+        lambda: datetime.datetime(2026, 7, 20, 12, 0, tzinfo=datetime.timezone.utc),
+    )
+    ietf = "/api/v1/name/meetingtypename/ietf/"
+    interim = "/api/v1/name/meetingtypename/interim/"
+    meetings = {
+        "objects": [
+            # Day two of a seven-day meeting: its first day was yesterday.
+            {"number": "126", "type": ietf, "date": "2026-07-19", "days": 7},
+            {"number": "125", "type": ietf, "date": "2026-07-10", "days": 7},
+            # An interim is one day however `days` reads.
+            {"number": "interim-2026-a-01", "type": interim, "date": "2026-07-19", "days": 7},
+            {"number": "interim-2026-a-02", "type": interim, "date": "2026-07-20"},
+            # The last day counts; the day after does not.
+            {"number": "127", "type": ietf, "date": "2026-07-14", "days": 7},
+            {"number": "128", "type": ietf, "date": "2026-07-13", "days": 7},
+        ]
+    }
+
+    def _stub(url, timeout=10.0):
+        return meetings if "/meeting/meeting/?id__in=" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    found, _, error = live_lookup.fetch_upcoming_meetings("aipref")
+    assert error is None
+    assert [m.number for m in found] == ["127", "126", "interim-2026-a-02"]
