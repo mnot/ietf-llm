@@ -408,8 +408,9 @@ Key invariants:
   per-host breakdown, and a top-N of URL patterns. `net/http_metrics.py`
   accumulates it at the one egress chokepoint, `net.governed_get` (status and
   body size per response, an error on a transport failure), so every host
-  (Datatracker, GitHub, mailarchive, draft and RFC hosts) is counted exactly
-  once and callers never record themselves; a `stream=True` fetch is metered
+  (Datatracker, GitHub, mailarchive, draft and RFC hosts) is counted once
+  per call (adapter retries and redirect hops are not counted separately) and
+  callers never record themselves; a `stream=True` fetch is metered
   by `Content-Length`. The CLI prints a one-line summary at the end of a
   gather. Beside the sentinel (one level above `files/`),
   so it is neither indexed nor exported.

@@ -7,7 +7,8 @@ GitHub, and draft hosts. This module gives us visibility into how much
 upstream load we generate: a passive accumulator that `governed_get` in
 `net/transport.py` — the one GET chokepoint, which every `fetch_resource`,
 Datatracker, GitHub, mailarchive and draft-host fetch goes through — records
-every request into, so callers never record themselves. It counts requests split
+every call into (once per call, not per adapter retry or redirect hop), so
+callers never record themselves. It counts requests split
 by outcome (real transfer / 304 revalidation / error), total bytes
 pulled down, a per-host breakdown, and a top-N of URL patterns to spot
 hot loops.

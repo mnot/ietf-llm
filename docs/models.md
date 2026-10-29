@@ -135,7 +135,7 @@ non-OpenAI providers remain available that way.
 | `IETF_LLM_SUMMARIZE_TIMEOUT` | per-request timeout, seconds (default 30) |
 | `IETF_LLM_SUMMARIZE_RETRIES` | retries on `429` / `5xx`, with backoff (default 3) |
 
-A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out: the request fails at once instead of tying up a worker thread.
+A `Retry-After` longer than 60 s is not waited out: the request fails at once.
 
 The token comes from the environment only and is never written to disk. Unlike the embedding model,
 the summariser id is **not** recorded in any index — summaries are plain text in the cache — so

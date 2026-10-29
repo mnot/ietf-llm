@@ -7,6 +7,8 @@ end to end; `time.sleep` inside urllib3 is stubbed so nothing actually waits.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -218,3 +220,17 @@ def test_pattern_table_is_bounded() -> None:
     assert len(m.patterns) == http_metrics._MAX_PATTERNS + 1
     assert m.patterns[http_metrics._OTHER] == extra
     assert m.total == total
+
+
+def test_transport_imports_without_urllib3_2_only_names() -> None:
+    # `BaseHTTPResponse` exists only in urllib3 2.x; requests still permits
+    # 1.26, so the module must not need it at runtime.
+    code = (
+        "import urllib3.response as r; del r.BaseHTTPResponse; "
+        "import ietf_llm.net.transport"
+    )
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr

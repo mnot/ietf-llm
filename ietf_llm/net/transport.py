@@ -21,7 +21,6 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.connectionpool import ConnectionPool
 from urllib3.exceptions import InvalidHeader, MaxRetryError, ResponseError
-from urllib3.response import BaseHTTPResponse
 from urllib3.util.retry import Retry
 
 from .. import __version__
@@ -31,6 +30,7 @@ from . import http_metrics
 from .http_governor import host_slot
 
 if TYPE_CHECKING:
+    from urllib3.response import BaseHTTPResponse
     from typing_extensions import Self
 
 #: Longest `Retry-After` (seconds) the gather transport will sit out. A larger
@@ -149,10 +149,12 @@ def governed_get(
     Every network GET in the package routes through here — `fetch_resource`
     and the direct call sites in `gather/*` and `live_lookup` — so the per-host
     budget bounds a wide fan-out or several concurrent gathers, datatracker
-    especially, and `http_metrics` (`gather-metrics.json`) sees every request
-    exactly once: status and body size on a response, an error on a transport
-    failure. Callers handle status exactly as for a bare session GET and must
-    not record again. The GET is non-streaming unless the caller asks, so the
+    especially, and `http_metrics` (`gather-metrics.json`) sees every call
+    once: status and body size on a response, an error on a transport failure.
+    That is one entry per call, not per wire request: the adapter's own
+    retries and redirect hops are not counted separately. Callers handle
+    status exactly as for a bare session GET and must not record again. The
+    GET is non-streaming unless the caller asks, so the
     slot normally covers the body transfer too, which is what bounds
     concurrency through large draft / RFC downloads; a `stream=True` caller
     gets the slot only for the headers and is metered by `Content-Length`
