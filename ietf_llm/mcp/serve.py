@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import datetime
 import os
+import threading
+import time
 from typing import Any, Dict, List, Tuple
+
+import anyio
 
 from .. import __version__, config, serve_metrics
 from ..config import service as service_config
@@ -18,6 +22,41 @@ from ..freshness import last_gathered
 from ..log import LogLevel, log
 from ..paths import get_index_dir
 from .common import _gather_enabled, _list_wgs, _log_verbosity
+
+#: How long a freshness sweep is reused. Probes arrive every few seconds from
+#: each load balancer and scraper; on the cloud backend each sweep is an S3
+#: LIST plus a read per corpus, so the sweep is shared rather than repeated.
+_SWEEP_TTL = 5.0
+
+_sweep_lock = threading.Lock()
+#: At most one `(monotonic time, corpus count, [(corpus, last-gathered)])`.
+_SWEEP_CACHE: "List[Tuple[float, int, List[Tuple[str, datetime.datetime]]]]" = []
+
+
+def _reset_sweep_cache() -> None:
+    with _sweep_lock:
+        _SWEEP_CACHE.clear()
+
+
+def _freshness_sweep() -> "Tuple[int, List[Tuple[str, datetime.datetime]]]":
+    """`(corpus count, [(corpus, last-gathered)])` for the corpora carrying a
+    sentinel, reused for `_SWEEP_TTL` seconds.
+
+    Holds the lock across the sweep so concurrent probes share one rather than
+    each listing the store. Callers run it on a worker thread.
+    """
+    with _sweep_lock:
+        if _SWEEP_CACHE and time.monotonic() - _SWEEP_CACHE[0][0] < _SWEEP_TTL:
+            return _SWEEP_CACHE[0][1], _SWEEP_CACHE[0][2]
+        wgs = _list_wgs()
+        tracked = serve_metrics.timed_store(
+            "freshness_sweep",
+            lambda: [
+                (wg, when) for wg in wgs if (when := last_gathered(wg)) is not None
+            ],
+        )
+        _SWEEP_CACHE[:] = [(time.monotonic(), len(wgs), tracked)]
+        return len(wgs), tracked
 
 
 def _corpora_freshness() -> "dict[str, Any]":
@@ -34,11 +73,7 @@ def _corpora_freshness() -> "dict[str, Any]":
     scrape's job. Both are null when nothing is tracked.
     """
     now = datetime.datetime.now(datetime.timezone.utc)
-    wgs = _list_wgs()
-    tracked = serve_metrics.timed_store(
-        "freshness_sweep",
-        lambda: [(wg, when) for wg in wgs if (when := last_gathered(wg)) is not None],
-    )
+    count, tracked = _freshness_sweep()
 
     def _entry(item: "tuple[str, datetime.datetime]") -> "dict[str, Any]":
         wg, when = item
@@ -49,7 +84,7 @@ def _corpora_freshness() -> "dict[str, Any]":
         }
 
     summary: "dict[str, Any]" = {
-        "count": len(wgs),
+        "count": count,
         "tracked": len(tracked),
         "oldest": None,
         "newest": None,
@@ -85,7 +120,6 @@ def _readiness() -> "tuple[bool, dict[str, Any]]":
     ready = index_ok and probe != "failed"
     return ready, {
         "version": __version__,
-        "index_dir": index_dir,
         "index_dir_usable": index_ok,
         "index_probe": probe,
         "embed_endpoint_configured": bool(
@@ -104,7 +138,9 @@ async def _health_endpoint(_request: Any) -> Any:
     # pylint: disable=import-outside-toplevel
     from starlette.responses import JSONResponse
 
-    ready, detail = _readiness()
+    # Blocking filesystem and (on the cloud backend) S3 reads: keep them off the
+    # event loop so a probe cannot stall in-flight MCP sessions.
+    ready, detail = await anyio.to_thread.run_sync(_readiness)
     return JSONResponse(
         {"status": "ok" if ready else "unavailable", **detail},
         status_code=200 if ready else 503,
@@ -120,24 +156,16 @@ def _corpus_ages() -> "List[Tuple[str, int]]":
     breakdown /health deliberately summarises rather than enumerates.
     """
     now = datetime.datetime.now(datetime.timezone.utc)
-    wgs = _list_wgs()
-
-    def _sweep() -> "List[Tuple[str, int]]":
-        ages: "List[Tuple[str, int]]" = []
-        for wg in wgs:
-            when = last_gathered(wg)
-            if when is not None:
-                ages.append((wg, max(0, int((now - when).total_seconds()))))
-        return ages
-
-    return serve_metrics.timed_store("freshness_sweep", _sweep)
+    _, tracked = _freshness_sweep()
+    return [(wg, max(0, int((now - when).total_seconds()))) for wg, when in tracked]
 
 
 async def _metrics_endpoint(_request: Any) -> Any:
     # pylint: disable=import-outside-toplevel
     from starlette.responses import PlainTextResponse
 
-    body = serve_metrics.render(_corpus_ages(), version=__version__)
+    ages = await anyio.to_thread.run_sync(_corpus_ages)
+    body = serve_metrics.render(ages, version=__version__)
     # Prometheus text exposition format v0.0.4.
     return PlainTextResponse(
         body, media_type="text/plain; version=0.0.4; charset=utf-8"

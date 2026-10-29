@@ -6,6 +6,7 @@ load balancer / orchestrator can probe the container.
 from __future__ import annotations
 from ietf_llm import mcp
 
+import asyncio
 import os
 from typing import Any
 
@@ -166,3 +167,74 @@ def test_corpora_freshness_never_materialises_on_cloud_backend(
     assert summary["tracked"] == 0  # not staged here yet -- degrades cleanly
     # The regression this guards against: no fetch happened just to answer.
     assert not scratch.exists()
+
+
+# --- the probes block on store reads (S3 on the cloud backend): off the loop ---
+
+
+def _runs_on_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def test_health_runs_readiness_off_the_event_loop(isolated_home, monkeypatch):
+    seen: list[bool] = []
+    real = mcp.serve._readiness
+
+    def _spy() -> Any:
+        seen.append(_runs_on_loop())
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_readiness", _spy)
+    TestClient(mcp.serve._http_app(_FakeServer())).get("/health")
+    assert seen == [False]
+
+
+def test_metrics_reads_corpus_ages_off_the_event_loop(isolated_home, monkeypatch):
+    seen: list[bool] = []
+    real = mcp.serve._corpus_ages
+
+    def _spy() -> Any:
+        seen.append(_runs_on_loop())
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_corpus_ages", _spy)
+    resp = TestClient(mcp.serve._http_app(_FakeServer())).get("/metrics")
+    assert resp.status_code == 200
+    assert seen == [False]
+
+
+def test_health_body_does_not_disclose_the_index_path(isolated_home):
+    body = TestClient(mcp.serve._http_app(_FakeServer())).get("/health").json()
+    assert "index_dir" not in body
+    assert body["index_dir_usable"] is True
+
+
+def test_freshness_sweep_is_shared_between_probes(isolated_home, monkeypatch):
+    """/health and /metrics both sweep; one sweep serves them for a few
+    seconds rather than listing the store on every probe."""
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    calls: list[int] = []
+    real = mcp.serve._list_wgs
+
+    def _counting() -> Any:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_list_wgs", _counting)
+    mcp.serve._corpora_freshness()
+    mcp.serve._corpora_freshness()
+    assert [name for name, _ in mcp.serve._corpus_ages()] == ["tls"]
+    assert len(calls) == 1
+
+
+def test_freshness_sweep_refreshes_after_the_ttl(isolated_home, monkeypatch):
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    assert mcp.serve._corpora_freshness()["count"] == 1
+    _seed_corpus(isolated_home, "quic", "2025-01-01T00:00:00Z")
+    assert mcp.serve._corpora_freshness()["count"] == 1  # still cached
+    monkeypatch.setattr(mcp.serve, "_SWEEP_TTL", 0.0)
+    assert mcp.serve._corpora_freshness()["count"] == 2
