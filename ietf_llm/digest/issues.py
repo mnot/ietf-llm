@@ -6,11 +6,11 @@ markdown table sorted open-first, newest-first within each group.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List, Optional, TextIO
 
 from ..atomicio import atomic_open
+from ..gather.sources.github_schema import archive_slug, load_archive
 from ..gather.sources.issue_files import _detect_duplicate_of, _participants
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, github_dir, issue_path, remove_stale_digest
@@ -92,16 +92,13 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
 
         for gh_file in gh_files:
             path = os.path.join(archives_dir, gh_file)
-            try:
-                with open(path, "r", encoding="utf-8") as jf:
-                    data = json.load(jf)
-            except (json.JSONDecodeError, OSError) as err:
-                log(f"Skipping {gh_file}: {err}", verbose, level=LogLevel.ERROR)
+            data = load_archive(path, verbose)
+            if data is None:
                 continue
 
-            repo = data.get("repo", gh_file)
+            repo = data["repo"]
             issues = data.get("issues", []) or []
-            repo_slug = repo.replace("/", "-").lower()
+            repo_slug = archive_slug(gh_file)
 
             fh.write(f"## {repo}\n\n")
             fh.write(
@@ -161,7 +158,7 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
                 participants_cell = ", ".join(others).replace("|", "\\|")
                 # Relative path is what the chunker and MCP tools speak.
                 relpath = os.path.relpath(
-                    issue_path(cache_dir, repo, number),
+                    issue_path(cache_dir, repo_slug, number),
                     cache_dir,
                 )
                 file_cell = f"`{relpath}`"

@@ -10,25 +10,25 @@ from ... import paths
 from ...atomicio import atomic_open
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
+from .github_schema import load_archive, normalise_archive, valid_repo
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
     """Yield each parsed `<repo>.json` issue archive under `archives_dir`.
 
-    Skips non-JSON files and any archive that fails to read / parse.
-    Shared by the people registry and the timeline builder so they
-    don't each re-implement the walk-and-load loop.
+    Skips non-JSON files and any archive that fails to read / parse, and
+    yields each in the normalised shape (see `github_schema`). Shared by the
+    people registry and the timeline builder so they don't each re-implement
+    the walk-and-load loop.
     """
     if not os.path.isdir(archives_dir):
         return
     for name in sorted(os.listdir(archives_dir)):
         if not name.endswith(".json"):
             continue
-        try:
-            with open(os.path.join(archives_dir, name), "r", encoding="utf-8") as fh:
-                yield json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            continue
+        data = load_archive(os.path.join(archives_dir, name), level=LogLevel.WARN)
+        if data is not None:
+            yield data
 
 
 def label_descriptions(archives_dir: str) -> Dict[str, str]:
@@ -97,12 +97,17 @@ def process_github_issues(
     try:
         with open(input_file, "r", encoding="utf-8") as json_fh:
             data = json.load(json_fh)
-    except (json.JSONDecodeError, OSError) as err:
+    except (ValueError, RecursionError, OSError) as err:
         log(f"Error parsing GitHub JSON: {err}", verbose, level=LogLevel.ERROR)
+        return []
+    # Only displayed here (no path is built from it), so keep what it claims.
+    claimed = data.get("repo") if isinstance(data, dict) else None
+    repo_name = claimed if isinstance(claimed, str) else "Unknown Repo"
+    data = normalise_archive(data, repo_name, os.path.basename(input_file), verbose)
+    if data is None:
         return []
 
     issues = data.get("issues", [])
-    repo_name = data.get("repo", "Unknown Repo")
 
     processed_count = 0
     filtered_count = 0
@@ -242,27 +247,11 @@ def download_github_issues(
     token: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
 ) -> bool:
-    """Download GitHub issues JSON using the API from 'owner/repo' short name."""
-    if repo_short.startswith(("http://", "https://")):
-        log(
-            f"Direct downloading GitHub issues from {repo_short}...",
-            verbose,
-            level=LogLevel.STATUS,
-        )
-        try:
-            response = governed_get(repo_short, headers=DEFAULT_HEADERS, timeout=60)
-            response.raise_for_status()
-            with atomic_open(dest_path) as json_file:
-                json_file.write(response.text)
-            return True
-        except (requests.RequestException, OSError) as err:
-            log(
-                f"Error downloading GitHub issues: {err}", verbose, level=LogLevel.ERROR
-            )
-            return False
-
+    """Download GitHub issues JSON for an 'owner/repo' short name: the repo's gh-pages
+    `archive.json` if it publishes one (normalised, see `github_schema`), else the API.
+    """
     # Expecting owner/repo
-    if "/" not in repo_short:
+    if not valid_repo(repo_short):
         log(
             f"Invalid GitHub short name: {repo_short}. Expected 'owner/repo'.",
             verbose,
@@ -290,7 +279,7 @@ def download_github_issues(
                         "timestamp": datetime.now().isoformat(),
                         "issues": archive_data,
                     }
-                elif "issues" not in archive_data:
+                elif isinstance(archive_data, dict) and "issues" not in archive_data:
                     # If it's a dict but missing 'issues', we might still want to wrap it
                     # or handle it differently. For now, assume it might be a single issue
                     # or some other format and wrap if it's not our expected schema.
@@ -299,10 +288,14 @@ def download_github_issues(
                         "timestamp": datetime.now().isoformat(),
                         "issues": [archive_data],
                     }
-                with atomic_open(dest_path) as json_fh:
-                    json.dump(archive_data, json_fh, indent=2)
-                return True
-            except (json.JSONDecodeError, TypeError) as err:
+                archive_data = normalise_archive(
+                    archive_data, repo_short, archive_url, verbose
+                )
+                if archive_data is not None:
+                    with atomic_open(dest_path) as json_fh:
+                        json.dump(archive_data, json_fh, indent=2)
+                    return True
+            except (ValueError, TypeError, RecursionError) as err:
                 log(
                     f"Error parsing archive JSON: {err}",
                     Verbosity.VERBOSE,

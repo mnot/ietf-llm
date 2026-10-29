@@ -222,6 +222,18 @@ Key invariants:
   are summarised in the header rather than given a section each. Archives
   without a `pulls` key (the REST fallback shape, used when a repo publishes no
   gh-pages `archive.json`) simply produce no PR tree.
+- **An archive is third-party content, so it is schema-normalised.** The
+  gh-pages `archive.json` is whatever the repo owner published, and its `repo`
+  and each record's `number` could become path components. `github_schema`
+  fixes the shape on download (bounded integer numbers, text fields as text,
+  labels as names, comments and reviews as objects, `repo` set to the configured
+  name) and again whenever an archive already on disk is read (`load_archive`),
+  so new code can rely on the shape. Paths under `issues/` and `pulls/` come
+  from the archive's file name, never its `repo`, which is for display only
+  (a renamed repo keeps its real name). A record that cannot be used is dropped
+  with a note; an archive in which *none* can be used is treated as no archive
+  (the download falls back to the API rather than emptying the corpus), and
+  `write_record_files` still refuses a destination outside its tree.
 - **PR files are written but not embedded.** `pulls/` is skipped by
   `embeddings.chunking._eligible_files`, alongside `raw/` and `github/`.
   Measured on `httpwg/http-extensions`, indexing them costs +31% chunks (29,062
@@ -581,6 +593,7 @@ ietf_llm/
 │       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
 │       ├── mail_threads.py         # reconstruct per-thread .md files
 │       ├── github.py               # archive.json (gh-pages) or REST API
+│       ├── github_schema.py        # normalise the archive's shape (download and read)
 │       ├── github_users.py         # resolve logins → real name + company
 │       ├── issue_files.py          # per-issue .md files
 │       ├── datatracker.py          # roles + paginated document listing via JSON API

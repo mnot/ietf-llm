@@ -12,11 +12,11 @@ thousand per-PR files would be silly; one grep here answers it.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..atomicio import atomic_open
+from ..gather.sources.github_schema import archive_slug, load_archive
 from ..gather.sources.pull_files import _closes
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, github_dir, pull_path, remove_stale_digest
@@ -63,18 +63,11 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
         return None
     gh_files = sorted(f for f in os.listdir(archives_dir) if f.endswith(".json"))
 
-    loaded: List[Tuple[str, List[Dict[str, Any]]]] = []
+    loaded: List[Tuple[str, str, List[Dict[str, Any]]]] = []
     for gh_file in gh_files:
-        path = os.path.join(archives_dir, gh_file)
-        try:
-            with open(path, "r", encoding="utf-8") as jf:
-                data = json.load(jf)
-        except (json.JSONDecodeError, OSError) as err:
-            log(f"Skipping {gh_file}: {err}", verbose, level=LogLevel.ERROR)
-            continue
-        pulls = [p for p in (data.get("pulls") or []) if isinstance(p, dict)]
-        if pulls:
-            loaded.append((data.get("repo", gh_file), pulls))
+        data = load_archive(os.path.join(archives_dir, gh_file), verbose)
+        if data is not None and data.get("pulls"):
+            loaded.append((archive_slug(gh_file), data["repo"], data["pulls"]))
     if not loaded:
         remove_stale_digest(cache_dir, "pulls")
         return None
@@ -102,8 +95,7 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
             "that introduced it and the issue it closed.\n\n"
         )
 
-        for repo, pulls in loaded:
-            repo_slug = repo.replace("/", "-").lower()
+        for repo_slug, repo, pulls in loaded:
             fh.write(f"## {repo}\n\n")
             fh.write(f"_Per-PR files: `pulls/{repo_slug}/*.md` ({len(pulls)} PRs)_\n\n")
 
@@ -162,7 +154,9 @@ def _build_pulls_digest(  # pylint: disable=too-many-locals
                     total_unknown += 1
 
                 closes = ", ".join(f"#{n}" for n in _closes(pull, repo))
-                relpath = os.path.relpath(pull_path(cache_dir, repo, number), cache_dir)
+                relpath = os.path.relpath(
+                    pull_path(cache_dir, repo_slug, number), cache_dir
+                )
                 row = (
                     f"| {number} | {state} | {title} | {labels} | {n_comments} | "
                     f"{n_reviews} | {updated} | {author} | {merged_by} | "

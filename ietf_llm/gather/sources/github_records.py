@@ -13,12 +13,12 @@ home for issue or PR semantics.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Callable, Dict, List, Optional
 
 from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
+from .github_schema import archive_slug, load_archive
 
 
 def last_comment_quote(
@@ -76,33 +76,26 @@ def write_record_files(  # pylint: disable=too-many-arguments,too-many-positiona
     all_paths: List[str] = []
     changed: List[str] = []
     expected: set[str] = set()
+    root = os.path.realpath(out_root) + os.sep
     for name in sorted(os.listdir(archives_dir)):
         if not name.endswith(".json"):
             continue
-        try:
-            with open(os.path.join(archives_dir, name), "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, json.JSONDecodeError) as err:
-            log(
-                f"Skipping {name}: {type(err).__name__}: {err}",
-                verbose,
-                level=LogLevel.ERROR,
-            )
+        data = load_archive(os.path.join(archives_dir, name), verbose)
+        if data is None or not data.get(records_key):
             continue
-
-        records = [r for r in (data.get(records_key) or []) if isinstance(r, dict)]
-        if not records:
+        # Paths come from the file name and display from the archive: they
+        # differ for a renamed repo, and a file named `..json` makes the slug
+        # `.`, so the destination must be checked rather than assumed.
+        slug = archive_slug(name)
+        if not os.path.realpath(repo_dir_for(slug)).startswith(root):
+            log(f"Skipping {name}: outside {out_root}", verbose, level=LogLevel.ERROR)
             continue
-        repo = data.get("repo", "")
-        os.makedirs(repo_dir_for(repo), exist_ok=True)
-        for record in records:
-            number = record.get("number")
-            if number is None:
-                continue
-            path = path_for(repo, number)
+        os.makedirs(repo_dir_for(slug), exist_ok=True)
+        for record in data[records_key]:
+            path = path_for(slug, record["number"])
             expected.add(os.path.relpath(path, out_root))
             all_paths.append(path)
-            if write_if_changed(path, render(repo, record)):
+            if write_if_changed(path, render(data["repo"], record)):
                 changed.append(path)
 
     removed = _sweep_orphans(out_root, expected)
@@ -124,7 +117,8 @@ def _sweep_orphans(out_root: str, expected: "set[str]") -> int:
     removed = 0
     for repo_subdir in os.listdir(out_root):
         sub_path = os.path.join(out_root, repo_subdir)
-        if not os.path.isdir(sub_path):
+        # A link could point anywhere; only real directories are ours to sweep.
+        if os.path.islink(sub_path) or not os.path.isdir(sub_path):
             continue
         for name in os.listdir(sub_path):
             if not name.endswith(".md"):
