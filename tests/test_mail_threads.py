@@ -400,6 +400,71 @@ def test_subject_fallback_merges_orphan_reply(isolated_home: Path) -> None:
     assert len(threads[0].members) == 2
 
 
+def _orphan(isolated_home: Path, uid: int, date: str, subject: str = "Weekly digest") -> None:
+    _write_eml(
+        isolated_home, "wg", uid,
+        subject=subject, sender="Bot <bot@x>", date=date,
+        message_id=f"<m{uid}@x>",
+    )
+
+
+def test_subject_fallback_keeps_distant_same_subject_roots_apart(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2024 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 05 Feb 2025 10:00:00 +0000")  # ~400 days on
+    threads = build_threads("wg")
+    assert sorted(len(t.members) for t in threads) == [1, 1]
+    assert sorted(t.span[0].year for t in threads) == [2024, 2025]  # type: ignore[union-attr]
+
+
+def test_subject_fallback_merges_roots_ten_days_apart(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2025 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 11 Jan 2025 10:00:00 +0000")
+    assert [len(t.members) for t in build_threads("wg")] == [2]
+
+
+def test_subject_fallback_window_runs_from_the_last_message(isolated_home: Path) -> None:
+    # A long-running thread: its last reply is 20 days before the new orphan,
+    # although its root is 200 days before it. The orphan belongs to it.
+    _write_eml(
+        isolated_home, "wg", 1, subject="Topic", sender="A <a@x>",
+        date="Wed, 01 Jan 2025 10:00:00 +0000", message_id="<r@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 2, subject="Re: Topic", sender="B <b@x>",
+        date="Fri, 11 Jul 2025 10:00:00 +0000", message_id="<r2@x>",
+        in_reply_to="<r@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 3, subject="Re: Topic", sender="C <c@x>",
+        date="Thu, 31 Jul 2025 10:00:00 +0000", message_id="<o@x>",
+    )
+    assert [len(t.members) for t in build_threads("wg")] == [3]
+
+
+def test_subject_fallback_chains_a_series_of_close_roots(isolated_home: Path) -> None:
+    # Fifty days apart each, 100 days end to end: each is within the window of
+    # the one before, so the weekly-ish series stays one conversation while a
+    # gap past the window starts a new one.
+    _orphan(isolated_home, 1, "Wed, 01 Jan 2025 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Thu, 20 Feb 2025 10:00:00 +0000")
+    _orphan(isolated_home, 3, "Fri, 11 Apr 2025 10:00:00 +0000")
+    _orphan(isolated_home, 4, "Sat, 11 Oct 2025 10:00:00 +0000")
+    assert sorted(len(t.members) for t in build_threads("wg")) == [1, 3]
+
+
+def test_split_threads_get_distinct_files_and_the_older_keeps_its_slug(
+    isolated_home: Path,
+) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2024 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 05 Feb 2025 10:00:00 +0000")
+    cache_dir = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache_dir, verbose=Verbosity.QUIET)
+    assert sorted(Path(p).name for p in paths) == [
+        "2024-01-01-weekly-digest.md",
+        "2025-02-05-weekly-digest.md",
+    ]
+
+
 def test_crosspost_duplicate_msgid_does_not_loop(isolated_home: Path) -> None:
     # Regression: a thread *starter* cross-posted to two lists is cached
     # once per list, so the same Message-Id lands twice under
