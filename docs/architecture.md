@@ -599,7 +599,7 @@ ietf_llm/
 │   ├── cli.py                  # build_parser: the `ietf-llm` gather argument parser
 │   ├── sequencer.py            # _gather_one / run_gather: walk one corpus through the gather stages
 │   └── sources/                # stage implementations: one module per thing gathered
-│       ├── charter.py              # charter text artifact (rev from doc API)
+│       ├── charter.py              # charter text artifact (approved rev from doc API; names a recharter proposal)
 │       ├── group_info.py           # group.md: name / status / area / Additional Resources
 │       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
