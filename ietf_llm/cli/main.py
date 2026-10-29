@@ -208,6 +208,12 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             "--clear-config is refused with --all (too easy to nuke "
             "every corpus's config by accident); clear one corpus at a time"
         )
+    if args.all and args.clear_cache:
+        parser.error(
+            "--clear-cache is refused with --all (it would discard every "
+            "corpus's cached mail, which cannot be downloaded again once it "
+            "is older than --months); clear one corpus at a time"
+        )
     if not args.all and not args.wg and not args.init_machine:
         parser.error(
             "a corpus name is required (unless using --init, --install-skills "
@@ -285,7 +291,17 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             one.wg = wg
             # A sweep refreshes what needs refreshing: a corpus another gatherer
             # is already refreshing (None) needs nothing from this run.
-            if _gather(one, verbosity) is GatherOutcome.UNUSABLE:
+            try:
+                if _gather(one, verbosity) is GatherOutcome.UNUSABLE:
+                    failed = True
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                # One corpus's publish or backend fault must not leave the rest
+                # of an unattended sweep stale; the exit status still reports it.
+                log(
+                    f"{wg}: gather failed: {type(exc).__name__}: {exc}",
+                    verbosity,
+                    level=LogLevel.ERROR,
+                )
                 failed = True
     else:
         # A named gather is a request for *this* invocation to do the work, so

@@ -73,7 +73,8 @@ per-corpus: set once, applied everywhere, and overridable by environment. See
 - `--list` — list cached corpora (name, kind, status, last-gathered, and a one-line subject — the
   group name, list, or tracked author), then exit.
 - `--all` — refresh every gathered corpus the configured store knows about, each with its own
-  persisted config (no positional NAME; `--clear-config` is refused). On the cloud backend this is
+  persisted config (no positional NAME; `--clear-config` and `--clear-cache` are refused). A
+  corpus that fails does not stop the sweep; the exit status is non-zero if any did. On the cloud backend this is
   the whole fleet, not just this host's local cache — see [Storage &
   locations](storage.md#the-cloud-backend).
 - `--all --used-within DAYS` — restrict `--all` to corpora **read within the last DAYS days** (via

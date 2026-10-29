@@ -81,8 +81,10 @@ to add additional lists, use `--mailing-list`; if you need to add issues lists f
 
 `ietf-llm --all` re-gathers every corpus the store knows about. On the cloud backend
 ([storage.md](storage.md#the-cloud-backend)) each corpus is published as it finishes, and one that
-another host is already gathering is skipped; the run exits non-zero if any corpus name was
-unusable.
+another host is already gathering is skipped. A corpus that fails (a publish error, an embedding
+backend fault) is logged and the sweep carries on with the rest; the run then exits non-zero if
+any corpus failed or its name was unusable. `--clear-cache` is refused with `--all`, as is
+`--clear-config`: clear one corpus at a time.
 
 To avoid refreshing unused corpora, add `--used-within DAYS`: it limits the refresh to those read
 within that many days through the MCP read tools, so a daily cron job can keep your active corpora
