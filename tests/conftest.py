@@ -85,6 +85,15 @@ def _reset_seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_health_sweep() -> None:
+    """Drop the /health freshness-sweep cache before each test — it is
+    process-global and would otherwise serve one test's corpora to the next."""
+    from ietf_llm.mcp import serve  # pylint: disable=import-outside-toplevel
+
+    serve._reset_sweep_cache()  # pylint: disable=protected-access
+
+
+@pytest.fixture(autouse=True)
 def _drain_gather_worker() -> Iterable[None]:
     """Wait for the shared gather worker to finish any in-flight job before the
     next test runs. The worker is a process-wide daemon, and a job's terminal

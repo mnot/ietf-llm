@@ -896,9 +896,19 @@ memoized: the cache lives on the store. It is the storage seam's own read — th
 same class as `local_cache_dir` — not a new networked-read exception. `get_rfc_info`'s
 body note uses it, asking the publishing WG first and the rest concurrently, so a
 metadata lookup never downloads a corpus; `read_file_section` is where the bytes
-are staged, and only for the corpus that has the file. (`mcp/drafts.py`'s
-`_find_latest_draft_file` has the same sweep shape but needs a listing and then
-the bytes, so it is not served by this.)
+are staged, and only for the corpus that has the file.
+
+`list_files(corpus, subdir)` is its listing counterpart, for a caller that cannot
+build the exact name: the names directly inside `files/<subdir>`, answered from
+the same manifest (or from the staged directory), never from the content.
+`mcp/drafts.py`'s `_find_latest_draft_file` uses it to find a draft's newest
+revision: the owning group's corpus (derived from `draft-ietf-<wg>-` /
+`draft-irtf-<rg>-`) is asked first and a hit there ends the lookup; otherwise
+every corpus is asked concurrently and the highest revision wins. Only the
+corpus holding the winner is then staged, so one `get_draft` on a cold replica
+downloads one corpus rather than the fleet. A draft cached both under its owner
+and elsewhere is therefore read from the owner, even if the other copy is a
+revision newer.
 
 `documents.json` reads through `local_corpus_dir` (a request already committed to
 materialising the corpus for a real read). The `last-gathered` / `seed-source`

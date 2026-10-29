@@ -215,7 +215,14 @@ against one `embeddings.db`, so an index that is present but unservable fails th
 passing it. A server with no corpora gathered yet is still ready. `503` otherwise, with a small
 JSON body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes **no** upstream
 call — a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured
-and ready to serve", not "the backend answered".
+and ready to serve", not "the backend answered". The probe's store reads (an S3 LIST per probe on
+the cloud backend) run on a worker thread, not the event loop, and the per-corpus freshness sweep
+behind it is shared with `/metrics` and reused for a few seconds, so a load balancer probing every
+second does not stall in-flight sessions or hammer the bucket. A probe that arrives while a refresh
+is running serves the previous sweep instead of queueing, a failed refresh is remembered for a
+couple of seconds, and the probes draw on their own small worker pool, so a stalled bucket cannot
+use up the threads the tool calls need. The body does not include the
+index directory path (it is in the boot banner).
 
 The JSON body also carries operator-facing fields that don't gate readiness:
 
