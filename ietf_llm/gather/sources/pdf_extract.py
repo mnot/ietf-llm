@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ...atomicio import atomic_open
 from ...log import LogLevel, Verbosity, log
 from ...paths import meeting_code_for_relpath, meeting_label, minutes_path
 
@@ -185,11 +186,14 @@ def _output_path(pdf_path: str) -> str:
 
 
 def _needs_extraction(pdf_path: str, txt_path: str) -> bool:
-    """True if the .txt is missing or older than its source .pdf."""
-    if not os.path.exists(txt_path):
-        return True
+    """True if the .txt is missing, empty, unreadable or older than its source
+    .pdf. A zero-length .txt can only be a torn write (even the "nothing
+    extractable" stub carries text), and the mtime check alone would trust it."""
     try:
-        return os.path.getmtime(txt_path) < os.path.getmtime(pdf_path)
+        txt_stat = os.stat(txt_path)
+        if txt_stat.st_size == 0 or not os.access(txt_path, os.R_OK):
+            return True
+        return txt_stat.st_mtime < os.path.getmtime(pdf_path)
     except OSError:
         return True
 
@@ -289,10 +293,8 @@ def extract_all_pdfs(
                     swept += 1
             except Exception as exc:  # pylint: disable=broad-except
                 failed += 1
-                # A failed write may have left a truncated/empty .txt;
-                # remove it so this PDF is retried next gather rather
-                # than mistaken for a successful empty extraction.
-                _remove_if_exists(txt_path)
+                # The write is atomic, so any prior .txt is intact; a stale
+                # one is older than its .pdf and so is retried next gather.
                 log(
                     f"PDF extraction failed for {relpath}: "
                     f"{type(exc).__name__}: {exc}",
@@ -339,9 +341,9 @@ def _extract_one(pdf_path: str, relpath: str, txt_path: str, cache_dir: str) -> 
             "_No extractable text. The PDF is image-only, encrypted, "
             "or its content stream couldn't be parsed._\n"
         )
-        with open(txt_path, "w", encoding="utf-8") as fh:
+        with atomic_open(txt_path) as fh:
             fh.write(header + "\n" + stub_body)
         return True
-    with open(txt_path, "w", encoding="utf-8") as fh:
+    with atomic_open(txt_path) as fh:
         fh.write(header + "\n" + text)
     return False

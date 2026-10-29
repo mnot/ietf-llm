@@ -112,7 +112,7 @@ def process_github_issues(
     processed_count = 0
     filtered_count = 0
 
-    with open(output_file, "w", encoding="utf-8") as out_fh:
+    with atomic_open(output_file) as out_fh:
         out_fh.write(f"Repository: {repo_name}\n")
         out_fh.write(f"Archive Export Date: {format_date(data.get('timestamp'))}\n")
         out_fh.write("=" * 80 + "\n\n")
