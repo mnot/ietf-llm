@@ -31,6 +31,7 @@ import re
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from .. import coverage
+from ..atomicio import TMP_SUFFIX
 from ..embeddings import chunk_spans
 from .common import (
     _append_participation_nudge,
@@ -54,7 +55,8 @@ _MAX_CONTEXT = 5
 #: alongside its text (a slide deck, an image). Decoding them with
 #: `errors="replace"` would not crash, but it would burn time and could
 #: produce meaningless "matches" out of mojibake.
-#: The `.kinds.json` digest sidecar is machine data, not corpus text.
+#: The `.kinds.json` digest sidecar is machine data, not corpus text, and an
+#: atomic-write temp is a possibly partial file a killed gather left behind.
 _SKIP_SUFFIXES = (
     ".pdf",
     ".png",
@@ -65,6 +67,7 @@ _SKIP_SUFFIXES = (
     ".gz",
     ".db",
     ".kinds.json",
+    TMP_SUFFIX,
 )
 
 #: Directories holding a second copy of material that already has a

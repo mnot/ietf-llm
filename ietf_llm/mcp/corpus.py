@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING, List, Optional
 
 from .. import coverage
+from ..atomicio import TMP_SUFFIX
 from ..corpus import describe, kind_status, status_cell
 from ..digest.overview import (
     _label_frequencies,
@@ -370,6 +371,8 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     entries = []
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
+            if name.endswith(TMP_SUFFIX):
+                continue  # a killed gather's partial atomic-write temp
             path = os.path.join(dirpath, name)
             if not os.path.isfile(path):
                 continue
