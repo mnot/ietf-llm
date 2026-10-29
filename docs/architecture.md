@@ -1092,7 +1092,14 @@ shared session retries 429/5xx, but a `Retry-After` beyond
 as-is and the stage's own error handling runs, because the sleep happens
 holding a per-host slot and urllib3's own ceiling is six hours. The remote
 embedding client applies the same rule (30 s for the single query-time embed,
-which also gets its own one-retry budget, `IETF_LLM_EMBED_QUERY_RETRIES`).
+which also gets its own one-retry budget, `IETF_LLM_EMBED_QUERY_RETRIES`). There
+an over-cap header raises `UpstreamRateLimited` (an `HTTPError` carrying the
+wait the server asked for), and the model then refuses new requests for up to
+60 s, so a bulk embed stops asking at once instead of sending every remaining
+window to be refused. `build_index` stops submitting files, keeps the ones
+already embedded (each is stamped on its own; the rest retry next gather), and
+raises the error, so the gather's stage error names the rate limit and the
+requested wait.
 
 ### Writers are write-if-changed and atomic
 

@@ -81,7 +81,7 @@ service, a gateway, a self-hosted vLLM / TEI) works; the URL and token are all t
 | `IETF_LLM_EMBED_QUERY_RETRIES` | retries for the single query-time embed behind a search, capped at `IETF_LLM_EMBED_RETRIES` (default 1) |
 | `IETF_LLM_EMBED_CONCURRENCY` | files embedded in parallel during a gather (default 8, floor 1 = serial) |
 
-A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out: the request fails at once instead of tying up a worker thread.
+A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out: the request fails at once instead of tying up a worker thread. During a gather this also stops the embed stage: no further requests are sent, files already embedded are kept, and the gather reports that the provider rate limited it and for how long it asked us to wait; the remaining files are embedded on the next gather.
 
 The token comes from the environment only and is never written to disk. Bulk ingest batches to
 `IETF_LLM_EMBED_BATCH` inputs per request and backs off on rate-limit / server errors. Because each

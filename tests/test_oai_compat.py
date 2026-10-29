@@ -137,11 +137,15 @@ def test_post_gives_up_at_once_on_oversized_retry_after(monkeypatch):
     monkeypatch.setattr(
         oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
     )
-    with pytest.raises(requests.HTTPError):
+    with pytest.raises(oai_compat.UpstreamRateLimited) as exc:
         oai_compat.post_json_with_retry(
             "https://host/v1/embeddings", {}, {}, timeout=5.0, max_retries=3,
         )
     assert calls["n"] == 1 and slept == []
+    # A plain HTTPError to callers that only know that, but it names the cause.
+    assert isinstance(exc.value, requests.HTTPError)
+    assert exc.value.retry_after == 3600.0
+    assert "HTTP 429" in str(exc.value) and "3600s" in str(exc.value)
 
 
 def test_build_headers_bearer_and_map():

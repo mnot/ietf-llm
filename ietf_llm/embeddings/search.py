@@ -40,6 +40,7 @@ from .models import (
     is_remote_embed_model,
     query_prefix,
 )
+from .oai_compat import UpstreamRateLimited
 from .snippet import make_snippet
 from .storage import (
     FLOAT32_CODEC,
@@ -497,13 +498,18 @@ def build_index(
         # seeded from the live index, so the build stays incremental.
         build_path = seed_build_db(wg)
         try:
-            changed = _build_index_locked(
+            changed, limited = _build_index_locked(
                 wg, cache_dir, model, model_name, rebuild, verbose, build_path, detail
             )
         except BaseException:
             discard_build_db(wg)
             raise
+        # Files embedded before a rate limit stopped the build are kept (each
+        # is hash-stamped on its own), then the stop is raised so the gather
+        # reports why the stage did not finish.
         promote_build_db(wg)
+        if limited is not None:
+            raise limited
         return changed
 
 
@@ -516,7 +522,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     verbose: Verbosity,
     build_path: Optional[str] = None,
     detail: Optional[Callable[[str], None]] = None,
-) -> bool:
+) -> Tuple[bool, Optional[UpstreamRateLimited]]:
+    """Build into `build_path`; returns `(changed, limited)`. `limited` is set
+    when the remote embedder was rate limited beyond what we will wait and the
+    build stopped early (the files done so far are written and consistent)."""
     conn = _open_db(wg, build_path)
     cur = conn.cursor()
 
@@ -692,6 +701,8 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     total_new = 0
     start = time.time()
     files_done = 0
+    # Set by the remote path when the embedder is rate limited past what we wait.
+    limited: Optional[UpstreamRateLimited] = None
     # Chunks written since the last flush — drives the chunk-count side of the
     # write-commit cadence (see `_FLUSH_EVERY_CHUNKS`).
     chunks_since_flush = 0
@@ -782,6 +793,8 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             inflight: Dict[Any, _FilePlan] = {}
 
             def _fill() -> None:
+                if limited is not None:
+                    return
                 for plan in plans:
                     inflight[pool.submit(model.embed_multi, plan.texts)] = plan
                     if len(inflight) >= max_inflight:
@@ -794,6 +807,22 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                     plan = inflight.pop(fut)
                     try:
                         vectors = list(fut.result())
+                    except UpstreamRateLimited as err:
+                        # Every further request would be refused too: stop
+                        # submitting and cancel what has not started. Running
+                        # files fail fast (the model refuses new requests while
+                        # blocked); any that still complete are kept.
+                        if limited is None:
+                            limited = err
+                            log(
+                                f"Embedding stopped: {err}",
+                                verbose,
+                                level=LogLevel.ERROR,
+                            )
+                            for pending in list(inflight):
+                                if pending.cancel():
+                                    del inflight[pending]
+                        continue
                     except Exception as err:  # pylint: disable=broad-except
                         log(
                             f"Embedding failed for {plan.relpath}: "
@@ -826,7 +855,14 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         verbose,
         level=LogLevel.STATUS,
     )
-    return changed
+    if limited is not None:
+        limited = UpstreamRateLimited(
+            f"embedding stopped, rate limited: {limited} "
+            f"({files_done} files embedded and kept; the rest are retried on "
+            "the next gather)",
+            limited.retry_after,
+        )
+    return changed, limited
 
 
 def index_model(wg: str) -> Optional[str]:

@@ -354,6 +354,11 @@ class _OpenAICompatEmbeddingModel:
         self._timeout = timeout
         self._max_retries = max(0, max_retries)
         self._query_retries = min(self._max_retries, max(0, query_retries))
+        # Monotonic time before which the upstream said not to come back (an
+        # over-cap Retry-After, clamped); every thread sharing this model then
+        # fails without a request, so a parallel bulk embed stops asking at once.
+        self._blocked_until = 0.0
+        self._blocked_by: oai_compat.UpstreamRateLimited | None = None
         # One keep-alive session for the model's lifetime (it is process-cached
         # in _MODEL_CACHE): a bulk index fires many batches back-to-back at one
         # host, so reusing the connection drops a TCP + TLS handshake per batch.
@@ -389,6 +394,17 @@ class _OpenAICompatEmbeddingModel:
             )
         return out
 
+    def _check_not_blocked(self) -> None:
+        remaining = self._blocked_until - time.monotonic()
+        cause = self._blocked_by
+        if remaining > 0 and cause is not None:
+            # Carries the original wait, so whichever thread's error a caller
+            # sees first still says what the server asked for.
+            raise oai_compat.UpstreamRateLimited(
+                f"{cause} (not asking again for another {remaining:.0f}s)",
+                cause.retry_after,
+            )
+
     def _embed_batch(
         self, batch: Sequence[str], *, max_retries: int, retry_after_max: float
     ) -> list[list[float]]:
@@ -402,16 +418,27 @@ class _OpenAICompatEmbeddingModel:
         start = time.monotonic()
         errored = True
         try:
-            body = oai_compat.post_json_with_retry(
-                self._url,
-                payload,
-                self._headers,
-                timeout=self._timeout,
-                max_retries=max_retries,
-                retry_after_max=retry_after_max,
-                auth_hint="IETF_LLM_EMBED_TOKEN / IETF_LLM_EMBED_HEADERS",
-                session=self._session,
-            )
+            self._check_not_blocked()
+            try:
+                body = oai_compat.post_json_with_retry(
+                    self._url,
+                    payload,
+                    self._headers,
+                    timeout=self._timeout,
+                    max_retries=max_retries,
+                    retry_after_max=retry_after_max,
+                    auth_hint="IETF_LLM_EMBED_TOKEN / IETF_LLM_EMBED_HEADERS",
+                    session=self._session,
+                )
+            except oai_compat.UpstreamRateLimited as err:
+                # Capped: the header is advisory, and a bogus hour must not
+                # lock queries out for an hour after the provider recovers.
+                self._blocked_until = max(
+                    self._blocked_until,
+                    time.monotonic() + min(err.retry_after, oai_compat.RETRY_AFTER_MAX),
+                )
+                self._blocked_by = err
+                raise
             errored = False
         finally:
             serve_metrics.record_embed(time.monotonic() - start, error=errored)
