@@ -44,6 +44,12 @@ def _stub_get_json(
     Datatracker URL including format=json appendages).
     """
     calls: list[str] = []
+    # Unless a test says otherwise, the people it uses are sitting balloters.
+    responses = {
+        "group__acronym=iesg": _roles(*range(100, 110)),
+        "group__acronym=irsg": _roles(*range(200, 210)),
+        **responses,
+    }
 
     def fake(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
         # noqa: ARG001
@@ -518,22 +524,62 @@ def test_irsg_members_count_as_current(
 
 
 @pytest.mark.parametrize("failing", ["group__acronym=iesg", "group__acronym=irsg"])
-def test_unknown_current_balloters_means_no_filtering(
+def test_unknown_current_balloters_is_a_failed_fetch(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
 ) -> None:
-    # If the role list can't be read, "nobody is current" would label every
-    # balloter a former one. Better to show them all.
+    # Without the role lists a departed AD's DISCUSS would count as live, so
+    # this is treated like any other failed fetch rather than guessed at.
     events = [_position_event("draft-foo", 102, "yes", _iso(5), ballot=7)]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        failing: None,
+    })
+    assert fetch_ballots("wg", months=12, verbose=Verbosity.QUIET) is None
+
+
+def test_role_list_failure_leaves_a_good_ballot_file_untouched(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_wg_file_cache_dir("wg")
+    events = [
+        _position_event("draft-foo", 101, "yes", _iso(5), ballot=7),
+        _position_event("draft-foo", 150, "discuss", _iso(5), discuss="Gone.", ballot=7),
+    ]
     responses: Dict[str, Optional[Dict[str, Any]]] = {
         "doc__group__acronym": {"objects": events},
         "doc__name__in=": {"objects": events},
         "group__acronym=iesg": _roles(101),
-        "group__acronym=irsg": _roles(201),
+        "group__acronym=irsg": _roles(),
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/150/": {"name": "Carol Lee"},
     }
-    responses[failing] = None
     _stub_get_json(monkeypatch, responses)
+    timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
+    path = Path(cache) / "ballots" / "draft-foo.md"
+    good = path.read_text(encoding="utf-8")
+    assert "**Tally:** 1 Yes" in good and "Carol Lee (former AD)" in good
+
+    _stub_get_json(monkeypatch, {**responses, "group__acronym=iesg": None})
+    timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
+    assert path.read_text(encoding="utf-8") == good
+
+
+def test_ballot_of_only_former_balloters_says_so(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [_position_event("draft-foo", 150, "yes", _iso(5), ballot=7)]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        "/api/v1/person/person/150/": {"name": "Carol Lee"},
+    })
     out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
-    assert out is not None and out[0].positions[0].current
+    assert out is not None
+    text = render_ballot(out[0])
+    assert "**Tally:**" not in text
+    assert "No current balloter holds a position" in text
+    assert "Carol Lee (former AD)" in text
 
 
 def test_charter_ballot_is_headed_as_one(

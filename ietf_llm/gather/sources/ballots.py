@@ -216,8 +216,8 @@ _BALLOT_DOC_CHUNK = 40
 def _fetch_current_balloters() -> Optional[frozenset[str]]:
     """Person ids of everyone who can hold a position on a ballot today, or
     None when that cannot be established (a failed fetch, or an empty answer).
-    None means "don't filter": treating an unreachable role list as "nobody is
-    current" would label every balloter a former one."""
+    The caller must not guess: "nobody is current" and "everybody is current"
+    are both wrong."""
     ids: set[str] = set()
     for query in _BALLOTER_QUERIES:
         path: Optional[str] = f"{_API_BASE}{query}&limit=200"
@@ -352,6 +352,17 @@ def fetch_ballots(
             level=LogLevel.WARN,
         )
         return None
+    # Without the role lists every departed balloter would count as current,
+    # and a good file would be rewritten with their blocking positions.
+    current = _fetch_current_balloters()
+    if current is None:
+        log(
+            f"Could not establish the current balloters for {wg}; "
+            "leaving existing ballot files as they are.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        return None
     bodies: List[Tuple[str, Dict[str, Any]]] = []
     balloters: set[str] = set()
     for doc_name in doc_names:
@@ -367,14 +378,6 @@ def fetch_ballots(
     # One batched query resolves every balloter (the same ~15 ADs recur
     # across docs) instead of one GET per balloter.
     person_cache: Dict[str, str] = fetch_person_names(balloters)
-    current = _fetch_current_balloters()
-    if current is None:
-        log(
-            "Could not establish the current balloters; every position "
-            "is treated as current.",
-            verbose,
-            level=LogLevel.WARN,
-        )
 
     ballots: List[Ballot] = []
     for doc_name, body in bodies:
@@ -396,7 +399,7 @@ def _build_ballot(
     event per balloter wins). `person_cache` is pre-resolved by the
     caller; any balloter it misses falls back to an individual lookup.
     `current` is the set of person ids still entitled to ballot; None
-    means unknown, and no position is then marked former.
+    marks no position former.
 
     "Newest" is the ballot with the most recent position event. A ballot
     just opened, before anyone has voted, has no events yet, so the previous
@@ -524,6 +527,11 @@ def render_ballot(ballot: Ballot) -> str:
         tally_bits.append(f"{counts[slug]} {label}")
     if tally_bits:
         out.append(f"**Tally:** {', '.join(tally_bits)}")
+    elif former:
+        out.append(
+            "**No current balloter holds a position:** every position below "
+            "is from a former balloter, so this ballot is most likely closed."
+        )
     out.append("")
     blocking = [p for p in standing if p.pos_slug in _BLOCKING]
     other = [p for p in standing if p.pos_slug not in _BLOCKING]

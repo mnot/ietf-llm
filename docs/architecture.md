@@ -349,12 +349,19 @@ Key invariants:
   recharter or a re-ballot never folds closed ballots into the tally.
   Positions from people who are no longer on the IESG or IRSG are listed
   under "Former balloters" and left out of the tally; the current set
-  comes from the `iesg` (role `ad`) and `irsg` group roles, and if
-  that can't be fetched nothing is marked former. `charter-*` documents
-  get the same treatment and are headed as charter ballots. If the
-  scoping or history fetch fails, the ballot files are left as the last
-  gather wrote them; only a successful answer of "no activity" removes
-  them. `review_record` applies the same newest-ballot rule live.
+  comes from the `iesg` (role `ad`) and `irsg` group roles. A ballot whose
+  balloters have all left says so instead of showing a tally.
+  `charter-*` documents get the same treatment and are headed as charter
+  ballots. If the scoping, history or role-list fetch fails, the ballot
+  files are left as the last gather wrote them (a guess at who is current
+  would rewrite them wrongly); only a successful answer of "no activity"
+  removes them. The timeline digest, rebuilt from events, has no ballot
+  rows after such a gather until the next good one. The newest ballot is
+  the one with the latest position event, so between a ballot being
+  opened and its first vote the previous ballot still shows.
+  `review_record` applies the newest-ballot rule live, but not the
+  former-balloter rule, so the two can differ on a departed AD's
+  position.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
   version, and vector dimension; a change to any forces a rebuild, and the model
   id is read back at query time to resolve the same backend. The `chunks` table
