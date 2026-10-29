@@ -3,16 +3,25 @@ ephemeral host (scale-to-zero) doesn't rebuild them by re-hitting rate-limited
 upstreams after its scratch is wiped (issue #82).
 
 Only the cloud CorpusStore backend calls in; the local backend keeps these
-caches on persistent disk and needs no sync. The caches have different
-contention profiles, so each is scoped to the unit that already guarantees a
-single writer:
+caches on persistent disk and needs no sync.
+
+This module is the *filesystem* half and runs in the process that owns the
+lease: `hydrate` restores the stored caches to disk before the gather, `persist`
+reads them off disk and uploads after. It holds no gather-time state. The gather
+itself may run in another process (the MCP runner's child), so what it computes
+reaches `persist` only as files: the ETag store flushed to `http_cache_path`
+(`datatracker.gather_http_cache`), and the per-list `.verified-uidvalidity`
+sidecar the IMAP sync writes (`mbox.record_verified`).
+
+The caches have different contention profiles, so each is scoped to the unit that
+already guarantees a single writer:
 
   - `.http-cache.json` — the datatracker ETag store. Sharded **per corpus** under
     that corpus's prefix. #85's per-corpus gather lease serialises writers across
-    the fleet, and `bind_gather_corpus` binds a per-corpus ETag store to *this
-    thread* so the runner's up-to-N concurrent in-process gathers each write their
-    own corpus file (not one shared root file). Together that makes hydrate ->
-    gather -> flush -> persist a plain read-modify-write — no CAS, no lost delta.
+    the fleet, and the gather binds a per-corpus ETag store to its thread so the
+    runner's up-to-N concurrent in-process gathers each write their own corpus
+    file (not one shared root file). Together that makes hydrate -> gather ->
+    persist a plain read-modify-write — no CAS, no lost delta.
   - `_github-users.json` / `_datatracker-github.json` / `_datatracker-people.json`
     — corpus-independent identity maps, **shared** at a fleet prefix. Two
     different-corpus gathers can run at once, so persist does a bounded
@@ -111,19 +120,12 @@ def hydrate(kv: KvStore, corpus: str) -> List[str]:
     after restoring everything else, if stored IMAP mail couldn't be fetched (see
     `_restore_imap`); nothing else here raises."""
     # A UIDVALIDITY confirmation is good for one gather, from here to persist.
-    # One left over from an earlier gather in this process would let persist
-    # replace the stored mail on the strength of a check this gather never made.
+    # One left over from an earlier gather would let persist replace the stored
+    # mail on the strength of a check this gather never made.
     mbox.forget_verified(corpus)
     _restore(
         kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
     )
-    # Bind this thread's ETag store to the freshly-hydrated per-corpus file. The
-    # runner gathers up to N corpora concurrently, one per worker thread, so a
-    # per-thread per-corpus store is what keeps them off one shared file.
-    try:
-        datatracker.bind_gather_corpus(corpus)
-    except Exception:  # pylint: disable=broad-except
-        pass
     _restore(kv, _GITHUB_USERS_KEY, github_users.cache_path())
     _restore(kv, _DATATRACKER_GITHUB_KEY, datatracker_github.cache_path())
     _restore(kv, _DATATRACKER_PEOPLE_KEY, datatracker_people.cache_path())
@@ -138,21 +140,9 @@ def hydrate(kv: KvStore, corpus: str) -> List[str]:
 def persist(kv: KvStore, corpus: str) -> List[str]:
     """Push the caches back to durable storage after a gather. Never raises;
     returns notes for failures worth surfacing (see `_persist_imap`)."""
-    # The ETag store flushes only at interpreter exit, which never fires between
-    # gathers in the serve worker — force it so the file reflects this gather.
-    try:
-        datatracker.flush_http_cache()
-    except Exception:  # pylint: disable=broad-except
-        pass
     _put_plain(
         kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
     )
-    # Unbind this thread's per-corpus store (release it; the next gather on this
-    # reused worker binds its own).
-    try:
-        datatracker.bind_gather_corpus(None)
-    except Exception:  # pylint: disable=broad-except
-        pass
     _cas_merge(
         kv, _GITHUB_USERS_KEY, github_users.cache_path(), github_users.merge_cache
     )

@@ -38,6 +38,7 @@ from ..people import build_registry, write_people_digest
 from .cli import build_parser
 from .lifecycle import GatherOutcome, clear_local_state
 from .plan import _gather_plan_summary
+from .sources import datatracker
 from .sources.author import fetch_author_draft_names, resolve_person
 from .sources.charter import process_charter
 from .sources.citations import (
@@ -589,7 +590,7 @@ def preflight(
     return Preflight(None, persisted, synth, group_backed)
 
 
-def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
+def _gather_one(
     args: argparse.Namespace,
     verbosity: Verbosity,
     progress: Optional[ProgressFn] = None,
@@ -607,7 +608,29 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     (success, but nothing new to publish), or `UNUSABLE` if the corpus
     name resolved to nothing (logged). `progress`, when given, is called
     as each stage begins (see `_stage_plan`).
+
+    On the cloud backend the stages run against the corpus's own ETag file,
+    flushed when they end: the sync that restores and uploads it runs in the
+    process that drives the gather, which is not this one when the pipeline runs
+    in the gather child.
     """
+    if pre is None:
+        pre = preflight(args, verbosity)
+    if pre.outcome is not None:
+        return pre.outcome
+    on_cloud = service_config.store_backend() == "cloud"
+    with datatracker.gather_http_cache(args.wg if on_cloud else None):
+        return _gather_stages(args, verbosity, progress, note_fn, pre)
+
+
+def _gather_stages(  # pylint: disable=too-many-branches,too-many-statements
+    args: argparse.Namespace,
+    verbosity: Verbosity,
+    progress: Optional[ProgressFn],
+    note_fn: Optional[Callable[[str], None]],
+    pre: Preflight,
+) -> GatherOutcome:
+    """The stages of `_gather_one`, once `preflight` has said to proceed."""
     # Suppress regenerable / non-served bulk when the CLI flag (always set by
     # an MCP gather via to_argv) OR a cloud backend asks for it (a cloud-served
     # version is never grepped locally). Computed once, threaded as a boolean.
@@ -615,10 +638,6 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     suppress_pdf = bool(args.no_pdf) or on_cloud
     suppress_raw = bool(args.no_raw) or on_cloud
 
-    if pre is None:
-        pre = preflight(args, verbosity)
-    if pre.outcome is not None:
-        return pre.outcome
     persisted, synth, group_backed = pre.persisted, pre.synth, pre.group_backed
 
     # Validate the *new* CLI-provided --draft / --mailing-list / --github

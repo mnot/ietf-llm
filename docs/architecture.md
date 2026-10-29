@@ -1354,7 +1354,18 @@ deadline couldn't fire) and "still gathering" was indistinguishable from "server
 dead". Off-process, the worker only blocks on the pipe (GIL released) and the
 server stays responsive; a stalled read now times out cleanly, and its timeout
 message names the running stage. Cancellation (`stop_gather`) terminates the
-child; a child crash fails one gather instead of the whole server. Under
+child; a child crash fails one gather instead of the whole server.
+
+The cloud gather-cache sync straddles that boundary, so it is split along it with
+nothing shared in process memory. The worker (`cache_sync.hydrate` / `persist`)
+only moves files: hydrate restores `.http-cache/<corpus>.json` and the IMAP units
+to disk before the child starts, persist reads them off disk after it exits. What
+the gather computes comes back as files too. The child binds its ETag store to
+`http_cache_path(corpus)` itself, around the stages (`_gather_one`, under the
+cloud backend; `datatracker.gather_http_cache`), and flushes it before it exits.
+The IMAP sync records the UIDVALIDITY the server confirmed in a per-list
+`.verified-uidvalidity` sidecar, which persist reads in place of any in-process
+state. The CLI runs the same code in one process, so both drivers behave alike. Under
 `IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
 which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
 the stage and how many are left) since there is no prior snapshot. A re-gather
@@ -1470,8 +1481,11 @@ the stored main unit's epoch differs from the local cache's, hydrate restores it
 into its own `epoch-<stored>/` dir instead of mixing UIDs that name different
 messages. Epochs are labels, not an order, so persist replaces the stored main
 unit only when this gather's sync confirmed the local epoch with the server
-(`mbox.verified_uidvalidity`); a differing, unconfirmed epoch -- a warm host whose
-IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+(`mbox.verified_uidvalidity`, read from the list's `.verified-uidvalidity`
+sidecar: the sync runs in the gather child, so the confirmation has to cross the
+process boundary as a file, and hydrate deletes it at the start of every gather so
+a stale one can't vouch for a check this gather never made); a differing,
+unconfirmed epoch -- a warm host whose IMAP sync failed -- leaves the store alone. When it does replace, it first makes
 sure the old epoch's mail is stored as an archive unit (filling the local
 `epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
 list if that fails), then invalidates the old index before touching the chunks,
