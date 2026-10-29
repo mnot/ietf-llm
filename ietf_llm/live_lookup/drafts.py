@@ -312,7 +312,8 @@ def _iter_group_adopted_drafts(
     prefixes = (f"draft-ietf-{wg}-", f"draft-irtf-{wg}-")
     objects: List[Dict[str, Any]] = []
     url: Optional[str] = (
-        f"{_API_BASE}/doc/document/?group__acronym={quote(wg, safe='')}&type=draft&limit=200&format=json"
+        f"{_API_BASE}/doc/document/?group__acronym={quote(wg, safe='')}"
+        "&type=draft&limit=200&format=json"
     )
     fetched = _now_utc()
     pages = 0

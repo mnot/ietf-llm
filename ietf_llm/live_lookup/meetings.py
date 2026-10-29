@@ -14,6 +14,7 @@ import datetime
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from ..gather.sources.meetings import _uri_id
 from .cache import (
@@ -205,8 +206,9 @@ def fetch_meeting_sessions(
     the agenda could not be read or has no published rows yet; `sessions` is
     then empty. An *empty* list with no error means the group simply has no
     session at that meeting. Cancelled and rescheduled-away rows are dropped
-    (`_is_live_row`); an unreachable Datatracker gets its own "could not
-    reach" message, never the no-agenda one.
+    (`_is_live_row`); if those are all the group has there, `error` says so
+    rather than implying it never had a session. An unreachable Datatracker
+    gets its own "could not reach" message, never the no-agenda one.
     """
     meeting = str(meeting).strip()
     is_interim = is_interim_number(meeting)
@@ -233,11 +235,24 @@ def fetch_meeting_sessions(
         return [], fetched, f"{label} has no published agenda yet."
     tz_name = _meeting_timezone(meeting)
     zone = _resolve_zone(tz_name)
+    ours = [
+        raw
+        for raw in rows
+        if isinstance(raw, dict) and (raw.get("group") or {}).get("acronym") == corpus
+    ]
     sessions = [
         _build_session(meeting, raw, tz_name, zone, is_interim)
-        for raw in rows
-        if _is_live_row(raw) and (raw.get("group") or {}).get("acronym") == corpus
+        for raw in ours
+        if _is_live_row(raw)
     ]
+    if ours and not sessions:
+        return (
+            [],
+            fetched,
+            f"`{corpus}` has no active session at {label}: the {len(ours)} "
+            "session(s) listed for it there are cancelled or were moved to "
+            "another slot.",
+        )
     return sessions, fetched, None
 
 
@@ -251,8 +266,9 @@ class UpcomingMeeting:
     agenda_url: str  # the human agenda page, drillable via `meeting_schedule`
 
 
-def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str, int]]:
-    """Batch-resolve meeting ids → `{number: (kind, date, days)}` via `id__in`.
+def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str, int, str]]:
+    """Batch-resolve meeting ids → `{number: (kind, date, days, time_zone)}`
+    via `id__in`.
 
     Raises `LiveUnavailable` if a batch could not be fetched, so a failure
     never reads as "no upcoming meetings".
@@ -263,7 +279,7 @@ def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str, int]]:
     agenda URLs / drill-in calls from it) rather than by uri-id. Keep the
     two in step if Datatracker's meeting shape changes.
     """
-    out: Dict[str, Tuple[str, str, int]] = {}
+    out: Dict[str, Tuple[str, str, int, str]] = {}
     ordered = sorted(set(ids))
     for start in range(0, len(ordered), 100):
         chunk = ordered[start : start + 100]
@@ -283,23 +299,29 @@ def _resolve_meetings(ids: List[str]) -> Dict[str, Tuple[str, str, int]]:
                 kind,
                 str(meeting.get("date") or ""),
                 days if isinstance(days, int) and days > 0 else 1,
+                str(meeting.get("time_zone") or ""),
             )
     return out
 
 
-def _still_upcoming(kind: str, date: str, days: int, today: datetime.date) -> bool:
+def _still_upcoming(
+    kind: str, date: str, days: int, tz_name: str, now: datetime.datetime
+) -> bool:
     """Whether a meeting dated `date` (its first day) has not yet finished.
 
     `Meeting.date` is day one, so comparing it to today drops a meeting from
     its second day although a group's session may be days away. An interim is
-    a single day however `days` reads.
+    a single day however `days` reads. The date is the venue-local day, so
+    "today" is taken in the meeting's own zone (UTC when it has none): an
+    evening session west of UTC is still on the day it was scheduled for.
     """
     try:
         first = datetime.date.fromisoformat(date)
     except ValueError:
         return False
+    zone = _resolve_zone(tz_name) or datetime.timezone.utc
     length = 1 if kind == "interim" else days
-    return first + datetime.timedelta(days=length) > today
+    return first + datetime.timedelta(days=length) > now.astimezone(zone).date()
 
 
 def fetch_upcoming_meetings(
@@ -313,12 +335,14 @@ def fetch_upcoming_meetings(
     the most-recent page of the group's sessions (future meetings carry the
     newest session ids) and batch-resolves their meeting metadata; the read
     stays date-level (cheap), with full per-session times on the drill-in. A
-    meeting stays listed until its last day has passed. An unreachable
+    meeting stays listed until its last (venue-local) day has passed, and a
+    meeting whose only session was cancelled still appears (the listing
+    cannot see session status). An unreachable
     Datatracker is reported as such, never as an empty calendar.
     """
-    today = _now_utc().date()
+    now = _now_utc()
     body, fetched, answered = _cached_json(
-        f"{_API_BASE}/meeting/session/?group__acronym={corpus}"
+        f"{_API_BASE}/meeting/session/?group__acronym={quote(corpus, safe='')}"
         "&limit=100&order_by=-id&format=json"
     )
     if not answered:
@@ -343,8 +367,8 @@ def fetch_upcoming_meetings(
             date=date,
             agenda_url=f"{_DT_BASE}/meeting/{number}/agenda",
         )
-        for number, (kind, date, days) in meetings.items()
-        if _still_upcoming(kind, date, days, today)
+        for number, (kind, date, days, tz_name) in meetings.items()
+        if _still_upcoming(kind, date, days, tz_name, now)
     ]
     upcoming.sort(key=lambda m: (m.date, m.number))
     return upcoming, fetched, None

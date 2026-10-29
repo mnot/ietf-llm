@@ -275,7 +275,7 @@ def test_meeting_sessions_meetecho_urls():
 
 
 def test_meeting_sessions_no_session_for_group():
-    sessions, _, error = live_lookup.fetch_meeting_sessions("tls", "126")
+    sessions, _, error = live_lookup.fetch_meeting_sessions("masque", "126")
     assert error is None
     assert sessions == []
 
@@ -1047,15 +1047,18 @@ def test_reconcile_covers_a_research_group_corpus(monkeypatch):
 # --- Meetings: cancelled / rescheduled rows, and the meeting in progress -----
 
 
-def test_a_cancelled_session_is_not_listed():
+def test_a_cancelled_session_is_not_listed_and_is_said_to_be_cancelled():
     sessions, _, error = live_lookup.fetch_meeting_sessions("dinrg", "126")
-    assert error is None and sessions == []
-    assert "No session for `dinrg`" in tool_meeting_schedule("dinrg", "126")
+    assert sessions == []
+    assert error and "cancelled" in error
+    out = tool_meeting_schedule("dinrg", "126")
+    assert "cancelled" in out and "Grand Klimt Hall 2" not in out
 
 
 def test_the_vacated_slot_of_a_rescheduled_session_is_not_listed():
     sessions, _, error = live_lookup.fetch_meeting_sessions("tls", "126")
-    assert error is None and sessions == []
+    assert sessions == []
+    assert error and "moved" in error
 
 
 def test_row_liveness_predicate():
@@ -1098,3 +1101,34 @@ def test_a_meeting_in_progress_is_still_upcoming(monkeypatch):
     found, _, error = live_lookup.fetch_upcoming_meetings("aipref")
     assert error is None
     assert [m.number for m in found] == ["127", "126", "interim-2026-a-02"]
+
+
+def test_upcoming_is_judged_in_the_meetings_own_timezone(monkeypatch):
+    # 19:00 PDT on the 20th is 02:00Z on the 21st: by the UTC date the interim
+    # would already have dropped off before it starts.
+    monkeypatch.setattr(
+        live_lookup.meetings,
+        "_now_utc",
+        lambda: datetime.datetime(2026, 7, 21, 2, 0, tzinfo=datetime.timezone.utc),
+    )
+    interim = "/api/v1/name/meetingtypename/interim/"
+    meetings = {
+        "objects": [
+            {
+                "number": "interim-2026-a-01",
+                "type": interim,
+                "date": "2026-07-20",
+                "time_zone": "America/Los_Angeles",
+            },
+            {"number": "interim-2026-a-02", "type": interim, "date": "2026-07-20"},
+        ]
+    }
+
+    def _stub(url, timeout=10.0):
+        return meetings if "/meeting/meeting/?id__in=" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    found, _, error = live_lookup.fetch_upcoming_meetings("aipref")
+    assert error is None
+    assert [m.number for m in found] == ["interim-2026-a-01"]  # UTC one is over

@@ -331,7 +331,8 @@ def register_live(server: "MCPServer") -> None:
         Cancelled sessions and the vacated slot of a rescheduled one are
         omitted. **Omit `meeting`** to list the group's upcoming meetings
         (numbered + interim) — the way to discover an interim id, which isn't
-        guessable; a meeting stays listed until its last day has passed.
+        guessable; a meeting stays listed until its last day has passed, even if
+        the group's only session there was cancelled.
 
         Live (short TTL + freshness stamp; it reaches the network). Times
         are venue-local — never quote the UTC start as the local time.
