@@ -30,7 +30,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..paths import checked_corpus
-from .kv import ABSENT, KvStore, Record
+from .kv import ABSENT, ANY, KvStore, Record
 
 _CORPORA = "corpora/"
 _SLOTS_KEY = "fleet/slots"
@@ -84,10 +84,19 @@ class KvControlPlane:
         record = self._kv.get(_pointer_key(corpus))
         return record[0].decode("utf-8") if record else None
 
-    def set_current(self, corpus: str, version: str) -> None:
-        # The publisher holds the per-corpus lease, so a last-writer-wins put is
-        # safe — no other writer flips this pointer concurrently.
-        self._kv.put(_pointer_key(corpus), version.encode("utf-8"))
+    def pointer_token(self, corpus: str) -> object:
+        """The pointer's version token — `ABSENT` when the corpus has none yet.
+        Read at the *start* of a publish and handed back to `set_current`, so the
+        flip only lands if nobody else has flipped in between."""
+        record = self._kv.get(_pointer_key(corpus))
+        return ABSENT if record is None else record[1]
+
+    def set_current(self, corpus: str, version: str, *, expect: object = ANY) -> bool:
+        """Flip the pointer to `version`; False if `expect` (a `pointer_token`)
+        no longer holds, i.e. another publisher got there first. The default
+        `ANY` is an unconditional put, for callers that hold no token."""
+        won = self._kv.put(_pointer_key(corpus), version.encode("utf-8"), expect=expect)
+        return won is not None
 
     def list_corpora(self) -> List[str]:
         names = self._kv.list_children(_CORPORA)
@@ -110,19 +119,47 @@ class KvControlPlane:
             return self._kv.put(key, new, expect=token) is not None
         return False
 
+    def _touch_lease(
+        self, corpus: str, owner: str, ttl: Optional[float], clock: float
+    ) -> bool:
+        """Rewrite `owner`'s lease record under compare-and-swap — extending it
+        to `clock + ttl`, or leaving it as it is when `ttl` is None — and report
+        whether `owner` still held it. A lost CAS is retried against a fresh read:
+        the only other writer of a live lease is its owner's other thread (the
+        heartbeat vs. a publish), and a CAS lost to that must not read as a lost
+        lease. A different owner on the record is the real answer."""
+        key = _lease_key(corpus)
+        for _ in range(_CAS_RETRIES):
+            record = self._kv.get(key)
+            if record is None:
+                return False
+            held, token = _loads(record)
+            if held["owner"] != owner:
+                return False
+            if ttl is not None:
+                held["expires_at"] = clock + ttl
+            if self._kv.put(key, _dumps(held), expect=token) is not None:
+                return True
+        return False
+
     def renew_lease(
         self, corpus: str, owner: str, ttl: float, now: Optional[float] = None
     ) -> bool:
+        """Extend `owner`'s lease; False once it is no longer `owner`'s (taken
+        over, or never held). A lease that merely lapsed unclaimed is revived: no
+        one else holds it, and the compare-and-swap decides any race with a
+        taker."""
         clock = time.time() if now is None else now
-        key = _lease_key(corpus)
-        record = self._kv.get(key)
-        if record is None:
-            return False
-        held, token = _loads(record)
-        if held["owner"] != owner:
-            return False
-        held["expires_at"] = clock + ttl
-        return self._kv.put(key, _dumps(held), expect=token) is not None
+        return self._touch_lease(corpus, owner, ttl, clock)
+
+    def confirm_lease(self, corpus: str, owner: str) -> bool:
+        """Whether `owner` holds the lease *right now*, proven by a compare-and-
+        swap rewrite of the record rather than a read: a taker's `acquire_lease`
+        and this write race on the record's token, so exactly one wins. Expiry is
+        not consulted — an unclaimed lapsed lease is still `owner`'s, and the
+        publisher's pointer compare-and-swap is what orders it against any later
+        taker."""
+        return self._touch_lease(corpus, owner, None, time.time())
 
     def release_lease(self, corpus: str, owner: str) -> None:
         # Free the lease by stamping it expired (compare-and-swap on our token),
@@ -135,13 +172,18 @@ class KvControlPlane:
             held["expires_at"] = 0.0
             self._kv.put(_lease_key(corpus), _dumps(held), expect=token)
 
-    def lease_holder(self, corpus: str, now: Optional[float] = None) -> Optional[str]:
+    def lease_holder(
+        self, corpus: str, now: Optional[float] = None, *, expired_ok: bool = False
+    ) -> Optional[str]:
+        """The live lease holder. `expired_ok` returns whoever the record names
+        even once it has lapsed: a lapsed lease still names its last owner until
+        someone else takes it, which is what a publisher checks."""
         clock = time.time() if now is None else now
         record = self._kv.get(_lease_key(corpus))
         if record is None:
             return None
         held, _ = _loads(record)
-        return held["owner"] if held["expires_at"] > clock else None
+        return held["owner"] if expired_ok or held["expires_at"] > clock else None
 
     # --- fleet-wide gather slots (cross-corpora concurrency cap) -----------
 

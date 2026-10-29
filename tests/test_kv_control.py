@@ -4,10 +4,10 @@ fleet slots, and status. Mirrors the old SQL control-plane behaviour."""
 from __future__ import annotations
 
 import threading
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 from ietf_llm.store.control import KvControlPlane
-from ietf_llm.store.kv import InMemoryKvStore
+from ietf_llm.store.kv import ANY, InMemoryKvStore
 
 
 def _race(n: int, attempt: Callable[[int], bool]) -> int:
@@ -176,3 +176,148 @@ def test_config_is_per_corpus() -> None:
     cp.set_config("tls", "gather", "{}")
     assert cp.get_config("httpbis", "gather") is None
     assert cp.clear_config("httpbis") is False
+
+
+# --- conditional pointer flip ---------------------------------------------
+
+
+def test_set_current_expect_absent_then_token() -> None:
+    cp = _cp()
+    first = cp.pointer_token("tls")
+    assert cp.set_current("tls", "v1", expect=first) is True
+    # The token read before the flip is now stale: a second publisher that read
+    # it too loses.
+    assert cp.set_current("tls", "v2", expect=first) is False
+    assert cp.resolve_current("tls") == "v1"
+    assert cp.set_current("tls", "v2", expect=cp.pointer_token("tls")) is True
+    assert cp.resolve_current("tls") == "v2"
+
+
+def test_set_current_race_has_one_winner() -> None:
+    cp = _cp()
+    token = cp.pointer_token("tls")
+    wins = _race(8, lambda i: cp.set_current("tls", f"v{i}", expect=token))
+    assert wins == 1
+
+
+# --- lease proof and renewal ----------------------------------------------
+
+
+class _InterposedKv(InMemoryKvStore):
+    """An in-memory store that runs `before_put(key)` just before each put, so a
+    test can slip a competing write between a get and its compare-and-swap."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.before_put: Callable[[str], None] = lambda key: None
+
+    def put(self, key: str, value: bytes, *, expect: object = ANY) -> Optional[str]:
+        self.before_put(key)
+        return super().put(key, value, expect=expect)
+
+
+def test_confirm_lease_and_the_expired_holder() -> None:
+    cp = _cp()
+    assert cp.lease_holder("tls", expired_ok=True) is None
+    assert cp.confirm_lease("tls", "a") is False
+    cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+    assert cp.confirm_lease("tls", "a") is True
+    assert cp.confirm_lease("tls", "b") is False
+    # A lapsed lease still names its owner until someone takes it.
+    assert cp.lease_holder("tls", now=5000.0) is None
+    assert cp.lease_holder("tls", now=5000.0, expired_ok=True) == "a"
+
+
+def test_confirm_lease_does_not_extend_the_lease() -> None:
+    cp = _cp()
+    cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+    assert cp.confirm_lease("tls", "a") is True
+    # Still expires at 1100: a taker is admitted exactly when it would have been.
+    assert cp.acquire_lease("tls", "b", ttl=100.0, now=1101.0) is True
+
+
+def test_confirm_lease_survives_a_concurrent_heartbeat_renewal() -> None:
+    # The heartbeat renews the same record while a publish confirms it. A CAS
+    # lost to our own heartbeat is not a lost lease.
+    kv = _InterposedKv()
+    cp = KvControlPlane(kv)
+    cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+    fired: List[str] = []
+
+    def heartbeat_lands_first(key: str) -> None:
+        if key.endswith("/lease") and not fired:
+            fired.append(key)
+            cp.renew_lease("tls", "a", ttl=100.0, now=1500.0)
+
+    kv.before_put = heartbeat_lands_first
+    assert cp.confirm_lease("tls", "a") is True
+    assert fired
+
+
+def test_renew_lease_survives_a_concurrent_renewal() -> None:
+    kv = _InterposedKv()
+    cp = KvControlPlane(kv)
+    cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+    fired: List[str] = []
+
+    def other_thread_renews(key: str) -> None:
+        if key.endswith("/lease") and not fired:
+            fired.append(key)
+            cp.confirm_lease("tls", "a")
+
+    kv.before_put = other_thread_renews
+    assert cp.renew_lease("tls", "a", ttl=100.0, now=1200.0) is True
+    assert fired
+    # And the renewal took: the lease runs to 1300, not the original 1100.
+    assert cp.acquire_lease("tls", "b", ttl=100.0, now=1250.0) is False
+
+
+def test_renew_and_confirm_refused_once_taken_over_mid_call() -> None:
+    # A takeover that lands between our get and our CAS must read as a lost
+    # lease, not be retried into success.
+    for op in ("renew", "confirm"):
+        kv = _InterposedKv()
+        cp = KvControlPlane(kv)
+        cp.acquire_lease("tls", "a", ttl=100.0, now=1000.0)
+        fired: List[str] = []
+
+        def b_takes_over(key: str) -> None:
+            if key.endswith("/lease") and not fired:
+                fired.append(key)
+                assert cp.acquire_lease("tls", "b", ttl=100.0, now=2000.0)
+
+        kv.before_put = b_takes_over
+        if op == "renew":
+            assert cp.renew_lease("tls", "a", ttl=100.0, now=2000.0) is False
+        else:
+            assert cp.confirm_lease("tls", "a") is False
+        assert cp.lease_holder("tls", now=2000.0) == "b"
+
+
+def test_renew_refused_for_a_takeover_even_after_release() -> None:
+    cp = _cp()
+    cp.acquire_lease("tls", "a", ttl=10.0, now=0.0)
+    cp.acquire_lease("tls", "b", ttl=10.0, now=100.0)
+    cp.release_lease("tls", "b")
+    # B released, but the record still names B: A's zombie renewal is refused.
+    assert cp.renew_lease("tls", "a", ttl=10.0, now=200.0) is False
+    assert cp.lease_holder("tls", expired_ok=True) == "b"
+
+
+def test_gather_slot_retries_a_lost_cas() -> None:
+    # S3's 409 ConditionalRequestConflict surfaces from the KvStore as a lost
+    # CAS (None); the slot loops must retry it rather than fail the gather.
+    kv = _InterposedKv()
+    cp = KvControlPlane(kv)
+    lost: List[str] = []
+    real_put = InMemoryKvStore.put
+
+    def put_losing_once(key: str, value: bytes, *, expect: object = ANY) -> Optional[str]:
+        if key == "fleet/slots" and not lost:
+            lost.append(key)
+            return None
+        return real_put(kv, key, value, expect=expect)
+
+    kv.put = put_losing_once  # type: ignore[method-assign]
+    assert cp.acquire_gather_slot("A", "tls", ttl=100.0, max_inflight=1, now=0.0) is True
+    assert lost

@@ -39,6 +39,7 @@ from .blobs import BlobStore, blob_concurrency, parallel_each
 from .control import KvControlPlane
 from .corpus import (
     CorpusStore,
+    LeaseLost,
     VersionVanished,
     clean_relpath,
     pinned_version,
@@ -697,9 +698,19 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         version: Optional[str] = None,
         *,
         extra_files: Optional[Dict[str, str]] = None,
+        lease_owner: Optional[str] = None,
     ) -> str:
         version = version or _new_version()
         prefix = _content_prefix(corpus, version)
+        # Fence the flip (see the end of this method). The holder check here only
+        # lets a zombie refuse before, rather than after, minutes of uploading;
+        # the pointer token is read first so that a pass proves nobody else held
+        # the lease, hence nobody else published, since the token was read.
+        expect_pointer = self._control.pointer_token(corpus)
+        if lease_owner is not None and (
+            self._control.lease_holder(corpus, expired_ok=True) != lease_owner
+        ):
+            raise LeaseLost(corpus, "another gatherer holds it; nothing published")
         staged: Dict[str, str] = {}
         # Stage every file in the workspace to the fresh version prefix, plus any
         # extra_files (e.g. an index living outside the cache), keyed by their
@@ -763,8 +774,19 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
             ).encode("utf-8"),
         )
         # Flip the pointer last. If this raises, the staged blobs are orphaned and
-        # the prior version stays current — never a torn read.
-        self._control.set_current(corpus, version)
+        # the prior version stays current — never a torn read. The lease is
+        # re-proven by a compare-and-swap on its record (a taker's acquire races
+        # that write on the same token, so one of them loses) and the pointer
+        # flips only if still at the token read above, so a publisher that
+        # stalled past its lease cannot overwrite a newer gather's version.
+        if lease_owner is not None and not self._control.confirm_lease(
+            corpus, lease_owner
+        ):
+            raise LeaseLost(corpus, "taken over during the upload; nothing published")
+        if not self._control.set_current(corpus, version, expect=expect_pointer):
+            raise LeaseLost(
+                corpus, "the current version changed during publish; nothing flipped"
+            )
         # Write-through so this process serves the version it just published
         # immediately, without waiting out the resolve TTL. Other replicas /
         # processes pick it up within the TTL.

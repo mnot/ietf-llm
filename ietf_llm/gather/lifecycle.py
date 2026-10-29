@@ -37,7 +37,7 @@ from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, get_cache_dir, get_index_dir
-from ..store.corpus import GatherCacheRestoreError
+from ..store.corpus import GatherCacheRestoreError, LeaseLost
 
 #: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
 #: gather and renewed periodically (see `LEASE_HEARTBEAT_S`), so even a gather
@@ -47,6 +47,13 @@ LEASE_TTL = 3600.0
 #: How often a heartbeat renews the lease/slot — comfortably under the TTL so a
 #: slow renew or a stalled stage still refreshes in time.
 LEASE_HEARTBEAT_S = 900.0
+
+#: Consecutive failed lease renewals (the store erroring, as opposed to refusing)
+#: after which a gather treats its lease as lost. At the heartbeat interval the
+#: third failure lands 45 minutes after the last good renewal, with a quarter of
+#: the TTL still to run — so the gather stops while it is still the only writer,
+#: not after another host has had time to take over.
+LEASE_RENEW_MAX_FAILURES = 3
 
 #: How often a gather waiting for a fleet slot retries the slot pool.
 SLOT_POLL_S = 5.0
@@ -113,6 +120,66 @@ def status_path(corpus: str) -> str:
 # --- lease + slot ----------------------------------------------------------
 
 
+class LeaseWatch:
+    """One gather's view of its lease: the heartbeat feeds it renewals and the
+    gather reads `lost`. Set when a renewal is refused (another gatherer holds
+    the lease now) or `LEASE_RENEW_MAX_FAILURES` renewals in a row error — either
+    way the gather must stop and must not publish, because it may no longer be
+    the only writer. Sticky: a later successful renewal does not un-lose it."""
+
+    def __init__(self, corpus: str) -> None:
+        self.corpus = corpus
+        self.lost = threading.Event()
+        self.reason = ""
+        self._failures = 0
+
+    def _lose(self, reason: str) -> None:
+        self.reason = reason
+        self.lost.set()
+        log(
+            f"gather: lost the lease for {self.corpus} ({reason}); stopping "
+            "without publishing",
+            Verbosity.STATUS,
+            level=LogLevel.ERROR,
+        )
+
+    def renew(self, store: Any, owner: str) -> None:
+        """Renew once. Never raises: a store error must not kill the heartbeat
+        thread, which would let the lease lapse unnoticed."""
+        if self.lost.is_set():
+            return
+        try:
+            held = store.renew_lease(self.corpus, owner, LEASE_TTL)
+        except Exception as err:  # pylint: disable=broad-except
+            self._failures += 1
+            log(
+                f"gather: could not renew the lease for {self.corpus} "
+                f"({self._failures}/{LEASE_RENEW_MAX_FAILURES}): "
+                f"{type(err).__name__}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.WARN,
+            )
+            if self._failures >= LEASE_RENEW_MAX_FAILURES:
+                self._lose(f"{self._failures} consecutive renewal failures")
+            return
+        self._failures = 0
+        if not held:
+            self._lose("another gatherer now holds it")
+
+
+def renew_slot(store: Any, slot: str) -> None:
+    """Renew a fleet slot, logging rather than raising: the slot is a politeness
+    cap, so a missed renewal is not worth stopping the heartbeat (or the gather)."""
+    try:
+        store.renew_gather_slot(slot, LEASE_TTL)
+    except Exception as err:  # pylint: disable=broad-except
+        log(
+            f"gather: could not renew fleet slot {slot}: {type(err).__name__}: {err}",
+            Verbosity.STATUS,
+            level=LogLevel.WARN,
+        )
+
+
 def heartbeat(
     store: Any,
     corpus: str,
@@ -121,16 +188,24 @@ def heartbeat(
     *,
     slot: Optional[str] = None,
     slot_held: Optional[threading.Event] = None,
+    watch: Optional[LeaseWatch] = None,
 ) -> None:
     """Renew one gather's lease — and its fleet slot once `slot_held` is set —
     periodically, so a gather longer than the TTL cannot let either lapse (which
-    would admit a second writer). Exits when `stop` is set or the lease is lost
-    (renew returns False). No-op renews on the local backend."""
+    would admit a second writer). Reports the lease's fate through `watch`;
+    exits when `stop` is set or the lease is lost. No-op renews on the local
+    backend."""
+    watch = watch or LeaseWatch(corpus)
     while not stop.wait(LEASE_HEARTBEAT_S):
-        if not store.renew_lease(corpus, owner, LEASE_TTL):
+        watch.renew(store, owner)
+        if watch.lost.is_set():
             break
         if slot is not None and slot_held is not None and slot_held.is_set():
-            store.renew_gather_slot(slot, LEASE_TTL)
+            renew_slot(store, slot)
+
+
+def lease_lost_error(watch: LeaseWatch) -> LeaseLost:
+    return LeaseLost(watch.corpus, f"{watch.reason}; stopped without publishing")
 
 
 @contextmanager
@@ -140,7 +215,7 @@ def held_gather(
     owner: str,
     *,
     on_wait: Optional[Callable[[], None]] = None,
-) -> Iterator[None]:
+) -> Iterator[LeaseWatch]:
     """Hold `corpus`'s gather lease and one fleet gather slot for the block.
 
     Takes the lease first (raising `GatherBusy` if another gatherer holds it),
@@ -148,16 +223,18 @@ def held_gather(
     calling `on_wait` once if it has to wait — and releases both on exit,
     however the block ends. The MCP runner does the same dance but spread over
     enqueue, worker and a shared heartbeat (`runner`); this is the synchronous
-    form for a single in-process gather."""
+    form for a single in-process gather. Yields the `LeaseWatch` the heartbeat
+    feeds, so the caller can stop when the lease is lost."""
     if not store.acquire_lease(corpus, owner, LEASE_TTL):
         raise GatherBusy(corpus)
     slot = slot_owner(owner, corpus)
     slot_held = threading.Event()
     stop = threading.Event()
+    watch = LeaseWatch(corpus)
     beat = threading.Thread(
         target=heartbeat,
         args=(store, corpus, owner, stop),
-        kwargs={"slot": slot, "slot_held": slot_held},
+        kwargs={"slot": slot, "slot_held": slot_held, "watch": watch},
         name=f"gather-heartbeat-{corpus}",
         daemon=True,
     )
@@ -166,12 +243,14 @@ def held_gather(
         max_inflight = service_config.gather_max_inflight()
         waited = False
         while not store.acquire_gather_slot(slot, corpus, LEASE_TTL, max_inflight):
+            if watch.lost.is_set():
+                raise lease_lost_error(watch)
             if not waited and on_wait is not None:
                 on_wait()
             waited = True
             time.sleep(SLOT_POLL_S)
         slot_held.set()
-        yield
+        yield watch
     finally:
         stop.set()
         if slot_held.is_set():
@@ -276,18 +355,35 @@ def prepare_workspace(
         note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
 
 
-def publish_workspace(store: Any, corpus: str, workspace: str, note: NoteFn) -> str:
+def publish_workspace(
+    store: Any,
+    corpus: str,
+    workspace: str,
+    note: NoteFn,
+    *,
+    owner: Optional[str] = None,
+    lease: Optional[LeaseWatch] = None,
+) -> str:
     """Publish the gathered tree as the corpus's new current version and persist
     the accelerator caches for the next cold gather. A no-op finalise on the
     local backend (the cache already is the live version); on the cloud backend
     this uploads the corpus and flips the pointer atomically. The index lives
     outside the cache when `IETF_LLM_INDEX_DIR` is split off, so it is included
     explicitly. Publish failures raise — the gather did not land; the cache
-    persist is best-effort and reported through `note`. Returns the version."""
+    persist is best-effort and reported through `note`. Returns the version.
+
+    `owner` is the lease owner the gather runs under; the store refuses the flip
+    (`LeaseLost`) unless it still holds the lease. `lease`, when given, is checked
+    first so a gather that already knows it lost the lease uploads nothing, and
+    the stored caches — keyed under the same lease — are left to the new holder:
+    a `LeaseLost` skips the persist below."""
+    if lease is not None and lease.lost.is_set():
+        raise lease_lost_error(lease)
     version = store.publish(
         corpus,
         workspace,
         extra_files=index_extra_files(corpus, workspace) or None,
+        lease_owner=owner,
     )
     try:
         for problem in store.persist_gather_caches(corpus):
@@ -327,9 +423,11 @@ def new_status(
     }
 
 
-def write_status(store: Any, status: Dict[str, Any]) -> None:
+def write_status(store: Any, status: Dict[str, Any], *, publish: bool = True) -> None:
     """Persist a status record locally and publish it to the store so it is
-    fleet-visible (G-8). Never fails the gather on a write/publish error."""
+    fleet-visible (G-8). Never fails the gather on a write/publish error.
+    `publish=False` keeps the record local: a gather that lost its lease must not
+    overwrite the fleet record of the one that holds it now."""
     status["updated"] = now_iso()
     corpus = status["corpus"]
     path = status_path(corpus)
@@ -343,6 +441,8 @@ def write_status(store: Any, status: Dict[str, Any]) -> None:
             Verbosity.STATUS,
             level=LogLevel.ERROR,
         )
+    if not publish:
+        return
     try:
         store.put_gather_status(corpus, status)
     except Exception as err:  # pylint: disable=broad-except
@@ -363,9 +463,12 @@ class StatusRecorder:
         self._store = store
         self.status = status
         self._last_detail_write = 0.0
+        #: Set once the gather has lost its lease: records stay local from then
+        #: on (see `write_status`).
+        self.fenced = False
 
     def write(self) -> None:
-        write_status(self._store, self.status)
+        write_status(self._store, self.status, publish=not self.fenced)
 
     def progress(
         self, name: str, index: int, total: int, detail: Optional[str] = None
@@ -424,7 +527,9 @@ def gather_and_publish(
 
     Raises `GatherBusy` when another gatherer holds the corpus; a pipeline or
     publish exception is recorded as `failed` and re-raised — the caller owns
-    the exit code. Only `GATHERED` publishes. The caller screens out an unusable
+    the exit code. A gather whose lease is lost stops at its next progress call
+    and raises `LeaseLost` without publishing (see `LeaseWatch`). Only
+    `GATHERED` publishes. The caller screens out an unusable
     name or a corpus that is not due *before* calling this
     (`sequencer.preflight`), so neither takes a lease, slot or status record."""
     owner = process_owner()
@@ -439,27 +544,58 @@ def gather_and_publish(
             level=LogLevel.STATUS,
         )
 
-    with held_gather(store, corpus, owner, on_wait=_waiting):
+    with held_gather(store, corpus, owner, on_wait=_waiting) as lease:
         recorder = StatusRecorder(
             store, new_status(corpus, spec, "running", driver="cli")
         )
         recorder.write()
+
+        def _progress(
+            name: str, index: int, total: int, detail: Optional[str] = None
+        ) -> None:
+            # The in-process pipeline's only checkpoint: every stage boundary
+            # and download batch passes through here. `_LeaseAborted` is a
+            # BaseException so no stage's `except Exception` can swallow it.
+            if lease.lost.is_set():
+                raise _LeaseAborted()
+            recorder.progress(name, index, total, detail)
+
         try:
             if fresh:
                 store.clear_gather_caches(corpus)
                 clear_local_state(corpus, workspace)
             prepare_workspace(store, corpus, workspace, recorder.note, seed=not fresh)
-            outcome = run(recorder.progress, recorder.note)
+            outcome = run(_progress, recorder.note)
             if outcome is GatherOutcome.GATHERED:
-                version = publish_workspace(store, corpus, workspace, recorder.note)
+                version = publish_workspace(
+                    store, corpus, workspace, recorder.note, owner=owner, lease=lease
+                )
                 if service_config.store_backend() == "cloud":
                     log(
                         f"Published {corpus} to the store as version {version}.",
                         verbosity,
                         level=LogLevel.STATUS,
                     )
+        except _LeaseAborted:
+            lost = lease_lost_error(lease)
+            _finish_fenced(recorder, lost)
+            raise lost from None
+        except LeaseLost as lost:
+            _finish_fenced(recorder, lost)
+            raise
         except BaseException as err:
             recorder.finish("failed", f"{type(err).__name__}: {err}"[:500])
             raise
         recorder.finish("done")
         return outcome
+
+
+class _LeaseAborted(BaseException):
+    """Unwinds an in-process pipeline whose lease was lost (see `_progress`)."""
+
+
+def _finish_fenced(recorder: StatusRecorder, lost: LeaseLost) -> None:
+    """Record a gather that lost its lease as failed — locally only, since the
+    fleet record now belongs to whoever holds the lease."""
+    recorder.fenced = True
+    recorder.finish("failed", f"{type(lost).__name__}: {lost}"[:500])
