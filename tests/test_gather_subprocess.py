@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from ietf_llm.gather import child as gather_child, pipeline as gather_pipeline, runner as gather_runner
+from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.runner import GatherSpec
 
 
@@ -65,7 +66,9 @@ def test_child_renices_by_default_and_can_be_disabled(
 # --- the child side: emit protocol + exit codes ----------------------------
 
 
-def _run_child_capturing(monkeypatch: pytest.MonkeyPatch, ok: bool) -> tuple:
+def _run_child_capturing(
+    monkeypatch: pytest.MonkeyPatch, outcome: GatherOutcome
+) -> tuple:
     """Run `gather_child.main()` with a stubbed pipeline and capture the JSON
     records it writes to the progress fd plus its exit code."""
     read_fd, write_fd = os.pipe()
@@ -75,7 +78,7 @@ def _run_child_capturing(monkeypatch: pytest.MonkeyPatch, ok: bool) -> tuple:
         progress("mailing list", 2, 3, "5/5 messages")
         if note_fn:
             note_fn("auto-tracked o/r")
-        return ok
+        return outcome
 
     monkeypatch.setattr(gather_child, "run_gather", fake_run_gather)
     monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
@@ -101,7 +104,7 @@ def _run_child_capturing(monkeypatch: pytest.MonkeyPatch, ok: bool) -> tuple:
 def test_child_emits_progress_notes_and_success_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    lines, rc = _run_child_capturing(monkeypatch, ok=True)
+    lines, rc = _run_child_capturing(monkeypatch, GatherOutcome.GATHERED)
     kinds = [r["t"] for r in lines]
     assert kinds == ["progress", "progress", "note"]
     assert lines[0] == {
@@ -115,8 +118,15 @@ def test_child_emits_progress_notes_and_success_code(
 def test_child_unusable_corpus_maps_to_distinct_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _lines, rc = _run_child_capturing(monkeypatch, ok=False)
+    _lines, rc = _run_child_capturing(monkeypatch, GatherOutcome.UNUSABLE)
     assert rc == gather_pipeline.CHILD_EXIT_UNUSABLE
+
+
+def test_child_skipped_corpus_maps_to_its_own_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _lines, rc = _run_child_capturing(monkeypatch, GatherOutcome.SKIPPED)
+    assert rc == gather_pipeline.CHILD_EXIT_SKIPPED
 
 
 # --- the parent side: stream a fake child, map exit codes ------------------
@@ -161,8 +171,8 @@ def test_parent_streams_records_and_maps_success(
         gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
     )
     monkeypatch.setenv("FAKE_EXIT", "0")
-    ok, prog, notes = _collect(GatherSpec(corpus="wg"))
-    assert ok is True
+    outcome, prog, notes = _collect(GatherSpec(corpus="wg"))
+    assert outcome is GatherOutcome.GATHERED
     assert prog == [("charter", 1, 2, None)]
     assert notes == ["hi"]
     assert "wg" not in gather_pipeline._children  # unregistered on the way out
@@ -175,10 +185,13 @@ def test_parent_maps_unusable_and_crash_exit_codes(
     monkeypatch.setattr(
         gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
     )
-    # Exit 3 -> unusable corpus (run_gather False), not a crash.
+    # Exit 3 -> unusable corpus, not a crash; exit 4 -> nothing to publish.
     monkeypatch.setenv("FAKE_EXIT", str(gather_pipeline.CHILD_EXIT_UNUSABLE))
-    ok, _prog, _notes = _collect(GatherSpec(corpus="wg"))
-    assert ok is False
+    outcome, _prog, _notes = _collect(GatherSpec(corpus="wg"))
+    assert outcome is GatherOutcome.UNUSABLE
+    monkeypatch.setenv("FAKE_EXIT", str(gather_pipeline.CHILD_EXIT_SKIPPED))
+    outcome, _prog, _notes = _collect(GatherSpec(corpus="wg"))
+    assert outcome is GatherOutcome.SKIPPED
     # Any other non-zero exit is an unexpected death -> RuntimeError.
     monkeypatch.setenv("FAKE_EXIT", "1")
     with pytest.raises(RuntimeError):

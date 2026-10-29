@@ -511,20 +511,20 @@ def run_gather(
     verbosity: Verbosity = Verbosity.STATUS,
     progress: Optional[ProgressFn] = None,
     note_fn: Optional[Callable[[str], None]] = None,
-) -> bool:
+) -> GatherOutcome:
     """Programmatic gather entry point: gather one corpus from a CLI-style
     `argv` (`[corpus, "--mailing-list", "foo", ...]`).
 
     Parses through `build_parser()` so defaults and validation match the
-    CLI exactly, then runs the pipeline. Returns True on success, False if
-    the corpus name was unusable (a typo'd WG that is neither a group, a
-    known list, nor configured with sources). Used by the MCP gather
-    runner; not wired to any console script. `note_fn` forwards one-line
-    outcome notes (e.g. auto-tracked GitHub repos) to the caller's status.
+    CLI exactly, then runs the pipeline. Returns what it did: `GATHERED`,
+    `SKIPPED` (fresh, or a reuse hint -- nothing worth publishing), or
+    `UNUSABLE` (a typo'd WG that is neither a group, a known list, nor
+    configured with sources). Used by the MCP gather runner; not wired to
+    any console script. `note_fn` forwards one-line outcome notes (e.g.
+    auto-tracked GitHub repos) to the caller's status.
     """
     args = build_parser().parse_args(argv)
-    outcome = _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
-    return outcome is not GatherOutcome.UNUSABLE
+    return _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
 
 
 @dataclass(frozen=True)

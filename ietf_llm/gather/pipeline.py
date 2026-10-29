@@ -35,6 +35,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ..log import Verbosity
+from .lifecycle import GatherOutcome
 
 if TYPE_CHECKING:
     from .runner import GatherSpec
@@ -48,10 +49,24 @@ _CHILD_POLL_S = 4.0
 _CHILD_TERM_GRACE_S = 5.0
 
 #: Exit code the gather subprocess uses for "the corpus name was unusable"
-#: (`run_gather` returned False), as opposed to a crash — so a bad name still
-#: reads as the actionable "not a recognized corpus" message. The child imports
-#: this so the two sides of the protocol can't drift.
+#: (`GatherOutcome.UNUSABLE`), as opposed to a crash — so a bad name still
+#: reads as the actionable "not a recognized corpus" message.
 CHILD_EXIT_UNUSABLE = 3
+
+#: Exit code for `GatherOutcome.SKIPPED`: the child found nothing to do (the
+#: corpus is fresh, or a reuse hint applies) and left the workspace as it was, so
+#: the parent must not publish it.
+CHILD_EXIT_SKIPPED = 4
+
+#: The exit code the child reports for each outcome (0 is `GATHERED`), and the
+#: inverse the parent reads back. Both sides use these so the protocol can't
+#: drift; any other code is a crash.
+OUTCOME_EXIT_CODES = {
+    GatherOutcome.GATHERED: 0,
+    GatherOutcome.UNUSABLE: CHILD_EXIT_UNUSABLE,
+    GatherOutcome.SKIPPED: CHILD_EXIT_SKIPPED,
+}
+_EXIT_CODE_OUTCOMES = {code: outcome for outcome, code in OUTCOME_EXIT_CODES.items()}
 
 #: A stage-progress callback (name, index, total, detail), a one-line note
 #: callback, and a "has a stop been requested?" predicate — matching the
@@ -93,15 +108,15 @@ def run_pipeline(
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
-) -> bool:
+) -> GatherOutcome:
     """Run the gather pipeline for `spec`, feeding `progress`/`note` exactly as
     the in-process path always did. In production this drives a child process
     and streams its progress back; under the in-process test flag it calls
     `run_gather` directly.
 
-    Returns True on success, False if the corpus name was unusable. Raises
-    `GatherCancelled` if a stop is honoured, and `RuntimeError` if the
-    subprocess dies unexpectedly."""
+    Returns what the gather did (see `GatherOutcome`): only `GATHERED` leaves a
+    tree worth publishing. Raises `GatherCancelled` if a stop is honoured, and
+    `RuntimeError` if the subprocess dies unexpectedly."""
     if _gather_in_process():
         # pylint: disable-next=import-outside-toplevel
         from . import sequencer as gather_main
@@ -147,10 +162,11 @@ def _run_pipeline_child(
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
-) -> bool:
+) -> GatherOutcome:
     """Spawn the gather as a child process and stream its progress records back
     into `progress`/`note` until it exits. The worker thread blocks on the
-    child's pipe (GIL released), so the server stays responsive throughout."""
+    child's pipe (GIL released), so the server stays responsive throughout. The
+    child's exit code carries its `GatherOutcome`."""
     corpus = spec.corpus
     read_fd, write_fd = os.pipe()
     env = dict(os.environ)
@@ -180,10 +196,9 @@ def _run_pipeline_child(
         with _children_lock:
             if _children.get(corpus) is proc:
                 del _children[corpus]
-    if rc == 0:
-        return True
-    if rc == CHILD_EXIT_UNUSABLE:
-        return False  # bad corpus name — same as run_gather returning False
+    outcome = _EXIT_CODE_OUTCOMES.get(rc)
+    if outcome is not None:
+        return outcome
     raise RuntimeError(f"gather subprocess for {corpus!r} exited with code {rc}")
 
 

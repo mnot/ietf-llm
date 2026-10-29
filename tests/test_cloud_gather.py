@@ -16,6 +16,7 @@ from moto import mock_aws
 from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import corpus
 from ietf_llm.gather import lifecycle
+from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather import runner as gather_runner
 from ietf_llm.store.corpus import get_corpus_store
 from ietf_llm.store.cloud import _clear_resolve_cache
@@ -73,12 +74,12 @@ def test_cloud_gather_publishes_and_serves(
     # Stub the pipeline: write a files/ tree into the local cache (the gather's
     # natural output, which on a cloud node is ephemeral scratch), report
     # success. The worker then publishes that tree to the cloud backend.
-    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> bool:
+    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> GatherOutcome:
         corpus = argv[0]
         digests = Path(get_cache_dir()) / corpus / "files" / "digests"
         digests.mkdir(parents=True, exist_ok=True)
         (digests / "index.md").write_text("# Overview\nbody\n")
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", _fake_run_gather)
 
@@ -151,11 +152,11 @@ def test_fleet_slot_blocks_a_gather_until_released(
     monkeypatch.setenv("IETF_LLM_GATHER_MAX_INFLIGHT", "1")
     monkeypatch.setattr(lifecycle, "SLOT_POLL_S", 0.02)
 
-    def _fake_run_gather(argv: list[str], _v: object, progress: object = None, note_fn: object = None) -> bool:
+    def _fake_run_gather(argv: list[str], _v: object, progress: object = None, note_fn: object = None) -> GatherOutcome:
         digests = Path(get_cache_dir()) / argv[0] / "files" / "digests"
         digests.mkdir(parents=True, exist_ok=True)
         (digests / "index.md").write_text("ok\n")
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", _fake_run_gather)
 
@@ -198,9 +199,10 @@ def test_cloud_gather_restores_the_mail_cache_on_a_fresh_container(
 ) -> None:
     # Issue #260: the second gather runs on a host whose imap-cache is empty,
     # and must find the first gather's mail restored before any stage runs.
+    monkeypatch.setenv("IETF_LLM_GATHER_MIN_INTERVAL", "0")  # re-gather at once
     seen: list[list[str]] = []
 
-    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> bool:
+    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> GatherOutcome:
         corpus = argv[0]
         mail = _imap_dir(corpus)
         if not seen:
@@ -212,7 +214,7 @@ def test_cloud_gather_restores_the_mail_cache_on_a_fresh_container(
         digests = Path(get_cache_dir()) / corpus / "files" / "digests"
         digests.mkdir(parents=True, exist_ok=True)
         (digests / "index.md").write_text("# Overview\n")
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", _fake_run_gather)
 
@@ -228,9 +230,10 @@ def test_cloud_gather_restores_the_mail_cache_on_a_fresh_container(
 def test_cloud_gather_fails_before_any_stage_when_stored_mail_cannot_be_fetched(
     cloud_s3: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("IETF_LLM_GATHER_MIN_INTERVAL", "0")  # re-gather at once
     ran: list[str] = []
 
-    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> bool:
+    def _fake_run_gather(argv: list[str], _verbosity: object, progress: object = None, note_fn: object = None) -> GatherOutcome:
         ran.append(argv[0])
         mail = _imap_dir(argv[0])
         mail.mkdir(parents=True, exist_ok=True)
@@ -238,7 +241,7 @@ def test_cloud_gather_fails_before_any_stage_when_stored_mail_cannot_be_fetched(
         digests = Path(get_cache_dir()) / argv[0] / "files" / "digests"
         digests.mkdir(parents=True, exist_ok=True)
         (digests / "index.md").write_text("# Overview\n")
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", _fake_run_gather)
     assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
@@ -426,3 +429,48 @@ def _stored_keys(kv: object) -> list[str]:
 
     walk("corpora/tls/")
     return found
+
+
+def _publish_tree(corpus: str, root: Path) -> str:
+    """Publish a minimal corpus tree straight to the cloud store."""
+    (root / "files").mkdir(parents=True)
+    (root / "files" / "group.md").write_text("# tls\n**Status:** active\n")
+    return get_corpus_store().publish(corpus, str(root))
+
+
+def test_start_on_a_fresh_replica_debounces_on_the_published_gather_time(
+    cloud_s3: None, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #290: this replica has no local last-gathered sentinel, but the
+    # published version is minutes old. The debounce must read the store, or it
+    # admits the request and downloads the version only to find it fresh.
+    version = _publish_tree("tls", isolated_home / "ws")
+    assert not (Path(get_cache_dir()) / "tls").exists()
+
+    def _unreachable(*_a: object, **_k: object) -> GatherOutcome:
+        raise AssertionError("a fresh corpus must not be gathered")
+
+    monkeypatch.setattr(main_mod, "run_gather", _unreachable)
+    result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert result["started"] is False and result["reason"] == "fresh"
+    assert get_corpus_store().resolve_current("tls") == version
+
+
+def test_a_skipped_gather_publishes_nothing(
+    cloud_s3: None, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #290: a pipeline that found nothing to do left the seeded workspace
+    # untouched; publishing it would upload an identical version.
+    version = _publish_tree("tls", isolated_home / "ws")
+    monkeypatch.setattr(
+        main_mod, "run_gather", lambda *a, **k: GatherOutcome.SKIPPED
+    )
+
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))[
+        "started"
+    ]
+    status = _wait_state("tls")
+    assert status["state"] == "done"
+    assert any("nothing published" in note for note in status["notes"])
+    assert get_corpus_store().resolve_current("tls") == version
+    assert len(get_corpus_store()._list_versions("tls")) == 1  # pylint: disable=protected-access

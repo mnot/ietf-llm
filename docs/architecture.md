@@ -1365,7 +1365,15 @@ the gather computes comes back as files too. The child binds its ETag store to
 cloud backend; `datatracker.gather_http_cache`), and flushes it before it exits.
 The IMAP sync records the UIDVALIDITY the server confirmed in a per-list
 `.verified-uidvalidity` sidecar, which persist reads in place of any in-process
-state. The CLI runs the same code in one process, so both drivers behave alike. Under
+state. The CLI runs the same code in one process, so both drivers behave alike.
+
+The child also reports what it did. Its exit code carries the `GatherOutcome`
+(0 gathered, 3 unusable name, 4 skipped), and the worker publishes only on
+`GATHERED`: a child whose preflight found the seeded workspace fresh leaves it
+untouched, and uploading it again would write an identical version. The
+freshness debounce at `start_gather` reads the store's `gathered_at` rather than
+the local sentinel, so a replica that has not seeded the corpus yet declines a
+fresh one up front instead of downloading it to find that out. Under
 `IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
 which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
 the stage and how many are left) since there is no prior snapshot. A re-gather

@@ -13,9 +13,10 @@ changes.
 Invoked as `python -m ietf_llm.gather.child <corpus> [--source ...]` — the same
 argv `GatherSpec.to_argv()` produces for the in-process path.
 
-Exit codes: 0 = the gather succeeded; 3 = the corpus name was unusable
-(`run_gather` returned False); anything else = an unhandled error (traceback on
-the inherited stderr) or a signal (the parent terminates the child to cancel).
+Exit codes: the `GatherOutcome` run_gather returned, as `pipeline.OUTCOME_EXIT_CODES`
+maps it (0 = gathered, 3 = the corpus name was unusable, 4 = skipped, nothing to
+publish); anything else = an unhandled error (traceback on the inherited
+stderr) or a signal (the parent terminates the child to cancel).
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import sys
 from typing import Any, Optional
 
 from ..log import Verbosity
-from .pipeline import CHILD_EXIT_UNUSABLE
+from .pipeline import OUTCOME_EXIT_CODES
 from .sequencer import run_gather
 
 
@@ -85,7 +86,7 @@ def main() -> None:
         _emit({"t": "note", "msg": message})
 
     try:
-        ok = run_gather(
+        outcome = run_gather(
             sys.argv[1:], Verbosity.STATUS, progress=_progress, note_fn=_note
         )
     finally:
@@ -93,7 +94,7 @@ def main() -> None:
         # even if run_gather raises (the traceback still reaches stderr).
         if sink is not None:
             sink.close()
-    sys.exit(0 if ok else CHILD_EXIT_UNUSABLE)
+    sys.exit(OUTCOME_EXIT_CODES[outcome])
 
 
 if __name__ == "__main__":

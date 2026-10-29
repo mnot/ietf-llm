@@ -260,7 +260,12 @@ def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
     # Freshness debounce: a plain re-gather of a recently-gathered corpus is
     # skipped. A source-changing request isn't a plain refresh.
     if not spec.has_sources():
-        detail = freshness.debounce_reason(corpus)
+        # The store's gathered time, not the local sentinel: a replica that has
+        # not seeded this corpus yet has no sentinel, would admit the request,
+        # and would download the published version only to find it fresh.
+        detail = freshness.debounce_reason(
+            corpus, gathered_at=corpus_store.get_corpus_store().gathered_at
+        )
         if detail is not None:
             return {
                 "started": False,
@@ -623,11 +628,16 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             # recorded as `failed` like any other gather error.
             lifecycle.prepare_workspace(store, corpus, workspace, recorder.note)
 
-            ok = pipeline.run_pipeline(
+            outcome = pipeline.run_pipeline(
                 spec, _progress, recorder.note, lambda: _cancel_requested(corpus)
             )
-            if ok:
+            if outcome is lifecycle.GatherOutcome.GATHERED:
                 lifecycle.publish_workspace(store, corpus, workspace, recorder.note)
+                status["state"] = "done"
+            elif outcome is lifecycle.GatherOutcome.SKIPPED:
+                # Nothing was gathered, so the seeded workspace is the published
+                # version unchanged: publishing it would upload an identical copy.
+                recorder.note("nothing to gather (up to date); nothing published")
                 status["state"] = "done"
             else:
                 status["state"] = "failed"
