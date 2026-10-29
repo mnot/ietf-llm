@@ -23,7 +23,7 @@ from .common import (
     _safe_path,
     _with_freshness,
 )
-from .drafts import _resolve_issue_file
+from .drafts import _MAX_WINDOW_CHARS, _resolve_issue_file, _truncation_notice
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -365,22 +365,48 @@ def tool_read_file_section(
 
 
 def _read_section(path: str, start_line: int, max_lines: int) -> str:
+    """A line window of `path`, bounded by `max_lines` *and* the character
+    budget `get_draft` / `get_issue` use, whichever binds first.
+
+    The file is streamed to the end even after the cut, only to count lines,
+    so the banner can say how much of it the caller has not seen.
+    """
     if max_lines > MAX_LINES_HARD_CAP:
         return (
             f"max_lines={max_lines} exceeds hard cap {MAX_LINES_HARD_CAP}. "
             "Use search() or get_chunk() instead of reading huge files."
         )
-    start_line = max(1, int(start_line))
-    out = []
+    start = max(1, int(start_line))
+    max_lines = max(1, max_lines)
+    out: List[str] = []
+    budget = _MAX_WINDOW_CHARS
+    end = start - 1
+    total = 0
+    cut = False
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for idx, line in enumerate(fh, 1):
-            if idx < start_line:
+        for total, line in enumerate(fh, 1):
+            if total < start or cut:
                 continue
-            if idx >= start_line + max_lines:
-                out.append(f"... [truncated at line {idx}; use start_line to continue]")
-                break
-            out.append(line.rstrip("\n"))
-    return "\n".join(out)
+            text = line.rstrip("\n")
+            if total >= start + max_lines:
+                cut = True
+            elif len(text) + 1 > budget:
+                cut = True
+                if not out:
+                    # A single line over the whole budget (pasted base64, a
+                    # log dump) is cut rather than emitted whole, and marked,
+                    # since a silently shortened line is a misquote.
+                    out.append(text[:budget] + " …[line truncated]")
+                    end = total
+            else:
+                out.append(text)
+                budget -= len(text) + 1
+                end = total
+    body = "\n".join(out)
+    if not cut:
+        return body
+    notice = _truncation_notice(start, end, total)
+    return f"{notice}\n\n{body}\n\n{notice}"
 
 
 # --- MCP server wiring -------------------------------------------------------
@@ -471,10 +497,14 @@ def register(server: "MCPServer") -> None:
         """Read a bounded section of any file in a corpus's
         ietf-llm cache (per-thread files, per-issue files, drafts,
         slides, transcripts, minutes; RFC bodies only when gathered with
-        `--rfcs` — otherwise use `get_rfc_info`). Default 400 lines per call; the
-        caller can raise `max_lines` up to a hard cap of 5000 so the
-        context window can't be blown by accident. Prefer
-        `search_corpus` / `get_chunk_text` for very large files.
+        `--rfcs`; RFC text is otherwise `get_rfc_section`). Default 400 lines
+        per call; the caller can raise `max_lines` up to a hard cap of 5000.
+        A result is also cut at about 40,000 characters, whichever bound
+        comes first, so a thread with a pasted log can't blow the context
+        window. A cut read opens and closes with a `PARTIAL READ` banner
+        naming the `start_line` to continue from; the banner is not part of
+        the file. Prefer `search_corpus` / `get_chunk_text` for very large
+        files.
         """
         return await _offload(
             tool_read_file_section, corpus, file, start_line, max_lines

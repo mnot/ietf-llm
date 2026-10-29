@@ -1287,7 +1287,10 @@ blocked by the ~10 s weight load) and caps native-math threads
 cores. For a remote embedding backend the prewarm is a no-op beyond
 constructing the client — there are no weights to load, and it makes no
 upstream call, so readiness never waits on the network. `read_file_section`
-is hard-capped (default 400 lines, max 5000) as context hygiene.
+is capped as context hygiene: default 400 lines, max 5000, and about 40,000
+characters, whichever binds first (a line cap alone lets one pasted-base64 line
+return megabytes). A cut read carries the same `PARTIAL READ` banner as
+`get_draft` / `get_issue`.
 
 The prewarm is **silent**: nobody asked for it, and the first `search_corpus`
 does a lazy load if it fails, so it writes nothing to stderr — not a failure,
