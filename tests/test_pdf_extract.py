@@ -11,6 +11,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 import ietf_llm.gather.sources.pdf_extract as pdf_extract
 from ietf_llm.gather.sources.pdf_extract import (
     _strip_surrogates,
@@ -363,3 +365,22 @@ def test_header_refresh_ignores_foreign_text_files(tmp_path: Path) -> None:
     other.write_text("something else entirely\n")
     extract_all_pdfs(str(tmp_path))
     assert other.read_text() == "something else entirely\n"
+
+
+def test_extraction_stops_at_the_page_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pypdf import PdfReader, PdfWriter  # pylint: disable=import-outside-toplevel
+
+    src = tmp_path / "one.pdf"
+    src.write_bytes(MINIMAL_PDF)
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.append(PdfReader(str(src)))
+    big = tmp_path / "three.pdf"
+    with open(big, "wb") as fh:
+        writer.write(fh)
+    monkeypatch.setattr(pdf_extract, "MAX_PDF_PAGES", 2)
+    text = extract_pdf_text(str(big))
+    assert "## Page 2" in text and "## Page 3" not in text
+    assert "stopped after 2 of 3 pages" in text

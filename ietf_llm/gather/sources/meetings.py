@@ -11,7 +11,8 @@ import requests
 
 from ...atomicio import atomic_open_binary, write_if_changed
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
+from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, http_session
+from ...net.http_governor import host_slot
 from ...paths import (
     ORPHAN_MEETING_CODE,
     agenda_path,
@@ -647,27 +648,76 @@ def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
     return _download_if_pdf(url, pdf_dest, verbose)
 
 
+#: Largest slide deck we will download. Decks are normally a few MB; this
+#: only stops a pathological upload from filling the cache.
+MAX_PDF_BYTES = 50 * 1024 * 1024
+
+
 def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
-    """Check head/stream for PDF content type and download."""
+    """Download `url` to `dest_path` if it serves a PDF no larger than
+    `MAX_PDF_BYTES`; returns True if it was written.
+
+    The body is streamed so the size can be bounded, which means the per-host
+    slot (normally held by `governed_get` only until it returns) is held here
+    across the transfer instead."""
     try:
-        p_res = governed_get(
-            url,
-            timeout=60,
-            stream=True,
-            headers=DEFAULT_HEADERS,
-        )
-        p_res.raise_for_status()
-        c_type = p_res.headers.get("Content-Type", "").lower()
-        if "application/pdf" in c_type:
-            log(f"Downloading PDF: {dest_path}...", verbose, level=LogLevel.PROGRESS)
-            with atomic_open_binary(dest_path) as pdf_fh:
-                for chunk in p_res.iter_content(chunk_size=8192):
-                    pdf_fh.write(chunk)
-            return True
-        p_res.close()
+        with host_slot(url):
+            res = http_session().get(
+                url, timeout=60, stream=True, headers=DEFAULT_HEADERS
+            )
+            try:
+                res.raise_for_status()
+                c_type = res.headers.get("Content-Type", "").lower()
+                if "application/pdf" not in c_type:
+                    return False
+                if _too_big(res.headers.get("Content-Length")):
+                    log(
+                        f"Skipping oversized PDF: {url}",
+                        verbose,
+                        level=LogLevel.PROGRESS,
+                    )
+                    return False
+                log(
+                    f"Downloading PDF: {dest_path}...",
+                    verbose,
+                    level=LogLevel.PROGRESS,
+                )
+                return _write_bounded(res, dest_path, url, verbose)
+            finally:
+                res.close()
     except (requests.RequestException, OSError):
-        pass
-    return False
+        return False
+
+
+def _too_big(content_length: Optional[str]) -> bool:
+    try:
+        return int(content_length or 0) > MAX_PDF_BYTES
+    except ValueError:
+        return False
+
+
+class _TooLarge(Exception):
+    pass
+
+
+def _write_bounded(
+    res: requests.Response, dest_path: str, url: str, verbose: Verbosity
+) -> bool:
+    """Stream `res` to `dest_path`, abandoning the file (nothing is left under
+    the final name) if more than `MAX_PDF_BYTES` arrive. Needed because
+    Content-Length may be absent or wrong."""
+    written = 0
+    try:
+        with atomic_open_binary(dest_path) as pdf_fh:
+            for chunk in res.iter_content(chunk_size=8192):
+                written += len(chunk)
+                if written > MAX_PDF_BYTES:
+                    raise _TooLarge()
+                pdf_fh.write(chunk)
+    except _TooLarge:
+        log(f"Skipping oversized PDF: {url}", verbose, level=LogLevel.PROGRESS)
+        return False
+    return True
 
 
 def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:

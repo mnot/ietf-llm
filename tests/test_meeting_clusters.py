@@ -299,3 +299,72 @@ def test_process_cluster_absorbs_the_first_sessions_legacy_dir(
     moved = Path(dest) / "meetings" / "interim20260414" / "slides"
     assert (moved / "slides-interim-2026-httpbis-01-deck.pdf.txt").read_text() == "deck"
     assert not (Path(dest) / "meetings" / "interim2026httpbis01").exists()
+
+
+# --- _download_if_pdf bounds ----------------------------------------------
+
+
+class _FakeStream:
+    def __init__(self, chunks: List[bytes], headers: Dict[str, str]) -> None:
+        self._chunks = chunks
+        self.headers = headers
+        self.closed = False
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def iter_content(self, chunk_size: int = 8192):  # noqa: ANN201,ARG002
+        yield from self._chunks
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _serve(monkeypatch, stream: _FakeStream) -> None:
+    session = type("S", (), {"get": lambda self, url, **kw: stream})()
+    monkeypatch.setattr(meetings, "http_session", lambda *a, **k: session)
+
+
+def _download(dest: Path) -> bool:
+    return meetings._download_if_pdf(  # pylint: disable=protected-access
+        "https://example.test/deck", str(dest), Verbosity.QUIET
+    )
+
+
+def test_download_writes_a_pdf_within_bounds(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream([b"%PDF", b"-1.4"], {"Content-Type": "application/pdf"})
+    _serve(monkeypatch, stream)
+    dest = tmp_path / "deck.pdf"
+    assert _download(dest)
+    assert dest.read_bytes() == b"%PDF-1.4" and stream.closed
+
+
+def test_download_refuses_a_declared_oversize(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream(
+        [b"x"],
+        {
+            "Content-Type": "application/pdf",
+            "Content-Length": str(meetings.MAX_PDF_BYTES + 1),
+        },
+    )
+    _serve(monkeypatch, stream)
+    dest = tmp_path / "deck.pdf"
+    assert not _download(dest)
+    assert not dest.exists() and stream.closed
+
+
+def test_download_abandons_an_undeclared_oversize(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(meetings, "MAX_PDF_BYTES", 10)
+    stream = _FakeStream([b"x" * 6, b"x" * 6], {"Content-Type": "application/pdf"})
+    _serve(monkeypatch, stream)
+    dest = tmp_path / "deck.pdf"
+    assert not _download(dest)
+    # No partial file, and no leftover temp.
+    assert not list(tmp_path.iterdir()) and stream.closed
+
+
+def test_download_closes_a_non_pdf_response(tmp_path: Path, monkeypatch) -> None:
+    stream = _FakeStream([b"<html>"], {"Content-Type": "text/html"})
+    _serve(monkeypatch, stream)
+    assert not _download(tmp_path / "d.pdf")
+    assert stream.closed

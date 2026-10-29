@@ -38,6 +38,10 @@ from ...paths import meeting_code_for_relpath, meeting_label, minutes_path
 # scroll dozens of unactionable lines past the user.
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
+#: Pages extracted from one PDF. A slide deck is tens of pages; this only
+#: bounds the time and index size a pathological upload can cost.
+MAX_PDF_PAGES = 300
+
 #: Files we never try to extract — they're already text or non-PDF.
 _EXCLUDED_SUFFIXES = (".txt", ".md", ".json")
 
@@ -243,7 +247,13 @@ def extract_pdf_text(pdf_path: str) -> str:
         return ""
 
     parts: List[str] = []
+    total = len(reader.pages)
     for idx, page in enumerate(reader.pages, 1):
+        if idx > MAX_PDF_PAGES:
+            parts.append(
+                f"_Text extraction stopped after {MAX_PDF_PAGES} of {total} pages._"
+            )
+            break
         try:
             page_text = page.extract_text() or ""
         except Exception:  # pylint: disable=broad-except
