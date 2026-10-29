@@ -179,7 +179,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   ├── files/charters/<acronym>.md        #   charter + current milestones — the embedded text
 │   ├── files/state/                       #   writer bookkeeping: watermarks, raw feed rows (ships in the seed)
 │   └── last-gathered                      #   ISO-8601 sentinel; the index lives at <index dir>/_groups/embeddings.db
-├── .http-cache.json                       # shared ETag store (conditional GET)
+├── .http-cache/_shared/                   # shared ETag store (conditional GET): index.json + one gzip per body
 └── _github-users.json                     # shared login → name / company cache
 ```
 
@@ -960,7 +960,8 @@ write-throughs its own entry, so it never serves config it just wrote.
   to a full gather rather than failing it. Alongside the seed, `hydrate_gather_caches` /
   `persist_gather_caches` (`gather/sources/cache_sync.py`) round-trip the gather
   accelerator caches through the `KvStore` — the datatracker ETag store sharded
-  per corpus (`corpora/<name>/gather-cache/`, lease-serialised plain RMW), the
+  per corpus (`corpora/<name>/gather-cache/http-cache.tar`, one tar of the store
+  directory; lease-serialised plain RMW), the
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
   the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins),
   and the per-list IMAP mail cache (`corpora/<name>/gather-cache/imap/<list>/`,
@@ -1066,8 +1067,18 @@ Re-gathers should transfer as little as possible. The API exposes the
 affordances; we use all three:
 
 - **Conditional GET.** `datatracker._get_json` persists each endpoint's
-  ETag (`.http-cache.json`) and revalidates with `If-None-Match`; an
+  ETag (`.http-cache/`) and revalidates with `If-None-Match`; an
   unchanged endpoint returns an empty 304 and we reuse the cached body.
+  The store is a directory (`gather/sources/http_cache.py`): one gzip file
+  per body, named by a hash of the URL and ETag, and a small `index.json`
+  mapping each URL to its ETag, body file, size and last use. A gather
+  loads the index and reads only the bodies it revalidates; the single
+  JSON file this replaced held every body (~100 MB on a real cache) and
+  was parsed and rewritten whole. Eviction at flush is by age (90 days
+  since last use), then entry count (10,000), then compressed bytes
+  (256 MB), keeping the most recently used. A single-file store from an
+  earlier version is migrated on first load; a corrupt or truncated one
+  yields an empty store (a refetch), never a failed gather.
   Covers the bulk of per-gather metadata (document lists, the meeting
   batch, roles). The materials *content* endpoint ignores conditional
   GET, so it is gated differently (below).
@@ -1133,7 +1144,7 @@ servers) can run at once. The safety model:
 - **Shared single-clone / shared caches.** The one transcripts git
   clone is guarded by `atomicio.file_lock` (flock) so concurrent gathers
   serialise their clone/pull. The JSON side-caches
-  (`.http-cache.json`, `materials.json`, `_github-users.json`,
+  (`.http-cache/`'s index, `materials.json`, `_github-users.json`,
   config) are written temp + rename; concurrent writers are
   last-writer-wins, which at worst costs a redundant re-fetch, never a
   corrupt file.
@@ -1373,7 +1384,7 @@ it stays incremental) and `os.replace`s it into place as a standalone
 
 The cloud gather-cache sync straddles that boundary, so it is split along it with
 nothing shared in process memory. The worker (`cache_sync.hydrate` / `persist`)
-only moves files: hydrate restores `.http-cache/<corpus>.json` and the IMAP units
+only moves files: hydrate restores `.http-cache/<corpus>/` and the IMAP units
 to disk before the child starts, persist reads them off disk after it exits. What
 the gather computes comes back as files too. The child binds its ETag store to
 `http_cache_path(corpus)` itself, around the stages (`_gather_one`, under the

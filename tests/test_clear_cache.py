@@ -37,8 +37,10 @@ def _populate(corpus: str) -> None:
     (mail / "epoch-7" / "9.eml").write_text("Message-Id: <9@x>\n\nbody\n")
     (mail / mbox.UIDVALIDITY_FILE).write_text("8")
     etag = Path(datatracker.http_cache_path(corpus))
-    etag.parent.mkdir(parents=True, exist_ok=True)
-    etag.write_text("{}")
+    etag.mkdir(parents=True, exist_ok=True)
+    (etag / "index.json").write_text("{}")
+    old = Path(datatracker.legacy_http_cache_path(corpus))  # from before the store was a dir
+    old.write_text("{}")
 
 
 def _left(corpus: str) -> List[str]:
@@ -58,12 +60,14 @@ def test_clear_local_state_wipes_the_corpus_and_only_the_corpus(isolated_home: P
     _populate("tls")
     _populate("httpbis")
     shared = Path(datatracker.http_cache_path())  # one store shared by all corpora
-    shared.write_text("{}")
+    shared.mkdir(parents=True)
+    (shared / "index.json").write_text("{}")
 
     lifecycle.clear_local_state("tls", str(Path(get_cache_dir()) / "tls"))
 
     assert _left("tls") == []
     assert not Path(datatracker.http_cache_path("tls")).exists()
+    assert not Path(datatracker.legacy_http_cache_path("tls")).exists()
     assert _left("httpbis") == [  # all of it still there
         "httpbis/embeddings.db",
         "httpbis/files/group.md",
@@ -72,6 +76,7 @@ def test_clear_local_state_wipes_the_corpus_and_only_the_corpus(isolated_home: P
         "imap-cache/httpbis/httpbis/epoch-7/9.eml",
     ]
     assert Path(datatracker.http_cache_path("httpbis")).exists()
+    assert Path(datatracker.legacy_http_cache_path("httpbis")).exists()
     assert shared.exists()
 
 
@@ -149,13 +154,24 @@ def test_clear_deletes_a_corporas_stored_state_and_nothing_else(
     kv.put("fleet/gather-cache/github-users.json", b"{}")
     mine = {k for k in kv._data if k.startswith("corpora/moq/")}
     assert any("/imap/moq/epoch-7/index.json" in k for k in mine)  # the archive too
-    assert "corpora/moq/gather-cache/http-cache.json" in mine
+    assert "corpora/moq/gather-cache/http-cache.tar" in mine
     others = {k for k in kv._data if not k.startswith("corpora/moq/")}
 
     cache_sync.clear(kv, "moq")
 
     assert not [k for k in kv._data if k.startswith("corpora/moq/")]
     assert {k for k in kv._data if not k.startswith("corpora/moq/")} == others
+
+
+def test_clear_also_deletes_a_blob_stored_before_the_directory_layout() -> None:
+    kv = InMemoryKvStore()
+    kv.put("corpora/moq/gather-cache/http-cache.json", b"{}")
+    kv.put("corpora/tls/gather-cache/http-cache.json", b"{}")
+
+    cache_sync.clear(kv, "moq")
+
+    assert kv.get("corpora/moq/gather-cache/http-cache.json") is None
+    assert kv.get("corpora/tls/gather-cache/http-cache.json") is not None
 
 
 def test_clear_then_hydrate_restores_nothing(
