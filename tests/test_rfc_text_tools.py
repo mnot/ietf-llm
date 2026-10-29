@@ -247,3 +247,48 @@ def test_a_missing_title_leaves_no_dangling_dash(corpus: Path) -> None:
     out = rfc_text.tool_search_rfc_text("caching", limit=1)
     assert "— \n" not in out and not out.rstrip().endswith("—")
     assert "## RFC 9111" in out
+
+
+def _add_rfcs(count: int) -> None:
+    conn = _open_db(rfc_text.RFC_CORPUS)
+    try:
+        vec = np.ones(4, dtype=np.float32).tobytes()
+        conn.executemany(
+            "INSERT INTO chunks(file, chunk_idx, sub_idx, title, text, embedding, "
+            "section) VALUES(?,?,0,?,?,?,?)",
+            [
+                (f"rfc{2000 + n}.txt", 0, "Overview", "Caching text.", vec, "1")
+                for n in range(count)
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_search_result_count_is_clamped(corpus: Path) -> None:
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    _add_rfcs(80)
+    out = rfc_text.tool_search_rfc_text("caching", limit=10**6)
+    assert out.count("\n## RFC ") == rfc_text._MAX_LIMIT  # pylint: disable=protected-access
+    assert f"showing {rfc_text._MAX_LIMIT}" in out  # pylint: disable=protected-access
+    # A nonsense value still returns something rather than nothing.
+    assert "## RFC " in rfc_text.tool_search_rfc_text("caching", limit=-5)
+
+
+def test_search_snippet_and_section_counts_are_clamped(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    monkeypatch.setattr(rfc_text, "section_text", lambda _n, _s: "word " * 5000)
+    out = rfc_text.tool_search_rfc_text(
+        "caching", rfc="9111", sections_per_rfc=10**6, snippet_chars=10**9
+    )
+    snippets = [ln for ln in out.splitlines() if ln.startswith("  ") and ln.endswith("…")]
+    assert snippets
+    assert len(snippets) <= rfc_text._MAX_SECTIONS_PER_RFC  # pylint: disable=protected-access
+    assert all(len(s) <= rfc_text._MAX_SNIPPET_CHARS + 3 for s in snippets)  # pylint: disable=protected-access
