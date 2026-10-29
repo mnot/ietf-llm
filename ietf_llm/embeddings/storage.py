@@ -340,7 +340,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # (file, chunk_idx) to (file, chunk_idx, sub_idx) so one long message can
     # own several embedding rows. SQLite can't ALTER a constraint, so we
     # recreate the table, carrying existing rows forward as sub_idx 0. They
-    # stay searchable as-is; a CHUNKER_VERSION mismatch re-embeds each WG on
+    # stay searchable as-is; a CHUNKER_VERSION mismatch re-chunks each WG on
     # its next gather, which is when the finer-grained fragments appear.
     if "sub_idx" not in have:
         conn.execute("""

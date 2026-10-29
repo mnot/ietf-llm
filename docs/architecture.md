@@ -346,7 +346,10 @@ Key invariants:
   position per AD, DISCUSS text inline) for drafts with ballot
   activity in the `--months` window.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
-  version, and vector dimension; a change to any forces a rebuild, and the model
+  version, and vector dimension; a model or dimension change forces a rebuild,
+  and a chunker-version change re-chunks every file on the next gather while
+  reusing stored vectors by `chunk_hash` (so a change that leaves chunk text
+  alone, such as line-number fixes, embeds nothing). The model
   id is read back at query time to resolve the same backend. The `chunks` table
   carries `start_line`/`end_line`, `chunk_date`, `labels`, `state`, `url`,
   `duplicate_of`, `closing_rationale` for faceted search, and a `chunk_hash`

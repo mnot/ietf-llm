@@ -38,7 +38,7 @@ from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 # fragment is re-covered by the head of the next, so content stays searchable.
 # Char-based on purpose: chunking must NOT depend on a runtime tokenizer (the
 # remote embedding backend won't ship one). Bumping this is a write-side change
-# — bump CHUNKER_VERSION in search.py so existing indices re-embed.
+# — bump CHUNKER_VERSION so existing indices are re-chunked.
 EMBED_CHAR_BUDGET = 1200
 EMBED_CHAR_OVERLAP = 150
 MAX_CHUNK_CHARS = 8000  # hard cap for the legacy year-dump chunkers (dead path)
@@ -51,7 +51,10 @@ MAX_CHUNK_CHARS = 8000  # hard cap for the legacy year-dump chunkers (dead path)
 #   "1" — fixed 2000-char windows, 8000-char per-section truncation
 #   "2" — EMBED_CHAR_BUDGET windows; long sections split into sub_idx
 #         fragments instead of being truncated
-CHUNKER_VERSION = "2"
+#   "3" — windowed chunks' start_line/end_line count from the top of the file
+#         (they were short by its leading blank lines); chunk text is
+#         unchanged, so an upgrade rewrites rows without re-embedding
+CHUNKER_VERSION = "3"
 
 
 @dataclass
@@ -429,16 +432,21 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
     rather than having its tail silently dropped from the vector.
     """
     chunks: List[Chunk] = []
+    # Line numbers are file lines, so index the text as read and shift the
+    # stripped text's window offsets by the whitespace removed from its head.
+    line_starts = _build_line_index(text)
+    lead = len(text) - len(text.lstrip())
     text = text.strip()
     if not text:
         return chunks
     # File-level citation URL (drafts, charter) stamped on every window;
     # None for windowed files without a confident canonical URL.
     file_url = _windowed_citation_url(filename, text)
-    line_starts = _build_line_index(text)
     for idx, (body, start, end) in enumerate(
         _window_text(text, EMBED_CHAR_BUDGET, EMBED_CHAR_OVERLAP)
     ):
+        start += lead
+        end += lead
         # First non-empty line as title hint
         title = next((ln.strip() for ln in body.splitlines() if ln.strip()), filename)
         if len(title) > 80:

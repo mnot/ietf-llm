@@ -551,3 +551,37 @@ def test_binary_files_are_skipped_and_reported(isolated_home: Path) -> None:
     out = tool_grep_corpus("wg", "needle")
     assert "no matches" in out
     assert "1 binary file(s) skipped" in out
+
+
+def test_chunk_attribution_is_right_for_blank_led_draft(isolated_home: Path) -> None:
+    # Datatracker drafts start with blank lines. Chunk line spans once ignored
+    # them, so a hit within a few lines of a window boundary was tagged with
+    # the neighbouring chunk (and the file's last lines with none).
+    import re
+
+    rel = "drafts/draft-ietf-foo-bar-00.txt"
+    rows = [
+        f"row-{n:04d} some filler text for the draft row-{n:04d}" for n in range(1, 201)
+    ]
+    raw = "\n\n\n\n" + "\n".join(rows) + "\n"
+    write_cache_file(isolated_home, "wg", rel, raw)
+    _build_with_stub("wg")
+
+    out = tool_grep_corpus("wg", r"^row-\d+", regex=True, limit=_MAX_GREP_LIMIT)
+    seen = 0
+    for line in out.splitlines():
+        if not re.match(r"\s+\d+: row-", line):
+            continue
+        hit = re.match(r"\s+(\d+): (row-\d+).*\[chunk (\d+):", line)
+        assert hit, f"untagged hit: {line!r}"
+        lineno, needle, chunk_idx = int(hit[1]), hit[2], int(hit[3])
+        assert rows[lineno - 5].startswith(needle)
+        got = embeddings.get_chunk("wg", rel, chunk_idx)
+        assert got is not None
+        # The tagged chunk's characters overlap the matched line's.
+        chunk_at = raw.index(got[1])
+        line_at = raw.index(rows[lineno - 5])
+        assert chunk_at < line_at + len(rows[lineno - 5])
+        assert line_at < chunk_at + len(got[1])
+        seen += 1
+    assert seen == len(rows)
