@@ -344,7 +344,17 @@ Key invariants:
   text.
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
-  activity in the `--months` window.
+  activity in the `--months` window. Only the document's newest
+  `BallotDocEvent` is read (each position event names its ballot), so a
+  recharter or a re-ballot never folds closed ballots into the tally.
+  Positions from people who are no longer on the IESG or IRSG are listed
+  under "Former balloters" and left out of the tally; the current set
+  comes from the `iesg` (role `ad`) and `irsg` group roles, and if
+  that can't be fetched nothing is marked former. `charter-*` documents
+  get the same treatment and are headed as charter ballots. If the
+  scoping or history fetch fails, the ballot files are left as the last
+  gather wrote them; only a successful answer of "no activity" removes
+  them. `review_record` applies the same newest-ballot rule live.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
   version, and vector dimension; a change to any forces a rebuild, and the model
   id is read back at query time to resolve the same backend. The `chunks` table
@@ -1051,7 +1061,10 @@ Concretely, the gather layer reads from the API for:
   A, B from A"), which carry the names inline and are dated by when the
   Datatracker record was edited, but only for changes since the log began; a
   group's founding chairs have no appointment event. Names are mapped to the
-  people registry's spelling where it holds a clean one.
+  people registry's spelling where it holds a clean one. Ballot fetches
+  return "unreachable" (not "none") on failure, so a Datatracker outage
+  cannot clear the gathered ballot files; their scoping URL carries a
+  day-rounded cutoff so it can revalidate against the ETag cache.
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
