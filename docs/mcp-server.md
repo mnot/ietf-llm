@@ -94,7 +94,14 @@ will not do any of it, now or by configuration:
 - **No authn/z.** No login, no API key, no per-client identity. Widen `IETF_LLM_MCP_HOST` to
   `0.0.0.0` only behind a proxy that authenticates.
 - **No rate limiting.** Nothing caps request rate or concurrency beyond the per-call tool deadline
-  (`IETF_LLM_TOOL_TIMEOUT`). One client can saturate CPU.
+  (`IETF_LLM_TOOL_TIMEOUT`) and, for `grep_corpus` only, a small worker pool
+  (`IETF_LLM_SCAN_CONCURRENCY`). One client can still saturate CPU.
+- **Regex scans are bounded in time, not memory.** A `grep_corpus(regex=True)` scan runs in a child
+  process that is killed at its 20s budget, but the child has no memory limit: one pathological
+  pattern over one very long line was measured at about 1.5 GB resident. Up to
+  `IETF_LLM_SCAN_CONCURRENCY` (default 4) scans run at once, so size the container for that many.
+  A hostile client can also hold every scan slot, about 23s per call, keeping `grep_corpus`
+  saturated; other tools are unaffected. Both are accepted limits, not bugs to be fixed here.
 - **No quota or budget cap.** `search_corpus` and `read_topic` each make a metered, paid
   `/v1/embeddings` call per request — no budget ceiling, no circuit breaker, no query-embedding
   cache. A busy or hostile client runs up the embedding bill.
@@ -127,6 +134,7 @@ in [Storage](storage.md) and [Model backends](models.md); the serve-specific one
 | `IETF_LLM_LOG_FORMAT` | `text` or `json` | `text` |
 | `IETF_LLM_LOG_LEVEL` | serve verbosity: `quiet` / `status` / `verbose` | `status` on HTTP, `quiet` on stdio |
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds (`0` disables) | `120` |
+| `IETF_LLM_SCAN_CONCURRENCY` | worker slots for `grep_corpus`, separate from the general pool, so a flood of scans queues against itself | `4` |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry | off |
 
 **Retrieval**
@@ -207,7 +215,14 @@ against one `embeddings.db`, so an index that is present but unservable fails th
 passing it. A server with no corpora gathered yet is still ready. `503` otherwise, with a small
 JSON body (an `index_probe` field reports `ok` / `no-corpora` / `failed`). It makes **no** upstream
 call — a slow or unreachable embedding endpoint won't flap readiness — so it reports "configured
-and ready to serve", not "the backend answered".
+and ready to serve", not "the backend answered". The probe's store reads (an S3 LIST per probe on
+the cloud backend) run on a worker thread, not the event loop, and the per-corpus freshness sweep
+behind it is shared with `/metrics` and reused for a few seconds, so a load balancer probing every
+second does not stall in-flight sessions or hammer the bucket. A probe that arrives while a refresh
+is running serves the previous sweep instead of queueing, a failed refresh is remembered for a
+couple of seconds, and the probes draw on their own small worker pool, so a stalled bucket cannot
+use up the threads the tool calls need. The body does not include the
+index directory path (it is in the boot banner).
 
 The JSON body also carries operator-facing fields that don't gate readiness:
 

@@ -58,7 +58,7 @@ compatibility gate:
   "generated": "2026-07-01T00:00:00Z",
   "schema_version": 8,
   "embedding_model": "sentence-transformers/BAAI/bge-small-en-v1.5",
-  "chunker_version": "2",
+  "chunker_version": "3",
   "vector_dim": 384,
   "corpora": [
     { "name": "httpbis", "kind": "group", "subject": "HTTP Working Group",

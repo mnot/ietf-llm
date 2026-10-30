@@ -21,7 +21,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import quote
 
 import requests
@@ -83,9 +83,21 @@ def _parse_utc(value: str) -> Optional[datetime.datetime]:
     return parsed.astimezone(datetime.timezone.utc)
 
 
+class LiveUnavailable(Exception):
+    """Datatracker could not be reached and no cached answer was on hand.
+
+    Distinct from "no such document": callers must never render this as a
+    negative. `tried_at` is when the failed attempt was made.
+    """
+
+    def __init__(self, tried_at: datetime.datetime) -> None:
+        super().__init__("Datatracker unreachable")
+        self.tried_at = tried_at
+
+
 @dataclass
 class _CacheEntry:
-    body: Optional[Dict[str, Any]]
+    body: Dict[str, Any]
     fetched_at: datetime.datetime
     monotonic: float
 
@@ -94,26 +106,55 @@ _cache: Dict[str, _CacheEntry] = {}
 _cache_lock = threading.Lock()
 
 
-def _fetch_json(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-    """GET a Datatracker JSON URL, returning the decoded dict or None.
+#: `(connect, read)` timeouts for a live fetch, in seconds. There is no retry
+#: (see `_fetch_json`), so these bound a tool call: an unreachable host costs
+#: at most ~5s to connect, a stalled response ~10s.
+_FETCH_TIMEOUT: Tuple[float, float] = (5.0, 10.0)
+
+
+def _fetch_json(
+    url: str, timeout: Union[float, Tuple[float, float]] = _FETCH_TIMEOUT
+) -> Optional[Dict[str, Any]]:
+    """GET a Datatracker JSON URL: the decoded dict, None for a 404, else raise.
+
+    None means Datatracker answered that the resource does not exist — the
+    only status that does. Any other failure (transport error, 5xx, 429, a
+    Cloudflare block, an undecodable or non-object body) is logged, with the
+    Cloudflare Ray ID when the response carries one, and re-raised as
+    `requests.RequestException` / `ValueError` for `_cached_json` to turn into
+    "unavailable" or a stale fallback.
 
     No disk cache and no ETag store — the read path writes nothing. Uses the
     shared rate governor (`governed_get`) so a burst of agenda lookups stays
-    polite to Datatracker. Any transport or decode error is logged (with the
-    Cloudflare Ray ID when the response carries one) and swallowed to None;
-    the caller decides whether to fall back to a stale cache entry.
+    polite to Datatracker, but with `retrying=False`: a caller is waiting, and
+    the shared session's retries (honouring `Retry-After`) can hold a call for
+    a minute or more. A failure is cheap to report ("could not reach") and the
+    stale-cache fallback in `_cached_json` already covers the blip.
     """
     try:
-        response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=timeout)
+        response = governed_get(
+            url, retrying=False, headers=dict(DEFAULT_HEADERS), timeout=timeout
+        )
         response.raise_for_status()
         body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("expected a JSON object")
+    except requests.HTTPError as err:
+        if err.response is not None and err.response.status_code == 404:
+            return None
+        _log_fetch_failure(url, err)
+        raise
     except (requests.RequestException, ValueError) as err:
-        log(
-            f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
-            level=LogLevel.WARN,
-        )
-        return None
-    return body if isinstance(body, dict) else None
+        _log_fetch_failure(url, err)
+        raise
+    return body
+
+
+def _log_fetch_failure(url: str, err: Exception) -> None:
+    log(
+        f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
+        level=LogLevel.WARN,
+    )
 
 
 def _live_cache_path() -> str:
@@ -189,21 +230,46 @@ def _disk_put(
         pass
 
 
-def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]:
-    """Return `(body, fetched_at)` for `url`, fetching at most once per TTL.
+def _stale_entry(
+    url: str,
+) -> Optional[Tuple[Dict[str, Any], datetime.datetime]]:
+    """Any previously-cached `(body, fetched_at)` for `url`, however old.
+
+    The fetch-failure fallback: in-process first, then a stale disk entry — the
+    cold-process case the disk cache exists for (a fresh process, network
+    down, only older-than-TTL data on disk).
+    """
+    with _cache_lock:
+        entry = _cache.get(url)
+    if entry is not None:
+        return entry.body, entry.fetched_at
+    stale = _disk_get(url, None)
+    return (stale[0], stale[1]) if stale is not None else None
+
+
+def _cached_json(
+    url: str,
+) -> Tuple[Optional[Dict[str, Any]], datetime.datetime, bool]:
+    """Return `(body, fetched_at, answered)` for `url`, fetching at most once
+    per TTL.
+
+    `answered` is False only when the fetch failed and there was no cached
+    entry, fresh or stale, to fall back on: `body` is then None because
+    Datatracker could not be asked, not because the resource is absent, and
+    `fetched_at` is the time of the failed attempt. A 404 is an answer
+    (`body` None, `answered` True), and is not cached.
 
     Checks the in-process cache first, then the cross-process disk cache (so a
     cold process reuses a recent fetch rather than re-hitting Datatracker), then
     fetches. On a fetch failure a previously-cached body is returned with its
-    *original* timestamp — in-process, else a stale disk entry — since a stale
-    answer beats none; with no prior entry anywhere, `(None, now)`.
+    *original* timestamp (`_stale_entry`) since a stale answer beats none.
     """
     ttl = _ttl_seconds()
     now_mono = time.monotonic()
     with _cache_lock:
         entry = _cache.get(url)
         if entry is not None and (now_mono - entry.monotonic) < ttl:
-            return entry.body, entry.fetched_at
+            return entry.body, entry.fetched_at, True
     disk = _disk_get(url, ttl)
     if disk is not None:
         disk_body, disk_fetched, disk_epoch = disk
@@ -217,27 +283,23 @@ def _cached_json(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]
                 fetched_at=disk_fetched,
                 monotonic=time.monotonic() - age,
             )
-        return disk_body, disk_fetched
-    body = _fetch_json(url)
-    if body is None:
-        # Fetch failed: prefer any stale answer over none. In-process first,
-        # then a stale disk entry — the cold-process case the disk cache exists
-        # for (a fresh process, network down, only older-than-TTL data on disk).
-        with _cache_lock:
-            entry = _cache.get(url)
-        if entry is not None:
-            return entry.body, entry.fetched_at
-        stale = _disk_get(url, None)
+        return disk_body, disk_fetched, True
+    try:
+        body = _fetch_json(url)
+    except (requests.RequestException, ValueError):
+        stale = _stale_entry(url)
         if stale is not None:
-            return stale[0], stale[1]
-        return None, _now_utc()
+            return stale[0], stale[1], True
+        return None, _now_utc(), False
     fetched_at = _now_utc()
+    if body is None:
+        return None, fetched_at, True
     with _cache_lock:
         _cache[url] = _CacheEntry(
             body=body, fetched_at=fetched_at, monotonic=time.monotonic()
         )
     _disk_put(url, body, fetched_at, ttl)
-    return body, fetched_at
+    return body, fetched_at, True
 
 
 def _reset_cache() -> None:
@@ -260,4 +322,24 @@ def age_stamp(fetched_at: datetime.datetime) -> str:
     return (
         f"_Live from Datatracker, fetched {age}s ago ({stamp}); "
         f"cached up to {int(_ttl_seconds())}s._"
+    )
+
+
+def _age_phrase(when: datetime.datetime) -> str:
+    age = max(0, int((_now_utc() - when).total_seconds()))
+    return "just now" if age <= 1 else f"{age}s ago"
+
+
+def unreachable_note(what: str, tried_at: datetime.datetime) -> str:
+    """The message for a lookup Datatracker could not be asked.
+
+    Worded so it cannot be read as a negative about `what`: an outage says
+    nothing about whether the thing exists or has any reviews, positions or
+    sessions.
+    """
+    stamp = tried_at.strftime("%Y-%m-%d %H:%M:%SZ")
+    return (
+        f"Could not reach Datatracker to look up {what} (last tried "
+        f"{_age_phrase(tried_at)}, {stamp}). That is an outage, not an answer: "
+        "nothing here says the lookup would come back empty. Try again shortly."
     )

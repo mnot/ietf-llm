@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ietf_llm import export
+from ietf_llm.cli import export as cli_export
 from ietf_llm.log import Verbosity
 
 from conftest import write_cache_file
@@ -95,6 +98,130 @@ def test_no_cache_returns_zero(isolated_home: Path, tmp_path: Path) -> None:
     dest = tmp_path / "dest"
     changes = export.directory("wg-never-gathered", str(dest), verbose=Verbosity.QUIET)
     assert changes == 0
+
+
+def test_typo_name_creates_no_corpus_and_spares_destination(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    # A mistyped corpus must not be materialised as an empty corpus, and the
+    # prune must never run against it: the destination's notes survive.
+    _mk_corpus(isolated_home)
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    (dest / "todo.txt").write_text("mine")
+    changes = export.directory("wgg", str(dest), verbose=Verbosity.QUIET)
+    assert changes == 0
+    assert sorted(p.name for p in dest.iterdir()) == ["notes.md", "todo.txt"]
+    cache = isolated_home / ".cache" / "ietf-llm"
+    assert sorted(p.name for p in cache.iterdir()) == ["wg"]
+
+
+def test_unsafe_name_is_refused(isolated_home: Path, tmp_path: Path) -> None:
+    dest = tmp_path / "dest"
+    assert export.directory("../wg", str(dest), verbose=Verbosity.QUIET) == 0
+    assert not dest.exists()
+
+
+def test_empty_corpus_does_not_prune_destination(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    # A corpus that exists but has nothing exportable yields an empty source
+    # set; pruning against it would wipe the destination.
+    write_cache_file(isolated_home, "wg", "github/x.json", "{}")  # excluded
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    assert export.directory("wg", str(dest), verbose=Verbosity.QUIET) == 0
+    assert (dest / "notes.md").read_text() == "mine"
+
+
+def test_notebooklm_typo_name_creates_no_corpus(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    # The NotebookLM sink resolves the corpus before any auth or network.
+    pytest.importorskip("google_auth_oauthlib")
+    assert export.notebooklm(
+        "wgg", "proj", str(tmp_path / "c.json"), str(tmp_path / "t.json"),
+        verbose=Verbosity.QUIET,
+    ) == 0
+    assert not (isolated_home / ".cache" / "ietf-llm" / "wgg").exists()
+
+
+def _run_cli(monkeypatch: pytest.MonkeyPatch, *argv: str) -> None:
+    monkeypatch.setattr("sys.argv", ["ietf-llm-export", *argv])
+    cli_export.main()
+
+
+def test_cli_typo_name_persists_nothing(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The CLI saves per-corpus config as a side effect of resolving flags; a
+    # mistyped name must not get as far as that, nor create a cache dir.
+    _mk_corpus(isolated_home)
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(monkeypatch, "wgg", "--destination", str(dest), "-q")
+    assert exc.value.code == 1
+    assert (dest / "notes.md").read_text() == "mine"
+    config_dir = isolated_home / ".config" / "ietf-llm"
+    assert not (config_dir / "wgg").exists()
+    cache = isolated_home / ".cache" / "ietf-llm"
+    assert sorted(p.name for p in cache.iterdir()) == ["wg"]
+
+
+def test_cli_unsafe_name_exits_cleanly_and_writes_nothing(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "dest"
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(monkeypatch, "../outside", "--destination", str(dest), "-q")
+    assert exc.value.code == 1
+    assert not dest.exists()
+    assert not (isolated_home / ".config" / "outside").exists()
+    assert not (isolated_home / ".config" / "ietf-llm" / "outside").exists()
+
+
+def test_cli_known_corpus_still_exports(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mk_corpus(isolated_home)
+    dest = tmp_path / "dest"
+    _run_cli(monkeypatch, "wg", "--destination", str(dest), "-q")
+    assert (dest / "charter.txt").exists()
+
+
+def test_cli_empty_corpus_exits_zero(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Gathered but nothing exportable is not an unknown corpus: exit 0, and the
+    # destination is left alone.
+    write_cache_file(isolated_home, "wg", "github/x.json", "{}")  # excluded
+    dest = tmp_path / "notes"
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine")
+    _run_cli(monkeypatch, "wg", "--destination", str(dest), "-q")
+    assert (dest / "notes.md").read_text() == "mine"
+
+
+def test_notebooklm_empty_corpus_creates_no_notebook(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("google_auth_oauthlib")
+    from ietf_llm import notebooklm  # pylint: disable=import-outside-toplevel
+
+    def forbidden(*_a: object, **_k: object) -> None:
+        raise AssertionError("must not authenticate or create a notebook")
+
+    monkeypatch.setattr(notebooklm, "get_credentials", forbidden)
+    monkeypatch.setattr(notebooklm, "create_notebook", forbidden)
+    write_cache_file(isolated_home, "wg", "github/x.json", "{}")  # excluded
+    assert export.notebooklm(
+        "wg", "proj", str(tmp_path / "c.json"), str(tmp_path / "t.json"),
+        verbose=Verbosity.QUIET,
+    ) == 0
 
 
 # --- Bundling (default) ---------------------------------------------------

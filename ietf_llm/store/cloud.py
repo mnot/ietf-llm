@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, TypeVar
 
 from .. import freshness
-from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
+from ..atomicio import TMP_SUFFIX, scratch_sibling_name, stage_split_dir, swap_dirs
 from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, checked_corpus, get_index_dir
 from .blobs import BlobStore, blob_concurrency, parallel_each
@@ -385,6 +385,33 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
 
         return bool(self._with_current(corpus, _present))
 
+    def list_files(self, corpus: str, subdir: str) -> List[str]:
+        # Like `has_file`: a staged version is listed on disk, anything else from
+        # the manifest (one small GET, kept per version), never the content.
+        rel = clean_relpath(subdir)
+        if rel is None:
+            return []
+
+        def _listed(version: str) -> List[str]:
+            root = os.path.join(self._scratch, corpus, version)
+            if os.path.isdir(root):
+                directory = os.path.join(root, "files", rel)
+                if not os.path.isdir(directory):
+                    return []
+                return sorted(
+                    name
+                    for name in os.listdir(directory)
+                    if os.path.isfile(os.path.join(directory, name))
+                )
+            prefix = f"files/{rel}/"
+            return sorted(
+                path[len(prefix) :]
+                for path in self._version_files(corpus, version)
+                if path.startswith(prefix) and "/" not in path[len(prefix) :]
+            )
+
+        return self._with_current(corpus, _listed) or []
+
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         staged = self._stage_current(corpus)
         if staged is None:
@@ -735,6 +762,8 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
             staged[rel.replace(os.sep, "/")] = abs_path
         for dirpath, _dirs, names in os.walk(workspace):
             for name in names:
+                if name.endswith(TMP_SUFFIX):
+                    continue  # an in-flight or leaked atomic-write temp
                 abs_path = os.path.join(dirpath, name)
                 rel = os.path.relpath(abs_path, workspace).replace(os.sep, "/")
                 staged[rel] = abs_path

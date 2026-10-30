@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import datetime
 import os
-from typing import Any, Dict, List, Tuple
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import anyio
+from anyio.lowlevel import RunVar
 
 from .. import __version__, config, serve_metrics
 from ..config import service as service_config
@@ -18,6 +23,112 @@ from ..freshness import last_gathered
 from ..log import LogLevel, log
 from ..paths import get_index_dir
 from .common import _gather_enabled, _list_wgs, _log_verbosity
+
+#: How long a freshness sweep is reused. Probes arrive every few seconds from
+#: each load balancer and scraper; on the cloud backend each sweep is an S3
+#: LIST plus a read per corpus, so the sweep is shared rather than repeated.
+_SWEEP_TTL = 5.0
+
+#: How long a failed sweep is remembered. Without it every probe queued behind a
+#: failing store would re-run the whole (retrying) sweep in turn.
+_SWEEP_FAILURE_TTL = 2.0
+
+_Sweep = Tuple[int, List[Tuple[str, datetime.datetime]]]
+
+_state_lock = threading.Lock()
+_refresh_lock = threading.Lock()
+#: At most one `(monotonic time, sweep)`; kept after it expires so a probe that
+#: finds a refresh in flight, or a failing store, can serve it stale.
+_SWEEP_CACHE: "List[Tuple[float, _Sweep]]" = []
+#: At most one `(monotonic time, error)` from the latest failed refresh.
+_SWEEP_FAILURE: "List[Tuple[float, Exception]]" = []
+
+#: Worker slots for the probes, one limiter per event loop. A stalled store
+#: must not be able to drain the default pool the MCP tool calls draw from.
+_PROBE_SLOTS = 4
+_probe_limiter_var: "RunVar[anyio.CapacityLimiter]" = RunVar("ietf_llm_probe_limiter")
+
+
+def _probe_limiter() -> anyio.CapacityLimiter:
+    try:
+        return _probe_limiter_var.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(_PROBE_SLOTS)
+        _probe_limiter_var.set(limiter)
+        return limiter
+
+
+def _reset_sweep_cache() -> None:
+    with _state_lock:
+        _SWEEP_CACHE.clear()
+        _SWEEP_FAILURE.clear()
+
+
+def _peek_sweep() -> "Tuple[Optional[_Sweep], Optional[_Sweep]]":
+    """`(usable, stale)`: `usable` is a sweep to serve without refreshing (fresh,
+    or the previous one while a failure is remembered), `stale` the previous
+    sweep whatever its age. Raises the remembered error when there is nothing
+    to serve in its place."""
+    with _state_lock:
+        now = time.monotonic()
+        stale = _SWEEP_CACHE[0][1] if _SWEEP_CACHE else None
+        if _SWEEP_CACHE and now - _SWEEP_CACHE[0][0] < _SWEEP_TTL:
+            return stale, stale
+        if _SWEEP_FAILURE and now - _SWEEP_FAILURE[0][0] < _SWEEP_FAILURE_TTL:
+            if stale is None:
+                raise _SWEEP_FAILURE[0][1]
+            return stale, stale
+        return None, stale
+
+
+def _refresh_sweep(stale: "Optional[_Sweep]") -> _Sweep:
+    """Run the sweep (holding `_refresh_lock`); on failure remember the error and
+    serve `stale` if there is one."""
+    try:
+        wgs = _list_wgs()
+        tracked = serve_metrics.timed_store(
+            "freshness_sweep",
+            lambda: [
+                (wg, when) for wg in wgs if (when := last_gathered(wg)) is not None
+            ],
+        )
+    except Exception as err:  # pylint: disable=broad-except
+        with _state_lock:
+            _SWEEP_FAILURE[:] = [(time.monotonic(), err)]
+        if stale is None:
+            raise
+        return stale
+    sweep = (len(wgs), tracked)
+    with _state_lock:
+        _SWEEP_CACHE[:] = [(time.monotonic(), sweep)]
+        _SWEEP_FAILURE.clear()
+    return sweep
+
+
+def _freshness_sweep() -> _Sweep:
+    """`(corpus count, [(corpus, last-gathered)])` for the corpora carrying a
+    sentinel, reused for `_SWEEP_TTL` seconds. Callers run it on a worker thread.
+
+    One probe refreshes at a time. A probe that finds a refresh in flight serves
+    the previous sweep, however old, rather than queueing behind it; only the
+    very first probe has nothing to serve and waits. A failed refresh is
+    remembered for `_SWEEP_FAILURE_TTL`: probes serve the previous sweep, or
+    re-raise the error when there is none.
+    """
+    while True:
+        usable, stale = _peek_sweep()
+        if usable is not None:
+            return usable
+        # pylint: disable-next=consider-using-with
+        if _refresh_lock.acquire(blocking=False):
+            try:
+                return _refresh_sweep(stale)
+            finally:
+                _refresh_lock.release()
+        if stale is not None:
+            return stale
+        with _refresh_lock:  # the first sweep is running; wait for its outcome
+            pass
 
 
 def _corpora_freshness() -> "dict[str, Any]":
@@ -34,11 +145,7 @@ def _corpora_freshness() -> "dict[str, Any]":
     scrape's job. Both are null when nothing is tracked.
     """
     now = datetime.datetime.now(datetime.timezone.utc)
-    wgs = _list_wgs()
-    tracked = serve_metrics.timed_store(
-        "freshness_sweep",
-        lambda: [(wg, when) for wg in wgs if (when := last_gathered(wg)) is not None],
-    )
+    count, tracked = _freshness_sweep()
 
     def _entry(item: "tuple[str, datetime.datetime]") -> "dict[str, Any]":
         wg, when = item
@@ -49,7 +156,7 @@ def _corpora_freshness() -> "dict[str, Any]":
         }
 
     summary: "dict[str, Any]" = {
-        "count": len(wgs),
+        "count": count,
         "tracked": len(tracked),
         "oldest": None,
         "newest": None,
@@ -85,7 +192,6 @@ def _readiness() -> "tuple[bool, dict[str, Any]]":
     ready = index_ok and probe != "failed"
     return ready, {
         "version": __version__,
-        "index_dir": index_dir,
         "index_dir_usable": index_ok,
         "index_probe": probe,
         "embed_endpoint_configured": bool(
@@ -104,7 +210,9 @@ async def _health_endpoint(_request: Any) -> Any:
     # pylint: disable=import-outside-toplevel
     from starlette.responses import JSONResponse
 
-    ready, detail = _readiness()
+    # Blocking filesystem and (on the cloud backend) S3 reads: keep them off the
+    # event loop so a probe cannot stall in-flight MCP sessions.
+    ready, detail = await anyio.to_thread.run_sync(_readiness, limiter=_probe_limiter())
     return JSONResponse(
         {"status": "ok" if ready else "unavailable", **detail},
         status_code=200 if ready else 503,
@@ -120,24 +228,16 @@ def _corpus_ages() -> "List[Tuple[str, int]]":
     breakdown /health deliberately summarises rather than enumerates.
     """
     now = datetime.datetime.now(datetime.timezone.utc)
-    wgs = _list_wgs()
-
-    def _sweep() -> "List[Tuple[str, int]]":
-        ages: "List[Tuple[str, int]]" = []
-        for wg in wgs:
-            when = last_gathered(wg)
-            if when is not None:
-                ages.append((wg, max(0, int((now - when).total_seconds()))))
-        return ages
-
-    return serve_metrics.timed_store("freshness_sweep", _sweep)
+    _, tracked = _freshness_sweep()
+    return [(wg, max(0, int((now - when).total_seconds()))) for wg, when in tracked]
 
 
 async def _metrics_endpoint(_request: Any) -> Any:
     # pylint: disable=import-outside-toplevel
     from starlette.responses import PlainTextResponse
 
-    body = serve_metrics.render(_corpus_ages(), version=__version__)
+    ages = await anyio.to_thread.run_sync(_corpus_ages, limiter=_probe_limiter())
+    body = serve_metrics.render(ages, version=__version__)
     # Prometheus text exposition format v0.0.4.
     return PlainTextResponse(
         body, media_type="text/plain; version=0.0.4; charset=utf-8"

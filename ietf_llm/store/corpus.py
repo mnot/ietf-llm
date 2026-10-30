@@ -209,6 +209,19 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         """
 
     @abstractmethod
+    def list_files(self, corpus: str, subdir: str) -> List[str]:
+        """Sorted names of the files directly inside `subdir` (a path inside
+        `files/`, e.g. `drafts`) in the current version of `corpus`. Empty for
+        an absent corpus or directory, or a `subdir` that is not inside `files/`.
+
+        The listing counterpart of `has_file`, with the same contract: answered
+        without fetching the version's content, so a caller hunting for a file
+        whose exact name it cannot yet build (a draft's newest revision) can ask
+        every corpus and stage only the one that has it. Read-only; honours the
+        request pin like the other read accessors.
+        """
+
+    @abstractmethod
     def local_corpus_dir(self, corpus: str) -> Optional[str]:
         """Local filesystem path to the corpus *root* for the current version of
         `corpus` — the directory that holds `files/` plus the root-level
@@ -499,6 +512,23 @@ class LocalCorpusStore(CorpusStore):
         path = os.path.realpath(os.path.join(files, rel))
         return path.startswith(os.path.realpath(files) + os.sep) and os.path.isfile(
             path
+        )
+
+    def list_files(self, corpus: str, subdir: str) -> List[str]:
+        rel = clean_relpath(subdir)
+        files = self.local_cache_dir(corpus)
+        if rel is None or files is None:
+            return []
+        root = os.path.realpath(files)
+        directory = os.path.realpath(os.path.join(files, rel))
+        if not directory.startswith(root + os.sep) or not os.path.isdir(directory):
+            return []
+        # As in `has_file`, a symlink out of files/ is not a file a reader may open.
+        return sorted(
+            name
+            for name in os.listdir(directory)
+            if os.path.realpath(os.path.join(directory, name)).startswith(root + os.sep)
+            and os.path.isfile(os.path.join(directory, name))
         )
 
     def local_corpus_dir(self, corpus: str) -> Optional[str]:

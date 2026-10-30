@@ -43,7 +43,7 @@ def generation() -> str:
 #:
 #: Not a member of the shared store, and it cannot be one: a store carries a
 #: single compatibility tuple, and this corpus's chunks come from rfc.fyi's
-#: chunker (`rfcfyi-1`) while every gathered corpus carries ours (`2`). Those
+#: chunker (`rfcfyi-1`) while every gathered corpus carries ours (`CHUNKER_VERSION`). Those
 #: can never match, so putting them in one store means one of them is always
 #: refused — which is exactly what the tuple is for. It is a different
 #: embedding generation, so it gets a different store.

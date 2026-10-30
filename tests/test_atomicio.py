@@ -12,7 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from ietf_llm.atomicio import scratch_sibling_name, stage_split_dir, swap_dir, swap_dirs
+from ietf_llm.atomicio import (
+    atomic_open,
+    atomic_open_binary,
+    scratch_sibling_name,
+    stage_split_dir,
+    swap_dir,
+    swap_dirs,
+)
 
 
 def test_scratch_sibling_name_is_dot_prefixed(tmp_path: Path) -> None:
@@ -302,3 +309,29 @@ def test_swap_dirs_names_a_dest_the_unwind_could_not_restore(
     assert str(index_dir) in message
     assert "corpus swap boom" in message
     assert "unwind restore boom" in message
+
+
+def test_atomic_open_temp_is_dot_prefixed_and_removed_on_error(tmp_path: Path) -> None:
+    target = tmp_path / "doc.txt"
+    target.write_text("old")
+    seen: list[str] = []
+    with pytest.raises(RuntimeError):
+        with atomic_open(str(target)) as fh:
+            fh.write("partial")
+            seen = os.listdir(tmp_path)
+            raise RuntimeError("boom")
+    temps = [n for n in seen if n != "doc.txt"]
+    assert len(temps) == 1
+    assert temps[0].startswith(".doc.txt.") and temps[0].endswith(".tmp")
+    assert target.read_text() == "old"
+    assert os.listdir(tmp_path) == ["doc.txt"]
+
+
+def test_atomic_open_binary_temp_is_dot_prefixed(tmp_path: Path) -> None:
+    target = tmp_path / "blob.bin"
+    with atomic_open_binary(str(target)) as fh:
+        fh.write(b"x")
+        temps = [n for n in os.listdir(tmp_path) if n != "blob.bin"]
+        assert len(temps) == 1 and temps[0].startswith(".blob.bin.")
+    assert target.read_bytes() == b"x"
+    assert os.listdir(tmp_path) == ["blob.bin"]

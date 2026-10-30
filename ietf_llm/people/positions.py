@@ -14,6 +14,10 @@ The extraction is deliberately **heuristic**, not semantic:
     `I oppose`, `DISCUSS` (IESG ballot), `Support`, `Oppose`, etc.
   - Conditional support — `I support with…`, `agree but…` — gets its
     own bucket so a tally doesn't conflate "yes" with "yes if".
+  - A match followed by a hedge in the same sentence ("I support this,
+    but …"), a bare `I agree`, or a poll marker with a qualifier ("my
+    second choice") is kept at low confidence; a negated intent ("not in
+    favor of option 2") is not a position at all.
   - Anything not matching shows as `no-position`. That's honest: the
     message may be a technical clarification, a question, or a stance
     expressed in non-standard phrasing. The tool reports the unmatched
@@ -38,7 +42,15 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from ..digest.query import parse_md_tables
+from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 from ..paths import digest_path
+from .poll_choice import (
+    HEDGE_RE,
+    contrast_follows,
+    extract_poll_choice,
+    first_unnegated,
+    rest_of_sentence,
+)
 
 # Number of leading non-quoted lines we scan for the strong patterns.
 # Long messages bury their position under preamble; a real declaration
@@ -60,11 +72,24 @@ _WEAK_SCAN_CHARS = 800
 # marked as low confidence — they can land on quoted-out fragments or
 # rhetorical phrasing the author then walks back.
 
+#
+# `bare` marks the self-contained votes (`+1`, a lone "Support"); every other
+# opener is checked by `_support_confidence`: a bare "I agree" is often
+# sub-point agreement that the rest of the sentence then qualifies, so only
+# `I agree with|that this|to` can be high, and any hedge in the same sentence
+# ("LGTM, but …"), or a negative word after an "I agree", drops a match to
+# low. "Support" counts as strong only as the whole line — mid-sentence
+# "support …" is usually a verb ("support FTP URIs"); see `_SUPPORT_IDIOM`.
 _STRONG_SUPPORT = re.compile(
-    r"""^\s*(
-        \+1\s*[.!]?\s*$                                    # bare +1
-      | I\s+(?:support|agree|concur|approve|endorse|am\s+in\s+favo[u]?r) # I support / agree / ...
-      | (?:I\s+(?:strongly\s+)?support|Support)\b
+    r"""^\s*(?:
+        (?P<bare>\+1\s*[.!]?\s*$)                           # bare +1
+      | I\s+(?:
+            (?:strongly\s+)?support
+          | concur | approve | endorse
+          | am\s+in\s+favo[u]?r
+          | (?P<agree>agree(?P<agree_ok>\s+(?:with|that\s+this|to)\b)?)
+        )\b
+      | (?P<bare_support>Support\s*[.!]?\s*$)              # a vote on its own line
       | LGTM\b                                             # looks-good-to-me
       | Ship\s+it\b
       | Yes,?\s+(?:I\s+(?:support|agree)|let'?s|we\s+should)
@@ -73,13 +98,33 @@ _STRONG_SUPPORT = re.compile(
     re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
 
+# Capitalised "Support for -04 …" / "Support -" / "support adopting this work"
+# are real votes in call-for-adoption and last-call threads, but too close to
+# the verb ("Support for X is lacking") to rank with the strong openers: low
+# confidence.
+_SUPPORT_IDIOM = re.compile(
+    r"""^\s*(?:
+        (?-i:Support)\s*(?:for\b|[-–—:])
+      | support\s+(?:adopt(?:ing|ion)|publication|the\s+draft
+                   |this\s+(?:work|draft|document|proposal))\b
+    )""",
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+# "I agree that this is a terrible idea" has no hedge word but is not support:
+# agreement with something negative is at best ambiguous.
+_NEGATIVE_AGREE_RE = re.compile(
+    r"\b(?:terrible|awful|bad|wrong|mistake|worse|harmful|dangerous|broken|flawed"
+    r"|unwise|useless|pointless|objections?|concerns?|problems?|issues?)\b",
+    re.IGNORECASE,
+)
+
 _STRONG_OPPOSE = re.compile(
     r"""^\s*(
         -1\s*[.!]?\s*$                                     # bare -1
       | I\s+(?:object|oppose|disagree|don'?t\s+support)
       | I\s+am\s+(?:opposed|against)
       | (?:Oppose|Object)d?\.?\s*$                         # standalone Oppose.
-      | DISCUSS\b                                          # IESG ballot
+      | (?-i:DISCUSS)\b                                    # IESG ballot; upper-case only
       | No,?\s+(?:I\s+(?:object|don'?t|disagree)|this\s+(?:should\s+not|must\s+not))
     )
     """,
@@ -119,150 +164,23 @@ _WEAK_SUPPORT = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 _WEAK_OPPOSE = re.compile(
-    r"\b(?:I\s+(?:do\s+)?oppose|strongly\s+against|cannot\s+support)\b",
+    r"\b(?:I\s+(?:do\s+)?(?:oppose|object)|strongly\s+against|cannot\s+support)\b",
     re.IGNORECASE,
 )
 
-# Poll / option-choice detection — two-stage design.
-#
-# Real IETF option polls produce three shapes of vote:
-#   1. Terse line-start reply ("Option 2", "#2") — bare marker, no
-#      surrounding intent language.
-#   2. Intent + marker in the same window ("I want option 2",
-#      "Strong preference for #2", "in favor of option 2",
-#      "+1 on #1", "definitely anonymous first (#1)").
-#   3. Bare numbered list reply ("1.", "2)") — too ambiguous, not
-#      attempted; consumer didn't report misses of that shape.
-#
-# An earlier single-regex implementation had a parse bug: with the
-# optional `(?:\s+is)?` capture, the engine would drop "is" from the
-# optional group and grab "is" as the choice token in "my preference
-# is #1", producing the bogus choice "IS". The current two-stage
-# design separates marker detection (what's the choice?) from intent
-# detection (is this a vote at all?), so the choice is always a
-# clean alphanumeric token from a structurally-anchored capture.
 
-# Markers — surface forms where a poll choice is explicitly tagged.
-# `m_word` is the digit/letter after "option"/"opt"/"choice"/
-# "alternative"; `m_hash` is the number after `#`. The lookbehind on
-# `#` keeps us from matching `foo#1` mid-token.
-_POLL_MARKER_RE = re.compile(
-    r"""(?:
-        \b (?: option | opt\.? | alternative | choice ) \s+ (?P<m_word>\d{1,2}|[A-Za-z]) \b
-      | (?<![A-Za-z0-9]) \# (?P<m_hash>\d{1,2}) \b
-    )""",
-    re.IGNORECASE | re.VERBOSE,
-)
-
-# Direct: intent verb followed *immediately* by a choice (digit,
-# `#N`, or `option N`). This is the bridge that catches bare-digit
-# votes like "I prefer 2" / "preference is #1" / "+1 on #1" /
-# "in favor of option 2" — no marker word required after the verb.
-# The `+1 …` branch uses an explicit anchor instead of `\b\+1` since
-# `+` is non-word and `\b` before `+` doesn't fire when preceded by
-# whitespace.
-_POLL_DIRECT_RE = re.compile(
-    r"""(?:
-        \b (?:
-            I \s+ (?: want | prefer | favor | support | back | choose | pick )
-          | (?: I'd | I \s+ (?: 'd | would ) ) \s+ (?: like | prefer | choose | go \s+ with )
-          | I \s+ think \s+ the \s+ answer \s+ is
-          | (?: my | the ) \s+ pref(?:erence)? \s+ (?: is | would \s+ be )
-          | pref(?:erence)? \s+ would \s+ be
-          | (?: strong(?:ly)? | slight(?:ly)? ) \s+ pref(?:erence)? \s+ for
-          | in \s+ favor \s+ of
-          | (?: my \s+ )? vote \s+ (?: is | for | goes \s+ to )
-          | hum \s+ for
-        ) \s+
-      | (?: ^ | (?<=\s) ) \+1 \s+ (?: on | to | for )? \s*
-    )
-    (?: option \s+ | \# )?
-    (?P<d_choice>\d{1,2})
-    \b""",
-    re.IGNORECASE | re.VERBOSE | re.MULTILINE,
-)
-
-# Intent phrases — used by the window-based fallback when a marker
-# appears with looser surrounding language. Catches "definitely
-# anonymous first (#1)" (intent "definitely", marker "(#1)") and
-# similar shapes where intent and marker are separated by descriptive
-# words. `\+1` uses an explicit anchor for the same reason as above.
-_POLL_INTENT_RE = re.compile(
-    r"""(?:
-        \b I \s+ (?: want | prefer | favor | support | back | choose | pick ) \b
-      | \b (?: I'd | I \s+ (?: 'd | would ) ) \s+ (?: like | prefer | choose | go \s+ with ) \b
-      | \b I \s+ think \s+ the \s+ answer \b
-      | \b (?: strong(?:ly)? | slight(?:ly)? ) \s+ pref(?:erence)? \b
-      | \b (?: my | the ) \s+ pref(?:erence)? \b
-      | \b pref(?:erence)? \s+ (?: is | would \s+ be ) \b
-      | \b (?: my \s+ )? vote \b
-      | \b in \s+ favor \s+ of \b
-      | \b definitely \b
-      | \b hum \s+ for \b
-      | (?: ^ | (?<=\s) ) \+1 (?= \s | $ | [^\d] )
-    )""",
-    re.IGNORECASE | re.VERBOSE | re.MULTILINE,
-)
-_POLL_INTENT_WINDOW = 80
-
-# Bare line-start marker — terse poll reply where the marker IS the
-# message's opening content. ("Option 2.", "#2", "Option 2 because
-# it's simpler.") No surrounding intent required; line-start position
-# IS the signal.
-_POLL_BARE_RE = re.compile(
-    r"""^\s*
-        (?:
-            (?: option | opt\.? | alternative | choice ) \s+ (?P<b_word>\d{1,2}|[A-Za-z]) \b
-          | \# (?P<b_hash>\d{1,2}) \b
-        )""",
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
-)
-
-
-def _extract_poll_choice(text: str) -> Optional[Tuple[str, re.Match[str]]]:
-    """Detect a poll vote in `text` and return (choice, match) or None.
-
-    Three modes, tried in order:
-      1. Terse line-start marker (`Option 2`, `#2` at line start) →
-         bare poll vote. The line-start position is the signal.
-      2. Direct intent verb immediately followed by a choice
-         (`I prefer 2`, `preference is #1`, `+1 on #1`,
-         `in favor of option 2`). The intent and marker are
-         syntactically attached.
-      3. Marker preceded by an intent phrase within
-         `_POLL_INTENT_WINDOW` chars (`Definitely anonymous first
-         (#1)`). Looser; the intent and marker can have descriptive
-         text between them.
-
-    The choice is uppercased ("Option 2" / "#2" / "I want 2" → "2";
-    "option b" → "B") so the renderer can aggregate by choice.
-
-    A previous single-regex design had a parse bug where the optional
-    "(?:\\s+is)?" group could drop "is" and have it captured as the
-    choice token ("preference is #1" → choice "IS"). The current
-    structure captures the choice from a structurally-anchored
-    digit/letter group, so this can't happen.
-    """
-    bare = _POLL_BARE_RE.search(text)
-    if bare is not None:
-        choice = (bare.group("b_word") or bare.group("b_hash") or "").upper()
-        if choice:
-            return (choice, bare)
-
-    direct = _POLL_DIRECT_RE.search(text)
-    if direct is not None:
-        choice = (direct.group("d_choice") or "").upper()
-        if choice:
-            return (choice, direct)
-
-    for marker in _POLL_MARKER_RE.finditer(text):
-        window_start = max(0, marker.start() - _POLL_INTENT_WINDOW)
-        preceding = text[window_start : marker.start()]
-        if _POLL_INTENT_RE.search(preceding) is not None:
-            choice = (marker.group("m_word") or marker.group("m_hash") or "").upper()
-            if choice:
-                return (choice, marker)
-    return None
+def _support_confidence(match: re.Match[str], text: str) -> str:
+    """ "high" for an unqualified strong-support opener, else "low"."""
+    if match.group("bare") or match.group("bare_support"):
+        return "high"
+    if match.group("agree") and not match.group("agree_ok"):
+        return "low"
+    rest = rest_of_sentence(text, match.end())
+    if HEDGE_RE.search(rest) or contrast_follows(text, match.end()):
+        return "low"
+    if match.group("agree") and _NEGATIVE_AGREE_RE.search(rest):
+        return "low"
+    return "high"
 
 
 # Chair-decision language. When a chair (role tag carries "Chair")
@@ -300,29 +218,6 @@ class ChairStatement:
     role: str  # the role tag from the registry ("Chair", "Chair/Author")
 
 
-# Thread message section header (mirrors chunking.py's _THREAD_MSG_RE,
-# but rewritten here to capture the bits this module cares about: the
-# message number and the sender. Date isn't needed — we sort by file
-# order, which is already chronological.) The optional trailing italic
-# annotation a GitHub file appends to a section header must be consumed
-# here, or it leaks into the sender name and splits one person's
-# identity across the tally. Three forms exist:
-#   `_(opened issue)_`         — issue_files, on the opener
-#   `_(opened pull request)_`  — pull_files, on the opener
-#   `_(review: APPROVED)_`     — pull_files, on each rendered review
-# The review form is the one that bites hardest: a reviewer who also
-# comments would otherwise appear as two people, and one who reviews
-# twice with different verdicts as three. `_SENDER_ROLE_SUFFIX` does not
-# save us — these end in `_`, not `)`.
-# The date group is optional: a message whose timestamp rendered empty leaves
-# `### [N]  — Sender`, and a required date token would drop that message from
-# the tally (and the coverage denominator) entirely.
-_THREAD_MSG_RE = re.compile(
-    r"^### \[(\d+)\] (?:\S+(?:\s+\S+)?)? — (.+?)"
-    r"(?:\s+_\((?:opened issue|opened pull request|review: [A-Z_]+)\)_)?"
-    r"(?: \(reply to \[\d+\]\))?$",
-    re.MULTILINE,
-)
 # Sender display includes a role tag in parens — e.g. "Alice (Chair)".
 # Strip that for the tally name; the role is recovered separately from
 # the Registry.
@@ -388,10 +283,12 @@ def _excerpt_for(match: re.Match[str], text: str) -> str:
 
 
 def extract_position(  # pylint: disable=too-many-return-statements
-    body: str,
+    body: str, allow_bare_hash: bool = True
 ) -> Tuple[str, str, str, Optional[str]]:
     """Return (label, confidence, excerpt, poll_choice) for one message
     body. `poll_choice` is only non-None when label == "poll".
+    `allow_bare_hash` is forwarded to the poll detector (see
+    `poll_choice.extract_poll_choice`); callers pass False for GitHub issue / PR files.
 
     Order of precedence:
       1. Strong conditional (overrides plain support if both match)
@@ -415,49 +312,36 @@ def extract_position(  # pylint: disable=too-many-return-statements
             None,
         )
 
-    poll = _extract_poll_choice(leading_text)
+    poll = extract_poll_choice(leading_text, allow_bare_hash)
     if poll is not None:
-        choice, match = poll
-        return ("poll", "high", _excerpt_for(match, leading_text), choice)
+        choice, match, poll_conf = poll
+        return ("poll", poll_conf, _excerpt_for(match, leading_text), choice)
 
     support_match = _STRONG_SUPPORT.search(leading_text)
     oppose_match = _STRONG_OPPOSE.search(leading_text)
     # When both somehow fire (rare — e.g. "I support X. I object to Y"),
     # we surface the *first* one, since that's the framing of the post.
-    if support_match and oppose_match:
-        if support_match.start() < oppose_match.start():
-            return (
-                "support",
-                "high",
-                _excerpt_for(support_match, leading_text),
-                None,
-            )
-        return (
-            "oppose",
-            "high",
-            _excerpt_for(oppose_match, leading_text),
-            None,
-        )
-    if support_match:
+    if support_match and (
+        not oppose_match or support_match.start() < oppose_match.start()
+    ):
         return (
             "support",
-            "high",
+            _support_confidence(support_match, leading_text),
             _excerpt_for(support_match, leading_text),
             None,
         )
     if oppose_match:
-        return (
-            "oppose",
-            "high",
-            _excerpt_for(oppose_match, leading_text),
-            None,
-        )
+        return ("oppose", "high", _excerpt_for(oppose_match, leading_text), None)
+    idiom = _SUPPORT_IDIOM.search(leading_text)
+    if idiom:
+        return ("support", "low", _excerpt_for(idiom, leading_text), None)
 
     # Weak patterns — scan a bigger window in the body proper, marked
-    # low confidence so the consumer can weight accordingly.
+    # low confidence so the consumer can weight accordingly. A negated hit
+    # ("not ready to progress") does not count.
     window = cleaned[:_WEAK_SCAN_CHARS]
-    weak_support = _WEAK_SUPPORT.search(window)
-    weak_oppose = _WEAK_OPPOSE.search(window)
+    weak_support = first_unnegated(_WEAK_SUPPORT, window)
+    weak_oppose = first_unnegated(_WEAK_OPPOSE, window)
     if weak_support and not weak_oppose:
         return ("support", "low", _excerpt_for(weak_support, window), None)
     if weak_oppose and not weak_support:
@@ -475,11 +359,11 @@ def _split_messages(text: str) -> List[Tuple[int, str, str]]:
     trailing `(Role)` suffix stripped. `body` is everything between
     this section's header and the next.
     """
-    matches = list(_THREAD_MSG_RE.finditer(text))
+    matches = list(THREAD_MSG_HEADER_RE.finditer(text))
     out: List[Tuple[int, str, str]] = []
     for i, match in enumerate(matches):
-        msg_idx = int(match.group(1))
-        sender_raw = match.group(2).strip()
+        msg_idx = int(match.group("idx"))
+        sender_raw = match.group("sender").strip()
         sender = _SENDER_ROLE_SUFFIX.sub("", sender_raw).strip()
         body_start = match.end()
         body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
@@ -538,7 +422,9 @@ def extract_chair_statements(
     return out
 
 
-def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
+def tally_thread(
+    file_text: str, allow_bare_hash: bool = True
+) -> Tuple[List[Position], Dict[str, int]]:
     """Walk one thread / issue file's text and return per-message
     positions plus a label→count summary.
 
@@ -548,6 +434,9 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
     user feedback that prompted this tool explicitly flagged "I
     relayed the chair's characterisation instead of counting" as the
     accuracy gap to close.
+
+    `allow_bare_hash=False` (GitHub issue / PR files) stops a line-start
+    `#N` cross-reference from being read as a poll vote.
     """
     # Single pass: split_messages is O(file_size) — re-running it for
     # the message-count tally was doubling the work on large WGLC
@@ -560,7 +449,7 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
         msg_counts[sender] = msg_counts.get(sender, 0) + 1
     positions: List[Position] = []
     for msg_idx, sender, body in messages:
-        label, conf, excerpt, poll_choice = extract_position(body)
+        label, conf, excerpt, poll_choice = extract_position(body, allow_bare_hash)
         positions.append(
             Position(
                 sender=sender,
@@ -588,7 +477,8 @@ def tally_thread(file_text: str) -> Tuple[List[Position], Dict[str, int]]:
 # heuristic missed most of the thread, so quoting "N oppose" would
 # misrepresent a discussion whose positions live in prose. Applied only to
 # non-trivial threads — a 3-message thread at 33% isn't a signal worth a
-# warning. Poll choices and chair statements are explicit and never withheld.
+# warning. Chair statements are never withheld; poll rows carry a caveat
+# instead (see `render_tally`).
 _LOW_COVERAGE_PCT = 25
 _LOW_COVERAGE_MIN_MESSAGES = 5
 
@@ -638,6 +528,58 @@ def _coverage_banner(
     ]
 
 
+def _render_poll_section(
+    positions: List[Position], low_coverage: bool, coverage_pct: int
+) -> List[str]:
+    """The per-option poll section: keyword matches with a confidence note,
+    plus a caveat when the thread's overall coverage is low. Empty when the
+    thread has no poll rows."""
+    poll_positions = [p for p in positions if p.label == "poll"]
+    if not poll_positions:
+        return []
+    by_choice: Dict[str, List[Position]] = {}
+    for pos in poll_positions:
+        by_choice.setdefault(pos.poll_choice or "?", []).append(pos)
+    out = [
+        f"## Poll choices ({len(poll_positions)})\n",
+        "_Per-option tally of keyword matches (`low` = a qualifier such as "
+        '"second choice" or "but" followed the marker). The same author '
+        "may show up under multiple choices if they voted more than once — "
+        "the most recent message wins for the by-author rollup below._\n",
+    ]
+    if low_coverage:
+        out.append(
+            f"> ⚠️ Coverage is low ({coverage_pct}%): most messages in this "
+            "thread were not classified, so votes cast in prose are missing "
+            "from these counts. Treat them as a lower bound on explicit "
+            "statements, not the split of the room.\n"
+        )
+
+    def _choice_sort(k: str) -> Tuple[int, str]:
+        # Numerics ascending, then alphabetic.
+        return (0, k.zfill(8)) if k.isdigit() else (1, k)
+
+    for choice in sorted(by_choice, key=_choice_sort):
+        voters = by_choice[choice]
+        names = ", ".join(sorted({p.sender for p in voters}))
+        n_low = sum(1 for p in voters if p.confidence == "low")
+        low_note = f" ({n_low} low confidence)" if n_low else ""
+        out.append(
+            f"- **Option {choice}** — {len(voters)} response(s){low_note}: {names}"
+        )
+    out.append("")
+    return out
+
+
+def _confidence_split(positions: List[Position], label: str) -> Tuple[int, int]:
+    """(high, low) counts for `label`. Low-confidence rows are hedged or
+    idiom-only matches, so they are reported beside the high count, never
+    folded into one headline number."""
+    rows = [p for p in positions if p.label == label]
+    low = sum(1 for p in rows if p.confidence == "low")
+    return len(rows) - low, low
+
+
 def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     file: str,
     positions: List[Position],
@@ -652,8 +594,6 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
     Either or both may be empty; missing entries are silently skipped.
     """
     total = len(positions)
-    s_count = summary.get("support", 0)
-    o_count = summary.get("oppose", 0)
     c_count = summary.get("conditional", 0)
     n_count = summary.get("no-position", 0)
     coverage_pct = int(100 * (total - n_count) / total) if total else 0
@@ -666,9 +606,11 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
         _coverage_banner(total, total - n_count, coverage_pct, bool(chair_statements))
     )
     out.append(
-        "_Best for **explicit option polls** (`option N` / `#N` / `I prefer N`) "
-        "and for **surfacing the chair's procedural call** (see Chair "
-        "statements). The support/oppose tally is a keyword heuristic: it "
+        "_Best for **surfacing the chair's procedural call** (see Chair "
+        "statements) and for **explicit option polls** (`option N` / `#N` / "
+        "`I prefer N`). Every row below is a keyword match, not a read of the "
+        "message, and carries a confidence tag: verify poll rows against the "
+        "messages before quoting a split. The support/oppose tally "
         "matches canonical phrasings (`+1`, `-1`, `I support`, `I object`, "
         "`LGTM`, `DISCUSS`, …) near the start of each message and **misses "
         "prose-form positions** — a thread can be full of clearly-argued "
@@ -684,14 +626,22 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
             "the counts to mean anything (see warning above; read the messages)._"
         )
     else:
-        out.append(f"- Support: **{s_count}**")
+        s_high, s_low = _confidence_split(positions, "support")
+        o_high, o_low = _confidence_split(positions, "oppose")
+        out.append(
+            f"- Support: **{s_high}** high confidence, **{s_low}** low confidence"
+        )
         out.append(f"- Conditional: **{c_count}**  (yes-but-only-if)")
-        out.append(f"- Oppose: **{o_count}**")
+        out.append(
+            f"- Oppose: **{o_high}** high confidence, **{o_low}** low confidence"
+        )
     if p_count:
-        # Poll choices are explicit votes — never withheld.
+        p_low = sum(1 for p in positions if p.label == "poll" and p.confidence == "low")
+        low_note = f", {p_low} low confidence" if p_low else ""
         out.append(
             f"- Poll choices: **{p_count}**  (`option N` / `#N` / "
-            "`I prefer N` — see Poll choices section below)"
+            f"`I prefer N` keyword matches{low_note} — see Poll choices "
+            "section below)"
         )
     out.append(
         f"- No-position: **{n_count}**  (the heuristic couldn't classify; "
@@ -736,7 +686,12 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
         # At low coverage the aggregate count is withheld in the summary; drop
         # it from the section header too so a quotable number does not leak here
         # while the grounded per-author rows below still show.
-        count = "" if _is_low_coverage(total, coverage_pct) else f" ({len(rows)})"
+        high, low = _confidence_split(positions, label)
+        count = (
+            ""
+            if _is_low_coverage(total, coverage_pct)
+            else f" ({high} high, {low} low)" if low else f" ({high})"
+        )
         out.append(f"## {title}{count}\n")
         for pos in rows:
             tag_bits: List[str] = []
@@ -756,30 +711,11 @@ def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-argu
     # Poll choices rendered before per-side breakdowns. For an
     # option-poll thread this IS the answer — "Option 1: 5, Option 2:
     # 8" tells the consumer what the room chose at a glance.
-    poll_positions = [p for p in positions if p.label == "poll"]
-    if poll_positions:
-        by_choice: Dict[str, List[Position]] = {}
-        for pos in poll_positions:
-            key = pos.poll_choice or "?"
-            by_choice.setdefault(key, []).append(pos)
-        out.append(f"## Poll choices ({len(poll_positions)})\n")
-        out.append(
-            "_Per-option tally. The same author may show up under "
-            "multiple choices if they voted more than once — the most "
-            "recent message wins for the by-author rollup below._\n"
+    out.extend(
+        _render_poll_section(
+            positions, _is_low_coverage(total, coverage_pct), coverage_pct
         )
-
-        # Sort by choice key: numerics ascending, then alphabetic.
-        def _choice_sort(k: str) -> Tuple[int, str]:
-            return (0, k.zfill(8)) if k.isdigit() else (1, k)
-
-        for choice in sorted(by_choice, key=_choice_sort):
-            voters = by_choice[choice]
-            names = ", ".join(sorted({p.sender for p in voters}))
-            out.append(
-                f"- **Option {choice}** — {len(voters)} response(s): " f"{names}"
-            )
-        out.append("")
+    )
 
     # By-author rollup answers "who's in which camp" in one block —
     # one row per author, listing the distinct stances they expressed

@@ -13,13 +13,18 @@ a slug.
 from __future__ import annotations
 from ietf_llm import mcp
 
+import datetime
 from typing import Any, Dict, Optional
 
 import pytest
+import requests
 
 from ietf_llm import live_lookup
 from ietf_llm.mcp.drafts import tool_draft_status
 from ietf_llm.mcp.meetings import tool_meeting_schedule
+
+# The real network seam, captured before the autouse fixture stubs it.
+_REAL_FETCH_JSON = live_lookup.cache._fetch_json
 
 # --- Canned Datatracker responses -----------------------------------------
 
@@ -30,6 +35,8 @@ _AGENDA_126 = {
     "126": [
         {
             "group": {"acronym": "httpbis"},
+            "status": "sched",
+            "objtype": "session",
             "start": "2026-07-23T07:00:00Z",
             "duration": "1:30:00",
             "location": "Park Suite 1",
@@ -52,6 +59,26 @@ _AGENDA_126 = {
             "duration": "1:00:00",
             "location": "Hall A",
             "session_id": 40003,
+        },
+        # Datatracker keeps these in the agenda: a cancelled session, and the
+        # vacated slot of a session moved elsewhere. Neither is happening.
+        {
+            "group": {"acronym": "dinrg"},
+            "status": "canceled",
+            "objtype": "session",
+            "start": "2026-07-21T09:00:00Z",
+            "duration": "1:00:00",
+            "location": "Grand Klimt Hall 2",
+            "session_id": 40004,
+        },
+        {
+            "group": {"acronym": "tls"},
+            "status": "resched",
+            "objtype": "session",
+            "start": "2026-07-22T09:00:00Z",
+            "duration": "1:00:00",
+            "location": "Hall B",
+            "session_id": 40005,
         },
     ]
 }
@@ -203,6 +230,11 @@ def _canned(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _down(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    """The network seam when Datatracker cannot be reached."""
+    raise requests.ConnectionError("simulated outage")
+
+
 @pytest.fixture(autouse=True)
 def _stub_fetch(monkeypatch, isolated_home):
     """Replace the one network seam and clear the TTL cache around each test.
@@ -243,7 +275,7 @@ def test_meeting_sessions_meetecho_urls():
 
 
 def test_meeting_sessions_no_session_for_group():
-    sessions, _, error = live_lookup.fetch_meeting_sessions("tls", "126")
+    sessions, _, error = live_lookup.fetch_meeting_sessions("masque", "126")
     assert error is None
     assert sessions == []
 
@@ -332,7 +364,12 @@ def test_draft_status_unknown_doc():
 
 
 def test_draft_status_rfc_ed_queue_is_in_iesg(monkeypatch):
-    doc = dict(_DOC_ACTIVE, states=["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"])
+    # Datatracker leaves `expires` in the past once a draft is in the queue.
+    doc = dict(
+        _DOC_ACTIVE,
+        states=["/api/v1/doc/state/1/", "/api/v1/doc/state/3/"],
+        expires="2022-09-05T22:09:01Z",
+    )
     monkeypatch.setattr(
         live_lookup.cache,
         "_fetch_json",
@@ -535,10 +572,10 @@ def test_disk_cache_serves_cold_process(monkeypatch):
         "_fetch_json",
         lambda u, timeout=10.0: calls.append(u) or {"ok": True},
     )
-    body1, _ = live_lookup._cached_json(url)
+    body1, _, _ = live_lookup._cached_json(url)
     assert body1 == {"ok": True} and len(calls) == 1
     live_lookup._reset_cache()  # simulate a new, cold process
-    body2, _ = live_lookup._cached_json(url)
+    body2, _, _ = live_lookup._cached_json(url)
     assert body2 == {"ok": True}
     assert len(calls) == 1  # served from the disk cache; no second fetch
 
@@ -551,9 +588,9 @@ def test_disk_cache_stale_fallback_on_cold_process(monkeypatch):
     live_lookup._cached_json(url)  # populate the disk cache
     live_lookup._reset_cache()  # cold process: empty in-process cache
     monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")  # the disk entry is now stale
-    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda u, timeout=10.0: None)  # down
-    body, _ = live_lookup._cached_json(url)
-    assert body == {"ok": 1}  # served the stale disk datum, not None
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    body, _, answered = live_lookup._cached_json(url)
+    assert body == {"ok": 1} and answered  # served the stale disk datum, not None
 
 
 def test_disk_get_rejects_non_dict_body():
@@ -579,7 +616,7 @@ def test_stale_fallback_on_fetch_failure(monkeypatch):
     live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     # TTL 0 forces re-fetch; the seam now fails -> stale cache is returned.
     monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")
-    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: None)
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
     status, _ = live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
     assert status is not None and status.draft_state == "Active"
 
@@ -736,3 +773,427 @@ def test_a_meeting_id_cannot_add_url_segments_or_parameters(monkeypatch, meeting
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda url, timeout=10.0: urls.append(url))
     out = tool_meeting_schedule("httpbis", meeting)
     assert urls == [] and "Provide a numbered IETF meeting" in out
+
+
+# --- Outage vs. absence (tri-state) -----------------------------------------
+
+_UNREACHABLE = "Could not reach Datatracker"
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: Any = None) -> None:
+        self.status_code = status
+        self._body = body
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code}", response=self)  # type: ignore[arg-type]
+
+    def json(self) -> Any:
+        return self._body
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_fetch_json_raises_on_a_non_404_error(monkeypatch, status):
+    monkeypatch.setattr(
+        live_lookup.cache, "governed_get", lambda url, **kw: _FakeResponse(status)
+    )
+    with pytest.raises(requests.HTTPError):
+        _REAL_FETCH_JSON("https://datatracker.ietf.org/api/v1/x/")
+
+
+def test_fetch_json_returns_none_only_for_a_404(monkeypatch):
+    monkeypatch.setattr(
+        live_lookup.cache, "governed_get", lambda url, **kw: _FakeResponse(404)
+    )
+    assert _REAL_FETCH_JSON("https://datatracker.ietf.org/api/v1/x/") is None
+
+
+def test_fetch_json_rejects_a_non_object_body(monkeypatch):
+    monkeypatch.setattr(
+        live_lookup.cache, "governed_get", lambda url, **kw: _FakeResponse(200, [1])
+    )
+    with pytest.raises(ValueError):
+        _REAL_FETCH_JSON("https://datatracker.ietf.org/api/v1/x/")
+
+
+def test_cached_json_distinguishes_outage_from_404(monkeypatch):
+    url = "https://datatracker.ietf.org/api/v1/doc/document/x/"
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda u, timeout=10.0: None)
+    body, _, answered = live_lookup._cached_json(url)
+    assert body is None and answered  # a 404 is an answer
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    body, _, answered = live_lookup._cached_json(url)
+    assert body is None and not answered
+
+
+def test_cached_json_stale_entry_counts_as_answered(monkeypatch):
+    url = "https://datatracker.ietf.org/api/v1/doc/document/y/"
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", lambda u, timeout=10.0: {"a": 1})
+    live_lookup._cached_json(url)
+    monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    body, _, answered = live_lookup._cached_json(url)
+    assert body == {"a": 1} and answered
+
+
+def _assert_no_negative(out: str) -> None:
+    assert _UNREACHABLE in out
+    for phrase in (
+        "no document named",
+        "no agenda",
+        "No upcoming meetings",
+        "No session for",
+        "none requested",
+        "not opened",
+        "match Datatracker",
+    ):
+        assert phrase not in out
+
+
+def test_draft_status_outage_is_not_a_missing_document(monkeypatch):
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    out = tool_draft_status("draft-ietf-httpbis-resumable-upload")
+    _assert_no_negative(out)
+    assert "draft-ietf-httpbis-resumable-upload" in out
+    assert "last tried just now" in out
+
+
+def test_draft_status_404_is_still_a_missing_document():
+    out = tool_draft_status("draft-ietf-httpbis-nope")
+    assert "no document named" in out
+    assert _UNREACHABLE not in out
+
+
+def test_draft_status_outage_while_resolving_a_state_is_not_a_verdict(monkeypatch):
+    # The doc answered but a state URI did not: a verdict built on the missing
+    # state would be a confident guess.
+    def _fetch(url, timeout=10.0):
+        if "/doc/state/" in url:
+            raise requests.ConnectionError("simulated outage")
+        return _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
+    live_lookup._reset_cache()
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert _UNREACHABLE in out and "Agenda eligibility" not in out
+
+
+def test_review_record_outage_is_not_a_missing_document(monkeypatch):
+    from ietf_llm.mcp.drafts import tool_review_record
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    _assert_no_negative(tool_review_record("draft-ietf-httpbis-no-vary-search"))
+
+
+def test_meeting_schedule_outage_is_not_a_missing_agenda(monkeypatch):
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    _assert_no_negative(tool_meeting_schedule("httpbis", "126"))
+
+
+def test_meeting_schedule_404_agenda_is_still_a_missing_agenda():
+    out = tool_meeting_schedule("httpbis", "999")
+    assert "no agenda" in out and _UNREACHABLE not in out
+
+
+def test_upcoming_meetings_outage_is_not_an_empty_calendar(monkeypatch):
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    _assert_no_negative(tool_meeting_schedule("aipref"))
+
+
+def test_upcoming_meetings_outage_resolving_meetings_is_not_an_empty_calendar(
+    monkeypatch,
+):
+    def _fetch(url, timeout=10.0):
+        if "/meeting/meeting/?id__in=" in url:
+            raise requests.ConnectionError("simulated outage")
+        return _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
+    live_lookup._reset_cache()
+    _assert_no_negative(tool_meeting_schedule("aipref"))
+
+
+def test_reconcile_outage_raises_rather_than_reporting_a_match(monkeypatch):
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    with pytest.raises(live_lookup.LiveUnavailable):
+        live_lookup.reconcile_active_drafts("httpbis", ["draft-ietf-httpbis-foo"])
+
+
+def test_reconcile_outage_on_a_later_page_raises(monkeypatch):
+    page1 = {"meta": {"next": "/api/v1/doc/document/?page=2"}, "objects": []}
+
+    def _fetch(url, timeout=10.0):
+        if "page=2" in url:
+            raise requests.ConnectionError("simulated outage")
+        if "group__acronym=httpbis&type=draft" in url:
+            return page1
+        return _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
+    live_lookup._reset_cache()
+    with pytest.raises(live_lookup.LiveUnavailable):
+        live_lookup.reconcile_active_drafts("httpbis", [])
+
+
+def _overview_section(monkeypatch, live: bool) -> str:
+    from ietf_llm.digest import overview as digest_overview
+    from ietf_llm.mcp import corpus
+
+    monkeypatch.setattr(
+        digest_overview, "active_draft_names", lambda wg: ["draft-ietf-httpbis-foo"]
+    )
+    return corpus._overview_live_reconciliation("httpbis", live)
+
+
+def test_overview_live_outage_is_not_a_clean_reconciliation(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _down)
+    out = _overview_section(monkeypatch, True)
+    assert _UNREACHABLE in out and "match Datatracker" not in out
+
+
+def test_overview_live_on_a_closed_gate_says_it_is_unavailable(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    assert "unavailable on this server" in _overview_section(monkeypatch, True)
+    assert _overview_section(monkeypatch, False) == ""
+
+
+# --- Eligibility: a lapsed `expires` past I-D Exists (#283) ------------------
+
+_LAPSED = "2022-09-05T22:09:01Z"
+
+
+@pytest.mark.parametrize(
+    "draft,iesg,stream,expected",
+    [
+        ("Active", "RFC Ed Queue", "sub-pub", "in-iesg"),
+        ("Active", "AD Evaluation", None, "in-iesg"),
+        ("Active", "IESG Evaluation", None, "in-iesg"),
+        ("Active", "I-D Exists", "sub-pub", "in-iesg"),
+        ("Active", "I-D Exists", "wg-doc", "dead"),
+        ("Active", None, None, "dead"),
+        ("Expired", "AD Evaluation", None, "dead"),
+        ("Active", "Dead", None, "dead"),
+    ],
+)
+def test_a_lapsed_expiry_only_means_dead_outside_iesg_processing(
+    draft, iesg, stream, expected
+):
+    assert live_lookup._derive_eligibility(draft, iesg, _LAPSED, None, stream) == expected
+
+
+def test_draft_status_ad_evaluation_with_lapsed_expiry_is_in_iesg(monkeypatch):
+    monkeypatch.setitem(
+        _STATES,
+        "/api/v1/doc/state/48/",
+        {
+            "name": "AD Evaluation",
+            "slug": "ad-eval",
+            "type": "/api/v1/doc/statetype/draft-iesg/",
+        },
+    )
+    _stub_doc(
+        monkeypatch,
+        states=["/api/v1/doc/state/1/", "/api/v1/doc/state/48/"],
+        expires=_LAPSED,
+    )
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert "past the WG (IESG processing)" in out
+    assert "expired or replaced" not in out
+
+
+def test_reconcile_labels_a_lapsed_draft_in_the_queue_in_iesg(monkeypatch):
+    drafts = {
+        "meta": {"next": None},
+        "objects": [_adopted("draft-ietf-httpbis-bar", _PAST_WG, _LAPSED)],
+    }
+
+    def _stub(url, timeout=10.0):
+        return drafts if "group__acronym=httpbis&type=draft" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    recon, _ = live_lookup.reconcile_active_drafts(
+        "httpbis", ["draft-ietf-httpbis-bar"]
+    )
+    assert recon.advanced == [("draft-ietf-httpbis-bar", "RFC Ed Queue (in-iesg)")]
+
+
+def test_reconcile_covers_a_research_group_corpus(monkeypatch):
+    drafts = {
+        "meta": {"next": None},
+        "objects": [
+            _adopted("draft-irtf-cfrg-foo", _PAST_WG, "2027-01-01T00:00:00Z"),
+            _adopted("draft-irtf-cfrg-new", _IN_WG, "2027-06-01T00:00:00Z"),
+            _adopted("draft-ietf-cfrg-bar", _IN_WG, "2027-06-01T00:00:00Z"),
+            _adopted("draft-someone-cfrg-idea", _IN_WG, "2027-06-01T00:00:00Z"),
+        ],
+    }
+
+    def _stub(url, timeout=10.0):
+        return drafts if "group__acronym=cfrg&type=draft" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    recon, _ = live_lookup.reconcile_active_drafts("cfrg", ["draft-irtf-cfrg-foo"])
+    assert [n for n, _ in recon.advanced] == ["draft-irtf-cfrg-foo"]
+    assert [n for n, _ in recon.revived] == [
+        "draft-ietf-cfrg-bar",
+        "draft-irtf-cfrg-new",
+    ]
+
+
+# --- Meetings: cancelled / rescheduled rows, and the meeting in progress -----
+
+
+def test_a_cancelled_session_is_not_listed_and_is_said_to_be_cancelled():
+    sessions, _, error = live_lookup.fetch_meeting_sessions("dinrg", "126")
+    assert sessions == []
+    assert error and "cancelled" in error
+    out = tool_meeting_schedule("dinrg", "126")
+    assert "cancelled" in out and "Grand Klimt Hall 2" not in out
+
+
+def test_the_vacated_slot_of_a_rescheduled_session_is_not_listed():
+    sessions, _, error = live_lookup.fetch_meeting_sessions("tls", "126")
+    assert sessions == []
+    assert error and "moved" in error
+
+
+def test_row_liveness_predicate():
+    live = live_lookup.meetings._is_live_row
+    assert live({"status": "sched", "objtype": "session"})
+    assert live({})  # an older shape without the keys
+    assert not live({"status": "canceled", "objtype": "session"})
+    assert not live({"status": "resched", "objtype": "session"})
+    assert not live({"status": "sched", "objtype": "break"})
+    assert not live(None)
+
+
+def test_a_meeting_in_progress_is_still_upcoming(monkeypatch):
+    monkeypatch.setattr(
+        live_lookup.meetings,
+        "_now_utc",
+        lambda: datetime.datetime(2026, 7, 20, 12, 0, tzinfo=datetime.timezone.utc),
+    )
+    ietf = "/api/v1/name/meetingtypename/ietf/"
+    interim = "/api/v1/name/meetingtypename/interim/"
+    meetings = {
+        "objects": [
+            # Day two of a seven-day meeting: its first day was yesterday.
+            {"number": "126", "type": ietf, "date": "2026-07-19", "days": 7},
+            {"number": "125", "type": ietf, "date": "2026-07-10", "days": 7},
+            # An interim is one day however `days` reads.
+            {"number": "interim-2026-a-01", "type": interim, "date": "2026-07-19", "days": 7},
+            {"number": "interim-2026-a-02", "type": interim, "date": "2026-07-20"},
+            # The last day counts; the day after does not.
+            {"number": "127", "type": ietf, "date": "2026-07-14", "days": 7},
+            {"number": "128", "type": ietf, "date": "2026-07-13", "days": 7},
+        ]
+    }
+
+    def _stub(url, timeout=10.0):
+        return meetings if "/meeting/meeting/?id__in=" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    found, _, error = live_lookup.fetch_upcoming_meetings("aipref")
+    assert error is None
+    assert [m.number for m in found] == ["127", "126", "interim-2026-a-02"]
+
+
+def test_upcoming_is_judged_in_the_meetings_own_timezone(monkeypatch):
+    # 19:00 PDT on the 20th is 02:00Z on the 21st: by the UTC date the interim
+    # would already have dropped off before it starts.
+    monkeypatch.setattr(
+        live_lookup.meetings,
+        "_now_utc",
+        lambda: datetime.datetime(2026, 7, 21, 2, 0, tzinfo=datetime.timezone.utc),
+    )
+    interim = "/api/v1/name/meetingtypename/interim/"
+    meetings = {
+        "objects": [
+            {
+                "number": "interim-2026-a-01",
+                "type": interim,
+                "date": "2026-07-20",
+                "time_zone": "America/Los_Angeles",
+            },
+            {"number": "interim-2026-a-02", "type": interim, "date": "2026-07-20"},
+        ]
+    }
+
+    def _stub(url, timeout=10.0):
+        return meetings if "/meeting/meeting/?id__in=" in url else _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _stub)
+    live_lookup._reset_cache()
+    found, _, error = live_lookup.fetch_upcoming_meetings("aipref")
+    assert error is None
+    assert [m.number for m in found] == ["interim-2026-a-01"]  # UTC one is over
+
+
+# --- No retry on the live path ----------------------------------------------
+
+
+def _wire(monkeypatch, behave):
+    """Run the real `_fetch_json` over a fake `governed_get`; return its calls."""
+    calls: list = []
+
+    def _get(url, **kwargs):
+        calls.append((url, kwargs))
+        return behave(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _REAL_FETCH_JSON)
+    monkeypatch.setattr(live_lookup.cache, "governed_get", _get)
+    live_lookup._reset_cache()
+    return calls
+
+
+def _serve(url):
+    body = _canned(url)
+    return _FakeResponse(404 if body is None else 200, body)
+
+
+def test_live_fetch_is_non_retrying_with_bounded_timeouts(monkeypatch):
+    calls = _wire(monkeypatch, _serve)
+    live_lookup.fetch_draft_status("draft-ietf-httpbis-foo")
+    assert calls
+    for _, kwargs in calls:
+        assert kwargs["retrying"] is False
+        assert kwargs["timeout"] == live_lookup.cache._FETCH_TIMEOUT
+    connect, read = live_lookup.cache._FETCH_TIMEOUT
+    assert 0 < connect <= 10 and 0 < read <= 30
+
+
+def test_a_connection_error_is_not_retried_and_reads_as_an_outage(monkeypatch):
+    def _refuse(url):
+        raise requests.ConnectionError("refused")
+
+    calls = _wire(monkeypatch, _refuse)
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert len(calls) == 1  # one attempt at the document, and no second try
+    assert _UNREACHABLE in out and "last tried just now" in out
+    assert "no document named" not in out
+
+
+def test_an_outage_serves_the_stale_entry_with_its_age(monkeypatch):
+    state = {"up": True}
+
+    def _flaky(url):
+        if state["up"]:
+            return _serve(url)
+        raise requests.ConnectionError("refused")
+
+    _wire(monkeypatch, _flaky)
+    assert "Agenda eligibility" in tool_draft_status("draft-ietf-httpbis-foo")
+    state["up"] = False
+    monkeypatch.setenv("IETF_LLM_LIVE_TTL", "0")  # everything cached is now stale
+    real_now = live_lookup.cache._now_utc
+    monkeypatch.setattr(
+        live_lookup.cache, "_now_utc", lambda: real_now() + datetime.timedelta(hours=2)
+    )
+    out = tool_draft_status("draft-ietf-httpbis-foo")
+    assert "Agenda eligibility" in out and _UNREACHABLE not in out
+    assert "fetched 7200s ago" in out

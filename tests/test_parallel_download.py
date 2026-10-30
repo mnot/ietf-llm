@@ -103,3 +103,53 @@ def test_revision_tasks_latest_only_vs_full(tmp_path: Path) -> None:
 
     (tmp_path / "draft-ietf-wg-x-05.txt").write_text("cached")
     assert drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True) == []
+
+
+def test_download_one_failed_write_leaves_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A write that dies partway must not leave a truncated draft under its
+    # final name: the revision loop would treat it as cached forever.
+    class _Boom:
+        @property
+        def text(self) -> str:
+            raise OSError("disk full")
+
+    monkeypatch.setattr(drafts, "fetch_resource", lambda url, headers=None: _Boom())
+    target = tmp_path / "draft-x-01.txt"
+    assert drafts._download_one("https://h/x", str(target), Verbosity.QUIET) is None
+    assert os.listdir(tmp_path) == []
+
+    class _Partial:
+        text = "complete body"
+
+    real_replace = os.replace
+
+    def dying_replace(src: str, dst: str) -> None:
+        raise OSError("killed before rename")
+
+    monkeypatch.setattr(drafts, "fetch_resource", lambda url, headers=None: _Partial())
+    monkeypatch.setattr("ietf_llm.atomicio.os.replace", dying_replace)
+    assert drafts._download_one("https://h/x", str(target), Verbosity.QUIET) is None
+    monkeypatch.setattr("ietf_llm.atomicio.os.replace", real_replace)
+    assert os.listdir(tmp_path) == []
+
+
+def test_zero_length_existing_file_is_refetched(tmp_path: Path) -> None:
+    out = str(tmp_path)
+    (tmp_path / "draft-ietf-wg-x-05.txt").write_text("")
+    tasks = drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True)
+    assert [os.path.basename(fp) for _u, fp in tasks] == ["draft-ietf-wg-x-05.txt"]
+    (tmp_path / "draft-ietf-wg-x-05.txt").write_text("content")
+    assert drafts._revision_tasks("draft-ietf-wg-x", 5, out, latest_only=True) == []
+
+
+def test_download_one_empty_body_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An empty 2xx body must not be cached as a zero-length file, which
+    # `_is_cached` would treat as absent and refetch on every gather.
+    monkeypatch.setattr(drafts, "fetch_resource", lambda url, headers=None: _Resp(""))
+    target = tmp_path / "draft-x-01.txt"
+    assert drafts._download_one("https://h/x", str(target), Verbosity.QUIET) is None
+    assert os.listdir(tmp_path) == []

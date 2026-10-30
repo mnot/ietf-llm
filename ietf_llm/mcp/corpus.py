@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING, List, Optional
 
 from .. import coverage
+from ..atomicio import TMP_SUFFIX
 from ..corpus import describe, kind_status, status_cell
 from ..digest.overview import (
     _label_frequencies,
@@ -162,15 +163,24 @@ def tool_list_corpora() -> str:
 def _overview_live_reconciliation(wg: str, live: bool) -> str:
     """The optional 'live draft reconciliation' section appended to overview.
 
-    Empty on a read-only (gather-disabled) deployment — the live tools aren't
-    available there, so neither is this. When gather is enabled but `live` is
-    off, a one-line pointer to the live check (the default stays offline and
-    fast). When `live` is on, it cross-checks the cache's active-draft list
-    against Datatracker (`live_lookup.reconcile_active_drafts`) and reports any
-    divergence, so a stale curated list can't silently mislead an agenda.
+    On a read-only (gather-disabled) deployment the live tools aren't
+    available: the section is empty, except that `live=True` gets a one-line
+    note so its absence is not mistaken for a clean reconciliation. When gather
+    is enabled but `live` is off, a one-line pointer to the live check (the
+    default stays offline and fast). When `live` is on, it cross-checks the
+    cache's active-draft list against Datatracker
+    (`live_lookup.reconcile_active_drafts`) and reports any divergence, so a
+    stale curated list can't silently mislead an agenda; an unreachable
+    Datatracker is said so, not reported as a match.
     """
     if not gather_enabled():
-        return ""
+        return (
+            "\n\n_Live draft reconciliation is unavailable on this server "
+            "(it is read-only and does not reach Datatracker); the active-draft "
+            "list above is from the gather cache._"
+            if live
+            else ""
+        )
     if not live:
         return (
             "\n\n_The active-draft list above is from the gather cache and can "
@@ -183,7 +193,12 @@ def _overview_live_reconciliation(wg: str, live: bool) -> str:
         active_draft_names,
     )
 
-    recon, fetched = live_lookup.reconcile_active_drafts(wg, active_draft_names(wg))
+    try:
+        recon, fetched = live_lookup.reconcile_active_drafts(wg, active_draft_names(wg))
+    except live_lookup.LiveUnavailable as err:
+        return "\n\n## Live draft reconciliation\n\n" + live_lookup.unreachable_note(
+            "this group's drafts", err.tried_at
+        )
     lines = ["\n\n## Live draft reconciliation\n"]
     if not recon.advanced and not recon.revived:
         lines.append(
@@ -370,6 +385,8 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     entries = []
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
+            if name.endswith(TMP_SUFFIX):
+                continue  # a killed gather's partial atomic-write temp
             path = os.path.join(dirpath, name)
             if not os.path.isfile(path):
                 continue
@@ -680,7 +697,9 @@ def register(server: "MCPServer") -> None:
         and consider). Use it when building an agenda or whenever the
         active-draft list must be exactly right; it hits Datatracker live (so
         it is only available where the live tools are enabled — see **This
-        session**) and is slower than the default offline overview.
+        session**; elsewhere the section is a one-line "unavailable" note) and
+        is slower than the default offline overview. If Datatracker cannot be
+        reached the section says so rather than reporting a match.
 
         Args:
             corpus: The corpus shortname (`httpbis`, `tls`, …).

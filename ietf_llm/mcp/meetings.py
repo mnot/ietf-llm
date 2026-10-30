@@ -53,14 +53,28 @@ def _read_text_capped(path: str, max_lines: int, relpath: str = "") -> str:
 
 
 def _session_date(cache: str, code: str) -> str:
-    """Best-effort session date from a meeting's minutes header, or ''."""
-    try:
-        with open(minutes_path(cache, code), encoding="utf-8") as handle:
-            head = handle.read(2000)
-    except OSError:
-        return ""
-    match = re.search(r"(?im)^\s*Date:\s*(\d{4}-\d{2}-\d{2})", head)
-    return match.group(1) if match else ""
+    """Best-effort session date, or ''.
+
+    From the `Date:` header of the minutes, else of the agenda (which is posted
+    first, so a meeting not yet minuted still has one), else from the earliest
+    transcript's `YYYYMMDDHHmm` filename.
+    """
+    for path in (minutes_path(cache, code), agenda_path(cache, code)):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                head = handle.read(2000)
+        except OSError:
+            continue
+        match = re.search(r"(?im)^\s*Date:\s*(\d{4}-\d{2}-\d{2})", head)
+        if match:
+            return match.group(1)
+    tdir = transcripts_dir(cache, code)
+    if os.path.isdir(tdir):
+        for name in sorted(os.listdir(tdir)):
+            match = re.fullmatch(r"(\d{4})(\d{2})(\d{2})\d{4}\.md", name)
+            if match:
+                return "-".join(match.groups())
+    return ""
 
 
 def _dir_md_count(directory: str) -> int:
@@ -328,8 +342,11 @@ def register_live(server: "MCPServer") -> None:
         the agenda's free-text remote instructions (a Meetecho URL, a Teams
         note, …) instead.
 
-        **Omit `meeting`** to list the group's upcoming meetings (numbered +
-        interim) — the way to discover an interim id, which isn't guessable.
+        Cancelled sessions and the vacated slot of a rescheduled one are
+        omitted. **Omit `meeting`** to list the group's upcoming meetings
+        (numbered + interim) — the way to discover an interim id, which isn't
+        guessable; a meeting stays listed until its last day has passed, even if
+        the group's only session there was cancelled.
 
         Live (short TTL + freshness stamp; it reaches the network). Times
         are venue-local — never quote the UTC start as the local time.

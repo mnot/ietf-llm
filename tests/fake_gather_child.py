@@ -56,7 +56,7 @@ class _Mail:
         return (name, [os.environ["FAKE_UIDVALIDITY"].encode()])
 
 
-def _attempt(list_name, months, cache_dir, verbose, on_progress):  # type: ignore[no-untyped-def]
+def _attempt(list_name, months, cache_dir, verbose, on_progress, isolate=False):  # type: ignore[no-untyped-def]
     mbox._reconcile_uidvalidity(_Mail(), cache_dir, verbose)
     uids = [u for u in os.environ.get("FAKE_UIDS", "").split(",") if u]
     new = 0

@@ -17,6 +17,8 @@ the cache root; see paths.get_index_dir), with two tables:
 from __future__ import annotations
 
 import base64
+import contextlib
+import contextvars
 import ctypes
 import hashlib
 import json
@@ -25,6 +27,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
@@ -33,7 +36,7 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from .. import serve_metrics
-from ..atomicio import file_lock
+from ..atomicio import LockHeld, file_lock
 from ..paths import checked_corpus, get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
@@ -175,11 +178,38 @@ def discard_build_db(wg: str) -> None:
     _remove_db_files(_db_building_path(wg))
 
 
+#: Set by `index_reads_from_workspace`: reads resolve to the workspace index.
+_READS_FROM_WORKSPACE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ietf_llm_index_reads_from_workspace", default=False
+)
+
+
+@contextlib.contextmanager
+def index_reads_from_workspace() -> Generator[None, None, None]:
+    """Make this context's index reads (`_db_path_ro` and everything built on
+    it) resolve to the gather workspace index that `build_index` just wrote.
+
+    A gather's own post-build steps (the topic map) must see the index they
+    are about to publish. On the cloud store `_db_path_ro` would otherwise
+    stage the previously *published* version -- stale content, and a full
+    download of it per gather. The flag is a `ContextVar`, so it is scoped to
+    the calling thread/task (a concurrently served read is unaffected) and is
+    reset on exit, including on error."""
+    token = _READS_FROM_WORKSPACE.set(True)
+    try:
+        yield
+    finally:
+        _READS_FROM_WORKSPACE.reset(token)
+
+
 def _db_path_ro(wg: str) -> str:
     """The index DB path for a *read*, resolved through the corpus store so a
     cloud reader replica serves the current version's `embeddings.db`
     (materialised onto local scratch) instead of an empty local index dir. The
-    local backend returns `<index_root>/<wg>`, so local reads are unchanged."""
+    local backend returns `<index_root>/<wg>`, so local reads are unchanged.
+    Inside `index_reads_from_workspace` it is the workspace path instead."""
+    if _READS_FROM_WORKSPACE.get():
+        return _db_path(wg)
     from ..store.corpus import (  # pylint: disable=import-outside-toplevel
         get_corpus_store,
     )
@@ -198,12 +228,11 @@ def _db_path_ro(wg: str) -> str:
 _BUSY_TIMEOUT_S = 30.0
 
 
-def _connect(path: str, *, write: bool = False) -> sqlite3.Connection:
-    """Open the index DB with a busy timeout. Writers also switch the DB
+def _connect(path: str) -> sqlite3.Connection:
+    """Open the index DB for writing, with a busy timeout. Switches the DB
     to WAL (persistent), which lets readers proceed during a write."""
     conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S)
-    if write:
-        conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -226,25 +255,103 @@ def _index_immutable() -> bool:
 def _connect_ro(wg: str) -> sqlite3.Connection:
     """Read-only connection to a WG index (busy timeout, no schema work).
 
-    Default: a plain connection. It can create the WAL's ``-shm`` sidecar
-    on a writable index dir, which a checkpointed WAL database needs in
-    order to be read -- correct for the local CLI and for a writable
-    (tmpfs) served index. For an immutable replica on a read-only mount,
-    set ``IETF_LLM_INDEX_IMMUTABLE=1`` (see ``_index_immutable``): SQLite
-    then reads the file directly, skipping WAL/-shm and locking. Only safe
-    when nothing rewrites the file in place.
+    Opened ``mode=ro``, so a read can never create the file: an absent index
+    raises ``sqlite3.OperationalError`` rather than materialising an empty
+    database that every later read would then trip over. Callers that treat
+    "no index" as an ordinary answer use ``_try_connect_ro``.
+
+    Current builds publish in DELETE journal mode, so a read leaves no
+    sidecars. A legacy WAL-mode index on a writable dir makes SQLite create
+    ``-shm`` and ``-wal`` and leave them behind on close (the next
+    ``promote_build_db`` clears them); that is harmless, and it is why a
+    read-only mount needs a different mode. For an immutable replica on a
+    read-only mount, set
+    ``IETF_LLM_INDEX_IMMUTABLE=1`` (see ``_index_immutable``): SQLite then
+    reads the file directly, skipping WAL/-shm and locking. Only safe when
+    nothing rewrites the file in place.
     """
-    path = _db_path_ro(wg)
+    return _open_ro(_db_path_ro(wg))
+
+
+def _open_ro(path: str) -> sqlite3.Connection:
+    uri = f"{Path(os.path.abspath(path)).as_uri()}?mode=ro"
     if _index_immutable():
-        uri = f"{Path(os.path.abspath(path)).as_uri()}?immutable=1"
-        return sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_S)
-    return _connect(path)
+        uri += "&immutable=1"
+    return sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_S)
+
+
+class IndexUnreadable(sqlite3.OperationalError):
+    """The index file is present but cannot be opened or read (permissions,
+    corruption, a lock that outlasts the busy timeout).
+
+    Distinct from "no index", which readers answer with an empty result: this
+    one propagates to the tool boundary (`mcp.common._offload`), which says the
+    index is unreadable. A `sqlite3.OperationalError` so it stays typed for
+    callers that distinguish a miss from a failure; `__cause__` is the
+    underlying `OSError` / `sqlite3.Error`.
+    """
+
+    def __init__(self, wg: str, cause: BaseException) -> None:
+        super().__init__(f"search index for '{wg}' is unreadable: {cause}")
+        self.wg = wg
+
+    def tool_message(self) -> str:
+        return (
+            f"The search index for '{self.wg}' exists but cannot be read "
+            f"({self.__cause__}). This is a local permission, corruption or "
+            "locking problem, not a missing index; tell the user rather than "
+            "retrying."
+        )
+
+
+def _path_is_absent(path: str) -> bool:
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _try_connect_ro(wg: str) -> Optional[sqlite3.Connection]:
+    """`_connect_ro`, or None when the corpus has no index to read.
+
+    "No index" is a missing file or a zero-byte one (earlier versions let a
+    read create one; it has no tables, so it is never servable). Anything else
+    that stops the index opening -- permissions, a corrupt file, a lock --
+    raises `IndexUnreadable` rather than reading as absent. SQLite reports a
+    missing file under ``mode=ro`` as ``OperationalError: unable to open
+    database file``, so absence is decided by checking the path after the
+    failure, not by the error text.
+    """
+    return _try_connect_ro_at(wg, _db_path_ro(wg))
+
+
+def _try_connect_ro_at(wg: str, path: str) -> Optional[sqlite3.Connection]:
+    """`_try_connect_ro` for an already-resolved DB path; `wg` only names the
+    corpus in an `IndexUnreadable`."""
+    try:
+        if os.path.getsize(path) == 0:
+            return None
+        conn = _open_ro(path)
+    except (OSError, sqlite3.OperationalError) as err:
+        if _path_is_absent(path):
+            return None
+        raise IndexUnreadable(wg, err) from err
+    try:
+        # Opening is lazy; reading the header is what rejects a non-database.
+        conn.execute("PRAGMA schema_version").fetchone()
+    except sqlite3.Error as err:
+        conn.close()
+        raise IndexUnreadable(wg, err) from err
+    return conn
 
 
 def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
     path = path or _db_path(wg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = _connect(path, write=True)
+    conn = _connect(path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             id         INTEGER PRIMARY KEY,
@@ -340,7 +447,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # (file, chunk_idx) to (file, chunk_idx, sub_idx) so one long message can
     # own several embedding rows. SQLite can't ALTER a constraint, so we
     # recreate the table, carrying existing rows forward as sub_idx 0. They
-    # stay searchable as-is; a CHUNKER_VERSION mismatch re-embeds each WG on
+    # stay searchable as-is; a CHUNKER_VERSION mismatch re-chunks each WG on
     # its next gather, which is when the finer-grained fragments appear.
     if "sub_idx" not in have:
         conn.execute("""
@@ -469,6 +576,10 @@ _META_SCALE = "vector_scale"
 META_SOURCE_MODEL = "vector_source_model"
 META_SOURCE_BUILD = "rfc_index_build"
 META_SOURCE_COMMIT = "rfc_index_commit"
+#: Fresh on every build that changed the index. A sidecar derived from the index
+#: (the topic map) records it, so a crash between promoting a build and writing
+#: the sidecar is detectable: the stamp no longer matches.
+META_BUILD_ID = "build_id"
 
 
 @dataclass(frozen=True)
@@ -635,6 +746,10 @@ def load_centroids(
 #: nullable column.
 _AUTO_UPGRADE_FROM = 9
 
+#: How long a reader waits for the index lock before giving up on the upgrade.
+_UPGRADE_LOCK_WAIT_S = 2.0
+_UPGRADE_LOCK_POLL_S = 0.05
+
 
 def try_upgrade_schema(wg: str, current: int) -> bool:
     """Bring `wg`'s index up to the current schema for a *reader*.
@@ -652,23 +767,32 @@ def try_upgrade_schema(wg: str, current: int) -> bool:
     (`_index_immutable` — a published replica upgrades by being republished,
     not by a reader mutating a materialised copy).
 
-    Returns True when the index is now current. Best-effort: any failure
-    returns False and the caller falls back to telling the user to gather.
+    Returns True when the index is now current. Best-effort: any failure,
+    including a build holding the lock, returns False and the caller falls
+    back to telling the user to gather.
     """
     if current < _AUTO_UPGRADE_FROM or _index_immutable():
         return False
     path = _db_path_ro(wg)
     if not os.access(os.path.dirname(path) or ".", os.W_OK):
         return False
-    try:
-        # The same lock a build takes, so a reader upgrading and a gather
-        # starting cannot both migrate at once.
-        with file_lock(path + ".lock"):
-            conn = _open_db(wg, path=path)
-            conn.close()
-    except (sqlite3.Error, OSError):
-        return False
-    return True
+    # The same lock a build takes, so a reader upgrading and a gather starting
+    # cannot both migrate at once. A build holds it for the whole embed, so wait
+    # only briefly: long enough for a concurrent reader's millisecond upgrade to
+    # finish (the lock conflicts even within one process), not for a build.
+    deadline = time.monotonic() + _UPGRADE_LOCK_WAIT_S
+    while True:
+        try:
+            with file_lock(path + ".lock", blocking=False):
+                conn = _open_db(wg, path=path)
+                conn.close()
+            return True
+        except LockHeld:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_UPGRADE_LOCK_POLL_S)
+        except (sqlite3.Error, OSError):
+            return False
 
 
 def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
@@ -678,9 +802,11 @@ def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
     without taking a write lock on it.
     """
     wanted = list(keys)
-    if not wanted or not os.path.exists(_db_path_ro(wg)):
+    if not wanted:
         return {}
-    conn = _connect_ro(wg)
+    conn = _try_connect_ro(wg)
+    if conn is None:
+        return {}
     try:
         placeholders = ",".join("?" * len(wanted))
         cur = conn.execute(
@@ -702,9 +828,9 @@ def section_rows(wg: str, file: str, section: Optional[str]) -> List[Tuple[int, 
     row can begin mid-sentence (23% of trimmed rows do), and only the whole
     run is faithful.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return []
-    conn = _connect_ro(wg)
     try:
         if section is None:
             cur = conn.execute(
@@ -732,9 +858,9 @@ def section_outline(wg: str, file: str) -> List[Tuple[str, str, int]]:
     reads as a table of contents rather than a lexical sort ("10" before
     "2").
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return []
-    conn = _connect_ro(wg)
     try:
         cur = conn.execute(
             "SELECT section, title, sum(length(text)), min(chunk_idx) "
@@ -787,9 +913,18 @@ def iter_sections(
     of the series and call the silence proof. Raising is what lets it say the
     scan failed.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    yield from iter_sections_at(_db_path_ro(wg), files, wg)
+
+
+def iter_sections_at(
+    path: str, files: Optional[Iterable[str]] = None, label: str = "index"
+) -> Generator[Tuple[str, Optional[str], str, str], None, None]:
+    """`iter_sections` over an already-resolved DB path — for a scan in a child
+    process, which must not re-resolve the path through the corpus store.
+    `label` names the corpus in an `IndexUnreadable`."""
+    conn = _try_connect_ro_at(label, path)
+    if conn is None:
         return
-    conn = _connect_ro(wg)
     try:
         sql = "SELECT file, section, title, text FROM chunks "
         params: List[Any] = []
@@ -825,9 +960,9 @@ def indexed_files(wg: str) -> List[str]:
     `chunk_counts` answers the same question but pays for a COUNT it does not
     need when the caller only wants the denominator of a scan.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return []
-    conn = _connect_ro(wg)
     try:
         cur = conn.execute("SELECT DISTINCT file FROM chunks ORDER BY file")
         return [str(row[0]) for row in cur.fetchall()]
@@ -844,9 +979,9 @@ def chunk_counts(wg: str) -> Dict[str, int]:
     consumer can see how many chunk_idx values are valid for each file
     instead of having to blind-probe.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return {}
-    conn = _connect_ro(wg)
     try:
         # COUNT(DISTINCT chunk_idx): one logical chunk per message/window,
         # even when a long message spans several sub_idx fragments — so the
@@ -875,9 +1010,9 @@ def chunk_spans(
     names = list(dict.fromkeys(files))
     if not names:
         return {}
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return {}
-    conn = _connect_ro(wg)
     try:
         out: Dict[str, List[Tuple[int, int, int, str]]] = {}
         # Chunked IN-list: a grep hit set can name more files than SQLite's
@@ -962,9 +1097,9 @@ def find_chunks_by_url(
     file. Callers (notably the MCP `get_by_url` tool) use the row
     count to decide whether to return a single chunk or the whole file.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return []
-    conn = _connect_ro(wg)
     try:
         # sub_idx 0 only: it carries the full message text and span, so a
         # split message resolves to one row here (not one per fragment),
@@ -1006,6 +1141,9 @@ def find_chunks_by_url(
         conn.close()
 
 
+_MESSAGE_KEY_BATCH = 200
+
+
 def get_messages(
     wg: str, items: Iterable[Tuple[str, int]]
 ) -> Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]]:
@@ -1019,34 +1157,35 @@ def get_messages(
     keys = list(items)
     if not keys:
         return {}
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return {}
-    conn = _connect_ro(wg)
     try:
-        # SQLite has no native (a,b) IN ((...),(...)) shortcut for many
-        # pairs, but the chunks table is small enough that a single
-        # SELECT with a per-pair WHERE OR chain is fine — and we cap
-        # the caller (k≤40-ish) so the IN-list never explodes.
-        clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(keys))
-        args: List[object] = []
-        for file, idx in keys:
-            args.extend([file, idx])
-        # sub_idx=0 holds the full message body and span, so each
-        # (file, chunk_idx) yields exactly one row — the whole message,
-        # not a fragment.
-        cur = conn.execute(
-            "SELECT file, chunk_idx, title, text, chunk_date, url "
-            f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
-            args,
-        )
         out: Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]] = {}
-        for row in cur.fetchall():
-            out[(str(row[0]), int(row[1]))] = (
-                _clean_title(str(row[2])),
-                str(row[3]),
-                str(row[4]) if row[4] is not None else None,
-                str(row[5]) if row[5] is not None else None,
+        # SQLite has no (a,b) IN ((...),(...)) form for older versions, so each
+        # batch is an OR chain. Batching keeps it under both the expression-depth
+        # limit (~1000 terms) and the variable limit (999 on old builds).
+        for i in range(0, len(keys), _MESSAGE_KEY_BATCH):
+            batch = keys[i : i + _MESSAGE_KEY_BATCH]
+            clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(batch))
+            args: List[object] = []
+            for file, idx in batch:
+                args.extend([file, idx])
+            # sub_idx=0 holds the full message body and span, so each
+            # (file, chunk_idx) yields exactly one row — the whole message,
+            # not a fragment.
+            cur = conn.execute(
+                "SELECT file, chunk_idx, title, text, chunk_date, url "
+                f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
+                args,
             )
+            for row in cur.fetchall():
+                out[(str(row[0]), int(row[1]))] = (
+                    _clean_title(str(row[2])),
+                    str(row[3]),
+                    str(row[4]) if row[4] is not None else None,
+                    str(row[5]) if row[5] is not None else None,
+                )
         return out
     finally:
         conn.close()
@@ -1061,9 +1200,9 @@ def get_chunk(
     are 1-indexed and inclusive when known; they may be None for chunks
     indexed before line tracking was added (schema v1).
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return None
-    conn = _connect_ro(wg)
     try:
         # sub_idx 0 carries the full message text and the section's full
         # line span; later fragments are embedding-only slices. Return the
@@ -1118,14 +1257,18 @@ def probe_index(wg: str) -> bool:
     which a bare directory stat would miss.
     """
     try:
-        conn = _connect_ro(wg)
-        try:
-            conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            return True
-        finally:
-            conn.close()
-    except (sqlite3.Error, OSError):
+        conn = _try_connect_ro(wg)
+    except IndexUnreadable:
         return False
+    if conn is None:
+        return False
+    try:
+        conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
 
 
 # --- document-level vectors + topic-map sidecar (issue #116) ---------------
@@ -1168,9 +1311,9 @@ def load_documents(wg: str) -> List[Document]:
 
     Empty list when there is no index. Read-only; never migrates the DB.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return []
-    conn = _connect_ro(wg)
     try:
         codec = read_codec(conn)
         cur = conn.execute(

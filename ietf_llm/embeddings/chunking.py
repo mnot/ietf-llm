@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from ..gather.sources.documents_manifest import skip_embed_draft_names
 from ..gather.sources.drafts import normalize_draft_name
+from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 
 # Character budget per embedded chunk. The embedding model only embeds the
 # first ~512 tokens of whatever text it's given; anything past that is silently
@@ -37,7 +38,7 @@ from ..gather.sources.drafts import normalize_draft_name
 # fragment is re-covered by the head of the next, so content stays searchable.
 # Char-based on purpose: chunking must NOT depend on a runtime tokenizer (the
 # remote embedding backend won't ship one). Bumping this is a write-side change
-# — bump CHUNKER_VERSION in search.py so existing indices re-embed.
+# — bump CHUNKER_VERSION so existing indices are re-chunked.
 EMBED_CHAR_BUDGET = 1200
 EMBED_CHAR_OVERLAP = 150
 MAX_CHUNK_CHARS = 8000  # hard cap for the legacy year-dump chunkers (dead path)
@@ -50,7 +51,10 @@ MAX_CHUNK_CHARS = 8000  # hard cap for the legacy year-dump chunkers (dead path)
 #   "1" — fixed 2000-char windows, 8000-char per-section truncation
 #   "2" — EMBED_CHAR_BUDGET windows; long sections split into sub_idx
 #         fragments instead of being truncated
-CHUNKER_VERSION = "2"
+#   "3" — windowed chunks' start_line/end_line count from the top of the file
+#         (they were short by its leading blank lines); chunk text is
+#         unchanged, so an upgrade rewrites rows without re-embedding
+CHUNKER_VERSION = "3"
 
 
 @dataclass
@@ -196,13 +200,6 @@ _SUBJECT_RE = re.compile(r"^Subject:\s*(.+)$", re.MULTILINE)
 _FROM_RE = re.compile(r"^From:\s*(.+)$", re.MULTILINE)
 _DATE_RE = re.compile(r"^Date:\s*(.+)$", re.MULTILINE)
 _ISSUE_RE = re.compile(r"^Issue #(\d+):\s*(.+)$", re.MULTILINE)
-
-# Per-thread file message section header:
-#   "### [N] YYYY-MM-DD HH:MM — Sender (reply to [M])"
-_THREAD_MSG_RE = re.compile(
-    r"^### \[(\d+)\] (\S+(?:\s+\S+)?) — (.+?)(?: \(reply to \[\d+\]\))?$",
-    re.MULTILINE,
-)
 
 # Per-issue file labels line (issue_files._render_issue):
 #   "**Labels:** vocabulary, top-level, ready to close  "
@@ -435,16 +432,21 @@ def _chunk_windowed(text: str, filename: str) -> List[Chunk]:
     rather than having its tail silently dropped from the vector.
     """
     chunks: List[Chunk] = []
+    # Line numbers are file lines, so index the text as read and shift the
+    # stripped text's window offsets by the whitespace removed from its head.
+    line_starts = _build_line_index(text)
+    lead = len(text) - len(text.lstrip())
     text = text.strip()
     if not text:
         return chunks
     # File-level citation URL (drafts, charter) stamped on every window;
     # None for windowed files without a confident canonical URL.
     file_url = _windowed_citation_url(filename, text)
-    line_starts = _build_line_index(text)
     for idx, (body, start, end) in enumerate(
         _window_text(text, EMBED_CHAR_BUDGET, EMBED_CHAR_OVERLAP)
     ):
+        start += lead
+        end += lead
         # First non-empty line as title hint
         title = next((ln.strip() for ln in body.splitlines() if ln.strip()), filename)
         if len(title) > 80:
@@ -550,7 +552,7 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
     every chunk in the file, so search can filter by topic label.
     """
     line_starts = _build_line_index(text)
-    matches = list(_THREAD_MSG_RE.finditer(text))
+    matches = list(THREAD_MSG_HEADER_RE.finditer(text))
     chunks: List[Chunk] = []
 
     if not matches:
@@ -610,15 +612,15 @@ def _chunk_thread_file(text: str, filename: str) -> List[Chunk]:
         body = text[start_off:end_off].strip()
         if not body:
             continue
-        # chunk_idx is the message number `[N]` (regex group 1), NOT a
+        # chunk_idx is the message number `[N]` (the `idx` group), NOT a
         # running counter — a long message that splits into several
         # sub_idx fragments must not push later messages' chunk_idx out of
         # step with the `[N]` the reply graph / position tally key on.
-        msg_idx = int(match.group(1))
+        msg_idx = int(match.group("idx"))
         # Title: "[N] DATE — Sender" without the leading `### `.
         title = match.group(0)[4:].strip()
-        # Date is group 2 in the regex (e.g. "2026-04-13 10:00").
-        chunk_date = _normalize_to_utc_iso(match.group(2))
+        # e.g. "2026-04-13 10:00"; absent when the header's timestamp is empty.
+        chunk_date = _normalize_to_utc_iso(match.group("date") or "")
         # Per-chunk URL: issue chunks inherit the file-level URL;
         # thread chunks have their own per-message Archived-At line.
         chunk_url = file_url if is_issue else _extract_thread_archived_at(body)

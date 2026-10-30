@@ -800,7 +800,7 @@ def test_a_stray_file_beside_the_lists_does_not_abort_hydrate(monkeypatch, tmp_p
     datatracker_key = "corpora/moq/gather-cache/http-cache.json"
     kv.put(datatracker_key, b'{"u": {"etag": "e", "body": "{}", "last_used": 1}}')
     assert cache_sync.hydrate(kv, "moq") == []
-    assert os.path.exists(cache_sync.datatracker.http_cache_path("moq"))
+    assert os.path.exists(cache_sync.datatracker.legacy_http_cache_path("moq"))
 
 
 def test_an_unwritable_confirmation_is_logged(monkeypatch, tmp_path, capsys):
@@ -811,3 +811,94 @@ def test_an_unwritable_confirmation_is_logged(monkeypatch, tmp_path, capsys):
     mbox.record_verified(str(list_dir), "7")
     assert mbox.verified_uidvalidity(str(list_dir)) is None
     assert "disk full" in capsys.readouterr().err
+
+
+# --- a shortfall does not stop the epoch from being confirmed ----------------
+
+
+class _BadUidImap(_FakeImap):
+    """A server whose UIDs in `bad` are never delivered (any FETCH naming one is
+    refused); the rest come back as parseable messages."""
+
+    def __init__(self, epoch: bytes, uids: List[int], bad: set[int]) -> None:
+        super().__init__(epoch, uids)
+        self._bad = bad
+
+    def uid(self, command: str, *args):
+        if command == "search":
+            return super().uid(command, *args)
+        wanted = [int(u) for u in args[0].split(",")]
+        if self._bad & set(wanted):
+            return ("NO", [b"corrupt"])
+        return (
+            "OK",
+            [
+                (
+                    f"{u} (UID {u} RFC822 {{5}}".encode(),
+                    f"Message-Id: <new-{u}@x>\nSubject: New {u}\n"
+                    f"From: Bob <bob@example.com>\nDate: Mon, 01 Feb 2024 10:00:00 +0000\n\nbody".encode(),
+                )
+                for u in wanted
+            ],
+        )
+
+
+def _sync_with(monkeypatch, fake: _FakeImap) -> List[str]:
+    monkeypatch.setattr(mbox.imaplib, "IMAP4_SSL", lambda *_a, **_k: fake)
+    notes: List[str] = []
+    mbox._sync_one_list("moq", "moq", 12, Verbosity.QUIET, note_fn=notes.append)
+    return notes
+
+
+def _message_ids(wg: str = "moq") -> List[str]:
+    from ietf_llm.gather.sources import mail_threads
+
+    return sorted(m.message_id for t in mail_threads.build_threads(wg) for m in t.members)
+
+
+def test_a_renumbered_epoch_with_an_undeliverable_uid_still_replaces_and_archives(
+    monkeypatch, tmp_path
+):
+    kv = _CountingKv()
+    first = _host(monkeypatch, tmp_path / "first")
+    _write_eml(first, 1, "old-a@x", "Old topic")
+    _write_eml(first, 2, "old-b@x", "Re: Old topic", reply_to="old-a@x")
+    (first / mbox.UIDVALIDITY_FILE).write_text("7")
+    cache_sync.persist(kv, "moq")
+    before = _message_ids()
+
+    # The server now reports epoch 8, lists UIDs 1..3 and will not deliver 2.
+    second = _host(monkeypatch, tmp_path / "second")
+    assert cache_sync.hydrate(kv, "moq") == []
+    notes = _sync_with(monkeypatch, _BadUidImap(b"8", [1, 2, 3], bad={2}))
+    assert any("undeliverable UIDs: 2" in n for n in notes)
+    assert mbox.verified_uidvalidity(str(second)) == "8"  # still confirmed
+
+    assert cache_sync.persist(kv, "moq") == []
+    assert PREFIX + "epoch-7/index.json" in kv._data  # E1 archived
+    cold = _host(monkeypatch, tmp_path / "cold")
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert (cold / mbox.UIDVALIDITY_FILE).read_text() == "8"
+    assert _names(cold) == ["1.eml", "3.eml"]  # the main unit is E2, minus UID 2
+    after = _message_ids()
+    assert set(before) <= set(after)  # every old Message-Id survives, via epoch-7/
+    assert {"<new-1@x>", "<new-3@x>"} <= set(after)
+
+
+def test_a_same_epoch_shortfall_persists_additively(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    first = _host(monkeypatch, tmp_path / "first")
+    _mail(first, [1, 2, 3], epoch="7")
+    cache_sync.persist(kv, "moq")
+
+    # A host that lacks UID 2 locally and whose server will not deliver it.
+    second = _host(monkeypatch, tmp_path / "second")
+    _mail(second, [1, 3], epoch="7")
+    _sync_with(monkeypatch, _BadUidImap(b"7", [1, 2, 3], bad={2}))
+    assert mbox.verified_uidvalidity(str(second)) == "7"
+    assert cache_sync.persist(kv, "moq") == []
+
+    # The stored chunk still holds all three; it was not replaced by less.
+    cold = _host(monkeypatch, tmp_path / "cold")
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert _names(cold) == ["1.eml", "2.eml", "3.eml"]
