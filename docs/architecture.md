@@ -193,7 +193,12 @@ Key invariants:
   skipped by `grep_corpus` unless asked for — the threads hold the same text).
   `threads/<date>-<slug>.md` is one file per reconstructed thread — built from
   RFC 5322 In-Reply-To / References headers with a normalised-subject safety
-  net, quoted runs collapsed, and per-message headers in **UTC** (so the
+  net (it only folds a root whose subject carries a `Re:`/`Fwd:` prefix, and
+  only into a conversation whose last message is within 60 days, so a
+  recurring subject that is reused verbatim -- a weekly digest, `I-D Action:`
+  notices -- becomes one thread per item rather than one for the list's whole
+  life), quoted
+  runs collapsed, and per-message headers in **UTC** (so the
   chunker's date re-parse sorts). `<date>` is the thread's *first* message, so
   it can lag the last-activity date; the overview surfaces the actual `File`
   path to bridge that. The thread files are what an LLM reads; the year files
@@ -630,7 +635,8 @@ ietf_llm/
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
-│       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
+│       ├── mbox.py                 # IMAP sync + per-year .txt; --mailing-list extras
+│       ├── imap_fetch.py           # FETCH into the per-list cache; halves a short batch to find undeliverable UIDs
 │       ├── mail_threads.py         # reconstruct per-thread .md files; owns THREAD_MSG_HEADER_RE (the shared `### [N]` section-header parse)
 │       ├── github.py               # archive.json (gh-pages) or REST API
 │       ├── github_schema.py        # normalise the archive's shape (download and read)
@@ -1676,7 +1682,13 @@ unit only when this gather's sync confirmed the local epoch with the server
 sidecar: the sync runs in the gather child, so the confirmation has to cross the
 process boundary as a file, and hydrate deletes it at the start of every gather so
 a stale one can't vouch for a check this gather never made); a differing,
-unconfirmed epoch -- a warm host whose IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+unconfirmed epoch -- a warm host whose IMAP sync failed before the server
+confirmed the epoch -- leaves the store alone. The sidecar says only that the
+server's epoch matched the local one, so FETCHes that left some requested
+messages unwritten (reported with the undeliverable UIDs, once a refused batch
+has been halved to find them) and a connection that dropped mid-download leave it
+in place: the old epoch is archived before the stored main unit is replaced, and
+a failed archive abandons the list, so a partial new epoch cannot lose mail. When it does replace, it first makes
 sure the old epoch's mail is stored as an archive unit (filling the local
 `epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
 list if that fails), then invalidates the old index before touching the chunks,

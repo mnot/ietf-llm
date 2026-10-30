@@ -22,9 +22,13 @@ Threading uses the same approach every mail client does:
      to the last entry of `References`).
   3. Messages whose parent isn't in our archive (because it was posted
      elsewhere or pre-dates our retention window) become thread roots.
-  4. As a safety net, root messages that share a normalised subject
-     get merged together. Catches cases where someone "replied" by
-     composing a new message without preserving References.
+  4. As a safety net, a root whose subject carries a `Re:`/`Fwd:` prefix
+     is merged into an earlier same-subject conversation if it falls
+     within `SUBJECT_MERGE_WINDOW` of that conversation's last message.
+     Catches cases where someone "replied" by composing a new message
+     without preserving References. Prefix-less roots (a weekly digest,
+     an `I-D Action:` notice) are new conversations and are never merged,
+     so a recurring subject doesn't chain into one multi-year thread.
 
 One file per thread:
 
@@ -44,14 +48,14 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
 from ...paths import get_cache_dir, thread_path, threads_dir
 from ...people import Registry
-from ...text import _normalize_subject, _parse_date, _short_addr
+from ...text import _has_reply_prefix, _normalize_subject, _parse_date, _short_addr
 from .mbox import extract_text_content
 
 
@@ -475,6 +479,54 @@ def _has_quoted_text(body: str) -> bool:
 # --- Thread building -------------------------------------------------------
 
 
+#: How long after a conversation's last message a same-subject root may still be
+#: folded into it by the subject fallback, on top of the reply-prefix test in
+#: `_mergeable_cluster`. A reply composed as a new message arrives within days
+#: or weeks of the thread it belongs to; a longer gap is a new conversation that
+#: happens to share a subject. Measured from the conversation's *last* message,
+#: so it bounds gaps, not total span.
+SUBJECT_MERGE_WINDOW = timedelta(days=60)
+
+
+@dataclass
+class _SubjectCluster:
+    """A thread root and the date of its conversation's latest message, so far."""
+
+    root: Message
+    last: Optional[datetime]
+
+
+def _last_date(root: Message, children: Dict[str, List[Message]]) -> Optional[datetime]:
+    """Date of the latest message in `root`'s reply tree, or `None` if none of
+    them is dated."""
+    dates = [m.date for m in _collect_subtree(root, children) if m.date]
+    return max(dates) if dates else None
+
+
+def _mergeable_cluster(
+    candidates: List[_SubjectCluster], msg: Message
+) -> Optional[_SubjectCluster]:
+    """The most recent cluster `msg` (dated no earlier than any cluster root)
+    may join, or `None` to start a new thread. This is the one place the
+    subject-fallback rule lives.
+
+    Only a root whose raw subject carries a reply or forward prefix is a
+    candidate: someone replying by composing a new message keeps the `Re:`,
+    whereas a weekly digest, an `I-D Action:` notice or an errata report reuses
+    its subject verbatim and is a new item each time, however close the last
+    one. A candidate must also start within `SUBJECT_MERGE_WINDOW` of the
+    cluster's last message. An undated cluster or message can't be placed in
+    time, so it joins the most recent cluster."""
+    if not _has_reply_prefix(msg.subject):
+        return None
+    for cluster in reversed(candidates):
+        if msg.date is None or cluster.last is None:
+            return cluster
+        if msg.date - cluster.last <= SUBJECT_MERGE_WINDOW:
+            return cluster
+    return None
+
+
 def _walk_imap_cache(wg: str) -> List[str]:
     """Return absolute paths of every .eml in the WG's IMAP cache.
 
@@ -558,25 +610,33 @@ def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
         msg.parent_id = parent
 
     # Roots are messages whose parent isn't in our archive.
-    # Safety net: if two roots share a normalised subject they're
-    # almost certainly the same conversation (someone replied as new).
-    subject_root: Dict[str, Message] = {}
+    # Safety net: roots that share a normalised subject and fall within
+    # SUBJECT_MERGE_WINDOW of the same conversation's last message are
+    # almost certainly one conversation (someone replied as new).
+    reply_children: Dict[str, List[Message]] = defaultdict(list)
     for msg in msgs:
         if msg.parent_id is not None:
-            continue
+            reply_children[msg.parent_id].append(msg)
+    roots = [msg for msg in msgs if msg.parent_id is None]
+    # Oldest first, undated last: a cluster's last-message date is then settled
+    # before any later root is compared against it, and the oldest root of a
+    # cluster is always the one the rest parent to.
+    roots.sort(key=lambda m: (m.date is None, m.date.timestamp() if m.date else 0.0))
+    clusters: Dict[str, List[_SubjectCluster]] = defaultdict(list)
+    cluster_roots: List[Message] = []
+    for msg in roots:
         key = _normalize_subject(msg.subject).lower()
         if not key:
             continue
-        existing = subject_root.get(key)
-        if existing is None:
-            subject_root[key] = msg
-        else:
-            # Older message becomes the root; younger one parents to it.
-            if msg.date and existing.date and msg.date < existing.date:
-                existing.parent_id = msg.message_id
-                subject_root[key] = msg
-            else:
-                msg.parent_id = existing.message_id
+        last = _last_date(msg, reply_children)
+        target = _mergeable_cluster(clusters.get(key, []), msg)
+        if target is None:
+            clusters[key].append(_SubjectCluster(msg, last))
+            cluster_roots.append(msg)
+            continue
+        msg.parent_id = target.root.message_id
+        if last and (target.last is None or last > target.last):
+            target.last = last
 
     # Collect descendants per root.
     children: Dict[str, List[Message]] = defaultdict(list)
@@ -585,7 +645,7 @@ def build_threads(wg: str, registry: Optional[Registry] = None) -> List[Thread]:
             children[msg.parent_id].append(msg)
 
     threads: List[Thread] = []
-    for root in subject_root.values():
+    for root in cluster_roots:
         members = _collect_subtree(root, children)
         # Order chronologically; messages without a date sink to the end.
         members.sort(key=lambda mm: mm.date.timestamp() if mm.date else float("inf"))
