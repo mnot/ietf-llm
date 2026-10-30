@@ -325,7 +325,12 @@ def _try_connect_ro(wg: str) -> Optional[sqlite3.Connection]:
     database file``, so absence is decided by checking the path after the
     failure, not by the error text.
     """
-    path = _db_path_ro(wg)
+    return _try_connect_ro_at(wg, _db_path_ro(wg))
+
+
+def _try_connect_ro_at(wg: str, path: str) -> Optional[sqlite3.Connection]:
+    """`_try_connect_ro` for an already-resolved DB path; `wg` only names the
+    corpus in an `IndexUnreadable`."""
     try:
         if os.path.getsize(path) == 0:
             return None
@@ -908,7 +913,16 @@ def iter_sections(
     of the series and call the silence proof. Raising is what lets it say the
     scan failed.
     """
-    conn = _try_connect_ro(wg)
+    yield from iter_sections_at(_db_path_ro(wg), files, wg)
+
+
+def iter_sections_at(
+    path: str, files: Optional[Iterable[str]] = None, label: str = "index"
+) -> Generator[Tuple[str, Optional[str], str, str], None, None]:
+    """`iter_sections` over an already-resolved DB path — for a scan in a child
+    process, which must not re-resolve the path through the corpus store.
+    `label` names the corpus in an `IndexUnreadable`."""
+    conn = _try_connect_ro_at(label, path)
     if conn is None:
         return
     try:

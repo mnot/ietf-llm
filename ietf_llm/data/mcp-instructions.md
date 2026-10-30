@@ -89,7 +89,8 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   `group_timeline` — charters, milestones and lifecycle for every WG and RG.
 - **Search:** `search_corpus` (one corpus), `search_corpora` (several),
   `read_topic` (chronological narrative), `find_related` (by example),
-  `grep_corpus` (exact string / regex).
+  `grep_corpus` (exact string / regex; a regex has a time budget, and an
+  `INCOMPLETE SCAN` reply is not an absence).
 - **Catalogue:** `read_digest` (filtered issue / pull-request / thread / people /
   timeline tables; a filter the kind does not support is rejected, not
   ignored; `kind="people"` takes `org=` for the Affiliation column and

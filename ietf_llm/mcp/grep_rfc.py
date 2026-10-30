@@ -6,15 +6,26 @@ the gathered-corpus scan are set out above `_grep_rfc_corpus`.
 
 from __future__ import annotations
 
-import bisect
 import fnmatch
 import re
-import sqlite3
 import time
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple, cast
 
-from ..embeddings.storage import indexed_files, iter_sections
-from .grep_common import _MAX_GREP_LIMIT, _elide, _mode_phrase
+from ..embeddings.storage import _db_path_ro, indexed_files, iter_sections
+from ..regexscan import (
+    ScanFailed,
+    ScanTimedOut,
+    SectionScan,
+    run_bounded,
+    scan_sections,
+)
+from .grep_common import (
+    _MAX_GREP_LIMIT,
+    _SCAN_FAILED_REPLY,
+    _incomplete_scan_head,
+    _mode_phrase,
+    _note_scan_stop,
+)
 from .rfc_text import RFC_CORPUS, provenance_line, status_note
 
 # --- the RFC series ----------------------------------------------------------
@@ -44,11 +55,11 @@ _RFC_MATCHES_PER_SECTION = 2
 #: Wall-clock budget for one RFC-series scan. A literal phrase crosses the
 #: whole corpus in ~2.5s, but a plausible regex is far slower — `[A-Za-z]+ing`
 #: takes ~25s and `(\s|\w)+$` ~88s over the same ~400 MB, and nothing about
-#: either is adversarial. Every call re-scans from scratch on an `_offload`
-#: worker, so without a bound a few concurrent calls saturate the pool on the
-#: shared deployment. Stopping and *saying so* is the only safe behaviour: a
-#: truncated scan that rendered as a normal result would be the unsound
-#: negative this tool exists to prevent.
+#: either is adversarial. Stopping and *saying so* is the only safe behaviour:
+#: a truncated scan that rendered as a normal result would be the unsound
+#: negative this tool exists to prevent. A regex runs in a child process
+#: (`regexscan`) that stops itself at the budget and is killed shortly after
+#: if one `finditer` over a single section never returns.
 _RFC_SCAN_BUDGET_S = 20.0
 
 #: How often the budget is polled, in sections. A clock read per section would
@@ -80,36 +91,6 @@ def _compile_phrase(
     if regex:
         return re.compile(pattern, flags)
     return re.compile(r"\s+".join(re.escape(word) for word in pattern.split()), flags)
-
-
-def _excerpts(
-    text: str, matcher: "re.Pattern[str]", context: int, max_matches: int
-) -> List[List[str]]:
-    """The lines covering each of the first `max_matches` matches in `text`,
-    with `context` lines either side.
-
-    A match may straddle a wrap, so the span is taken from the line holding its
-    first character to the line holding its last — rendering only the opening
-    line would cut the phrase the caller searched for in half.
-    """
-    lines = text.splitlines()
-    offsets: List[int] = []
-    running = 0
-    for line in lines:
-        offsets.append(running)
-        running += len(line) + 1
-    out: List[List[str]] = []
-    for count, match in enumerate(matcher.finditer(text)):
-        if count >= max_matches:
-            break
-        first = max(0, bisect.bisect_right(offsets, match.start()) - 1)
-        last = max(
-            first, bisect.bisect_right(offsets, max(match.start(), match.end() - 1)) - 1
-        )
-        low = max(0, first - context)
-        high = min(len(lines), last + 1 + context)
-        out.append([_elide(line) for line in lines[low:high]])
-    return out
 
 
 class _RfcHit(NamedTuple):
@@ -249,7 +230,68 @@ def _rfc_scan_scope(
     return narrowed, None
 
 
-def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+_SECTION_SCAN_KEYS = (
+    "sections",
+    "total",
+    "matching_sections",
+    "per_file",
+    "hits",
+    "stopped_early",
+    "error",
+)
+
+
+def _run_scan(
+    matcher: "re.Pattern[str]",
+    regex: bool,
+    scoped: Optional[List[str]],
+    keep: int,
+    context: int,
+) -> SectionScan:
+    """Scan the series for `matcher`. The caller's own regex runs in a child
+    process, killed at the budget (`regexscan`); a literal phrase is `\\s+`-joined
+    words and cannot backtrack catastrophically, so it scans here — still with
+    the soft budget, since 400 MB is slow even when the pattern is not."""
+    if regex:
+        return cast(
+            SectionScan,
+            run_bounded(
+                {
+                    "kind": "sections",
+                    "pattern": matcher.pattern,
+                    "flags": matcher.flags,
+                    "db_path": _db_path_ro(RFC_CORPUS),
+                    "names": scoped,
+                    "keep": keep,
+                    "context": context,
+                    "check_every": _RFC_SCAN_CHECK_EVERY,
+                    "per_file_cap": _RFC_SECTIONS_PER_DOC,
+                    "matches_per_section": _RFC_MATCHES_PER_SECTION,
+                },
+                _RFC_SCAN_BUDGET_S,
+                _SECTION_SCAN_KEYS,
+            ),
+        )
+    return scan_sections(
+        matcher,
+        iter_sections(RFC_CORPUS, scoped),
+        keep,
+        context,
+        time.monotonic() + _RFC_SCAN_BUDGET_S,
+        _RFC_SCAN_CHECK_EVERY,
+        _RFC_SECTIONS_PER_DOC,
+        _RFC_MATCHES_PER_SECTION,
+    )
+
+
+def _incomplete_reply(pattern: str, mode: str, found_note: str, read_note: str) -> str:
+    return (
+        _incomplete_scan_head(pattern, mode, _RFC_SCAN_BUDGET_S, found_note, read_note)
+        + f"\n\n_{provenance_line()}_"
+    )
+
+
+def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
     pattern: str,
     file_pattern: Optional[str],
     regex: bool,
@@ -271,63 +313,49 @@ def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     if refusal is not None:
         return refusal
 
-    hits: List[_RfcHit] = []
-    per_doc: Dict[str, int] = {}
-    total = 0
-    sections = 0
-    matching_sections = 0
-    stopped_early = False
-    keep = 0 if files_only else _MAX_GREP_LIMIT
-    deadline = time.monotonic() + _RFC_SCAN_BUDGET_S
     # A glob is the only reason to name files: an unscoped scan would otherwise
     # build an `IN (?,?,…)` clause with one parameter per RFC — 9,813 of them,
     # past the 999-parameter default of SQLite before 3.32, which older
     # distribution Pythons still ship. That is exactly where a swallowed error
     # would have turned into a confident claim of absence.
     scoped = files if file_pattern else None
+    keep = 0 if files_only else _MAX_GREP_LIMIT
+    mode = _mode_phrase(regex, case_sensitive) + (
+        "" if regex else ", across line breaks"
+    )
     try:
-        stream = iter_sections(RFC_CORPUS, scoped)
-        for file, section, title, text in stream:
-            sections += 1
-            if not sections % _RFC_SCAN_CHECK_EVERY and time.monotonic() > deadline:
-                stopped_early = True
-                stream.close()
-                break
-            found = sum(1 for _ in matcher.finditer(text))
-            if not found:
-                continue
-            matching_sections += 1
-            number = _rfc_number(file)
-            total += found
-            per_doc[number] = per_doc.get(number, 0) + found
-            if len(hits) >= keep or sum(1 for h in hits if h.number == number) >= (
-                _RFC_SECTIONS_PER_DOC
-            ):
-                continue
-            hits.append(
-                _RfcHit(
-                    number,
-                    section,
-                    title,
-                    found,
-                    _excerpts(text, matcher, context, _RFC_MATCHES_PER_SECTION),
-                )
-            )
-    except sqlite3.Error as exc:
+        scan = _run_scan(matcher, regex, scoped, keep, context)
+    except ScanTimedOut:
+        _note_scan_stop("timeout")
+        # The kill leaves no counts to report; same rule as a stopped scan.
+        return _incomplete_reply(
+            pattern, mode, "no result was recovered", "an unknown number of sections"
+        )
+    except ScanFailed as exc:
+        _note_scan_stop("failed", exc)
+        return _SCAN_FAILED_REPLY
+    sections = scan["sections"]
+    if scan["error"] is not None:
         # An incomplete scan must never render as absence. Whatever was found
         # before the failure is still true, but the denominator is not, so the
         # one thing this must not do is stay quiet.
         return (
             f"The scan of the RFC series failed after {sections} section(s): "
-            f"{exc}. **Nothing can be concluded from this** — in particular a "
-            "partial scan is not evidence that the pattern is absent. Retry, "
-            "or narrow with `file_pattern`."
+            f"{scan['error']}. **Nothing can be concluded from this** — in "
+            "particular a partial scan is not evidence that the pattern is "
+            "absent. Retry, or narrow with `file_pattern`."
         )
+    per_doc: Dict[str, int] = {}
+    for file, count in scan["per_file"].items():
+        per_doc[_rfc_number(file)] = count
+    total = scan["total"]
+    matching_sections = scan["matching_sections"]
+    hits = [
+        _RfcHit(_rfc_number(file), section, title, found, excerpts_)
+        for file, section, title, found, excerpts_ in scan["hits"]
+    ]
 
-    mode = _mode_phrase(regex, case_sensitive) + (
-        "" if regex else ", across line breaks"
-    )
-    if stopped_early:
+    if scan["stopped_early"]:
         # Same rule as a failed scan: a truncated denominator cannot support a
         # negative, so say what was covered and refuse to imply the rest.
         found_note = (
@@ -335,14 +363,8 @@ def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
             if per_doc
             else "no matches before it stopped"
         )
-        return (
-            f"**INCOMPLETE SCAN — stopped after {_RFC_SCAN_BUDGET_S:.0f}s.** "
-            f"`{pattern}` ({mode}): {found_note}, having read {sections} of "
-            f"the corpus's section(s). A regex over ~400 MB can run for "
-            "minutes; a literal phrase scans the whole series in seconds. "
-            "**This cannot support a negative claim** — narrow with "
-            "`file_pattern`, or search a literal phrase instead.\n\n"
-            f"_{provenance_line()}_"
+        return _incomplete_reply(
+            pattern, mode, found_note, f"{sections} of the corpus's section(s)"
         )
     if not per_doc:
         body = _rfc_no_match_body(pattern, file_pattern, mode, len(files), sections)

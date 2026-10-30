@@ -749,9 +749,34 @@ Grouped by job:
   names them, and the skip is reported so the denominator stays honest. The
   line view is bounded twice: `max_per_file` (optional) keeps at most N
   matching lines per file, then `limit` bounds the total. The per-file cap is
-  applied first, at retention time in `_scan_file`, so a noisy file cannot
-  starve the files sorted after it; counts stay complete and the footer
-  attributes omitted lines to the cap that removed them. Hits
+  applied first, at retention time in `regexscan._scan_file`, so a noisy file
+  cannot starve the files sorted after it; counts stay complete and the footer
+  attributes omitted lines to the cap that removed them.
+
+  **A caller's regex is bounded; a literal is not.** `re` runs a pattern in one
+  uninterruptible C call, so a catastrophic one (`(\w|\w)*X`) cannot be
+  stopped in a thread — `_offload` can only abandon the worker, which keeps
+  burning CPU and holding its pool slot (issue #293). With `regex=True`, both
+  backends therefore hand the scan to a child process (`python -m
+  ietf_llm.regexscan`, which imports neither torch nor the MCP server, so it
+  starts in tens of milliseconds — a few hundred for an RFC scan, which loads numpy) and
+  the parent kills it at the budget: 20s for a gathered corpus, and the RFC
+  series' own `_RFC_SCAN_BUDGET_S`. The child stops itself at the budget
+  between files / sections (the reply then says how far it got), is killed
+  `KILL_SLACK_S` later if one match call never returns (no counts survive), and
+  arms `SIGALRM` as a backstop should the server die mid-scan. Either way the
+  reply is "INCOMPLETE SCAN", never a zero; a child that crashes or answers
+  with garbage gets a fixed "nothing can be concluded" reply (its stderr goes to
+  the server log, not the client). Kills and failures are logged at WARN and
+  counted in `ietf_llm_grep_scan_stops_total{reason}`. The child is bounded in
+  time only: it has no memory cap (about 1.5 GB resident was measured for one
+  pathological pattern over a single very long line), and up to
+  `IETF_LLM_SCAN_CONCURRENCY` run at once, so deployments size for that. A
+  hostile client can hold all the scan slots (about 23s per call); other tools
+  are unaffected. Accepted limits (`docs/mcp-server.md`). The parent owns all store state
+  (cache dir, RFC index path) and never runs the user's pattern itself: the
+  child returns finished, already-elided lines. A literal pattern is escaped, so
+  it cannot backtrack catastrophically and scans in-process. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
 
@@ -813,8 +838,12 @@ Grouped by job:
 
 Every wrapper offloads its blocking `tool_*` body to a worker thread
 with a per-call deadline (`IETF_LLM_TOOL_TIMEOUT`, default 120s) so a
-stuck call fails fast instead of hanging to the client ceiling, and
-guards against an unknown corpus name (a read-only existence check, so a
+stuck call fails fast instead of hanging to the client ceiling.
+`grep_corpus`, the one tool whose work can run for tens of seconds, draws its
+worker from its own `anyio.CapacityLimiter` (`IETF_LLM_SCAN_CONCURRENCY`,
+default 4) rather than anyio's 40-token default pool, so a flood of scans
+queues against itself instead of starving every other tool. The wrappers also
+guard against an unknown corpus name (a read-only existence check, so a
 typo neither creates a cache dir nor returns a hollow result).
 
 The full routing brain (`data/mcp-instructions.md`) is handed to compliant
@@ -890,9 +919,19 @@ memoized: the cache lives on the store. It is the storage seam's own read — th
 same class as `local_cache_dir` — not a new networked-read exception. `get_rfc_info`'s
 body note uses it, asking the publishing WG first and the rest concurrently, so a
 metadata lookup never downloads a corpus; `read_file_section` is where the bytes
-are staged, and only for the corpus that has the file. (`mcp/drafts.py`'s
-`_find_latest_draft_file` has the same sweep shape but needs a listing and then
-the bytes, so it is not served by this.)
+are staged, and only for the corpus that has the file.
+
+`list_files(corpus, subdir)` is its listing counterpart, for a caller that cannot
+build the exact name: the names directly inside `files/<subdir>`, answered from
+the same manifest (or from the staged directory), never from the content.
+`mcp/drafts.py`'s `_find_latest_draft_file` uses it to find a draft's newest
+revision: the owning group's corpus (derived from `draft-ietf-<wg>-` /
+`draft-irtf-<rg>-`) is asked first and a hit there ends the lookup; otherwise
+every corpus is asked concurrently and the highest revision wins. Only the
+corpus holding the winner is then staged, so one `get_draft` on a cold replica
+downloads one corpus rather than the fleet. A draft cached both under its owner
+and elsewhere is therefore read from the owner, even if the other copy is a
+revision newer.
 
 `documents.json` reads through `local_corpus_dir` (a request already committed to
 materialising the corpus for a real read). The `last-gathered` / `seed-source`
