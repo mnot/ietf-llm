@@ -8,17 +8,20 @@ same move-aside/rename/restore/stage dance.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 from ietf_llm.atomicio import (
+    STALE_TMP_SECONDS,
     atomic_open,
     atomic_open_binary,
     scratch_sibling_name,
     stage_split_dir,
     swap_dir,
     swap_dirs,
+    sweep_stale_tmp,
 )
 
 
@@ -335,3 +338,129 @@ def test_atomic_open_binary_temp_is_dot_prefixed(tmp_path: Path) -> None:
         assert len(temps) == 1 and temps[0].startswith(".blob.bin.")
     assert target.read_bytes() == b"x"
     assert os.listdir(tmp_path) == ["blob.bin"]
+
+
+# --- sweep_stale_tmp --------------------------------------------------------
+
+
+def _leak(directory: Path, name: str, age: float = 0.0, binary: bool = False) -> Path:
+    """Leave the temp a killed writer would, `age` seconds old. The leaked name
+    is captured from inside a real writer so it tracks the production format."""
+    target = directory / name
+    opener = atomic_open_binary if binary else atomic_open
+    before = set(os.listdir(directory))
+    with opener(str(target)) as fh:
+        fh.write(b"partial" if binary else "partial")
+        fh.flush()
+        (temp_name,) = set(os.listdir(directory)) - before - {name}
+        data = (directory / temp_name).read_bytes()
+    leaked = directory / temp_name
+    leaked.write_bytes(data)
+    target.unlink()
+    if age:
+        past = time.time() - age
+        os.utime(leaked, (past, past))
+    return leaked
+
+
+def test_sweep_removes_old_temp_and_keeps_fresh_one(tmp_path: Path) -> None:
+    old = _leak(tmp_path, "a.md", age=2 * STALE_TMP_SECONDS)
+    fresh = _leak(tmp_path, "b.md", age=60)
+    removed, errors = sweep_stale_tmp(str(tmp_path))
+    assert removed == [str(old)] and errors == []
+    assert not old.exists() and fresh.exists()
+
+
+def test_sweep_covers_the_binary_writer_and_subdirectories(tmp_path: Path) -> None:
+    (tmp_path / "x" / "y").mkdir(parents=True)
+    old = _leak(tmp_path / "x" / "y", "1.eml", age=2 * STALE_TMP_SECONDS, binary=True)
+    removed, _errors = sweep_stale_tmp(str(tmp_path))
+    assert removed == [str(old)]
+    assert not old.exists()
+
+
+def test_sweep_threshold_is_the_age_argument(tmp_path: Path) -> None:
+    just_under = _leak(tmp_path, "a", age=STALE_TMP_SECONDS - 120)
+    assert sweep_stale_tmp(str(tmp_path)) == ([], [])
+    assert just_under.exists()
+    assert sweep_stale_tmp(str(tmp_path), max_age=60)[0] == [str(just_under)]
+
+
+def test_sweep_keeps_ordinary_files_whatever_their_age(tmp_path: Path) -> None:
+    keep = [
+        tmp_path / "thread.md",
+        tmp_path / "notes.tmp",  # ends in .tmp, but is not an atomic_open temp
+        tmp_path / ".hidden",
+        tmp_path / ".gather.json.tmp",
+        tmp_path / "doc.txt.123.4.tmp",  # undotted: not what atomic_open makes now
+    ]
+    long_ago = time.time() - 30 * 86400
+    for path in keep:
+        path.write_text("x")
+        os.utime(path, (long_ago, long_ago))
+    assert sweep_stale_tmp(str(tmp_path)) == ([], [])
+    assert all(path.exists() for path in keep)
+
+
+def test_sweep_ignores_symlinks_and_does_not_follow_them(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = _leak(outside, "victim.md", age=2 * STALE_TMP_SECONDS)
+    root = tmp_path / "root"
+    root.mkdir()
+    # A symlink named like a temp, pointing at an old regular file...
+    link = root / victim.name
+    os.symlink(victim, link)
+    # ...and a symlinked directory holding an old temp.
+    os.symlink(outside, root / "linked-dir")
+    removed, errors = sweep_stale_tmp(str(root))
+    assert (removed, errors) == ([], [])
+    assert os.path.islink(link) and victim.exists()
+
+
+def test_sweep_non_recursive_stays_in_the_directory(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    top = _leak(tmp_path, "a", age=2 * STALE_TMP_SECONDS)
+    deep = _leak(tmp_path / "sub", "b", age=2 * STALE_TMP_SECONDS)
+    removed, _errors = sweep_stale_tmp(str(tmp_path), recursive=False)
+    assert removed == [str(top)]
+    assert deep.exists()
+
+
+def test_sweep_missing_root_is_empty_and_unreadable_dir_is_reported(
+    tmp_path: Path,
+) -> None:
+    assert sweep_stale_tmp(str(tmp_path / "absent")) == ([], [])
+    if os.geteuid() == 0:
+        return  # root reads everything
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        removed, errors = sweep_stale_tmp(str(tmp_path))
+    finally:
+        locked.chmod(0o700)
+    assert removed == [] and len(errors) == 1 and "locked" in errors[0]
+
+
+def test_sweep_name_match_is_exact(tmp_path: Path) -> None:
+    # `$` would match before a trailing newline; the pattern must not.
+    odd = tmp_path / ".x.1.2.tmp\n"
+    odd.write_text("x")
+    past = time.time() - 30 * 86400
+    os.utime(odd, (past, past))
+    assert sweep_stale_tmp(str(tmp_path)) == ([], [])
+    assert odd.exists()
+
+
+def test_sweep_skips_a_symlinked_root_and_says_so(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    old = _leak(real, "a.md", age=2 * STALE_TMP_SECONDS)
+    link = tmp_path / "link"
+    os.symlink(real, link)
+    removed, errors = sweep_stale_tmp(str(link))
+    assert removed == [] and len(errors) == 1 and "symlink" in errors[0]
+    assert old.exists()
+    # The real directory is still swept when named directly.
+    assert sweep_stale_tmp(str(real))[0] == [str(old)]

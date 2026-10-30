@@ -18,6 +18,7 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .. import config, paths
+from ..atomicio import sweep_stale_tmp
 from ..net import http_metrics
 from ..corpus import canonical
 from ..config import service as service_config
@@ -37,6 +38,9 @@ from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
 from ..people import build_registry, write_people_digest
+from ..singletons.catalog import CATALOG_DIR
+from ..singletons.groups import GROUPS_DIR
+from ..singletons.rfcs import RFC_DIR
 from .cli import build_parser
 from .lifecycle import GatherOutcome, clear_local_state
 from .plan import _gather_plan_summary
@@ -508,6 +512,33 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
         )
 
 
+def _sweep_leaked_temps(wg: str, verbosity: Verbosity) -> None:
+    """Reap `atomic_open` temps that a killed writer left behind (see
+    `atomicio.sweep_stale_tmp`): across this corpus and its IMAP `.eml` cache,
+    and in the shared dirs a gather also writes through `atomic_open` (the
+    cache root's identity caches, the `_rfc` / `_catalog` mirrors, the `_groups`
+    singleton). Gather path only, so a read tool never deletes anything;
+    best-effort, never fatal."""
+    root = get_cache_dir()
+    targets = (
+        (os.path.join(root, wg), True),
+        (os.path.join(root, "imap-cache", wg), True),
+        (root, False),
+        (os.path.join(root, RFC_DIR), False),
+        (os.path.join(root, CATALOG_DIR), False),
+        (os.path.join(root, GROUPS_DIR), True),
+    )
+    try:
+        for directory, recursive in targets:
+            removed, errors = sweep_stale_tmp(directory, recursive=recursive)
+            for path in removed:
+                log(f"Removed leaked temp file {path}", verbosity, LogLevel.PROGRESS)
+            for message in errors:
+                log(f"Temp sweep: {message}", verbosity, LogLevel.PROGRESS)
+    except Exception as err:  # pylint: disable=broad-except
+        log(f"Temp sweep failed: {err}", verbosity, LogLevel.PROGRESS)
+
+
 def run_gather(
     argv: List[str],
     verbosity: Verbosity = Verbosity.STATUS,
@@ -700,6 +731,7 @@ def _gather_stages(  # pylint: disable=too-many-branches,too-many-statements
     # fresher, compatible base than what is local (issue #182). Best-effort and
     # opt-out; a no-op unless IETF_LLM_SEED_URL is configured.
     _maybe_seed(args, on_cloud, verbosity, note_fn)
+    _sweep_leaked_temps(args.wg, verbosity)
 
     # `synth` (x-) and `group_backed` were resolved above. A corpus
     # that's neither is "custom" (list/draft/github sources only).
