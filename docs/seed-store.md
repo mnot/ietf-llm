@@ -191,6 +191,9 @@ python scripts/publish_seeds.py ~/seed-store/rfcs --add rfcs
 - **Cost on first run:** about 138 MB downloaded from rfc.fyi and about 530 MB rsynced from the RFC
   Editor (the mirror defaults under the cache; `IETF_LLM_RFC_MIRROR` moves it), a corpus of about
   660 MB and a bundle of about 270 MB. Later runs download nothing unless upstream has republished.
+- **GitHub rate limit.** Finding the newest upstream build is one GitHub API call. If gathering
+  other members has used up the anonymous 60-per-hour limit, the member is skipped with "rate limit
+  reached" and the reset time; set `GITHUB_TOKEN` (any read-only token) or re-run after the reset.
 - **Reconciliation.** The run prints `RFC text mirror: N/N RFCs match the build`. An RFC whose text
   has moved since the upstream build is dropped, so many differing RFCs means the mirror is out of
   step with the index. If neither that line nor the `rfc index:` build line appears, the member was
