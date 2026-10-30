@@ -51,7 +51,63 @@ def test_read_file_section_respects_max_lines(isolated_home: Path) -> None:
     # 10 lines of content plus a "truncated" marker
     assert any(l.startswith("line 10") for l in lines)
     assert not any(l.startswith("line 11") for l in lines)
-    assert any("truncated" in l for l in lines)
+    assert any("PARTIAL READ" in l and "lines 1–10 of 100" in l for l in lines)
+    assert any("start_line=11" in l for l in lines)
+
+
+def test_read_file_section_is_bounded_by_characters(isolated_home: Path) -> None:
+    # 500 lines of 200 characters is far under the 5000-line cap and far over
+    # the character budget.
+    content = "\n".join(f"{i:04d} " + "x" * 195 for i in range(1, 501))
+    write_cache_file(isolated_home, "wg", "wide.txt", content)
+    out = mcp.chunks.tool_read_file_section("wg", "wide.txt", max_lines=5000)
+    shown = [l for l in out.splitlines() if l.startswith("0")]
+    assert 0 < len(shown) < 500
+    assert len(out) < mcp.drafts._MAX_WINDOW_CHARS + 1000
+    assert out.startswith("**PARTIAL READ")
+    assert out.count("PARTIAL READ") == 2
+    # The banner's continuation point is exactly where the content stopped.
+    assert f"start_line={len(shown) + 1}" in out
+    nxt = mcp.chunks.tool_read_file_section(
+        "wg", "wide.txt", start_line=len(shown) + 1, max_lines=5000
+    )
+    assert f"{len(shown) + 1:04d} " in nxt
+
+
+def test_read_file_section_cuts_a_single_oversized_line(isolated_home: Path) -> None:
+    blob = "A" * (mcp.drafts._MAX_WINDOW_CHARS * 5)
+    write_cache_file(isolated_home, "wg", "blob.txt", f"before\n{blob}\nafter")
+    out = mcp.chunks.tool_read_file_section("wg", "blob.txt", start_line=2)
+    assert len(out) < mcp.drafts._MAX_WINDOW_CHARS + 1000
+    assert "…[line truncated]" in out
+    # The banner says the line was cut and points past it, not into it.
+    assert "line 2 is longer than" in out
+    assert "cannot be reached with `start_line`" in out
+    assert "start_line=3" in out
+    assert "% of the file" not in out
+
+
+def test_read_file_section_oversized_last_line_has_no_dead_end(
+    isolated_home: Path,
+) -> None:
+    blob = "A" * (mcp.drafts._MAX_WINDOW_CHARS * 2)
+    write_cache_file(isolated_home, "wg", "blob.txt", f"before\n{blob}")
+    out = mcp.chunks.tool_read_file_section("wg", "blob.txt", start_line=2)
+    assert "line 2 is longer than" in out
+    assert "start_line=" not in out
+
+
+def test_read_file_section_line_of_exactly_the_budget_is_not_cut(
+    isolated_home: Path,
+) -> None:
+    line = "B" * mcp.drafts._MAX_WINDOW_CHARS
+    write_cache_file(isolated_home, "wg", "exact.txt", line)
+    assert mcp.chunks.tool_read_file_section("wg", "exact.txt") == line
+
+
+def test_read_file_section_small_file_has_no_banner(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "small.txt", "a\nb\nc")
+    assert mcp.chunks.tool_read_file_section("wg", "small.txt") == "a\nb\nc"
 
 
 def test_read_file_section_rejects_oversized_request(isolated_home: Path) -> None:

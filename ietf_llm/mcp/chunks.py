@@ -23,7 +23,7 @@ from .common import (
     _safe_path,
     _with_freshness,
 )
-from .drafts import _resolve_issue_file
+from .drafts import _MAX_WINDOW_CHARS, _resolve_issue_file, _truncation_notice
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -365,22 +365,63 @@ def tool_read_file_section(
 
 
 def _read_section(path: str, start_line: int, max_lines: int) -> str:
+    """A line window of `path`, bounded by `max_lines` *and* the character
+    budget `get_draft` / `get_issue` use, whichever binds first.
+
+    The file is streamed to the end even after the cut, only to count lines,
+    so the banner can say how much of it the caller has not seen.
+    """
     if max_lines > MAX_LINES_HARD_CAP:
         return (
             f"max_lines={max_lines} exceeds hard cap {MAX_LINES_HARD_CAP}. "
             "Use search() or get_chunk() instead of reading huge files."
         )
-    start_line = max(1, int(start_line))
-    out = []
+    start = max(1, int(start_line))
+    max_lines = max(1, max_lines)
+    out: List[str] = []
+    budget = _MAX_WINDOW_CHARS
+    end = start - 1
+    total = 0
+    cut = False
+    line_cut = False
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for idx, line in enumerate(fh, 1):
-            if idx < start_line:
+        for total, line in enumerate(fh, 1):
+            if total < start or cut:
                 continue
-            if idx >= start_line + max_lines:
-                out.append(f"... [truncated at line {idx}; use start_line to continue]")
-                break
-            out.append(line.rstrip("\n"))
-    return "\n".join(out)
+            text = line.rstrip("\n")
+            sep = 1 if out else 0  # the join newline, not owed by the first line
+            if total >= start + max_lines:
+                cut = True
+            elif len(text) + sep > budget:
+                cut = True
+                if not out:
+                    # A single line over the whole budget (pasted base64, a
+                    # log dump) is cut rather than emitted whole, and marked,
+                    # since a silently shortened line is a misquote.
+                    out.append(text[:budget] + " …[line truncated]")
+                    end = total
+                    line_cut = True
+            else:
+                out.append(text)
+                budget -= len(text) + sep
+                end = total
+    body = "\n".join(out)
+    if not cut:
+        return body
+    if line_cut:
+        # The rest of the line is unreachable by `start_line`, so the usual
+        # "continue from the next line" banner would misstate what was read.
+        notice = (
+            f"**PARTIAL READ — line {end} is longer than the "
+            f"{_MAX_WINDOW_CHARS:,}-character budget and was cut; the rest of "
+            "it cannot be reached with `start_line`."
+        )
+        if end < total:
+            notice += f" The lines after it start at `start_line={end + 1}`."
+        notice += "**"
+    else:
+        notice = _truncation_notice(start, end, total)
+    return f"{notice}\n\n{body}\n\n{notice}"
 
 
 # --- MCP server wiring -------------------------------------------------------
@@ -430,22 +471,34 @@ def register(server: "MCPServer") -> None:
 
     @server.tool()
     async def get_by_url(corpus: str, url: str) -> str:
-        """Resolve a citation URL to its cached chunk in a corpus.
-        Accepts the URL forms that actually appear in the corpus:
+        """Resolve a citation URL to its cached content in a corpus.
 
-        - Mailing-list message permalinks of the form
-          `https://www.w3.org/mid/<message-id>` — this is the
-          `Archived-At:` URL shown on every thread message (NOT
-          `mailarchive.ietf.org/arch/msg/...`, which is not what the
-          archive stamps into the messages).
-        - GitHub issue URLs (e.g.
-          `https://github.com/<owner>/<repo>/issues/<N>`).
+        Use this whenever you meet an archive permalink in a message body,
+        a footnote, or another tool's output and want the gathered record
+        behind it; don't conclude "not in the corpus" from a bare URL
+        without trying here first.
 
-        Matches exactly against the URL stamped at index time, so pass
-        the URL as it appears in the data (a `w3.org/mid` link straight
-        from a message header resolves; a hand-built archive URL will
-        not). Returns the chunk text — same shape as `get_chunk_text`.
-        Use it when the user pastes, or a chunk cites, such a URL.
+        Matching tolerates the incidental spelling differences a mail
+        client adds (trailing slash, `http`/`https`, leading `www.`,
+        `<...>` wrapping, `#fragment`). By URL kind:
+
+        - **Mailing-list `Archived-At:` permalink** matches one message and
+          returns that chunk, the same shape as `get_chunk_text`. The stored
+          form varies by list: most IETF lists use
+          `https://mailarchive.ietf.org/arch/msg/<list>/<token>`, some (e.g.
+          httpbis) use `https://www.w3.org/mid/<message-id>`. Both resolve;
+          paste whichever form you have.
+        - **GitHub issue or pull-request URL** (`.../issues/N`, `.../pull/N`)
+          returns the whole per-issue / per-PR file, not just its header.
+          Pull-request files are not embedded, so they are read from disk.
+        - **Draft or charter URL**: a draft's
+          `https://datatracker.ietf.org/doc/<name>/` page or a charter's
+          `Source:` URL returns the file's concatenated content.
+
+        One gap: a `mailarchive.ietf.org/arch/msg/<token>` link does not
+        resolve against a message stored under its `www.w3.org/mid` form
+        (or the reverse); the opaque token and the Message-ID cannot be
+        converted into each other. Same list, different identifier scheme.
         """
         return await _offload(tool_get_by_url, corpus, url)
 
@@ -459,10 +512,14 @@ def register(server: "MCPServer") -> None:
         """Read a bounded section of any file in a corpus's
         ietf-llm cache (per-thread files, per-issue files, drafts,
         slides, transcripts, minutes; RFC bodies only when gathered with
-        `--rfcs` — otherwise use `get_rfc_info`). Default 400 lines per call; the
-        caller can raise `max_lines` up to a hard cap of 5000 so the
-        context window can't be blown by accident. Prefer
-        `search_corpus` / `get_chunk_text` for very large files.
+        `--rfcs`; RFC text is otherwise `get_rfc_section`). Default 400 lines
+        per call; the caller can raise `max_lines` up to a hard cap of 5000.
+        A result is also cut at about 40,000 characters, whichever bound
+        comes first, so a thread with a pasted log can't blow the context
+        window. A cut read carries a `PARTIAL READ` banner before and after
+        the file text, naming the `start_line` to continue from; the banner
+        is not part of the file. Prefer `search_corpus` / `get_chunk_text` for very large
+        files.
         """
         return await _offload(
             tool_read_file_section, corpus, file, start_line, max_lines
