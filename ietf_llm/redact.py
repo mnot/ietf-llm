@@ -37,8 +37,31 @@ _BARE_USERINFO_RE = re.compile(
 #: What replaces a status record's free text when it cannot be sanitised.
 PLACEHOLDER = "[redacted: could not sanitise]"
 
-#: The status record's free-text fields (see `redact_record`).
-_FREE_TEXT_FIELDS = ("error", "notes", "stage_detail", "detail")
+#: The scalar fields of a status record (`lifecycle.new_status`, plus what the
+#: runner sets) that carry no free text: the fallback in `redact_record` keeps
+#: only these.
+_SAFE_STATUS_FIELDS = frozenset(
+    {
+        "corpus",
+        "state",
+        "driver",
+        "pid",
+        "started",
+        "updated",
+        "finished",
+        "stage",
+        "stage_index",
+        "stage_total",
+        "cancel_requested",
+        "cancel_token_sha256",
+    }
+)
+
+#: Fields that carry free text or caller input; the fallback keeps the key and
+#: replaces the value.
+_PLACEHOLDER_STATUS_FIELDS = ("error", "stage_detail", "notes", "spec")
+
+_SCALARS = (str, int, float, bool, type(None))
 
 
 def redact_userinfo(text: str) -> str:
@@ -48,10 +71,15 @@ def redact_userinfo(text: str) -> str:
     echoes the URL in its exception messages, and those reach logs, the fleet
     gather status and tool output.
 
-    Not covered, because the text itself no longer shows where the secret
-    starts or ends: a "/", "?" or "#" in the password (``https://u:pa/ss@host``,
-    ``https://u:pa?ss@host``), which ``requests`` reports as a bare
-    ``'u:pa' is not a valid host or port``.
+    Not covered:
+
+    - a "/" in the password (``https://u:pa/ss@host``): ``requests`` reports
+      only the bare ``'u:pa' is not a valid host or port``, and nothing in that
+      text says where the secret ends. ("?" and "#" are handled when a scheme
+      is present.)
+    - a password over 256 characters in the scheme-less ``user:pw@host/path``
+      form (a JWT, say); the bound keeps the pattern linear-time. The
+      ``scheme://user:pw@host`` form has no length limit.
     """
     return _BARE_USERINFO_RE.sub("***@", _URL_USERINFO_RE.sub("***@", text))
 
@@ -70,8 +98,10 @@ def redact_value(value: Any) -> Any:
 
 def redact_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """A status record with credentials removed from every string in it. Never
-    raises: if redaction itself fails, the free-text fields are replaced by
-    `PLACEHOLDER` and a warning is logged, so unsanitised text is never written."""
+    raises: if redaction itself fails, a warning is logged and the record is
+    reduced to an allowlist of its scalar fields, with `error`, `stage_detail`,
+    `notes` and `spec` replaced by `PLACEHOLDER` and everything else dropped, so
+    nothing unsanitised is ever written."""
     try:
         return redact_value(record)  # type: ignore[no-any-return]
     except Exception as err:  # pylint: disable=broad-except
@@ -81,9 +111,12 @@ def redact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             Verbosity.STATUS,
             level=LogLevel.WARN,
         )
-        safe = dict(record)
-        for field in _FREE_TEXT_FIELDS:
-            if safe.get(field) is None:
-                continue
-            safe[field] = [PLACEHOLDER] if field == "notes" else PLACEHOLDER
+        safe: Dict[str, Any] = {}
+        for key in _SAFE_STATUS_FIELDS:
+            value = record.get(key)
+            if isinstance(value, _SCALARS):
+                safe[key] = value
+        for key in _PLACEHOLDER_STATUS_FIELDS:
+            if record.get(key) is not None:
+                safe[key] = [PLACEHOLDER] if key == "notes" else PLACEHOLDER
         return safe

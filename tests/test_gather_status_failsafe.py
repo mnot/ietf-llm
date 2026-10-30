@@ -67,6 +67,57 @@ def test_write_status_never_writes_unsanitised_text_when_redaction_raises(
     )
 
 
+def test_failed_redaction_keeps_only_allowlisted_scalars(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `spec` is the caller's own input and an unknown key is anything a future
+    # change adds: neither may survive a failed redaction.
+    monkeypatch.setattr(redact_module, "redact_value", _raise)
+    status = lifecycle.new_status(
+        "tls",
+        {"author": SECRET_URL, "mailing_list": [SECRET_URL]},
+        "running",
+        driver="cli",
+    )
+    status["extra"] = {"url": SECRET_URL}
+    status["detail"] = SECRET_URL
+    status["stage"] = "drafts"
+    store = _Store()
+    lifecycle.write_status(store, status)
+    written = store.statuses[-1]
+    assert written["spec"] == PLACEHOLDER
+    assert "extra" not in written and "detail" not in written
+    assert written["corpus"] == "tls" and written["state"] == "running"
+    assert written["stage"] == "drafts" and written["pid"] == status["pid"]
+    _assert_clean(
+        store.statuses,
+        Path(lifecycle.status_path("tls")).read_text(),
+        capsys.readouterr().err,
+    )
+
+
+def test_write_status_survives_a_record_json_cannot_serialise(
+    isolated_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status = lifecycle.new_status("tls", {}, "running", driver="cli")
+    status["oops"] = object()
+    lifecycle.write_status(_Store(), status)  # must not raise
+    assert "could not write status for tls" in capsys.readouterr().err
+
+    # A cyclic record cannot be redacted, so the fallback replaces it with the
+    # allowlisted fields and the write succeeds.
+    cyclic: Dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    status["oops"] = cyclic
+    store = _Store()
+    lifecycle.write_status(store, status)
+    assert "could not sanitise" in capsys.readouterr().err
+    assert store.statuses[-1]["state"] == "running"
+    assert "oops" not in store.statuses[-1]
+
+
 def test_a_failed_redaction_is_warned_about(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,

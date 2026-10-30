@@ -477,7 +477,9 @@ def write_status(store: Any, status: Dict[str, Any], *, publish: bool = True) ->
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with atomic_open(path) as handle:
             json.dump(status, handle, indent=2, sort_keys=True)
-    except OSError as err:
+    except (OSError, ValueError, TypeError, RecursionError) as err:
+        # Also a record json cannot serialise (cyclic, or a stray object): the
+        # gather goes on, as with a failed write.
         log(
             f"gather: could not write status for {corpus}: {err}",
             Verbosity.STATUS,
