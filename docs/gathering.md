@@ -1,14 +1,15 @@
 # Gathering a corpus
 
-**This document is for:** gathering a corpus of IETF materials into the local cache — the shared
-first step for every workflow. — Back to the [docs index](README.md).
+**This document is for:** gathering a corpus of IETF materials into the local cache, the first step
+for every workflow. Back to the [docs index](README.md).
 
-See the [reference](reference.md) for the full flag set, and
-[shell completion](shell-completion.md) to tab-complete commands and cached corpus names.
+Every flag is in the [reference](reference.md); [shell completion](shell-completion.md) completes
+commands and cached corpus names.
 
 ## The basics
 
-**First run:** Install the package, then gather a group. For example:
+Install the package (`pipx install 'ietf-llm[local-embeddings]'`; see
+[Running the MCP server locally](mcp-local.md)), then gather a group:
 
 ```bash
 ietf-llm netconf
@@ -16,81 +17,70 @@ ietf-llm netconf
 
 Everything lands in `~/.cache/ietf-llm/<name>/`.
 
-> **From an MCP client:** when in-session gather is enabled, an assistant can gather
-> via the `start_gather` tool and watch it with `gather_status`, instead of you running
-> `ietf-llm <name>` in a shell. A local [stdio server](mcp-local.md) has it on by default;
-> the shared [HTTP server](mcp-server.md) defaults to off.
+An MCP client can also gather, with the `start_gather` and `gather_status` tools. A local
+[stdio server](mcp-local.md) has them on by default; the shared [HTTP server](mcp-server.md) does
+not.
 
-Gathering also builds a **semantic-search index**. By default it uses
-[`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5) on-device, which needs
-the `local-embeddings` extra (~130 MB, downloaded once and cached). The download is the only
-time HuggingFace is contacted: once the weights are in `~/.cache/huggingface/` they are loaded
-from there alone, so searching a gathered corpus works offline.
+Gathering also builds a **semantic-search index**, by default with the on-device
+[`BAAI/bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5) model (the
+`local-embeddings` extra). The weights download once; after that, searching works offline. To use a
+remote endpoint instead, see [Model backends](models.md). `--no-embed` skips the index entirely,
+which suits a [NotebookLM export](notebooklm.md); it is remembered globally, and `--embed` undoes it.
 
-Prefer not to run a model locally? Omit `[local-embeddings]` and point at a remote
-OpenAI-compatible endpoint instead — see the [remote embedding backend](models.md). Or pass
-`--no-embed` to skip the index entirely (useful for [NotebookLM export](notebooklm.md)).
+**Later runs.** The flags you pass are saved in `~/.config/ietf-llm/`, so a refresh is just
+`ietf-llm <name>`. Extra flags add to the saved set, and `--clear-config` starts over. The embedding
+and summariser settings are the exception: they apply to every corpus (see the
+[global model settings](models.md#global-settings)).
 
-**Subsequent runs:** the flags you passed are persisted to `~/.config/ietf-llm/`, so to refresh
-just run `ietf-llm <name>` — no need to repeat `--github`, `--mailing-list`, etc. Pass extra flags
-to add to the set, or `--clear-config` to start over. (The embedding and summariser settings are an
-exception — they're properties of the tool, not a corpus, so they're set once and apply everywhere;
-see the [global model settings](models.md#global-settings).)
-
-**GitHub authentication:** Set `GITHUB_TOKEN` in the environment for gathers if you hit the
-anonymous 60-requests/hour API limit. A fine-scoped read-only token is plenty.
-
+**GitHub rate limits.** Set `GITHUB_TOKEN` in the environment if you hit the anonymous
+60-requests/hour limit. A read-only token is enough.
 
 ## The RFC series, which no gather brings
 
-`search_rfc_index`, `search_rfc_text`, `grep_corpus(corpus="rfcs", …)`, `get_rfc_info` and
-`get_rfc_section` cover **every published RFC** and belong to no corpus, so gathering one does not
-bring them. Their data arrives as gather *housekeeping* — the RFC metadata mirror, the effort
-catalog, and the full text of the series from the seed store. Gather anything and you get it.
+The RFC tools (`search_rfc_index`, `search_rfc_text`, `get_rfc_info`, `get_rfc_section`, and
+`grep_corpus` on `rfcs`) cover every published RFC and belong to no corpus. Their data arrives as
+housekeeping after any gather: the RFC metadata mirror, the effort catalog, and the full text of the
+series from the [seed store](seed-store.md).
 
-A machine that only ever reads never gathers, so it never gets it. `--init` does that housekeeping
+A machine that only reads never gathers, so it never gets that data. `--init` does the housekeeping
 on its own and exits:
 
 ```bash
 ietf-llm --init
 ```
 
-About 285 MB to download and ~650 MB on disk once installed. It gathers nothing, is safe to re-run,
-and needs a **writable** cache. If it reports the full text as `NOT installed`, it says why — seeding
-turned off, no seed store configured, an unreachable store, or a TLS certificate it cannot verify.
-
-Add `--seed` to re-enable seeding and install in one go, if a previous `--no-seed` turned it off.
-
+It downloads about 285 MB (about 650 MB on disk once installed), gathers nothing, is safe to
+re-run, and needs a writable cache. If it reports the full text as `NOT installed`, it gives the
+reason (seeding is off, no seed store is configured, the store is unreachable, or a TLS certificate
+can't be verified). `--init --seed` re-enables seeding first, if an earlier `--no-seed` turned it
+off.
 
 ## Identifying what to gather
 
-A corpus doesn't have to be a Working Group — the name is classified automatically:
+The name is classified automatically:
 
 | Command | Corpus |
 |---|---|
 | `ietf-llm httpbis` | a WG / RG / editorial WG / BoF: charter, drafts, meetings, ballots, list |
-| `ietf-llm last-call` | a standalone mailing list (any archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor) |
+| `ietf-llm last-call` | a standalone mailing list archived at mailarchive.ietf.org |
 | `ietf-llm new-ids --new-drafts --months 1` | new Internet-Drafts in a rolling window |
 | `ietf-llm mnot --author mnot@mnot.net` | every draft a person has authored |
 
-For most groups, mailing lists and GitHub repositories are automatically discovered. If you need
-to add additional lists, use `--mailing-list`; if you need to add issues lists from other GitHub repos, use `--github`. The `--months` flag controls the timeframe of materials that is gathered; it defaults to 12 months. See the [reference](reference.md) for more information.
-
+A group's own mailing list and active GitHub repositories are discovered automatically. Add lists
+with `--mailing-list` and repositories with `--github`. `--months` sets how much history to gather
+(default 12). See the [reference](reference.md).
 
 ## Keeping a set of corpora fresh
 
 `ietf-llm --all` re-gathers every corpus the store knows about. On the cloud backend
 ([storage.md](storage.md#the-cloud-backend)) each corpus is published as it finishes, and one that
-another host is already gathering is skipped. A corpus that fails (a publish error, an embedding
-backend fault) is logged and the sweep carries on with the rest; the run then exits non-zero if
-any corpus failed or its name was unusable. `--clear-cache` is refused with `--all`, as is
-`--clear-config`: clear one corpus at a time.
+another host is already gathering is skipped. A corpus that fails is logged and the sweep carries
+on; the exit status is non-zero if any corpus failed or had an unusable name. `--clear-cache` and
+`--clear-config` are refused with `--all`.
 
-To avoid refreshing unused corpora, add `--used-within DAYS`: it limits the refresh to those read
-within that many days through the MCP read tools, so a daily cron job can keep your active corpora
-fresh and lets the rest go stale:
+`--used-within DAYS` limits the sweep to corpora read through the MCP tools in that many days, so a
+daily cron job keeps active corpora fresh and lets the rest go stale:
 
 ```bash
 ietf-llm --all --used-within 30
 ```
-

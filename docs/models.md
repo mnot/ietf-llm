@@ -1,74 +1,54 @@
 # Model backends
 
-**This document is for:** configuring ietf-llm's two model backends — the embedding model behind
-semantic search and the optional summariser — on-device or against a remote OpenAI-compatible
-endpoint, and how the global model settings resolve. — Back to the [docs index](README.md).
-
-ietf-llm has two model touch-points, and both are configured the same way — on-device, or against a
-remote OpenAI-compatible endpoint:
+**This document is for:** configuring the model backends — the embedding model behind semantic
+search and the optional summariser — on-device or against a remote OpenAI-compatible endpoint. Back
+to the [docs index](README.md).
 
 - The **embedding model** builds and queries the semantic-search index. Required for search.
 - The **summariser** writes short summaries into the issues and threads digests at gather time.
   Optional (`--summarize`).
 
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
-
-- [Embeddings](#embeddings)
-  - [On-device (default)](#on-device-default)
-  - [Remote embedding endpoint](#remote-embedding-endpoint)
-  - [One index, one backend](#one-index-one-backend)
-- [Summarisation](#summarisation)
-  - [Remote summariser endpoint](#remote-summariser-endpoint)
-- [Global settings](#global-settings)
-
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
-
 ## Embeddings
 
-Both `ietf-llm-search` and the MCP `search_corpus` tool run over a per-corpus vector index built
-during gather. The model that builds the index is recorded in it, so search always queries with
-the same backend.
+`ietf-llm-search` and the MCP `search_corpus` tool run over a per-corpus vector index built during
+gather. The index records the model that built it, and search queries with the same backend.
 
 ### On-device (default)
 
-`BAAI/bge-small-en-v1.5` runs locally via sentence-transformers — ~130 MB, ~33M params,
-no API key. It requires installing the `local-embeddings` extra (torch is not in the base install):
+`BAAI/bge-small-en-v1.5` runs locally via sentence-transformers (about 130 MB, no API key). It needs
+the `local-embeddings` extra, since torch is not in the base install:
 
 ```bash
 pipx install 'ietf-llm[local-embeddings]'
 ```
 
-**Intel Macs** need Python 3.10–3.12: PyTorch publishes no Intel-Mac wheels for 3.13 or later, so
-the install fails with "No matching distribution found for torch". Install under an older Python
-(`pipx install --python python3.12 'ietf-llm[local-embeddings]'`), or omit the extra and use a
-remote endpoint (below).
+The weights download from Hugging Face on first use and are cached.
 
-The weights download from Hugging Face on first use and are cached; subsequent gathers reuse them.
+**Intel Macs** need Python 3.10–3.12, because PyTorch publishes no Intel-Mac wheels for 3.13 or
+later (the install fails with "No matching distribution found for torch"). Install under an older
+Python (`pipx install --python python3.12 'ietf-llm[local-embeddings]'`), or omit the extra and use
+a remote endpoint.
 
-**Device.** Embedding runs on **CPU by default**. MPS (the Apple Silicon GPU) is deliberately
-avoided: PyTorch's MPS caching allocator fragments on the variable-length inputs a corpus produces,
-and indexing one modest corpus drove the process to ~11 GB of memory — enough to stall a co-resident
-read server — versus ~1–2 GB on CPU, for numerically-equivalent vectors at a ~15–30% time cost.
-Override with `IETF_LLM_EMBED_DEVICE` (`cpu` / `mps` / `cuda`); CUDA is auto-selected when present.
-This works around an upstream PyTorch MPS memory bug and is expected to revert to MPS once that is
-fixed.
+**Device.** Embedding runs on the CPU, or on CUDA when it is available. MPS (the Apple Silicon GPU)
+is not used by default, because PyTorch's MPS allocator uses several times the memory the CPU does
+when indexing a corpus (one modest corpus reached about 11 GB, against 1–2 GB on CPU). Set
+`IETF_LLM_EMBED_DEVICE` to `cpu`, `mps` or `cuda` to override.
 
 ### Remote embedding endpoint
 
-To embed against a hosted `/v1/embeddings` service instead — so the install (and any serving
-container) needs no torch — set the model id to an `openai-embed/<model-id>` prefix and point at the
-endpoint with the environment:
+To embed against a hosted `/v1/embeddings` service, so the install (and any serving container)
+needs no torch, set the model id to an `openai-embed/<model-id>` prefix and point at the endpoint
+with the environment:
 
 ```bash
 export IETF_LLM_EMBED_MODEL=openai-embed/bge-small-en-v1.5
 export IETF_LLM_EMBED_BASE_URL=https://your-endpoint/v1
-export IETF_LLM_EMBED_TOKEN=...          # kept in the environment only
+export IETF_LLM_EMBED_TOKEN=...
 ietf-llm httpbis
 ```
 
-The backend is provider-neutral — anything that speaks the OpenAI embeddings contract (a hosted
-service, a gateway, a self-hosted vLLM / TEI) works; the URL and token are all that change.
+Anything that speaks the OpenAI embeddings contract works: a hosted service, a gateway, or a
+self-hosted vLLM or TEI.
 
 | Variable | Purpose |
 |---|---|
@@ -79,89 +59,73 @@ service, a gateway, a self-hosted vLLM / TEI) works; the URL and token are all t
 | `IETF_LLM_EMBED_TIMEOUT` | per-request timeout, seconds (default 10) |
 | `IETF_LLM_EMBED_RETRIES` | retries on `429` / `5xx` for bulk ingest, with backoff (default 3) |
 | `IETF_LLM_EMBED_QUERY_RETRIES` | retries for the single query-time embed behind a search, capped at `IETF_LLM_EMBED_RETRIES` (default 1) |
-| `IETF_LLM_EMBED_CONCURRENCY` | files embedded in parallel during a gather (default 8, floor 1 = serial) |
+| `IETF_LLM_EMBED_CONCURRENCY` | files embedded in parallel during a gather (default 8; 1 is serial) |
 
-A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out: the request fails at once instead of tying up a worker thread. During a gather this also stops the embed stage: no further requests are sent, files already embedded are kept, and the gather reports that the provider rate limited it and for how long it asked us to wait; the remaining files are embedded on the next gather.
+The token is read from the environment only and never written to disk. A gather embeds up to
+`IETF_LLM_EMBED_CONCURRENCY` files at once: raise it for throughput against a generous endpoint,
+lower it if the endpoint rate-limits. The on-device model ignores it.
 
-The token comes from the environment only and is never written to disk. Bulk ingest batches to
-`IETF_LLM_EMBED_BATCH` inputs per request and backs off on rate-limit / server errors. Because each
-request is a network round-trip, a gather embeds up to `IETF_LLM_EMBED_CONCURRENCY` files at once
-(the index write stays single-threaded); raise it for more throughput against a generous endpoint,
-lower it (or `1`) if the endpoint rate-limits. The embedding session's connection pool is sized to
-this value (never below the default 10), so raising it scales the keep-alive connections with the
-fan-out instead of exhausting the pool. The on-device model ignores this — it embeds serially.
+A `Retry-After` longer than 60 s (30 s for a query-time embed) is not waited out. During a gather
+the embed stage then stops, files already embedded are kept, the gather reports the rate limit and
+how long the provider asked for, and the remaining files are embedded on the next gather.
 
 ### One index, one backend
 
-The embedding backend is a property of the index, not something you re-select at query time: the
-model id is stored in the index and search reads it back to resolve the same backend automatically.
-So if you switch a corpus from local to remote (or vice versa), the next `ietf-llm <name>` re-embeds
-it — vectors aren't portable across backends, and a change of model or vector dimension forces a
-rebuild rather than mixing incompatible vectors. The
-[reasoning](architecture.md#the-default-embedding-model-is-local-the-backend-is-pluggable) is in the
-architecture notes.
+The index stores its model id, and search reads it back to pick the same backend. Switching a
+corpus between local and remote, or changing the model or vector dimension, makes the next
+`ietf-llm <name>` re-embed it, since vectors from different models are not compatible.
 
 ## Summarisation
 
-`--summarize` writes a one-line LLM summary into the issues and threads digests (off by default). By
-default it runs through Simon Willison's [`llm`](https://llm.datasette.io/) library, so you can use
-any provider `llm` knows about — OpenAI is built in; Anthropic, Gemini, and others need their
-`llm-<provider>` plugin — configured with `llm`'s own settings on the host that runs gather.
+`--summarize` writes a one-line LLM summary into the issues and threads digests (off by default). It
+runs through Simon Willison's [`llm`](https://llm.datasette.io/) library, so any provider `llm`
+knows about works: OpenAI is built in, and Anthropic, Gemini and others need their `llm-<provider>`
+plugin, configured with `llm`'s own settings on the host that runs gather.
 
 ### Remote summariser endpoint
 
-For parity with embeddings — so a deployment configures both touch-points identically — set the
-summariser model to an `openai-summarize/<model-id>` prefix and point at a chat-completions endpoint
-with the environment:
+To use a chat-completions endpoint directly, set the summariser model to an
+`openai-summarize/<model-id>` prefix and point at it with the environment:
 
 ```bash
 export IETF_LLM_SUMMARIZE_MODEL=openai-summarize/gpt-4o-mini
 export IETF_LLM_SUMMARIZE_BASE_URL=https://your-endpoint/v1
-export IETF_LLM_SUMMARIZE_TOKEN=...        # kept in the environment only
+export IETF_LLM_SUMMARIZE_TOKEN=...
 ietf-llm httpbis --summarize
 ```
 
-Same provider-neutral contract as embeddings: anything serving OpenAI-compatible
-`/v1/chat/completions` works (a hosted service, a gateway, a self-hosted vLLM). The id after the
-prefix is whatever the endpoint calls the model — e.g. `@cf/meta/llama-3.1-8b-instruct` on a
-Cloudflare Workers AI gateway. Any model id **without** the prefix still goes through `llm`, so
-non-OpenAI providers remain available that way.
+Anything serving OpenAI-compatible `/v1/chat/completions` works. The id after the prefix is
+whatever the endpoint calls the model. A model id without the prefix goes through `llm`.
 
 | Variable | Purpose |
 |---|---|
 | `IETF_LLM_SUMMARIZE_BASE_URL` | endpoint base URL (e.g. `https://host/v1`) |
 | `IETF_LLM_SUMMARIZE_TOKEN` | bearer token (sent as `Authorization: Bearer`) |
-| `IETF_LLM_SUMMARIZE_HEADERS` | extra request headers as a JSON object (e.g. an API-gateway header alongside the token) |
+| `IETF_LLM_SUMMARIZE_HEADERS` | extra request headers as a JSON object |
 | `IETF_LLM_SUMMARIZE_TIMEOUT` | per-request timeout, seconds (default 30) |
 | `IETF_LLM_SUMMARIZE_RETRIES` | retries on `429` / `5xx`, with backoff (default 3) |
 
-A `Retry-After` longer than 60 s is not waited out: the request fails at once.
-
-The token comes from the environment only and is never written to disk. Unlike the embedding model,
-the summariser id is **not** recorded in any index — summaries are plain text in the cache — so
-switching providers needs no rebuild; the next `--summarize` gather just uses the new backend.
+The token is read from the environment only and never written to disk. Summaries are plain text in
+the cache, so switching summariser needs no rebuild; the next `--summarize` gather uses the new one.
 
 ## Global settings
 
-The embedding model, embed on/off, and the summariser are properties of the tool — not of any one
-corpus — so as of 0.8.0 they're configured **globally**, and resolve with this precedence:
+The embedding model, whether to embed, and the summariser are properties of the tool rather than of
+any one corpus, and resolve with this precedence:
 
 ```
 environment  >  CLI flag  >  global config (~/.config/ietf-llm/config.json)  >  default
 ```
 
-A non-default CLI flag is written through to the global config, so it sticks for every corpus. The
-environment wins even over an explicit flag (so a container's injected configuration is
-authoritative); when it overrides a flag you passed, a notice is logged.
+A CLI value is also written to the global config, so it applies to every corpus from then on. The
+environment wins even over an explicit flag; when it does, a notice is logged.
 
 | Setting | Flag | Environment | Default |
 |---|---|---|---|
 | Embedding model | `--embed-model` | `IETF_LLM_EMBED_MODEL` | `bge-small-en-v1.5`, on-device |
-| Skip embedding | `--no-embed` | `IETF_LLM_NO_EMBED` | off |
+| Skip embedding | `--no-embed` (undo with `--embed`) | `IETF_LLM_NO_EMBED` | off |
 | Summaries | `--summarize` | `IETF_LLM_SUMMARIZE` | off |
 | Summariser model | `--summarize-model` | `IETF_LLM_SUMMARIZE_MODEL` | the `llm` default |
 
-The `*_BASE_URL` / `*_TOKEN` / `*_HEADERS` endpoint variables for either backend (above) are read
-from the environment at gather time and are **never** persisted — secrets stay in the environment,
-not in the global config.
-
+The `*_BASE_URL`, `*_TOKEN` and `*_HEADERS` variables are read from the environment at gather time
+and are never persisted.

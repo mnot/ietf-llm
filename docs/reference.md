@@ -1,6 +1,6 @@
 # Command & gather reference
 
-**This document is for:** the full `ietf-llm` command list and every gather flag. — Back to the
+**This document is for:** the `ietf-llm` command list and every gather flag. Back to the
 [docs index](README.md).
 
 ## Commands
@@ -12,8 +12,8 @@
 | `ietf-llm-search` | Semantic search over the cache | cache | stdout |
 | `ietf-llm-mcp` | Expose the cache to MCP clients | cache | stdio / HTTP (MCP) |
 
-All four are independent. The cache (`~/.cache/ietf-llm/<name>/`) is the single source of truth;
-everything else reads from it.
+The commands are independent. The cache (`~/.cache/ietf-llm/<name>/`) is what `ietf-llm-export`,
+`ietf-llm-search` and `ietf-llm-mcp` read.
 
 ## Gather options
 
@@ -23,79 +23,91 @@ ietf-llm [OPTIONS] <name>
 
 `<name>` is the corpus to gather, classified automatically:
 
-- a **Working Group / Research Group / editorial WG / BoF** shortname (`httpbis`, `cfrg`, `rswg`) —
+- a **Working Group / Research Group / editorial WG / BoF** shortname (`httpbis`, `cfrg`, `rswg`),
   gathered in full (charter, drafts, meetings, ballots, mailing list);
-- a **mailing list** archived at mailarchive.ietf.org — IETF, IRTF, or RFC-Editor (`last-call`,
-  `irtf-discuss`, `rfc-interest`) — that list on its own;
-- any other **label** given explicit sources (`--draft` / `--mailing-list` / `--github` /
-  `--new-drafts` / `--author`);
-- prefix with `x-` to skip the Datatracker group lookup entirely (a fully manual corpus).
+- a **mailing list** archived at mailarchive.ietf.org (`last-call`, `irtf-discuss`,
+  `rfc-interest`), gathered on its own;
+- any other **label** given explicit sources (`--draft`, `--mailing-list`, `--github`,
+  `--new-drafts`, `--author`);
+- an `x-` prefix, which skips the Datatracker group lookup (a fully manual corpus).
 
 A name that is none of these and has no configured sources is rejected as a likely typo.
 
-**Sources**:
+**Sources** (all persisted, so later runs pick them up):
 
-- `--github OWNER/REPO` — a GitHub repo whose issues and pull requests to include. _Working Groups usually
-  don't need this_: the first gather auto-discovers the group's active draft repos based upon Datatracker. Use `--github` to override or extend that set.
-- `--draft DRAFT-NAME` — an extra Internet-Draft to track, beyond a WG's own documents. Version
-  suffix stripped; every revision gathered.
-- `--mailing-list LIST` — an extra list to sync (any archived at mailarchive.ietf.org). A bare name
-  or a full address; the domain is optional and ignored (`rswg`, `rswg@rfc-editor.org`).
-- `--new-drafts` — subscribe to *new* Internet-Drafts: every `-00` submitted within `--months`
-  (rolling window; drafts age out).
-- `--author PERSON` — every draft `PERSON` authored. `PERSON` is an email (`mnot@mnot.net`,
-  recommended), a Datatracker person id, or an exact full name. Drafts only.
-- `--add-mentioned-drafts` — also pull drafts the corpus's threads/issues mention but don't already
-  include. Sticky.
+- `--github OWNER/REPO` — a GitHub repo whose issues and pull requests to include. A WG's active
+  draft repos are discovered on the first gather; use this to override or extend them.
+- `--draft DRAFT-NAME` — an extra Internet-Draft to track. The version suffix is stripped and every
+  revision is gathered.
+- `--mailing-list LIST` — an extra list to sync, as a bare name or a full address (`rswg`,
+  `rswg@rfc-editor.org`); the domain is ignored.
+- `--new-drafts` — subscribe to *new* Internet-Drafts: every `-00` submitted within `--months`.
+  Drafts age out of the rolling window.
+- `--author PERSON` — every draft `PERSON` authored: an email (`mnot@mnot.net`, recommended), a
+  Datatracker person id, or an exact full name. Drafts only.
+- `--add-mentioned-drafts` — also pull drafts that the corpus's threads and issues mention. Once
+  added, a draft stays.
+- `--include-related-drafts` — also gather active `draft-<author>-<wg>-<topic>` drafts the WG
+  follows but hasn't adopted. Off by default; can be large for popular WGs.
+- `--rfcs` — also download the WG's published RFCs into `drafts/` and index them. Off by default,
+  because the RFC tools already cover the whole series.
 
-**Scope & filtering:**
+**Scope and filtering:**
 
-- `--months N` — months of mailing list / meeting / new-draft history (default 12).
-- `--github-label LABEL` / `--exclude-github-label LABEL` — include / exclude issues by label.
+- `--months N` — months of mailing list, meeting and new-draft history (default 12). `0` means all
+  history and requires `--force`.
+- `--github-label LABEL` / `--exclude-github-label LABEL` — include or exclude issues by label.
+- `--force` — gather even if the corpus was gathered within the last 6 hours
+  (`IETF_LLM_GATHER_MIN_INTERVAL` sets the window, in hours).
 
-**Digests & search index:**
+**Digests and search index** (all but `--rebuild-embeddings` are
+[global settings](models.md#global-settings)):
 
-- `--summarize` / `--summarize-model MODEL` — add LLM-generated one-liners to digests via the `llm`
-  package.
-- `--no-embed` — skip the semantic search index (it backs `ietf-llm-search` and the MCP
-  `search_corpus` tool). On by default, incremental. The MCP `grep_corpus` tool reads the gathered
-  files rather than the index, so exact-string search still works without it.
-- `--embed-model MODEL` — embedding model id (default: a small local model; or an `openai-embed/...`
-  id for a remote endpoint).
-- `--rebuild-embeddings` — drop and re-embed everything instead of the incremental update.
+- `--summarize` / `--summarize-model MODEL` — add LLM-generated one-liners to digests.
+- `--no-embed` / `--embed` — skip, or restore, the semantic search index that backs
+  `ietf-llm-search` and the MCP `search_corpus` tool. The index is on by default and incremental;
+  `grep_corpus` reads the gathered files, so it works without it.
+- `--embed-model MODEL` — embedding model id: the default on-device model, or an `openai-embed/...`
+  id for a remote endpoint.
+- `--rebuild-embeddings` — drop and re-embed everything instead of updating incrementally.
 
-`--summarize`, `--summarize-model`, `--embed-model`, and `--no-embed` are **global** settings, not
-per-corpus: set once, applied everywhere, and overridable by environment. See
-[Model backends](models.md#global-settings).
+**Seeding** (see the [seed store](seed-store.md)):
 
-**Cache & config:**
+- `--no-seed` / `--seed` — turn seeding from the public seed store off or on. The choice persists
+  across gathers.
+- `--refresh-base` — re-pull the seed snapshot even when a local copy exists, then freshen.
 
-- `--list` — list cached corpora (name, kind, status, last-gathered, and a one-line subject — the
-  group name, list, or tracked author), then exit.
-- `--all` — refresh every gathered corpus the configured store knows about, each with its own
-  persisted config (no positional NAME; `--clear-config` and `--clear-cache` are refused). A
-  corpus that fails does not stop the sweep; the exit status is non-zero if any did. On the cloud
-  backend this is the whole fleet, not just this host's local cache — see [Storage &
-  locations](storage.md#the-cloud-backend).
-- `--all --used-within DAYS` — restrict `--all` to corpora **read within the last DAYS days** (via
-  the MCP read tools). A corpus with no recorded access falls back to its last-gathered time, so a
-  freshly gathered corpus that hasn't been read yet still gets a grace period rather than being
-  skipped. Set `IETF_LLM_RECORD_ACCESS=off` on the read deployment to disable access recording
-  entirely (the filter then sees only gather times).
+**Disk use:**
+
+- `--no-raw` — skip the regenerable `raw/` text dumps. On automatically for MCP gathers and the
+  cloud backend.
+- `--no-pdf` — delete slide-deck PDFs after extracting their text. On automatically for MCP gathers
+  and the cloud backend.
+
+**Cache, config and housekeeping:**
+
+- `--list` — list cached corpora (name, kind, status, last-gathered, one-line subject), then exit.
+- `--all` — refresh every gathered corpus the store knows about, each with its own persisted
+  config. Takes no NAME, and refuses `--clear-config` and `--clear-cache`. A failing corpus doesn't
+  stop the sweep, but the exit status is non-zero. On the cloud backend this is the whole fleet; see
+  [Storage & locations](storage.md#the-cloud-backend).
+- `--all --used-within DAYS` — only corpora read within the last DAYS days through the MCP read
+  tools. A corpus with no recorded access counts from its last-gathered time. Set
+  `IETF_LLM_RECORD_ACCESS=off` on the read deployment to stop recording access.
 - `--clear-cache` — wipe everything cached for this corpus and re-download: its gathered files and
-  embedding index, its cached mailing-list mail (kept outside the corpus directory so an ordinary
-  re-gather reuses it), and on the cloud backend the copies of that mail and of its datatracker
-  ETag store held in the bucket, which the next gather would otherwise restore. Other corpora and
-  the caches shared between them are untouched. Mail older than `--months` can't be downloaded
-  again, so this discards it for good. On the cloud backend a failure to clear the bucket fails the
-  gather rather than carrying on with the old state.
-- `--clear-config` — clear this corpus's persisted config.
-- `--discover-github NAME` — print the GitHub repos discovery recommends tracking for a WG (those
-  with Internet-Draft sources and an active issue tracker), and the matching `--github` flags, then
-  exit. A dry run — gathers nothing, writes no config.
-- `--quiet` / `--verbose`.
+  index, its cached mailing-list mail, and on the cloud backend the copies of that mail and of the
+  Datatracker ETag store in the bucket. Other corpora and shared caches are untouched. Mail older
+  than `--months` can't be downloaded again, so it is lost for good. If the bucket can't be cleared,
+  the gather fails.
+- `--clear-config` — clear this corpus's persisted gather and export config.
+- `--discover-github NAME` — print the GitHub repos recommended for a WG and the matching `--github`
+  flags, then exit. Gathers nothing and writes no config.
+- `--init` — set the machine up without gathering: see [the RFC series](gathering.md#the-rfc-series-which-no-gather-brings).
+- `--install-skills` — install the bundled IETF skills into each supported agent harness found
+  (Claude Code, Codex, Gemini CLI, opencode), overwriting existing copies, then exit.
+- `--completion SHELL` — print a completion script; see [shell completion](shell-completion.md).
+- `--quiet` / `-q` — print only errors; `--verbose` / `-v` — detailed progress.
 
-Per-corpus settings live in `~/.config/ietf-llm/<name>/gather.json`; tool-wide settings live in
-`~/.config/ietf-llm/config.json`. To put any of these directories elsewhere, see
+Per-corpus settings live in `~/.config/ietf-llm/<name>/gather.json`, and tool-wide settings in
+`~/.config/ietf-llm/config.json`. To move any of these directories, see
 [Storage & locations](storage.md).
-
