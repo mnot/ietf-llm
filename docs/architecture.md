@@ -270,15 +270,8 @@ Publish is a no-op and the gather lease is always granted.
 
 **`CloudCorpusStore`** keeps two planes in one S3-compatible bucket: an immutable blob plane for
 versioned content, and a control plane built on get plus conditional put (`If-Match` /
-`If-None-Match`). Bucket layout:
-
-- `corpora/<name>/versions/<version>/` — immutable content and its manifest.
-- `corpora/<name>/{pointer,lease,status,access}` — current version, gather lease, gather status,
-  last read access.
-- `corpora/<name>/config/<scope>` — per-corpus config.
-- `fleet/slots` — the gather-slot semaphore.
-- `corpora/<name>/gather-cache/` and `fleet/gather-cache/`, `fleet/catalog/` — gather accelerator
-  caches (gather-only; the serve path never reads them).
+`If-None-Match`). The key layout is in [Storage](storage.md#bucket-layout); the `gather-cache/`
+prefixes hold accelerator caches that only gathers read or write.
 
 Rules:
 
