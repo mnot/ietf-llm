@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from ..embeddings import index_model, probe_index, related, search
+from ..embeddings import IndexUnreadable, index_model, probe_index, related, search
 from ..freshness import gather_enabled, staleness_warning, unknown_corpus_message
 from ..log import Verbosity
 from ..paths import readable_corpus_name
@@ -500,27 +500,33 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
     no_index: List[str] = []
     empty: List[str] = []
     dropped_versions = 0
+    unreadable: List[Tuple[str, BaseException]] = []
     for corpus in known:
-        model = index_model(corpus)
-        if model is None:
-            no_index.append(corpus)
+        try:
+            model = index_model(corpus)
+            if model is None:
+                no_index.append(corpus)
+                continue
+            # Over-fetch when collapsing draft revisions so each corpus can
+            # still contribute k distinct items to the merge.
+            fetch_k = max(k * 4, 20) if collapse_versions else k
+            hits = search(
+                corpus,
+                query,
+                k=fetch_k,
+                since=since,
+                until=until,
+                label=label,
+                state=state,
+                author=author,
+                role=role,
+                snippet_chars=snippet_chars,
+                verbose=Verbosity.QUIET,
+            )
+        except IndexUnreadable as err:
+            # One bad index must not take the other corpora's results with it.
+            unreadable.append((corpus, err.__cause__ or err))
             continue
-        # Over-fetch when collapsing draft revisions so each corpus can
-        # still contribute k distinct items to the merge.
-        fetch_k = max(k * 4, 20) if collapse_versions else k
-        hits = search(
-            corpus,
-            query,
-            k=fetch_k,
-            since=since,
-            until=until,
-            label=label,
-            state=state,
-            author=author,
-            role=role,
-            snippet_chars=snippet_chars,
-            verbose=Verbosity.QUIET,
-        )
         if collapse_versions and hits:
             hits, dropped = _collapse_draft_versions(hits)
             dropped_versions += dropped
@@ -550,9 +556,18 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
             + ", ".join(dropped_for_cap)
         )
 
+    unreadable_lines = [
+        f"_Skipped (index unreadable): {corpus}: {cause}._"
+        for corpus, cause in unreadable
+    ]
     if not per_corpus:
-        body = [f"(no results for {query!r} across the requested corpora)"]
-        body += [f"_Skipped — {n}._" for n in skip_notes]
+        what = (
+            "every requested corpus's index exists but cannot be read"
+            if unreadable and len(unreadable) == len(known)
+            else f"no results for {query!r} across the requested corpora"
+        )
+        body = [f"({what})"]
+        body += [f"_Skipped — {n}._" for n in skip_notes] + unreadable_lines
         return "\n".join(body)
 
     # Group corpora by embedding-model id (insertion order = first-seen).
@@ -610,6 +625,7 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
         lines.append(f"_Stale (consider re-gathering): {', '.join(stale)}._")
     for note in skip_notes:
         lines.append(f"_Skipped — {note}._")
+    lines += unreadable_lines
     lines.append("")
 
     for i, (corpus, hit) in enumerate(final, 1):
@@ -906,8 +922,9 @@ def register(server: "MCPServer") -> None:
         call.
 
         `corpora` is **required**: unknown names, corpora with no embedding
-        index, and any past the 12-corpus cap are skipped and reported, not
-        silently dropped.
+        index, corpora whose index exists but cannot be read (permissions,
+        corruption; reported with the cause), and any past the 12-corpus cap
+        are skipped and reported, not silently dropped.
 
         **Score comparability.** Cosine scores compare directly only across
         corpora built with the **same embedding model**. One shared model →

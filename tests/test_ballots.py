@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 import pytest
 
+from ietf_llm.digest import timeline
+from ietf_llm.digest.overview import build_overview
 from ietf_llm.gather.sources import ballots as ballots_module
 from ietf_llm.gather.sources.ballots import (
     Ballot,
@@ -24,7 +26,9 @@ from ietf_llm.gather.sources.ballots import (
     write_ballot_files,
 )
 from ietf_llm.log import Verbosity
+from ietf_llm.mcp.digest import tool_read_digest
 from ietf_llm.paths import get_wg_file_cache_dir
+from ietf_llm.people import Registry
 
 
 # --- Mock helpers ---------------------------------------------------------
@@ -40,6 +44,12 @@ def _stub_get_json(
     Datatracker URL including format=json appendages).
     """
     calls: list[str] = []
+    # Unless a test says otherwise, the people it uses are sitting balloters.
+    responses = {
+        "group__acronym=iesg": _roles(*range(100, 110)),
+        "group__acronym=irsg": _roles(*range(200, 210)),
+        **responses,
+    }
 
     def fake(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
         # noqa: ARG001
@@ -63,9 +73,11 @@ def _position_event(
     discuss: str = "",
     comment: str = "",
     rev: str = "12",
+    ballot: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Shape one ballotpositiondocevent JSON object."""
-    return {
+    """Shape one ballotpositiondocevent JSON object. `ballot` is the id of the
+    BallotDocEvent the position belongs to (absent when None)."""
+    obj: Dict[str, Any] = {
         "doc": f"/api/v1/doc/document/{doc_name}/",
         "balloter": f"/api/v1/person/person/{person_id}/",
         "pos": f"/api/v1/name/ballotpositionname/{pos_slug}/",
@@ -73,6 +85,17 @@ def _position_event(
         "rev": rev,
         "discuss": discuss,
         "comment": comment,
+    }
+    if ballot is not None:
+        obj["ballot"] = f"/api/v1/doc/ballotdocevent/{ballot}/"
+    return obj
+
+
+def _roles(*person_ids: int) -> Dict[str, Any]:
+    """A `group/role` response naming these people."""
+    return {
+        "objects": [{"person": f"/api/v1/person/person/{pid}/"} for pid in person_ids],
+        "meta": {"next": None},
     }
 
 
@@ -409,3 +432,293 @@ def test_ballot_events_emits_one_event_per_in_window_position(
     assert events[0].kind == "ballot"
     # Link points at the per-draft ballot file (relpath within cache).
     assert events[0].link == "ballots/draft-foo.md"
+
+
+# --- One ballot per document ---------------------------------------------
+
+
+def _iso(days_ago: int) -> str:
+    when = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_only_the_newest_ballot_is_read(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A re-balloted document carries the old ballot's positions in the same
+    # history. Bob's DISCUSS on ballot 1 is closed; Alice re-balloted on 2.
+    history = [
+        _position_event("draft-foo", 101, "discuss", _iso(300), discuss="Old.", ballot=1),
+        _position_event("draft-foo", 102, "discuss", _iso(300), discuss="Closed.", ballot=1),
+        _position_event("draft-foo", 101, "yes", _iso(5), ballot=2),
+    ]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": [history[2]]},
+        "doc__name__in=": {"objects": history},
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/102/": {"name": "Bob Smith"},
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert out is not None
+    assert [(p.name, p.pos_slug) for p in out[0].positions] == [("Alice Chen", "yes")]
+    text = render_ballot(out[0])
+    assert "Closed." not in text and "Bob Smith" not in text
+    assert "**Tally:** 1 Yes" in text
+
+
+def test_events_without_a_ballot_field_are_one_ballot(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        _position_event("draft-foo", 101, "yes", _iso(5)),
+        _position_event("draft-foo", 102, "noobj", _iso(4)),
+    ]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert out is not None and len(out[0].positions) == 2
+
+
+def test_former_balloters_are_listed_but_not_counted(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        _position_event("draft-foo", 101, "yes", _iso(5), ballot=7),
+        _position_event("draft-foo", 102, "discuss", _iso(5), discuss="Departed.", ballot=7),
+    ]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        "group__acronym=iesg": _roles(101, 103),
+        "group__acronym=irsg": _roles(),
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/102/": {"name": "Bob Smith"},
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert out is not None
+    by_name = {p.name: p for p in out[0].positions}
+    assert by_name["Alice Chen"].current and not by_name["Bob Smith"].current
+    text = render_ballot(out[0])
+    assert "**Tally:** 1 Yes" in text
+    assert "DISCUSS" not in text.split("## Former balloters")[0]
+    assert "Bob Smith (former balloter) — DISCUSS" in text
+    # The departed AD's body is not presented as a live objection.
+    assert "Departed." not in text
+
+
+def test_irsg_members_count_as_current(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [_position_event("draft-irtf-foo", 201, "yes", _iso(5), ballot=3)]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        "group__acronym=iesg": _roles(101),
+        "group__acronym=irsg": _roles(201),
+        "/api/v1/person/person/201/": {"name": "Rae Search"},
+    })
+    out = fetch_ballots("rg", months=12, verbose=Verbosity.QUIET)
+    assert out is not None and out[0].positions[0].current
+
+
+@pytest.mark.parametrize("failing", ["group__acronym=iesg", "group__acronym=irsg"])
+def test_unknown_current_balloters_is_a_failed_fetch(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
+) -> None:
+    # Without the role lists a departed AD's DISCUSS would count as live, so
+    # this is treated like any other failed fetch rather than guessed at.
+    events = [_position_event("draft-foo", 102, "yes", _iso(5), ballot=7)]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        failing: None,
+    })
+    assert fetch_ballots("wg", months=12, verbose=Verbosity.QUIET) is None
+
+
+def test_role_list_failure_leaves_a_good_ballot_file_untouched(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_wg_file_cache_dir("wg")
+    events = [
+        _position_event("draft-foo", 101, "yes", _iso(5), ballot=7),
+        _position_event("draft-foo", 150, "discuss", _iso(5), discuss="Gone.", ballot=7),
+    ]
+    responses: Dict[str, Optional[Dict[str, Any]]] = {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        "group__acronym=iesg": _roles(101),
+        "group__acronym=irsg": _roles(),
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/150/": {"name": "Carol Lee"},
+    }
+    _stub_get_json(monkeypatch, responses)
+    timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
+    path = Path(cache) / "ballots" / "draft-foo.md"
+    good = path.read_text(encoding="utf-8")
+    assert "**Tally:** 1 Yes" in good and "Carol Lee (former balloter)" in good
+
+    _stub_get_json(monkeypatch, {**responses, "group__acronym=iesg": None})
+    timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
+    assert path.read_text(encoding="utf-8") == good
+
+
+def test_ballot_of_only_former_balloters_says_so(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [_position_event("draft-foo", 150, "yes", _iso(5), ballot=7)]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": {"objects": events},
+        "/api/v1/person/person/150/": {"name": "Carol Lee"},
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert out is not None
+    text = render_ballot(out[0])
+    assert "**Tally:**" not in text
+    assert "No current balloter holds a position" in text
+    assert "Carol Lee (former balloter)" in text
+
+
+def test_charter_ballot_is_headed_as_one(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # charter-ietf-dispatch has had four ballots; the three closed ones must
+    # not be merged into the file.
+    events = [
+        _position_event("charter-ietf-wg", 101, "block", _iso(900), ballot=1),
+        _position_event("charter-ietf-wg", 102, "block", _iso(600), ballot=2),
+        _position_event("charter-ietf-wg", 103, "yes", _iso(300), ballot=3),
+        _position_event("charter-ietf-wg", 101, "yes", _iso(5), ballot=4),
+        _position_event("charter-ietf-wg", 102, "noobj", _iso(4), ballot=4),
+    ]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events[3:]},
+        "doc__name__in=": {"objects": events},
+        "group__acronym=iesg": _roles(101, 102, 103),
+        "group__acronym=irsg": _roles(),
+    })
+    out = fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert out is not None
+    text = render_ballot(out[0])
+    assert text.startswith("# IESG charter ballot: `charter-ietf-wg`")
+    assert "**Tally:** 1 Yes, 1 No Objection" in text
+    assert "Block" not in text
+
+
+# --- A failed fetch is not "no ballots" ----------------------------------
+
+
+def test_failed_scoping_fetch_is_none_not_empty(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {"doc__group__acronym": None})
+    assert fetch_ballots("wg", months=12, verbose=Verbosity.QUIET) is None
+
+
+def test_failed_history_fetch_is_none(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [_position_event("draft-foo", 101, "yes", _iso(5), ballot=1)]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": events},
+        "doc__name__in=": None,
+    })
+    assert fetch_ballots("wg", months=12, verbose=Verbosity.QUIET) is None
+
+
+def test_no_ballot_activity_is_still_an_empty_list(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_get_json(monkeypatch, {"doc__group__acronym": {"objects": []}})
+    assert fetch_ballots("wg", months=12, verbose=Verbosity.QUIET) == []
+
+
+def _clock(hour: int) -> Any:
+    """A `datetime` class whose now() is fixed at `hour` o'clock on a set day."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return datetime(2026, 6, 15, hour, 7, 31, tzinfo=tz)
+
+    return _Frozen
+
+
+def test_scoping_url_is_stable_within_a_day(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cutoff is part of the URL the ETag cache is keyed on.
+    urls = []
+    for hour in (3, 17):
+        monkeypatch.setattr(ballots_module, "datetime", _clock(hour))
+        calls = _stub_get_json(monkeypatch, {"doc__group__acronym": {"objects": []}})
+        fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+        urls.append(calls[0])
+    assert urls[0] == urls[1]
+    assert "time__gte=2025-06-20T00:00:00" in urls[0]
+
+
+def test_failed_fetch_leaves_the_ballot_files_alone(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_wg_file_cache_dir("wg")
+    ballot_file = Path(cache) / "ballots" / "draft-foo.md"
+    ballot_file.parent.mkdir(parents=True)
+    ballot_file.write_text("# last good gather\n", encoding="utf-8")
+    _stub_get_json(monkeypatch, {"doc__group__acronym": None})
+    timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
+    assert ballot_file.read_text(encoding="utf-8") == "# last good gather\n"
+
+    # Whereas a successful "no activity" really does clear it.
+    _stub_get_json(monkeypatch, {"doc__group__acronym": {"objects": []}})
+    timeline.build_events("wg", cache, Registry(), verbose=Verbosity.QUIET)
+    assert not ballot_file.exists()
+
+
+# --- Writer -> reader ------------------------------------------------------
+
+
+def test_written_ballot_reads_back_with_the_right_tally(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drive the real gather path over a re-balloted document with a departed
+    AD, then read the output the way a consumer does: the overview's DISCUSS
+    flag (which parses the written `**Tally:**` line) and
+    `read_digest(event_kind="ballot")`."""
+    cache = get_wg_file_cache_dir("wg")
+    history = [
+        # Closed first ballot: a standing-looking DISCUSS from Dana.
+        _position_event("draft-ietf-wg-foo", 104, "discuss", _iso(400), discuss="Closed.", ballot=1),
+        _position_event("draft-ietf-wg-foo", 101, "noobj", _iso(400), ballot=1),
+        # Current ballot: Alice DISCUSS, Bob yes, Carol (departed) DISCUSS.
+        _position_event("draft-ietf-wg-foo", 101, "discuss", _iso(6), discuss="Live.", ballot=2),
+        _position_event("draft-ietf-wg-foo", 102, "yes", _iso(5), ballot=2),
+        _position_event("draft-ietf-wg-foo", 103, "discuss", _iso(5), discuss="Gone.", ballot=2),
+    ]
+    _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {"objects": history[2:]},
+        "doc__name__in=": {"objects": history},
+        "group__acronym=iesg": _roles(101, 102, 104),
+        "group__acronym=irsg": _roles(),
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+        "/api/v1/person/person/102/": {"name": "Bob Smith"},
+        "/api/v1/person/person/103/": {"name": "Carol Lee"},
+        "/api/v1/person/person/104/": {"name": "Dana Fox"},
+    })
+    timeline.write_timeline_digest("wg", cache, Registry(), verbose=Verbosity.QUIET)
+
+    body = (Path(cache) / "ballots" / "draft-ietf-wg-foo.md").read_text(encoding="utf-8")
+    assert "**Tally:** 1 DISCUSS, 1 Yes" in body
+    assert "Live." in body and "Closed." not in body and "Gone." not in body
+
+    overview = build_overview("wg", cache)
+    assert "Blocked on IESG DISCUSS (1)" in overview
+    assert "draft-ietf-wg-foo" in overview
+
+    rows = tool_read_digest("wg", "timeline", event_kind="ballot")
+    assert "Alice Chen → DISCUSS" in rows
+    assert "Bob Smith → Yes" in rows
+    assert "Dana Fox" not in rows  # her only position was on the closed ballot

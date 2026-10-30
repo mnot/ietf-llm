@@ -11,6 +11,7 @@ simulated by pointing the cache dir somewhere empty.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -47,16 +48,9 @@ class _CountingKv(InMemoryKvStore):
         self.puts.clear()
 
 
-@pytest.fixture(autouse=True)
-def _clear_verified():
-    mbox._VERIFIED.clear()
-    yield
-    mbox._VERIFIED.clear()
-
-
 def _verify(list_dir: Path, epoch: str) -> None:
     """Stand in for a sync that confirmed `epoch` with the server this gather."""
-    mbox._VERIFIED[str(list_dir)] = epoch
+    mbox.record_verified(str(list_dir), epoch)
 
 
 def _host(monkeypatch, path: Path) -> Path:
@@ -603,6 +597,8 @@ def test_epoch_change_clears_the_cache_before_the_cached_set_is_read(monkeypatch
     assert (list_dir / "1.eml").read_text() == "new 1"
     assert (list_dir / mbox.UIDVALIDITY_FILE).read_text() == "8"
     assert mbox.verified_uidvalidity(str(list_dir)) == "8"
+    # A file, so the persist that runs in the parent of the gather child sees it.
+    assert (list_dir / mbox.VERIFIED_FILE).read_text() == "8"
 
 
 def test_unchanged_epoch_skips_cached_messages(monkeypatch, tmp_path):
@@ -617,7 +613,7 @@ def test_unchanged_epoch_skips_cached_messages(monkeypatch, tmp_path):
 
 def test_a_sync_that_fails_leaves_the_epoch_unverified(monkeypatch, tmp_path):
     list_dir = _host(monkeypatch, tmp_path / "h")
-    mbox._VERIFIED[str(list_dir)] = "7"  # left over from an earlier gather
+    mbox.record_verified(str(list_dir), "7")  # left over from an earlier gather
 
     def boom(*_a):
         raise OSError("timed out")
@@ -773,3 +769,45 @@ def test_a_failed_archive_fetch_fails_the_restore(monkeypatch, tmp_path):
     monkeypatch.setattr(kv, "get", get)
     with pytest.raises(GatherCacheRestoreError, match="1 stored chunk"):
         cache_sync.hydrate(kv, "moq")
+
+
+def test_forget_verified_drops_every_lists_confirmation(monkeypatch, tmp_path):
+    first = _host(monkeypatch, tmp_path / "h")
+    second = first.parent / "moq-chairs"
+    second.mkdir()
+    other_corpus = tmp_path / "h" / "imap-cache" / "tls" / "tls"
+    other_corpus.mkdir(parents=True)
+    for directory in (first, second, other_corpus):
+        mbox.record_verified(str(directory), "7")
+
+    mbox.forget_verified("moq")
+
+    assert mbox.verified_uidvalidity(str(first)) is None
+    assert mbox.verified_uidvalidity(str(second)) is None
+    assert mbox.verified_uidvalidity(str(other_corpus)) == "7"
+
+
+def test_a_stray_file_beside_the_lists_does_not_abort_hydrate(monkeypatch, tmp_path):
+    kv = _CountingKv()
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    (list_dir.parent / "stray.txt").write_text("not a list dir")
+    mbox.record_verified(str(list_dir), "7")
+
+    mbox.forget_verified("moq")  # must not raise NotADirectoryError
+    assert mbox.verified_uidvalidity(str(list_dir)) is None
+
+    # and hydrate gets past it to the rest of its work
+    datatracker_key = "corpora/moq/gather-cache/http-cache.json"
+    kv.put(datatracker_key, b'{"u": {"etag": "e", "body": "{}", "last_used": 1}}')
+    assert cache_sync.hydrate(kv, "moq") == []
+    assert os.path.exists(cache_sync.datatracker.legacy_http_cache_path("moq"))
+
+
+def test_an_unwritable_confirmation_is_logged(monkeypatch, tmp_path, capsys):
+    list_dir = _host(monkeypatch, tmp_path / "h")
+    monkeypatch.setattr(
+        mbox, "write_if_changed", lambda *a: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    mbox.record_verified(str(list_dir), "7")
+    assert mbox.verified_uidvalidity(str(list_dir)) is None
+    assert "disk full" in capsys.readouterr().err

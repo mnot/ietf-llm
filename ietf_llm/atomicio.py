@@ -252,6 +252,21 @@ def swap_dirs(swaps: "List[Tuple[str, str]]") -> None:
 #: threads writing the same path; `next()` is atomic under the GIL.
 _atomic_tmp_counter = itertools.count()
 
+#: Suffix of every atomic-write temp. Listers and publish walks skip on it.
+#: (Matches earlier undotted `<name>.<pid>.<n>.tmp` leftovers too.)
+TMP_SUFFIX = ".tmp"
+
+
+def _atomic_tmp_path(path: str) -> str:
+    """`.<name>.<pid>.<n>.tmp` beside `path`. Dot-prefixed (like
+    `scratch_sibling_name`) because a process killed mid-write leaves its temp
+    behind, and every walker that skips dotfiles then ignores the leftover
+    rather than listing, reading or publishing a partial file."""
+    parent, name = os.path.split(path)
+    return os.path.join(
+        parent, f".{name}.{os.getpid()}.{next(_atomic_tmp_counter)}{TMP_SUFFIX}"
+    )
+
 
 @contextmanager
 def atomic_open(
@@ -271,7 +286,7 @@ def atomic_open(
     `newline` is passed through to `open` — `write_if_changed` uses
     `"\n"` so the bytes written match its LF-normalised comparison.
     """
-    tmp = f"{path}.{os.getpid()}.{next(_atomic_tmp_counter)}.tmp"
+    tmp = _atomic_tmp_path(path)
     handle = open(  # pylint: disable=consider-using-with
         tmp, "w", encoding=encoding, newline=newline
     )
@@ -296,7 +311,7 @@ def atomic_open_binary(path: str) -> "Iterator[Any]":
     the temp is removed and any prior file is left intact — so a crash or a
     truncated transfer never leaves a partial blob cached under the final name.
     """
-    tmp = f"{path}.{os.getpid()}.{next(_atomic_tmp_counter)}.tmp"
+    tmp = _atomic_tmp_path(path)
     handle = open(tmp, "wb")  # pylint: disable=consider-using-with
     try:
         yield handle

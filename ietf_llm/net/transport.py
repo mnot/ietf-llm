@@ -186,6 +186,18 @@ def governed_get(
     return response
 
 
+def meter_stream(url: str, response: requests.Response) -> None:
+    """Meter a streamed response by its declared length. For the one caller that
+    holds the host slot itself across the whole transfer, and so cannot go
+    through `governed_get` (`meetings._download_if_pdf`)."""
+    http_metrics.record(
+        url,
+        response.status_code,
+        _declared_length(response),
+        error=response.status_code >= 400,
+    )
+
+
 def _declared_length(response: requests.Response) -> int:
     try:
         return max(0, int(response.headers.get("Content-Length", 0)))

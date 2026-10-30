@@ -487,8 +487,11 @@ def build_events(
         dt_events.extend(f_group.result())
         dt_events.extend(f_docs.result())
         ballots = f_ballots.result()
-        write_ballot_files(cache_dir, ballots, verbose=verbose)
-        dt_events.extend(ballot_events(ballots, cache_dir, _ballot_cutoff(months)))
+        # None: Datatracker was unreachable. Leave the last good ballot files
+        # in place rather than sweeping them as though nothing were balloted.
+        if ballots is not None:
+            write_ballot_files(cache_dir, ballots, verbose=verbose)
+            dt_events.extend(ballot_events(ballots, cache_dir, _ballot_cutoff(months)))
         events.extend(dt_events)
 
     # Heuristic WGLC / adoption from mailing list subjects. Datatracker

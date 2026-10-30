@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """Shared scaffolding for the ietf-llm MCP tools: corpus-path
 resolution, the ``@_requires_corpus`` guard, freshness/inflight notes, the
 grounding + participation nudges, and the ``_offload`` dispatcher."""
@@ -17,7 +18,7 @@ from .. import coverage, serve_metrics
 from ..access_stamp import note_access
 from ..config import service as service_config
 from ..digest.query import parse_md_tables
-from ..embeddings import probe_index
+from ..embeddings import IndexUnreadable, probe_index
 from ..freshness import (
     deployment_mode,
     freshness_line,
@@ -774,6 +775,10 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         )
         try:
             result = fn(*args, **kwargs)
+        except IndexUnreadable as exc:
+            # Present but unreadable: a clear message, not "no index".
+            debug_log.log_event(req_id, "thread_error", error=str(exc)[:500])
+            return exc.tool_message()
         except BaseException as exc:  # pylint: disable=broad-except
             debug_log.log_event(
                 req_id,

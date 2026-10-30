@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 from urllib.parse import urlsplit
 
+from ..atomicio import atomic_open
+
 #: How many URL patterns to surface in the summary / persisted file.
 _TOP_N = 8
 
@@ -229,9 +231,7 @@ def persist(wg_cache_dir: str) -> None:
     path = os.path.join(wg_cache_dir, _METRICS_NAME)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with atomic_open(path) as fh:
             json.dump(current().to_dict(), fh, indent=2)
-        os.replace(tmp, path)
     except OSError:
         pass

@@ -9,6 +9,7 @@ and `_get_json`) actually record into the current accumulator.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -128,6 +129,25 @@ def test_persist_writes_json(tmp_path: Path) -> None:
     assert data["by_host"]["datatracker.ietf.org"]["bytes"] == 7
 
 
+def test_persist_leaves_no_temp_and_uses_per_writer_temp_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http_metrics.reset()
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def spy(src: str, dst: str) -> None:
+        seen.append(os.path.basename(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("ietf_llm.atomicio.os.replace", spy)
+    http_metrics.persist(str(tmp_path))
+    http_metrics.persist(str(tmp_path))
+    assert len(seen) == 2 and seen[0] != seen[1]  # never a shared fixed tmp
+    assert all(n.startswith(".gather-metrics.json.") for n in seen)
+    assert os.listdir(tmp_path) == ["gather-metrics.json"]
+
+
 def test_persist_is_best_effort(tmp_path: Path) -> None:
     # A path whose parent is a file, not a dir → makedirs fails; no raise.
     not_a_dir = tmp_path / "afile"
@@ -200,4 +220,28 @@ def test_get_json_records_200_and_304(
     )
     datatracker._get_json("/api/v1/y")
     m = http_metrics.current()
+    assert (m.ok, m.revalidated, m.errors) == (1, 1, 0)
+
+
+def test_304_with_lost_body_refetch_counts_both_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Cache:
+        def get(self, url: str) -> Dict[str, str]:
+            return {"etag": "x"}
+
+        def body(self, url: str) -> Optional[str]:
+            return None
+
+        def store(self, *args: Any) -> None:
+            pass
+
+    monkeypatch.setattr(datatracker, "_active_http_cache", lambda: _Cache())
+    monkeypatch.setattr(datatracker, "_get_json", _REAL_GET_JSON)
+    replies = [_FakeResp(304, b""), _FakeResp(200, b'{"a": 1}', {"a": 1})]
+    monkeypatch.setattr(net.http_session(), "get", lambda *a, **k: replies.pop(0))
+    http_metrics.reset()
+    assert datatracker._get_json("/api/v1/z") == {"a": 1}
+    m = http_metrics.current()
+    # The unconditional refetch is a second request, counted once more.
     assert (m.ok, m.revalidated, m.errors) == (1, 1, 0)
