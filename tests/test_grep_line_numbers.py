@@ -66,9 +66,13 @@ def _hits(out: str) -> List[Tuple[int, str]]:
 
 def _read_one(wg: str, file: str, lineno: int) -> str:
     out = tool_read_file_section(wg, file, start_line=lineno, max_lines=1)
-    # `max_lines=1` is followed by a truncation marker line (and thread files
-    # by a participation nudge); the requested line is the first.
-    return out.split("\n")[0]
+    # A read cut at `max_lines` opens and closes with a PARTIAL READ banner
+    # (and thread files end with a participation nudge); the requested line is
+    # the first non-banner, non-blank line.
+    for line in out.split("\n"):
+        if line and not line.startswith("**PARTIAL READ"):
+            return line
+    return ""
 
 
 def _assert_round_trip(wg: str, file: str, out: str, needle: str) -> int:
