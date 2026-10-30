@@ -44,7 +44,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
 from ..gather.sources.citations import normalize_draft_name
-from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, document_url
+from .cache import (
+    _API_BASE,
+    _DT_BASE,
+    LiveUnavailable,
+    _cached_json,
+    _now_utc,
+    document_url,
+)
 
 #: Ballot position slug → label, the full vocabulary of
 #: `/api/v1/name/ballotpositionname/`. The last four are the IAB / IRSG
@@ -101,24 +108,25 @@ def _objects(url: str) -> Tuple[List[Dict[str, Any]], datetime.datetime, bool]:
     """Every object from a list endpoint, following `meta.next`.
 
     Returns `(objects, fetched_at, answered)`. The flag is load-bearing rather
-    than fastidious: `_cached_json` swallows a timeout, a 500 and a decode
-    failure alike to `None`, so without it a Datatracker outage is
-    indistinguishable from a document nobody has reviewed — and this tool's
-    whole payload is a claim of absence. An empty list with `answered=True` is
-    a real "none"; with `answered=False` it is "we do not know".
+    than fastidious: without it a Datatracker outage is indistinguishable from
+    a document nobody has reviewed — and this tool's whole payload is a claim
+    of absence. An empty list with `answered=True` is a real "none"; with
+    `answered=False` (any page could not be fetched) it is "we do not know".
     """
     out: List[Dict[str, Any]] = []
     fetched = _now_utc()
     next_url: Optional[str] = url
-    answered = False
+    answered = True
     for _ in range(_MAX_PAGES):
         if not next_url:
             break
-        body, page_fetched = _cached_json(next_url)
+        body, page_fetched, page_answered = _cached_json(next_url)
         fetched = page_fetched
+        if not page_answered:
+            answered = False
+            break
         if not body:
             break
-        answered = True
         for obj in body.get("objects") or []:
             if isinstance(obj, dict):
                 out.append(obj)
@@ -147,7 +155,7 @@ def _fetch_map(
         # silent hole in the column this join exists to produce. `,` is the
         # separator, so it stays unescaped.
         chunk = [quote(value, safe="") for value in wanted[start : start + 100]]
-        body, _ = _cached_json(
+        body, _, _ = _cached_json(
             f"{_API_BASE}/{path}/?{key}__in={','.join(chunk)}&limit=100"
         )
         for obj in (body or {}).get("objects") or []:
@@ -353,15 +361,18 @@ def fetch_review_record(
 ) -> Tuple[Optional[ReviewRecord], datetime.datetime]:
     """The joined review and ballot record for one draft.
 
-    `(None, fetched_at)` when Datatracker has no such document — the same
-    contract as `fetch_draft_status`, so a mistyped name is reported rather
-    than rendered as a document nobody has reviewed.
+    `(None, fetched_at)` when Datatracker has no such document (a 404) — the
+    same contract as `fetch_draft_status`, so a mistyped name is reported
+    rather than rendered as a document nobody has reviewed. Raises
+    `LiveUnavailable` when the document itself could not be fetched.
     """
     canonical = normalize_draft_name(name)
     url = document_url(canonical)
     if url is None:
         return None, _now_utc()
-    doc, fetched = _cached_json(url)
+    doc, fetched, answered = _cached_json(url)
+    if not answered:
+        raise LiveUnavailable(fetched)
     if doc is None or not doc.get("name"):
         return None, fetched
 

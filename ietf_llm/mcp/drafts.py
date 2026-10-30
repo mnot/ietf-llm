@@ -534,7 +534,12 @@ def tool_draft_status(name: str) -> str:
             "(the version suffix is optional)."
         )
 
-    status, fetched = live_lookup.fetch_draft_status(name)
+    try:
+        status, fetched = live_lookup.fetch_draft_status(name)
+    except live_lookup.LiveUnavailable as err:
+        return live_lookup.unreachable_note(
+            f"`{normalize_draft_name(name)}`", err.tried_at
+        )
     if status is None:
         canonical = normalize_draft_name(name)
         return (
@@ -808,7 +813,12 @@ def tool_review_record(name: str) -> str:
             "Provide a draft name, e.g. `draft-ietf-httpbis-no-vary-search` "
             "(the version suffix is optional)."
         )
-    record, fetched = live_lookup.fetch_review_record(name)
+    try:
+        record, fetched = live_lookup.fetch_review_record(name)
+    except live_lookup.LiveUnavailable as err:
+        return live_lookup.unreachable_note(
+            f"`{normalize_draft_name(name)}`", err.tried_at
+        )
     if record is None:
         canonical = normalize_draft_name(name)
         return (
@@ -824,6 +834,8 @@ def tool_review_record(name: str) -> str:
     if record.reviews:
         lines += ["", f"## Reviews ({len(record.reviews)})", ""]
         lines += _review_rows(record)
+    elif "reviews" in record.unavailable:
+        lines += ["", "## Reviews", "", "_Not retrieved: Datatracker did not answer._"]
     else:
         lines += ["", "## Reviews", "", "_No review has been requested._"]
     if record.positions:
@@ -836,6 +848,8 @@ def tool_review_record(name: str) -> str:
                 "\n_A DISCUSS holds publication. Its text is in the gathered "
                 f"`ballots/{record.name}.md` — read that for the substance._"
             )
+    elif "ballot" in record.unavailable:
+        lines += ["", "## Ballot", "", "_Not retrieved: Datatracker did not answer._"]
     else:
         lines += ["", "## Ballot", "", "_No ballot has been opened._"]
     lines.append("")
