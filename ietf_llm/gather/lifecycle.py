@@ -37,6 +37,7 @@ from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, get_cache_dir, get_index_dir
+from ..redact import redact_record, redact_userinfo
 from ..store.corpus import GatherCacheRestoreError, LeaseLost
 
 #: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
@@ -66,6 +67,9 @@ SLOT_POLL_S = 5.0
 #: coalescing to this interval keeps the status file / control plane from
 #: churning while still giving a poller fresh movement to show.
 DETAIL_MIN_INTERVAL_S = 3.0
+
+#: Longest `error` the status record carries.
+STATUS_ERROR_MAX = 500
 
 STATUS_NAME = "gather-status.json"
 
@@ -443,6 +447,18 @@ def new_status(
     }
 
 
+def error_text(text: str) -> str:
+    """`text` as the status record's `error`: credentials removed *before* the
+    cut, since a cut inside ``user:token@host`` would leave a fragment that no
+    later redaction can recognise."""
+    return redact_userinfo(text)[:STATUS_ERROR_MAX]
+
+
+def status_error(err: BaseException) -> str:
+    """The status record's `error` for an exception."""
+    return error_text(f"{type(err).__name__}: {err}")
+
+
 def write_status(store: Any, status: Dict[str, Any], *, publish: bool = True) -> None:
     """Persist a status record locally and publish it to the store so it is
     fleet-visible (G-8). Never fails the gather on a write/publish error.
@@ -450,12 +466,19 @@ def write_status(store: Any, status: Dict[str, Any], *, publish: bool = True) ->
     overwrite the fleet record of the one that holds it now."""
     status["updated"] = now_iso()
     corpus = status["corpus"]
+    # The one place every status write passes through (local file, fleet
+    # record, CLI and worker alike): whatever free text reached the live dict,
+    # an exception message or a note quoting a URL, leaves it without
+    # credentials.
+    status = redact_record(status)
     path = status_path(corpus)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with atomic_open(path) as handle:
             json.dump(status, handle, indent=2, sort_keys=True)
-    except OSError as err:
+    except (OSError, ValueError, TypeError, RecursionError) as err:
+        # Also a record json cannot serialise (cyclic, or a stray object): the
+        # gather goes on, as with a failed write.
         log(
             f"gather: could not write status for {corpus}: {err}",
             Verbosity.STATUS,
@@ -604,7 +627,7 @@ def gather_and_publish(
             _finish_fenced(recorder, lost)
             raise
         except BaseException as err:
-            recorder.finish("failed", f"{type(err).__name__}: {err}"[:500])
+            recorder.finish("failed", status_error(err))
             raise
         recorder.finish("done")
         return outcome
@@ -618,4 +641,4 @@ def _finish_fenced(recorder: StatusRecorder, lost: LeaseLost) -> None:
     """Record a gather that lost its lease as failed — locally only, since the
     fleet record now belongs to whoever holds the lease."""
     recorder.fenced = True
-    recorder.finish("failed", f"{type(lost).__name__}: {lost}"[:500])
+    recorder.finish("failed", status_error(lost))

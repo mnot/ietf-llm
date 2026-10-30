@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..months import months_request_caution, months_request_error
 from ..paths import valid_corpus_name
+from ..redact import redact_record
 from . import debug_log
 from .common import (
     _corpus_exists,
@@ -347,7 +348,10 @@ def _cancelled_effect() -> str:
 
 
 def _format_gather_status(status: Dict[str, Any]) -> str:
-    """One compact line for a gather status record."""
+    """One compact line for a gather status record. Redacted again here: a
+    record stored before the writer did so, or by an older host in a mixed
+    fleet, must not show a URL's credentials."""
+    status = redact_record(status)
     corpus = status.get("corpus", "?")
     state = status.get("state", "?")
     parts = [f"**{corpus}** — {state}"]

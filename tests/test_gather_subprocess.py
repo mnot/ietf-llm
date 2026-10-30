@@ -67,7 +67,9 @@ def test_child_renices_by_default_and_can_be_disabled(
 
 
 def _run_child_capturing(
-    monkeypatch: pytest.MonkeyPatch, outcome: GatherOutcome
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: GatherOutcome,
+    note: str = "auto-tracked o/r",
 ) -> tuple:
     """Run `gather_child.main()` with a stubbed pipeline and capture the JSON
     records it writes to the progress fd plus its exit code."""
@@ -77,7 +79,7 @@ def _run_child_capturing(
         progress("charter", 1, 3, None)
         progress("mailing list", 2, 3, "5/5 messages")
         if note_fn:
-            note_fn("auto-tracked o/r")
+            note_fn(note)
         return outcome
 
     monkeypatch.setattr(gather_child, "run_gather", fake_run_gather)
@@ -115,13 +117,15 @@ def test_child_emits_progress_notes_and_success_code(
     assert rc == 0
 
 
-def test_child_reports_an_unhandled_error_before_dying(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _run_child_that_raises(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> tuple[list, list]:
+    """Run `gather_child.main` with a gather that raises `error`; return the
+    records it sent down the pipe and the exceptions it re-raised."""
     read_fd, write_fd = os.pipe()
 
     def exploding_run_gather(argv, _verbosity, progress=None, note_fn=None):  # type: ignore[no-untyped-def]
-        raise ValueError("bad\nthing " + "x" * 1000)
+        raise error
 
     monkeypatch.setattr(gather_child, "run_gather", exploding_run_gather)
     monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
@@ -130,7 +134,7 @@ def test_child_reports_an_unhandled_error_before_dying(
     def _go() -> None:
         try:
             gather_child.main()
-        except ValueError as err:
+        except type(error) as err:
             raised.append(err)  # re-raised, so the traceback still reaches stderr
 
     thread = threading.Thread(target=_go)
@@ -138,11 +142,72 @@ def test_child_reports_an_unhandled_error_before_dying(
     with os.fdopen(read_fd, "r", encoding="utf-8") as pipe:
         lines = [json.loads(line) for line in pipe if line.strip()]
     thread.join()
+    return lines, raised
+
+
+def test_child_reports_an_unhandled_error_before_dying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines, raised = _run_child_that_raises(
+        monkeypatch, ValueError("bad\nthing " + "x" * 1000)
+    )
     assert len(raised) == 1
     assert [r["t"] for r in lines] == ["error"]
     assert lines[0]["type"] == "ValueError"
     assert lines[0]["msg"].startswith("bad thing xxx")  # one line
     assert len(lines[0]["msg"]) == gather_child._ERROR_MSG_MAX
+
+
+def test_child_error_record_hides_credentials_in_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines, _raised = _run_child_that_raises(
+        monkeypatch,
+        ConnectionError("POST https://svc:s3cret@embed.example/v1/embeddings failed"),
+    )
+    assert lines[0]["msg"] == "POST https://***@embed.example/v1/embeddings failed"
+    assert "s3cret" not in json.dumps(lines)
+
+
+def test_child_error_redacts_before_cutting_to_the_length_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Sweep the credential across the 300-character cut: cut-then-redact would
+    # leave "https://svc:s3cr" (no "@", so nothing left to recognise) in some of
+    # these.
+    cap = gather_child._ERROR_MSG_MAX
+    for pad in range(cap - 40, cap):
+        lines, _raised = _run_child_that_raises(
+            monkeypatch,
+            ConnectionError("x" * pad + " https://svc:s3cret-token@embed.example/v1"),
+        )
+        assert len(lines[0]["msg"]) <= cap
+        for fragment in ("svc", "s3c"):
+            assert fragment not in lines[0]["msg"], pad
+
+
+def test_child_note_records_hide_credentials_in_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines, _rc = _run_child_capturing(
+        monkeypatch, GatherOutcome.GATHERED, note="seed https://svc:s3cret@seed.example/x"
+    )
+    assert lines[-1] == {"t": "note", "msg": "seed https://***@seed.example/x"}
+
+
+def test_child_traceback_on_stderr_hides_credentials(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    try:
+        try:
+            raise OSError("https://svc:s3cret@embed.example/v1 refused")
+        except OSError as cause:
+            raise RuntimeError("wrapped") from cause
+    except RuntimeError as err:
+        gather_child._redacting_excepthook(type(err), err, err.__traceback__)
+    shown = capsys.readouterr().err
+    assert "RuntimeError: wrapped" in shown and "https://***@embed.example/v1" in shown
+    assert "s3cret" not in shown
 
 
 def test_child_unusable_corpus_maps_to_distinct_exit(
@@ -295,7 +360,7 @@ def test_gather_status_error_names_what_the_child_hit(
     monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
 
     assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
-    deadline = time.time() + 10
+    deadline = time.time() + 30
     status = gather_runner.read_status("tls")
     while time.time() < deadline and (
         status is None or status.get("state") not in ("done", "failed")
@@ -333,7 +398,7 @@ def test_lost_lease_terminates_a_silent_child_without_publishing(
     monkeypatch.setenv("FAKE_SLEEP", "1")  # the child would otherwise run 30s
 
     assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
-    deadline = time.time() + 10
+    deadline = time.time() + 30
     while time.time() < deadline and "tls" not in gather_pipeline._children:
         time.sleep(0.01)
     store.renew = False

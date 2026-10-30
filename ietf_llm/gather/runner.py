@@ -404,7 +404,8 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
     gather, so one client cannot cancel another's. Cooperative and best-effort:
     the worker honours it at its next stage boundary or download batch (see
     `_progress`), so this reports "stopping", not "stopped". The same-host case
-    is race-free (an in-process event); cross-host (cloud backend) rides the
+    is race-free (an in-process event, shown by `read_status` on this host as
+    `cancel_requested` without being written); cross-host (cloud backend) rides the
     published `cancel_requested` flag, which the worker polls — a stop set in the
     brief window before the worker republishes its status can be missed and need
     re-issuing.
@@ -429,17 +430,29 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
         or not secrets.compare_digest(_hash_token(token), str(expected))
     ):
         return {"stopped": False, "reason": "bad token", "corpus": corpus}
-    # Same-host fast path: set the in-process event (race-free). Always also
-    # write the flag so a worker on another host (cloud backend) sees it.
+    # Same-host: setting the in-process event is the whole request. Writing the
+    # record we read back would race the worker, which owns it: a worker that saw
+    # the event and finished first would have its terminal record replaced by our
+    # stale `queued`/`running` copy, and that never reaches a terminal state.
+    # The worker records `cancel_requested` itself when it honours the stop.
     with _registry_lock:
         event = _cancel_events.get(corpus)
     if event is not None:
         event.set()
+        return {"stopped": True, "corpus": corpus, "state": status.get("state")}
+    # Another host (cloud backend) owns the job, so the published flag is the only
+    # channel. Re-read just before writing and leave a record that has gone
+    # terminal alone. This narrows, but does not close, the window in which the
+    # owner's terminal write lands between our read and our put (the put is
+    # unconditional); closing it needs a compare-and-swap on the status key.
     from ..store import corpus as corpus_store  # noqa: PLC0415
 
     store = corpus_store.get_corpus_store()
-    status["cancel_requested"] = True
-    _write_status(store, status)
+    # The stored record, not `read_status`: its overlay must never be written back.
+    latest = _read_stored_status(corpus)
+    if latest is not None and latest.get("state") in ("queued", "running"):
+        latest["cancel_requested"] = True
+        _write_status(store, latest)
     return {"stopped": True, "corpus": corpus, "state": status.get("state")}
 
 
@@ -702,7 +715,9 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 # that is a failure, not a requested stop.
                 fenced = True
                 status["state"] = "failed"
-                status["error"] = str(lifecycle.lease_lost_error(watch))[:500]
+                status["error"] = lifecycle.error_text(
+                    str(lifecycle.lease_lost_error(watch))
+                )
             else:
                 # Stop requested: do not publish (the cache is partial); leave it
                 # for the next gather to overwrite. A cancelled record is
@@ -713,10 +728,10 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         except LeaseLost as err:
             fenced = True
             status["state"] = "failed"
-            status["error"] = f"{type(err).__name__}: {err}"[:500]
+            status["error"] = lifecycle.status_error(err)
         except BaseException as err:  # noqa: BLE001
             status["state"] = "failed"
-            status["error"] = f"{type(err).__name__}: {err}"[:500]
+            status["error"] = lifecycle.status_error(err)
         finally:
             status["finished"] = _now_iso()
             _mark_finishing(corpus)
@@ -737,13 +752,41 @@ def _fail_lease_lost(
     """Finalise a queued job whose lease went before it got a slot: failed, and
     recorded locally only (the fleet record belongs to the new holder)."""
     status["state"] = "failed"
-    status["error"] = str(lifecycle.lease_lost_error(watch))[:500]
+    status["error"] = lifecycle.error_text(str(lifecycle.lease_lost_error(watch)))
     status["finished"] = _now_iso()
     _mark_finishing(corpus)
     _write_status(store, status, publish=False)
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:
+    """One corpus's gather status (see `_read_stored_status`), with a pending
+    stop made visible.
+
+    A same-host `request_stop` only sets the in-process event and never writes the
+    record (the worker owns it, and a write-back would race its terminal write),
+    so the stop would otherwise be invisible until the worker reaches a
+    checkpoint. It is overlaid here, at read time and never written back, and only
+    onto a live (`queued`/`running`) record while this host holds the job's
+    cancel event, which is dropped with the job: a terminal record is left as it
+    is, and so is the next gather of the corpus (a new event). It is visible on
+    this host only: other replicas, and the cloud listing in `all_statuses`, show
+    the stored record, which carries no flag until the worker writes the terminal
+    one.
+
+    The event is looked up without `_registry_lock`: `start` holds that lock across
+    the lease acquisition (a store round trip), and a status read must not queue
+    behind it. A plain `dict.get` is atomic and entries are only added and removed
+    whole."""
+    status = _read_stored_status(corpus)
+    if status is None or status.get("state") not in ("queued", "running"):
+        return status
+    event = _cancel_events.get(corpus)
+    if event is not None and event.is_set():
+        status["cancel_requested"] = True
+    return status
+
+
+def _read_stored_status(corpus: str) -> Optional[Dict[str, Any]]:
     """Read one corpus's gather status, or None if none recorded (or the
     name is not a safe path segment).
 

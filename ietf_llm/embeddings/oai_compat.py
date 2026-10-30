@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import re
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -23,6 +22,7 @@ from typing import Any, cast
 import requests
 
 from ..log import LogLevel, Verbosity, log
+from ..redact import redact_userinfo
 from ..tls import trust_store_adapter
 
 #: HTTP statuses that mean "your credentials are missing/invalid/insufficient",
@@ -46,21 +46,6 @@ def _shared_session() -> "requests.Session":
         session.mount("http://", adapter)
         _SESSION = session
     return _SESSION
-
-
-#: Greedy to the last "@" before the path, query or fragment, so a password
-#: containing a literal "@" is redacted whole.
-_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
-
-
-def redact_userinfo(text: str) -> str:
-    """``text`` with any ``user:password@`` in a URL replaced by ``***@``.
-
-    An operator can put credentials in the configured base URL; ``requests``
-    echoes the URL in its exception messages, and those reach logs and tool
-    output.
-    """
-    return _USERINFO_RE.sub("***@", text)
 
 
 def _redacted(err: requests.RequestException) -> requests.RequestException:
