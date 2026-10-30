@@ -1,7 +1,7 @@
 """Real-subprocess coverage for the gather runner's out-of-process pipeline.
 
-The rest of the suite runs the pipeline in-process (the `_gather_in_process`
-autouse fixture) so it can stub `run_gather`. These tests exercise the actual
+The tests that stub `run_gather` run the pipeline in-process (the
+`gather_in_process` fixture). These tests exercise the actual
 subprocess machinery — the child's progress protocol, the parent's streaming
 pump, the exit-code mapping, and cancellation — without touching the network:
 the child protocol is driven with a stubbed `run_gather`, and the parent pump is
@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from ietf_llm.gather import child as gather_child, pipeline as gather_pipeline, runner as gather_runner
+from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.runner import GatherSpec
 
 
@@ -65,7 +66,9 @@ def test_child_renices_by_default_and_can_be_disabled(
 # --- the child side: emit protocol + exit codes ----------------------------
 
 
-def _run_child_capturing(monkeypatch: pytest.MonkeyPatch, ok: bool) -> tuple:
+def _run_child_capturing(
+    monkeypatch: pytest.MonkeyPatch, outcome: GatherOutcome
+) -> tuple:
     """Run `gather_child.main()` with a stubbed pipeline and capture the JSON
     records it writes to the progress fd plus its exit code."""
     read_fd, write_fd = os.pipe()
@@ -75,7 +78,7 @@ def _run_child_capturing(monkeypatch: pytest.MonkeyPatch, ok: bool) -> tuple:
         progress("mailing list", 2, 3, "5/5 messages")
         if note_fn:
             note_fn("auto-tracked o/r")
-        return ok
+        return outcome
 
     monkeypatch.setattr(gather_child, "run_gather", fake_run_gather)
     monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
@@ -101,7 +104,7 @@ def _run_child_capturing(monkeypatch: pytest.MonkeyPatch, ok: bool) -> tuple:
 def test_child_emits_progress_notes_and_success_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    lines, rc = _run_child_capturing(monkeypatch, ok=True)
+    lines, rc = _run_child_capturing(monkeypatch, GatherOutcome.GATHERED)
     kinds = [r["t"] for r in lines]
     assert kinds == ["progress", "progress", "note"]
     assert lines[0] == {
@@ -112,11 +115,48 @@ def test_child_emits_progress_notes_and_success_code(
     assert rc == 0
 
 
+def test_child_reports_an_unhandled_error_before_dying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_fd, write_fd = os.pipe()
+
+    def exploding_run_gather(argv, _verbosity, progress=None, note_fn=None):  # type: ignore[no-untyped-def]
+        raise ValueError("bad\nthing " + "x" * 1000)
+
+    monkeypatch.setattr(gather_child, "run_gather", exploding_run_gather)
+    monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
+    raised: list = []
+
+    def _go() -> None:
+        try:
+            gather_child.main()
+        except ValueError as err:
+            raised.append(err)  # re-raised, so the traceback still reaches stderr
+
+    thread = threading.Thread(target=_go)
+    thread.start()
+    with os.fdopen(read_fd, "r", encoding="utf-8") as pipe:
+        lines = [json.loads(line) for line in pipe if line.strip()]
+    thread.join()
+    assert len(raised) == 1
+    assert [r["t"] for r in lines] == ["error"]
+    assert lines[0]["type"] == "ValueError"
+    assert lines[0]["msg"].startswith("bad thing xxx")  # one line
+    assert len(lines[0]["msg"]) == gather_child._ERROR_MSG_MAX
+
+
 def test_child_unusable_corpus_maps_to_distinct_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _lines, rc = _run_child_capturing(monkeypatch, ok=False)
+    _lines, rc = _run_child_capturing(monkeypatch, GatherOutcome.UNUSABLE)
     assert rc == gather_pipeline.CHILD_EXIT_UNUSABLE
+
+
+def test_child_skipped_corpus_maps_to_its_own_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _lines, rc = _run_child_capturing(monkeypatch, GatherOutcome.SKIPPED)
+    assert rc == gather_pipeline.CHILD_EXIT_SKIPPED
 
 
 # --- the parent side: stream a fake child, map exit codes ------------------
@@ -132,6 +172,10 @@ def _fake_child(tmp_path: Path) -> Path:
         "w.write(json.dumps({'t':'progress','name':'charter',"
         "'index':1,'total':2,'detail':None})+chr(10)); w.flush()\n"
         "w.write(json.dumps({'t':'note','msg':'hi'})+chr(10)); w.flush()\n"
+        "if os.environ.get('FAKE_ERROR'):\n"
+        "    w.write(json.dumps({'t':'error','type':'ValueError',"
+        "'msg':os.environ['FAKE_ERROR']})+chr(10)); w.flush()\n"
+        "if os.environ.get('FAKE_KILL'): os.kill(os.getpid(), 9)\n"
         "if os.environ.get('FAKE_SLEEP'): time.sleep(30)\n"
         "w.close()\n"
         "sys.exit(int(os.environ.get('FAKE_EXIT','0')))\n"
@@ -161,8 +205,8 @@ def test_parent_streams_records_and_maps_success(
         gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
     )
     monkeypatch.setenv("FAKE_EXIT", "0")
-    ok, prog, notes = _collect(GatherSpec(corpus="wg"))
-    assert ok is True
+    outcome, prog, notes = _collect(GatherSpec(corpus="wg"))
+    assert outcome is GatherOutcome.GATHERED
     assert prog == [("charter", 1, 2, None)]
     assert notes == ["hi"]
     assert "wg" not in gather_pipeline._children  # unregistered on the way out
@@ -175,14 +219,48 @@ def test_parent_maps_unusable_and_crash_exit_codes(
     monkeypatch.setattr(
         gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
     )
-    # Exit 3 -> unusable corpus (run_gather False), not a crash.
+    # Exit 3 -> unusable corpus, not a crash; exit 4 -> nothing to publish.
     monkeypatch.setenv("FAKE_EXIT", str(gather_pipeline.CHILD_EXIT_UNUSABLE))
-    ok, _prog, _notes = _collect(GatherSpec(corpus="wg"))
-    assert ok is False
+    outcome, _prog, _notes = _collect(GatherSpec(corpus="wg"))
+    assert outcome is GatherOutcome.UNUSABLE
+    monkeypatch.setenv("FAKE_EXIT", str(gather_pipeline.CHILD_EXIT_SKIPPED))
+    outcome, _prog, _notes = _collect(GatherSpec(corpus="wg"))
+    assert outcome is GatherOutcome.SKIPPED
     # Any other non-zero exit is an unexpected death -> RuntimeError.
     monkeypatch.setenv("FAKE_EXIT", "1")
     with pytest.raises(RuntimeError):
         _collect(GatherSpec(corpus="wg"))
+
+
+def test_parent_carries_the_childs_error_into_the_crash_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(
+        gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
+    )
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
+    with pytest.raises(RuntimeError) as crash:
+        _collect(GatherSpec(corpus="wg"))
+    assert "exited with code 1: ValueError: no route to datatracker" in str(
+        crash.value
+    )
+
+
+def test_parent_names_the_signal_that_killed_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An OOM kill leaves no error record; the status must still say what it was.
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(
+        gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
+    )
+    monkeypatch.setenv("FAKE_KILL", "1")
+    with pytest.raises(RuntimeError, match="was killed by SIGKILL; possibly out of"):
+        _collect(GatherSpec(corpus="wg"))
+    assert gather_pipeline._describe_exit(-11) == "was killed by SIGSEGV"
+    assert gather_pipeline._describe_exit(1) == "exited with code 1"
 
 
 def test_parent_cancellation_terminates_child(
@@ -203,3 +281,26 @@ def test_parent_cancellation_terminates_child(
     # registered child behind.
     assert time.monotonic() - started < 20
     assert "wg" not in gather_pipeline._children
+
+
+def test_gather_status_error_names_what_the_child_hit(
+    isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fleet-visible record, not just the exception the worker raises.
+    script = _fake_child(tmp_path)
+    monkeypatch.setattr(
+        gather_pipeline, "_child_command", lambda spec: [sys.executable, str(script)]
+    )
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
+
+    assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
+    deadline = time.time() + 10
+    status = gather_runner.read_status("tls")
+    while time.time() < deadline and (
+        status is None or status.get("state") not in ("done", "failed")
+    ):
+        time.sleep(0.02)
+        status = gather_runner.read_status("tls")
+    assert status is not None and status["state"] == "failed"
+    assert "ValueError: no route to datatracker" in status["error"]

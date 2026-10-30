@@ -24,6 +24,7 @@ import hashlib
 import os
 import sqlite3
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -40,21 +41,22 @@ from .models import (
     is_remote_embed_model,
     query_prefix,
 )
+from .oai_compat import UpstreamRateLimited
 from .snippet import make_snippet
 from .storage import (
     FLOAT32_CODEC,
     VectorCodec,
     _SCHEMA_VERSION,
-    _connect_ro,
     _db_path,
-    _db_path_ro,
     _open_db,
     _pack,
+    _try_connect_ro,
     _unpack_matrix,
     chunk_hash,
     discard_build_db,
     promote_build_db,
     DEFAULT_NPROBE,
+    META_BUILD_ID,
     META_NPROBE,
     load_centroids,
     read_codec,
@@ -93,6 +95,11 @@ _FLUSH_EVERY_FILES = 25
 #: streaming and crash-durable. Also the progress cadence. 512 gives ST a deep
 #: sort window while keeping each flush short.
 _EMBED_BUFFER = 512
+#: Also flush a window once it holds this many planned files. `_EMBED_BUFFER`
+#: counts only chunks to embed, so a run of fully-reused files (a re-chunk that
+#: keeps every vector) adds nothing to it and would otherwise sit in memory,
+#: unwritten, until the end of the corpus.
+_EMBED_BUFFER_FILES = 128
 
 
 def _mps_empty_cache() -> Optional[Callable[[], None]]:
@@ -339,12 +346,16 @@ def _flush_window(
     chunks all landed. `window` is `(plan_pos, chunk_idx, text)` triples into
     `plans`; the whole window goes to one `embed_multi` call, which lets
     sentence-transformers length-sort it for tight padding. A file with a chunk
-    in a failed call is not yielded (no hash stamp → retried next run)."""
-    if not window:
+    in a failed call is not yielded (no hash stamp → retried next run). A file
+    whose chunks were all reused has nothing to embed but is still yielded, so
+    its rows are rewritten and stamped."""
+    if not plans:
         return
     results: List[List[Any]] = [[None] * len(plan.texts) for plan in plans]
     try:
-        vectors = list(model.embed_multi([text for _, _, text in window]))
+        vectors = (
+            list(model.embed_multi([text for _, _, text in window])) if window else []
+        )
     except Exception as err:  # pylint: disable=broad-except
         # The window failed (OOM, a provider error); drop the files it touched
         # so none is stamped half-embedded, and keep going.
@@ -393,7 +404,7 @@ def _stream_embed(
         pos = len(window_plans)
         window_plans.append(plan)
         window.extend((pos, li, text) for li, text in enumerate(plan.texts))
-        if len(window) >= _EMBED_BUFFER:
+        if len(window) >= _EMBED_BUFFER or len(window_plans) >= _EMBED_BUFFER_FILES:
             yield from _flush_window(model, window_plans, window, mps_empty, verbose)
             window_plans, window = [], []
     yield from _flush_window(model, window_plans, window, mps_empty, verbose)
@@ -497,13 +508,18 @@ def build_index(
         # seeded from the live index, so the build stays incremental.
         build_path = seed_build_db(wg)
         try:
-            changed = _build_index_locked(
+            changed, limited = _build_index_locked(
                 wg, cache_dir, model, model_name, rebuild, verbose, build_path, detail
             )
         except BaseException:
             discard_build_db(wg)
             raise
+        # Files embedded before a rate limit stopped the build are kept (each
+        # is hash-stamped on its own), then the stop is raised so the gather
+        # reports why the stage did not finish.
         promote_build_db(wg)
+        if limited is not None:
+            raise limited
         return changed
 
 
@@ -516,7 +532,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     verbose: Verbosity,
     build_path: Optional[str] = None,
     detail: Optional[Callable[[str], None]] = None,
-) -> bool:
+) -> Tuple[bool, Optional[UpstreamRateLimited]]:
+    """Build into `build_path`; returns `(changed, limited)`. `limited` is set
+    when the remote embedder was rate limited beyond what we will wait and the
+    build stopped early (the files done so far are written and consistent)."""
     conn = _open_db(wg, build_path)
     cur = conn.cursor()
 
@@ -532,23 +551,26 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         )
         rebuild = True
 
-    # A chunker change alters chunk boundaries but not the model id, so the
-    # model check above can't catch it. Record the chunker version and
-    # rebuild on mismatch, so an upgrade that changes how text is cut
-    # transparently re-chunks + re-embeds each WG on its next gather. A
-    # pre-versioning index (an existing `model` row but no `chunker_version`)
-    # counts as a mismatch — it was built by the old char-window chunker.
+    # A chunker change alters how text is cut (or the line spans stored with
+    # it) but not the model id, so the model check above can't catch it.
+    # Record the chunker version and, on mismatch, re-chunk every file on this
+    # gather. Stored vectors are kept: they are keyed by the hash of the text
+    # embedded, so a chunk whose text survives the change is reused and only
+    # genuinely new text is embedded (a metadata-only change costs no embeds).
+    # A pre-versioning index (an existing `model` row but no `chunker_version`)
+    # counts as a mismatch -- it was built by the old char-window chunker.
     cur.execute("SELECT value FROM meta WHERE key='chunker_version'")
     row = cur.fetchone()
     existing_chunker = row[0] if row else None
+    rechunk = False
     if existing_model and existing_chunker != CHUNKER_VERSION:
         log(
             f"Chunker changed ({existing_chunker or 'pre-v2'} -> "
-            f"{CHUNKER_VERSION}); rebuilding index.",
+            f"{CHUNKER_VERSION}); re-chunking index.",
             verbose,
             level=LogLevel.STATUS,
         )
-        rebuild = True
+        rechunk = True
 
     # Probe the embedding dimension up front (one embed; negligible against
     # a bulk build). Recording it is provenance beyond the model-id string;
@@ -582,6 +604,10 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     if rebuild:
         cur.execute("DELETE FROM chunks")
         cur.execute("DELETE FROM meta")
+    elif rechunk:
+        # Dropping the per-file content stamps makes every file replan; the
+        # rows stay so _plan_file can reuse their vectors by chunk hash.
+        cur.execute("DELETE FROM meta WHERE key LIKE 'hash:%'")
 
     cur.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('model', ?)", (model_name,)
@@ -635,7 +661,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     # Did the vector set change this run? A rebuild or a prune already changed it;
     # any written file below sets it too. Lets the caller skip the topic-map
     # recompute when nothing changed (issue #190).
-    changed = rebuild or bool(orphans)
+    changed = rebuild or rechunk or bool(orphans)
 
     # Content hashes for every eligible file, computed once and reused by both
     # the pending-count pass and the embed pass below, so each file is read at
@@ -692,6 +718,8 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     total_new = 0
     start = time.time()
     files_done = 0
+    # Set by the remote path when the embedder is rate limited past what we wait.
+    limited: Optional[UpstreamRateLimited] = None
     # Chunks written since the last flush — drives the chunk-count side of the
     # write-commit cadence (see `_FLUSH_EVERY_CHUNKS`).
     chunks_since_flush = 0
@@ -782,6 +810,8 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
             inflight: Dict[Any, _FilePlan] = {}
 
             def _fill() -> None:
+                if limited is not None:
+                    return
                 for plan in plans:
                     inflight[pool.submit(model.embed_multi, plan.texts)] = plan
                     if len(inflight) >= max_inflight:
@@ -794,6 +824,22 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                     plan = inflight.pop(fut)
                     try:
                         vectors = list(fut.result())
+                    except UpstreamRateLimited as err:
+                        # Every further request would be refused too: stop
+                        # submitting and cancel what has not started. Running
+                        # files fail fast (the model refuses new requests while
+                        # blocked); any that still complete are kept.
+                        if limited is None:
+                            limited = err
+                            log(
+                                f"Embedding stopped: {err}",
+                                verbose,
+                                level=LogLevel.ERROR,
+                            )
+                            for pending in list(inflight):
+                                if pending.cancel():
+                                    del inflight[pending]
+                        continue
                     except Exception as err:  # pylint: disable=broad-except
                         log(
                             f"Embedding failed for {plan.relpath}: "
@@ -811,6 +857,11 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                         embed_last = time.time()
                 _fill()
 
+    if changed:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            (META_BUILD_ID, uuid.uuid4().hex),
+        )
     conn.commit()
     # Finalise into a standalone single file: fold the WAL back in, then switch
     # to DELETE journal mode so the promoted DB carries no -wal/-shm sidecar.
@@ -826,7 +877,14 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
         verbose,
         level=LogLevel.STATUS,
     )
-    return changed
+    if limited is not None:
+        limited = UpstreamRateLimited(
+            f"embedding stopped, rate limited: {limited} "
+            f"({files_done} files embedded and kept; the rest are retried on "
+            "the next gather)",
+            limited.retry_after,
+        )
+    return changed, limited
 
 
 def index_model(wg: str) -> Optional[str]:
@@ -840,9 +898,9 @@ def index_model(wg: str) -> Optional[str]:
     not bit-identical across runtimes). Read-only: never creates or
     migrates the DB.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         return None
-    conn = _connect_ro(wg)
     try:
         row = conn.execute("SELECT value FROM meta WHERE key='model'").fetchone()
     except sqlite3.Error:
@@ -926,18 +984,18 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
     read). Shared by `search` and `related`.
 
     Read-only path: the index is built and migrated by gather
-    (build_index); the server never writes. `_connect_ro` avoids the
+    (build_index); the server never writes. `_try_connect_ro` avoids the
     makedirs / WAL / ALTER-TABLE migration `_open_db` performs, which is
     unnecessary for a query and unsafe against an immutable index.
     """
-    if not os.path.exists(_db_path_ro(wg)):
+    conn = _try_connect_ro(wg)
+    if conn is None:
         log(
             f"No embeddings index for {wg}. Run `ietf-llm {wg} --embed` first.",
             verbose,
             level=LogLevel.ERROR,
         )
         return None
-    conn = _connect_ro(wg)
     # An index predating this version may lack columns the query selects. We
     # cannot migrate on a read-only connection -- but for the cheap, additive
     # steps we can do it on a fresh write connection first and carry on, so a
@@ -956,15 +1014,13 @@ def _open_query_db(wg: str, verbose: Verbosity) -> Optional[sqlite3.Connection]:
                 verbose,
                 level=LogLevel.PROGRESS,
             )
-            return _connect_ro(wg)
-        conn = _connect_ro(wg)
+            return _try_connect_ro(wg)
         log(
             f"Embeddings index for {wg} is an older schema; re-run "
             f"`ietf-llm {wg}` (or --rebuild-embeddings) to upgrade it.",
             verbose,
             level=LogLevel.ERROR,
         )
-        conn.close()
         return None
     return conn
 

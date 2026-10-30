@@ -141,6 +141,9 @@ def fetch_doc_events(
     objects = _paged_objects(
         f"{_API_BASE}/doc/docevent/"
         f"?doc__group__acronym={wg}"
+        # The group's charter document is in the group too; its events would
+        # render as document events beside the group's own charter event.
+        "&doc__type__in=draft,rfc"
         f"&time__gte={cutoff_param}"
         "&limit=500"
     )

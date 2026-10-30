@@ -19,6 +19,7 @@ from ietf_llm.gather.sources.mail_threads import (
     thread_slug,
     write_thread_files,
 )
+from ietf_llm.gather.sources.message_citations import scan_message_citations
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
@@ -35,6 +36,7 @@ def _write_eml(
     in_reply_to: str = "",
     references: str = "",
     body: str = "body",
+    archived_at: str = "",
 ) -> Path:
     """Like the conftest helper but lets us set Message-Id / In-Reply-To."""
     imap_dir = (
@@ -50,6 +52,8 @@ def _write_eml(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
+    if archived_at:
+        msg["Archived-At"] = f"<{archived_at}>"
     msg.set_content(body)
     path = imap_dir / f"{uid}.eml"
     path.write_bytes(bytes(msg))
@@ -398,6 +402,176 @@ def test_subject_fallback_merges_orphan_reply(isolated_home: Path) -> None:
     threads = build_threads("wg")
     assert len(threads) == 1
     assert len(threads[0].members) == 2
+
+
+def _orphan(isolated_home: Path, uid: int, date: str, subject: str = "Re: Weekly digest") -> None:
+    _write_eml(
+        isolated_home, "wg", uid,
+        subject=subject, sender="Bot <bot@x>", date=date,
+        message_id=f"<m{uid}@x>",
+    )
+
+
+def test_subject_fallback_keeps_distant_same_subject_roots_apart(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2024 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 05 Feb 2025 10:00:00 +0000")  # ~400 days on
+    threads = build_threads("wg")
+    assert sorted(len(t.members) for t in threads) == [1, 1]
+    assert sorted(t.span[0].year for t in threads) == [2024, 2025]  # type: ignore[union-attr]
+
+
+def test_subject_fallback_merges_roots_ten_days_apart(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2025 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 11 Jan 2025 10:00:00 +0000")
+    assert [len(t.members) for t in build_threads("wg")] == [2]
+
+
+def test_subject_fallback_ignores_roots_without_a_reply_prefix(isolated_home: Path) -> None:
+    # A weekly digest reuses its subject verbatim, a week apart: each one is a
+    # new conversation, not a reply to the last.
+    for uid in range(1, 5):
+        _orphan(
+            isolated_home, uid, f"Mon, {uid * 7:02d} Jan 2025 10:00:00 +0000",
+            subject="Weekly digest",
+        )
+    assert [len(t.members) for t in build_threads("wg")] == [1, 1, 1, 1]
+
+
+def test_subject_fallback_prefix_may_follow_a_list_tag(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2025 10:00:00 +0000", subject="[wg] Topic")
+    _orphan(isolated_home, 2, "Fri, 11 Jan 2025 10:00:00 +0000", subject="[wg] Re: Topic")
+    _orphan(isolated_home, 3, "Sat, 12 Jan 2025 10:00:00 +0000", subject="[wg] Topic")
+    # The tagged reply joins; the second bare "[wg] Topic" is a new item.
+    assert sorted(len(t.members) for t in build_threads("wg")) == [1, 2]
+
+
+def test_subject_fallback_window_runs_from_the_last_message(isolated_home: Path) -> None:
+    # A long-running thread: its last reply is 20 days before the new orphan,
+    # although its root is 200 days before it. The orphan belongs to it.
+    _write_eml(
+        isolated_home, "wg", 1, subject="Topic", sender="A <a@x>",
+        date="Wed, 01 Jan 2025 10:00:00 +0000", message_id="<r@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 2, subject="Re: Topic", sender="B <b@x>",
+        date="Fri, 11 Jul 2025 10:00:00 +0000", message_id="<r2@x>",
+        in_reply_to="<r@x>",
+    )
+    _write_eml(
+        isolated_home, "wg", 3, subject="Re: Topic", sender="C <c@x>",
+        date="Thu, 31 Jul 2025 10:00:00 +0000", message_id="<o@x>",
+    )
+    assert [len(t.members) for t in build_threads("wg")] == [3]
+
+
+def test_subject_fallback_chains_a_series_of_close_roots(isolated_home: Path) -> None:
+    # Replies (they carry "Re:") fifty days apart each: each is within the
+    # window of the one before, so the series stays one conversation while a
+    # gap past the window starts a new one.
+    _orphan(isolated_home, 1, "Wed, 01 Jan 2025 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Thu, 20 Feb 2025 10:00:00 +0000")
+    _orphan(isolated_home, 3, "Fri, 11 Apr 2025 10:00:00 +0000")
+    _orphan(isolated_home, 4, "Sat, 11 Oct 2025 10:00:00 +0000")
+    assert sorted(len(t.members) for t in build_threads("wg")) == [1, 3]
+
+
+def test_split_threads_get_distinct_files_and_the_older_keeps_its_slug(
+    isolated_home: Path,
+) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2024 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 05 Feb 2025 10:00:00 +0000")
+    cache_dir = get_wg_file_cache_dir("wg")
+    paths = write_thread_files("wg", cache_dir, verbose=Verbosity.QUIET)
+    assert sorted(Path(p).name for p in paths) == [
+        "2024-01-01-weekly-digest.md",
+        "2025-02-05-weekly-digest.md",
+    ]
+
+
+def _thread_files(wg: str) -> dict[str, bytes]:
+    cache_dir = get_wg_file_cache_dir(wg)
+    paths = write_thread_files(wg, cache_dir, verbose=Verbosity.QUIET)
+    return {Path(p).name: Path(p).read_bytes() for p in paths}
+
+
+def _split_series(isolated_home: Path, uids: list[int]) -> None:
+    dates = [
+        "Mon, 01 Jan 2024 10:00:00 +0000",
+        "Fri, 05 Feb 2025 10:00:00 +0000",
+        "Sat, 11 Mar 2025 10:00:00 +0000",
+        "Wed, 01 Jan 2020 10:00:00 +0000",
+    ]
+    for uid, date in zip(uids, dates):
+        _orphan(isolated_home, uid, date)
+
+
+def test_split_output_is_stable_across_builds_and_uid_order(isolated_home: Path) -> None:
+    _split_series(isolated_home, [1, 2, 3, 4])
+    first = _thread_files("wg")
+    # A second gather over the same cache rewrites identical files.
+    assert _thread_files("wg") == first
+    assert len(first) == 3  # 2020, 2024, and the 2025 pair
+
+    # Same messages cached under a different UID order: same files, same bytes.
+    for eml in (isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list").glob("*.eml"):
+        eml.unlink()
+    _split_series(isolated_home, [4, 3, 2, 1])
+    assert _thread_files("wg") == first
+
+
+def test_tied_dates_merge_deterministically(isolated_home: Path) -> None:
+    same = "Mon, 01 Jan 2025 10:00:00 +0000"
+    _orphan(isolated_home, 1, same)
+    _orphan(isolated_home, 2, same)
+    first = _thread_files("wg")
+    assert len(first) == 1
+    # Swapping which UID each message arrived under changes nothing.
+    for eml in (isolated_home / ".cache" / "ietf-llm" / "imap-cache" / "wg" / "list").glob("*.eml"):
+        eml.unlink()
+    _orphan(isolated_home, 2, same)
+    _orphan(isolated_home, 1, same)
+    assert _thread_files("wg") == first
+
+
+def test_undated_roots_join_the_latest_same_subject_thread(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "Mon, 01 Jan 2024 10:00:00 +0000")
+    _orphan(isolated_home, 2, "Fri, 05 Feb 2025 10:00:00 +0000")
+    _orphan(isolated_home, 3, "")  # no Date header
+    threads = sorted(build_threads("wg"), key=lambda t: t.span[0].year)  # type: ignore[union-attr]
+    assert [len(t.members) for t in threads] == [1, 2]
+    assert any(m.date is None for m in threads[1].members)
+
+
+def test_only_undated_roots_form_one_thread(isolated_home: Path) -> None:
+    _orphan(isolated_home, 1, "")
+    _orphan(isolated_home, 2, "")
+    assert [len(t.members) for t in build_threads("wg")] == [2]
+
+
+def test_message_citations_follow_a_resplit(isolated_home: Path) -> None:
+    # Alice's 2024 message is cited by a same-subject message 400 days later.
+    # Merged, both would sit in one thread file; split, the citation crosses
+    # files and the digest must say so.
+    url = "https://mailarchive.ietf.org/arch/msg/wg/TOKENA"
+    _write_eml(
+        isolated_home, "wg", 1, subject="Weekly digest", sender="Alice <a@x>",
+        date="Mon, 01 Jan 2024 10:00:00 +0000", message_id="<a@x>",
+        archived_at=url, body="the origin",
+    )
+    _write_eml(
+        isolated_home, "wg", 2, subject="Weekly digest", sender="Bob <b@x>",
+        date="Fri, 05 Feb 2025 10:00:00 +0000", message_id="<b@x>",
+        archived_at="https://mailarchive.ietf.org/arch/msg/wg/TOKENB",
+        body=f"following up on {url}",
+    )
+    cache_dir = get_wg_file_cache_dir("wg")
+    write_thread_files("wg", cache_dir, verbose=Verbosity.QUIET)
+    cits = scan_message_citations(cache_dir)
+    resolved = [c for c in cits if c.target]
+    assert len(resolved) == 1
+    assert resolved[0].src_file == "threads/2025-02-05-weekly-digest.md"
+    assert resolved[0].target is not None
+    assert resolved[0].target.file == "threads/2024-01-01-weekly-digest.md"
 
 
 def test_crosspost_duplicate_msgid_does_not_loop(isolated_home: Path) -> None:

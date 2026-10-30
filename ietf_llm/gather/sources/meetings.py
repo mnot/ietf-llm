@@ -3,15 +3,24 @@ import json
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
-from ...atomicio import atomic_open_binary, write_if_changed
+from ...atomicio import atomic_open, atomic_open_binary, write_if_changed
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
+from ...net import (
+    DEFAULT_HEADERS,
+    clean_html,
+    fetch_resource,
+    http_metrics,
+    http_session,
+)
+from ...net.http_governor import host_slot
+from ...net.transport import meter_stream
 from ...paths import (
     ORPHAN_MEETING_CODE,
     agenda_path,
@@ -95,8 +104,8 @@ class MeetingCluster:
     Datatracker lists each interim *session* as its own row. A
     multi-day interim event (or several sessions on one day) is one
     meeting; we cluster contiguous-date interim rows into a single
-    `MeetingCluster` with one canonical `code` (the earliest
-    session's) and a date span. Numbered IETF meetings are never
+    `MeetingCluster` with one canonical `code` (`interim<YYYYMMDD>` of
+    the earliest session's date) and a date span. Numbered IETF meetings are never
     clustered — each is already one event, in its own singleton
     cluster.
 
@@ -104,7 +113,7 @@ class MeetingCluster:
     matching can ask "does this transcript's date fall in the span?".
     """
 
-    code: str  # canonical safe-code, e.g. "interim2026aipref05"
+    code: str  # canonical safe-code, e.g. "interim20260414"
     start: datetime
     end: datetime
     sessions: List[Dict[str, Any]] = field(default_factory=list)
@@ -490,8 +499,9 @@ def _process_cluster(
     os.makedirs(canonical, exist_ok=True)
 
     # Fold in any pre-existing per-session dirs (migration from the
-    # old one-dir-per-row layout).
-    for session in cluster.sessions[1:]:
+    # old one-dir-per-row layout). Every session's: the canonical code is
+    # date-based, so even the first session's old dir is a different one.
+    for session in cluster.sessions:
         _absorb_meeting_dir(
             meeting_dir(destination, _safe_meeting_code(session["number"])),
             canonical,
@@ -646,27 +656,106 @@ def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
     return _download_if_pdf(url, pdf_dest, verbose)
 
 
+#: Largest slide deck we will download. Decks are normally a few MB; this
+#: only stops a pathological upload from filling the cache.
+MAX_PDF_BYTES = 50 * 1024 * 1024
+
+#: Wall-clock budget for one slide download. The per-host slot is held for the
+#: whole transfer and `timeout` only bounds each read, so a server that
+#: trickles bytes could otherwise pin one of datatracker's slots indefinitely.
+MAX_PDF_SECONDS = 120.0
+
+
+class _Abandon(Exception):
+    """A download that exceeded a bound; `oversize` marks a size breach."""
+
+    def __init__(self, oversize: bool) -> None:
+        super().__init__()
+        self.oversize = oversize
+
+
 def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
-    """Check head/stream for PDF content type and download."""
+    """Download `url` to `dest_path` if it serves a PDF within `MAX_PDF_BYTES`
+    and `MAX_PDF_SECONDS`; returns True if it was written.
+
+    The body is streamed so it can be bounded, which means the per-host slot
+    (normally held by `governed_get` only until it returns) is held here
+    across the transfer instead. A deck over the size cap leaves a stub
+    `.pdf.txt` so later gathers do not request it again."""
+    deadline = time.monotonic() + MAX_PDF_SECONDS
     try:
-        p_res = governed_get(
-            url,
-            timeout=60,
-            stream=True,
-            headers=DEFAULT_HEADERS,
+        with host_slot(url):
+            try:
+                res = http_session().get(
+                    url, timeout=60, stream=True, headers=DEFAULT_HEADERS
+                )
+            except requests.RequestException:
+                http_metrics.record(url, 0, 0, error=True)
+                raise
+            meter_stream(url, res)
+            try:
+                res.raise_for_status()
+                c_type = res.headers.get("Content-Type", "").lower()
+                if "application/pdf" not in c_type:
+                    return False
+                if _too_big(res.headers.get("Content-Length")):
+                    raise _Abandon(oversize=True)
+                log(
+                    f"Downloading PDF: {dest_path}...",
+                    verbose,
+                    level=LogLevel.PROGRESS,
+                )
+                _write_bounded(res, dest_path, deadline)
+                return True
+            finally:
+                res.close()
+    except _Abandon as bound:
+        log(
+            f"Skipping {'oversized' if bound.oversize else 'too slow'} PDF: {url}",
+            verbose,
+            level=LogLevel.PROGRESS,
         )
-        p_res.raise_for_status()
-        c_type = p_res.headers.get("Content-Type", "").lower()
-        if "application/pdf" in c_type:
-            log(f"Downloading PDF: {dest_path}...", verbose, level=LogLevel.PROGRESS)
-            with atomic_open_binary(dest_path) as pdf_fh:
-                for chunk in p_res.iter_content(chunk_size=8192):
-                    pdf_fh.write(chunk)
-            return True
-        p_res.close()
+        if bound.oversize:
+            _mark_oversize(dest_path, url)
+        return False
     except (requests.RequestException, OSError):
+        return False
+
+
+def _too_big(content_length: Optional[str]) -> bool:
+    try:
+        return int(content_length or 0) > MAX_PDF_BYTES
+    except ValueError:
+        return False
+
+
+def _write_bounded(res: requests.Response, dest_path: str, deadline: float) -> None:
+    """Stream `res` to `dest_path`; raises `_Abandon` (leaving nothing under
+    the final name) past `MAX_PDF_BYTES` or `deadline`. Content-Length may be
+    absent or wrong, so the bytes are counted as they arrive."""
+    written = 0
+    with atomic_open_binary(dest_path) as pdf_fh:
+        for chunk in res.iter_content(chunk_size=8192):
+            written += len(chunk)
+            if written > MAX_PDF_BYTES:
+                raise _Abandon(oversize=True)
+            if time.monotonic() > deadline:
+                raise _Abandon(oversize=False)
+            pdf_fh.write(chunk)
+
+
+def _mark_oversize(pdf_path: str, url: str) -> None:
+    """Write the `.pdf.txt` stub that stands in for a deck that was too large
+    to fetch; `_download_slide` treats it as already handled."""
+    name = os.path.basename(pdf_path)
+    try:
+        with atomic_open(pdf_path + ".txt") as fh:
+            fh.write(
+                f"# {name}\n\n\n_Deck not downloaded: larger than "
+                f"{MAX_PDF_BYTES // (1024 * 1024)} MB. Source: {url}_\n"
+            )
+    except OSError:
         pass
-    return False
 
 
 def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
@@ -677,12 +766,19 @@ def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
     older ones — both pass through untouched. Without the header it
     would serve the HTML doc-viewer page; a few older minutes are also
     authored directly in HTML even with the header. We clean any HTML
-    response down to readable text so the corpus stays LLM-friendly."""
+    response down to readable text so the corpus stays LLM-friendly.
+    Anything that is not `text/*` (a PDF-uploaded agenda) becomes a
+    one-line pointer rather than decoded binary."""
     log(f"Fetching {url}...", verbose, level=LogLevel.PROGRESS)
     res = fetch_resource(url, headers={"Accept": "text/markdown"})
     if not res:
         return None
-    if "text/html" in res.headers.get("Content-Type", "").lower():
+    ctype = res.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if ctype and not ctype.startswith("text/"):
+        # A PDF (or other binary) upload would decode to mojibake; say what it
+        # is. The block header already carries the URL.
+        return f"[Non-text material ({ctype}); text not extracted.]"
+    if ctype == "text/html":
         cleaned = clean_html(res.text)
         return cleaned or None
     return str(res.text)

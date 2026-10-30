@@ -13,9 +13,18 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from ..gather.sources.citations import normalize_draft_name
-from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, _parse_utc, document_url
+from .cache import (
+    _API_BASE,
+    _DT_BASE,
+    LiveUnavailable,
+    _cached_json,
+    _now_utc,
+    _parse_utc,
+    document_url,
+)
 
 
 @dataclass
@@ -41,7 +50,9 @@ def _resolve_name_uri(uri: Any) -> Optional[str]:
     """Resolve a Datatracker `/api/v1/name/...` URI to its `name` field."""
     if not isinstance(uri, str) or not uri.startswith("/"):
         return uri if isinstance(uri, str) and uri else None
-    body, _ = _cached_json(f"{_DT_BASE}{uri}?format=json")
+    # Cosmetic label only: an unreachable fetch leaves it out rather than
+    # failing the whole lookup.
+    body, _, _ = _cached_json(f"{_DT_BASE}{uri}?format=json")
     if not body:
         return None
     value = body.get("name")
@@ -60,6 +71,17 @@ def _uri_slug(uri: Any) -> Optional[str]:
     return parts[-1] if parts else None
 
 
+def _resolved_json(url: str) -> Optional[Dict[str, Any]]:
+    """`_cached_json`'s body, raising `LiveUnavailable` when it could not be
+    fetched. For the state lookups the eligibility verdict depends on: a state
+    that failed to resolve would otherwise read as "no such state" and yield a
+    confident wrong verdict."""
+    body, fetched, answered = _cached_json(url)
+    if not answered:
+        raise LiveUnavailable(fetched)
+    return body
+
+
 def _state_parts(state_uri: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve a doc `states[]` URI to `(type_slug, state_slug, state_name)`.
 
@@ -68,7 +90,7 @@ def _state_parts(state_uri: str) -> Tuple[Optional[str], Optional[str], Optional
     state's own slug (`wg-lc`, `sub-pub`, …) is the stable key; its `name` is
     display text.
     """
-    body, _ = _cached_json(f"{_DT_BASE}{state_uri}?format=json")
+    body = _resolved_json(f"{_DT_BASE}{state_uri}?format=json")
     if not body:
         return None, None, None
     state_name = body.get("name")
@@ -76,7 +98,7 @@ def _state_parts(state_uri: str) -> Tuple[Optional[str], Optional[str], Optional
     type_ref = body.get("type")
     slug: Optional[str] = None
     if isinstance(type_ref, str) and type_ref.startswith("/"):
-        type_body, _ = _cached_json(f"{_DT_BASE}{type_ref}?format=json")
+        type_body = _resolved_json(f"{_DT_BASE}{type_ref}?format=json")
         if type_body:
             raw_slug = type_body.get("slug")
             slug = raw_slug if isinstance(raw_slug, str) else None
@@ -105,25 +127,26 @@ def _derive_eligibility(
     """Collapse the raw states into the agenda-eligibility signal.
 
     published → past the WG, has an RFC number or a `RFC` draft state.
-    dead → expired, replaced, or a Dead WG Document. in-iesg → any IESG
-    processing state beyond `I-D Exists`, or a stream state of `sub-pub`
-    (handed to the IESG, which has not picked it up yet). in-wg → `I-D
-    Exists` or an active draft with no IESG state.
+    dead → expired, replaced, or a Dead WG Document; or a lapsed `expires`
+    on a draft not in IESG processing. in-iesg → any IESG processing state
+    beyond `I-D Exists`, or a stream state of `sub-pub` (handed to the IESG,
+    which has not picked it up yet). in-wg → `I-D Exists` or an active draft
+    with no IESG state.
     """
     ds = (draft_state or "").strip().lower()
     iesg = (iesg_state or "").strip().lower()
     stream_slug = (stream_state_slug or "").strip().lower()
     if rfc_number or ds == "rfc":
         return "published"
-    if (
-        ds in ("expired", "replaced", "repl")
-        or iesg == "dead"
-        or stream_slug == "dead"
-        or _is_past(expires)
-    ):
+    if ds in ("expired", "replaced", "repl") or iesg == "dead" or stream_slug == "dead":
         return "dead"
     if (iesg and iesg != "i-d exists") or stream_slug == "sub-pub":
         return "in-iesg"
+    # After the IESG test: Datatracker suspends expiry once a draft is past
+    # `I-D Exists` but leaves `expires` in the past, so a lapsed date only means
+    # dead for a draft still in (or never past) the WG.
+    if _is_past(expires):
+        return "dead"
     if iesg == "i-d exists" or ds == "active":
         return "in-wg"
     return "unknown"
@@ -180,7 +203,9 @@ def _classify_states(doc: Dict[str, Any]) -> DocStates:
 
 
 def fetch_draft_status(name: str) -> Tuple[Optional[DraftStatus], datetime.datetime]:
-    """Live status for one draft. `(None, fetched_at)` if the doc is unknown.
+    """Live status for one draft. `(None, fetched_at)` if Datatracker says the
+    doc is unknown (a 404). Raises `LiveUnavailable` if it could not be asked:
+    an outage is never reported as an unknown document.
 
     Honours two Datatracker gotchas: a state's `type` is a URI to resolve to
     a slug, and the `states` list is occasionally returned empty by a flaky
@@ -191,7 +216,9 @@ def fetch_draft_status(name: str) -> Tuple[Optional[DraftStatus], datetime.datet
     url = document_url(canonical)
     if url is None:
         return None, _now_utc()
-    doc, fetched = _cached_json(url)
+    doc, fetched, answered = _cached_json(url)
+    if not answered:
+        raise LiveUnavailable(fetched)
     if doc is None or not doc.get("name"):
         return None, fetched
 
@@ -273,26 +300,33 @@ class DraftReconciliation:
 def _iter_group_adopted_drafts(
     wg: str,
 ) -> Tuple[List[Dict[str, Any]], datetime.datetime]:
-    """All `draft-ietf-<wg>-*` documents Datatracker associates with the group.
+    """All `draft-(ietf|irtf)-<wg>-*` documents Datatracker associates with
+    the group (`irtf` for a research group's adopted drafts).
 
-    Pages `meta.next` (bounded), keeping only adopted WG drafts so the
+    Pages `meta.next` (bounded), keeping only adopted group drafts so the
     individual drafts a group also touches don't leak in. Each object carries
     `name`/`expires` directly, so no per-doc state resolution is needed for
-    the active-or-not check the caller makes.
+    the active-or-not check the caller makes. Raises `LiveUnavailable` if any
+    page could not be fetched: a partial listing would report a clean match.
     """
-    prefix = f"draft-ietf-{wg}-"
+    prefixes = (f"draft-ietf-{wg}-", f"draft-irtf-{wg}-")
     objects: List[Dict[str, Any]] = []
     url: Optional[str] = (
-        f"{_API_BASE}/doc/document/?group__acronym={wg}&type=draft&limit=200&format=json"
+        f"{_API_BASE}/doc/document/?group__acronym={quote(wg, safe='')}"
+        "&type=draft&limit=200&format=json"
     )
     fetched = _now_utc()
     pages = 0
     while url and pages < 20:
-        body, fetched = _cached_json(url)
+        body, fetched, answered = _cached_json(url)
+        if not answered:
+            raise LiveUnavailable(fetched)
         if not body:
             break
         for obj in body.get("objects") or []:
-            if isinstance(obj, dict) and str(obj.get("name") or "").startswith(prefix):
+            if isinstance(obj, dict) and str(obj.get("name") or "").startswith(
+                prefixes
+            ):
                 objects.append(obj)
         nxt = (body.get("meta") or {}).get("next")
         url = f"{_DT_BASE}{nxt}" if isinstance(nxt, str) and nxt else None
@@ -306,6 +340,7 @@ def reconcile_active_drafts(
     """Cross-check the cache's active-draft list against live Datatracker.
 
     Two divergences, in both directions:
+
     - **advanced** — a draft the cache still lists active that Datatracker has
       moved past the WG (IESG processing), published, or expired/replaced.
     - **revived** — an adopted WG draft genuinely still **in the WG** on
@@ -319,6 +354,9 @@ def reconcile_active_drafts(
     requires genuine `in-wg` eligibility, not just a future `expires`: an
     adopted draft that aged out of the cache but has *advanced past the WG*
     must read as "drop it", never as a revived draft to agenda.
+
+    Raises `LiveUnavailable` when Datatracker could not be asked, so an outage
+    never reads as "no divergence".
     """
     active_set = {normalize_draft_name(name) for name in active_names}
     drafts, fetched = _iter_group_adopted_drafts(wg)

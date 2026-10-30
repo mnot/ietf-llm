@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -47,6 +48,31 @@ def _shared_session() -> "requests.Session":
     return _SESSION
 
 
+#: Greedy to the last "@" before the path, query or fragment, so a password
+#: containing a literal "@" is redacted whole.
+_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
+
+
+def redact_userinfo(text: str) -> str:
+    """``text`` with any ``user:password@`` in a URL replaced by ``***@``.
+
+    An operator can put credentials in the configured base URL; ``requests``
+    echoes the URL in its exception messages, and those reach logs and tool
+    output.
+    """
+    return _USERINFO_RE.sub("***@", text)
+
+
+def _redacted(err: requests.RequestException) -> requests.RequestException:
+    """``err`` itself when its message is clean, else a same-typed copy with
+    the userinfo removed."""
+    message = str(err)
+    clean = redact_userinfo(message)
+    if clean == message:
+        return err
+    return type(err)(clean, request=err.request, response=err.response)
+
+
 class UpstreamAuthError(RuntimeError):
     """An OpenAI-compatible upstream rejected our credentials (HTTP 401/403/407).
 
@@ -55,6 +81,18 @@ class UpstreamAuthError(RuntimeError):
     message that names the environment variables to check, so the failure reads
     as actionable guidance rather than a raw ``requests`` traceback.
     """
+
+
+class UpstreamRateLimited(requests.HTTPError):
+    """An upstream answered 429 / 5xx with a ``Retry-After`` longer than we will
+    wait. A plain ``HTTPError`` to callers that only catch that, but bulk
+    ingest recognises it and stops asking: every further request would be
+    refused too. ``retry_after`` is the wait the server asked for, in seconds.
+    """
+
+    def __init__(self, message: str, retry_after: float, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.retry_after = retry_after
 
 
 def env_int(name: str, default: int) -> int:
@@ -134,21 +172,40 @@ def build_headers(
     return headers
 
 
-def _sleep_backoff(attempt: int, resp: requests.Response | None) -> None:
-    # Honour Retry-After when the server sends it, else exponential backoff.
-    # Either way add jitter before sleeping: the rate limit is account-level,
-    # so several concurrent callers share the budget and tend to be throttled
-    # together -- a Retry-After value is identical across them, so without the
-    # jitter they would all wake at the same instant and re-collide. The jitter
-    # spreads the retries out.
-    delay = 0.0
-    if resp is not None:
-        retry_after = resp.headers.get("Retry-After")
-        if retry_after:
-            delay = parse_retry_after(retry_after)
+#: Longest `Retry-After` (seconds) honoured by default. A larger one is not
+#: slept on: the failure is raised instead, since a worker thread (the serve
+#: path's `search_corpus` embeds the query inline) cannot be pinned for the
+#: hour an account-level limit might ask.
+RETRY_AFTER_MAX = 60.0
+
+
+def _retry_after_seconds(resp: requests.Response) -> float:
+    """The wait a response's ``Retry-After`` asks for; 0.0 if absent."""
+    retry_after = resp.headers.get("Retry-After")
+    return parse_retry_after(retry_after) if retry_after else 0.0
+
+
+def _sleep_backoff(
+    attempt: int,
+    resp: requests.Response | None,
+    retry_after_max: float = RETRY_AFTER_MAX,
+) -> bool:
+    """Sleep before a retry; False (without sleeping) if upstream asked for
+    longer than `retry_after_max`, so the caller should give up.
+
+    Honours Retry-After when the server sends it, else exponential backoff.
+    Either way add jitter before sleeping: the rate limit is account-level,
+    so several concurrent callers share the budget and tend to be throttled
+    together -- a Retry-After value is identical across them, so without the
+    jitter they would all wake at the same instant and re-collide.
+    """
+    delay = _retry_after_seconds(resp) if resp is not None else 0.0
+    if delay > retry_after_max:
+        return False
     if delay <= 0.0:
         delay = min(30.0, 2.0**attempt)
     time.sleep(delay + random.uniform(0.0, 1.0))
+    return True
 
 
 def post_json_with_retry(
@@ -158,6 +215,7 @@ def post_json_with_retry(
     *,
     timeout: float,
     max_retries: int,
+    retry_after_max: float = RETRY_AFTER_MAX,
     auth_hint: str = "",
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
@@ -165,7 +223,9 @@ def post_json_with_retry(
 
     Retries up to ``max_retries`` times, honouring ``Retry-After`` and
     otherwise backing off exponentially with jitter. Returns the parsed
-    JSON body; raises the last error once retries are exhausted.
+    JSON body; raises the last error once retries are exhausted, or at once
+    (as ``UpstreamRateLimited``) when ``Retry-After`` exceeds
+    ``retry_after_max`` seconds.
 
     Pass ``session`` (a ``requests.Session``) to reuse one keep-alive
     connection across calls — a bulk embed makes many back-to-back requests
@@ -184,22 +244,45 @@ def post_json_with_retry(
     while True:
         try:
             resp = post(url, headers=headers, json=payload, timeout=timeout)
-        except requests.RequestException:
+        except requests.RequestException as err:
             if attempt >= max_retries:
-                raise
-            _sleep_backoff(attempt, None)
+                clean = _redacted(err)
+                if clean is err:
+                    raise
+                # No chaining: the original exception carries the credentials.
+                raise clean from None
+            _sleep_backoff(attempt, None, retry_after_max)
             attempt += 1
             continue
         if resp.status_code in _AUTH_STATUSES:
             raise UpstreamAuthError(_auth_error_message(url, resp, auth_hint))
         if resp.status_code == 429 or resp.status_code >= 500:
+            wait = _retry_after_seconds(resp)
+            if wait > retry_after_max:
+                raise UpstreamRateLimited(
+                    f"{redact_userinfo(url)} answered HTTP {resp.status_code} and asked for a "
+                    f"{wait:.0f}s wait, longer than the {retry_after_max:.0f}s "
+                    "limit; not retrying",
+                    wait,
+                    response=resp,
+                )
             if attempt >= max_retries:
-                resp.raise_for_status()
-            _sleep_backoff(attempt, resp)
+                _raise_for_status(resp)
+            _sleep_backoff(attempt, resp, retry_after_max)
             attempt += 1
             continue
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return cast(dict[str, Any], resp.json())
+
+
+def _raise_for_status(resp: requests.Response) -> None:
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as err:
+        clean = _redacted(err)
+        if clean is err:
+            raise
+        raise clean from None
 
 
 def _auth_error_message(url: str, resp: requests.Response, auth_hint: str) -> str:
@@ -208,6 +291,6 @@ def _auth_error_message(url: str, resp: requests.Response, auth_hint: str) -> st
     status = f"HTTP {resp.status_code}" + (f" {reason}" if reason else "")
     check = f" Check {auth_hint}." if auth_hint else ""
     return (
-        f"{url} rejected the request ({status}): the credentials are missing, "
+        f"{redact_userinfo(url)} rejected the request ({status}): the credentials are missing, "
         f"invalid, or lack access.{check}"
     )

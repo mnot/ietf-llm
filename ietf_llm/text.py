@@ -22,6 +22,26 @@ _SUBJECT_PREFIX_RE = re.compile(
 )
 
 
+_REPLY_TOKEN_RE = re.compile(
+    r"\s*(?:(re|fwd|fw|aw|sv)\s*:|\[[^\]]+\])\s*", re.IGNORECASE
+)
+
+
+def _has_reply_prefix(subject: str) -> bool:
+    """Whether `subject` carries a reply or forward prefix (`Re:`, `Fwd:`, `Aw:`
+    and the other forms `_normalize_subject` strips), anywhere among its leading
+    prefixes. A bare `[wg]` list tag is not one: `[wg] Re: x` is a reply and
+    `[wg] x` is not."""
+    pos = 0
+    while True:
+        match = _REPLY_TOKEN_RE.match(subject, pos)
+        if match is None:
+            return False
+        if match.group(1):
+            return True
+        pos = match.end()
+
+
 def _normalize_subject(subject: str) -> str:
     """Strip Re:/Fwd:/[wg]-style prefixes for thread grouping."""
     prev = None

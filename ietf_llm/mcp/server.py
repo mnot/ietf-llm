@@ -14,6 +14,7 @@ import anyio
 
 from .. import __version__
 from ..embeddings import _get_embed_model, is_remote_embed_model
+from ..embeddings.storage import _open_ro
 from ..freshness import set_deployment_mode, set_gather_default
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_index_dir
@@ -137,7 +138,7 @@ def _prewarm_embedding_model_async() -> None:
         # corpus scanned before a model is found.
         conn = None
         try:
-            conn = sqlite3.connect(db_path, timeout=30.0)
+            conn = _open_ro(db_path)
             row = conn.execute("SELECT value FROM meta WHERE key='model'").fetchone()
             if row:
                 model_name = row[0]

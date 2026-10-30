@@ -6,9 +6,13 @@ load balancer / orchestrator can probe the container.
 from __future__ import annotations
 from ietf_llm import mcp
 
+import asyncio
 import os
+import threading
+import time
 from typing import Any
 
+import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -166,3 +170,156 @@ def test_corpora_freshness_never_materialises_on_cloud_backend(
     assert summary["tracked"] == 0  # not staged here yet -- degrades cleanly
     # The regression this guards against: no fetch happened just to answer.
     assert not scratch.exists()
+
+
+# --- the probes block on store reads (S3 on the cloud backend): off the loop ---
+
+
+def _runs_on_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def test_health_runs_readiness_off_the_event_loop(isolated_home, monkeypatch):
+    seen: list[bool] = []
+    real = mcp.serve._readiness
+
+    def _spy() -> Any:
+        seen.append(_runs_on_loop())
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_readiness", _spy)
+    TestClient(mcp.serve._http_app(_FakeServer())).get("/health")
+    assert seen == [False]
+
+
+def test_metrics_reads_corpus_ages_off_the_event_loop(isolated_home, monkeypatch):
+    seen: list[bool] = []
+    real = mcp.serve._corpus_ages
+
+    def _spy() -> Any:
+        seen.append(_runs_on_loop())
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_corpus_ages", _spy)
+    resp = TestClient(mcp.serve._http_app(_FakeServer())).get("/metrics")
+    assert resp.status_code == 200
+    assert seen == [False]
+
+
+def test_health_body_does_not_disclose_the_index_path(isolated_home):
+    body = TestClient(mcp.serve._http_app(_FakeServer())).get("/health").json()
+    assert "index_dir" not in body
+    assert body["index_dir_usable"] is True
+
+
+def test_freshness_sweep_is_shared_between_probes(isolated_home, monkeypatch):
+    """/health and /metrics both sweep; one sweep serves them for a few
+    seconds rather than listing the store on every probe."""
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    calls: list[int] = []
+    real = mcp.serve._list_wgs
+
+    def _counting() -> Any:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_list_wgs", _counting)
+    mcp.serve._corpora_freshness()
+    mcp.serve._corpora_freshness()
+    assert [name for name, _ in mcp.serve._corpus_ages()] == ["tls"]
+    assert len(calls) == 1
+
+
+def test_freshness_sweep_refreshes_after_the_ttl(isolated_home, monkeypatch):
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    assert mcp.serve._corpora_freshness()["count"] == 1
+    _seed_corpus(isolated_home, "quic", "2025-01-01T00:00:00Z")
+    assert mcp.serve._corpora_freshness()["count"] == 1  # still cached
+    monkeypatch.setattr(mcp.serve, "_SWEEP_TTL", 0.0)
+    assert mcp.serve._corpora_freshness()["count"] == 2
+
+
+# --- a stalled or failing store must not queue probes behind it ---
+
+
+def test_probe_serves_the_stale_sweep_while_a_refresh_is_in_flight(
+    isolated_home, monkeypatch
+):
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    assert mcp.serve._corpora_freshness()["count"] == 1
+    monkeypatch.setattr(mcp.serve, "_SWEEP_TTL", 0.0)  # force a refresh
+    entered, release = threading.Event(), threading.Event()
+    real = mcp.serve._list_wgs
+
+    def _blocked() -> Any:
+        entered.set()
+        release.wait(5)
+        return real()
+
+    monkeypatch.setattr(mcp.serve, "_list_wgs", _blocked)
+    refresher = threading.Thread(target=mcp.serve._corpus_ages)
+    refresher.start()
+    try:
+        assert entered.wait(5)
+        started = time.monotonic()
+        assert [name for name, _ in mcp.serve._corpus_ages()] == ["tls"]
+        assert time.monotonic() - started < 1.0  # did not wait for the refresh
+    finally:
+        release.set()
+        refresher.join(5)
+
+
+def test_a_failed_sweep_is_remembered_not_rerun_by_each_probe(
+    isolated_home, monkeypatch
+):
+    calls: list[int] = []
+
+    def _failing() -> Any:
+        calls.append(1)
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(mcp.serve, "_list_wgs", _failing)
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="store down"):
+            mcp.serve._corpus_ages()
+    assert len(calls) == 1
+    # Once the failure is forgotten the store is asked again.
+    monkeypatch.setattr(mcp.serve, "_SWEEP_FAILURE_TTL", 0.0)
+    with pytest.raises(RuntimeError):
+        mcp.serve._corpus_ages()
+    assert len(calls) == 2
+
+
+def test_a_failed_refresh_serves_the_previous_sweep(isolated_home, monkeypatch):
+    _seed_corpus(isolated_home, "tls", "2025-01-01T00:00:00Z")
+    assert mcp.serve._corpora_freshness()["count"] == 1
+    monkeypatch.setattr(mcp.serve, "_SWEEP_TTL", 0.0)
+
+    def _failing() -> Any:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(mcp.serve, "_list_wgs", _failing)
+    assert mcp.serve._corpora_freshness()["count"] == 1
+
+
+def test_probes_use_their_own_limiter(isolated_home, monkeypatch):
+    seen: list[Any] = []
+    real = mcp.serve.anyio.to_thread.run_sync
+
+    async def _spy(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("limiter"))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(mcp.serve.anyio.to_thread, "run_sync", _spy)
+    client = TestClient(mcp.serve._http_app(_FakeServer()))
+    client.get("/health")
+    client.get("/metrics")
+    assert len(seen) == 2
+    assert all(
+        limiter is not None and limiter.total_tokens == mcp.serve._PROBE_SLOTS
+        for limiter in seen
+    )

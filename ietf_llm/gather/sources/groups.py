@@ -32,15 +32,11 @@ from ...atomicio import write_if_changed
 from ...config import service as service_config
 from ...freshness import record_gather
 from ...log import LogLevel, Verbosity, log
-from ...net import (
-    DEFAULT_HEADERS,
-    governed_get,
-    http_error_detail,
-    http_metrics,
-)
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...paths import get_index_dir
 from ...singletons import groups as reader
 from . import _mirror
+from .charter import approved_rev
 from .datatracker_history import chair_changes, chair_event_title
 
 _API = "https://datatracker.ietf.org/api/v1"
@@ -112,14 +108,12 @@ def _fetch_all(url: str, verbosity: Verbosity) -> Optional[List[Dict[str, Any]]]
             response.raise_for_status()
             body = response.json()
         except (requests.RequestException, ValueError) as err:
-            http_metrics.record(next_url, 0, 0, error=True)
             log(
                 f"Groups: fetch {next_url} failed: {http_error_detail(err)}",
                 verbosity,
                 LogLevel.PROGRESS,
             )
             return None
-        http_metrics.record(next_url, response.status_code, len(response.content))
         objects.extend(o for o in body.get("objects") or [] if isinstance(o, dict))
         nxt = (body.get("meta") or {}).get("next")
         next_url = f"https://datatracker.ietf.org{nxt}" if nxt else None
@@ -235,31 +229,6 @@ def _plain(text: Any) -> str:
     return " ".join(_TAG_RE.sub("", str(text or "")).split())
 
 
-#: Datatracker charter state `approved`; its URI ends in this id.
-_CHARTER_APPROVED = "88"
-
-
-def _approved_rev(charter: Dict[str, Any]) -> Tuple[str, str]:
-    """`(revision of the approved charter, status)` for a charter document.
-
-    A plain revision (`09`) is an approved charter. A dashed one (`01-05`) is
-    a working revision: with a non-zero base, a recharter is in progress and
-    the approved text is the base revision (`01`); with base `00` the charter
-    was never approved. The status is "" when the document's latest revision
-    is the approved one, else `rechartering` or `unapproved`.
-    """
-    rev = str(charter.get("rev") or "")
-    approved_state = any(
-        _slug(s) == _CHARTER_APPROVED for s in charter.get("states") or []
-    )
-    if not rev or "-" not in rev or approved_state:
-        return rev, ""
-    base = rev.split("-", 1)[0]
-    if base.strip("0"):
-        return base, "rechartering"
-    return rev, "unapproved"
-
-
 def build_groups(
     groups: List[Dict[str, Any]],
     areas: List[Dict[str, Any]],
@@ -279,7 +248,7 @@ def build_groups(
             continue
         area, area_name = parents.get(obj.get("parent") or "", ("", ""))
         charter = revs.get(obj.get("resource_uri")) or {}
-        rev, status = _approved_rev(charter)
+        rev, status = approved_rev(charter)
         out.append(
             {
                 "acronym": acronym,
@@ -516,20 +485,15 @@ def _fetch_charter(doc: str, rev: str) -> Optional[str]:
     try:
         response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=_TIMEOUT)
     except requests.RequestException as err:
-        http_metrics.record(url, 0, 0, error=True)
         log(
             f"Groups: fetch {url} failed: {http_error_detail(err)}", level=LogLevel.WARN
         )
         return None
-    size = len(response.content)
     if response.status_code in _ABSENT_STATUSES:
-        http_metrics.record(url, response.status_code, size, error=True)
         return ""
     if not response.ok or not response.text:
-        http_metrics.record(url, response.status_code, size, error=True)
         log(f"Groups: fetch {url} returned {response.status_code}", level=LogLevel.WARN)
         return None
-    http_metrics.record(url, response.status_code, size)
     return response.text
 
 

@@ -179,7 +179,7 @@ park the hot index on tmpfs while the corpus comes from elsewhere.
 │   ├── files/charters/<acronym>.md        #   charter + current milestones — the embedded text
 │   ├── files/state/                       #   writer bookkeeping: watermarks, raw feed rows (ships in the seed)
 │   └── last-gathered                      #   ISO-8601 sentinel; the index lives at <index dir>/_groups/embeddings.db
-├── .http-cache.json                       # shared ETag store (conditional GET)
+├── .http-cache/_shared/                   # shared ETag store (conditional GET): index.json + one gzip per body
 └── _github-users.json                     # shared login → name / company cache
 ```
 
@@ -193,7 +193,12 @@ Key invariants:
   skipped by `grep_corpus` unless asked for — the threads hold the same text).
   `threads/<date>-<slug>.md` is one file per reconstructed thread — built from
   RFC 5322 In-Reply-To / References headers with a normalised-subject safety
-  net, quoted runs collapsed, and per-message headers in **UTC** (so the
+  net (it only folds a root whose subject carries a `Re:`/`Fwd:` prefix, and
+  only into a conversation whose last message is within 60 days, so a
+  recurring subject that is reused verbatim -- a weekly digest, `I-D Action:`
+  notices -- becomes one thread per item rather than one for the list's whole
+  life), quoted
+  runs collapsed, and per-message headers in **UTC** (so the
   chunker's date re-parse sorts). `<date>` is the thread's *first* message, so
   it can lag the last-activity date; the overview surfaces the actual `File`
   path to bridge that. The thread files are what an LLM reads; the year files
@@ -222,6 +227,17 @@ Key invariants:
   are summarised in the header rather than given a section each. Archives
   without a `pulls` key (the REST fallback shape, used when a repo publishes no
   gh-pages `archive.json`) simply produce no PR tree.
+- **The REST fallback never writes a truncated issue.** Without a gh-pages
+  archive the issues come from the API, one comments request per issue. If paging
+  an issue's comments fails (a non-200, or a dropped connection) that issue keeps
+  its previously cached copy — it is not written with the comments fetched so
+  far, which would pass for the whole discussion and lose the closing comment —
+  and the other issues still update. A throttle (429, or 403 with a
+  `Retry-After`) stops the repo at once, as do three failures in a row, and every
+  issue not reached keeps its cached copy. The gather logs one warning with how
+  many issues were left stale and why (including the `Retry-After` when it is over
+  the transport's limit); they are retried next gather. An issue that was never
+  cached is skipped rather than written partial.
 - **An archive is third-party content, so it is schema-normalised.** The
   gh-pages `archive.json` is whatever the repo owner published, and its `repo`
   and each record's `number` could become path components. `github_schema`
@@ -252,7 +268,15 @@ Key invariants:
   multiple emails, GitHub logins — into one canonical `Person`, resolving
   addresses through Datatracker's curated email→person table (exact-match, so
   collision-free) and linking GitHub logins by each person's Datatracker
-  `github_username` profile (`people.linking`). A `Person` carries
+  `github_username` profile (`people.linking`). Both lookups are cached across
+  corpora (`_datatracker-people.json`, `_datatracker-github.json`); a "not on
+  Datatracker" answer is re-asked after 30 days (`identity_cache.TTL_SECONDS`)
+  and the `github_username` index after 7 (`INDEX_TTL_SECONDS`), since people
+  add addresses and profile resources later. Resolved per-login entries are
+  refreshed after 30 days, at most 50 entries (100 requests) per corpus gather;
+  a refresh that fails keeps the old value and is not retried for another 30
+  days (`checked_at`). A hit for an address is kept: it always wins a merge
+  over a miss. A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
@@ -344,9 +368,30 @@ Key invariants:
   text.
 - **`ballots/<draft>.md`** holds the current IESG ballot (latest
   position per AD, DISCUSS text inline) for drafts with ballot
-  activity in the `--months` window.
+  activity in the `--months` window. Only the document's newest
+  `BallotDocEvent` is read (each position event names its ballot), so a
+  recharter or a re-ballot never folds closed ballots into the tally.
+  Positions from people who are no longer on the IESG or IRSG are listed
+  under "Former balloters" and left out of the tally; the current set
+  comes from the `iesg` (role `ad`) and `irsg` group roles. A ballot whose
+  balloters have all left says so instead of showing a tally.
+  `charter-*` documents get the same treatment and are headed as charter
+  ballots. If the scoping, history or role-list fetch fails, the ballot
+  files are left as the last gather wrote them (a guess at who is current
+  would rewrite them wrongly); only a successful answer of "no activity"
+  removes them. Accepted limitations: a first-ever gather during a
+  role-list outage writes no ballot files; the timeline digest, rebuilt
+  from events, has no ballot rows after a failed gather until the next
+  good one; and the newest ballot is the one with the latest position
+  event, so between a ballot being opened and its first vote the
+  previous ballot still shows. `review_record` applies the newest-ballot
+  rule live, but not the former-balloter rule, so the two can differ on a
+  departed AD's position.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
-  version, and vector dimension; a change to any forces a rebuild, and the model
+  version, and vector dimension; a model or dimension change forces a rebuild,
+  and a chunker-version change re-chunks every file on the next gather while
+  reusing stored vectors by `chunk_hash` (so a change that leaves chunk text
+  alone, such as line-number fixes, embeds nothing). The model
   id is read back at query time to resolve the same backend. The `chunks` table
   carries `start_line`/`end_line`, `chunk_date`, `labels`, `state`, `url`,
   `duplicate_of`, `closing_rationale` for faceted search, and a `chunk_hash`
@@ -369,7 +414,17 @@ Key invariants:
   k-means) is **skipped when the index didn't change** and a sidecar already
   exists — `build_index` returns whether anything was embedded or pruned, so a
   no-op re-gather (or a seeded corpus whose delta was zero) doesn't re-cluster for
-  nothing (#190).
+  nothing (#190). Each build that changes the index stamps a fresh `build_id`
+  into its `meta`, and the sidecar records the `index_build_id` it was derived
+  from; a mismatch (a crash after the index was promoted but before the map was
+  written) forces the recompute, so themes cannot describe a previous build.
+  The stage (its skip decision and the clustering) reads the index the gather
+  just built, under `storage.index_reads_from_workspace()` (a `ContextVar`, so it
+  is per-thread and per-task): on the cloud store the ordinary read path would
+  resolve to the previously *published* version, so the themes would cluster
+  last gather's corpus, and the version would be staged a second time (the
+  workspace was already seeded from it). Any new index-reading check in this
+  stage belongs inside that wrapper.
 - **The centroids are reused, reader-side, for two cross-corpus jobs.**
   *Centroid routing* (`corpus/routing.py`, the `which_corpus` tool) scores each corpus
   as the max cosine of the query against its centroids and abstains below a
@@ -406,9 +461,13 @@ Key invariants:
 - **`gather-metrics.json`** records the upstream HTTP load of the last
   run — request counts (transferred / revalidated / error), bytes, a
   per-host breakdown, and a top-N of URL patterns. `net/http_metrics.py`
-  accumulates it at the two egress chokepoints (`datatracker._get_json`
-  and `net.fetch_resource`) and the CLI prints a one-line summary at
-  the end of a gather. Beside the sentinel (one level above `files/`),
+  accumulates it at the one egress chokepoint, `net.governed_get` (status and
+  body size per response, an error on a transport failure), so every host
+  (Datatracker, GitHub, mailarchive, draft and RFC hosts) is counted once
+  per call (adapter retries and redirect hops are not counted separately) and
+  callers never record themselves; a `stream=True` fetch is metered
+  by `Content-Length`. The CLI prints a one-line summary at the end of a
+  gather. Beside the sentinel (one level above `files/`),
   so it is neither indexed nor exported.
 - **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
   whole published RFC series from rfc.fyi (three JSON blobs), refreshed
@@ -544,7 +603,8 @@ ietf_llm/
 │   ├── names.py            # name keys for identity lookup; role-account detection
 │   ├── meetings.py         # link-only meeting participation (attendance id / speaker name)
 │   ├── digest.py           # render the _people.md digest
-│   └── positions.py        # heuristic position / poll / chair-statement extraction
+│   ├── poll_choice.py      # option-poll vote detection + hedge/negation helpers
+│   └── positions.py        # heuristic position / chair-statement extraction, tally rendering
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── log.py                  # stderr output leaf: log(), Verbosity/LogLevel, _use_color
@@ -554,7 +614,8 @@ ietf_llm/
 │                           # (atomic_open / write_if_changed) + advisory file locks
 ├── net/                    # gather-side HTTP egress (the offline read path imports none of it)
 │   ├── transport.py        # pooled retrying session, host-governed GET,
-│   │                       # metered fetch_resource, clean_html (re-exported from net/)
+│   │                       # metered chokepoint (governed_get), fetch_resource, clean_html
+│   │                       # (re-exported from net/)
 │   ├── http_governor.py    # per-host concurrency slots (datatracker kept tight)
 │   └── http_metrics.py     # per-gather upstream HTTP egress accounting (thread-local)
 ├── datatracker_api.py               # IETF group metadata via the Datatracker API
@@ -582,7 +643,7 @@ ietf_llm/
 │   ├── cli.py                  # build_parser: the `ietf-llm` gather argument parser
 │   ├── sequencer.py            # _gather_one / run_gather: walk one corpus through the gather stages
 │   └── sources/                # stage implementations: one module per thing gathered
-│       ├── charter.py              # charter text artifact (rev from doc API)
+│       ├── charter.py              # charter text artifact (approved rev from doc API; names a recharter proposal)
 │       ├── group_info.py           # group.md: name / status / area / Additional Resources
 │       ├── drafts.py               # WG drafts + RFCs via doc API; --draft extras
 │       ├── recent_drafts.py        # --new-drafts: -00 submissions in the window
@@ -590,8 +651,9 @@ ietf_llm/
 │       ├── meetings.py             # minutes/agenda/slides via meeting API; clustering; attendance rosters
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
-│       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
-│       ├── mail_threads.py         # reconstruct per-thread .md files
+│       ├── mbox.py                 # IMAP sync + per-year .txt; --mailing-list extras
+│       ├── imap_fetch.py           # FETCH into the per-list cache; halves a short batch to find undeliverable UIDs
+│       ├── mail_threads.py         # reconstruct per-thread .md files; owns THREAD_MSG_HEADER_RE (the shared `### [N]` section-header parse)
 │       ├── github.py               # archive.json (gh-pages) or REST API
 │       ├── github_schema.py        # normalise the archive's shape (download and read)
 │       ├── github_users.py         # resolve logins → real name + company
@@ -704,14 +766,43 @@ Grouped by job:
   denominator (issues #108, #215). It is also the only path to content the
   index deliberately omits — chiefly the skipped revision stack of a concluded
   draft. Matching is per line, so a phrase split by a mail wrap misses; the
-  tool says so on every empty result. `raw/` and `github/` are skipped by
+  tool says so on every empty result. A line is what lies between `\n`s, as in
+  `read_file_section` and the chunk spans, so a form feed (the page break in a
+  draft) or other Unicode line separator does not end one: `^` anchors only
+  after a `\n`, and `^Heading` misses text after a mid-line `\x0c`
+  (`regexscan.split_lines`). `raw/` and `github/` are skipped by
   default (they duplicate `threads/` and `issues/`) unless the caller's glob
   names them, and the skip is reported so the denominator stays honest. The
   line view is bounded twice: `max_per_file` (optional) keeps at most N
   matching lines per file, then `limit` bounds the total. The per-file cap is
-  applied first, at retention time in `_scan_file`, so a noisy file cannot
-  starve the files sorted after it; counts stay complete and the footer
-  attributes omitted lines to the cap that removed them. Hits
+  applied first, at retention time in `regexscan._scan_file`, so a noisy file
+  cannot starve the files sorted after it; counts stay complete and the footer
+  attributes omitted lines to the cap that removed them.
+
+  **A caller's regex is bounded; a literal is not.** `re` runs a pattern in one
+  uninterruptible C call, so a catastrophic one (`(\w|\w)*X`) cannot be
+  stopped in a thread — `_offload` can only abandon the worker, which keeps
+  burning CPU and holding its pool slot (issue #293). With `regex=True`, both
+  backends therefore hand the scan to a child process (`python -m
+  ietf_llm.regexscan`, which imports neither torch nor the MCP server, so it
+  starts in tens of milliseconds — a few hundred for an RFC scan, which loads numpy) and
+  the parent kills it at the budget: 20s for a gathered corpus, and the RFC
+  series' own `_RFC_SCAN_BUDGET_S`. The child stops itself at the budget
+  between files / sections (the reply then says how far it got), is killed
+  `KILL_SLACK_S` later if one match call never returns (no counts survive), and
+  arms `SIGALRM` as a backstop should the server die mid-scan. Either way the
+  reply is "INCOMPLETE SCAN", never a zero; a child that crashes or answers
+  with garbage gets a fixed "nothing can be concluded" reply (its stderr goes to
+  the server log, not the client). Kills and failures are logged at WARN and
+  counted in `ietf_llm_grep_scan_stops_total{reason}`. The child is bounded in
+  time only: it has no memory cap (about 1.5 GB resident was measured for one
+  pathological pattern over a single very long line), and up to
+  `IETF_LLM_SCAN_CONCURRENCY` run at once, so deployments size for that. A
+  hostile client can hold all the scan slots (about 23s per call); other tools
+  are unaffected. Accepted limits (`docs/mcp-server.md`). The parent owns all store state
+  (cache dir, RFC index path) and never runs the user's pattern itself: the
+  child returns finished, already-elided lines. A literal pattern is escaped, so
+  it cannot backtrack catastrophically and scans in-process. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
 
@@ -750,11 +841,19 @@ Grouped by job:
 - **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(rfc)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
-  text. A body is on disk only where a corpus that published the RFC was
-  gathered with `--rfcs`, so `get_rfc_info` ends every entry by saying whether this
-  one is (with the `read_file_section` call) or is not reachable — a
+  text. `get_rfc_info` ends every entry with a body note (`_body_note`) naming
+  which of three cases holds: the RFC full-text corpus has it (the note points
+  at `get_rfc_section`, the usual case); failing that, a corpus gathered with
+  `--rfcs` holds a copy (the note gives the `read_file_section` call); or
+  neither does, and the note says the body is not reachable from here. A
   well-formed metadata response otherwise reads as the document itself
   (issue #218).
+  `search_rfc_text` bounds its own reply: `limit`, `sections_per_rfc` and
+  `snippet_chars` are clamped (50, 10, 2000), and because those do not bound
+  their product, the reply as a whole stops at about 40,000 characters (the
+  budget `get_draft` / `get_issue` / `read_file_section` use). A cut reply
+  opens and closes with a `PARTIAL RESULT` banner giving the number of
+  sections left out; the first section is always shown.
 - **Live chair-workflow facts (gated, networked):** `meeting_schedule`,
   `draft_status`, `review_record`, and `overview(corpus, live=True)` read
   *live* from Datatracker, so they share the gather gate (see "The networked
@@ -765,8 +864,12 @@ Grouped by job:
 
 Every wrapper offloads its blocking `tool_*` body to a worker thread
 with a per-call deadline (`IETF_LLM_TOOL_TIMEOUT`, default 120s) so a
-stuck call fails fast instead of hanging to the client ceiling, and
-guards against an unknown corpus name (a read-only existence check, so a
+stuck call fails fast instead of hanging to the client ceiling.
+`grep_corpus`, the one tool whose work can run for tens of seconds, draws its
+worker from its own `anyio.CapacityLimiter` (`IETF_LLM_SCAN_CONCURRENCY`,
+default 4) rather than anyio's 40-token default pool, so a flood of scans
+queues against itself instead of starving every other tool. The wrappers also
+guard against an unknown corpus name (a read-only existence check, so a
 typo neither creates a cache dir nor returns a hollow result).
 
 The full routing brain (`data/mcp-instructions.md`) is handed to compliant
@@ -842,9 +945,19 @@ memoized: the cache lives on the store. It is the storage seam's own read — th
 same class as `local_cache_dir` — not a new networked-read exception. `get_rfc_info`'s
 body note uses it, asking the publishing WG first and the rest concurrently, so a
 metadata lookup never downloads a corpus; `read_file_section` is where the bytes
-are staged, and only for the corpus that has the file. (`mcp/drafts.py`'s
-`_find_latest_draft_file` has the same sweep shape but needs a listing and then
-the bytes, so it is not served by this.)
+are staged, and only for the corpus that has the file.
+
+`list_files(corpus, subdir)` is its listing counterpart, for a caller that cannot
+build the exact name: the names directly inside `files/<subdir>`, answered from
+the same manifest (or from the staged directory), never from the content.
+`mcp/drafts.py`'s `_find_latest_draft_file` uses it to find a draft's newest
+revision: the owning group's corpus (derived from `draft-ietf-<wg>-` /
+`draft-irtf-<rg>-`) is asked first and a hit there ends the lookup; otherwise
+every corpus is asked concurrently and the highest revision wins. Only the
+corpus holding the winner is then staged, so one `get_draft` on a cold replica
+downloads one corpus rather than the fleet. A draft cached both under its owner
+and elsewhere is therefore read from the owner, even if the other copy is a
+revision newer.
 
 `documents.json` reads through `local_corpus_dir` (a request already committed to
 materialising the corpus for a real read). The `last-gathered` / `seed-source`
@@ -960,7 +1073,12 @@ write-throughs its own entry, so it never serves config it just wrote.
   to a full gather rather than failing it. Alongside the seed, `hydrate_gather_caches` /
   `persist_gather_caches` (`gather/sources/cache_sync.py`) round-trip the gather
   accelerator caches through the `KvStore` — the datatracker ETag store sharded
-  per corpus (`corpora/<name>/gather-cache/`, lease-serialised plain RMW), the
+  per corpus (`corpora/<name>/gather-cache/http-cache.tar`, one tar of the store
+  directory; lease-serialised plain RMW; uploaded only when something beyond
+  `last_used` changed, or a `last_used` is over a day past the stored one, since
+  a gather touches nearly every entry and would otherwise re-send the whole store
+  each time, so the stored timestamps, and the 90-day age eviction that reads
+  them, have day granularity), the
   shared GitHub/datatracker identity maps (`fleet/gather-cache/`, CAS-merge), and
   the effort catalog (`fleet/catalog/`, a shared fleet singleton, last-writer-wins),
   and the per-list IMAP mail cache (`corpora/<name>/gather-cache/imap/<list>/`,
@@ -1034,7 +1152,10 @@ Concretely, the gather layer reads from the API for:
   alternate-archive resource here.
 - **Charter** — revision from the document API, then the published
   plain-text artifact at `www.ietf.org/charter/<doc>-<rev>.txt`
-  (the datatracker doc page is HTML-only).
+  (the datatracker doc page is HTML-only). While a group is rechartering the
+  document's revision is a dashed working draft (`03-02`); `charter.txt`
+  holds the approved base revision (`03`) and a header line names the
+  proposal.
 - **Documents** — WG drafts, RFCs, session polls — via
   `/api/v1/doc/document/?group__acronym=<wg>&type=…`, paginated through
   `datatracker.iter_group_documents`.
@@ -1043,7 +1164,13 @@ Concretely, the gather layer reads from the API for:
   and the linked meeting/material objects (`meetings.get_meeting_links`).
   Material *content* is fetched from its canonical URL
   (`/meeting/<n>/materials/<docname>`) with `Accept: text/markdown`,
-  resolving to the latest rendered markdown / text / PDF.
+  resolving to the latest rendered markdown / text / PDF. A non-`text/*`
+  agenda or minutes (a PDF upload) is written as a one-line pointer, not
+  decoded. Slide PDFs are capped at 50 MB (a stub `.pdf.txt` records an oversize
+  deck so it is not requested again), 120 s per download (the host slot is
+  held throughout) and 300 extracted pages, and each
+  `.pdf.txt` carries a meeting-context header that is refreshed in place
+  (the source `.pdf` may have been dropped).
 - **Roles, ballots, governance events** — the `group/role`, `iesg`,
   and document-event endpoints (`datatracker.py`, `ballots.py`,
   `datatracker_history.py`). Chair appointments and departures come
@@ -1051,7 +1178,10 @@ Concretely, the gather layer reads from the API for:
   A, B from A"), which carry the names inline and are dated by when the
   Datatracker record was edited, but only for changes since the log began; a
   group's founding chairs have no appointment event. Names are mapped to the
-  people registry's spelling where it holds a clean one.
+  people registry's spelling where it holds a clean one. Ballot fetches
+  return "unreachable" (not "none") on failure, so a Datatracker outage
+  cannot clear the gathered ballot files; their scoping URL carries a
+  day-rounded cutoff so it can revalidate against the ETag cache.
 
 `BeautifulSoup` survives only where there is no structured source:
 `net.clean_html` cleans the MCP `get_by_url` tool's arbitrary
@@ -1066,8 +1196,27 @@ Re-gathers should transfer as little as possible. The API exposes the
 affordances; we use all three:
 
 - **Conditional GET.** `datatracker._get_json` persists each endpoint's
-  ETag (`.http-cache.json`) and revalidates with `If-None-Match`; an
+  ETag (`.http-cache/`) and revalidates with `If-None-Match`; an
   unchanged endpoint returns an empty 304 and we reuse the cached body.
+  The store is a directory (`gather/sources/http_cache.py`): one gzip file
+  per body, named by a hash of the URL and ETag, and a small `index.json`
+  mapping each URL to its ETag, body file, size and last use. A gather
+  loads the index and reads only the bodies it revalidates; the single
+  JSON file this replaced held every body (~100 MB on a real cache) and
+  was parsed and rewritten whole. Eviction at flush is by age (90 days
+  since last use), then entry count (10,000), then compressed bytes
+  (256 MB), keeping the most recently used. A single-file store from an
+  earlier version is migrated on first load; a corrupt or truncated one
+  yields an empty store (a refetch), never a failed gather. A 304 whose stored
+  body turns out to be missing or corrupt is retried once without
+  `If-None-Match` rather than reported as no data (which would end a paged
+  listing early). An index written by a newer layout is left untouched.
+  Migration keeps only sound entries (a `https://datatracker.ietf.org/` URL, an
+  ETag, a body that is a JSON object); junk left in real caches by old test runs
+  is dropped. Known limit: two processes sharing the local `.http-cache/_shared`
+  directory each flush their own view of the index, last writer wins (as the
+  single file did), so one can lose the other's new entries; a union merge by URL
+  at flush is the place to start for #110.
   Covers the bulk of per-gather metadata (document lists, the meeting
   batch, roles). The materials *content* endpoint ignores conditional
   GET, so it is gated differently (below).
@@ -1080,6 +1229,21 @@ affordances; we use all three:
   re-fetch minutes/agenda content only when the rev changes — fixing
   the old skip-if-exists that froze minutes forever. Slides (large
   metadata, rarely revised) and polls (immutable) stay skip-if-exists.
+
+Being a good neighbour also means not obeying an upstream's clock blindly. The
+shared session retries 429/5xx, but a `Retry-After` beyond
+`transport.RETRY_AFTER_MAX` (60 s) is not slept on: the response is returned
+as-is and the stage's own error handling runs, because the sleep happens
+holding a per-host slot and urllib3's own ceiling is six hours. The remote
+embedding client applies the same rule (30 s for the single query-time embed,
+which also gets its own one-retry budget, `IETF_LLM_EMBED_QUERY_RETRIES`). There
+an over-cap header raises `UpstreamRateLimited` (an `HTTPError` carrying the
+wait the server asked for), and the model then refuses new requests for up to
+60 s, so a bulk embed stops asking at once instead of sending every remaining
+window to be refused. `build_index` stops submitting files, keeps the ones
+already embedded (each is stamped on its own; the rest retry next gather), and
+raises the error, so the gather's stage error names the rate limit and the
+requested wait.
 
 ### Writers are write-if-changed and atomic
 
@@ -1150,6 +1314,20 @@ servers) can run at once. The safety model:
   `immutable=1`) — the only way to read a WAL DB from a read-only mount,
   where the `-shm` sidecar otherwise can't be created. search() closes
   its connection on every return so a query never pins the WAL.
+  Every read opens `mode=ro` (`storage._connect_ro`), so a read can never
+  create an index: an absent one raises `sqlite3.OperationalError`, which
+  `_try_connect_ro` turns into "no index" (a zero-byte file left by older
+  versions counts as absent too). Only absence reads that way: a present
+  index that cannot be opened or read (permissions, a non-database file, a
+  lock) raises `IndexUnreadable`, a typed `OperationalError` subclass that the
+  tool boundary (`mcp.common._offload`) reports as "exists but cannot be read"
+  instead of "no index"; `probe_index` still answers False for it. The one
+  multi-corpus tool that opens indexes, `search_corpora`, catches it per corpus:
+  the unreadable one is listed as "Skipped (index unreadable): <wg>: <cause>"
+  and the readable corpora still answer. Current indexes are published in DELETE
+  journal mode and a read leaves no sidecars; a legacy WAL-mode index on a
+  writable dir still gets `-shm`/`-wal` created (and left behind) by a
+  `mode=ro` reader, until the next swap clears them.
 - **Corpus files.** Atomic writes (above) mean a reader sees the old
   bytes or the new, never a truncated file. Skip-if-exists files
   (drafts, RFCs, transcripts, slide text) are written once and not
@@ -1157,7 +1335,7 @@ servers) can run at once. The safety model:
 - **Shared single-clone / shared caches.** The one transcripts git
   clone is guarded by `atomicio.file_lock` (flock) so concurrent gathers
   serialise their clone/pull. The JSON side-caches
-  (`.http-cache.json`, `materials.json`, `_github-users.json`,
+  (`.http-cache/`'s index, `materials.json`, `_github-users.json`,
   config) are written temp + rename; concurrent writers are
   last-writer-wins, which at worst costs a redundant re-fetch, never a
   corrupt file.
@@ -1240,7 +1418,10 @@ chunk of content, and declines outright when the step is expensive
 (`_AUTO_UPGRADE_FROM` — below it a migration rebuilds the table or hashes
 every row) or the index is not ours to write (`_index_immutable`; a
 published replica upgrades by being republished). Any failure falls back to
-the previous behaviour, which is to tell the user to gather.
+the previous behaviour, which is to tell the user to gather. That includes a
+build holding the index lock (it holds it for the whole embed): the upgrade
+polls the lock for two seconds, enough for a concurrent reader's upgrade to
+finish, then gives up rather than wait out the build.
 
 `corpus.routing` deliberately does **not** use it: its confidence floor is an
 absolute calibrated threshold, and a prefixed query moves the distribution
@@ -1299,6 +1480,14 @@ small local model fine; a bad summary is worse than none. Summarisation defers t
 the `llm` package; without one, we print setup help rather than limp
 along. Deterministic digests ship without any setup.
 
+A summary is model output over raw issue and thread text, so it is treated as
+untrusted: each is capped at 300 characters, and its digest column is headed
+`LLM summary` (not `Summary`) so a reader can tell it from the record. The
+summariser disables itself after three consecutive failed calls, not the first
+(a single 5xx would otherwise cost the rest of the gather its summaries).
+Write-side: digests gathered earlier keep their uncapped `Summary` column until
+re-gathered with `--summarize`.
+
 ### The MCP server reads exclusively from the cache, off a daemon prewarm
 
 The read tools touch no network: everything an MCP client can do is read
@@ -1309,7 +1498,10 @@ blocked by the ~10 s weight load) and caps native-math threads
 cores. For a remote embedding backend the prewarm is a no-op beyond
 constructing the client — there are no weights to load, and it makes no
 upstream call, so readiness never waits on the network. `read_file_section`
-is hard-capped (default 400 lines, max 5000) as context hygiene.
+is capped as context hygiene: default 400 lines, max 5000, and about 40,000
+characters, whichever binds first (a line cap alone lets one pasted-base64 line
+return megabytes). A cut read carries the same `PARTIAL READ` banner as
+`get_draft` / `get_issue`.
 
 The prewarm is **silent**: nobody asked for it, and the first `search_corpus`
 does a lazy load if it fails, so it writes nothing to stderr — not a failure,
@@ -1379,8 +1571,10 @@ dead". Off-process, the worker only blocks on the pipe (GIL released) and the
 server stays responsive; a stalled read now times out cleanly, and its timeout
 message names the running stage. Cancellation (`stop_gather`) terminates the
 child; a child crash fails one gather instead of the whole server. Under
-`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (the test suite,
-which stubs it by monkeypatch). Reads during a **first** gather refuse (naming
+`IETF_LLM_GATHER_INPROCESS` the pipeline runs in-thread instead (tests that stub
+it by monkeypatch). The cloud cache round trip is tested through a real child
+process (`tests/test_cloud_gather_child.py`, with the network and stage bodies
+replaced), and a test that would spawn one unasked fails. Reads during a **first** gather refuse (naming
 the stage and how many are left) since there is no prior snapshot. A re-gather
 stays readable, and what a reader sees depends on the backend. On the **cloud**
 backend it is the previous published version until the new one is ready. On the
@@ -1392,6 +1586,31 @@ to be **atomic**: the build writes a scratch DB (seeded from the live index, so
 it stays incremental) and `os.replace`s it into place as a standalone
 (DELETE-journal) file, so a reader never sees a half-populated index — see
 "Writers are write-if-changed and atomic".
+
+The cloud gather-cache sync straddles that boundary, so it is split along it with
+nothing shared in process memory. The worker (`cache_sync.hydrate` / `persist`)
+only moves files: hydrate restores `.http-cache/<corpus>/` and the IMAP units
+to disk before the child starts, persist reads them off disk after it exits. What
+the gather computes comes back as files too. The child binds its ETag store to
+`http_cache_path(corpus)` itself, around the stages (`_gather_one`, under the
+cloud backend; `datatracker.gather_http_cache`), and flushes it before it exits.
+The IMAP sync records the UIDVALIDITY the server confirmed in a per-list
+`.verified-uidvalidity` sidecar, which persist reads in place of any in-process
+state. The CLI runs the same code in one process, so both drivers behave alike.
+
+The child also reports what it did. Its exit code carries the `GatherOutcome`
+(0 gathered, 3 unusable name, 4 skipped), and the worker publishes only on
+`GATHERED`: a child whose preflight found the seeded workspace fresh leaves it
+untouched, and uploading it again would write an identical version. The
+freshness debounce at `start_gather` reads the store's `gathered_at` rather than
+the local sentinel, so a replica that has not seeded the corpus yet declines a
+fresh one up front instead of downloading it to find that out.
+
+A child that dies on an unhandled exception sends one last `error` record (type
+and a truncated, single-line message) down the pipe before it exits non-zero, and
+the worker appends it to the failure it raises. The child's stderr is inherited,
+so on a cloud deployment it never reaches whoever is reading `gather_status`;
+this puts the cause in the status record's `error` field, which is fleet-visible.
 
 ### The networked read exception: live Datatracker lookups and get_rfc_info
 
@@ -1412,6 +1631,24 @@ default on for stdio and off for the HTTP replica. Imported lazily (so the
 default read path pulls in neither it nor `requests`), torch-free, and always
 via the Datatracker REST API, never a scraped page. Its offline cousin
 `draft_authors` needs no network and is always registered.
+
+The fetch seam is tri-state, because these tools' payloads are claims of
+absence ("no such document", "no reviews", "no upcoming meetings") and an outage
+must never be rendered as one. `_fetch_json` returns `None` only for an HTTP
+404 and raises on every other failure; `_cached_json` turns that into
+`(body, fetched_at, answered)`, where `answered` is False only when the fetch
+failed with no cached entry (fresh or stale) to fall back on. The tools say
+"could not reach Datatracker (last tried …)" for that case and keep the
+"no document named …" wording for a 404. `fetch_draft_status`,
+`fetch_review_record` and `reconcile_active_drafts` raise `LiveUnavailable`;
+the meeting fetches return it in their existing `error` slot.
+
+The live fetch uses `governed_get(..., retrying=False)` with a `(5s, 10s)`
+connect/read timeout (`_FETCH_TIMEOUT`), for the reason given for `get_rfc_info`
+below: the shared session's retries honour `Retry-After` and can hold a tool
+call for a minute or more, whereas a failed fetch here already has a good
+answer — a stale cache entry if one exists, otherwise an honest "could not
+reach Datatracker". The host governor still applies.
 
 `get_rfc_info` takes the same exception, for a different reason and in a different
 shape. The `_rfc/` mirror is only refreshed by a gather, so between gathers it
@@ -1439,7 +1676,8 @@ single-flighted, so a burst of misses or a down host can't hammer rfc.fyi.
 It also fetches with `retrying=False`, which matters more than it sounds: a
 `timeout` is **not** a deadline — requests applies it per connect and per read,
 and the shared session's adapter retries with `respect_retry_after_header=True`,
-so a host answering `429 Retry-After: 30` sleeps ~90s past a 5s timeout. That is
+so a host answering `429 Retry-After: 30` sleeps ~90s past a 5s timeout (and
+anything over 60 s is not waited out at all). That is
 fine for a gather (a background job, where riding out a blip beats failing a
 stage) and wrong for a read with a caller waiting. Not retrying is the right
 trade here for a second reason: this path *has* a correct answer to fall back on
@@ -1494,8 +1732,17 @@ the stored main unit's epoch differs from the local cache's, hydrate restores it
 into its own `epoch-<stored>/` dir instead of mixing UIDs that name different
 messages. Epochs are labels, not an order, so persist replaces the stored main
 unit only when this gather's sync confirmed the local epoch with the server
-(`mbox.verified_uidvalidity`); a differing, unconfirmed epoch -- a warm host whose
-IMAP sync failed -- leaves the store alone. When it does replace, it first makes
+(`mbox.verified_uidvalidity`, read from the list's `.verified-uidvalidity`
+sidecar: the sync runs in the gather child, so the confirmation has to cross the
+process boundary as a file, and hydrate deletes it at the start of every gather so
+a stale one can't vouch for a check this gather never made); a differing,
+unconfirmed epoch -- a warm host whose IMAP sync failed before the server
+confirmed the epoch -- leaves the store alone. The sidecar says only that the
+server's epoch matched the local one, so FETCHes that left some requested
+messages unwritten (reported with the undeliverable UIDs, once a refused batch
+has been halved to find them) and a connection that dropped mid-download leave it
+in place: the old epoch is archived before the stored main unit is replaced, and
+a failed archive abandons the list, so a partial new epoch cannot lose mail. When it does replace, it first makes
 sure the old epoch's mail is stored as an archive unit (filling the local
 `epoch-<old>/` from the stored main unit if it lacks anything, and abandoning the
 list if that fails), then invalidates the old index before touching the chunks,
