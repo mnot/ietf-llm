@@ -8,7 +8,7 @@ import argparse
 import sys
 
 from .. import __version__
-from .completion import maybe_autocomplete, wg_completer
+from .completion import maybe_autocomplete, set_wg_completer
 from ..embeddings import search
 from ..log import Verbosity, graceful_keyboard_interrupt
 
@@ -24,7 +24,7 @@ def main() -> None:
     wg_arg = parser.add_argument(
         "wg", metavar="NAME", help="Corpus name (e.g. 'httpbis')"
     )
-    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
+    set_wg_completer(wg_arg)
     parser.add_argument("query", help="Search query (natural language)")
     parser.add_argument(
         "-k", "--top", type=int, default=10, help="Number of hits (default: 10)"

@@ -114,7 +114,7 @@ def _default_llm_model(verbose: Verbosity) -> str:
     try:
         import llm  # noqa: PLC0415
 
-        return str(llm.get_default_model())  # type: ignore[no-untyped-call]
+        return str(llm.get_default_model())
     except Exception as err:  # noqa: BLE001
         # llm.get_default_model() can fail many ways depending on what
         # plugins/config the user has; this is a fallback so we don't

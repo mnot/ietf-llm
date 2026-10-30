@@ -116,7 +116,7 @@ def _mps_empty_cache() -> Optional[Callable[[], None]]:
     or when torch is absent (or lacks MPS), so callers no-op transparently.
     """
     try:
-        import torch  # type: ignore[import-not-found,unused-ignore]  # noqa: PLC0415
+        import torch  # pyrefly: ignore[missing-import]  # noqa: PLC0415
     except ImportError:
         return None
     mps = getattr(torch, "mps", None)

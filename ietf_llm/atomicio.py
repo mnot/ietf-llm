@@ -26,7 +26,7 @@ from typing import Any, Generator, List, Optional, Set, Tuple
 try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
-    _fcntl = None  # type: ignore[assignment]
+    _fcntl = None
 
 
 class LockHeld(Exception):

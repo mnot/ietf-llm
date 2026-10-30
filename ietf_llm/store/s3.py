@@ -15,9 +15,9 @@ from __future__ import annotations
 import os
 from typing import Callable, Optional, Tuple, TypeVar
 
-import boto3  # type: ignore[import-untyped]
-from botocore.config import Config  # type: ignore[import-untyped]
-from botocore.exceptions import (  # type: ignore[import-untyped]
+import boto3
+from botocore.config import Config
+from botocore.exceptions import (
     ClientError,
     NoCredentialsError,
 )

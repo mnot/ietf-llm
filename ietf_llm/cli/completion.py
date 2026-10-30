@@ -9,8 +9,9 @@ installed, so a minimal install still runs the CLI.
 
 from __future__ import annotations
 
+import argparse
 import sys
-from typing import Any, List
+from typing import Any, List, cast
 
 from ..paths import cached_wg_names
 
@@ -21,6 +22,12 @@ def wg_completer(prefix: str, **_kwargs: Any) -> List[str]:
     interpreter per <TAB>, so this is just a directory listing.
     """
     return [w for w in cached_wg_names() if w.startswith(prefix)]
+
+
+def set_wg_completer(action: argparse.Action) -> None:
+    """Attach `wg_completer` to the `wg` positional; argcomplete reads it off
+    the action, which argparse's stubs do not declare."""
+    cast(Any, action).completer = wg_completer
 
 
 def maybe_autocomplete(parser: Any) -> None:
@@ -58,7 +65,7 @@ def print_completion_snippet(shell: str) -> int:
         return 1
     commands = ["ietf-llm", "ietf-llm-export", "ietf-llm-search"]
     # argcomplete ships no type stubs; shellcode isn't in its __all__.
-    snippet = argcomplete.shellcode(  # type: ignore[attr-defined]
+    snippet = argcomplete.shellcode(
         commands,
         shell=shell,
     )

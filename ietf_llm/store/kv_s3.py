@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, cast
 
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError
 
 from .kv import ABSENT, ANY, KvStore, Record
 from .s3 import NOT_FOUND, PRECONDITION_FAILED, S3Bucket

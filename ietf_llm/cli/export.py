@@ -31,7 +31,7 @@ import os
 import sys
 
 from .. import __version__, config, export
-from .completion import maybe_autocomplete, wg_completer
+from .completion import maybe_autocomplete, set_wg_completer
 from ..freshness import local_staleness_warning
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_config_dir
@@ -56,7 +56,7 @@ def main() -> None:
     wg_arg = parser.add_argument(
         "wg", metavar="NAME", help="Corpus name (e.g. 'httpbis')"
     )
-    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
+    set_wg_completer(wg_arg)
     sink = parser.add_mutually_exclusive_group()
     sink.add_argument(
         "--destination",

@@ -142,7 +142,7 @@ def _cuda_available() -> bool:
     """True if a CUDA device is usable. Isolated so the device default can be
     tested without importing torch (CI stays torch-free)."""
     try:
-        import torch  # type: ignore[import-untyped,import-not-found,unused-ignore]  # noqa: PLC0415
+        import torch  # pyrefly: ignore[missing-import]  # noqa: PLC0415
 
         return bool(torch.cuda.is_available())
     except ImportError:
@@ -181,7 +181,7 @@ def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
 
 def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool) -> Any:
     """Build the underlying SentenceTransformer. Isolated for testing."""
-    from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]  # noqa: PLC0415
+    from sentence_transformers import (  # pyrefly: ignore[missing-import]  # noqa: PLC0415
         SentenceTransformer,
     )
 
@@ -220,7 +220,7 @@ def _load_sentence_transformer(
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
-        from llm_sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]  # noqa: PLC0415
+        from llm_sentence_transformers import (  # pyrefly: ignore[missing-import]  # noqa: PLC0415
             SentenceTransformerModel,
             read_models,
             write_models,
@@ -560,9 +560,7 @@ def _get_embed_model(
                 )
                 return None
             try:
-                model = llm.get_embedding_model(  # type: ignore[no-untyped-call]
-                    model_name
-                )
+                model = llm.get_embedding_model(model_name)
             except Exception as err:  # noqa: BLE001
                 # `llm.get_embedding_model` and the various provider
                 # plugins don't share a typed exception hierarchy.
