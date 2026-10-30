@@ -41,7 +41,7 @@ def _stub(
     def fake(path_or_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:  # noqa: ARG001
         if calls is not None:
             calls.append(path_or_url)
-        from urllib.parse import unquote  # pylint: disable=import-outside-toplevel
+        from urllib.parse import unquote
 
         joined = path_or_url.split("address__in=", 1)[1].split("&", 1)[0]
         objects = []

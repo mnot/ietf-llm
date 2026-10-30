@@ -18,7 +18,7 @@ from ietf_llm.net.transport import fetch_resource, http_error_detail
 
 # Captured at import (before conftest's autouse `_no_datatracker` stub binds
 # over it) so the WARN test below exercises the genuine `_get_json`.
-_REAL_GET_JSON = datatracker._get_json  # pylint: disable=protected-access
+_REAL_GET_JSON = datatracker._get_json
 
 _URL = "https://datatracker.ietf.org/api/v1/group/group/"
 
@@ -28,7 +28,7 @@ def _response(status: int, headers: Optional[Dict[str, str]] = None) -> requests
     res.status_code = status
     res.url = _URL
     res.headers.update(headers or {})
-    res._content = b"blocked"  # pylint: disable=protected-access
+    res._content = b"blocked"
     return res
 
 
@@ -91,7 +91,7 @@ def test_get_json_warns_with_ray_id(
     monkeypatch.setattr(datatracker, "_get_json", _REAL_GET_JSON)
     monkeypatch.setattr(datatracker, "_DEFAULT_CACHE", None)
     monkeypatch.setattr(datatracker, "governed_get", _blocked)
-    assert datatracker._get_json("/api/v1/group/group/") is None  # pylint: disable=protected-access
+    assert datatracker._get_json("/api/v1/group/group/") is None
     err_out = capsys.readouterr().err
     assert "[WARN]" in err_out
     assert "(Cloudflare Ray ID: deadbeefcafef00d-SYD)" in err_out
@@ -102,7 +102,7 @@ def test_live_fetch_json_warns_with_ray_id(monkeypatch: Any, capsys: Any) -> Non
     monkeypatch.delenv("IETF_LLM_LOG_FORMAT", raising=False)
     monkeypatch.setattr(live_cache, "governed_get", _blocked)
     with pytest.raises(requests.RequestException):
-        live_cache._fetch_json(_URL)  # pylint: disable=protected-access
+        live_cache._fetch_json(_URL)
     err_out = capsys.readouterr().err
     assert "[WARN]" in err_out
     assert "(Cloudflare Ray ID: deadbeefcafef00d-SYD)" in err_out

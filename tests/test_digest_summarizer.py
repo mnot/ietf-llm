@@ -96,7 +96,7 @@ def test_success_resets_the_failure_count() -> None:
     fail = RuntimeError("503")
     model = _Model(*([fail] * (_MAX_CONSECUTIVE_FAILURES - 1) + ["ok"] + [fail] * 2))
     summarizer = _summarizer(model)
-    for _ in range(len(model._replies)):  # pylint: disable=protected-access
+    for _ in range(len(model._replies)):
         summarizer.summarize("p")
     assert summarizer.active()
 

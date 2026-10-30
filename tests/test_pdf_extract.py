@@ -139,7 +139,7 @@ def test_extract_all_pdfs_re_extracts_when_pdf_is_newer(tmp_path: Path) -> None:
     txt = tmp_path / "slides.pdf.txt"
     original_mtime = txt.stat().st_mtime
     # Make the .pdf appear newer than the .txt.
-    import os  # pylint: disable=import-outside-toplevel
+    import os
 
     os.utime(pdf, (time.time() + 60, time.time() + 60))
     time.sleep(0.05)
@@ -370,7 +370,7 @@ def test_header_refresh_ignores_foreign_text_files(tmp_path: Path) -> None:
 def test_extraction_stops_at_the_page_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from pypdf import PdfReader, PdfWriter  # pylint: disable=import-outside-toplevel
+    from pypdf import PdfReader, PdfWriter
 
     src = tmp_path / "one.pdf"
     src.write_bytes(MINIMAL_PDF)

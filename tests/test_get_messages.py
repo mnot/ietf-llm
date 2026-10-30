@@ -31,7 +31,7 @@ def test_a_very_long_key_list_is_batched(isolated_home: Path) -> None:
         "### [1] 2026-01-01 09:00 — A\n\nFirst.\n\n"
         "### [2] 2026-01-02 09:00 — B (reply to [1])\n\nSecond.\n",
     )
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index("wg", get_wg_file_cache_dir("wg"), model_name="stub",
                 verbose=Verbosity.QUIET)
 

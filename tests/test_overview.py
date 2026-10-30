@@ -459,7 +459,7 @@ def test_subject_prefix_frequencies_counts_bracketed_tokens(
 ) -> None:
     # Build a synthetic threads/ dir with messages carrying TLS-style
     # subject prefixes; the helper should report the frequency table.
-    from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.overview import _subject_prefix_frequencies
     threads_dir = tmp_path / "threads"
     threads_dir.mkdir()
     (threads_dir / "2026-04-10-foo.md").write_text(
@@ -488,7 +488,7 @@ def test_subject_prefix_frequencies_counts_bracketed_tokens(
 def test_subject_prefix_frequencies_strips_re_fwd(tmp_path: Path) -> None:
     # `Re: ` / `Fwd:` chrome before the first bracketed prefix must be
     # stripped so the prefix is still recognised.
-    from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.overview import _subject_prefix_frequencies
     threads_dir = tmp_path / "threads"
     threads_dir.mkdir()
     (threads_dir / "x.md").write_text(
@@ -504,7 +504,7 @@ def test_subject_prefix_frequencies_strips_re_fwd(tmp_path: Path) -> None:
 def test_subject_prefix_frequencies_empty_when_no_threads(
     tmp_path: Path,
 ) -> None:
-    from ietf_llm.digest.overview import _subject_prefix_frequencies  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.overview import _subject_prefix_frequencies
     # No threads/ dir at all → empty list, not crash.
     assert _subject_prefix_frequencies(str(tmp_path)) == []
 

@@ -243,7 +243,7 @@ def test_a_missing_title_leaves_no_dangling_dash(corpus: Path) -> None:
     """
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     out = rfc_text.tool_search_rfc_text("caching", limit=1)
     assert "— \n" not in out and not out.rstrip().endswith("—")
     assert "## RFC 9111" in out
@@ -269,11 +269,11 @@ def _add_rfcs(count: int) -> None:
 def test_search_result_count_is_clamped(corpus: Path) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     _add_rfcs(80)
     out = rfc_text.tool_search_rfc_text("caching", limit=10**6)
-    assert out.count("\n## RFC ") == rfc_text._MAX_LIMIT  # pylint: disable=protected-access
-    assert f"showing {rfc_text._MAX_LIMIT}" in out  # pylint: disable=protected-access
+    assert out.count("\n## RFC ") == rfc_text._MAX_LIMIT
+    assert f"showing {rfc_text._MAX_LIMIT}" in out
     assert "limit 1000000 clamped to 50" in out
     # A nonsense value still returns something rather than nothing.
     assert "## RFC " in rfc_text.tool_search_rfc_text("caching", limit=-5)
@@ -284,7 +284,7 @@ def test_search_snippet_and_section_counts_are_clamped(
 ) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     # More distinct sections than the ceiling, so the clamp has to bite.
     conn = _open_db(rfc_text.RFC_CORPUS)
     try:
@@ -302,8 +302,8 @@ def test_search_snippet_and_section_counts_are_clamped(
         "caching", rfc="9111", sections_per_rfc=10**6, snippet_chars=10**9
     )
     snippets = [ln for ln in out.splitlines() if ln.startswith("  ") and ln.endswith("…")]
-    assert len(snippets) == rfc_text._MAX_SECTIONS_PER_RFC  # pylint: disable=protected-access
-    assert all(len(s) <= rfc_text._MAX_SNIPPET_CHARS + 3 for s in snippets)  # pylint: disable=protected-access
+    assert len(snippets) == rfc_text._MAX_SECTIONS_PER_RFC
+    assert all(len(s) <= rfc_text._MAX_SNIPPET_CHARS + 3 for s in snippets)
     assert "sections_per_rfc 1000000 clamped to 10" in out
     assert "snippet_chars 1000000000 clamped to 2000" in out
 
@@ -311,14 +311,14 @@ def test_search_snippet_and_section_counts_are_clamped(
 def test_search_reply_is_silent_when_nothing_was_clamped(corpus: Path) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     assert "Adjusted" not in rfc_text.tool_search_rfc_text("caching")
 
 
 def test_search_non_numeric_size_falls_back_instead_of_raising(corpus: Path) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     out = rfc_text.tool_search_rfc_text("caching", limit="lots")  # type: ignore[arg-type]
     assert "limit='lots' is not a number; using 10" in out
 
@@ -328,10 +328,10 @@ def test_reply_is_cut_at_the_character_budget_and_says_so(
 ) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     _add_rfcs(30)
     monkeypatch.setattr(rfc_text, "section_text", lambda _n, _s: "word " * 2000)
-    budget = rfc_text._MAX_REPLY_CHARS  # pylint: disable=protected-access
+    budget = rfc_text._MAX_REPLY_CHARS
     out = rfc_text.tool_search_rfc_text("caching", limit=50, snippet_chars=2000)
 
     shown = out.count("\n## RFC ") + out.startswith("## RFC ")
@@ -353,7 +353,7 @@ def test_reply_is_cut_at_the_character_budget_and_says_so(
 def test_a_small_reply_has_no_truncation_notice(corpus: Path) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     out = rfc_text.tool_search_rfc_text("caching")
     assert "PARTIAL RESULT" not in out and "budget" not in out
 
@@ -363,7 +363,7 @@ def test_the_first_section_is_always_shown(
 ) -> None:
     from ietf_llm import embeddings
 
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     monkeypatch.setattr(rfc_text, "_MAX_REPLY_CHARS", 10)
     out = rfc_text.tool_search_rfc_text("caching", rfc="9111")
     assert "## RFC 9111" in out and "showing 1." in out

@@ -85,7 +85,6 @@ def _seed(home: Path) -> None:
 
 def _index_under(model_id: str) -> _RecordingModel:
     model = _RecordingModel()
-    # pylint: disable-next=protected-access
     embeddings._MODEL_CACHE[model_id] = model
     build_index("wg", get_wg_file_cache_dir("wg"), model_name=model_id, verbose=Verbosity.QUIET)
     model.seen.clear()  # drop the passage-side embeds from the build
@@ -111,7 +110,6 @@ def test_passages_are_never_prefixed(isolated_home: Path) -> None:
     wrongly and persist that way in the index."""
     _seed(isolated_home)
     model = _RecordingModel()
-    # pylint: disable-next=protected-access
     embeddings._MODEL_CACHE["sentence-transformers/BAAI/bge-small-en-v1.5"] = model
     build_index(
         "wg",

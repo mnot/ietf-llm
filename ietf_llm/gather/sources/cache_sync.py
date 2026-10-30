@@ -728,9 +728,7 @@ def _persist_unit(
     if not local:
         return
     superseded = _epochs_differ(epoch, stored.uidvalidity)
-    base = dict(stored.chunks)
-    if superseded:
-        base.clear()
+    base: Dict[int, Set[int]] = {} if superseded else stored.chunks
     chunks = dict(base)
     index_key = prefix + _IMAP_INDEX
     if superseded:

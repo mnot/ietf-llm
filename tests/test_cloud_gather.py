@@ -476,4 +476,4 @@ def test_a_skipped_gather_publishes_nothing(
     assert status["state"] == "done"
     assert any("nothing published" in note for note in status["notes"])
     assert get_corpus_store().resolve_current("tls") == version
-    assert len(get_corpus_store()._list_versions("tls")) == 1  # pylint: disable=protected-access
+    assert len(get_corpus_store()._list_versions("tls")) == 1

@@ -95,14 +95,14 @@ def test_cap_change_takes_effect_after_reset(
     # Pool is built lazily from config; _initial_value is the cap it was sized
     # with (a BoundedSemaphore implementation detail, used here as a probe).
     sem = http_governor._sem_for("example.com")
-    assert sem._initial_value == 4  # pylint: disable=protected-access
+    assert sem._initial_value == 4
 
 
 def test_default_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     general = http_governor._sem_for("example.com")
     datatracker = http_governor._sem_for("datatracker.ietf.org")
-    assert general._initial_value == 6  # pylint: disable=protected-access
-    assert datatracker._initial_value == 2  # pylint: disable=protected-access
+    assert general._initial_value == 6
+    assert datatracker._initial_value == 2
 
 
 def test_invalid_cap_falls_back_to_default(
@@ -112,4 +112,4 @@ def test_invalid_cap_falls_back_to_default(
         monkeypatch.setenv("IETF_LLM_HTTP_MAX_PER_HOST", bad)
         http_governor.reset()
         sem = http_governor._sem_for("example.com")
-        assert sem._initial_value == 6  # pylint: disable=protected-access
+        assert sem._initial_value == 6

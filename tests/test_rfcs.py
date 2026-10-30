@@ -99,21 +99,21 @@ def test_load_rekeys_on_every_file_not_just_rfcs_json(isolated_home: Path) -> No
     # reader between replaces parses a mixed set; it must not stay pinned to it
     # once the rest have landed, even though rfcs.json's mtime never moves again.
     rfc_dir = _seed(isolated_home)
-    first = rfcs._load()  # pylint: disable=protected-access
+    first = rfcs._load()
     assert first is not None
-    assert rfcs._load() is first  # pylint: disable=protected-access
+    assert rfcs._load() is first
     new_refs = {"100": {"normative": [], "informative": ["200"]}}
     path = rfc_dir / "refs.json"
     path.write_text(json.dumps(new_refs), encoding="utf-8")
     st = path.stat()
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
-    second = rfcs._load()  # pylint: disable=protected-access
+    second = rfcs._load()
     assert second is not first
     assert second is not None and second.refs == new_refs
     tags = rfc_dir / "tags.json"
     st = tags.stat()
     os.utime(tags, ns=(st.st_atime_ns, st.st_mtime_ns + 7_000_000_000))
-    assert rfcs._load() is not second  # pylint: disable=protected-access
+    assert rfcs._load() is not second
 
 
 # --- Reader: search --------------------------------------------------------
@@ -430,7 +430,7 @@ def test_failed_revalidation_falls_back_to_the_honest_miss(
     _age_mirror(rfc_dir, 8 * 86400)
 
     def _boom(url: str, hdrs: Dict[str, str]) -> Any:
-        import requests  # pylint: disable=import-outside-toplevel
+        import requests
 
         raise requests.ConnectionError("rfc.fyi unreachable")
 
@@ -448,7 +448,7 @@ def test_revalidation_is_throttled_across_misses(
     _age_mirror(rfc_dir, 8 * 86400)
 
     def _boom(url: str, hdrs: Dict[str, str]) -> Any:
-        import requests  # pylint: disable=import-outside-toplevel
+        import requests
 
         raise requests.ConnectionError("rfc.fyi unreachable")
 
@@ -556,7 +556,7 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            import requests  # pylint: disable=import-outside-toplevel
+            import requests
 
             raise requests.HTTPError(f"status {self.status_code}")
 
@@ -704,7 +704,7 @@ def test_writer_network_error_preserves_cache_and_does_not_raise(
     rfc_dir = isolated_home / ".cache" / "ietf-llm" / rfcs.RFC_DIR
     original = (rfc_dir / "rfcs.json").read_bytes()
 
-    import requests  # pylint: disable=import-outside-toplevel
+    import requests
 
     def boom(url: str, hdrs: Dict[str, str]) -> _FakeResponse:
         raise requests.ConnectionError("network down")
@@ -768,7 +768,7 @@ def test_rendered_entry_says_body_is_unavailable(isolated_home: Path) -> None:
 
 
 def test_rendered_entry_points_at_a_cached_body(isolated_home: Path) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
@@ -779,7 +779,7 @@ def test_rendered_entry_points_at_a_cached_body(isolated_home: Path) -> None:
 
 def test_body_note_is_per_rfc_not_per_corpus(isolated_home: Path) -> None:
     # A corpus holding rfc200's body says nothing about rfc300's.
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
@@ -843,7 +843,7 @@ class _RecordingStore:
 def _install_store(
     monkeypatch: pytest.MonkeyPatch, corpora: List[str]
 ) -> _RecordingStore:
-    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp import common
 
     store = _RecordingStore(corpora)
     # `_list_wgs` reaches the store through `common`, the body lookup through
@@ -865,7 +865,7 @@ def test_working_group_accessor(isolated_home: Path) -> None:
 def test_sweep_finds_a_body_without_resolving_any_dir(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
@@ -882,7 +882,7 @@ def test_unstaged_corpus_is_still_found(
     # The cold-replica case: nothing is staged (the dir accessors both answer
     # None), but the body is published. `has_file` is exact, so it is found
     # rather than reported as "not reachable from here".
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
@@ -895,7 +895,7 @@ def test_unstaged_corpus_is_still_found(
 def test_owner_is_asked_first_and_a_hit_ends_the_lookup(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "prose")
@@ -931,7 +931,7 @@ def test_owner_wins_when_several_corpora_hold_the_body(
 ) -> None:
     # Precedence: the publishing WG -- a body under an unrelated corpus is
     # coincidence.
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "aaa", "drafts/rfc200.txt", "prose")
@@ -944,7 +944,7 @@ def test_owner_wins_when_several_corpora_hold_the_body(
 def test_without_an_owner_the_first_corpus_in_order_wins(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     for corpus in ("zzz", "aaa", "mmm"):
@@ -957,8 +957,8 @@ def test_without_an_owner_the_first_corpus_in_order_wins(
 def test_a_corpus_that_cannot_answer_does_not_fail_the_lookup(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
-    from ietf_llm.store.corpus import VersionVanished  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
+    from ietf_llm.store.corpus import VersionVanished
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
@@ -994,7 +994,7 @@ def test_a_failing_corpus_is_logged(
 def test_a_version_pin_reaches_the_sweep_workers(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm.store.corpus import (  # pylint: disable=import-outside-toplevel
+    from ietf_llm.store.corpus import (
         pin_corpus_version,
         pinned_version,
     )
@@ -1018,11 +1018,11 @@ def test_a_cold_cloud_replica_finds_a_published_body_without_staging(
 ) -> None:
     # End to end through a real CloudCorpusStore: the body is published, the
     # replica has staged nothing, and the note still points at it.
-    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
-    from ietf_llm.store.blobs import FileBlobStore  # pylint: disable=import-outside-toplevel
-    from ietf_llm.store.cloud import CloudCorpusStore  # pylint: disable=import-outside-toplevel
-    from ietf_llm.store.control import KvControlPlane  # pylint: disable=import-outside-toplevel
-    from ietf_llm.store.kv import InMemoryKvStore  # pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp import common
+    from ietf_llm.store.blobs import FileBlobStore
+    from ietf_llm.store.cloud import CloudCorpusStore
+    from ietf_llm.store.control import KvControlPlane
+    from ietf_llm.store.kv import InMemoryKvStore
 
     _seed(isolated_home)
     ws = isolated_home / "ws"
@@ -1088,12 +1088,12 @@ def test_one_bad_reference_does_not_abort_the_index(isolated_home: Path) -> None
 
 def test_load_rekeys_on_a_replace_within_the_same_mtime(isolated_home: Path) -> None:
     rfc_dir = _seed(isolated_home)
-    first = rfcs._load()  # pylint: disable=protected-access
+    first = rfcs._load()
     path = rfc_dir / "refs.json"
     before = path.stat()
     new_refs = {"100": {"normative": ["200"], "informative": []}}
     path.write_text(json.dumps(new_refs), encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))  # same tick
-    second = rfcs._load()  # pylint: disable=protected-access
+    second = rfcs._load()
     assert second is not first
     assert second is not None and second.refs == new_refs

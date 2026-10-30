@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("google_auth_oauthlib")
 
-from ietf_llm import notebooklm  # noqa: E402  pylint: disable=wrong-import-position
+from ietf_llm import notebooklm  # noqa: E402
 
 
 class _Creds:

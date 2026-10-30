@@ -31,7 +31,7 @@ class _StatusResp:
 def test_mailarchive_probe_sends_the_user_agent(
     isolated_home: Path, monkeypatch: Any,
 ) -> None:
-    from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import mbox
     from ietf_llm.log import Verbosity
 
     seen: List[Dict[str, str]] = []

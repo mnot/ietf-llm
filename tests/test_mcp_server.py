@@ -1425,7 +1425,7 @@ def test_get_chunks_batch_rejects_non_numeric_index(
 
 
 def test_descendants_is_cycle_safe() -> None:
-    from ietf_llm.mcp.topic import _descendants# pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp.topic import _descendants
 
     # A malformed self-reply (graph[5] = [5]) must not list the root as its own
     # descendant, and a cycle must not loop forever.
@@ -1471,7 +1471,7 @@ def test_read_file_window_past_eof(tmp_path) -> None:
 def test_load_server_instructions_is_markdown_heading() -> None:
     # The instructions floor is a package-owned markdown string (no YAML
     # frontmatter): it opens with a heading and carries no `---` sentinel.
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert out is not None
     assert out.lstrip().startswith("#")
     assert "---" not in out.splitlines()[0]
@@ -1487,7 +1487,7 @@ def test_load_server_instructions_states_session_mode(
 
     monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert "{{SESSION}}" not in out  # placeholder resolved
     assert "## This session" in out
     assert "single-user stdio server" in out.lower()
@@ -1506,7 +1506,7 @@ def test_load_server_instructions_prepends_session_when_marker_missing(
     monkeypatch.setattr(
         mcp.server, "_strip_frontmatter", lambda _t: "# Routing\n\nbody, no marker"
     )
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert "{{SESSION}}" not in out
     assert "Fixed for this server's lifetime" in out  # the session section
     # Prepended, not appended, so it leads.
@@ -1517,7 +1517,7 @@ def test_load_server_instructions_includes_load_bearing_content() -> None:
     # Spot-check that the routing rules the skill carries actually land
     # in the instructions string. If this regresses, the non-Claude
     # harnesses lose the guidance.
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert out is not None
     # Routing rules.
     assert "overview" in out

@@ -13,6 +13,7 @@ Also covers the one-time migration that sweeps an older index's stale
 
 from __future__ import annotations
 
+import importlib
 import os
 import sqlite3
 from pathlib import Path
@@ -323,7 +324,7 @@ def test_fully_reused_rechunk_flushes_in_bounded_windows(
 
     monkeypatch.setattr(search_mod, "_EMBED_BUFFER_FILES", 4)
     sizes: List[int] = []
-    real = search_mod._flush_window  # pylint: disable=protected-access
+    real = search_mod._flush_window
 
     def _spy(model, plans, window, mps_empty, verbose):  # type: ignore[no-untyped-def]
         sizes.append(len(plans))
@@ -335,3 +336,41 @@ def test_fully_reused_rechunk_flushes_in_bounded_windows(
     assert len(sizes) > 1 and max(sizes) <= 4 and sum(sizes) == 11
     assert not any("body" in t for t in stub.embedded)
     assert _rows() == before
+
+
+class _FailsOn(_CountingStub):
+    """Raises from `embed_multi` when any text in the batch carries `needle`,
+    as an out-of-memory or provider error would."""
+
+    def __init__(self, needle: str) -> None:
+        super().__init__()
+        self.needle = needle
+
+    def embed_multi(self, texts: List[str]) -> Iterable[List[float]]:
+        if any(self.needle in t for t in texts):
+            raise RuntimeError("provider error")
+        return super().embed_multi(texts)
+
+
+def test_failed_window_leaves_its_files_unstamped_and_retried(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # A window whose embed call raises must not abort the build or stamp its
+    # files as embedded: the other windows land, and the next run retries.
+    search_mod = importlib.import_module("ietf_llm.embeddings.search")
+    monkeypatch.setattr(search_mod, "_EMBED_BUFFER_FILES", 1)
+    stub = _FailsOn("poison")
+    embeddings._MODEL_CACHE["stub"] = stub  # noqa
+    write_cache_file(isolated_home, "wg", "threads/a.md", _THREAD_HEAD + _MSG1)
+    write_cache_file(
+        isolated_home, "wg", "threads/b.md", _THREAD_HEAD + "### [1] x\n\npoison\n"
+    )
+
+    assert _build("wg") > 0
+    assert _chunk_rows("wg", "threads/a.md")
+    assert _chunk_rows("wg", "threads/b.md") == []
+
+    stub.needle = "never-matches"
+    assert _build("wg") > 0
+    assert _chunk_rows("wg", "threads/b.md")
+

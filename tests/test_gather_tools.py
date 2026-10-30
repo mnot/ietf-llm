@@ -496,7 +496,7 @@ def test_suggest_github_repos_invalid_name() -> None:
 def test_suggest_github_repos_renders_discovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import ietf_llm.gather.sources.repo_discovery as rd  # pylint: disable=import-outside-toplevel
+    import ietf_llm.gather.sources.repo_discovery as rd
 
     cand = rd.RepoCandidate("httpwg/http-extensions", True, 101, "", False, False)
     cand.draft_files = ["draft-ietf-httpbis-x.md"]

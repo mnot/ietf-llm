@@ -210,7 +210,7 @@ def test_hit_line_falls_inside_its_chunk_span(isolated_home: Path) -> None:
     the chunk that actually contains it."""
     write_cache_file(isolated_home, "wg", _DRAFT, _real_shape_draft())
     cache = get_wg_file_cache_dir("wg")
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index("wg", cache, model_name="stub", verbose=Verbosity.QUIET)
     spans = chunk_spans("wg", [_DRAFT]).get(_DRAFT)
     if not spans:

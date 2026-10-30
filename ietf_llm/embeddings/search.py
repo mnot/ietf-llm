@@ -368,6 +368,8 @@ def _flush_window(
             level=LogLevel.ERROR,
         )
     else:
+        # Not strict: a short result leaves None slots, and the check below
+        # then withholds those files rather than stamping them half-embedded.
         for (pos, li, _), vec in zip(window, vectors, strict=False):
             results[pos][li] = vec
     # Evict the allocator cache between windows so its high-water stays near one

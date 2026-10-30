@@ -35,7 +35,7 @@ class _KeywordStubModel:
 
 
 def _build_with_keyword_stub(wg: str) -> None:
-    embeddings._MODEL_CACHE["kw"] = _KeywordStubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["kw"] = _KeywordStubModel()
     cache = get_wg_file_cache_dir(wg)
     build_index(wg, cache, model_name="kw", verbose=Verbosity.QUIET)
 
@@ -104,7 +104,7 @@ def test_related_needs_no_embedding_backend(isolated_home: Path) -> None:
     # query-string search would now fail to load, but related() still works.
     _seed_thread(isolated_home)
     _build_with_keyword_stub("wg")
-    embeddings._MODEL_CACHE.pop("kw", None)  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE.pop("kw", None)
     hits = related(
         "wg", "threads/2025-01-01-topic.md", 1, k=5,
         verbose=Verbosity.QUIET,

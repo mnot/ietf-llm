@@ -33,7 +33,7 @@ class _StubModel:
 
 def _build_with_stub(wg: str) -> None:
     cache = get_wg_file_cache_dir(wg)
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index(wg, cache, model_name="stub", verbose=Verbosity.QUIET)
 
 
@@ -86,10 +86,10 @@ def test_connect_ro_cannot_create_or_write(isolated_home: Path) -> None:
     _seed(isolated_home)
     db = Path(_db_path("wg"))
     with pytest.raises(sqlite3.OperationalError):
-        storage._connect_ro("wg")  # pylint: disable=protected-access
+        storage._connect_ro("wg")
     assert not db.exists()
     _build_with_stub("wg")
-    conn = storage._connect_ro("wg")  # pylint: disable=protected-access
+    conn = storage._connect_ro("wg")
     try:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("CREATE TABLE intruder (x)")
@@ -112,7 +112,7 @@ def test_zero_byte_index_left_by_an_older_version_reads_as_absent(
 
 
 def _offloaded(fn: Callable[..., str], *args: str) -> str:
-    return asyncio.run(mcp.common._offload(fn, *args))  # pylint: disable=protected-access
+    return asyncio.run(mcp.common._offload(fn, *args))
 
 
 def test_corrupt_index_is_unreadable_not_absent(isolated_home: Path) -> None:
@@ -121,7 +121,7 @@ def test_corrupt_index_is_unreadable_not_absent(isolated_home: Path) -> None:
     db.parent.mkdir(parents=True, exist_ok=True)
     db.write_bytes(b"this is not a sqlite database" * 10)
     with pytest.raises(embeddings.IndexUnreadable) as excinfo:
-        storage._try_connect_ro("wg")  # pylint: disable=protected-access
+        storage._try_connect_ro("wg")
     assert isinstance(excinfo.value, sqlite3.OperationalError)  # stays typed
     assert isinstance(excinfo.value.__cause__, sqlite3.DatabaseError)
     with pytest.raises(embeddings.IndexUnreadable):
@@ -142,7 +142,7 @@ def test_permission_denied_index_is_unreadable_not_absent(
     db.chmod(0)
     try:
         with pytest.raises(embeddings.IndexUnreadable) as excinfo:
-            storage._try_connect_ro("wg")  # pylint: disable=protected-access
+            storage._try_connect_ro("wg")
         assert isinstance(excinfo.value, sqlite3.OperationalError)
         with pytest.raises(embeddings.IndexUnreadable):
             mcp.search.tool_search("wg", "mlkem")
@@ -248,7 +248,7 @@ def test_embedding_failure_is_not_reported_as_a_clean_miss(
     _seed(isolated_home)
     _build_with_stub("wg")
     assert "score=" in mcp.search.tool_search("wg", "mlkem")  # control: hits exist
-    embeddings._MODEL_CACHE["stub"] = _FailingModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _FailingModel()
     for kwargs in ({}, {"author": "Alice"}):
         out = mcp.search.tool_search("wg", "mlkem", **kwargs)
         assert "score=" not in out

@@ -67,7 +67,7 @@ class _StubModel:
 def _seed_stub_model(model_name: str = "stub") -> None:
     """Inject the stub into the process-level model cache so build_index
     and search both skip the real loader."""
-    embeddings._MODEL_CACHE[model_name] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE[model_name] = _StubModel()
 
 
 def _build_with_stub(wg: str, isolated_home: Path) -> None:

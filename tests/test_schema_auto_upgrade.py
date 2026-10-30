@@ -50,7 +50,7 @@ def _built(home: Path) -> None:
         home, "wg", "threads/2026-01-01-t.md",
         "# T\n\n## Messages\n\n### [1] 2026-01-01 09:00 — A\n\nA response may be stored.\n",
     )
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index("wg", get_wg_file_cache_dir("wg"), model_name="stub",
                 verbose=Verbosity.QUIET)
 
@@ -162,7 +162,7 @@ def test_a_concurrent_upgrade_is_waited_for(
         with file_lock(_db_path("wg") + ".lock"):
             held.set()
             time.sleep(0.3)
-            conn = storage._open_db("wg")  # pylint: disable=protected-access
+            conn = storage._open_db("wg")
             conn.close()
 
     thread = threading.Thread(target=winner)

@@ -169,7 +169,7 @@ def test_a_skipped_child_publishes_nothing(
     assert status["state"] == "done"
     assert any("nothing published" in note for note in status["notes"])
     assert store.resolve_current("tls") == version
-    assert len(store._list_versions("tls")) == 1  # pylint: disable=protected-access
+    assert len(store._list_versions("tls")) == 1
     assert {k: v for k, v in kv._data.items() if "gather-cache" in k} == caches
 
 
@@ -204,7 +204,7 @@ def test_a_real_preflight_skip_reaches_the_parent_as_skipped(
     )
     freshness.record_gather("x-demo")
 
-    outcome = gather_pipeline._run_pipeline_child(  # pylint: disable=protected-access
+    outcome = gather_pipeline._run_pipeline_child(
         gather_runner.GatherSpec(corpus="x-demo"), lambda *a: None, lambda m: None, lambda: False
     )
     assert outcome is GatherOutcome.SKIPPED

@@ -665,9 +665,6 @@ def pack_vector(vec: Iterable[float], codec: VectorCodec) -> bytes:
     if norm:
         arr = arr / norm
     quantised = np.rint(arr / np.float32(codec.scale)).clip(-127, 127)
-    # `bytes(...)` rather than a bare `.tobytes()`: on Python 3.11's older
-    # numpy stubs the latter infers as Any, which strict mypy rejects for a
-    # function declared to return bytes. The runtime value is identical.
     return quantised.astype(np.int8).tobytes()
 
 
