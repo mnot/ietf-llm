@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -45,6 +46,31 @@ def _shared_session() -> "requests.Session":
         session.mount("http://", adapter)
         _SESSION = session
     return _SESSION
+
+
+#: Greedy to the last "@" before the path, query or fragment, so a password
+#: containing a literal "@" is redacted whole.
+_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
+
+
+def redact_userinfo(text: str) -> str:
+    """``text`` with any ``user:password@`` in a URL replaced by ``***@``.
+
+    An operator can put credentials in the configured base URL; ``requests``
+    echoes the URL in its exception messages, and those reach logs and tool
+    output.
+    """
+    return _USERINFO_RE.sub("***@", text)
+
+
+def _redacted(err: requests.RequestException) -> requests.RequestException:
+    """``err`` itself when its message is clean, else a same-typed copy with
+    the userinfo removed."""
+    message = str(err)
+    clean = redact_userinfo(message)
+    if clean == message:
+        return err
+    return type(err)(clean, request=err.request, response=err.response)
 
 
 class UpstreamAuthError(RuntimeError):
@@ -218,9 +244,13 @@ def post_json_with_retry(
     while True:
         try:
             resp = post(url, headers=headers, json=payload, timeout=timeout)
-        except requests.RequestException:
+        except requests.RequestException as err:
             if attempt >= max_retries:
-                raise
+                clean = _redacted(err)
+                if clean is err:
+                    raise
+                # No chaining: the original exception carries the credentials.
+                raise clean from None
             _sleep_backoff(attempt, None, retry_after_max)
             attempt += 1
             continue
@@ -230,19 +260,29 @@ def post_json_with_retry(
             wait = _retry_after_seconds(resp)
             if wait > retry_after_max:
                 raise UpstreamRateLimited(
-                    f"{url} answered HTTP {resp.status_code} and asked for a "
+                    f"{redact_userinfo(url)} answered HTTP {resp.status_code} and asked for a "
                     f"{wait:.0f}s wait, longer than the {retry_after_max:.0f}s "
                     "limit; not retrying",
                     wait,
                     response=resp,
                 )
             if attempt >= max_retries:
-                resp.raise_for_status()
+                _raise_for_status(resp)
             _sleep_backoff(attempt, resp, retry_after_max)
             attempt += 1
             continue
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return cast(dict[str, Any], resp.json())
+
+
+def _raise_for_status(resp: requests.Response) -> None:
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as err:
+        clean = _redacted(err)
+        if clean is err:
+            raise
+        raise clean from None
 
 
 def _auth_error_message(url: str, resp: requests.Response, auth_hint: str) -> str:
@@ -251,6 +291,6 @@ def _auth_error_message(url: str, resp: requests.Response, auth_hint: str) -> st
     status = f"HTTP {resp.status_code}" + (f" {reason}" if reason else "")
     check = f" Check {auth_hint}." if auth_hint else ""
     return (
-        f"{url} rejected the request ({status}): the credentials are missing, "
+        f"{redact_userinfo(url)} rejected the request ({status}): the credentials are missing, "
         f"invalid, or lack access.{check}"
     )

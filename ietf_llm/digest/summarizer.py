@@ -21,6 +21,34 @@ from .remote_summarizer import is_remote_summarize_model, load_openai_compat_cha
 #: "Generating digests..." and the first "Wrote ... digest" line.
 _PROGRESS_SECS = 20.0
 
+#: Longest summary written into a digest, counted after the callers escape each
+#: `|` to `\|` (so a cell never exceeds it). The model's input is raw issue and
+#: thread text, so an unbounded reply is an unbounded channel into the digest
+#: that `overview` and `read_digest` surface.
+_MAX_SUMMARY_CHARS = 300
+
+#: Consecutive failed calls after which the summariser disables itself. One
+#: transient 5xx (after the backend's own retries) should not cost every
+#: remaining row its summary; a missing key fails every call and trips this fast.
+_MAX_CONSECUTIVE_FAILURES = 3
+
+#: Header of the digest column the summary is written into. The label tells a
+#: reader (human or model) that the cell is model output, not the record.
+SUMMARY_COLUMN = "LLM summary"
+
+
+def _cap(text: str) -> str:
+    """`text` cut to `_MAX_SUMMARY_CHARS` as written into a table cell, where
+    each `|` costs two characters (the callers escape it)."""
+    if len(text) + text.count("|") <= _MAX_SUMMARY_CHARS:
+        return text
+    used = 0
+    for i, char in enumerate(text):
+        used += 2 if char == "|" else 1
+        if used > _MAX_SUMMARY_CHARS - 1:  # one character kept for the ellipsis
+            return text[:i].rstrip() + "…"
+    return text
+
 
 def _llm_setup_help(model_name: str, underlying_error: str) -> str:
     """Compose a multi-line help message for an --summarize misconfiguration.
@@ -81,6 +109,7 @@ class _Summarizer:
         self.model_name = model_name
         self.verbose = verbose
         self._warned = False
+        self._failures = 0
         self._remote = False
         # Progress accounting across every summarise() call, so the one
         # wrapper reports for all digests rather than each loop reporting
@@ -132,13 +161,15 @@ class _Summarizer:
             # Strip surrounding quotes if any
             if len(text) > 2 and text[0] in "\"'" and text[-1] == text[0]:
                 text = text[1:-1]
+            text = _cap(text)
+            self._failures = 0
             self._note_progress()
             return text
         except Exception as err:  # pylint: disable=broad-except
             # Most common case: model loaded but API key missing/invalid.
-            # Surface the full setup help on the first failure, then
-            # disable the summariser so subsequent chunks don't repeat
-            # the error or rack up zero-value API attempts.
+            # Surface the full setup help on the first failure, and disable the
+            # summariser after several in a row so a misconfiguration doesn't
+            # rack up zero-value API attempts.
             if not self._warned:
                 log(
                     self._setup_help(f"{type(err).__name__}: {err}"),
@@ -146,6 +177,8 @@ class _Summarizer:
                     level=LogLevel.ERROR,
                 )
                 self._warned = True
+            self._failures += 1
+            if self._failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.model = None
             return ""
 

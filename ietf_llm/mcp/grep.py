@@ -28,19 +28,34 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from .. import coverage
 from ..atomicio import TMP_SUFFIX
 from ..embeddings import chunk_spans
+from ..regexscan import (
+    FileScan,
+    ScanFailed,
+    ScanTimedOut,
+    elide,
+    run_bounded,
+    scan_files,
+)
 from .common import (
     _append_participation_nudge,
     _files_dir,
-    _offload,
+    _offload_scan,
     _requires_corpus,
     _with_freshness,
 )
-from .grep_common import _MAX_GREP_LIMIT, _elide, _mode_phrase
+from .grep_common import (
+    _MAX_GREP_LIMIT,
+    _REGEX_SCAN_BUDGET_S,
+    _SCAN_FAILED_REPLY,
+    _incomplete_scan_head,
+    _mode_phrase,
+    _note_scan_stop,
+)
 from .grep_rfc import _grep_rfc_corpus
 from .rfc_text import RFC_CORPUS
 
@@ -79,7 +94,7 @@ _DERIVED_PREFIXES = ("raw/", "github/")
 
 
 class _Hit(NamedTuple):
-    """One matching line: where it is and what it says."""
+    """One matching line: where it is and what it says (already elided)."""
 
     file: str
     lineno: int
@@ -91,7 +106,7 @@ def _compile(pattern: str, regex: bool, case_sensitive: bool) -> "re.Pattern[str
     handled by a separate substring path, so matching, counting, and context
     rendering all run through one code path.
 
-    `re.MULTILINE` is not optional. `_scan_file` prefilters by searching the
+    `re.MULTILINE` is not optional. The scan prefilters by searching the
     file's whole text before it looks at individual lines, so without it `^`
     and `$` would anchor to the file rather than the line: `^From:` would fail
     the prefilter, the file would be skipped entirely, and the tool would
@@ -101,55 +116,6 @@ def _compile(pattern: str, regex: bool, case_sensitive: bool) -> "re.Pattern[str
     """
     flags = re.MULTILINE if case_sensitive else re.MULTILINE | re.IGNORECASE
     return re.compile(pattern if regex else re.escape(pattern), flags)
-
-
-def _scan_file(
-    path: str,
-    relpath: str,
-    matcher: "re.Pattern[str]",
-    hits: List[_Hit],
-    keep: int,
-    per_file_cap: Optional[int] = None,
-) -> int:
-    """Count every matching line in one file; append the first `keep` of them
-    (across the whole scan) to `hits`, and no more than `per_file_cap` from
-    this file. Returns the count, which is complete whether or not the lines
-    were retained.
-
-    Reads the file whole and prefilters with a single search over the entire
-    text: the overwhelmingly common case is a file with no match at all, and
-    one C-level scan is far cheaper than splitting a 30 KB message thread into
-    lines to check each one.
-
-    Counting past `keep` but not retaining is what lets the reported total stay
-    honest without holding a `_Hit` per match: a one-character pattern matches
-    over a million lines in a real corpus, and keeping them all would be a
-    memory-exhaustion lever on a shared server. Files are scanned in relpath
-    order, so the retained hits are exactly the ones the renderer would have
-    shown after sorting.
-
-    The per-file cap is applied here, before the total `keep` is spent, which
-    is what stops a file with hundreds of hits from using up the whole budget
-    ahead of the files sorted after it. With a cap, `hits` is therefore no
-    longer a prefix of the sorted matches, but it is still in (file, line)
-    order.
-    """
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        return 0
-    if not matcher.search(text):
-        return 0
-    found = 0
-    kept = 0
-    for lineno, line in enumerate(text.splitlines(), 1):
-        if matcher.search(line):
-            found += 1
-            if len(hits) < keep and (per_file_cap is None or kept < per_file_cap):
-                hits.append(_Hit(relpath, lineno, line))
-                kept += 1
-    return found
 
 
 def _chunk_for_line(
@@ -185,7 +151,7 @@ def _context_lines(
         cache[path] = lines
     before = lines[max(0, lineno - 1 - context) : lineno - 1]
     after = lines[lineno : lineno + context]
-    return ([_elide(line) for line in before], [_elide(line) for line in after])
+    return ([elide(line) for line in before], [elide(line) for line in after])
 
 
 def _wants_derived(file_pattern: Optional[str]) -> bool:
@@ -449,7 +415,6 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
     header: str,
     context: int,
     cache: str,
-    matcher: "re.Pattern[str]",
     max_per_file: Optional[int] = None,
 ) -> str:
     """Render matching lines grouped by file, annotated with the chunk that
@@ -489,12 +454,12 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
             )
             for offset, line in enumerate(before, start=hit.lineno - len(before)):
                 out.append(f"  {offset:>6}- {line}")
-            out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
+            out.append(f"  {hit.lineno:>6}: {hit.text}{tag}")
             for offset, line in enumerate(after, start=hit.lineno + 1):
                 out.append(f"  {offset:>6}- {line}")
             out.append("")
         else:
-            out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
+            out.append(f"  {hit.lineno:>6}: {hit.text}{tag}")
     _close_group()
     footer = _hits_footer(hits, per_file, total, max_per_file)
     if footer:
@@ -568,6 +533,39 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     )
 
 
+_FILE_SCAN_KEYS = ("hits", "per_file", "total", "scanned", "complete")
+
+
+def _run_scan(
+    matcher: "re.Pattern[str]",
+    regex: bool,
+    eligible: List[Tuple[str, str]],
+    keep: int,
+    max_per_file: Optional[int],
+) -> FileScan:
+    """Scan `eligible` for `matcher`. The caller's own regex runs in a child
+    process that is killed at the budget (`regexscan`); a literal cannot
+    backtrack catastrophically and is scanned here, unbudgeted as it always
+    was."""
+    if not regex or not eligible:
+        return scan_files(matcher, eligible, keep, max_per_file)
+    return cast(
+        FileScan,
+        run_bounded(
+            {
+                "kind": "files",
+                "pattern": matcher.pattern,
+                "flags": matcher.flags,
+                "files": eligible,
+                "keep": keep,
+                "per_file_cap": max_per_file,
+            },
+            _REGEX_SCAN_BUDGET_S,
+            _FILE_SCAN_KEYS,
+        ),
+    )
+
+
 @_requires_corpus
 def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
     wg: str,
@@ -599,17 +597,43 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     # counts are all it needs, and a broad pattern over a large corpus would
     # otherwise hold a hit per match for nothing.
     keep = 0 if files_only else limit
-    hits: List[_Hit] = []
-    per_file: Dict[str, int] = {}
-    total = 0
-    for relpath, path in eligible:
-        found = _scan_file(path, relpath, matcher, hits, keep, max_per_file)
-        if found:
-            per_file[relpath] = found
-            total += found
+    mode = _mode_phrase(regex, case_sensitive)
+    try:
+        scan = _run_scan(matcher, regex, eligible, keep, max_per_file)
+    except ScanTimedOut:
+        _note_scan_stop("timeout")
+        # No counts survive a kill, and a partial denominator supports no
+        # negative, so say only that the scan did not finish.
+        return _with_freshness(
+            wg,
+            _incomplete_scan_head(
+                pattern,
+                mode,
+                _REGEX_SCAN_BUDGET_S,
+                "no result was recovered",
+                f"an unknown number of the {len(eligible)} file(s)",
+            ),
+        )
+    except ScanFailed as exc:
+        _note_scan_stop("failed", exc)
+        return _SCAN_FAILED_REPLY
+    if not scan["complete"]:
+        return _with_freshness(
+            wg,
+            _incomplete_scan_head(
+                pattern,
+                mode,
+                _REGEX_SCAN_BUDGET_S,
+                f"{scan['total']} matching line(s) in {len(scan['per_file'])} "
+                "file(s) before it stopped",
+                f"{scan['scanned']} of {len(eligible)} file(s)",
+            ),
+        )
+    hits = [_Hit(*hit) for hit in scan["hits"]]
+    per_file = scan["per_file"]
+    total = scan["total"]
     scanned = len(eligible)
 
-    mode = _mode_phrase(regex, case_sensitive)
     # Nothing scanned means there is no denominator, so the evidence-of-absence
     # body below would be a claim resting on zero files. Say what happened
     # instead — the glob matched nothing, or matched only files the scan
@@ -638,7 +662,7 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
         body = _render_files_only(wg, per_file, total, header, limit)
     else:
         body = _render_hits(
-            wg, hits, per_file, total, header, context, cache, matcher, max_per_file
+            wg, hits, per_file, total, header, context, cache, max_per_file
         )
     return _append_participation_nudge(list(per_file.keys()), _with_freshness(wg, body))
 
@@ -714,7 +738,12 @@ def register(server: "MCPServer") -> None:
             `list_files` takes. Narrowing also narrows what a zero result can
             claim, so scan unscoped before concluding absence.
           - `regex=True`: treat `pattern` as a Python regex instead of a
-            literal string. An invalid pattern is reported, not raised.
+            literal string. An invalid pattern is reported, not raised. A
+            regex scan has a time budget (20s on a gathered corpus): a
+            pattern that cannot finish in it — catastrophic backtracking, or
+            just too much text — is stopped and reported as an INCOMPLETE
+            SCAN, which supports no negative claim. Narrow with
+            `file_pattern` or simplify the pattern. A literal is not budgeted.
           - `case_sensitive=True`: default is case-insensitive.
           - `limit`: cap on rendered rows — matching lines normally, files
             under `files_only` (default 50, max 200). The scan and the
@@ -743,7 +772,7 @@ def register(server: "MCPServer") -> None:
         files. Pivot to `read_file_section` or `get_chunk_text` to read a hit
         in context.
         """
-        return await _offload(
+        return await _offload_scan(
             tool_grep_corpus,
             corpus,
             pattern,

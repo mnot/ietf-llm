@@ -383,6 +383,33 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
 
         return bool(self._with_current(corpus, _present))
 
+    def list_files(self, corpus: str, subdir: str) -> List[str]:
+        # Like `has_file`: a staged version is listed on disk, anything else from
+        # the manifest (one small GET, kept per version), never the content.
+        rel = clean_relpath(subdir)
+        if rel is None:
+            return []
+
+        def _listed(version: str) -> List[str]:
+            root = os.path.join(self._scratch, corpus, version)
+            if os.path.isdir(root):
+                directory = os.path.join(root, "files", rel)
+                if not os.path.isdir(directory):
+                    return []
+                return sorted(
+                    name
+                    for name in os.listdir(directory)
+                    if os.path.isfile(os.path.join(directory, name))
+                )
+            prefix = f"files/{rel}/"
+            return sorted(
+                path[len(prefix) :]
+                for path in self._version_files(corpus, version)
+                if path.startswith(prefix) and "/" not in path[len(prefix) :]
+            )
+
+        return self._with_current(corpus, _listed) or []
+
     def local_cache_dir(self, corpus: str) -> Optional[str]:
         staged = self._stage_current(corpus)
         if staged is None:

@@ -22,7 +22,7 @@ from ietf_llm import embeddings
 from ietf_llm.digest.overview import build_overview
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.embeddings.storage import decode_centroid, read_topics
-from ietf_llm.embeddings.topics import generate_topics
+from ietf_llm.embeddings.topics import generate_topics, has_topics, topics_stale
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
 
@@ -105,6 +105,77 @@ def test_topics_round_trip(isolated_home: Path) -> None:
         assert np.isclose(np.linalg.norm(vec), 1.0, atol=1e-5)
         assert c["last_active"] == "2025-03-01T10:00:00Z" or c["last_active"] is None
         assert c["exemplars"]  # concrete anchor titles
+
+
+def test_topics_carry_the_index_build_stamp(isolated_home: Path) -> None:
+    _seed(isolated_home, "wg")
+    assert generate_topics("wg", verbose=Verbosity.QUIET) is True
+    topics = read_topics("wg")
+    assert topics is not None
+    assert topics["index_build_id"]
+    assert not topics_stale("wg")
+
+
+def test_topics_are_stale_after_a_build_that_never_reached_them(
+    isolated_home: Path,
+) -> None:
+    """A crash between promoting a build and writing the topic map leaves a
+    sidecar from the previous build next to an index that is now unchanged."""
+    _seed(isolated_home, "wg")
+    generate_topics("wg", verbose=Verbosity.QUIET)
+    cache = get_wg_file_cache_dir("wg")
+    write_cache_file(
+        isolated_home, "wg", "threads/2025-quic-new.md",
+        _thread("quic discussion item new", "quic"),
+    )
+    assert build_index("wg", cache, model_name="stub", verbose=Verbosity.QUIET)
+    # ... crash: generate_topics never ran. The next gather's build is a no-op.
+    assert not build_index("wg", cache, model_name="stub", verbose=Verbosity.QUIET)
+    assert has_topics("wg") and topics_stale("wg")
+    generate_topics("wg", verbose=Verbosity.QUIET)
+    assert not topics_stale("wg")
+
+
+def test_an_unchanged_build_keeps_its_stamp(isolated_home: Path) -> None:
+    _seed(isolated_home, "wg")
+    generate_topics("wg", verbose=Verbosity.QUIET)
+    cache = get_wg_file_cache_dir("wg")
+    assert not build_index("wg", cache, model_name="stub", verbose=Verbosity.QUIET)
+    assert not topics_stale("wg")
+
+
+def test_topics_without_a_stamp_are_stale_against_a_stamped_index(
+    isolated_home: Path,
+) -> None:
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        write_topics,
+    )
+
+    _seed(isolated_home, "wg")
+    write_topics("wg", {"version": 1, "clusters": []})
+    assert topics_stale("wg")
+
+
+def test_an_index_without_a_build_id_is_never_stale(isolated_home: Path) -> None:
+    """An index built before ids were stamped must not re-cluster on upgrade,
+    whatever its sidecar holds (or lacks)."""
+    import sqlite3  # pylint: disable=import-outside-toplevel
+
+    from ietf_llm.embeddings.storage import (  # pylint: disable=import-outside-toplevel
+        _db_path,
+        write_topics,
+    )
+
+    _seed(isolated_home, "wg")
+    conn = sqlite3.connect(_db_path("wg"))
+    conn.execute("DELETE FROM meta WHERE key='build_id'")
+    conn.commit()
+    conn.close()
+    assert not topics_stale("wg")  # no sidecar at all
+    write_topics("wg", {"version": 1, "clusters": []})  # an unstamped one
+    assert not topics_stale("wg")
+    write_topics("wg", {"version": 1, "clusters": [], "index_build_id": "old"})
+    assert not topics_stale("wg")
 
 
 def test_overview_renders_themes(isolated_home: Path) -> None:

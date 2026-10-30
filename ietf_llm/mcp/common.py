@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import anyio
+from anyio.lowlevel import RunVar
 
 from .. import coverage, serve_metrics
 from ..access_stamp import note_access
@@ -87,6 +88,15 @@ def _materialised_files_dir(wg: str) -> Optional[str]:
     """
     return serve_metrics.timed_store(
         "materialised_cache_dir", lambda: get_corpus_store().materialised_cache_dir(wg)
+    )
+
+
+def _list_corpus_files(wg: str, subdir: str) -> List[str]:
+    """Names of the files directly inside `files/<subdir>` of `wg`'s current
+    version, without staging it (the listing counterpart of the store's
+    `has_file`). For a sweep across corpora that wants to stage only the hit."""
+    return serve_metrics.timed_store(
+        "list_files", lambda: get_corpus_store().list_files(wg, subdir)
     )
 
 
@@ -726,7 +736,53 @@ def _session_section() -> str:
     return f"{facts}\n\n{guidance}"
 
 
+#: Default worker slots for the scan class (`grep_corpus`). Scans are the one
+#: tool that can occupy a worker for tens of seconds, so they get a small pool
+#: of their own instead of the 40-token default: a flood of them queues against
+#: itself and cannot starve every other tool.
+_SCAN_CONCURRENCY_DEFAULT = 4
+
+#: The scan limiter, one per event loop (anyio limiters bind to the loop that
+#: first uses them, and the test suite runs many loops in one process).
+_scan_limiter_var: "RunVar[anyio.CapacityLimiter]" = RunVar("ietf_llm_scan_limiter")
+
+
+def _scan_concurrency() -> int:
+    """Worker slots for scans, from `IETF_LLM_SCAN_CONCURRENCY` (default 4;
+    unparseable or below 1 falls back to the default)."""
+    try:
+        value = int(os.environ.get("IETF_LLM_SCAN_CONCURRENCY", ""))
+    except ValueError:
+        return _SCAN_CONCURRENCY_DEFAULT
+    return value if value >= 1 else _SCAN_CONCURRENCY_DEFAULT
+
+
+def _scan_limiter() -> anyio.CapacityLimiter:
+    """The scan-class limiter for the running event loop."""
+    try:
+        return _scan_limiter_var.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(_scan_concurrency())
+        _scan_limiter_var.set(limiter)
+        return limiter
+
+
 async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
+    """Run a blocking `tool_*` function in a worker thread (default pool)."""
+    return await _run_offloaded(None, fn, args, kwargs)
+
+
+async def _offload_scan(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
+    """`_offload` on the scan class's own small pool (`_scan_limiter`)."""
+    return await _run_offloaded(_scan_limiter(), fn, args, kwargs)
+
+
+async def _run_offloaded(
+    limiter: Optional[anyio.CapacityLimiter],
+    fn: Callable[..., str],
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> str:
     """Run a blocking `tool_*` function in a worker thread.
 
     Blocking work (embedding-model load, a numpy matmul over every
@@ -749,6 +805,11 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
     multi-minute ceiling, it returns a clear, retryable error. Generous
     enough not to trip a legitimate first-time embedding-model load or a
     large file read.
+
+    `limiter` is the anyio pool the worker draws from (None: the default
+    40-token pool). A scan abandoned at the deadline still holds its token
+    until its own bounded work ends — for `grep_corpus`, the regex child's
+    kill — so the pool, not the abandoned thread, is what limits it.
     """
     # run_sync loses the return type through functools.partial; the
     # tool_* functions all return str, so cast.
@@ -802,14 +863,18 @@ async def _offload(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
         if timeout <= 0:
             result = cast(
                 str,
-                await anyio.to_thread.run_sync(partial, abandon_on_cancel=True),
+                await anyio.to_thread.run_sync(
+                    partial, abandon_on_cancel=True, limiter=limiter
+                ),
             )
             status = "ok"
             return result
         with anyio.move_on_after(timeout):
             result = cast(
                 str,
-                await anyio.to_thread.run_sync(partial, abandon_on_cancel=True),
+                await anyio.to_thread.run_sync(
+                    partial, abandon_on_cancel=True, limiter=limiter
+                ),
             )
             status = "ok"
             return result

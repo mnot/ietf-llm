@@ -450,3 +450,74 @@ def test_sub_fragment_line_ranges_are_contiguous_and_correct() -> None:
     for c in frags[1:]:
         assert c.start_line >= frags[0].start_line  # type: ignore[operator]
         assert c.end_line <= frags[0].end_line  # type: ignore[operator]
+
+
+# --- windowed chunks: line numbers are file lines --------------------------
+
+# Every Datatracker draft starts with blank lines. Each line names its own
+# number at both ends so a chunk that starts or ends mid-line still carries a
+# recognisable fragment of it.
+_LEADING_BLANKS = 4
+
+
+def _draft_with_leading_blanks(rows: int = 200) -> str:
+    return "\n" * _LEADING_BLANKS + "".join(
+        f"row-{n:04d} some filler text for the draft row-{n:04d}\n"
+        for n in range(1, rows + 1)
+    )
+
+
+def test_windowed_chunk_lines_skip_leading_blank_lines() -> None:
+    text = _draft_with_leading_blanks()
+    chunks = _chunk_windowed(text, "drafts/draft-ietf-foo-bar-00.txt")
+    assert len(chunks) > 3
+    # The first window starts on the file's first non-blank line, not line 1.
+    assert chunks[0].start_line == _LEADING_BLANKS + 1
+    lines = text.splitlines()
+    assert lines[chunks[0].start_line - 1].startswith("row-0001")
+    for chunk in chunks:
+        assert chunk.start_line is not None and chunk.end_line is not None
+        span = "\n".join(lines[chunk.start_line - 1 : chunk.end_line])
+        assert chunk.text in span
+        # Tight: the chunk starts on its first line and ends on its last.
+        first, last = chunk.text.split("\n")[0], chunk.text.split("\n")[-1]
+        assert lines[chunk.start_line - 1].endswith(first)
+        assert lines[chunk.end_line - 1].startswith(last)
+    assert chunks[-1].end_line == len(lines)
+
+
+def test_windowed_chunk_lines_unchanged_without_leading_whitespace() -> None:
+    body = "".join(f"line {n}\n" for n in range(1, 400))
+    shifted = _chunk_windowed("\n\n\n" + body, "drafts/draft-x-00.txt")
+    plain = _chunk_windowed(body, "drafts/draft-x-00.txt")
+    assert [c.text for c in shifted] == [c.text for c in plain]
+    assert [(c.start_line, c.end_line) for c in shifted] == [
+        (c.start_line + 3, c.end_line + 3) for c in plain  # type: ignore[operator]
+    ]
+
+
+def test_windowed_chunk_lines_with_leading_spaces_on_first_line() -> None:
+    # Indentation on the first non-blank line is stripped from the chunk text
+    # but is still on that file line.
+    text = "\n\n   Heading\n" + "x" * 3000 + "\n"
+    chunks = _chunk_windowed(text, "drafts/draft-x-00.txt")
+    assert chunks[0].text.startswith("Heading")
+    assert chunks[0].start_line == 3
+
+
+def test_chunk_file_lines_match_file_for_blank_led_draft(isolated_home: Path) -> None:
+    # Through the real reader (`_chunk_file`), and back out through
+    # read_file_section: the lines a chunk claims are the lines it came from.
+    from conftest import write_cache_file
+    from ietf_llm.mcp.chunks import tool_read_file_section
+
+    rel = "drafts/draft-ietf-foo-bar-00.txt"
+    path = write_cache_file(isolated_home, "wg", rel, _draft_with_leading_blanks())
+    chunks = _chunk_file(str(path), rel)
+    assert chunks[0].start_line == _LEADING_BLANKS + 1
+    for chunk in chunks:
+        assert chunk.start_line is not None and chunk.end_line is not None
+        got = tool_read_file_section(
+            "wg", rel, chunk.start_line, chunk.end_line - chunk.start_line + 1
+        )
+        assert chunk.text in got

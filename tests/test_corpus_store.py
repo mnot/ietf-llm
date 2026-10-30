@@ -151,3 +151,20 @@ def test_has_file_does_not_follow_a_symlink_out_of_files(isolated_home: Path) ->
     store = LocalCorpusStore()
     assert store.has_file("httpbis", "drafts/link.txt") is False
     assert store.has_file("httpbis", "drafts/inside.txt") is True
+
+
+def test_local_list_files(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "httpbis", "drafts/b.txt", "x")
+    write_cache_file(isolated_home, "httpbis", "drafts/a.txt", "x")
+    write_cache_file(isolated_home, "httpbis", "drafts/sub/c.txt", "x")
+    outside = isolated_home / "secret.txt"
+    outside.write_text("x")
+    files = isolated_home / ".cache" / "ietf-llm" / "httpbis" / "files"
+    (files / "drafts" / "link.txt").symlink_to(outside)
+    store = LocalCorpusStore()
+    # Sorted, files only: no subdirectory, no symlink out of files/.
+    assert store.list_files("httpbis", "drafts") == ["a.txt", "b.txt"]
+    for bad in ("", ".", "/etc", "../..", "nonesuch"):
+        assert store.list_files("httpbis", bad) == []
+    assert store.list_files("ghost", "drafts") == []
+    assert not (isolated_home / ".cache" / "ietf-llm" / "ghost").exists()

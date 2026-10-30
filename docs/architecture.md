@@ -383,7 +383,10 @@ Key invariants:
   rule live, but not the former-balloter rule, so the two can differ on a
   departed AD's position.
 - **`embeddings.db` is per-WG.** `meta` records the embedding model id, chunker
-  version, and vector dimension; a change to any forces a rebuild, and the model
+  version, and vector dimension; a model or dimension change forces a rebuild,
+  and a chunker-version change re-chunks every file on the next gather while
+  reusing stored vectors by `chunk_hash` (so a change that leaves chunk text
+  alone, such as line-number fixes, embeds nothing). The model
   id is read back at query time to resolve the same backend. The `chunks` table
   carries `start_line`/`end_line`, `chunk_date`, `labels`, `state`, `url`,
   `duplicate_of`, `closing_rationale` for faceted search, and a `chunk_hash`
@@ -406,7 +409,10 @@ Key invariants:
   k-means) is **skipped when the index didn't change** and a sidecar already
   exists — `build_index` returns whether anything was embedded or pruned, so a
   no-op re-gather (or a seeded corpus whose delta was zero) doesn't re-cluster for
-  nothing (#190).
+  nothing (#190). Each build that changes the index stamps a fresh `build_id`
+  into its `meta`, and the sidecar records the `index_build_id` it was derived
+  from; a mismatch (a crash after the index was promoted but before the map was
+  written) forces the recompute, so themes cannot describe a previous build.
   The stage (its skip decision and the clustering) reads the index the gather
   just built, under `storage.index_reads_from_workspace()` (a `ContextVar`, so it
   is per-thread and per-task): on the cloud store the ordinary read path would
@@ -592,7 +598,8 @@ ietf_llm/
 │   ├── names.py            # name keys for identity lookup; role-account detection
 │   ├── meetings.py         # link-only meeting participation (attendance id / speaker name)
 │   ├── digest.py           # render the _people.md digest
-│   └── positions.py        # heuristic position / poll / chair-statement extraction
+│   ├── poll_choice.py      # option-poll vote detection + hedge/negation helpers
+│   └── positions.py        # heuristic position / chair-statement extraction, tally rendering
 ├── notebooklm.py           # Google OAuth + Discovery Engine API
 ├── text.py                 # generic text helpers (subject norm, date, addr)
 ├── log.py                  # stderr output leaf: log(), Verbosity/LogLevel, _use_color
@@ -640,7 +647,7 @@ ietf_llm/
 │       ├── transcripts.py          # ietf-minutes-data repo; match to meeting clusters
 │       ├── transcript_context.py   # prepend meeting-context header to transcripts
 │       ├── mbox.py                 # IMAP fetch + per-year .txt; --mailing-list extras
-│       ├── mail_threads.py         # reconstruct per-thread .md files
+│       ├── mail_threads.py         # reconstruct per-thread .md files; owns THREAD_MSG_HEADER_RE (the shared `### [N]` section-header parse)
 │       ├── github.py               # archive.json (gh-pages) or REST API
 │       ├── github_schema.py        # normalise the archive's shape (download and read)
 │       ├── github_users.py         # resolve logins → real name + company
@@ -758,9 +765,34 @@ Grouped by job:
   names them, and the skip is reported so the denominator stays honest. The
   line view is bounded twice: `max_per_file` (optional) keeps at most N
   matching lines per file, then `limit` bounds the total. The per-file cap is
-  applied first, at retention time in `_scan_file`, so a noisy file cannot
-  starve the files sorted after it; counts stay complete and the footer
-  attributes omitted lines to the cap that removed them. Hits
+  applied first, at retention time in `regexscan._scan_file`, so a noisy file
+  cannot starve the files sorted after it; counts stay complete and the footer
+  attributes omitted lines to the cap that removed them.
+
+  **A caller's regex is bounded; a literal is not.** `re` runs a pattern in one
+  uninterruptible C call, so a catastrophic one (`(\w|\w)*X`) cannot be
+  stopped in a thread — `_offload` can only abandon the worker, which keeps
+  burning CPU and holding its pool slot (issue #293). With `regex=True`, both
+  backends therefore hand the scan to a child process (`python -m
+  ietf_llm.regexscan`, which imports neither torch nor the MCP server, so it
+  starts in tens of milliseconds — a few hundred for an RFC scan, which loads numpy) and
+  the parent kills it at the budget: 20s for a gathered corpus, and the RFC
+  series' own `_RFC_SCAN_BUDGET_S`. The child stops itself at the budget
+  between files / sections (the reply then says how far it got), is killed
+  `KILL_SLACK_S` later if one match call never returns (no counts survive), and
+  arms `SIGALRM` as a backstop should the server die mid-scan. Either way the
+  reply is "INCOMPLETE SCAN", never a zero; a child that crashes or answers
+  with garbage gets a fixed "nothing can be concluded" reply (its stderr goes to
+  the server log, not the client). Kills and failures are logged at WARN and
+  counted in `ietf_llm_grep_scan_stops_total{reason}`. The child is bounded in
+  time only: it has no memory cap (about 1.5 GB resident was measured for one
+  pathological pattern over a single very long line), and up to
+  `IETF_LLM_SCAN_CONCURRENCY` run at once, so deployments size for that. A
+  hostile client can hold all the scan slots (about 23s per call); other tools
+  are unaffected. Accepted limits (`docs/mcp-server.md`). The parent owns all store state
+  (cache dir, RFC index path) and never runs the user's pattern itself: the
+  child returns finished, already-elided lines. A literal pattern is escaped, so
+  it cannot backtrack catastrophically and scans in-process. Hits
   are annotated with the containing chunk via `embeddings.chunk_spans` where
   the index knows it — best-effort, absent for unindexed files.
 
@@ -799,11 +831,19 @@ Grouped by job:
 - **RFC series (cross-corpus):** `search_rfc_index(query)` / `get_rfc_info(rfc)` over
   the whole published series — the `_rfc/` singleton, not a corpus. Metadata
   only: the singleton mirrors titles and the reference graph, never document
-  text. A body is on disk only where a corpus that published the RFC was
-  gathered with `--rfcs`, so `get_rfc_info` ends every entry by saying whether this
-  one is (with the `read_file_section` call) or is not reachable — a
+  text. `get_rfc_info` ends every entry with a body note (`_body_note`) naming
+  which of three cases holds: the RFC full-text corpus has it (the note points
+  at `get_rfc_section`, the usual case); failing that, a corpus gathered with
+  `--rfcs` holds a copy (the note gives the `read_file_section` call); or
+  neither does, and the note says the body is not reachable from here. A
   well-formed metadata response otherwise reads as the document itself
   (issue #218).
+  `search_rfc_text` bounds its own reply: `limit`, `sections_per_rfc` and
+  `snippet_chars` are clamped (50, 10, 2000), and because those do not bound
+  their product, the reply as a whole stops at about 40,000 characters (the
+  budget `get_draft` / `get_issue` / `read_file_section` use). A cut reply
+  opens and closes with a `PARTIAL RESULT` banner giving the number of
+  sections left out; the first section is always shown.
 - **Live chair-workflow facts (gated, networked):** `meeting_schedule`,
   `draft_status`, `review_record`, and `overview(corpus, live=True)` read
   *live* from Datatracker, so they share the gather gate (see "The networked
@@ -814,8 +854,12 @@ Grouped by job:
 
 Every wrapper offloads its blocking `tool_*` body to a worker thread
 with a per-call deadline (`IETF_LLM_TOOL_TIMEOUT`, default 120s) so a
-stuck call fails fast instead of hanging to the client ceiling, and
-guards against an unknown corpus name (a read-only existence check, so a
+stuck call fails fast instead of hanging to the client ceiling.
+`grep_corpus`, the one tool whose work can run for tens of seconds, draws its
+worker from its own `anyio.CapacityLimiter` (`IETF_LLM_SCAN_CONCURRENCY`,
+default 4) rather than anyio's 40-token default pool, so a flood of scans
+queues against itself instead of starving every other tool. The wrappers also
+guard against an unknown corpus name (a read-only existence check, so a
 typo neither creates a cache dir nor returns a hollow result).
 
 The full routing brain (`data/mcp-instructions.md`) is handed to compliant
@@ -891,9 +935,19 @@ memoized: the cache lives on the store. It is the storage seam's own read — th
 same class as `local_cache_dir` — not a new networked-read exception. `get_rfc_info`'s
 body note uses it, asking the publishing WG first and the rest concurrently, so a
 metadata lookup never downloads a corpus; `read_file_section` is where the bytes
-are staged, and only for the corpus that has the file. (`mcp/drafts.py`'s
-`_find_latest_draft_file` has the same sweep shape but needs a listing and then
-the bytes, so it is not served by this.)
+are staged, and only for the corpus that has the file.
+
+`list_files(corpus, subdir)` is its listing counterpart, for a caller that cannot
+build the exact name: the names directly inside `files/<subdir>`, answered from
+the same manifest (or from the staged directory), never from the content.
+`mcp/drafts.py`'s `_find_latest_draft_file` uses it to find a draft's newest
+revision: the owning group's corpus (derived from `draft-ietf-<wg>-` /
+`draft-irtf-<rg>-`) is asked first and a hit there ends the lookup; otherwise
+every corpus is asked concurrently and the highest revision wins. Only the
+corpus holding the winner is then staged, so one `get_draft` on a cold replica
+downloads one corpus rather than the fleet. A draft cached both under its owner
+and elsewhere is therefore read from the owner, even if the other copy is a
+revision newer.
 
 `documents.json` reads through `local_corpus_dir` (a request already committed to
 materialising the corpus for a real read). The `last-gathered` / `seed-source`
@@ -1336,7 +1390,10 @@ chunk of content, and declines outright when the step is expensive
 (`_AUTO_UPGRADE_FROM` — below it a migration rebuilds the table or hashes
 every row) or the index is not ours to write (`_index_immutable`; a
 published replica upgrades by being republished). Any failure falls back to
-the previous behaviour, which is to tell the user to gather.
+the previous behaviour, which is to tell the user to gather. That includes a
+build holding the index lock (it holds it for the whole embed): the upgrade
+polls the lock for two seconds, enough for a concurrent reader's upgrade to
+finish, then gives up rather than wait out the build.
 
 `corpus.routing` deliberately does **not** use it: its confidence floor is an
 absolute calibrated threshold, and a prefixed query moves the distribution
@@ -1395,6 +1452,14 @@ small local model fine; a bad summary is worse than none. Summarisation defers t
 the `llm` package; without one, we print setup help rather than limp
 along. Deterministic digests ship without any setup.
 
+A summary is model output over raw issue and thread text, so it is treated as
+untrusted: each is capped at 300 characters, and its digest column is headed
+`LLM summary` (not `Summary`) so a reader can tell it from the record. The
+summariser disables itself after three consecutive failed calls, not the first
+(a single 5xx would otherwise cost the rest of the gather its summaries).
+Write-side: digests gathered earlier keep their uncapped `Summary` column until
+re-gathered with `--summarize`.
+
 ### The MCP server reads exclusively from the cache, off a daemon prewarm
 
 The read tools touch no network: everything an MCP client can do is read
@@ -1405,7 +1470,10 @@ blocked by the ~10 s weight load) and caps native-math threads
 cores. For a remote embedding backend the prewarm is a no-op beyond
 constructing the client — there are no weights to load, and it makes no
 upstream call, so readiness never waits on the network. `read_file_section`
-is hard-capped (default 400 lines, max 5000) as context hygiene.
+is capped as context hygiene: default 400 lines, max 5000, and about 40,000
+characters, whichever binds first (a line cap alone lets one pasted-base64 line
+return megabytes). A cut read carries the same `PARTIAL READ` banner as
+`get_draft` / `get_issue`.
 
 The prewarm is **silent**: nobody asked for it, and the first `search_corpus`
 does a lazy load if it fails, so it writes nothing to stderr — not a failure,
@@ -1535,6 +1603,24 @@ default on for stdio and off for the HTTP replica. Imported lazily (so the
 default read path pulls in neither it nor `requests`), torch-free, and always
 via the Datatracker REST API, never a scraped page. Its offline cousin
 `draft_authors` needs no network and is always registered.
+
+The fetch seam is tri-state, because these tools' payloads are claims of
+absence ("no such document", "no reviews", "no upcoming meetings") and an outage
+must never be rendered as one. `_fetch_json` returns `None` only for an HTTP
+404 and raises on every other failure; `_cached_json` turns that into
+`(body, fetched_at, answered)`, where `answered` is False only when the fetch
+failed with no cached entry (fresh or stale) to fall back on. The tools say
+"could not reach Datatracker (last tried …)" for that case and keep the
+"no document named …" wording for a 404. `fetch_draft_status`,
+`fetch_review_record` and `reconcile_active_drafts` raise `LiveUnavailable`;
+the meeting fetches return it in their existing `error` slot.
+
+The live fetch uses `governed_get(..., retrying=False)` with a `(5s, 10s)`
+connect/read timeout (`_FETCH_TIMEOUT`), for the reason given for `get_rfc_info`
+below: the shared session's retries honour `Retry-After` and can hold a tool
+call for a minute or more, whereas a failed fetch here already has a good
+answer — a stale cache entry if one exists, otherwise an honest "could not
+reach Datatracker". The host governor still applies.
 
 `get_rfc_info` takes the same exception, for a different reason and in a different
 shape. The `_rfc/` mirror is only refreshed by a gather, so between gathers it

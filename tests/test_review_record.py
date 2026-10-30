@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
+import requests
 
 from ietf_llm import live_lookup
 from ietf_llm.mcp.drafts import tool_review_record
@@ -419,15 +420,12 @@ def test_a_failed_fetch_is_not_rendered_as_an_empty_record(monkeypatch, urls) ->
     """A Datatracker outage on the list endpoints must not read as a draft
     nobody has reviewed. The doc fetch still answers (it can come off the disk
     cache), so without the flag this renders a confident, wrong absence."""
-    monkeypatch.setattr(
-        live_lookup.cache,
-        "_fetch_json",
-        lambda url, timeout=10.0: (
-            None
-            if ("/review/reviewassignment/" in url or "/ballotpositiondocevent/" in url)
-            else _canned(url)
-        ),
-    )
+    def _fetch(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        if "/review/reviewassignment/" in url or "/ballotpositiondocevent/" in url:
+            raise requests.ConnectionError("simulated outage")
+        return _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
     live_lookup._reset_cache()  # pylint: disable=protected-access
     out = _record()
     assert "Datatracker did not answer for the reviews and ballot" in out
@@ -435,6 +433,11 @@ def test_a_failed_fetch_is_not_rendered_as_an_empty_record(monkeypatch, urls) ->
     # None of the absence claims may appear.
     assert "none requested" not in out
     assert "not opened" not in out
+    # Nor may the section bodies, which render separately from the verdict.
+    assert "No review has been requested" not in out
+    assert "No ballot has been opened" not in out
+    assert "## Reviews\n\n_Not retrieved" in out
+    assert "## Ballot\n\n_Not retrieved" in out
     assert "Nothing in this record has examined" not in out
 
 
