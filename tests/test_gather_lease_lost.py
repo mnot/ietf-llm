@@ -508,6 +508,60 @@ def test_stop_cannot_overwrite_the_terminal_status_the_worker_wrote(
     assert status["cancel_requested"] is True
 
 
+@pytest.mark.usefixtures("gather_in_process")
+def test_stop_is_acknowledged_by_gather_status_without_being_written(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop, then ask the tool: the stop must show as pending although the
+    request wrote nothing (the worker owns the record), and must not outlive its
+    job -- not on the terminal record, and not on the next gather of the same
+    corpus. Real runner, real tools, records written by the real worker."""
+    import json
+
+    from ietf_llm.mcp import gather as gather_tools
+
+    store = _Store()
+    _patch_store(monkeypatch, store)
+    holding = [threading.Event(), threading.Event()]  # at the gate, per run
+    gates = [threading.Event(), threading.Event()]
+    runs: List[int] = []
+
+    def run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
+        n = len(runs)
+        runs.append(1)
+        progress("a", 1, 3)
+        holding[n].set()
+        gates[n].wait(30.0)
+        progress("b", 2, 3)
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(sequencer, "run_gather", run)
+    started = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert holding[0].wait(30.0)
+    assert "stop requested" not in gather_tools.tool_gather_status("tls")
+
+    assert "Requested stop" in gather_tools.tool_stop_gather("tls", started["cancel_token"])
+    shown = gather_tools.tool_gather_status("tls")
+    assert "running" in shown and "stop requested" in shown
+    # An overlay on read: nothing was written for the request itself.
+    with open(lifecycle.status_path("tls"), encoding="utf-8") as handle:
+        assert not json.load(handle).get("cancel_requested")
+
+    gates[0].set()
+    assert _wait_terminal("tls")["state"] == "cancelled"
+    _wait_idle("tls")
+    assert "stop requested" not in gather_tools.tool_gather_status("tls")
+
+    # The next gather of the same corpus starts clean.
+    again = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
+    assert again["started"], again
+    assert holding[1].wait(30.0)
+    shown = gather_tools.tool_gather_status("tls")
+    assert "running" in shown and "stop requested" not in shown
+    gates[1].set()
+    _wait_idle("tls")
+
+
 def test_stop_for_a_job_on_another_host_writes_the_flag_only_to_a_live_record(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
