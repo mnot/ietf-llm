@@ -104,6 +104,9 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
   on the IESG side), `review_record` (live — who reviewed or balloted, and on
   **which revision**), `draft_authors`, `get_draft` (verbatim text).
+  A live tool that says it **could not reach Datatracker** has given no
+  answer: that is an outage, not evidence the draft, review or meeting does
+  not exist. Retry rather than reporting it as missing.
 - **Before reviewing or commenting on a draft at WGLC / Last Call / a
   telechat, call `review_record`.** It says whether any review or ballot
   position has been cast against the *current* revision. A revision posted
@@ -132,9 +135,11 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   - `search_rfc_text` — what the documents **say**, semantically, over the
     full text of every RFC. Use it when the question is about content
     ("when must a cache not store a response"). Needs the RFC text corpus;
-    says so if it is not installed. **Semantic only** — it ranks by
-    similarity and never matches a string, so it cannot tell you which RFCs
-    contain an exact phrase. That is `grep_corpus(corpus="rfcs", …)`.
+    says so if it is not installed. A reply is bounded at about 40,000
+    characters; if it is cut, a `PARTIAL RESULT` banner at both ends says how
+    many sections were left out (narrow with `rfc=`, or lower `limit`).
+    **Semantic only** — it ranks by similarity and never matches a string, so
+    it cannot tell you which RFCs contain an exact phrase. That is `grep_corpus(corpus="rfcs", …)`.
   - `grep_corpus(corpus="rfcs", pattern=…)` — the same text, scanned
     **literally**. Use it for "which RFCs contain this exact sentence" and
     for any claim that some wording appears nowhere in the series. A literal
@@ -166,7 +171,10 @@ Quote the **actual text**, not a search snippet: `get_draft(name)` for a draft,
 `get_issue(corpus, number)` for an issue or PR, `get_by_url(corpus, url)` when the
 user already has a mailarchive / datatracker / github link, `read_minutes(
 corpus, meeting)` for what a meeting recorded. A poll tally is a sense of the
-room, not a decision — consensus is the chair's to declare.
+room, not a decision — consensus is the chair's to declare — and
+`tally_positions` rows, poll choices included, are keyword matches with a
+confidence tag, not a read of the messages: check them against the text, and
+quote its high- and low-confidence counts separately, never as one total.
 
 **A draft is bigger than one result.** `get_draft(name)` returns its
 **outline** — every section with its title and length — and
@@ -174,18 +182,24 @@ room, not a decision — consensus is the chair's to declare.
 everything beneath it). Reach for those rather than paging from line 1. When a
 read is cut short it says so in a `PARTIAL READ` banner at both ends, which is
 not part of the document: check for it before treating what you have as the
-whole section. The same banner appears on `get_issue`.
+whole section. The same banner appears on `get_issue` and `read_file_section`.
 
 **RFC text is the exception: `get_rfc_info` does not return it.** It is catalogue
-metadata — title, status, reference graph. An RFC body is on disk only when a
-corpus that published it was gathered with `--rfcs`; `get_rfc_info`'s last line says
-whether this one is, and gives the `read_file_section` call if so. When it says
-the body is **not reachable from here**, you cannot quote or characterise that
-RFC — say so rather than reconstructing it from memory, which is exactly where
-confident wrong readings come from. That answer is about what this server can
-reach, not about what exists: the RFC is published, but no corpus gathered
-here holds its text (or, rarely, the server failed to check one), so report it
-as "I can't read it", never as "it isn't available".
+metadata — title, status, reference graph — and ends every entry with a `Body:`
+line saying where the text can be read. There are three cases:
+
+- **The RFC text corpus holds it** (the usual case): the line points at
+  `get_rfc_section("<number>")` for the outline and `get_rfc_section("<number>",
+  "<section>")` to read one.
+- **Only a gathered corpus holds it**, because that corpus was gathered with
+  `--rfcs`: the line names the corpus and gives the `read_file_section` call.
+- **Neither does**: the line says the body is **not reachable from here**. You
+  cannot quote or characterise that RFC — say so rather than reconstructing it
+  from memory, which is exactly where confident wrong readings come from. That
+  answer is about what this server can reach, not about what exists: the RFC is
+  published, but no corpus installed here holds its text (or, rarely, the
+  server failed to check one), so report it as "I can't read it", never as "it
+  isn't available".
 
 ## Saying something was **never** said
 

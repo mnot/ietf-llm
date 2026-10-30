@@ -16,7 +16,7 @@ from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, github_dir, issue_path, remove_stale_digest
 from ..people import Registry
 from .helpers import _state_is_open
-from .summarizer import _Summarizer
+from .summarizer import SUMMARY_COLUMN, _Summarizer
 
 _ISSUE_PROMPT = (
     "Summarize this IETF working group GitHub issue in ONE sentence "
@@ -110,9 +110,9 @@ def _build_issues_digest(  # pylint: disable=too-many-locals
             if summarizer.active():
                 fh.write(
                     "| # | State | Title | Labels | Comments | Updated | "
-                    "Author | Participants | Dup-of | File | Summary |\n"
+                    f"Author | Participants | Dup-of | File | {SUMMARY_COLUMN} |\n"
                     "|---|-------|-------|--------|----------|---------|"
-                    "--------|--------------|--------|------|---------|\n"
+                    "--------|--------------|--------|------|-------------|\n"
                 )
             else:
                 fh.write(

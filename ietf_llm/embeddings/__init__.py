@@ -34,6 +34,7 @@ from .models import (
 )
 from .search import Hit, build_index, index_model, related, search
 from .storage import (
+    IndexUnreadable,
     any_indexed_wg,
     chunk_counts,
     chunk_spans,
@@ -47,13 +48,14 @@ from .storage import (
     section_outline,
     section_rows,
 )
-from .topics import build_topics, generate_topics, has_topics
+from .topics import build_topics, generate_topics, has_topics, topics_stale
 
 __all__ = [
     # Public surface
     "DEFAULT_EMBED_MODEL",
     "Chunk",
     "Hit",
+    "IndexUnreadable",
     "any_indexed_wg",
     "build_index",
     "build_topics",
@@ -71,6 +73,7 @@ __all__ = [
     "read_topics",
     "section_outline",
     "section_rows",
+    "topics_stale",
     "related",
     "search",
     # Used by ietf_llm/mcp/server.py for pre-warming

@@ -529,6 +529,14 @@ def test_doc_events_handles_missing_body(
     assert events == []
 
 
+def test_doc_events_exclude_the_charter_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = _stub_get_json(monkeypatch, {"/doc/docevent/": {"objects": []}})
+    datatracker_history.fetch_doc_events("wg", months=12, verbose=Verbosity.QUIET)
+    assert "doc__type__in=draft,rfc" in called[0]
+
+
 # --- helpers --------------------------------------------------------------
 
 

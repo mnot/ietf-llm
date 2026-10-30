@@ -19,6 +19,7 @@ import pytest
 from ietf_llm import embeddings
 from ietf_llm.embeddings import chunking
 from ietf_llm.gather.sources import groups as writer
+from ietf_llm.gather.sources.charter import approved_rev
 from ietf_llm.gather.sources.groups import _fetch_charter as real_fetch_charter
 from ietf_llm.log import Verbosity
 from ietf_llm.mcp import groups as tools
@@ -822,7 +823,7 @@ def test_never_approved_charter_is_flagged(mirror: _Datatracker) -> None:
 
 
 def test_approved_state_keeps_a_dashed_revision(mirror: _Datatracker) -> None:
-    assert writer._approved_rev({"rev": "20-02", "states": ["/api/v1/doc/state/88/"]}) == ("20-02", "")  # pylint: disable=protected-access
+    assert approved_rev({"rev": "20-02", "states": ["/api/v1/doc/state/88/"]}) == ("20-02", "")
 
 
 def test_not_gathered_message_is_honest_on_cloud(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG001

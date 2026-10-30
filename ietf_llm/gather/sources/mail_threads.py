@@ -734,6 +734,23 @@ def _format_msg_date(msg: "Message") -> str:
     return aware.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
+# The one parse of a message section header, shared by every reader (the
+# chunker, the position tally) so `[N]` means the same thing to all of them.
+# Writers: this module (`### [N] DATE — Sender (reply to [M])`) and, for the
+# GitHub record files, `issue_files` / `pull_files`, which add a trailing
+# italic annotation (`_(opened issue)_`, `_(opened pull request)_`,
+# `_(review: APPROVED)_`) that must stay out of the sender or one person
+# splits into several identities. `date` is optional: a message whose
+# timestamp rendered empty leaves `### [N]  — Sender`, which must still be a
+# section boundary.
+THREAD_MSG_HEADER_RE = re.compile(
+    r"^### \[(?P<idx>\d+)\] (?P<date>\S+(?:\s+\S+)?)? — (?P<sender>.+?)"
+    r"(?P<annotation>\s+_\((?:opened issue|opened pull request|review: [A-Z_]+)\)_)?"
+    r"(?: \(reply to \[(?P<reply_to>\d+)\]\))?$",
+    re.MULTILINE,
+)
+
+
 def _build_outline(thread: Thread, registry: Optional["Registry"] = None) -> str:
     """A short bulleted list of (date, sender, subject) for navigation."""
     lines = []

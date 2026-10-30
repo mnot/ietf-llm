@@ -144,3 +144,93 @@ def test_env_int_and_float(monkeypatch):
     assert oai_compat.env_int("IETF_LLM_X", 7) == 42
     monkeypatch.setenv("IETF_LLM_X", "bad")
     assert oai_compat.env_int("IETF_LLM_X", 7) == 7
+
+
+# --- credentials embedded in the base URL must not reach error text --------
+
+_SECRET_URL = "https://user:s3cr3t@host.example/v1/embeddings"
+
+
+def _real_response(status: int, url: str):
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = status
+    resp.reason = "Nope"
+    resp.url = url
+    return resp
+
+
+def test_redact_userinfo():
+    assert oai_compat.redact_userinfo(_SECRET_URL) == (
+        "https://***@host.example/v1/embeddings"
+    )
+    for plain in (
+        "https://host.example/a@b",
+        "https://host.example/x?e=a@b",
+        "https://host.example?e=a@b",
+        "https://host.example/x#a@b",
+    ):
+        assert oai_compat.redact_userinfo(plain) == plain
+
+
+def test_redact_userinfo_covers_an_at_sign_in_the_password():
+    out = oai_compat.redact_userinfo("see https://u:p@ss@host.example/x now")
+    assert out == "see https://***@host.example/x now"
+    assert "ss" not in out
+
+
+def test_a_clean_error_keeps_its_chain():
+    import requests
+
+    inner = OSError("urllib3 detail")
+
+    def boom(*_a, **_k):
+        try:
+            raise inner
+        except OSError as err:
+            raise requests.ConnectionError("cannot reach host.example") from err
+
+    with pytest.raises(requests.ConnectionError) as info:
+        oai_compat.post_json_with_retry(
+            "https://host.example/v1", {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=boom),
+        )
+    assert info.value.__cause__ is inner
+
+
+def test_auth_error_message_redacts_the_url():
+    with pytest.raises(oai_compat.UpstreamAuthError) as info:
+        oai_compat.post_json_with_retry(
+            _SECRET_URL, {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=lambda *a, **k: _real_response(401, _SECRET_URL)),
+        )
+    assert "s3cr3t" not in str(info.value)
+    assert "host.example" in str(info.value)
+
+
+def test_http_error_redacts_the_url():
+    import requests
+
+    with pytest.raises(requests.HTTPError) as info:
+        oai_compat.post_json_with_retry(
+            _SECRET_URL, {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=lambda *a, **k: _real_response(503, _SECRET_URL)),
+        )
+    assert "s3cr3t" not in str(info.value)
+    assert "503" in str(info.value)
+    assert "s3cr3t" not in repr(info.value.__cause__)
+
+
+def test_connection_error_redacts_the_url(monkeypatch):
+    import requests
+
+    def boom(*_a, **_k):
+        raise requests.ConnectionError(f"cannot reach {_SECRET_URL}")
+
+    with pytest.raises(requests.ConnectionError) as info:
+        oai_compat.post_json_with_retry(
+            _SECRET_URL, {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=boom),
+        )
+    assert "s3cr3t" not in str(info.value)

@@ -30,6 +30,7 @@ from ..embeddings import (
     generate_topics,
     has_topics,
     index_reads_from_workspace,
+    topics_stale,
 )
 from ..freshness import GatheredAt, local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
@@ -929,7 +930,8 @@ def _gather_stages(  # pylint: disable=too-many-branches,too-many-statements
         # otherwise good gather. Recomputing is O(corpus) k-means, so skip it when
         # the index didn't change and a sidecar already exists — the recompute is
         # dead CPU on a no-op re-gather or a seeded corpus whose delta was zero
-        # (issue #190).
+        # (issue #190) — unless the sidecar was derived from an earlier build
+        # (a crash after the index was promoted but before the map was written).
         tracker.begin("topic map")
         try:
             # The skip decision and the clustering both read the index; they
@@ -937,7 +939,7 @@ def _gather_stages(  # pylint: disable=too-many-branches,too-many-statements
             # store would otherwise stage for reads. Keep any index-reading
             # check (e.g. a staleness test) inside this block.
             with index_reads_from_workspace():
-                if index_changed or not has_topics(args.wg):
+                if index_changed or not has_topics(args.wg) or topics_stale(args.wg):
                     generate_topics(args.wg, verbose=verbosity)
         except Exception as err:  # pylint: disable=broad-except
             log(

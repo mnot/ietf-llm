@@ -26,7 +26,7 @@ from ietf_llm.embeddings.storage import (
     _db_path_ro,
     index_reads_from_workspace,
 )
-from ietf_llm.embeddings.topics import build_topics, generate_topics
+from ietf_llm.embeddings.topics import build_topics, generate_topics, topics_stale
 from ietf_llm.gather import sequencer as main_mod
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
@@ -139,6 +139,31 @@ def test_cloud_regather_topics_see_the_workspace_index(
     payload = build_topics("wg")
     assert payload is not None and payload["n_docs"] == 12
     assert cloud.staged > 0
+
+
+def test_cloud_topics_stale_compares_against_the_workspace_build(
+    isolated_home: Path, cloud: _SpyStore
+) -> None:
+    """A crash between promoting a build and writing the topic map leaves
+    topics.json stamped with the previous build. On cloud the published version
+    carries that same old stamp, so only a read of the workspace index notices."""
+    for theme in _THEMES:
+        _seed_threads(isolated_home, theme, 3)
+    _index()
+    with index_reads_from_workspace():
+        assert generate_topics("wg", verbose=Verbosity.QUIET)
+        assert not topics_stale("wg")
+    cloud.publish("wg", str(Path(get_wg_file_cache_dir("wg")).parent), version="v1")
+
+    _seed_threads(isolated_home, "quic", 4, start=10)
+    _index()  # new build id; the "crash" means generate_topics never runs
+    cloud.staged = 0
+
+    with index_reads_from_workspace():
+        assert topics_stale("wg")
+    assert cloud.staged == 0, "the staleness check must not stage the published copy"
+    # Control: outside the wrapper the published copy's matching old id hides it.
+    assert not topics_stale("wg")
 
 
 def test_first_gather_never_published_is_unchanged(

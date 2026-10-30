@@ -3,16 +3,20 @@ CorpusStore hydrate/persist seam (issue #82).
 
 The sync round-trips the gather accelerator caches to the KvStore so an
 ephemeral host doesn't re-hit rate-limited upstreams after scale-to-zero:
-`.http-cache.json` per corpus (lease-serialised, plain RMW) and the shared
+the ETag store per corpus (lease-serialised, plain RMW) and the shared
 identity maps (CAS-merge). Tests drive the real cache-module path helpers
 through an InMemoryKvStore, simulating a cold start by switching the cache dir.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import tarfile
 import threading
+import time as _real_time
+import types
 from pathlib import Path
 from typing import List, Optional
 
@@ -28,6 +32,7 @@ from ietf_llm.gather.sources import (
     datatracker_github,
     datatracker_people,
     github_users,
+    http_cache,
 )
 from ietf_llm.store.control import KvControlPlane
 from ietf_llm.store.kv import ANY, InMemoryKvStore, KvStore, Record
@@ -61,6 +66,36 @@ def _cache_dir(monkeypatch, path: Path) -> Path:
 
 # --- http cache: per-corpus round-trip ------------------------------------
 
+_HTTP_KEY = "corpora/{}/gather-cache/http-cache.tar"
+_LEGACY_HTTP_KEY = "corpora/{}/gather-cache/http-cache.json"
+
+
+def _stored_http_cache(kv: KvStore, corpus: str) -> dict:
+    """The stored ETag store, unpacked: `{member name: bytes}`."""
+    record = kv.get(_HTTP_KEY.format(corpus))
+    assert record is not None
+    members = {}
+    with tarfile.open(fileobj=io.BytesIO(record[0]), mode="r:") as tar:
+        for member in tar:
+            handle = tar.extractfile(member)
+            assert handle is not None
+            members[member.name] = handle.read()
+    return members
+
+
+def _stored_urls(kv: KvStore, corpus: str) -> set:
+    return set(json.loads(_stored_http_cache(kv, corpus)["index.json"])["entries"])
+
+
+def _tar(members: dict) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
 
 def test_http_cache_roundtrip_across_a_cold_start(monkeypatch, tmp_path):
     kv = InMemoryKvStore()
@@ -91,11 +126,8 @@ def test_http_cache_is_sharded_per_corpus(monkeypatch, tmp_path):
     cache_sync.persist(kv, "beta")
 
     # Each corpus has its own key; beta's gather did not clobber alpha's delta.
-    alpha = kv.get("corpora/alpha/gather-cache/http-cache.json")
-    assert alpha is not None and "u-a" in json.loads(alpha[0])
-    beta = kv.get("corpora/beta/gather-cache/http-cache.json")
-    assert beta is not None and "u-b" in json.loads(beta[0])
-    assert "u-a" not in json.loads(beta[0])
+    assert _stored_urls(kv, "alpha") == {"u-a"}
+    assert _stored_urls(kv, "beta") == {"u-b"}
 
 
 def test_concurrent_threads_get_isolated_http_caches(monkeypatch, tmp_path):
@@ -121,6 +153,300 @@ def test_concurrent_threads_get_isolated_http_caches(monkeypatch, tmp_path):
     t2.join()
     assert seen["alpha"] == (True, False)
     assert seen["beta"] == (True, False)
+
+
+def test_the_stored_bodies_survive_the_round_trip(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    url = "https://datatracker.ietf.org/api/v1/group/?format=json"
+    _cache_dir(monkeypatch, tmp_path / "warm")
+    _gather_stores("tls", url, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")
+    first = _stored_http_cache(kv, "tls")
+
+    _cache_dir(monkeypatch, tmp_path / "cold")
+    cache_sync.hydrate(kv, "tls")
+    with datatracker.gather_http_cache("tls"):
+        assert datatracker._active_http_cache().body(url) == '{"hit": true}'
+        datatracker._active_http_cache().get(url)  # a revalidation touches it
+    cache_sync.persist(kv, "tls")
+    # The same body files; only the index (last_used) differs.
+    second = _stored_http_cache(kv, "tls")
+    assert second.keys() == first.keys()
+    assert {n: d for n, d in second.items() if n != "index.json"} == {
+        n: d for n, d in first.items() if n != "index.json"
+    }
+
+
+def test_persist_with_no_local_store_leaves_the_stored_one(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    _cache_dir(monkeypatch, tmp_path / "warm")
+    _gather_stores("tls", "u", "e")
+    cache_sync.persist(kv, "tls")
+    stored = kv.get(_HTTP_KEY.format("tls"))
+
+    _cache_dir(monkeypatch, tmp_path / "cold")  # a gather that never fetched
+    cache_sync.persist(kv, "tls")
+    assert kv.get(_HTTP_KEY.format("tls"))[0] == stored[0]
+
+
+def test_a_blob_stored_before_the_directory_layout_is_migrated(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    url = "https://datatracker.ietf.org/api/v1/group/?format=json"
+    legacy = {url: {"etag": "old", "body": '{"was": "blob"}', "last_used": 1.0e9}}
+    kv.put(_LEGACY_HTTP_KEY.format("tls"), json.dumps(legacy).encode())
+    _cache_dir(monkeypatch, tmp_path / "cold")
+
+    cache_sync.hydrate(kv, "tls")
+    with datatracker.gather_http_cache("tls"):
+        cache = datatracker._active_http_cache()
+        assert cache.get(url)["etag"] == "old"
+        assert cache.body(url) == '{"was": "blob"}'
+    cache_sync.persist(kv, "tls")
+
+    assert _stored_urls(kv, "tls") == {url}
+    assert kv.get(_LEGACY_HTTP_KEY.format("tls")) is None  # superseded
+
+
+@pytest.mark.parametrize("blob", [b"", b"{truncated", b"[1, 2]", b'{"u": 5}'])
+def test_a_corrupt_stored_blob_does_not_fail_the_gather(monkeypatch, tmp_path, blob):
+    kv = InMemoryKvStore()
+    kv.put(_LEGACY_HTTP_KEY.format("tls"), blob)
+    _cache_dir(monkeypatch, tmp_path / "cold")
+
+    assert cache_sync.hydrate(kv, "tls") == []
+    _gather_stores("tls", "u", "e")  # the gather starts from nothing
+    cache_sync.persist(kv, "tls")
+    assert _stored_urls(kv, "tls") == {"u"}
+
+
+def test_a_corrupt_stored_archive_does_not_fail_the_gather(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    kv.put(_HTTP_KEY.format("tls"), b"this is not a tar")
+    _cache_dir(monkeypatch, tmp_path / "cold")
+
+    assert cache_sync.hydrate(kv, "tls") == []
+    _gather_stores("tls", "u", "e")
+    cache_sync.persist(kv, "tls")
+    assert _stored_urls(kv, "tls") == {"u"}  # replaced by what the gather learned
+
+
+def test_a_hostile_archive_writes_only_store_files(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    name = "a" * 64 + ".gz"
+    index = {"version": 1, "entries": {"u": {"etag": "e", "file": name, "size": 1}}}
+    kv.put(
+        _HTTP_KEY.format("tls"),
+        _tar(
+            {
+                "../../escape.txt": b"x",
+                "/abs.txt": b"x",
+                "notes.txt": b"x",
+                "b" * 64 + ".gz\n": b"x",
+                name: b"body",
+                "index.json": json.dumps(index).encode(),
+            }
+        ),
+    )
+    _cache_dir(monkeypatch, tmp_path / "cold")
+    cache_sync.hydrate(kv, "tls")
+
+    store = Path(datatracker.http_cache_path("tls"))
+    assert sorted(p.name for p in store.iterdir()) == sorted(
+        [".synced.json", "index.json", name]
+    )
+    assert not (tmp_path / "escape.txt").exists()
+    assert not (tmp_path / "cold" / "escape.txt").exists()
+
+
+def _sparse_member(name: str, real_size: int) -> bytes:
+    """A GNU sparse tar member that stores 5 bytes and claims `real_size`."""
+    header = bytearray(512)
+    header[0 : len(name)] = name.encode()
+    header[100:108] = b"0000644\0"
+    header[108:116] = b"0000000\0"
+    header[116:124] = b"0000000\0"
+    header[124:136] = b"00000000005\0"
+    header[136:148] = b"00000000000\0"
+    header[156:157] = b"S"
+    header[257:265] = b"ustar  \0"
+    header[386:398] = b"%011o\0" % (real_size - 5)  # sparse map: one 5-byte extent
+    header[398:410] = b"%011o\0" % 5
+    header[483:495] = b"%011o\0" % real_size
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    return bytes(header) + b"hello".ljust(512, b"\0")
+
+
+def test_a_sparse_member_is_not_unpacked(monkeypatch, tmp_path):
+    name = "a" * 64 + ".gz"
+    blob = _sparse_member(name, 200 * 1024 * 1024) + b"\0" * 1024
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
+        [member] = tar.getmembers()
+        assert member.issparse()  # reports its real size, not the 5 bytes stored
+        assert member.size == 200 * 1024 * 1024
+    _cache_dir(monkeypatch, tmp_path / "cold")
+    cache_sync._unpack_http_cache(blob, str(tmp_path / "out"))
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_archive_past_the_store_bounds_is_refused(monkeypatch, tmp_path):
+    members = {f"{c}" * 64 + ".gz": b"x" * 100 for c in "abc"}
+    members["index.json"] = b"{}"
+    blob = _tar(members)
+    out = tmp_path / "out"
+
+    monkeypatch.setattr(http_cache, "MAX_ENTRIES", 2)  # three bodies + the index
+    with pytest.raises(ValueError):
+        cache_sync._unpack_http_cache(blob, str(out))
+    monkeypatch.setattr(http_cache, "MAX_ENTRIES", 10)
+    monkeypatch.setattr(http_cache, "MAX_BYTES", 250)
+    monkeypatch.setattr(http_cache, "INDEX_ALLOWANCE", 0)
+    with pytest.raises(ValueError):
+        cache_sync._unpack_http_cache(blob, str(out))
+    assert not (out / "index.json").exists()  # nothing claims what was refused
+
+
+def test_a_truncated_archive_leaves_the_local_index_alone(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    _cache_dir(monkeypatch, tmp_path / "warm")
+    _gather_stores("tls", "stored-url", "e")
+    cache_sync.persist(kv, "tls")
+    whole = kv.get(_HTTP_KEY.format("tls"))[0]
+
+    _cache_dir(monkeypatch, tmp_path / "other")
+    _gather_stores("tls", "other-url", "e2")
+    # One body (header + a block of data), then the index cut off mid-data.
+    kv.put(_HTTP_KEY.format("tls"), whole[: 1024 + 512 + 20])
+    cache_sync.hydrate(kv, "tls")
+
+    index = http_cache.read_index(datatracker.http_cache_path("tls"))
+    assert index is not None and set(index) == {"other-url"}
+
+
+def test_hydrate_keeps_a_local_store_over_a_stored_blob(monkeypatch, tmp_path):
+    kv = InMemoryKvStore()
+    kv.put(
+        _LEGACY_HTTP_KEY.format("tls"),
+        json.dumps({"stored": {"etag": "e", "body": "{}"}}).encode(),
+    )
+    _cache_dir(monkeypatch, tmp_path / "warm")
+    _gather_stores("tls", "local", "e")  # this host already has a store
+    cache_sync.hydrate(kv, "tls")
+    index = http_cache.read_index(datatracker.http_cache_path("tls"))
+    assert index is not None and set(index) == {"local"}
+    assert not os.path.exists(datatracker.legacy_http_cache_path("tls"))
+
+
+class _PutLog(InMemoryKvStore):
+    """An in-memory store that remembers which keys were written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts: List[str] = []
+
+    def put(self, key, value, expect=ANY):
+        self.puts.append(key)
+        return super().put(key, value, expect=expect)
+
+
+def _later(monkeypatch, seconds: float) -> None:
+    """Make the ETag store's clock run `seconds` ahead."""
+    real = _real_time.time
+    monkeypatch.setattr(
+        http_cache, "time", types.SimpleNamespace(time=lambda: real() + seconds)
+    )
+
+
+def _revalidate_on_a_cold_host(kv, monkeypatch, tmp_path, name, url, action):
+    """hydrate, then a gather that runs `action(cache)` against the ETag store,
+    then persist; returns the stored tar bytes and the puts it took."""
+    _cache_dir(monkeypatch, tmp_path / name)
+    cache_sync.hydrate(kv, "tls")
+    before = len(kv.puts)
+    with datatracker.gather_http_cache("tls"):
+        action(datatracker._active_http_cache())
+    cache_sync.persist(kv, "tls")
+    return kv.get(_HTTP_KEY.format("tls"))[0], kv.puts[before:]
+
+
+_URL = "https://datatracker.ietf.org/api/v1/group/?format=json"
+
+
+def _seeded(tmp_path, monkeypatch):
+    kv = _PutLog()
+    _cache_dir(monkeypatch, tmp_path / "first")
+    _gather_stores("tls", _URL, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")
+    assert kv.puts == [_HTTP_KEY.format("tls")]
+    return kv, kv.get(_HTTP_KEY.format("tls"))[0]
+
+
+def test_a_gather_that_only_touches_entries_uploads_nothing(monkeypatch, tmp_path):
+    kv, stored = _seeded(tmp_path, monkeypatch)
+    _later(monkeypatch, 3600)  # revalidated an hour later: well inside the grace
+    tar, puts = _revalidate_on_a_cold_host(
+        kv, monkeypatch, tmp_path, "second", _URL, lambda cache: cache.get(_URL)
+    )
+    assert puts == []
+    assert tar == stored  # the very same bytes
+
+
+def test_a_gather_that_changes_a_body_uploads(monkeypatch, tmp_path):
+    kv, stored = _seeded(tmp_path, monkeypatch)
+    tar, puts = _revalidate_on_a_cold_host(
+        kv,
+        monkeypatch,
+        tmp_path,
+        "second",
+        _URL,
+        lambda cache: cache.store(_URL, "etag-2", '{"hit": "new"}'),
+    )
+    assert puts == [_HTTP_KEY.format("tls")]
+    assert tar != stored
+
+
+def test_a_gather_that_learns_a_new_url_uploads(monkeypatch, tmp_path):
+    kv, _ = _seeded(tmp_path, monkeypatch)
+    _, puts = _revalidate_on_a_cold_host(
+        kv,
+        monkeypatch,
+        tmp_path,
+        "second",
+        _URL,
+        lambda cache: cache.store("https://datatracker.ietf.org/x/", "e", "{}"),
+    )
+    assert puts == [_HTTP_KEY.format("tls")]
+
+
+def test_an_entry_last_used_over_a_day_later_uploads(monkeypatch, tmp_path):
+    kv, stored = _seeded(tmp_path, monkeypatch)
+    _later(monkeypatch, 86400 + 60)
+    tar, puts = _revalidate_on_a_cold_host(
+        kv, monkeypatch, tmp_path, "second", _URL, lambda cache: cache.get(_URL)
+    )
+    assert puts == [_HTTP_KEY.format("tls")]
+    assert tar != stored  # the stored last_used moved, so age eviction sees it
+
+
+def test_touches_accumulate_until_they_pass_a_day(monkeypatch, tmp_path):
+    """Each gather compares with what is *stored*, not with the last gather, so
+    several small touches cannot hide a stale stored timestamp."""
+    kv, _ = _seeded(tmp_path, monkeypatch)
+    for hours, uploads in ((10, 0), (20, 0), (30, 1)):
+        _later(monkeypatch, hours * 3600)
+        _, puts = _revalidate_on_a_cold_host(
+            kv, monkeypatch, tmp_path, f"h{hours}", _URL, lambda cache: cache.get(_URL)
+        )
+        assert len(puts) == uploads, hours
+
+
+def test_a_host_that_matches_nothing_stored_uploads(monkeypatch, tmp_path):
+    kv, _ = _seeded(tmp_path, monkeypatch)
+    # A gather on a host that never hydrated has no record of what is stored.
+    _cache_dir(monkeypatch, tmp_path / "unsynced")
+    _gather_stores("tls", _URL, "etag-1", '{"hit": true}')
+    cache_sync.persist(kv, "tls")
+    assert kv.puts.count(_HTTP_KEY.format("tls")) == 2
 
 
 # --- identity maps: shared CAS-merge --------------------------------------
@@ -303,7 +629,7 @@ def test_cloud_seam_delegates_to_sync(monkeypatch, tmp_path):
     _cache_dir(monkeypatch, tmp_path / "host")
     _gather_stores("tls", "u", "e")
     store.persist_gather_caches("tls")
-    assert kv.get("corpora/tls/gather-cache/http-cache.json") is not None
+    assert kv.get(_HTTP_KEY.format("tls")) is not None
 
 
 def test_cloud_seam_without_kv_is_noop(tmp_path):
@@ -346,8 +672,8 @@ def test_a_cloud_gather_binds_and_flushes_the_corpus_etag_file(monkeypatch, tmp_
     _run_gather_one(monkeypatch, "tls", "cloud", seen)
 
     assert seen["store"] is not datatracker._default_http_cache()
-    on_disk = json.loads(Path(datatracker.http_cache_path("tls")).read_text())
-    assert on_disk["u"]["etag"] == "etag-1"
+    on_disk = http_cache.read_index(datatracker.http_cache_path("tls"))
+    assert on_disk is not None and on_disk["u"]["etag"] == "etag-1"
     # Unbound again, so the next gather on this reused thread starts clean.
     assert datatracker._active_http_cache() is datatracker._default_http_cache()
 
@@ -367,5 +693,5 @@ def test_the_etag_file_is_flushed_when_the_stages_raise(monkeypatch, tmp_path):
         with datatracker.gather_http_cache("tls"):
             datatracker._active_http_cache().store("u", "etag-1", "{}")
             raise RuntimeError("stage blew up")
-    assert "u" in json.loads(Path(datatracker.http_cache_path("tls")).read_text())
+    assert "u" in (http_cache.read_index(datatracker.http_cache_path("tls")) or {})
     assert datatracker._active_http_cache() is datatracker._default_http_cache()

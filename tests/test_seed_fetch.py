@@ -17,6 +17,7 @@ import time
 import pytest
 
 from ietf_llm import freshness
+from ietf_llm.embeddings.chunking import CHUNKER_VERSION
 from ietf_llm.embeddings.storage import _SCHEMA_VERSION
 from ietf_llm.config import service
 from ietf_llm.paths import get_cache_dir, get_index_dir
@@ -40,7 +41,7 @@ def _gathered(name, *, model="sentence-transformers/BAAI/bge-small-en-v1.5"):
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.executemany("INSERT INTO meta VALUES (?, ?)", [
         ("model", model), ("schema_version", str(_SCHEMA_VERSION)),
-        ("chunker_version", "2"), ("embed_dim", "384")])
+        ("chunker_version", CHUNKER_VERSION), ("embed_dim", "384")])
     conn.commit()
     conn.close()
     freshness.record_gather(name)

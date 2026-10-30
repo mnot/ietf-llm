@@ -12,9 +12,11 @@ reached the store.
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sys
+import tarfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -33,7 +35,7 @@ from ietf_llm.store.kv import InMemoryKvStore
 pytestmark = pytest.mark.usefixtures("real_gather_child")
 
 _CHILD = Path(__file__).with_name("fake_gather_child.py")
-_HTTP_KEY = "corpora/tls/gather-cache/http-cache.json"
+_HTTP_KEY = "corpora/tls/gather-cache/http-cache.tar"
 _IMAP_PREFIX = "corpora/tls/gather-cache/imap/tls/"
 _ETAG_URL = "https://datatracker.ietf.org/api/v1/group/group/?acronym=tls&format=json"
 
@@ -85,6 +87,17 @@ def _stored(kv: InMemoryKvStore, key: str) -> Any:
     return json.loads(record[0])
 
 
+def _stored_etags(kv: InMemoryKvStore) -> Dict[str, str]:
+    """The ETag store the child left in the store: URL -> ETag."""
+    record = kv.get(_HTTP_KEY)
+    assert record is not None
+    with tarfile.open(fileobj=io.BytesIO(record[0]), mode="r:") as tar:
+        handle = tar.extractfile("index.json")
+        assert handle is not None
+        entries = json.loads(handle.read())["entries"]
+    return {url: entry["etag"] for url, entry in entries.items()}
+
+
 def _a_fresh_container() -> None:
     """Drop everything a gather left on this host's disk; the store keeps it."""
     shutil.rmtree(get_cache_dir())
@@ -101,7 +114,7 @@ def test_the_etag_cache_reaches_the_store_and_the_next_child(
     assert _gather()["state"] == "done"
     first = kv.get(_HTTP_KEY)
     assert first is not None
-    assert json.loads(first[0])[_ETAG_URL]["etag"] == "e1"
+    assert _stored_etags(kv)[_ETAG_URL] == "e1"
 
     _a_fresh_container()
     monkeypatch.setenv("FAKE_ETAG", "e2")
@@ -112,7 +125,7 @@ def test_the_etag_cache_reaches_the_store_and_the_next_child(
     # ...and what the child learned came back out.
     second = kv.get(_HTTP_KEY)
     assert second is not None and second[0] != first[0]
-    assert json.loads(second[0])[_ETAG_URL]["etag"] == "e2"
+    assert _stored_etags(kv)[_ETAG_URL] == "e2"
 
 
 def test_a_renumbered_list_replaces_the_stored_epoch(

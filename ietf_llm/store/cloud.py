@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, TypeVar
 
 from .. import freshness
-from ..atomicio import scratch_sibling_name, stage_split_dir, swap_dirs
+from ..atomicio import TMP_SUFFIX, scratch_sibling_name, stage_split_dir, swap_dirs
 from ..paths import INDEX_FILE_NAMES, checked_corpus, get_index_dir
 from .blobs import BlobStore, blob_concurrency, parallel_each
 from .control import KvControlPlane
@@ -709,6 +709,8 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
             staged[rel.replace(os.sep, "/")] = abs_path
         for dirpath, _dirs, names in os.walk(workspace):
             for name in names:
+                if name.endswith(TMP_SUFFIX):
+                    continue  # an in-flight or leaked atomic-write temp
                 abs_path = os.path.join(dirpath, name)
                 rel = os.path.relpath(abs_path, workspace).replace(os.sep, "/")
                 staged[rel] = abs_path
