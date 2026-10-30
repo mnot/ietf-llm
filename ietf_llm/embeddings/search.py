@@ -24,6 +24,7 @@ import hashlib
 import os
 import sqlite3
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -54,6 +55,7 @@ from .storage import (
     discard_build_db,
     promote_build_db,
     DEFAULT_NPROBE,
+    META_BUILD_ID,
     META_NPROBE,
     load_centroids,
     read_codec,
@@ -826,6 +828,11 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                         embed_last = time.time()
                 _fill()
 
+    if changed:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            (META_BUILD_ID, uuid.uuid4().hex),
+        )
     conn.commit()
     # Finalise into a standalone single file: fold the WAL back in, then switch
     # to DELETE journal mode so the promoted DB carries no -wal/-shm sidecar.

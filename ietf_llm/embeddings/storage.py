@@ -27,6 +27,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
@@ -35,7 +36,7 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from .. import serve_metrics
-from ..atomicio import file_lock
+from ..atomicio import LockHeld, file_lock
 from ..paths import checked_corpus, get_index_dir
 
 #: Bumped when the chunks-table schema changes. _open_db migrates older
@@ -570,6 +571,10 @@ _META_SCALE = "vector_scale"
 META_SOURCE_MODEL = "vector_source_model"
 META_SOURCE_BUILD = "rfc_index_build"
 META_SOURCE_COMMIT = "rfc_index_commit"
+#: Fresh on every build that changed the index. A sidecar derived from the index
+#: (the topic map) records it, so a crash between promoting a build and writing
+#: the sidecar is detectable: the stamp no longer matches.
+META_BUILD_ID = "build_id"
 
 
 @dataclass(frozen=True)
@@ -736,6 +741,10 @@ def load_centroids(
 #: nullable column.
 _AUTO_UPGRADE_FROM = 9
 
+#: How long a reader waits for the index lock before giving up on the upgrade.
+_UPGRADE_LOCK_WAIT_S = 2.0
+_UPGRADE_LOCK_POLL_S = 0.05
+
 
 def try_upgrade_schema(wg: str, current: int) -> bool:
     """Bring `wg`'s index up to the current schema for a *reader*.
@@ -753,23 +762,32 @@ def try_upgrade_schema(wg: str, current: int) -> bool:
     (`_index_immutable` — a published replica upgrades by being republished,
     not by a reader mutating a materialised copy).
 
-    Returns True when the index is now current. Best-effort: any failure
-    returns False and the caller falls back to telling the user to gather.
+    Returns True when the index is now current. Best-effort: any failure,
+    including a build holding the lock, returns False and the caller falls
+    back to telling the user to gather.
     """
     if current < _AUTO_UPGRADE_FROM or _index_immutable():
         return False
     path = _db_path_ro(wg)
     if not os.access(os.path.dirname(path) or ".", os.W_OK):
         return False
-    try:
-        # The same lock a build takes, so a reader upgrading and a gather
-        # starting cannot both migrate at once.
-        with file_lock(path + ".lock"):
-            conn = _open_db(wg, path=path)
-            conn.close()
-    except (sqlite3.Error, OSError):
-        return False
-    return True
+    # The same lock a build takes, so a reader upgrading and a gather starting
+    # cannot both migrate at once. A build holds it for the whole embed, so wait
+    # only briefly: long enough for a concurrent reader's millisecond upgrade to
+    # finish (the lock conflicts even within one process), not for a build.
+    deadline = time.monotonic() + _UPGRADE_LOCK_WAIT_S
+    while True:
+        try:
+            with file_lock(path + ".lock", blocking=False):
+                conn = _open_db(wg, path=path)
+                conn.close()
+            return True
+        except LockHeld:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_UPGRADE_LOCK_POLL_S)
+        except (sqlite3.Error, OSError):
+            return False
 
 
 def read_meta(wg: str, keys: Iterable[str]) -> Dict[str, str]:
@@ -1109,6 +1127,9 @@ def find_chunks_by_url(
         conn.close()
 
 
+_MESSAGE_KEY_BATCH = 200
+
+
 def get_messages(
     wg: str, items: Iterable[Tuple[str, int]]
 ) -> Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]]:
@@ -1126,30 +1147,31 @@ def get_messages(
     if conn is None:
         return {}
     try:
-        # SQLite has no native (a,b) IN ((...),(...)) shortcut for many
-        # pairs, but the chunks table is small enough that a single
-        # SELECT with a per-pair WHERE OR chain is fine — and we cap
-        # the caller (k≤40-ish) so the IN-list never explodes.
-        clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(keys))
-        args: List[object] = []
-        for file, idx in keys:
-            args.extend([file, idx])
-        # sub_idx=0 holds the full message body and span, so each
-        # (file, chunk_idx) yields exactly one row — the whole message,
-        # not a fragment.
-        cur = conn.execute(
-            "SELECT file, chunk_idx, title, text, chunk_date, url "
-            f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
-            args,
-        )
         out: Dict[Tuple[str, int], Tuple[str, str, Optional[str], Optional[str]]] = {}
-        for row in cur.fetchall():
-            out[(str(row[0]), int(row[1]))] = (
-                _clean_title(str(row[2])),
-                str(row[3]),
-                str(row[4]) if row[4] is not None else None,
-                str(row[5]) if row[5] is not None else None,
+        # SQLite has no (a,b) IN ((...),(...)) form for older versions, so each
+        # batch is an OR chain. Batching keeps it under both the expression-depth
+        # limit (~1000 terms) and the variable limit (999 on old builds).
+        for i in range(0, len(keys), _MESSAGE_KEY_BATCH):
+            batch = keys[i : i + _MESSAGE_KEY_BATCH]
+            clauses = " OR ".join(["(file=? AND chunk_idx=?)"] * len(batch))
+            args: List[object] = []
+            for file, idx in batch:
+                args.extend([file, idx])
+            # sub_idx=0 holds the full message body and span, so each
+            # (file, chunk_idx) yields exactly one row — the whole message,
+            # not a fragment.
+            cur = conn.execute(
+                "SELECT file, chunk_idx, title, text, chunk_date, url "
+                f"FROM chunks WHERE sub_idx=0 AND ({clauses})",
+                args,
             )
+            for row in cur.fetchall():
+                out[(str(row[0]), int(row[1]))] = (
+                    _clean_title(str(row[2])),
+                    str(row[3]),
+                    str(row[4]) if row[4] is not None else None,
+                    str(row[5]) if row[5] is not None else None,
+                )
         return out
     finally:
         conn.close()
