@@ -177,8 +177,8 @@ def build_cloud_config_store() -> CloudConfigStore:
             f"s3:// locator (got {store_url!r})"
         )
     try:
-        from ..store.kv_s3 import S3KvStore  # pylint: disable=import-outside-toplevel
-        from ..store.s3 import S3Bucket  # pylint: disable=import-outside-toplevel
+        from ..store.kv_s3 import S3KvStore  # noqa: PLC0415
+        from ..store.s3 import S3Bucket  # noqa: PLC0415
     except ImportError as err:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
@@ -190,8 +190,7 @@ def build_cloud_config_store() -> CloudConfigStore:
     #   config.store -> store.control -> store/__init__ -> store.corpus
     #     -> config.service -> config.store
     # Keep it here (and the sibling S3 imports above) function-local. Do not tidy up.
-    # pylint: disable-next=import-outside-toplevel
-    from ..store.control import KvControlPlane
+    from ..store.control import KvControlPlane  # noqa: PLC0415
 
     return CloudConfigStore(
         KvControlPlane(S3KvStore(S3Bucket(store_url))),

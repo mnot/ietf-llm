@@ -279,7 +279,7 @@ def _emit_histogram(
     `label` is a pre-rendered `key="value"` fragment (or ""). Buckets are
     emitted directly because `hist.counts` is already cumulative."""
     inner = f"{label}," if label else ""
-    for bound, count in zip(hist.buckets, hist.counts):
+    for bound, count in zip(hist.buckets, hist.counts, strict=True):
         lines.append(f'{name}_bucket{{{inner}le="{_fmt(bound)}"}} {count}')
     lines.append(f'{name}_bucket{{{inner}le="+Inf"}} {hist.count}')
     suffix = f"{{{label}}}" if label else ""

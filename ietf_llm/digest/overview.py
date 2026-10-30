@@ -728,7 +728,7 @@ def _themes_section(wg: str) -> List[str]:
     flags = generic_theme_flags(wg)
     if not flags or len(flags) != len(clusters):
         flags = [False] * len(clusters)
-    paired = sorted(zip(clusters, flags), key=lambda cf: cf[1])
+    paired = sorted(zip(clusters, flags, strict=True), key=lambda cf: cf[1])
 
     out: List[str] = [
         f"## Main discussion themes ({len(clusters)})",

@@ -176,7 +176,7 @@ def parse_eml(path: str, registry: Optional[Registry] = None) -> Optional[Messag
         # `>` runs it keys on, so an inline / bottom-posted reply was left
         # as a bare attribution + prose and the trail-cut ate the prose.
         body = extract_text_content(msg)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         body = ""
 
     return Message(

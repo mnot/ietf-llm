@@ -399,7 +399,7 @@ def sync_if_pristine(verbosity: Verbosity = Verbosity.STATUS) -> None:
     """
     try:
         _sync_if_pristine(verbosity)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         # Purely a convenience nudge; any failure (permissions, a weird skills
         # dir, a read error) must not derail the gather it follows.
         pass

@@ -11,7 +11,7 @@ extra still runs the rest of the CLI and the local-mirror export path.
 
 import base64
 import os
-from typing import Optional
+from typing import Optional, cast
 
 import requests
 from google.auth.exceptions import GoogleAuthError
@@ -38,7 +38,7 @@ def _session() -> requests.Session:
     its own session for the token refresh, so that leg still verifies against
     certifi -- `REQUESTS_CA_BUNDLE` is what reaches it.
     """
-    global _SESSION  # pylint: disable=global-statement
+    global _SESSION  # noqa: PLW0603
     if _SESSION is None:
         session = requests.Session()
         adapter = trust_store_adapter()
@@ -86,7 +86,7 @@ def get_credentials(
                 flow = InstalledAppFlow.from_client_secrets_file(
                     client_secrets_path, SCOPES
                 )
-                creds = flow.run_local_server(port=0)
+                creds = cast(Credentials, flow.run_local_server(port=0))
             except (GoogleAuthError, OSError, requests.RequestException) as err:
                 # OSError covers port-already-in-use and similar local
                 # binding failures from the temporary OAuth callback server.

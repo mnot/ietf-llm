@@ -22,6 +22,7 @@ Publisher-side only — see the subpackage docstring.
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import dataclass
 from typing import Optional
 
@@ -68,9 +69,6 @@ class PublishResult:
 
 def _existing_build(db_path: str) -> Optional[str]:
     """The upstream build id already assembled at `db_path`, if any."""
-    # pylint: disable-next=import-outside-toplevel
-    import sqlite3
-
     if not os.path.exists(db_path):
         return None
     try:

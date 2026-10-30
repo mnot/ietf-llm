@@ -291,7 +291,7 @@ def _incomplete_reply(pattern: str, mode: str, found_note: str, read_note: str) 
     )
 
 
-def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+def _grep_rfc_corpus(  # noqa: PLR0911
     pattern: str,
     file_pattern: Optional[str],
     regex: bool,

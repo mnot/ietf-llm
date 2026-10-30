@@ -206,11 +206,10 @@ def _disk_put(
         with file_lock(path + ".lock"):
             try:
                 with open(path, encoding="utf-8") as handle:
-                    data = json.load(handle)
+                    loaded = json.load(handle)
             except (OSError, ValueError):
-                data = {}
-            if not isinstance(data, dict):
-                data = {}
+                loaded = None
+            data = loaded if isinstance(loaded, dict) else {}
             now = time.time()
             fresh = {
                 key: val

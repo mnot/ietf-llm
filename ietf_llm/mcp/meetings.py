@@ -206,7 +206,7 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
 def _render_upcoming_meetings(corpus: str) -> str:
     """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
     each drillable by passing its id back as `meeting`."""
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     meetings, fetched, error = live_lookup.fetch_upcoming_meetings(corpus)
     if error:
@@ -238,7 +238,7 @@ def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
     in; registered only behind the gather gate. Times are venue-local,
     converted from the agenda's UTC.
     """
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     corpus = (corpus or "").strip()
     meeting = str(meeting or "").strip()
@@ -259,7 +259,7 @@ def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
 
 def _render_meeting_sessions(corpus: str, meeting: str) -> str:
     """Render one meeting's sessions (numbered or interim), venue-local."""
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     label = live_lookup.meeting_id_label(meeting)
     sessions, fetched, error = live_lookup.fetch_meeting_sessions(corpus, meeting)

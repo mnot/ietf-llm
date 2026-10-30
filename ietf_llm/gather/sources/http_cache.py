@@ -33,7 +33,7 @@ import re
 import threading
 import time
 import zlib
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...log import LogLevel, log
 
@@ -372,6 +372,7 @@ class HttpCache:
         self._dropped.clear()
         referenced = {entry["file"] for entry in (self._entries or {}).values()}
         cutoff = time.time() - _ORPHAN_GRACE
+        names: List[str]
         try:
             names = os.listdir(self._dest)
         except OSError:

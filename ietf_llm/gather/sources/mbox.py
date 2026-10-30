@@ -175,7 +175,7 @@ def clean_email_text(text: str) -> str:
     text = html.unescape(text)
 
     lines = text.splitlines()
-    cleaned_lines = []
+    cleaned_lines: List[str] = []
 
     # Common signature starts (case-insensitive)
     sig_patterns = [
@@ -785,9 +785,7 @@ def sync_mailing_list(
             # Bind the list name so the caller can label progress when a WG
             # follows several lists. Default-arg capture avoids the late-binding
             # loop-variable trap.
-            def per_list_cb(  # pylint: disable=function-redefined
-                done: int, total: int, _name: str = list_name
-            ) -> None:
+            def per_list_cb(done: int, total: int, _name: str = list_name) -> None:
                 on_progress(_name, done, total)
 
         per_list_uids[list_name] = _sync_one_list(

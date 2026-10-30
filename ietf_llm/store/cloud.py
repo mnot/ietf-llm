@@ -32,6 +32,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, TypeVar
 
+from typing_extensions import override
+
 from .. import freshness
 from ..atomicio import TMP_SUFFIX, scratch_sibling_name, stage_split_dir, swap_dirs
 from ..log import LogLevel, Verbosity, log
@@ -118,8 +120,7 @@ def store_config_key() -> Tuple[Any, ...]:
     are also read when the client is built but are left out: the process
     environment is fixed in a deployment, and instance-role credentials refresh
     themselves."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..config import service as service_config
+    from ..config import service as service_config  # noqa: PLC0415
 
     return (
         service_config.store_url(),
@@ -139,8 +140,7 @@ def build_cloud_store() -> "CloudCorpusStore":
     one S3-compatible bucket (object-store only — no SQL control plane). The
     serve path surfaces config problems earlier via boot-time validation; this
     guards the CLI / gather path too."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..config import service as service_config
+    from ..config import service as service_config  # noqa: PLC0415
 
     store_url = service_config.store_url()
     scratch = service_config.scratch_dir()
@@ -164,13 +164,13 @@ def build_cloud_store() -> "CloudCorpusStore":
             f"s3:// locator (got {store_url!r})"
         )
     try:
-        from .blobs_s3 import (  # pylint: disable=import-outside-toplevel
+        from .blobs_s3 import (  # noqa: PLC0415
             S3BlobStore,
         )
-        from .kv_s3 import (  # pylint: disable=import-outside-toplevel
+        from .kv_s3 import (  # noqa: PLC0415
             S3KvStore,
         )
-        from .s3 import S3Bucket  # pylint: disable=import-outside-toplevel
+        from .s3 import S3Bucket  # noqa: PLC0415
     except ImportError as err:
         raise ValueError(
             "an s3:// store needs the 's3' extra (pip install ietf-llm[s3])"
@@ -191,7 +191,7 @@ def build_cloud_store() -> "CloudCorpusStore":
     )
 
 
-class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
+class CloudCorpusStore(CorpusStore):
     """CorpusStore over a transactional control plane + an immutable blob store,
     materialising versions onto `scratch_dir`. Implements the full (wide)
     CorpusStore seam, so the public-method count runs past the default lint
@@ -430,6 +430,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         staged = self._stage_current(corpus)
         return staged[1] if staged is not None else None
 
+    @override
     def materialised_cache_dir(self, corpus: str) -> Optional[str]:
         # Read-only, non-fetching, and never a live control-plane call either
         # (_cached_current_version, not resolve_current): return the version's
@@ -445,6 +446,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         files_dir = os.path.join(self._scratch, corpus, version, "files")
         return files_dir if os.path.isdir(files_dir) else None
 
+    @override
     def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
         # The corpus-root counterpart of materialised_cache_dir, same
         # non-fetching, no-live-call contract: the version root only if
@@ -515,6 +517,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # A new version just landed on this replica's scratch; sweep older ones.
         self._reap_scratch(corpus, version)
 
+    @override
     def seed_workspace(self, corpus: str, dest_root: str) -> Optional[str]:
         # Materialise the current published version into the gather workspace so
         # an incremental gather on a fresh replica builds on prior output
@@ -583,6 +586,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                     shutil.rmtree(path, ignore_errors=True)
         return version
 
+    @override
     def hydrate_gather_caches(self, corpus: str) -> List[str]:
         # Restore the gather accelerator caches from the KvStore before a gather,
         # so a fresh replica revalidates instead of re-hitting rate-limited
@@ -590,27 +594,27 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # gather modules (consistent with the import dodge in get_corpus_store).
         if self._kv is None:
             return []
-        # pylint: disable-next=import-outside-toplevel
-        from ..gather.sources import cache_sync
+        from ..gather.sources import cache_sync  # noqa: PLC0415
 
         return cache_sync.hydrate(self._kv, corpus)
 
+    @override
     def persist_gather_caches(self, corpus: str) -> List[str]:
         if self._kv is None:
             return []
-        # pylint: disable-next=import-outside-toplevel
-        from ..gather.sources import cache_sync
+        from ..gather.sources import cache_sync  # noqa: PLC0415
 
         return cache_sync.persist(self._kv, corpus)
 
+    @override
     def clear_gather_caches(self, corpus: str) -> None:
         if self._kv is None:
             return
-        # pylint: disable-next=import-outside-toplevel
-        from ..gather.sources import cache_sync
+        from ..gather.sources import cache_sync  # noqa: PLC0415
 
         cache_sync.clear(self._kv, corpus)
 
+    @override
     def routing_fleet_table(self) -> Optional[Dict[str, Dict[str, Any]]]:
         # One GET of the fleet key routes the whole fleet — no per-corpus version
         # materialisation. publish() merged each corpus's entry. An empty dict
@@ -618,7 +622,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # to a local topics.json scan, which would materialise versions.
         if self._kv is None:
             return {}
-        from ..corpus import routing  # pylint: disable=import-outside-toplevel
+        from ..corpus import routing  # noqa: PLC0415
 
         return routing.read_fleet_table(self._kv)
 
@@ -630,8 +634,8 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # version. Best-effort: never fail an already-succeeded publish.
         if self._kv is None:
             return
-        from ..corpus import routing  # pylint: disable=import-outside-toplevel
-        from ..embeddings.topics import (  # pylint: disable=import-outside-toplevel
+        from ..corpus import routing  # noqa: PLC0415
+        from ..embeddings.topics import (  # noqa: PLC0415
             routing_projection,
         )
 
@@ -725,7 +729,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         references the prefix, so deleting it cannot hurt a reader."""
         try:
             self._blobs.delete_prefix(prefix)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             log(
                 f"store: could not remove the refused publish at {prefix}: "
                 f"{type(err).__name__}: {err}",
@@ -853,37 +857,44 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # `_reap_scratch`'s stance for local scratch).
         try:
             self._reap_versions(corpus, version)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             pass
         # Make the just-published version routable: merge its centroids into the
         # fleet routing key. Best-effort, like the reap — the publish has already
         # succeeded, so a routing-merge failure must never surface as one.
         try:
             self._merge_routing_entry(corpus)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             pass
         return version
 
+    @override
     def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
         return self._control.acquire_lease(corpus, owner, ttl)
 
+    @override
     def renew_lease(self, corpus: str, owner: str, ttl: float) -> bool:
         return self._control.renew_lease(corpus, owner, ttl)
 
+    @override
     def release_lease(self, corpus: str, owner: str) -> None:
         self._control.release_lease(corpus, owner)
 
+    @override
     def acquire_gather_slot(
         self, owner: str, corpus: str, ttl: float, max_inflight: int
     ) -> bool:
         return self._control.acquire_gather_slot(owner, corpus, ttl, max_inflight)
 
+    @override
     def renew_gather_slot(self, owner: str, ttl: float) -> bool:
         return self._control.renew_gather_slot(owner, ttl)
 
+    @override
     def release_gather_slot(self, owner: str) -> None:
         self._control.release_gather_slot(owner)
 
+    @override
     def record_access(self, corpus: str) -> None:
         # The one control-plane write the read fleet makes: an LWW timestamp
         # under corpora/<corpus>/access. Not best-effort-wrapped here — the
@@ -891,17 +902,21 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         # deployment that rejects the PUT degrades to "never recorded".
         self._control.set_access(corpus, freshness.iso_now())
 
+    @override
     def last_accessed(self, corpus: str) -> Optional[datetime]:
         raw = self._control.get_access(corpus)
         return freshness.parse_iso(raw) if raw else None
 
+    @override
     def gathered_at(self, corpus: str) -> Optional[datetime]:
         version = self.resolve_current(corpus)
         return _version_time(version) if version else None
 
+    @override
     def put_gather_status(self, corpus: str, status: Dict[str, Any]) -> None:
         self._control.set_gather_status(corpus, json.dumps(status, sort_keys=True))
 
+    @override
     def list_gather_statuses(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         for _corpus, raw in self._control.list_gather_statuses():
@@ -913,6 +928,7 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 out.append(parsed)
         return out
 
+    @override
     def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
         raw = self._control.get_gather_status(corpus)
         if raw is None:

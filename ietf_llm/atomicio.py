@@ -298,9 +298,7 @@ def atomic_open(
     `"\n"` so the bytes written match its LF-normalised comparison.
     """
     tmp = _atomic_tmp_path(path)
-    handle = open(  # pylint: disable=consider-using-with
-        tmp, "w", encoding=encoding, newline=newline
-    )
+    handle = open(tmp, "w", encoding=encoding, newline=newline)
     try:
         yield handle
         handle.close()
@@ -323,7 +321,7 @@ def atomic_open_binary(path: str) -> "Iterator[Any]":
     truncated transfer never leaves a partial blob cached under the final name.
     """
     tmp = _atomic_tmp_path(path)
-    handle = open(tmp, "wb")  # pylint: disable=consider-using-with
+    handle = open(tmp, "wb")
     try:
         yield handle
         handle.close()

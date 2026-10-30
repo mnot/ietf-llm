@@ -97,8 +97,7 @@ def _await_gather(corpus: str, budget: float) -> Optional[Dict[str, Any]]:
     Runs inside the `_offload` worker thread, so the blocking `time.sleep` is
     off the event loop and the server stays responsive to other requests.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     deadline = time.monotonic() + budget
     status = gather_runner.read_status(corpus)
@@ -125,7 +124,7 @@ def _format_waited_result(status: Dict[str, Any], corpus: str) -> str:
     return line
 
 
-def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_start_gather(  # noqa: PLR0913, PLR0917
     corpus: str,
     mailing_list: Optional[List[str]] = None,
     draft: Optional[List[str]] = None,
@@ -140,8 +139,7 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     force: bool = False,
     wait: Optional[float] = None,
 ) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     wait_started = time.monotonic()
     corpus = (corpus or "").strip()
@@ -266,8 +264,7 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
 def tool_gather_status(
     corpus: Optional[str] = None, wait: Optional[float] = None
 ) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     wait_started = time.monotonic()
     if corpus:
@@ -294,8 +291,7 @@ def tool_gather_status(
 
 
 def tool_stop_gather(corpus: str, token: str) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     corpus = (corpus or "").strip()
     if not corpus:
@@ -397,7 +393,7 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
 
 
 def tool_suggest_github_repos(corpus: str) -> str:
-    from ..gather.sources.repo_discovery import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.repo_discovery import (  # noqa: PLC0415
         discover_group_repos,
         format_discovery,
     )
@@ -412,7 +408,7 @@ def tool_suggest_github_repos(corpus: str) -> str:
 
 def register(server: "MCPServer") -> None:
     @server.tool()
-    async def start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def start_gather(  # noqa: PLR0913, PLR0917
         corpus: str,
         mailing_list: Optional[List[str]] = None,
         draft: Optional[List[str]] = None,

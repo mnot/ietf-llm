@@ -56,13 +56,10 @@ def _init_report(rfc_corpus_reason: Optional[str] = None) -> None:
     unreachable store and a store missing the entry all end in the same
     "not installed", and only the step that declined knows which.
     """
-    # pylint: disable=import-outside-toplevel
-    from ..gather.sources.rfc_corpus import local_build
-    from ..singletons import catalog as catalog_reader
-    from ..singletons import groups as group_reader
-    from ..singletons.rfcs import _load as load_rfcs
-
-    # pylint: enable=import-outside-toplevel
+    from ..gather.sources.rfc_corpus import local_build  # noqa: PLC0415
+    from ..singletons import catalog as catalog_reader  # noqa: PLC0415
+    from ..singletons import groups as group_reader  # noqa: PLC0415
+    from ..singletons.rfcs import _load as load_rfcs  # noqa: PLC0415
 
     rfcs = load_rfcs()
     print(
@@ -80,7 +77,7 @@ def _init_report(rfc_corpus_reason: Optional[str] = None) -> None:
             "get_rfc_section will be unavailable.\n"
             f"               Because: {why}."
         )
-    efforts = catalog_reader._load()  # pylint: disable=protected-access
+    efforts = catalog_reader._load()
     print(
         f"Efforts:       {len(efforts):,} in the catalog"
         if efforts
@@ -189,7 +186,7 @@ def _gather(args: argparse.Namespace, verbosity: Verbosity) -> Optional[GatherOu
 
 
 @graceful_keyboard_interrupt
-def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
+def main() -> None:  # noqa: PLR0912
     parser = build_parser()
     maybe_autocomplete(parser)
     args = parser.parse_args()
@@ -301,7 +298,7 @@ def main() -> None:  # pylint: disable=too-many-branches,too-many-statements
             try:
                 if _gather(one, verbosity) is GatherOutcome.UNUSABLE:
                     failed = True
-            except Exception as exc:  # pylint: disable=broad-exception-caught
+            except Exception as exc:  # noqa: BLE001
                 # One corpus's publish or backend fault must not leave the rest
                 # of an unattended sweep stale; the exit status still reports it.
                 log(

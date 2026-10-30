@@ -417,10 +417,9 @@ def build_timeline(
 def _rfc_lookup() -> Callable[[str], Optional[Tuple[str, str]]]:
     """`rfcN` -> (publishing WG, title) from the offline `_rfc/` mirror."""
     # Lazy: keeps the two singletons' readers independent at import time.
-    # pylint: disable-next=import-outside-toplevel
-    from ...singletons import rfcs as rfc_reader
+    from ...singletons import rfcs as rfc_reader  # noqa: PLC0415
 
-    data = rfc_reader._load()  # pylint: disable=protected-access
+    data = rfc_reader._load()
 
     def lookup(name: str) -> Optional[Tuple[str, str]]:
         if data is None:
@@ -572,11 +571,11 @@ def ensure_groups_index(
             batch,
             reindex,
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"Groups: refresh failed: {err}", verbosity, LogLevel.PROGRESS)
 
 
-def _ensure(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _ensure(
     verbosity: Verbosity,
     force: bool,
     fetch: Fetcher,
@@ -657,12 +656,10 @@ def install_seed(verbosity: Verbosity = Verbosity.STATUS) -> bool:
         return False
     # Lazy: the seed consumer is gather-path only, and this keeps it off any
     # path that merely reads.
-    # pylint: disable=import-outside-toplevel
-    from ...seed import fetch as seed_fetch
-    from ...seed import format as seed_fmt
-    from ...seed import generation as seed_generation
+    from ...seed import fetch as seed_fetch  # noqa: PLC0415
+    from ...seed import format as seed_fmt  # noqa: PLC0415
+    from ...seed import generation as seed_generation  # noqa: PLC0415
 
-    # pylint: enable=import-outside-toplevel
     seed_url = seed_generation.store_url()
     if not seed_url:
         return False
@@ -844,8 +841,11 @@ def _index(verbosity: Verbosity, embed_model: Optional[str], embed: bool) -> boo
     alone. Incremental on file content, so a pass over unchanged files is cheap."""
     if not embed or not os.path.isdir(reader.charters_dir()):
         return False
-    # pylint: disable-next=import-outside-toplevel
-    from ...embeddings import DEFAULT_EMBED_MODEL, _get_embed_model, build_index
+    from ...embeddings import (  # noqa: PLC0415
+        DEFAULT_EMBED_MODEL,
+        _get_embed_model,
+        build_index,
+    )
 
     model_name = embed_model or DEFAULT_EMBED_MODEL
     # build_index reports an unavailable model as "nothing changed", which is
@@ -859,7 +859,7 @@ def _index(verbosity: Verbosity, embed_model: Optional[str], embed: bool) -> boo
             model_name=model_name,
             verbose=verbosity,
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"Groups: charter index not built: {err}", verbosity, LogLevel.PROGRESS)
         return False
     return True

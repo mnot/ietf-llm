@@ -209,7 +209,7 @@ def _restore(kv: KvStore, key: str, path: str) -> None:
         if record is None:
             return
         _atomic_write(path, record[0])
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -345,7 +345,7 @@ def _restore_http_cache(kv: KvStore, corpus: str) -> None:
                 _LEGACY_HTTP_CACHE_KEY.format(corpus=corpus),
                 datatracker.legacy_http_cache_path(corpus),
             )
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -366,7 +366,7 @@ def _persist_http_cache(kv: KvStore, corpus: str) -> None:
         kv.put(_HTTP_CACHE_KEY.format(corpus=corpus), blob)
         _write_synced(directory, current)
         kv.delete(_LEGACY_HTTP_CACHE_KEY.format(corpus=corpus))
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -378,7 +378,7 @@ def _put_plain(kv: KvStore, key: str, path: str) -> None:
         if data is None:
             return
         kv.put(key, data)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -402,7 +402,7 @@ def _cas_merge(kv: KvStore, key: str, path: str, merge: MergeFn) -> None:
             payload = json.dumps(merge(remote, local), sort_keys=True).encode("utf-8")
             if kv.put(key, payload, expect=expect) is not None:
                 return
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -416,7 +416,7 @@ def _restore_tree(kv: KvStore, prefix: str, local_dir: str) -> None:
     re-fetch. Best-effort per file — one failure never skips the rest."""
     try:
         names = kv.list_children(prefix)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return
     for name in names:
         _restore(kv, prefix + name, os.path.join(local_dir, name))
@@ -550,7 +550,7 @@ def _restore_imap(kv: KvStore, corpus: str, problems: List[str]) -> List[str]:
     prefix = _IMAP_PREFIX.format(corpus=corpus)
     try:
         names = kv.list_children(prefix)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         return [f"IMAP mail cache not restored (listing failed: {err})"]
     root = _imap_root(corpus)
     for name in names:
@@ -563,7 +563,7 @@ def _restore_imap(kv: KvStore, corpus: str, problems: List[str]) -> List[str]:
         except _CorruptIndex as err:
             problems.append(f"IMAP mail cache for '{name}' not restored ({err})")
             continue
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             fatal.append(f"IMAP mail cache for '{name}' not restored ({err})")
             continue
         if failed:
@@ -612,7 +612,7 @@ def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Tuple[int, in
         except _CorruptIndex:
             lost += 1
             continue
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             failed += 1
             continue
         more_failed, more_lost = _restore_unit(
@@ -635,7 +635,7 @@ def _restore_unit(
             continue
         try:
             record = kv.get(_chunk_key(prefix, chunk))
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             failed += 1
             continue
         if record is None:
@@ -669,7 +669,7 @@ def _persist_imap(kv: KvStore, corpus: str, problems: List[str]) -> None:
             continue
         try:
             skipped = _persist_imap_list(kv, f"{prefix}{name}/", list_dir)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             problems.append(f"IMAP mail cache for '{name}' not persisted ({err})")
             continue
         if skipped:
@@ -728,7 +728,9 @@ def _persist_unit(
     if not local:
         return
     superseded = _epochs_differ(epoch, stored.uidvalidity)
-    base = {} if superseded else stored.chunks
+    base = dict(stored.chunks)
+    if superseded:
+        base.clear()
     chunks = dict(base)
     index_key = prefix + _IMAP_INDEX
     if superseded:

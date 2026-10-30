@@ -316,8 +316,11 @@ def notebooklm(
     # so this push path imports them lazily and fails cleanly when the
     # extra isn't installed (mirror-mode export needs none of this).
     try:
-        # pylint: disable=import-outside-toplevel
-        from .notebooklm import create_notebook, get_credentials, upload_source
+        from .notebooklm import (  # noqa: PLC0415
+            create_notebook,
+            get_credentials,
+            upload_source,
+        )
     except ImportError:
         log(
             "NotebookLM export needs the optional `notebooklm` extra "

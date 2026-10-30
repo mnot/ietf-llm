@@ -99,7 +99,7 @@ _workers: "List[threading.Thread]" = []
 _heartbeat_stop = threading.Event()
 #: The single lease/slot heartbeat thread. Tracked so a pool regrow (after a
 #: worker died) doesn't spawn a second heartbeat alongside the first.
-_heartbeat_thread: "Optional[threading.Thread]" = None  # pylint: disable=invalid-name
+_heartbeat_thread: "Optional[threading.Thread]" = None
 
 #: Cooperative-cancel state, keyed by corpus, guarded by `_registry_lock`.
 #: `_cancel_tokens` holds the SHA-256 of each in-flight gather's stop token so
@@ -244,8 +244,7 @@ def _pre_start_refusal(spec: GatherSpec) -> Optional[Dict[str, Any]]:
     # `force` overrides the freshness debounce only — never a gather in flight.
     # None on the local backend, where the in-process registry catches same-host
     # races (the lease below is the cross-host arbiter for the tight race).
-    # pylint: disable-next=import-outside-toplevel
-    from ..store import corpus as corpus_store
+    from ..store import corpus as corpus_store  # noqa: PLC0415
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
     if fleet is not None and fleet.get("state") in ("queued", "running"):
@@ -295,7 +294,7 @@ def _queue_max() -> int:
     return value if value >= 1 else _DEFAULT_QUEUE_MAX
 
 
-def start(  # pylint: disable=too-many-return-statements
+def start(  # noqa: PLR0911
     spec: GatherSpec,
 ) -> Dict[str, Any]:
     """Enqueue a background gather for `spec.corpus`.
@@ -321,8 +320,7 @@ def start(  # pylint: disable=too-many-return-statements
     refusal = _pre_start_refusal(spec)
     if refusal is not None:
         return refusal
-    # pylint: disable-next=import-outside-toplevel
-    from ..store import corpus as corpus_store
+    from ..store import corpus as corpus_store  # noqa: PLC0415
 
     store = corpus_store.get_corpus_store()
     owner = _owner()
@@ -370,7 +368,7 @@ def start(  # pylint: disable=too-many-return-statements
         with _registry_lock:
             _queue.put(spec)
             _ensure_worker(owner)
-    except BaseException:  # pylint: disable=broad-except
+    except BaseException:  # noqa: BLE001
         # Enqueue or worker spawn failed (e.g. RuntimeError under thread/FD
         # exhaustion). The worker's finally is the only place that frees the
         # reservation, and no worker will ever run this spec — so roll back here
@@ -383,7 +381,7 @@ def start(  # pylint: disable=too-many-return-statements
             _lease_watches.pop(corpus, None)
         try:
             store.release_lease(corpus, owner)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             pass
         return {"started": False, "reason": "could not start gather", "corpus": corpus}
     # How many gathers this one actually waits behind: with N running
@@ -437,8 +435,7 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
         event = _cancel_events.get(corpus)
     if event is not None:
         event.set()
-    # pylint: disable-next=import-outside-toplevel
-    from ..store import corpus as corpus_store
+    from ..store import corpus as corpus_store  # noqa: PLC0415
 
     store = corpus_store.get_corpus_store()
     status["cancel_requested"] = True
@@ -459,8 +456,7 @@ def _store() -> Any:
     """The current CorpusStore. Fetched fresh (not captured) so the long-lived
     worker/heartbeat always honour the live config rather than whatever was set
     when they first started."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..store import corpus as corpus_store
+    from ..store import corpus as corpus_store  # noqa: PLC0415
 
     return corpus_store.get_corpus_store()
 
@@ -476,7 +472,7 @@ def _ensure_worker(owner: str) -> None:
     cannot un-start a thread), so in steady state — a fixed N — it grows once and
     returns early thereafter; the fleet slot is the authoritative concurrency
     cap, the pool just needs to be big enough not to be the bottleneck."""
-    global _heartbeat_thread  # pylint: disable=global-statement
+    global _heartbeat_thread  # noqa: PLW0603
     alive = [w for w in _workers if w.is_alive()]
     target = max(1, service_config.gather_max_inflight())
     if len(alive) >= target:
@@ -510,7 +506,7 @@ def _heartbeat_loop(owner: str, stop: threading.Event) -> None:
     while not stop.wait(lifecycle.LEASE_HEARTBEAT_S):
         try:
             _heartbeat_once(owner)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             log(
                 f"gather.runner: heartbeat error: {type(err).__name__}: {err}",
                 Verbosity.STATUS,
@@ -547,7 +543,7 @@ def _worker_loop(owner: str) -> None:
         store = _store()
         try:
             _run_one(store, owner, spec)
-        except BaseException as err:  # pylint: disable=broad-except
+        except BaseException as err:  # noqa: BLE001
             # The worker must outlive any single job's failure.
             log(
                 f"gather.runner: worker error on {corpus}: {err}",
@@ -557,7 +553,7 @@ def _worker_loop(owner: str) -> None:
         finally:
             try:
                 store.release_lease(corpus, owner)
-            except Exception:  # pylint: disable=broad-except
+            except Exception:  # noqa: BLE001
                 pass
             with _registry_lock:
                 _jobs.pop(corpus, None)
@@ -718,7 +714,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             fenced = True
             status["state"] = "failed"
             status["error"] = f"{type(err).__name__}: {err}"[:500]
-        except BaseException as err:  # pylint: disable=broad-except
+        except BaseException as err:  # noqa: BLE001
             status["state"] = "failed"
             status["error"] = f"{type(err).__name__}: {err}"[:500]
         finally:
@@ -769,8 +765,7 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     if not valid_corpus_name(corpus):
         return None
     # Fleet-visible status first (cloud backend); None on the local backend.
-    # pylint: disable-next=import-outside-toplevel
-    from ..store import corpus as corpus_store
+    from ..store import corpus as corpus_store  # noqa: PLC0415
 
     fleet = corpus_store.get_corpus_store().get_gather_status(corpus)
     if fleet is not None:
@@ -881,8 +876,7 @@ def all_statuses() -> List[Dict[str, Any]]:
     no-corpus listing also sees gathers queued or running on other replicas,
     not just the corpora cached locally.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..store import corpus as corpus_store
+    from ..store import corpus as corpus_store  # noqa: PLC0415
 
     out: List[Dict[str, Any]] = []
     seen: "set[str]" = set()

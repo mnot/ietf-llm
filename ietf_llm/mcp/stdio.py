@@ -183,7 +183,7 @@ async def stdio_server_threaded_writer(
                         message = types.jsonrpc_message_adapter.validate_json(
                             line, by_name=False
                         )
-                    except Exception as exc:  # pylint: disable=broad-except
+                    except Exception as exc:  # noqa: BLE001
                         await read_stream_writer.send(exc)
                         debug_log.log_event(0, "reader_dispatched", parse_error=True)
                         continue

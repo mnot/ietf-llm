@@ -276,9 +276,7 @@ def _write_actor_table(
     fh.write("\n")
 
 
-def _format_cell(  # pylint: disable=too-many-return-statements
-    person: "Person", column: str
-) -> str:
+def _format_cell(person: "Person", column: str) -> str:  # noqa: PLR0911
     if column == "Name":
         return person.canonical_name.replace("|", "\\|")
     if column == "Emails":

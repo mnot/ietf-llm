@@ -78,7 +78,7 @@ def _corpus_has(wg: str, relpath: str) -> bool:
         return serve_metrics.timed_store(
             "has_file", lambda: get_corpus_store().has_file(wg, relpath)
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"has_file({wg!r}, {relpath!r}) failed: {err!r}", level=LogLevel.WARN)
         return False
 
@@ -126,11 +126,9 @@ def _rfc_text_available(number: str) -> bool:
     A cheap existence probe, not a read: the note only needs to know which
     call to recommend.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..embeddings.storage import section_outline
+    from ..embeddings.storage import section_outline  # noqa: PLC0415
 
-    # pylint: disable-next=import-outside-toplevel
-    from .rfc_text import RFC_CORPUS, _rfc_file
+    from .rfc_text import RFC_CORPUS, _rfc_file  # noqa: PLC0415
 
     file = _rfc_file(number)
     return bool(file) and bool(section_outline(RFC_CORPUS, str(file)))
@@ -148,8 +146,7 @@ def _render_rfc_live(number: str) -> str:
     honestly rather than as a bare negative.
     """
     if is_stale_miss(number):
-        # pylint: disable-next=import-outside-toplevel
-        from ..gather.sources.rfcs import revalidate_index
+        from ..gather.sources.rfcs import revalidate_index  # noqa: PLC0415
 
         revalidate_index()
     rendered = render_rfc(number)
@@ -162,7 +159,7 @@ def _render_rfc_live(number: str) -> str:
 
 def register(server: "MCPServer") -> None:
     @server.tool()
-    async def search_rfc_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfc_index(
         query: str,
         status: Optional[str] = None,
         stream: Optional[str] = None,

@@ -84,13 +84,11 @@ def _available_to_seed(local: List[str]) -> str:
     cached catalog and revalidates in the background, blocking only on a cold miss
     (nothing cached yet) so a fresh client still sees it. Empty when seeding is
     disabled or the store is unreachable."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..config import service
+    from ..config import service  # noqa: PLC0415
 
     if not gather_enabled() or not service.seeding_enabled():
         return ""
-    # pylint: disable-next=import-outside-toplevel
-    from ..seed import catalog as seed_catalog
+    from ..seed import catalog as seed_catalog  # noqa: PLC0415
 
     seed_catalog.refresh_mirror()
     index = seed_catalog.cached_index()
@@ -188,8 +186,8 @@ def _overview_live_reconciliation(wg: str, live: bool) -> str:
             "it live, or `draft_status(name)` to check one draft._"
         )
 
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
-    from ..digest.overview import (  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
+    from ..digest.overview import (  # noqa: PLC0415
         active_draft_names,
     )
 
@@ -243,8 +241,7 @@ def _gather_notes_available(wg: str) -> bool:
     """
     if not gather_enabled():
         return False
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     return gather_runner.has_local_status(wg)
 

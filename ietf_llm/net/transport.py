@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import requests
 from bs4 import BeautifulSoup
+from typing_extensions import override
 from urllib3.connectionpool import ConnectionPool
 from urllib3.exceptions import InvalidHeader, MaxRetryError, ResponseError
 from urllib3.util.retry import Retry
@@ -60,7 +61,8 @@ class _BoundedRetry(Retry):
     `raise_on_status=False` hand the 429 / 5xx back to the caller instead.
     """
 
-    def increment(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    @override
+    def increment(
         self,
         method: Optional[str] = None,
         url: Optional[str] = None,
@@ -117,7 +119,7 @@ def http_session(*, retrying: bool = True) -> requests.Session:
     adapter never retries — for a caller who is *waiting* on the result and
     has a correct answer to fall back on. See `governed_get`.
     """
-    global _SESSION, _NO_RETRY_SESSION  # pylint: disable=global-statement
+    global _SESSION, _NO_RETRY_SESSION  # noqa: PLW0603
     if retrying:
         if _SESSION is None:
             with _SESSION_LOCK:

@@ -31,7 +31,7 @@ def maybe_autocomplete(parser: Any) -> None:
     without the dependency still runs the CLI normally.
     """
     try:
-        import argcomplete  # pylint: disable=import-outside-toplevel
+        import argcomplete  # noqa: PLC0415
     except ImportError:
         return
     argcomplete.autocomplete(parser)
@@ -48,7 +48,7 @@ def print_completion_snippet(shell: str) -> int:
     works regardless of how the package was installed.
     """
     try:
-        import argcomplete  # pylint: disable=import-outside-toplevel
+        import argcomplete  # noqa: PLC0415
     except ImportError:
         print(
             "argcomplete is not installed (it ships with ietf-llm; "

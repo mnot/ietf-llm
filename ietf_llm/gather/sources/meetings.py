@@ -793,7 +793,7 @@ def _parse_meeting_date(date_str: str) -> Optional[datetime]:
     if not date_str:
         return None
     try:
-        return datetime.strptime(date_str.split(" ")[0], "%Y-%m-%d")
+        return datetime.strptime(date_str.split(" ", 1)[0], "%Y-%m-%d")
     except (ValueError, IndexError):
         return None
 

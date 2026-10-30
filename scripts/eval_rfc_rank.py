@@ -108,7 +108,7 @@ def evaluate(
     }
 
 
-def main() -> None:  # pylint: disable=too-many-locals
+def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--index", help="an unpacked published index")
     ap.add_argument("--download", action="store_true", help="fetch the latest release")
@@ -131,7 +131,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     manifest, mat, rfc_of = load_index(index_dir)
     print(f"{mat.shape[0]:,} chunks from {manifest.build}", file=sys.stderr)
 
-    data = rfcdata._load()  # pylint: disable=protected-access
+    data = rfcdata._load()
     if data is None:
         raise SystemExit("no _rfc mirror in the cache; run a gather first")
     cites: Dict[str, int] = {}

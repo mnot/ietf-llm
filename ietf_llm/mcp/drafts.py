@@ -1,4 +1,3 @@
-# pylint: disable=too-many-lines
 """Draft / issue tools: draft_authors, list_drafts, get_draft,
 get_issue, draft_status, review_record."""
 
@@ -61,7 +60,7 @@ def _newest_revision(wg: str, pattern: "re.Pattern[str]") -> Optional[Tuple[int,
     """
     try:
         names = _list_corpus_files(wg, DIR_DRAFTS)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # A corpus that cannot answer holds nothing for this lookup; one bad
         # manifest or store hiccup must not fail it for every draft (as
         # `rfcs._corpus_has`).
@@ -130,7 +129,7 @@ def tool_draft_authors(name: str) -> str:
     network. Returns what the draft itself records; a chair may know a better
     working address from mail and can override.
     """
-    from ..gather.sources.draft_authors import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.draft_authors import (  # noqa: PLC0415
         parse_authors,
     )
 
@@ -597,7 +596,7 @@ def tool_draft_status(name: str) -> str:
     state, expiry, RFC number, and the derived in-wg / in-iesg / published /
     dead signal an agenda decision turns on.
     """
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     name = (name or "").strip()
     if not name:
@@ -880,7 +879,7 @@ def tool_review_record(name: str) -> str:
     reviewed *this* text. See `live_lookup.reviews` for why the join has to
     happen here rather than being left to the caller.
     """
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     name = (name or "").strip()
     if not name:

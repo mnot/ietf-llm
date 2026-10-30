@@ -234,10 +234,9 @@ def extract_pdf_text(pdf_path: str) -> str:
     Each page is preceded by `## Page N` and separated by form feeds
     so the chunker has natural break points.
     """
-    # pylint: disable=import-outside-toplevel
     try:
-        from pypdf import PdfReader
-        from pypdf.errors import PdfReadError
+        from pypdf import PdfReader  # noqa: PLC0415
+        from pypdf.errors import PdfReadError  # noqa: PLC0415
     except ImportError:
         return ""
 
@@ -259,7 +258,7 @@ def extract_pdf_text(pdf_path: str) -> str:
             break
         try:
             page_text = page.extract_text() or ""
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             # Page-level extraction can blow up on malformed content
             # streams; skip just that page and continue.
             page_text = ""
@@ -346,7 +345,7 @@ def extract_all_pdfs(
                 if suppress_pdf:
                     _remove_if_exists(pdf_path)
                     swept += 1
-            except Exception as exc:  # pylint: disable=broad-except
+            except Exception as exc:  # noqa: BLE001
                 failed += 1
                 # Whatever .txt is still here is stale, empty or unreadable
                 # (`_needs_extraction` said so), so drop it: it must not stay

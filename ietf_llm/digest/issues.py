@@ -49,7 +49,7 @@ def _write_label_glossary(fh: TextIO, data: Dict[str, Any], issues: List[Any]) -
             if isinstance(name, str):
                 counts[name] = counts.get(name, 0) + 1
     fh.write(f"**Label vocabulary** ({len(labels)} defined):\n\n")
-    for label in sorted(labels, key=lambda l: str(l.get("name") or "")):
+    for label in sorted(labels, key=lambda lb: str(lb.get("name") or "")):
         name = label.get("name")
         if not isinstance(name, str) or not name:
             continue
@@ -61,7 +61,7 @@ def _write_label_glossary(fh: TextIO, data: Dict[str, Any], issues: List[Any]) -
     fh.write("\n")
 
 
-def _build_issues_digest(  # pylint: disable=too-many-locals
+def _build_issues_digest(
     cache_dir: str,
     wg: str,
     summarizer: _Summarizer,

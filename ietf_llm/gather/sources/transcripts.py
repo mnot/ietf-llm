@@ -42,7 +42,7 @@ def _clone_transcripts_repo(repo_dir: str, verbose: Verbosity) -> bool:
             errstream=io.BytesIO(),
         ).close()
         return True
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"Error cloning transcripts repo: {err}", level=LogLevel.ERROR)
         # Drop any partial checkout so the next gather re-clones clean.
         shutil.rmtree(repo_dir, ignore_errors=True)
@@ -91,7 +91,7 @@ def _sync_transcripts_repo(repo_dir: str, verbose: Verbosity) -> bool:
                 shutil.rmtree(repo_dir, ignore_errors=True)
                 if not _clone_transcripts_repo(repo_dir, verbose):
                     return False
-            except Exception as err:  # pylint: disable=broad-except
+            except Exception as err:  # noqa: BLE001
                 # Transient (network) failure: keep the cached copy — it is
                 # usually still usable — and try again on the next gather.
                 log(f"Error updating transcripts repo: {err}", level=LogLevel.ERROR)

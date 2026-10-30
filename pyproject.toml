@@ -19,6 +19,8 @@ dependencies = [
     "requests",
     "beautifulsoup4",
     "pypdf",
+    # `override` (typing.override is 3.12+; we support 3.10).
+    "typing_extensions",
     # Pure-Python git client used to sync the meeting-transcripts data repo,
     # so gather needs no `git` binary and isn't subject to the GitHub REST
     # API rate limit (it speaks the smart-HTTP git protocol). Floor: 0.21.7

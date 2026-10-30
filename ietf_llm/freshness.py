@@ -103,7 +103,7 @@ def set_gather_default(enabled: bool) -> None:
     defaults it off. An explicit env value still overrides either way, so
     this only moves the *default* — it is not a second on-switch.
     """
-    global _GATHER_DEFAULT  # pylint: disable=global-statement
+    global _GATHER_DEFAULT  # noqa: PLW0603
     _GATHER_DEFAULT = enabled
 
 
@@ -121,7 +121,7 @@ def set_deployment_mode(mode: str) -> None:
     so tool output can state whether the deployment is local single-user or
     possibly shared (which is what scopes the 'a wide gather costs everyone'
     cautions). Anything but 'http' normalises to 'stdio'."""
-    global _DEPLOYMENT_MODE  # pylint: disable=global-statement
+    global _DEPLOYMENT_MODE  # noqa: PLW0603
     _DEPLOYMENT_MODE = "http" if mode == "http" else "stdio"
 
 
@@ -231,11 +231,10 @@ def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str
     so a top-level import here would cycle.
     """
     try:
-        # pylint: disable-next=import-outside-toplevel,cyclic-import
-        from .store.corpus import get_corpus_store
+        from .store.corpus import get_corpus_store  # noqa: PLC0415
 
         root = get_corpus_store().materialised_corpus_dir(wg)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return None
     return os.path.join(root, name) if root else None
 

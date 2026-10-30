@@ -1,4 +1,3 @@
-# pylint: disable=invalid-name
 """Temporary debug telemetry for diagnosing MCP client stalls/timeouts.
 
 Writes JSONL events to
@@ -64,7 +63,7 @@ _writer_state_getter: Optional[Callable[[], Any]] = None
 def set_writer_state_getter(getter: Callable[[], Any]) -> None:
     """Register the transport's queue-state snapshot for the heartbeat to
     include. Called by `stdio` at startup."""
-    global _writer_state_getter  # pylint: disable=global-statement
+    global _writer_state_getter  # noqa: PLW0603
     _writer_state_getter = getter
 
 
@@ -81,8 +80,7 @@ def init() -> None:
     Idempotent; safe to call multiple times. If the cache dir isn't
     writable, logging silently disables itself rather than crashing the
     server."""
-    # pylint: disable=global-statement
-    global _fd, _path, _enabled, _heartbeat_thread
+    global _fd, _path, _enabled, _heartbeat_thread  # noqa: PLW0603
     if _enabled:
         return
     if not _is_enabled_env():
@@ -113,8 +111,7 @@ def init() -> None:
 
 def next_id() -> int:
     """Monotonic request id; correlates the per-call events."""
-    # pylint: disable=global-statement
-    global _calls_seen
+    global _calls_seen  # noqa: PLW0603
     with _calls_lock:
         _calls_seen += 1
     return next(_counter)

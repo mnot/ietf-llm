@@ -123,7 +123,7 @@ def mini_batch_kmeans(
             np.zeros((0,), dtype=np.intp)
         )
     k = max(1, min(k, n_rows))
-    rng = np.random.RandomState(seed)  # pylint: disable=no-member
+    rng = np.random.RandomState(seed)
     centres = _kmeans_pp_init(mat, k, rng)
     counts = np.zeros(k, dtype=np.float64)
 

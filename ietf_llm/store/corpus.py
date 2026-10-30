@@ -31,7 +31,10 @@ import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
+from types import MappingProxyType
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Set, Tuple, cast
+
+from typing_extensions import override
 
 from .. import freshness
 from ..config import service as service_config
@@ -111,8 +114,8 @@ def _local_files_dir(corpus: str) -> str:
 #: version, and a publish landing mid-request cannot mix two versions into one
 #: answer. Only the cloud backend consults it; the local backend is
 #: single-version. A ContextVar so it is isolated per request/worker thread.
-_pinned_versions: contextvars.ContextVar[Dict[str, str]] = contextvars.ContextVar(
-    "ietf_llm_pinned_versions", default={}
+_pinned_versions: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
+    "ietf_llm_pinned_versions", default=MappingProxyType({})
 )
 
 
@@ -157,7 +160,7 @@ def pinned_versions_in_use(corpus: str) -> Set[str]:
         return {ver for (cor, ver), n in _pin_counts.items() if cor == corpus and n > 0}
 
 
-class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
+class CorpusStore(ABC):
     """Brokers materialisation (read) and publication (write) of a corpus.
 
     Backends: `LocalCorpusStore` (filesystem, single-version) today; a SQL +
@@ -540,6 +543,7 @@ class LocalCorpusStore(CorpusStore):
         # a gather can read what it has already written before `files/` exists.
         return os.path.join(get_cache_dir(), checked_corpus(corpus))
 
+    @override
     def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
         # The base class default (`return self.local_corpus_dir(corpus)`)
         # would inherit `local_corpus_dir`'s deliberate no-existence-check —
@@ -571,9 +575,11 @@ class LocalCorpusStore(CorpusStore):
         # there is nothing to upload or flip (`extra_files` is irrelevant here).
         return LOCAL_VERSION
 
+    @override
     def record_access(self, corpus: str) -> None:
         freshness.record_access(corpus)
 
+    @override
     def last_accessed(self, corpus: str) -> Optional[datetime]:
         # local_last_accessed, not last_accessed -- same reasoning as
         # gathered_at below: this instance IS the local backend, so it must
@@ -581,6 +587,7 @@ class LocalCorpusStore(CorpusStore):
         # get_corpus_store(), which could answer a different store's state.
         return freshness.local_last_accessed(corpus)
 
+    @override
     def gathered_at(self, corpus: str) -> Optional[datetime]:
         # local_last_gathered, not last_gathered: this method is already the
         # local backend, so it must read straight off local disk through

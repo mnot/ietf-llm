@@ -147,7 +147,7 @@ def _should_install(have: Optional[str], offered: str, margin_days: float) -> bo
     return (theirs - mine).total_seconds() > margin_days * 86400.0
 
 
-def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
+def ensure_rfc_corpus(  # noqa: PLR0911
     verbosity: Verbosity = Verbosity.STATUS,
     margin_days: Optional[float] = None,
     interval: float = _CHECK_INTERVAL,
@@ -172,8 +172,7 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
             "re-enable it and install in one go with `ietf-llm --init --seed`"
         )
     # Lazy for the same reason as the block below.
-    # pylint: disable-next=import-outside-toplevel
-    from ...seed import generation as seed_generation
+    from ...seed import generation as seed_generation  # noqa: PLC0415
 
     seed_url = seed_generation.rfc_store_url()
     if not seed_url:
@@ -193,12 +192,9 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
         )
     # Lazy: the seed consumer is gather-path only, and this keeps the import
     # off any path that merely reads.
-    # pylint: disable=import-outside-toplevel
-    from ...seed import fetch as seed_fetch
-    from ...seed import format as seed_fmt
-    from ..sequencer import _seed_stale_jump_margin
-
-    # pylint: enable=import-outside-toplevel
+    from ...seed import fetch as seed_fetch  # noqa: PLC0415
+    from ...seed import format as seed_fmt  # noqa: PLC0415
+    from ..sequencer import _seed_stale_jump_margin  # noqa: PLC0415
 
     # Stamped on the attempt, not on success: a store that is unreachable or
     # carries no index would otherwise be retried on every single invocation,
@@ -206,7 +202,7 @@ def ensure_rfc_corpus(  # pylint: disable=too-many-return-statements
     _touch_stamp()
     try:
         index = seed_fetch.read_index(seed_url)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # A TLS-inspecting corporate proxy lands here, and the raw OpenSSL
         # message alone reads as "the store is broken" rather than "your
         # machine cannot verify it" — which sends the user to the wrong place.

@@ -121,8 +121,7 @@ def run_pipeline(
     tree worth publishing. Raises `GatherCancelled` if a stop is honoured, and
     `RuntimeError` if the subprocess dies unexpectedly."""
     if _gather_in_process():
-        # pylint: disable-next=import-outside-toplevel
-        from . import sequencer as gather_main
+        from . import sequencer as gather_main  # noqa: PLC0415
 
         return gather_main.run_gather(
             spec.to_argv(), Verbosity.STATUS, progress=progress, note_fn=note
@@ -176,7 +175,7 @@ def _run_pipeline_child(
     env["IETF_LLM_PROGRESS_FD"] = str(write_fd)
     _limit_child_cpu(env)
     try:
-        proc = subprocess.Popen(  # pylint: disable=consider-using-with
+        proc = subprocess.Popen(
             _child_command(spec),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

@@ -112,10 +112,10 @@ def embed_settings(
 def _default_llm_model(verbose: Verbosity) -> str:
     """Return the user's configured default `llm` model name, or a fallback."""
     try:
-        import llm  # pylint: disable=import-outside-toplevel,import-error
+        import llm  # noqa: PLC0415
 
         return str(llm.get_default_model())  # type: ignore[no-untyped-call]
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # llm.get_default_model() can fail many ways depending on what
         # plugins/config the user has; this is a fallback so we don't
         # narrow.
@@ -335,10 +335,9 @@ def _client_compat(args: argparse.Namespace) -> Any:
     the configured embedding model plus this build's schema/chunker versions.
     vector_dim is left unknown (not known until embedding; the gate treats unknown
     as compatible)."""
-    # pylint: disable=import-outside-toplevel
-    from ..embeddings.chunking import CHUNKER_VERSION
-    from ..embeddings.storage import _SCHEMA_VERSION
-    from ..seed.format import CompatTuple
+    from ..embeddings.chunking import CHUNKER_VERSION  # noqa: PLC0415
+    from ..embeddings.storage import _SCHEMA_VERSION  # noqa: PLC0415
+    from ..seed.format import CompatTuple  # noqa: PLC0415
 
     return CompatTuple(
         schema_version=_SCHEMA_VERSION,
@@ -440,7 +439,7 @@ def _log_seeded(
     log(msg, verbosity, level=LogLevel.STATUS)
 
 
-def _maybe_seed(  # pylint: disable=too-many-return-statements
+def _maybe_seed(  # noqa: PLR0911
     args: argparse.Namespace,
     on_cloud: bool,
     verbosity: Verbosity,
@@ -459,18 +458,15 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
         return
     # Lazy for the same reason as the block below: the seed consumer is
     # gather-path only.
-    # pylint: disable-next=import-outside-toplevel
-    from ..seed import generation as seed_generation
+    from ..seed import generation as seed_generation  # noqa: PLC0415
 
     seed_url = seed_generation.store_url()
     if not seed_url:
         return
     # Lazy: the seed consumer is gather-path only.
-    # pylint: disable=import-outside-toplevel
-    from ..seed import fetch as seed_fetch
-    from ..seed import format as seed_fmt
+    from ..seed import fetch as seed_fetch  # noqa: PLC0415
+    from ..seed import format as seed_fmt  # noqa: PLC0415
 
-    # pylint: enable=import-outside-toplevel
     index = seed_fetch.load_index(seed_url)
     if index is None:
         return
@@ -535,7 +531,7 @@ def _sweep_leaked_temps(wg: str, verbosity: Verbosity) -> None:
                 log(f"Removed leaked temp file {path}", verbosity, LogLevel.PROGRESS)
             for message in errors:
                 log(f"Temp sweep: {message}", verbosity, LogLevel.PROGRESS)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"Temp sweep failed: {err}", verbosity, LogLevel.PROGRESS)
 
 
@@ -656,7 +652,7 @@ def _gather_one(
         return _gather_stages(args, verbosity, progress, note_fn, pre)
 
 
-def _gather_stages(  # pylint: disable=too-many-branches,too-many-statements
+def _gather_stages(  # noqa: PLR0915
     args: argparse.Namespace,
     verbosity: Verbosity,
     progress: Optional[ProgressFn],
@@ -973,7 +969,7 @@ def _gather_stages(  # pylint: disable=too-many-branches,too-many-statements
             with index_reads_from_workspace():
                 if index_changed or not has_topics(args.wg) or topics_stale(args.wg):
                     generate_topics(args.wg, verbose=verbosity)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             log(
                 f"Topic map skipped ({type(err).__name__}: {err}).",
                 verbosity,

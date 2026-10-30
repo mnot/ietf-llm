@@ -43,7 +43,7 @@ def _merge_oid(pull: Dict[str, Any]) -> str:
     return oid[:_SHORT_OID] if isinstance(oid, str) else ""
 
 
-def _build_pulls_digest(  # pylint: disable=too-many-locals
+def _build_pulls_digest(
     cache_dir: str,
     wg: str,
     summarizer: _Summarizer,

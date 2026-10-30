@@ -237,7 +237,7 @@ def tool_get_by_url(wg: str, url: str) -> str:
 
 
 @_requires_corpus
-def tool_get_chunk(  # pylint: disable=too-many-return-statements
+def tool_get_chunk(  # noqa: PLR0911
     wg: str,
     file: str,
     chunk_idx: int,

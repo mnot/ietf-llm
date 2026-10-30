@@ -26,7 +26,7 @@ SCOPE = "gather"
 def _norm_draft(name: str) -> str:
     # Lazy import keeps the gather pipeline's deps off the read-only path;
     # this module is only consulted at the gather entry point.
-    from ..gather.sources.drafts import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.drafts import (  # noqa: PLC0415
         normalize_draft_name,
     )
 
@@ -34,7 +34,7 @@ def _norm_draft(name: str) -> str:
 
 
 def _norm_list(name: str) -> str:
-    from ..gather.sources.mbox import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.mbox import (  # noqa: PLC0415
         normalize_list_name,
     )
 

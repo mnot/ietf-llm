@@ -89,7 +89,7 @@ _active = threading.local()
 
 
 def _default_http_cache() -> HttpCache:
-    global _DEFAULT_CACHE  # pylint: disable=global-statement
+    global _DEFAULT_CACHE  # noqa: PLW0603
     with _default_lock:
         if _DEFAULT_CACHE is None:
             _DEFAULT_CACHE = HttpCache(

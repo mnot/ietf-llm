@@ -313,9 +313,7 @@ def _render_inline_comments(review: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _render_pull(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-    repo: str, pull: Dict[str, Any], registry: Optional[Registry]
-) -> str:
+def _render_pull(repo: str, pull: Dict[str, Any], registry: Optional[Registry]) -> str:
     number = pull.get("number", "?")
     title = pull.get("title") or "(no title)"
     author_name = _canon_with_role(registry, pull.get("author") or "")

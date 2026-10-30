@@ -529,7 +529,7 @@ def _comments_failure(res: Any) -> _CommentsUnavailable:
     return _CommentsUnavailable(reason + ")", rate_limited=True)
 
 
-def _fetch_all_issues(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _fetch_all_issues(
     owner: str,
     repo_name: str,
     headers: Dict[str, str],
@@ -574,7 +574,7 @@ def _fetch_all_issues(  # pylint: disable=too-many-arguments,too-many-positional
                 "state": issue.get("state"),
                 "author": issue.get("user", {}).get("login"),
                 "createdAt": issue.get("created_at"),
-                "labels": [l.get("name") for l in issue.get("labels", [])],
+                "labels": [lb.get("name") for lb in issue.get("labels", [])],
                 "body": issue.get("body"),
                 "comments": [],
             }

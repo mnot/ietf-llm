@@ -174,7 +174,7 @@ def _build_headers() -> Dict[str, str]:
     return headers
 
 
-def _fetch_one(  # pylint: disable=too-many-return-statements
+def _fetch_one(  # noqa: PLR0911
     login: str,
     headers: Dict[str, str],
     verbose: Verbosity,

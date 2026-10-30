@@ -57,7 +57,7 @@ from ...atomicio import write_if_changed
 from ...digest.events import Event
 from ...log import LogLevel, Verbosity, log
 from ...paths import ballot_path, ballots_dir
-from .datatracker import (  # pylint: disable=protected-access
+from .datatracker import (
     _get_json,
     fetch_person_names,
 )
