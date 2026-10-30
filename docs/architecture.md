@@ -227,6 +227,17 @@ Key invariants:
   are summarised in the header rather than given a section each. Archives
   without a `pulls` key (the REST fallback shape, used when a repo publishes no
   gh-pages `archive.json`) simply produce no PR tree.
+- **The REST fallback never writes a truncated issue.** Without a gh-pages
+  archive the issues come from the API, one comments request per issue. If paging
+  an issue's comments fails (a non-200, or a dropped connection) that issue keeps
+  its previously cached copy — it is not written with the comments fetched so
+  far, which would pass for the whole discussion and lose the closing comment —
+  and the other issues still update. A throttle (429, or 403 with a
+  `Retry-After`) stops the repo at once, as do three failures in a row, and every
+  issue not reached keeps its cached copy. The gather logs one warning with how
+  many issues were left stale and why (including the `Retry-After` when it is over
+  the transport's limit); they are retried next gather. An issue that was never
+  cached is skipped rather than written partial.
 - **An archive is third-party content, so it is schema-normalised.** The
   gh-pages `archive.json` is whatever the repo owner published, and its `repo`
   and each record's `number` could become path components. `github_schema`
@@ -450,9 +461,13 @@ Key invariants:
 - **`gather-metrics.json`** records the upstream HTTP load of the last
   run — request counts (transferred / revalidated / error), bytes, a
   per-host breakdown, and a top-N of URL patterns. `net/http_metrics.py`
-  accumulates it at the two egress chokepoints (`datatracker._get_json`
-  and `net.fetch_resource`) and the CLI prints a one-line summary at
-  the end of a gather. Beside the sentinel (one level above `files/`),
+  accumulates it at the one egress chokepoint, `net.governed_get` (status and
+  body size per response, an error on a transport failure), so every host
+  (Datatracker, GitHub, mailarchive, draft and RFC hosts) is counted once
+  per call (adapter retries and redirect hops are not counted separately) and
+  callers never record themselves; a `stream=True` fetch is metered
+  by `Content-Length`. The CLI prints a one-line summary at the end of a
+  gather. Beside the sentinel (one level above `files/`),
   so it is neither indexed nor exported.
 - **`_rfc/` is a cross-corpus singleton, not a corpus.** It mirrors the
   whole published RFC series from rfc.fyi (three JSON blobs), refreshed
@@ -599,7 +614,8 @@ ietf_llm/
 │                           # (atomic_open / write_if_changed) + advisory file locks
 ├── net/                    # gather-side HTTP egress (the offline read path imports none of it)
 │   ├── transport.py        # pooled retrying session, host-governed GET,
-│   │                       # metered fetch_resource, clean_html (re-exported from net/)
+│   │                       # metered chokepoint (governed_get), fetch_resource, clean_html
+│   │                       # (re-exported from net/)
 │   ├── http_governor.py    # per-host concurrency slots (datatracker kept tight)
 │   └── http_metrics.py     # per-gather upstream HTTP egress accounting (thread-local)
 ├── datatracker_api.py               # IETF group metadata via the Datatracker API
@@ -1225,6 +1241,21 @@ affordances; we use all three:
   the old skip-if-exists that froze minutes forever. Slides (large
   metadata, rarely revised) and polls (immutable) stay skip-if-exists.
 
+Being a good neighbour also means not obeying an upstream's clock blindly. The
+shared session retries 429/5xx, but a `Retry-After` beyond
+`transport.RETRY_AFTER_MAX` (60 s) is not slept on: the response is returned
+as-is and the stage's own error handling runs, because the sleep happens
+holding a per-host slot and urllib3's own ceiling is six hours. The remote
+embedding client applies the same rule (30 s for the single query-time embed,
+which also gets its own one-retry budget, `IETF_LLM_EMBED_QUERY_RETRIES`). There
+an over-cap header raises `UpstreamRateLimited` (an `HTTPError` carrying the
+wait the server asked for), and the model then refuses new requests for up to
+60 s, so a bulk embed stops asking at once instead of sending every remaining
+window to be refused. `build_index` stops submitting files, keeps the ones
+already embedded (each is stamped on its own; the rest retry next gather), and
+raises the error, so the gather's stage error names the rate limit and the
+requested wait.
+
 ### Writers are write-if-changed and atomic
 
 `mail_threads`, `issue_files`, `ballots`, and the digest/minutes
@@ -1662,7 +1693,8 @@ single-flighted, so a burst of misses or a down host can't hammer rfc.fyi.
 It also fetches with `retrying=False`, which matters more than it sounds: a
 `timeout` is **not** a deadline — requests applies it per connect and per read,
 and the shared session's adapter retries with `respect_retry_after_header=True`,
-so a host answering `429 Retry-After: 30` sleeps ~90s past a 5s timeout. That is
+so a host answering `429 Retry-After: 30` sleeps ~90s past a 5s timeout (and
+anything over 60 s is not waited out at all). That is
 fine for a gather (a background job, where riding out a blip beats failing a
 stage) and wrong for a read with a caller waiting. Not retrying is the right
 trade here for a second reason: this path *has* a correct answer to fall back on

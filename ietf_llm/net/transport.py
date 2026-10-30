@@ -1,7 +1,7 @@
 """HTTP transport for gather-side fetches.
 
-A process-wide pooled, retrying `requests.Session`; a per-host-governed GET
-(`governed_get`), the metered `fetch_resource`, and HTML→text cleaning
+A process-wide pooled, retrying `requests.Session`; the per-host-governed,
+metered GET (`governed_get`), `fetch_resource`, and HTML→text cleaning
 (`clean_html`). Sits low in the import graph: it depends only on
 `http_governor` (the per-host concurrency slot), `http_metrics` (egress
 accounting), and `log` for logging — nothing that reaches `config`.
@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import Any, Dict, Optional
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import requests
 from bs4 import BeautifulSoup
+from urllib3.connectionpool import ConnectionPool
+from urllib3.exceptions import InvalidHeader, MaxRetryError, ResponseError
 from urllib3.util.retry import Retry
 
 from .. import __version__
@@ -25,6 +28,16 @@ from ..log import LogLevel, log
 from ..tls import trust_store_adapter
 from . import http_metrics
 from .http_governor import host_slot
+
+if TYPE_CHECKING:
+    from urllib3.response import BaseHTTPResponse
+    from typing_extensions import Self
+
+#: Longest `Retry-After` (seconds) the gather transport will sit out. A larger
+#: one is not slept on: the response is returned as it stands (a 429 / 503), so
+#: the calling stage's own error handling runs instead of the thread holding a
+#: per-host slot for however long upstream asked.
+RETRY_AFTER_MAX = 60
 
 # Identify the client and give upstream operators a contact path. A shared
 # community service (datatracker especially) would rather reach the tool's
@@ -36,6 +49,49 @@ DEFAULT_HEADERS = {
 _SESSION: Optional[requests.Session] = None
 _NO_RETRY_SESSION: Optional[requests.Session] = None
 _SESSION_LOCK = threading.Lock()
+
+
+class _BoundedRetry(Retry):
+    """`Retry` that gives up, rather than sleeps, on a `Retry-After` beyond
+    `RETRY_AFTER_MAX`.
+
+    urllib3 only clamps an oversized header (to 6 h by default), which would
+    still pin a host slot; raising `MaxRetryError` from `increment` makes
+    `raise_on_status=False` hand the 429 / 5xx back to the caller instead.
+    """
+
+    def increment(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        method: Optional[str] = None,
+        url: Optional[str] = None,
+        response: Optional[BaseHTTPResponse] = None,
+        error: Optional[Exception] = None,
+        _pool: Optional[ConnectionPool] = None,
+        _stacktrace: Optional[TracebackType] = None,
+    ) -> "Self":
+        if response is not None and self.respect_retry_after_header:
+            wait = self._header_wait(response)
+            if wait > RETRY_AFTER_MAX:
+                log(
+                    f"{url}: upstream asked for a {wait:.0f}s wait "
+                    f"(limit {RETRY_AFTER_MAX}s); not retrying",
+                    level=LogLevel.WARN,
+                )
+                raise MaxRetryError(
+                    cast(ConnectionPool, _pool),
+                    url or "",
+                    ResponseError(f"Retry-After {wait:.0f}s exceeds limit"),
+                )
+        return super().increment(method, url, response, error, _pool, _stacktrace)
+
+    def _header_wait(self, response: BaseHTTPResponse) -> float:
+        raw = response.headers.get("Retry-After")
+        if raw is None:
+            return 0.0
+        try:
+            return float(self.parse_retry_after(raw))
+        except InvalidHeader:
+            return 0.0
 
 
 def _build_session(retry: Any) -> requests.Session:
@@ -67,7 +123,7 @@ def http_session(*, retrying: bool = True) -> requests.Session:
             with _SESSION_LOCK:
                 if _SESSION is None:
                     _SESSION = _build_session(
-                        Retry(
+                        _BoundedRetry(
                             total=3,
                             backoff_factor=0.5,
                             status_forcelist=(429, 500, 502, 503, 504),
@@ -88,28 +144,65 @@ def governed_get(
     url: str, *, retrying: bool = True, **kwargs: Any
 ) -> requests.Response:
     """GET `url` through the shared session while holding a per-host
-    concurrency slot (see `http_governor`).
+    concurrency slot (see `http_governor`), and meter it.
 
-    Every gather-side fetch routes through here — `fetch_resource` and the
-    direct `http_session().get` call sites in `gather/*` — so that a wide
-    fan-out or several concurrent gathers can never exceed the per-host budget,
-    datatracker especially. The GET is non-streaming, so the slot is held for
-    the whole request including the body transfer — which is what bounds
-    concurrency through large draft / RFC downloads. Callers handle status and
-    metrics exactly as for a bare session GET.
+    Every network GET in the package routes through here — `fetch_resource`
+    and the direct call sites in `gather/*` and `live_lookup` — so the per-host
+    budget bounds a wide fan-out or several concurrent gathers, datatracker
+    especially, and `http_metrics` (`gather-metrics.json`) sees every call
+    once: status and body size on a response, an error on a transport failure.
+    That is one entry per call, not per wire request: the adapter's own
+    retries and redirect hops are not counted separately. Callers handle
+    status exactly as for a bare session GET and must not record again. The
+    GET is non-streaming unless the caller asks, so the
+    slot normally covers the body transfer too, which is what bounds
+    concurrency through large draft / RFC downloads; a `stream=True` caller
+    gets the slot only for the headers and is metered by `Content-Length`
+    (reading `.content` here would defeat the streaming).
 
     **`timeout` is not a deadline.** requests applies it per connect and per
-    read, and the default adapter retries (`total=3`, `respect_retry_after_
-    header=True`), so a host answering `429 Retry-After: 30` makes a
-    `timeout=5` call take ~90s of server-dictated sleep. That is fine for a
-    gather and wrong for a read with someone waiting on it, which is what
-    `retrying=False` is for: it selects the non-retrying session, so the call
-    is bounded by the connect + read timeouts (plus any wait for the per-host
-    slot). Pass it when a failed fetch has a correct fallback and latency
-    matters more than riding out a blip.
+    read, and the default adapter retries (`total=3`), so a host answering
+    `429 Retry-After: 30` makes a `timeout=5` call take ~90s of server-dictated
+    sleep (a `Retry-After` over `RETRY_AFTER_MAX` is not slept on at all). That
+    is fine for a gather and wrong for a read with someone waiting on it, which
+    is what `retrying=False` is for: it selects the non-retrying session, so
+    the call is bounded by the connect + read timeouts (plus any wait for the
+    per-host slot). Pass it when a failed fetch has a correct fallback and
+    latency matters more than riding out a blip.
     """
     with host_slot(url):
-        return http_session(retrying=retrying).get(url, **kwargs)
+        try:
+            response = http_session(retrying=retrying).get(url, **kwargs)
+        except requests.RequestException:
+            http_metrics.record(url, 0, 0, error=True)
+            raise
+    if kwargs.get("stream"):
+        n_bytes = _declared_length(response)
+    else:
+        n_bytes = len(response.content)
+    http_metrics.record(
+        url, response.status_code, n_bytes, error=response.status_code >= 400
+    )
+    return response
+
+
+def meter_stream(url: str, response: requests.Response) -> None:
+    """Meter a streamed response by its declared length. For the one caller that
+    holds the host slot itself across the whole transfer, and so cannot go
+    through `governed_get` (`meetings._download_if_pdf`)."""
+    http_metrics.record(
+        url,
+        response.status_code,
+        _declared_length(response),
+        error=response.status_code >= 400,
+    )
+
+
+def _declared_length(response: requests.Response) -> int:
+    try:
+        return max(0, int(response.headers.get("Content-Length", 0)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def http_error_detail(err: Exception) -> str:
@@ -135,12 +228,8 @@ def fetch_resource(
     try:
         res = governed_get(url, headers=combined_headers, timeout=30)
         res.raise_for_status()
-        http_metrics.record(url, res.status_code, len(res.content))
         return res
     except requests.RequestException as err:
-        status = err.response.status_code if err.response is not None else 0
-        n_bytes = len(err.response.content) if err.response is not None else 0
-        http_metrics.record(url, status, n_bytes, error=True)
         log(f"Error fetching {url}: {http_error_detail(err)}", level=LogLevel.ERROR)
         return None
 
