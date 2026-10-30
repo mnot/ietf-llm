@@ -67,6 +67,24 @@ class ScanFailed(Exception):
         self.detail = detail
 
 
+def split_lines(text: str) -> List[str]:
+    """Split `text` into lines on `\\n` alone, as the rest of the read surface
+    counts them (chunk spans, `read_file_section`).
+
+    `str.splitlines` also breaks on form feed, vertical tab, `\\x1c`-`\\x1e`,
+    `\\x85` and U+2028/2029. Draft text carries a form feed at every page
+    break, so line numbers would drift by one per page against everything that
+    counts newlines. Callers read files in text mode, so CRLF has already been
+    folded to `\\n`; a CRLF that survives (section text from the index) keeps
+    its `\\r`, which `elide` strips. A final newline ends the last line rather
+    than opening an empty one, as `splitlines` and file iteration both have it.
+    """
+    lines = text.split("\n")
+    if not lines[-1]:
+        lines.pop()
+    return lines
+
+
 def elide(line: str, matcher: Optional["re.Pattern[str]"] = None) -> str:
     """Bound one rendered line, keeping the match visible.
 
@@ -98,7 +116,7 @@ def excerpts(
     first character to the line holding its last — rendering only the opening
     line would cut the phrase the caller searched for in half.
     """
-    lines = text.splitlines()
+    lines = split_lines(text)
     offsets: List[int] = []
     running = 0
     for line in lines:
@@ -170,7 +188,7 @@ def _scan_file(
         return 0
     found = 0
     kept = 0
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in enumerate(split_lines(text), 1):
         if matcher.search(line):
             found += 1
             if len(hits) < keep and (per_file_cap is None or kept < per_file_cap):

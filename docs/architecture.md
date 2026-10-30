@@ -750,7 +750,11 @@ Grouped by job:
   denominator (issues #108, #215). It is also the only path to content the
   index deliberately omits — chiefly the skipped revision stack of a concluded
   draft. Matching is per line, so a phrase split by a mail wrap misses; the
-  tool says so on every empty result. `raw/` and `github/` are skipped by
+  tool says so on every empty result. A line is what lies between `\n`s, as in
+  `read_file_section` and the chunk spans, so a form feed (the page break in a
+  draft) or other Unicode line separator does not end one: `^` anchors only
+  after a `\n`, and `^Heading` misses text after a mid-line `\x0c`
+  (`regexscan.split_lines`). `raw/` and `github/` are skipped by
   default (they duplicate `threads/` and `issues/`) unless the caller's glob
   names them, and the skip is reported so the denominator stays honest. The
   line view is bounded twice: `max_per_file` (optional) keeps at most N

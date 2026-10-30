@@ -223,9 +223,10 @@ end of the record. Route on the shape of the question:
 
 Over a gathered corpus it matches **within one line**, so search the most
 distinctive single token (`8890`, not `RFC 8890`) — a phrase can be broken by a
-mail wrap. It also reads files the index does not hold (superseded draft
-revisions are not embedded), so it is the only way to find wording that was
-removed before publication.
+mail wrap. A line is what lies between newlines, so `^` anchors only at a
+real line start: a form feed (a draft's page break) is not one. It also reads
+files the index does not hold (superseded draft revisions are not embedded), so
+it is the only way to find wording that was removed before publication.
 
 To see example lines from many files in one call, pass `max_per_file=N` (a
 small N such as 3) instead of making a `files_only` call and then a lines call.
