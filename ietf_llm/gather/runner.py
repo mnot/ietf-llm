@@ -431,18 +431,27 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
         or not secrets.compare_digest(_hash_token(token), str(expected))
     ):
         return {"stopped": False, "reason": "bad token", "corpus": corpus}
-    # Same-host fast path: set the in-process event (race-free). Always also
-    # write the flag so a worker on another host (cloud backend) sees it.
+    # Same-host: setting the in-process event is the whole request. Writing the
+    # record we read back would race the worker, which owns it: a worker that saw
+    # the event and finished first would have its terminal record replaced by our
+    # stale `queued`/`running` copy, and that never reaches a terminal state.
+    # The worker records `cancel_requested` itself when it honours the stop.
     with _registry_lock:
         event = _cancel_events.get(corpus)
     if event is not None:
         event.set()
+        return {"stopped": True, "corpus": corpus, "state": status.get("state")}
+    # Another host (cloud backend) owns the job, so the published flag is the only
+    # channel. Re-read just before writing and leave a record that has gone
+    # terminal alone; the window that remains is the documented best-effort one.
     # pylint: disable-next=import-outside-toplevel
     from ..store import corpus as corpus_store
 
     store = corpus_store.get_corpus_store()
-    status["cancel_requested"] = True
-    _write_status(store, status)
+    latest = read_status(corpus)
+    if latest is not None and latest.get("state") in ("queued", "running"):
+        latest["cancel_requested"] = True
+        _write_status(store, latest)
     return {"stopped": True, "corpus": corpus, "state": status.get("state")}
 
 
