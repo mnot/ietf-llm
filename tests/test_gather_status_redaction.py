@@ -107,6 +107,46 @@ def test_redact_userinfo_leaves_ordinary_text_alone(plain: str) -> None:
     assert redact_userinfo(plain) == plain
 
 
+@pytest.mark.parametrize(
+    "leaky",
+    [
+        "//svc:s3cret@host.example/v1",
+        "see '//svc:s3cret@host.example/v1'",
+        "https:/svc:s3cret@host.example/v1",
+        "svc:s3cret@host.example:8443/v1",
+    ],
+)
+def test_redact_userinfo_malformed_scheme_forms(leaky: str) -> None:
+    out = redact_userinfo(leaky)
+    _assert_clean(out)
+    assert "@host.example" in out  # the host is kept for diagnosis
+
+
+def test_redact_userinfo_time_is_bounded_on_adversarial_input() -> None:
+    # Unbounded repeats in the scheme-less pattern made these quadratic: seconds
+    # at 40 KB, never finishing at 1 MB. 100 KB keeps a regression a failure
+    # (about 10 s) rather than a hang; the bounded pattern takes well under 0.2 s.
+    shapes = ["a:!", "1:2,", "color:red;margin:0;", "k:v|", "@", ":", "a:@", "//a:", "://"]
+    for unit in shapes:
+        text = unit * (100_000 // len(unit))
+        started = time.perf_counter()
+        redact_userinfo(text)
+        assert time.perf_counter() - started < 2.0, unit
+
+
+def test_redact_userinfo_time_scales_linearly() -> None:
+    def took(size: int) -> float:
+        text = "a:!" * (size // 3)
+        started = time.perf_counter()
+        redact_userinfo(text)
+        return time.perf_counter() - started
+
+    small, large = took(100_000), took(400_000)
+    # 4x the input: about 4x if linear, 16x if quadratic. The floor keeps a fast
+    # small run from turning scheduler noise into a failure.
+    assert large < 10 * max(small, 0.02)
+
+
 def test_redact_value_walks_nested_strings_and_copies() -> None:
     original = {"a": [SECRET_URL, {"b": SECRET_URL}], "n": 3, "none": None}
     assert redact_value(original) == {"a": [CLEAN_URL, {"b": CLEAN_URL}], "n": 3, "none": None}
@@ -245,15 +285,21 @@ def test_runner_error_cut_inside_the_credentials_leaves_no_fragment(
 ) -> None:
     store = _Store()
     _patch_store(monkeypatch, store)
-    pad = lifecycle.STATUS_ERROR_MAX - len("ConnectionError: ") - 8  # cut after "https://"
+    # The URL's userinfo spans offsets 8..32; move the 500-character cut across it.
+    for offset in range(8, 33, 3):
+        pad = lifecycle.STATUS_ERROR_MAX - len("ConnectionError: ") - 1 - offset
 
-    def run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
-        raise ConnectionError("x" * pad + SECRET_URL)
+        def run(
+            argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None, pad: int = pad
+        ) -> GatherOutcome:
+            raise ConnectionError("x" * pad + " " + SECRET_URL)
 
-    monkeypatch.setattr(sequencer, "run_gather", run)
-    gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
-    status = _wait_terminal("tls")
-    _assert_clean(status, store.statuses)
+        monkeypatch.setattr(sequencer, "run_gather", run)
+        corpus = f"wg{offset}"
+        gather_runner.start(gather_runner.GatherSpec(corpus=corpus))
+        status = _wait_terminal(corpus)
+        assert status["state"] == "failed"
+        _assert_clean(status, store.statuses)
 
 
 @pytest.mark.usefixtures("gather_in_process")

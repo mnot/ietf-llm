@@ -37,7 +37,7 @@ from ..atomicio import atomic_open
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, get_cache_dir, get_index_dir
-from ..redact import redact_userinfo, redact_value
+from ..redact import redact_record, redact_userinfo
 from ..store.corpus import GatherCacheRestoreError, LeaseLost
 
 #: Cross-host gather-lease TTL (cloud backend). The lease is held for the whole
@@ -471,7 +471,7 @@ def write_status(store: Any, status: Dict[str, Any], *, publish: bool = True) ->
     # record, CLI and worker alike): whatever free text reached the live dict,
     # an exception message or a note quoting a URL, leaves it without
     # credentials.
-    status = redact_value(status)
+    status = redact_record(status)
     path = status_path(corpus)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
