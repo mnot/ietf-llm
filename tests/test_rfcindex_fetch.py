@@ -22,10 +22,17 @@ from test_rfcindex_format import DIMS, _manifest, _write_index  # noqa: F401
 
 
 class _FakeResponse:
-    def __init__(self, status: int, payload: Any = None, content: bytes = b"") -> None:
+    def __init__(
+        self,
+        status: int,
+        payload: Any = None,
+        content: bytes = b"",
+        headers: Dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status
         self._payload = payload
         self.content = content
+        self.headers = headers or {}
 
     def json(self) -> Any:
         return self._payload
@@ -117,6 +124,82 @@ def test_api_failure_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     with pytest.raises(RfcIndexError, match="HTTP 503"):
         fetch.latest_release("owner/repo")
+
+
+def _limited(monkeypatch: pytest.MonkeyPatch, headers: Dict[str, str]) -> None:
+    monkeypatch.setattr(
+        fetch, "governed_get", lambda url, **kw: _FakeResponse(403, None, headers=headers)
+    )
+
+
+def test_exhausted_anonymous_limit_says_so_and_how_to_lift_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    _limited(
+        monkeypatch, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1793334590"}
+    )
+    with pytest.raises(RfcIndexError) as err:
+        fetch.latest_release("owner/repo")
+    message = str(err.value)
+    assert "HTTP 403" in message
+    assert "rate limit reached, resets at " in message
+    assert "set GITHUB_TOKEN" in message
+
+
+def test_exhausted_limit_with_a_token_does_not_suggest_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    _limited(monkeypatch, {"X-RateLimit-Remaining": "0"})
+    with pytest.raises(RfcIndexError) as err:
+        fetch.latest_release("owner/repo")
+    assert "rate limit reached, try again later" in str(err.value)
+    assert "GITHUB_TOKEN" not in str(err.value)
+    assert "t0ken" not in str(err.value)
+
+
+def test_a_403_that_is_not_the_rate_limit_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    _limited(monkeypatch, {"X-RateLimit-Remaining": "37"})
+    with pytest.raises(RfcIndexError) as err:
+        fetch.latest_release("owner/repo")
+    assert str(err.value).endswith("HTTP 403")
+
+
+def test_listing_sends_the_token_and_the_asset_download_does_not(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    seen: List[Dict[str, str]] = []
+
+    def get(url: str, **kw: Any) -> _FakeResponse:
+        seen.append(dict(kw.get("headers") or {}))
+        if url.startswith("https://api.github.com/"):
+            return _FakeResponse(200, [_entry("index-20260811T003915Z")])
+        return _FakeResponse(200, None, _tarball(tmp_path, "20260811T003915Z"))
+
+    monkeypatch.setattr(fetch, "governed_get", get)
+    release = fetch.latest_release("owner/repo")
+    assert release is not None
+    fetch.download_index(release, str(tmp_path / "dl"))
+    assert seen[0].get("Authorization") == "token t0ken"
+    assert "Authorization" not in seen[1]
+
+
+def test_listing_is_anonymous_without_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    seen: List[Dict[str, str]] = []
+
+    def get(url: str, **kw: Any) -> _FakeResponse:
+        seen.append(dict(kw.get("headers") or {}))
+        return _FakeResponse(200, [])
+
+    monkeypatch.setattr(fetch, "governed_get", get)
+    assert fetch.latest_release("owner/repo") is None
+    assert "Authorization" not in seen[0]
 
 
 def _tarball(tmp_path: Any, build: str) -> bytes:
