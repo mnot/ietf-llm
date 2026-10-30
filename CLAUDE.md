@@ -6,9 +6,10 @@ the hard way.
 
 ## The gate (run before every commit)
 
-- `make test lint typecheck` must pass. **pylint must be 10.00/10 with
-  zero warnings** — any message fails the gate. (`.pylintrc`:
-  max-branches=25; C0114/C0115/C0116/W0613/R0903 disabled.)
+- `make test lint typecheck` must pass: `ruff check` (config in `ruff.toml`)
+  and `pyrefly check` (strict preset, `pyrefly.toml`) exit zero. Judge by the
+  exit code. Suppress a ruff rule with `# noqa: <code>`; ruff ignores
+  `# pylint:` comments.
 - **black is not in CI**, but keep `ietf_llm/` black-clean:
   `.venv/bin/black --check --target-version py313 <changed files>` before
   committing, or a later `make tidy` will churn them in an unrelated
@@ -17,8 +18,9 @@ the hard way.
   and it isn't enforced there.
 - Do **not** edit files `make update` overwrites from mnot/pyproject-tmpl
   (the authoritative list is `UPDATE_MAKEFILES` + `UPDATE_FILES` in
-  `Makefile.pyproject`): `Makefile.pyproject`, `Makefile.venv`, `mypy.ini`,
-  `.pylintrc`, `.isort.cfg`, `.github/workflows/publish.yml`. Each carries a
+  `Makefile.pyproject`): `Makefile.pyproject`, `Makefile.venv`, `pyrefly.toml`,
+  `ruff.toml`, `.isort.cfg`, `tools/partial_update.py`,
+  `tools/update_python_targets.py`, `.github/workflows/publish.yml`. Each carries a
   banner saying so.
 - `.github/workflows/test.yml`, `.gitignore` and `.editorconfig` are managed
   *except* inside `# === pyproject-tmpl: start "<name>" ===` regions, whose
@@ -88,7 +90,7 @@ the spec. Skip an item only when you can say *why* it doesn't apply.
   Skills, not the routing brain — and are vendored, so edit them upstream in
   mnot/ietf-skill and re-run `make vendor-skills`; CI runs
   `make vendor-skills-check`, so drift from the pin fails the build.)
-- **The gate.** `make test lint typecheck` clean (pylint 10.00/10), and
+- **The gate.** `make test lint typecheck` clean, and
   `ietf_llm/` is black-clean. See "The gate" above.
 
 ## Reader-side vs write-side (matters for "does this need a re-gather?")

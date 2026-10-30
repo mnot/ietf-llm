@@ -11,7 +11,7 @@ By contributing code, bugs or enhancements to this project (whether that be thro
 
 We use [black](https://pypi.org/project/black/) for Python formatting, which can be run with `make tidy`.
 
-All Python functions and methods need to have type annotations. See `pyproject.toml` for specific pylint and mypy settings.
+All Python functions and methods need to have type annotations. See `ruff.toml` and `pyrefly.toml` for specific [Ruff](https://docs.astral.sh/ruff/) and [Pyrefly](https://pyrefly.org/) settings.
 
 
 ## Setting up a Development Environment
@@ -24,8 +24,8 @@ Helpful make targets include:
 
 * `make shell` - start a shell in the Python virtual environment
 * `make python` - start an interactive Python interpreter in the virtual environment
-* `make lint` - run pylint with REDbot-specific configuration
-* `make typecheck` - run mypy to check Python types
+* `make lint` - run ruff
+* `make typecheck` - run Pyrefly to check Python types
 * `make tidy` - format Python source
 * `make test` - run the tests
 

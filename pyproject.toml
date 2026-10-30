@@ -65,12 +65,9 @@ notebooklm = [
 # the default file:// blob store and base install do not.
 s3 = ["boto3"]
 dev = [
-    # Floor, not a pin: 2.3.0 narrowed what `no-untyped-call` fires on, so the
-    # ignore it made redundant is gone from cli/completion.py. An older mypy
-    # then reports that call as newly untyped and the gate fails the other way.
-    "mypy>=2.3.0",
+    "pyrefly",
     "black",
-    "pylint",
+    "ruff",
     "pytest",
     "pytest-md",
     "validate-pyproject",
