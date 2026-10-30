@@ -63,7 +63,7 @@ class _SpyStore(LocalCorpusStore):
         self.calls.append("hydrate")
         return []
 
-    def publish(self, corpus: str, workspace: str, *, extra_files: Any = None) -> str:
+    def publish(self, corpus: str, workspace: str, *, extra_files: Any = None, lease_owner: Optional[str] = None) -> str:
         self.calls.append("publish")
         return "v1"
 
@@ -224,7 +224,7 @@ def test_a_clear_that_fails_fails_the_gather(isolated_home: Path) -> None:
 
 def test_publish_error_records_failed_and_reraises(isolated_home: Path) -> None:
     class _Broken(_SpyStore):
-        def publish(self, corpus: str, workspace: str, *, extra_files: Any = None) -> str:
+        def publish(self, corpus: str, workspace: str, *, extra_files: Any = None, lease_owner: Optional[str] = None) -> str:
             raise OSError("bucket gone")
 
     store = _Broken()

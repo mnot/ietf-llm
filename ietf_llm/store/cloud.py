@@ -34,11 +34,13 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, T
 
 from .. import freshness
 from ..atomicio import TMP_SUFFIX, scratch_sibling_name, stage_split_dir, swap_dirs
+from ..log import LogLevel, Verbosity, log
 from ..paths import INDEX_FILE_NAMES, checked_corpus, get_index_dir
 from .blobs import BlobStore, blob_concurrency, parallel_each
-from .control import KvControlPlane
+from .control import KvControlPlane, LeaseConflict
 from .corpus import (
     CorpusStore,
+    LeaseLost,
     VersionVanished,
     clean_relpath,
     pinned_version,
@@ -717,6 +719,20 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
                 continue
             self._blobs.delete_prefix(_content_prefix(corpus, version))
 
+    def _discard_staged(self, prefix: str) -> None:
+        """Best-effort removal of a refused publish's own staged version. Only
+        for a publish that has definitely not flipped the pointer: nothing
+        references the prefix, so deleting it cannot hurt a reader."""
+        try:
+            self._blobs.delete_prefix(prefix)
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"store: could not remove the refused publish at {prefix}: "
+                f"{type(err).__name__}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.WARN,
+            )
+
     def publish(
         self,
         corpus: str,
@@ -724,9 +740,19 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
         version: Optional[str] = None,
         *,
         extra_files: Optional[Dict[str, str]] = None,
+        lease_owner: Optional[str] = None,
     ) -> str:
         version = version or _new_version()
         prefix = _content_prefix(corpus, version)
+        # Fence the flip (see the end of this method). The holder check here only
+        # lets a zombie refuse before, rather than after, minutes of uploading;
+        # the pointer token is read first so that a pass proves nobody else held
+        # the lease, hence nobody else published, since the token was read.
+        expect_pointer = self._control.pointer_token(corpus)
+        if lease_owner is not None and (
+            self._control.lease_holder(corpus, expired_ok=True) != lease_owner
+        ):
+            raise LeaseLost(corpus, "another gatherer holds it; nothing published")
         staged: Dict[str, str] = {}
         # Stage every file in the workspace to the fresh version prefix, plus any
         # extra_files (e.g. an index living outside the cache), keyed by their
@@ -792,8 +818,31 @@ class CloudCorpusStore(CorpusStore):  # pylint: disable=too-many-public-methods
             ).encode("utf-8"),
         )
         # Flip the pointer last. If this raises, the staged blobs are orphaned and
-        # the prior version stays current — never a torn read.
-        self._control.set_current(corpus, version)
+        # the prior version stays current — never a torn read. The lease is
+        # re-proven by a compare-and-swap that also extends it (a taker's acquire
+        # races that write on the record, so one of them loses; the extension
+        # keeps the flip and reap under a live lease) and the pointer
+        # flips only if still at the token read above, so a publisher that
+        # stalled past its lease cannot overwrite a newer gather's version.
+        # A refusal is definitive (nothing was flipped), so the refused publish
+        # removes its own staged prefix: left behind, its newer id would rank as
+        # the "previous" version and the reap would drop the real one.
+        if lease_owner is not None:
+            try:
+                confirmed = self._control.confirm_lease(corpus, lease_owner)
+            except LeaseConflict:
+                self._discard_staged(prefix)
+                raise
+            if not confirmed:
+                self._discard_staged(prefix)
+                raise LeaseLost(
+                    corpus, "taken over during the upload; nothing published"
+                )
+        if not self._control.set_current(corpus, version, expect=expect_pointer):
+            self._discard_staged(prefix)
+            raise LeaseLost(
+                corpus, "the current version changed during publish; nothing flipped"
+            )
         # Write-through so this process serves the version it just published
         # immediately, without waiting out the resolve TTL. Other replicas /
         # processes pick it up within the TTL.

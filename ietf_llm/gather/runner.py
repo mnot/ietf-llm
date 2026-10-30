@@ -53,6 +53,7 @@ from ..corpus import canonical
 from ..config import service as service_config
 from ..log import LogLevel, Verbosity, log
 from ..paths import get_cache_dir, valid_corpus_name
+from ..store.corpus import LeaseLost
 from . import lifecycle, pipeline
 
 # `GatherCancelled` lives in `pipeline` (the raiser) and is re-exported here so
@@ -109,6 +110,10 @@ _heartbeat_thread: "Optional[threading.Thread]" = None  # pylint: disable=invali
 #: which the worker polls — best-effort cross-host (see `request_stop`).
 _cancel_tokens: Dict[str, str] = {}
 _cancel_events: Dict[str, threading.Event] = {}
+#: Each in-flight gather's view of its lease, keyed by corpus, guarded by
+#: `_registry_lock`. The shared heartbeat feeds it; the job's worker reads
+#: `lost` to stop (and not publish) once another host has taken the corpus.
+_lease_watches: Dict[str, lifecycle.LeaseWatch] = {}
 
 
 def _hash_token(token: str) -> str:
@@ -350,6 +355,7 @@ def start(  # pylint: disable=too-many-return-statements
         token_hash = _hash_token(token)
         _cancel_tokens[corpus] = token_hash
         _cancel_events[corpus] = threading.Event()
+        _lease_watches[corpus] = lifecycle.LeaseWatch(corpus)
     # Publish `queued` BEFORE enqueueing, then enqueue, then ensure the worker is
     # up. Ordering matters: the worker only ever writes `running`/terminal, and
     # it can only dequeue after the put below — so this `queued` write always
@@ -374,6 +380,7 @@ def start(  # pylint: disable=too-many-return-statements
             _jobs.pop(corpus, None)
             _cancel_tokens.pop(corpus, None)
             _cancel_events.pop(corpus, None)
+            _lease_watches.pop(corpus, None)
         try:
             store.release_lease(corpus, owner)
         except Exception:  # pylint: disable=broad-except
@@ -498,17 +505,35 @@ def _heartbeat_loop(owner: str, stop: threading.Event) -> None:
     """Renew every lease this host holds (queued + running jobs) and each running
     gather's slot, comfortably within the TTL, so a long gather — or a long wait
     for a fleet slot — cannot let the lease/slot lapse. No-ops on the local
-    backend. Lives for the process (daemon); `stop` is a test seam."""
+    backend. Lives for the process (daemon) and is the one heartbeat for every
+    job on the host, so nothing in a beat may end it; `stop` is a test seam."""
     while not stop.wait(lifecycle.LEASE_HEARTBEAT_S):
-        with _registry_lock:
-            items = list(_jobs.items())
-        if not items:
+        try:
+            _heartbeat_once(owner)
+        except Exception as err:  # pylint: disable=broad-except
+            log(
+                f"gather.runner: heartbeat error: {type(err).__name__}: {err}",
+                Verbosity.STATUS,
+                level=LogLevel.WARN,
+            )
+
+
+def _heartbeat_once(owner: str) -> None:
+    """One beat: renew each job's lease, marking the job's own `LeaseWatch` when
+    its lease is lost, so one corpus losing its lease stops only that gather. A
+    job already finishing is skipped: its worker is about to release the lease,
+    and a renewal landing after the release would revive it."""
+    with _registry_lock:
+        items = [(c, st, _lease_watches.get(c)) for c, st in _jobs.items()]
+    if not items:
+        return
+    store = _store()
+    for corpus, state, watch in items:
+        if state == "finishing" or watch is None or watch.lost.is_set():
             continue
-        store = _store()
-        for corpus, state in items:
-            store.renew_lease(corpus, owner, lifecycle.LEASE_TTL)
-            if state == "running":
-                store.renew_gather_slot(_slot_owner(owner, corpus), lifecycle.LEASE_TTL)
+        watch.renew(store, owner)
+        if state == "running" and not watch.lost.is_set():
+            lifecycle.renew_slot(store, _slot_owner(owner, corpus))
 
 
 def _worker_loop(owner: str) -> None:
@@ -538,6 +563,7 @@ def _worker_loop(owner: str) -> None:
                 _jobs.pop(corpus, None)
                 _cancel_tokens.pop(corpus, None)
                 _cancel_events.pop(corpus, None)
+                _lease_watches.pop(corpus, None)
                 _registry_cond.notify_all()
             _queue.task_done()
 
@@ -565,6 +591,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
     # can authenticate a cancel against the record the worker keeps republishing.
     with _registry_lock:
         status["cancel_token_sha256"] = _cancel_tokens.get(corpus)
+        watch = _lease_watches.get(corpus) or lifecycle.LeaseWatch(corpus)
     # Wait for one of the fleet-wide gather slots. While queued, the heartbeat
     # renews the lease; re-publishing `queued` keeps `updated` fresh so a stale
     # record is distinguishable. On shutdown, bail without a terminal status —
@@ -574,6 +601,10 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         slot_owner, corpus, lifecycle.LEASE_TTL, max_inflight
     ):
         if _heartbeat_stop.is_set():
+            return
+        if watch.lost.is_set():
+            # Another host holds the corpus now; the fleet record is theirs.
+            _fail_lease_lost(store, status, watch, corpus)
             return
         if _cancel_requested(corpus):
             # Stopped before it ever got a slot — no slot/pipeline to unwind,
@@ -586,6 +617,16 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             return
         _write_status(store, status)
         time.sleep(lifecycle.SLOT_POLL_S)
+    # The lease may have gone while this job sat in the queue and a slot was free
+    # when the worker reached it, which skips the loop above. Stop before the
+    # first `running` write (the fleet record is the new holder's) and before the
+    # seed and the child. The slot is ours by now, so it is released here.
+    if watch.lost.is_set():
+        try:
+            _fail_lease_lost(store, status, watch, corpus)
+        finally:
+            store.release_gather_slot(slot_owner)
+        return
     # Gather lifecycle for /metrics: started once we go `running`, finished in
     # the outer `finally` below. `run_start` stays None until then so the
     # finally only records (and balances the in-flight gauge) for a gather that
@@ -607,6 +648,11 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             name: str, index: int, total: int, detail: Optional[str] = None
         ) -> None:
             nonlocal last_cancel_poll
+            if watch.lost.is_set():
+                # Checked on every call (an Event read is free), ahead of the
+                # polled cancel check: a zombie gather should stop at the next
+                # checkpoint, not up to `_CANCEL_POLL_S` later.
+                raise GatherCancelled(corpus)
             now = time.monotonic()
             # Cooperative cancellation checkpoint. Reached at every stage
             # boundary (detail is None) and every download batch (detail set).
@@ -622,6 +668,7 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             recorder.progress(name, index, total, detail)
 
         workspace = os.path.join(get_cache_dir(), corpus)
+        fenced = False
         try:
             # Inside the try so an unfetchable IMAP mail chunk, which fails the
             # gather before any stage runs (`GatherCacheRestoreError`), is
@@ -629,10 +676,17 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
             lifecycle.prepare_workspace(store, corpus, workspace, recorder.note)
 
             outcome = pipeline.run_pipeline(
-                spec, _progress, recorder.note, lambda: _cancel_requested(corpus)
+                spec,
+                _progress,
+                recorder.note,
+                # Also ends a silent stage (the pipe check polls this on an idle
+                # tick), so a lost lease terminates the child promptly.
+                lambda: watch.lost.is_set() or _cancel_requested(corpus),
             )
             if outcome is lifecycle.GatherOutcome.GATHERED:
-                lifecycle.publish_workspace(store, corpus, workspace, recorder.note)
+                lifecycle.publish_workspace(
+                    store, corpus, workspace, recorder.note, owner=owner, lease=watch
+                )
                 status["state"] = "done"
             elif outcome is lifecycle.GatherOutcome.SKIPPED:
                 # Nothing was gathered, so the seeded workspace is the published
@@ -647,25 +701,50 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                     "synthetic (x-) corpus. Check the spelling or add sources."
                 )
         except GatherCancelled:
-            # Stop requested: do not publish (the cache is partial); leave it
-            # for the next gather to overwrite. A cancelled record is terminal,
-            # so liveness never relabels it.
-            status["state"] = "cancelled"
-            status["cancel_requested"] = True
-            status["error"] = None
+            if watch.lost.is_set():
+                # The checkpoints raise this to unwind a gather whose lease went;
+                # that is a failure, not a requested stop.
+                fenced = True
+                status["state"] = "failed"
+                status["error"] = str(lifecycle.lease_lost_error(watch))[:500]
+            else:
+                # Stop requested: do not publish (the cache is partial); leave it
+                # for the next gather to overwrite. A cancelled record is
+                # terminal, so liveness never relabels it.
+                status["state"] = "cancelled"
+                status["cancel_requested"] = True
+                status["error"] = None
+        except LeaseLost as err:
+            fenced = True
+            status["state"] = "failed"
+            status["error"] = f"{type(err).__name__}: {err}"[:500]
         except BaseException as err:  # pylint: disable=broad-except
             status["state"] = "failed"
             status["error"] = f"{type(err).__name__}: {err}"[:500]
         finally:
             status["finished"] = _now_iso()
             _mark_finishing(corpus)
-            _write_status(store, status)
+            # A gather that lost its lease must not overwrite the fleet record
+            # of whoever holds the corpus now.
+            _write_status(store, status, publish=not fenced)
     finally:
         store.release_gather_slot(slot_owner)
         if run_start is not None:
             serve_metrics.record_gather_finished(
                 str(status["state"]), time.monotonic() - run_start
             )
+
+
+def _fail_lease_lost(
+    store: Any, status: Dict[str, Any], watch: lifecycle.LeaseWatch, corpus: str
+) -> None:
+    """Finalise a queued job whose lease went before it got a slot: failed, and
+    recorded locally only (the fleet record belongs to the new holder)."""
+    status["state"] = "failed"
+    status["error"] = str(lifecycle.lease_lost_error(watch))[:500]
+    status["finished"] = _now_iso()
+    _mark_finishing(corpus)
+    _write_status(store, status, publish=False)
 
 
 def read_status(corpus: str) -> Optional[Dict[str, Any]]:

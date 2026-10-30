@@ -94,11 +94,14 @@ fleet gather slot, seed the local workspace from the current published version, 
 accelerator caches, gather, then publish the result as a new version and persist the caches. The
 local cache on a cloud host is scratch — only what is published reaches readers — so a CLI gather
 that lands prints the version it published, and one whose corpus another host is already gathering
-is refused with a non-zero exit (a `--all` sweep just skips that corpus). A run the freshness
-debounce skips publishes nothing: the current version is already what it would upload. The
-debounce, like the check that a corpus name is real, is decided before the lease, the slot or the
-seed, from the published version's own timestamp — so a `--all` sweep pays one small read, not a
-download, for each corpus that is not due.
+is refused with a non-zero exit (a `--all` sweep just skips that corpus). A gather that loses its
+lease — a renewal refused because another host took the corpus over after a lapse, or the
+store failing three renewals in a row, or for three quarters of the TTL — stops at its next
+checkpoint and publishes nothing; `publish` itself refuses to flip the pointer unless the publisher still holds the lease and nobody else has
+moved the pointer since it started. A run the freshness debounce skips publishes nothing: the
+current version is already what it would upload. The debounce, like the check that a corpus name is
+real, is decided before the lease, the slot or the seed, from the published version's own timestamp
+— so a `--all` sweep pays one small read, not a download, for each corpus that is not due.
 
 **Per-WG config is fleet-wide automatically.** On cloud, each corpus's gather/export config lives
 in the control plane (`corpora/<name>/config/<scope>`), written during a gather under that corpus's
@@ -114,7 +117,10 @@ on each host.
 works against AWS S3, Cloudflare R2, or MinIO. The store **must support conditional writes**
 (`If-Match` / `If-None-Match`) — that is what makes the control-plane compare-and-swap safe;
 without it, two concurrent gathers could both believe they hold the lease. **Confirm this on your
-target** before relying on it.
+target** before relying on it. AWS S3 also answers *overlapping* conditional writes to one key with
+`409 ConditionalRequestConflict` rather than `412`; the store treats both as a lost compare-and-swap
+and retries, but whether R2 and MinIO return the same code is **unconfirmed** — check how your
+endpoint reports a lost race, and open an issue if it is something other than `412` / `409`.
 
 **The `s3` extra.** `pipx install 'ietf-llm[s3]'`. For a non-AWS endpoint set
 `IETF_LLM_STORE_ENDPOINT_URL` (e.g. your R2 or MinIO endpoint); leave it unset for AWS.

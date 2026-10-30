@@ -3,7 +3,8 @@ conditional writes.
 
 `put` maps the precondition onto S3 headers — `ABSENT` → `If-None-Match: *`
 (create-only), a version token → `If-Match: <etag>` (compare-and-swap) — and
-turns a 412 PreconditionFailed into a `None` return, so a lost CAS reads the
+turns a 412 PreconditionFailed (or a 409 ConditionalRequestConflict, S3's answer
+to overlapping conditional writes) into a `None` return, so a lost CAS reads the
 same as on the in-memory store. The object's **ETag is the opaque version
 token**. `delete` is unconditional (the control plane never needs a conditional
 delete; a lease is released by stamping it expired, not removing it).
@@ -56,7 +57,13 @@ class S3KvStore(KvStore):
         try:
             resp = bkt.call("write an object", lambda: bkt.client.put_object(**params))
         except ClientError as err:
-            if err.response.get("Error", {}).get("Code") in PRECONDITION_FAILED:
+            # Only a conditional put can lose a compare-and-swap; an unconditional
+            # one that fails must surface, not read as a CAS it never asked for.
+            lost = expect is not ANY
+            if (
+                lost
+                and err.response.get("Error", {}).get("Code") in PRECONDITION_FAILED
+            ):
                 return None
             raise
         return str(resp["ETag"])

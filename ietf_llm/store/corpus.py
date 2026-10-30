@@ -51,6 +51,18 @@ class GatherCacheRestoreError(RuntimeError):
     retry can succeed. Every other restore failure stays a note."""
 
 
+class LeaseLost(RuntimeError):
+    """A publish was refused because the publisher no longer holds the corpus's
+    gather lease, or the current-version pointer moved while it was publishing:
+    another gather took over (or published), and flipping the pointer now would
+    put this one's older content over theirs. Nothing was flipped; the
+    already-uploaded blobs are orphans the next publish's reap collects."""
+
+    def __init__(self, corpus: str, detail: str) -> None:
+        super().__init__(f"gather lease for '{corpus}' lost: {detail}")
+        self.corpus = corpus
+
+
 class VersionVanished(FileNotFoundError):
     """The pinned version of a corpus was reaped out from under an in-flight
     read: a concurrent re-gather published a newer version and the version GC
@@ -251,9 +263,15 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         workspace: str,
         *,
         extra_files: Optional[Dict[str, str]] = None,
+        lease_owner: Optional[str] = None,
     ) -> str:
         """Publish the gathered tree at local `workspace` as a new version of
         `corpus`, atomically, and return its version token.
+
+        `lease_owner` is the owner the caller took the gather lease under. A
+        cloud backend refuses to flip the pointer (raising `LeaseLost`) unless
+        that owner still holds the lease and no one else has moved the pointer
+        since publish began; without it only the pointer check applies.
 
         `extra_files` maps a version-relative path to an absolute local path for
         files that live *outside* `workspace` but belong in the version — notably
@@ -546,6 +564,7 @@ class LocalCorpusStore(CorpusStore):
         workspace: str,
         *,
         extra_files: Optional[Dict[str, str]] = None,
+        lease_owner: Optional[str] = None,
     ) -> str:
         # No-op finalise: the local cache is the single live version, the gather
         # writes straight into it, and the index is read from its own dir — so

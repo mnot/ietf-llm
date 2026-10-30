@@ -36,7 +36,7 @@ from ..gather.sources.rfc_corpus import ensure_rfc_corpus
 from ..gather.sources.rfcs import ensure_rfc_index
 from ..log import LogLevel, Verbosity, graceful_keyboard_interrupt, log
 from ..months import months_request_error
-from ..store.corpus import get_corpus_store
+from ..store.corpus import LeaseLost, get_corpus_store
 from . import list as cli_list
 from .completion import maybe_autocomplete, print_completion_snippet
 from .skill_install import install_skills, sync_if_pristine
@@ -179,6 +179,12 @@ def _gather(args: argparse.Namespace, verbosity: Verbosity) -> Optional[GatherOu
             verbosity,
             level=LogLevel.STATUS,
         )
+        return None
+    except LeaseLost as lost:
+        # Another gatherer took the corpus over mid-run (or moved the pointer),
+        # so nothing was published. Like a busy corpus: not an outcome of this
+        # run, and a sweep carries on to the next one.
+        log(str(lost), verbosity, level=LogLevel.ERROR)
         return None
 
 

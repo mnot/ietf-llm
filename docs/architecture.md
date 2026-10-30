@@ -1053,6 +1053,17 @@ write-throughs its own entry, so it never serves config it just wrote.
   and the manifest, itself a blob — to a fresh version prefix, then flips the
   pointer with a single compare-and-swap; a reader sees the old version or the
   new, never a torn one, and a killed publish leaves the prior version live.
+  The flip is fenced against a publisher that has lost its gather lease: `publish`
+  reads the pointer token, checks the lease still names the publisher (before the
+  upload, so a zombie refuses early), uploads, re-proves the lease by a
+  compare-and-swap that also extends it (the record's bytes, hence its ETag,
+  change, so a taker's `acquire_lease` and this write race and exactly one loses,
+  and the flip and the reap after it run under a live lease), then flips the pointer
+  conditionally on the token it read first. Either check failing raises
+  `LeaseLost` and flips nothing; the staged blobs are orphans the next publish's
+  reap collects. Expiry is deliberately not consulted at the flip: a lapsed lease
+  with no taker still names its owner, and the pointer compare-and-swap, not the
+  clock, is what orders that owner against anyone who takes the lease later.
   After the flip — under the gather lease, best-effort — it reaps superseded
   version blobs (and any failed-publish orphan), keeping the current version plus
   the previous one (`IETF_LLM_RETAIN_VERSIONS`, default 2), so durable storage is
@@ -1123,8 +1134,8 @@ write-throughs its own entry, so it never serves config it just wrote.
   control under `corpora/<name>/{pointer,lease,status}`, immutable content (and
   its manifest) under `corpora/<name>/versions/<version>/`, and the one
   cross-corpora key — the gather-slot semaphore — at `fleet/slots`. The program
-  stays the storage client (no FUSE); all atomicity lives in the pointer's
-  compare-and-swap. Reads resolve
+  stays the storage client (no FUSE); all atomicity lives in the compare-and-swaps
+  on the pointer and the lease. Reads resolve
   the current version through the control plane behind a
   short per-replica TTL cache (`IETF_LLM_RESOLVE_TTL`, default 10s), so a burst of
   reads coalesces to one round trip; immutable versions make a stale hit harmless,
@@ -1328,6 +1339,30 @@ servers) can run at once. The safety model:
   publish (a compare-and-swap pointer flip over immutable, already-staged blobs)
   replaces shared-filesystem atomic writes for cross-object atomicity. Both are
   no-ops on the local backend, which relies on the flock as before.
+  A lease is only as good as its holder noticing it has lost it, so the heartbeat
+  (`gather.lifecycle.LeaseWatch`, one per gather; the runner's single heartbeat
+  keeps one per job) never lets a store error end it, and marks the gather's lease
+  lost when a renewal is refused (another host holds it), three renewals in a row
+  error, or none has succeeded for three quarters of the TTL (the deadline does not
+  depend on how long a failing call takes to give up). A gather with a lost lease
+  stops at its next progress checkpoint (the runner also ends the child process
+  through the cancel predicate), will not publish, will not persist the
+  accelerator caches, and records `failed` locally only: the fleet status record
+  is now the new holder's, so it is not overwritten. The CLI and the MCP runner
+  apply the same fence. A renewal that cannot update the lease record because
+  every compare-and-swap in its retry budget lost (`LeaseConflict`) says nothing
+  about who holds the lease: it counts as a store error, not a lost lease. A
+  released lease (`expires_at == 0`, owner kept) refuses a renewal still in
+  flight, so a late heartbeat cannot revive it, and `release_lease` retries its
+  compare-and-swap like a renewal. A publish refused after staging deletes its
+  own version prefix (best-effort), so the orphan's newer id cannot rank as the
+  "previous" version and displace the real one in the reap.
+  Two limitations are accepted. `confirm_lease` revives a lapsed lease that has
+  no taker; the pointer compare-and-swap, not the clock, orders that publisher
+  against anyone who takes the lease later. And per-WG config
+  (`CloudConfigStore.set_config`) is written with plain puts during a gather and
+  is not fenced by the watch, so a zombie can write config until its next
+  progress checkpoint (config is last-writer-wins).
 
 ### `ietf-llm` (gather) has no `--update` flag
 
