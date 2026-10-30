@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 import requests
 
@@ -142,7 +142,7 @@ def _cuda_available() -> bool:
     """True if a CUDA device is usable. Isolated so the device default can be
     tested without importing torch (CI stays torch-free)."""
     try:
-        import torch  # pyrefly: ignore[missing-import]  # noqa: PLC0415
+        import torch  # type: ignore[import-not-found]  # noqa: PLC0415
 
         return bool(torch.cuda.is_available())
     except ImportError:
@@ -181,7 +181,7 @@ def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
 
 def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool) -> Any:
     """Build the underlying SentenceTransformer. Isolated for testing."""
-    from sentence_transformers import (  # pyrefly: ignore[missing-import]  # noqa: PLC0415
+    from sentence_transformers import (  # type: ignore[import-not-found]  # noqa: PLC0415
         SentenceTransformer,
     )
 
@@ -220,7 +220,7 @@ def _load_sentence_transformer(
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
-        from llm_sentence_transformers import (  # pyrefly: ignore[missing-import]  # noqa: PLC0415
+        from llm_sentence_transformers import (  # type: ignore[import-not-found]  # noqa: PLC0415
             SentenceTransformerModel,
             read_models,
             write_models,
@@ -239,7 +239,7 @@ def _load_sentence_transformer(
         )
         return None
     try:
-        models = read_models()
+        models: List[Dict[str, Any]] = read_models()
         if not any(m.get("name") == bare for m in models):
             models.append({"name": bare, "trust_remote_code": False})
             write_models(models)
