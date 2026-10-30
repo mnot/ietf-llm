@@ -115,13 +115,15 @@ def test_child_emits_progress_notes_and_success_code(
     assert rc == 0
 
 
-def test_child_reports_an_unhandled_error_before_dying(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _run_child_that_raises(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> tuple[list, list]:
+    """Run `gather_child.main` with a gather that raises `error`; return the
+    records it sent down the pipe and the exceptions it re-raised."""
     read_fd, write_fd = os.pipe()
 
     def exploding_run_gather(argv, _verbosity, progress=None, note_fn=None):  # type: ignore[no-untyped-def]
-        raise ValueError("bad\nthing " + "x" * 1000)
+        raise error
 
     monkeypatch.setattr(gather_child, "run_gather", exploding_run_gather)
     monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
@@ -130,7 +132,7 @@ def test_child_reports_an_unhandled_error_before_dying(
     def _go() -> None:
         try:
             gather_child.main()
-        except ValueError as err:
+        except type(error) as err:
             raised.append(err)  # re-raised, so the traceback still reaches stderr
 
     thread = threading.Thread(target=_go)
@@ -138,11 +140,31 @@ def test_child_reports_an_unhandled_error_before_dying(
     with os.fdopen(read_fd, "r", encoding="utf-8") as pipe:
         lines = [json.loads(line) for line in pipe if line.strip()]
     thread.join()
+    return lines, raised
+
+
+def test_child_reports_an_unhandled_error_before_dying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines, raised = _run_child_that_raises(
+        monkeypatch, ValueError("bad\nthing " + "x" * 1000)
+    )
     assert len(raised) == 1
     assert [r["t"] for r in lines] == ["error"]
     assert lines[0]["type"] == "ValueError"
     assert lines[0]["msg"].startswith("bad thing xxx")  # one line
     assert len(lines[0]["msg"]) == gather_child._ERROR_MSG_MAX
+
+
+def test_child_error_record_hides_credentials_in_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines, _raised = _run_child_that_raises(
+        monkeypatch,
+        ConnectionError("POST https://svc:s3cret@embed.example/v1/embeddings failed"),
+    )
+    assert lines[0]["msg"] == "POST https://***@embed.example/v1/embeddings failed"
+    assert "s3cret" not in json.dumps(lines)
 
 
 def test_child_unusable_corpus_maps_to_distinct_exit(

@@ -27,6 +27,7 @@ import os
 import sys
 from typing import Any, Optional
 
+from ..embeddings.oai_compat import redact_userinfo
 from ..log import Verbosity
 from .pipeline import OUTCOME_EXIT_CODES
 from .sequencer import run_gather
@@ -96,12 +97,14 @@ def main() -> None:
         )
     except Exception as err:
         # stderr is inherited and lost to a fleet operator; the parent's status
-        # record is what `gather_status` shows, so say what failed there.
+        # record is what `gather_status` shows, so say what failed there, minus
+        # any credentials embedded in a URL the exception quotes.
+        message = redact_userinfo(" ".join(str(err).split()))
         _emit(
             {
                 "t": "error",
                 "type": type(err).__name__,
-                "msg": " ".join(str(err).split())[:_ERROR_MSG_MAX],
+                "msg": message[:_ERROR_MSG_MAX],
             }
         )
         raise
