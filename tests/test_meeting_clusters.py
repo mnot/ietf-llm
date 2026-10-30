@@ -308,6 +308,7 @@ class _FakeStream:
     def __init__(self, chunks: List[bytes], headers: Dict[str, str]) -> None:
         self._chunks = chunks
         self.headers = headers
+        self.status_code = 200
         self.closed = False
 
     def raise_for_status(self) -> None:
@@ -337,6 +338,18 @@ def test_download_writes_a_pdf_within_bounds(tmp_path: Path, monkeypatch) -> Non
     dest = tmp_path / "deck.pdf"
     assert _download(dest)
     assert dest.read_bytes() == b"%PDF-1.4" and stream.closed
+
+
+def test_download_is_metered_by_declared_length(tmp_path: Path, monkeypatch) -> None:
+    from ietf_llm.net import http_metrics
+
+    stream = _FakeStream(
+        [b"%PDF"], {"Content-Type": "application/pdf", "Content-Length": "4"}
+    )
+    _serve(monkeypatch, stream)
+    metrics = http_metrics.reset()
+    assert _download(tmp_path / "deck.pdf")
+    assert (metrics.ok, metrics.errors, metrics.bytes_received) == (1, 0, 4)
 
 
 def test_download_refuses_a_declared_oversize(tmp_path: Path, monkeypatch) -> None:

@@ -4,13 +4,11 @@
 single `ietf-llm <wg>` fans out into dozens of requests to datatracker
 (drafts / RFCs / ballots / charter / meetings / people), mailarchive,
 GitHub, and draft hosts. This module gives us visibility into how much
-upstream load we generate: a passive accumulator that the two network
-chokepoints record every request into —
-
-  - `_get_json` in `gather/sources/datatracker.py` (the ETag-aware JSON API path)
-  - `fetch_resource` in `net/transport.py` (raw resource fetches)
-
-— which together cover essentially all egress. It counts requests split
+upstream load we generate: a passive accumulator that `governed_get` in
+`net/transport.py` — the one GET chokepoint, which every `fetch_resource`,
+Datatracker, GitHub, mailarchive and draft-host fetch goes through — records
+every call into (once per call, not per adapter retry or redirect hop), so
+callers never record themselves. It counts requests split
 by outcome (real transfer / 304 revalidation / error), total bytes
 pulled down, a per-host breakdown, and a top-N of URL patterns to spot
 hot loops.
@@ -43,6 +41,13 @@ from ..atomicio import atomic_open
 
 #: How many URL patterns to surface in the summary / persisted file.
 _TOP_N = 8
+
+#: Distinct URL patterns tracked per accumulator. Patterns fold digits and drop
+#: query values but not path words, so a long-lived reader thread (live
+#: Datatracker lookups) could otherwise grow the table by one entry per draft
+#: name; past the cap new patterns share `_OTHER`.
+_MAX_PATTERNS = 500
+_OTHER = "(other)"
 
 _METRICS_NAME = "gather-metrics.json"
 
@@ -113,7 +118,10 @@ class HttpMetrics:
                 self.ok += 1
             self.bytes_received += n_bytes
             self.host_bytes[host] += n_bytes
-            self.patterns[url_pattern(url)] += 1
+            pattern = url_pattern(url)
+            if pattern not in self.patterns and len(self.patterns) >= _MAX_PATTERNS:
+                pattern = _OTHER
+            self.patterns[pattern] += 1
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-serialisable snapshot for `<wg>/gather-metrics.json`."""
@@ -218,8 +226,8 @@ def persist(wg_cache_dir: str) -> None:
 
     The caller passes the corpus directory (`<cache>/<wg>/`) so this module
     needs nothing from the rest of the package; `net` imports us back (it hosts
-    the `fetch_resource` chokepoint). Best-effort, like the freshness sentinel it sits beside:
-    a failed write just means there's no baseline to compare next run."""
+    the `governed_get` chokepoint). Best-effort, like the freshness sentinel it
+    sits beside: a failed write just means there's no baseline to compare next run."""
     path = os.path.join(wg_cache_dir, _METRICS_NAME)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -83,6 +83,18 @@ class UpstreamAuthError(RuntimeError):
     """
 
 
+class UpstreamRateLimited(requests.HTTPError):
+    """An upstream answered 429 / 5xx with a ``Retry-After`` longer than we will
+    wait. A plain ``HTTPError`` to callers that only catch that, but bulk
+    ingest recognises it and stops asking: every further request would be
+    refused too. ``retry_after`` is the wait the server asked for, in seconds.
+    """
+
+    def __init__(self, message: str, retry_after: float, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.retry_after = retry_after
+
+
 def env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -160,21 +172,40 @@ def build_headers(
     return headers
 
 
-def _sleep_backoff(attempt: int, resp: requests.Response | None) -> None:
-    # Honour Retry-After when the server sends it, else exponential backoff.
-    # Either way add jitter before sleeping: the rate limit is account-level,
-    # so several concurrent callers share the budget and tend to be throttled
-    # together -- a Retry-After value is identical across them, so without the
-    # jitter they would all wake at the same instant and re-collide. The jitter
-    # spreads the retries out.
-    delay = 0.0
-    if resp is not None:
-        retry_after = resp.headers.get("Retry-After")
-        if retry_after:
-            delay = parse_retry_after(retry_after)
+#: Longest `Retry-After` (seconds) honoured by default. A larger one is not
+#: slept on: the failure is raised instead, since a worker thread (the serve
+#: path's `search_corpus` embeds the query inline) cannot be pinned for the
+#: hour an account-level limit might ask.
+RETRY_AFTER_MAX = 60.0
+
+
+def _retry_after_seconds(resp: requests.Response) -> float:
+    """The wait a response's ``Retry-After`` asks for; 0.0 if absent."""
+    retry_after = resp.headers.get("Retry-After")
+    return parse_retry_after(retry_after) if retry_after else 0.0
+
+
+def _sleep_backoff(
+    attempt: int,
+    resp: requests.Response | None,
+    retry_after_max: float = RETRY_AFTER_MAX,
+) -> bool:
+    """Sleep before a retry; False (without sleeping) if upstream asked for
+    longer than `retry_after_max`, so the caller should give up.
+
+    Honours Retry-After when the server sends it, else exponential backoff.
+    Either way add jitter before sleeping: the rate limit is account-level,
+    so several concurrent callers share the budget and tend to be throttled
+    together -- a Retry-After value is identical across them, so without the
+    jitter they would all wake at the same instant and re-collide.
+    """
+    delay = _retry_after_seconds(resp) if resp is not None else 0.0
+    if delay > retry_after_max:
+        return False
     if delay <= 0.0:
         delay = min(30.0, 2.0**attempt)
     time.sleep(delay + random.uniform(0.0, 1.0))
+    return True
 
 
 def post_json_with_retry(
@@ -184,6 +215,7 @@ def post_json_with_retry(
     *,
     timeout: float,
     max_retries: int,
+    retry_after_max: float = RETRY_AFTER_MAX,
     auth_hint: str = "",
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
@@ -191,7 +223,9 @@ def post_json_with_retry(
 
     Retries up to ``max_retries`` times, honouring ``Retry-After`` and
     otherwise backing off exponentially with jitter. Returns the parsed
-    JSON body; raises the last error once retries are exhausted.
+    JSON body; raises the last error once retries are exhausted, or at once
+    (as ``UpstreamRateLimited``) when ``Retry-After`` exceeds
+    ``retry_after_max`` seconds.
 
     Pass ``session`` (a ``requests.Session``) to reuse one keep-alive
     connection across calls — a bulk embed makes many back-to-back requests
@@ -217,15 +251,24 @@ def post_json_with_retry(
                     raise
                 # No chaining: the original exception carries the credentials.
                 raise clean from None
-            _sleep_backoff(attempt, None)
+            _sleep_backoff(attempt, None, retry_after_max)
             attempt += 1
             continue
         if resp.status_code in _AUTH_STATUSES:
             raise UpstreamAuthError(_auth_error_message(url, resp, auth_hint))
         if resp.status_code == 429 or resp.status_code >= 500:
+            wait = _retry_after_seconds(resp)
+            if wait > retry_after_max:
+                raise UpstreamRateLimited(
+                    f"{redact_userinfo(url)} answered HTTP {resp.status_code} and asked for a "
+                    f"{wait:.0f}s wait, longer than the {retry_after_max:.0f}s "
+                    "limit; not retrying",
+                    wait,
+                    response=resp,
+                )
             if attempt >= max_retries:
                 _raise_for_status(resp)
-            _sleep_backoff(attempt, resp)
+            _sleep_backoff(attempt, resp, retry_after_max)
             attempt += 1
             continue
         _raise_for_status(resp)

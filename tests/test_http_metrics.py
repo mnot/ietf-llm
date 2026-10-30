@@ -221,3 +221,27 @@ def test_get_json_records_200_and_304(
     datatracker._get_json("/api/v1/y")
     m = http_metrics.current()
     assert (m.ok, m.revalidated, m.errors) == (1, 1, 0)
+
+
+def test_304_with_lost_body_refetch_counts_both_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Cache:
+        def get(self, url: str) -> Dict[str, str]:
+            return {"etag": "x"}
+
+        def body(self, url: str) -> Optional[str]:
+            return None
+
+        def store(self, *args: Any) -> None:
+            pass
+
+    monkeypatch.setattr(datatracker, "_active_http_cache", lambda: _Cache())
+    monkeypatch.setattr(datatracker, "_get_json", _REAL_GET_JSON)
+    replies = [_FakeResp(304, b""), _FakeResp(200, b'{"a": 1}', {"a": 1})]
+    monkeypatch.setattr(net.http_session(), "get", lambda *a, **k: replies.pop(0))
+    http_metrics.reset()
+    assert datatracker._get_json("/api/v1/z") == {"a": 1}
+    m = http_metrics.current()
+    # The unconditional refetch is a second request, counted once more.
+    assert (m.ok, m.revalidated, m.errors) == (1, 1, 0)

@@ -23,7 +23,6 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
-from ...net import http_metrics
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...paths import get_cache_dir
@@ -200,7 +199,6 @@ def _get_url(url: str, timeout: float, retry: bool) -> Optional[Dict[str, Any]]:
     try:
         response = governed_get(url, headers=headers, timeout=timeout)
     except requests.RequestException as err:
-        http_metrics.record(url, 0, 0, error=True)
         log(
             f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
             level=LogLevel.WARN,
@@ -208,7 +206,6 @@ def _get_url(url: str, timeout: float, retry: bool) -> Optional[Dict[str, Any]]:
         return cached()
 
     if response.status_code == 304:
-        http_metrics.record(url, 304, len(response.content))
         body = cached()
         if body is None and entry and retry:
             # The stored body is gone or unreadable (and now dropped): ask again
@@ -220,15 +217,11 @@ def _get_url(url: str, timeout: float, retry: bool) -> Optional[Dict[str, Any]]:
         response.raise_for_status()
         result = response.json()
     except (requests.RequestException, ValueError) as err:
-        http_metrics.record(
-            url, response.status_code, len(response.content), error=True
-        )
         log(
             f"Datatracker: fetch {url} failed: {http_error_detail(err)}",
             level=LogLevel.WARN,
         )
         return cached()
-    http_metrics.record(url, response.status_code, len(response.content))
     if not isinstance(result, dict):
         return None
     etag = response.headers.get("ETag")

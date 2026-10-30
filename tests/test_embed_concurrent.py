@@ -17,7 +17,12 @@ import time
 from pathlib import Path
 from typing import Iterable, List
 
+import pytest
+import requests
+
 from ietf_llm import embeddings
+from ietf_llm.embeddings.models import _OpenAICompatEmbeddingModel
+from ietf_llm.embeddings.oai_compat import RETRY_AFTER_MAX, UpstreamRateLimited
 from ietf_llm.embeddings.search import build_index
 from ietf_llm.embeddings.storage import _db_path
 from ietf_llm.log import Verbosity
@@ -189,3 +194,101 @@ def test_remote_reports_percent_to_detail(
         detail=seen.append,
     )
     assert seen and all("%" in s and "embedded" in s for s in seen)
+
+
+class _Resp:
+    def __init__(self, status: int, n: int = 1, headers=None) -> None:
+        self.status_code = status
+        self.headers = headers or {}
+        self._n = n
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+    def json(self):
+        return {
+            "data": [
+                {"index": i, "embedding": [1.0, 0.0, 0.0, 0.0]} for i in range(self._n)
+            ]
+        }
+
+
+def test_over_cap_retry_after_stops_the_build(
+    isolated_home: Path, monkeypatch
+) -> None:
+    # Several windows in flight against the real remote client; the first
+    # file request is refused with an hour-long Retry-After. No request may
+    # follow it once the client knows, the build stops with the cause named,
+    # and files that did embed are kept (unfinished ones retry next gather).
+    monkeypatch.setenv("IETF_LLM_EMBED_CONCURRENCY", "2")
+    lock = threading.Lock()
+    posts: List[str] = []
+    state = {"limited": False, "ok": 0}
+
+    def fake_post(self, url, headers, json, timeout):  # noqa: ARG001
+        texts = json["input"]
+        if texts == ["dimension probe"]:
+            return _Resp(200)
+        with lock:
+            posts.append(texts[0])
+            first = not state["limited"]
+            state["limited"] = True
+        if first:
+            return _Resp(429, headers={"Retry-After": "3600"})
+        time.sleep(0.1)
+        with lock:
+            state["ok"] += 1
+        return _Resp(200, len(texts))
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    model = _OpenAICompatEmbeddingModel(
+        "stub", "https://host/v1", {}, batch_size=1, timeout=5.0, max_retries=3
+    )
+    embeddings._MODEL_CACHE[_REMOTE] = model  # noqa: SLF001
+    _seed_files(isolated_home, "limitedwg", 12)
+
+    with pytest.raises(UpstreamRateLimited) as exc:
+        build_index(
+            "limitedwg",
+            get_wg_file_cache_dir("limitedwg"),
+            _REMOTE,
+            verbose=Verbosity.QUIET,
+        )
+
+    msg = str(exc.value)
+    assert "rate limited" in msg and "3600s" in msg and "next gather" in msg
+    assert exc.value.retry_after == 3600
+    # Only the requests already in flight (the pool has two workers) went out;
+    # the other windows never reached the provider.
+    assert len(posts) <= 2
+    kept = _chunk_rows("limitedwg")
+    assert len(kept) == state["ok"] < 12
+    assert f"{len(kept)} files embedded and kept" in msg
+
+
+def test_model_refuses_requests_while_blocked(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def fake_post(self, url, headers, json, timeout):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Resp(429, headers={"Retry-After": "3600"})
+        return _Resp(200)
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    model = _OpenAICompatEmbeddingModel(
+        "m", "https://host/v1", {}, batch_size=1, timeout=5.0, max_retries=3
+    )
+    with pytest.raises(UpstreamRateLimited):
+        model.embed_multi(["a"])
+    # Blocked: later calls, from any path, fail without a request ...
+    with pytest.raises(UpstreamRateLimited):
+        model.embed("b")
+    with pytest.raises(UpstreamRateLimited):
+        model.embed_multi(["c"])
+    assert calls["n"] == 1
+    # ... for at most RETRY_AFTER_MAX, however long the header said.
+    assert model._blocked_until - time.monotonic() <= RETRY_AFTER_MAX
+    model._blocked_until = 0.0
+    assert model.embed("d") == [1.0, 0.0, 0.0, 0.0]

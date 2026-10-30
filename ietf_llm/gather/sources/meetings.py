@@ -12,8 +12,15 @@ import requests
 
 from ...atomicio import atomic_open, atomic_open_binary, write_if_changed
 from ...log import LogLevel, Verbosity, log
-from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, http_session
+from ...net import (
+    DEFAULT_HEADERS,
+    clean_html,
+    fetch_resource,
+    http_metrics,
+    http_session,
+)
 from ...net.http_governor import host_slot
+from ...net.transport import meter_stream
 from ...paths import (
     ORPHAN_MEETING_CODE,
     agenda_path,
@@ -678,9 +685,14 @@ def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
     deadline = time.monotonic() + MAX_PDF_SECONDS
     try:
         with host_slot(url):
-            res = http_session().get(
-                url, timeout=60, stream=True, headers=DEFAULT_HEADERS
-            )
+            try:
+                res = http_session().get(
+                    url, timeout=60, stream=True, headers=DEFAULT_HEADERS
+                )
+            except requests.RequestException:
+                http_metrics.record(url, 0, 0, error=True)
+                raise
+            meter_stream(url, res)
             try:
                 res.raise_for_status()
                 c_type = res.headers.get("Content-Type", "").lower()
