@@ -193,13 +193,13 @@ def test_heartbeat_survives_a_store_error_and_keeps_renewing(
         target=lifecycle.heartbeat, args=(store, "tls", "me", stop), kwargs={"watch": watch}
     )
     thread.start()
-    deadline = time.time() + 2.0
+    deadline = time.time() + 30.0
     while store.renew_calls < 4 and time.time() < deadline:
         time.sleep(0.005)
     assert thread.is_alive() and not watch.lost.is_set()
     assert store.renew_calls >= 4
     stop.set()
-    thread.join(timeout=1.0)
+    thread.join(timeout=10.0)
 
 
 def test_heartbeat_flags_the_watch_and_exits_when_the_lease_is_gone(
@@ -214,7 +214,7 @@ def test_heartbeat_flags_the_watch_and_exits_when_the_lease_is_gone(
         kwargs={"watch": watch},
     )
     thread.start()
-    thread.join(timeout=1.0)
+    thread.join(timeout=10.0)
     assert not thread.is_alive() and watch.lost.is_set()
 
 
@@ -238,15 +238,29 @@ def test_slot_renewal_error_does_not_end_the_heartbeat(
         kwargs={"slot": "s", "slot_held": held, "watch": watch},
     )
     thread.start()
-    deadline = time.time() + 2.0
+    deadline = time.time() + 30.0
     while len(slot_calls) < 3 and time.time() < deadline:
         time.sleep(0.005)
     assert thread.is_alive() and len(slot_calls) >= 3
     stop.set()
-    thread.join(timeout=1.0)
+    thread.join(timeout=10.0)
 
 
 # --- the CLI driver --------------------------------------------------------
+
+
+def _when_lost(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    """An event set the moment any LeaseWatch marks its lease lost, so a test can
+    wait for the heartbeat on the thing it did rather than sleep and hope."""
+    event = threading.Event()
+    original = LeaseWatch._lose
+
+    def lose(self: LeaseWatch, reason: str) -> None:
+        original(self, reason)
+        event.set()
+
+    monkeypatch.setattr(LeaseWatch, "_lose", lose)
+    return event
 
 
 def _cli_run(store: _Store, pipeline: Any) -> GatherOutcome:
@@ -259,21 +273,21 @@ def test_cli_lease_lost_mid_run_stops_at_the_next_checkpoint_without_publishing(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(lifecycle, "LEASE_HEARTBEAT_S", 0.005)
+    lost = _when_lost(monkeypatch)
     store = _Store()
     reached: List[int] = []
 
     def pipeline(progress: Any, note: Any) -> GatherOutcome:
         progress("a", 1, 400, None)
         store.renew_result = False  # the next beat finds the lease gone
-        for i in range(2, 400):
-            time.sleep(0.005)
-            progress("a", i, 400, None)
-            reached.append(i)
+        assert lost.wait(30.0)  # wait for the beat, however loaded the machine
+        progress("a", 2, 400, None)  # the very next checkpoint must stop it
+        reached.append(2)
         return GatherOutcome.GATHERED
 
     with pytest.raises(LeaseLost, match="stopped without publishing"):
         _cli_run(store, pipeline)
-    assert len(reached) < 390  # stopped early, not run to completion
+    assert reached == []
     assert "publish" not in store.calls and "persist" not in store.calls
     assert store.calls[-1] == "release_lease"
     # Recorded as failed locally, but never put over the new holder's fleet record.
@@ -289,10 +303,12 @@ def test_cli_lease_lost_during_a_silent_stage_refuses_to_publish(
     monkeypatch.setattr(lifecycle, "LEASE_HEARTBEAT_S", 0.005)
     store = _Store()
 
+    lost = _when_lost(monkeypatch)
+
     def pipeline(progress: Any, note: Any) -> GatherOutcome:
         progress("a", 1, 1, None)
         store.renew_result = False
-        time.sleep(0.1)
+        assert lost.wait(30.0)  # wait for the beat, however loaded the machine
         return GatherOutcome.GATHERED
 
     with pytest.raises(LeaseLost):
@@ -348,7 +364,7 @@ def _patch_store(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
     monkeypatch.setattr(corpus_store, "get_corpus_store", lambda: store)
 
 
-def _wait_terminal(corpus: str, timeout: float = 5.0) -> Dict[str, Any]:
+def _wait_terminal(corpus: str, timeout: float = 30.0) -> Dict[str, Any]:
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = gather_runner.read_status(corpus)
@@ -356,6 +372,16 @@ def _wait_terminal(corpus: str, timeout: float = 5.0) -> Dict[str, Any]:
             return status
         time.sleep(0.01)
     raise AssertionError(f"gather for {corpus} did not finish in {timeout}s")
+
+
+def _wait_idle(corpus: str, timeout: float = 30.0) -> None:
+    """Wait until the worker has dropped `corpus` from its registry, i.e. finished
+    its cleanup after the terminal status. Waits on the registry condition the
+    worker notifies, not on a poll."""
+    with gather_runner._registry_cond:
+        assert gather_runner._registry_cond.wait_for(
+            lambda: corpus not in gather_runner._jobs, timeout=timeout
+        ), f"worker for {corpus} never finished its cleanup"
 
 
 @pytest.mark.usefixtures("gather_in_process")
@@ -427,7 +453,7 @@ def test_runner_user_cancel_is_still_cancelled_not_lease_lost(
 
     def run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
         progress("a", 1, 3)
-        gate.wait(5.0)
+        gate.wait(30.0)
         progress("b", 2, 3)
         return GatherOutcome.GATHERED
 
@@ -437,6 +463,194 @@ def test_runner_user_cancel_is_still_cancelled_not_lease_lost(
     gate.set()
     assert _wait_terminal("tls")["state"] == "cancelled"
     assert "publish" not in store.calls
+
+
+@pytest.mark.usefixtures("gather_in_process")
+def test_stop_cannot_overwrite_the_terminal_status_the_worker_wrote(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """request_stop used to write back the status record it had read, after
+    setting the cancel event. A worker that saw the event and finished first had
+    its terminal `cancelled` record replaced by that stale `queued` copy, which
+    `read_status` then relabels `interrupted`: a cancel that never reached a
+    terminal state. Hold the caller's write until the worker's terminal write has
+    landed, which makes the interleaving deterministic."""
+    store = _Store()
+    _patch_store(monkeypatch, store)
+    gate, terminal = threading.Event(), threading.Event()
+    real_write = gather_runner._write_status
+    caller = threading.current_thread()
+
+    def write(st: Any, status: Dict[str, Any], **kw: Any) -> None:
+        stale = status.get("state") in ("queued", "running") and status.get("cancel_requested")
+        if threading.current_thread() is caller and stale:
+            gate.set()  # let the worker run on to its cancel checkpoint ...
+            terminal.wait(10.0)  # ... and finish, before this stale write lands
+        real_write(st, status, **kw)
+        if status.get("state") in ("done", "failed", "cancelled"):
+            terminal.set()
+
+    def run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
+        progress("a", 1, 3)
+        gate.wait(10.0)
+        progress("b", 2, 3)
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(gather_runner, "_write_status", write)
+    monkeypatch.setattr(sequencer, "run_gather", run)
+    started = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    assert gather_runner.request_stop("tls", started["cancel_token"])["stopped"]
+    gate.set()
+    assert terminal.wait(10.0)
+    _wait_idle("tls")
+    status = gather_runner.read_status("tls")
+    assert status is not None and status["state"] == "cancelled"
+    assert status["cancel_requested"] is True
+
+
+@pytest.mark.usefixtures("gather_in_process")
+def test_stop_is_acknowledged_by_gather_status_without_being_written(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop, then ask the tool: the stop must show as pending although the
+    request wrote nothing (the worker owns the record), and must not outlive its
+    job -- not on the terminal record, and not on the next gather of the same
+    corpus. Real runner, real tools, records written by the real worker."""
+    import json
+
+    from ietf_llm.mcp import gather as gather_tools
+
+    store = _Store()
+    _patch_store(monkeypatch, store)
+    holding = [threading.Event(), threading.Event()]  # at the gate, per run
+    gates = [threading.Event(), threading.Event()]
+    runs: List[int] = []
+
+    def run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
+        n = len(runs)
+        runs.append(1)
+        progress("a", 1, 3)
+        holding[n].set()
+        gates[n].wait(30.0)
+        progress("b", 2, 3)
+        return GatherOutcome.GATHERED
+
+    def stored() -> Dict[str, Any]:
+        with open(lifecycle.status_path("tls"), encoding="utf-8") as handle:
+            return dict(json.load(handle))
+
+    monkeypatch.setattr(sequencer, "run_gather", run)
+    try:
+        started = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+        assert holding[0].wait(30.0)
+        assert "stop requested" not in gather_tools.tool_gather_status("tls")
+
+        reply = gather_tools.tool_stop_gather("tls", started["cancel_token"])
+        assert "Requested stop" in reply
+        shown = gather_tools.tool_gather_status("tls")
+        assert "running" in shown and "stop requested" in shown
+        # An overlay on read: nothing was written for the request itself.
+        assert not stored().get("cancel_requested")
+
+        gates[0].set()
+        assert _wait_terminal("tls")["state"] == "cancelled"
+        _wait_idle("tls")
+        # The terminal record is the worker's own, and reads as a finished stop,
+        # not as a stop still pending.
+        assert stored()["state"] == "cancelled" and stored()["cancel_requested"] is True
+        assert "stopped on request" in gather_tools.tool_gather_status("tls")
+
+        # The next gather of the same corpus starts clean.
+        again = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
+        assert again["started"], again
+        assert holding[1].wait(30.0)
+        shown = gather_tools.tool_gather_status("tls")
+        assert "running" in shown and "stop requested" not in shown
+        assert not gather_runner.read_status("tls").get("cancel_requested")
+    finally:
+        # A failed assertion must not leave a worker holding the corpus, which
+        # would fail the next test too.
+        for gate in gates:
+            gate.set()
+        _wait_idle("tls")
+
+
+def test_status_read_does_not_wait_behind_start_holding_the_registry_lock(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`start` holds the registry lock across the lease acquisition, a store round
+    trip on the cloud backend. A status read of another in-flight corpus must not
+    queue behind it."""
+
+    class _Slow(_Store):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_acquire = threading.Event()
+            self.release = threading.Event()
+
+        def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+            self.in_acquire.set()
+            assert self.release.wait(30.0)
+            return True
+
+        def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
+            if corpus == "quic":  # in flight on another job, per the fleet record
+                return {"corpus": corpus, "state": "running"}
+            return None
+
+    store = _Slow()
+    _patch_store(monkeypatch, store)
+    monkeypatch.setattr(sequencer, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
+    starter = threading.Thread(
+        target=gather_runner.start, args=(gather_runner.GatherSpec(corpus="tls"),)
+    )
+    results: List[Any] = []
+    reader = threading.Thread(
+        target=lambda: results.append(gather_runner.read_status("quic"))
+    )
+    try:
+        starter.start()
+        assert store.in_acquire.wait(30.0)  # start() now holds the registry lock
+        reader.start()
+        reader.join(timeout=10.0)
+        assert not reader.is_alive(), "read_status queued behind start()"
+        assert results and results[0]["state"] == "running"
+    finally:
+        store.release.set()
+        starter.join(timeout=30.0)
+        reader.join(timeout=30.0)
+        _wait_idle("tls")
+
+
+def test_stop_for_a_job_on_another_host_writes_the_flag_only_to_a_live_record(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No local event: the published flag is the only channel. It is written
+    over the record as it is now, and not at all once that has gone terminal."""
+
+    class _Fleet(_Store):
+        def __init__(self, reads: List[str]) -> None:
+            super().__init__()
+            self.reads = reads
+
+        def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
+            state = self.reads.pop(0) if len(self.reads) > 1 else self.reads[0]
+            return {
+                "corpus": corpus,
+                "state": state,
+                "cancel_token_sha256": gather_runner._hash_token("tok"),
+            }
+
+    live = _Fleet(["running"])
+    _patch_store(monkeypatch, live)
+    assert gather_runner.request_stop("tls", "tok")["stopped"]
+    assert [s["cancel_requested"] for s in live.statuses] == [True]
+
+    # The job finishes between the check and the write: leave the record alone.
+    racing = _Fleet(["running", "cancelled"])
+    _patch_store(monkeypatch, racing)
+    assert gather_runner.request_stop("tls", "tok")["stopped"]
+    assert racing.statuses == []
 
 
 @pytest.mark.usefixtures("gather_in_process")
@@ -542,9 +756,9 @@ def test_runner_heartbeat_loop_survives_an_exception(
     stop = threading.Event()
     thread = threading.Thread(target=gather_runner._heartbeat_loop, args=("me", stop))
     thread.start()
-    deadline = time.time() + 2.0
+    deadline = time.time() + 30.0
     while len(beats) < 3 and time.time() < deadline:
         time.sleep(0.005)
     assert thread.is_alive() and len(beats) >= 3
     stop.set()
-    thread.join(timeout=1.0)
+    thread.join(timeout=10.0)

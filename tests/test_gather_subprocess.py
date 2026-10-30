@@ -295,7 +295,7 @@ def test_gather_status_error_names_what_the_child_hit(
     monkeypatch.setenv("FAKE_ERROR", "no route to datatracker")
 
     assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
-    deadline = time.time() + 10
+    deadline = time.time() + 30
     status = gather_runner.read_status("tls")
     while time.time() < deadline and (
         status is None or status.get("state") not in ("done", "failed")
@@ -333,7 +333,7 @@ def test_lost_lease_terminates_a_silent_child_without_publishing(
     monkeypatch.setenv("FAKE_SLEEP", "1")  # the child would otherwise run 30s
 
     assert gather_runner.start(GatherSpec(corpus="tls"))["started"]
-    deadline = time.time() + 10
+    deadline = time.time() + 30
     while time.time() < deadline and "tls" not in gather_pipeline._children:
         time.sleep(0.01)
     store.renew = False
