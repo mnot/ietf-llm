@@ -1,6 +1,6 @@
 # Model backends
 
-**This document is for:** configuring the two model backends — the embedding model behind semantic
+**This document is for:** configuring the model backends — the embedding model behind semantic
 search and the optional summariser — on-device or against a remote OpenAI-compatible endpoint. Back
 to the [docs index](README.md).
 
@@ -31,7 +31,8 @@ a remote endpoint.
 
 **Device.** Embedding runs on the CPU, or on CUDA when it is available. MPS (the Apple Silicon GPU)
 is not used by default, because PyTorch's MPS allocator uses several times the memory the CPU does
-when indexing a corpus. Set `IETF_LLM_EMBED_DEVICE` to `cpu`, `mps` or `cuda` to override.
+when indexing a corpus (one modest corpus reached about 11 GB, against 1–2 GB on CPU). Set
+`IETF_LLM_EMBED_DEVICE` to `cpu`, `mps` or `cuda` to override.
 
 ### Remote embedding endpoint
 

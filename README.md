@@ -46,9 +46,11 @@ gathered into one queryable corpus, an LLM can help you:
 
 ## What you can ask
 
-The RFC, chartered-group and norms tools work without a gather; the rest read a corpus you've
-gathered. `draft_status`, `review_record` and `meeting_schedule` also look up current state on the
-Datatracker.
+The norms tools need nothing gathered. The RFC and chartered-group tools need the series data that
+`ietf-llm --init` or any gather installs; the rest read a corpus you've gathered. `draft_status`,
+`review_record` and `meeting_schedule` also look up current state on the Datatracker. The full tool
+list is served to the client with the server's
+[instructions](https://github.com/mnot/ietf-llm/blob/main/ietf_llm/data/mcp-instructions.md).
 
 - **Orientation** — what's gathered, what a group is doing, who's active, what's open.
 - **Chartered groups and RFCs** — which group or RFC covers a topic; charters, milestones, history,
@@ -72,7 +74,7 @@ Datatracker.
   Enterprise.
 
 Every mode reads a corpus you first [gather](https://github.com/mnot/ietf-llm/blob/main/docs/gathering.md) with `ietf-llm <corpus>`. The full
-documentation listing is in [docs/README.md](docs/README.md).
+documentation listing is in [docs/README.md](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
 
 > **Gathering reaches the network.** To make a first gather fast, `ietf-llm` pulls a prebuilt
 > snapshot of covered corpora from the public [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at

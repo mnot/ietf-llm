@@ -236,7 +236,8 @@ client's JSON config.
 - `IETF_LLM_TOOL_TIMEOUT` — the per-call deadline in seconds (default `120`; `0` disables), so a
   stuck call fails with a clear message before the client's own timeout.
 - `IETF_LLM_GATHER_MAX_WAIT` — how long `start_gather` and `gather_status` block, in seconds
-  (default `10`). A call outstanding much longer degrades some clients. If the client turns choppy or stops responding during a gather, lower this, or set
-  `0` so both tools return immediately and the model polls `gather_status`.
+  (default `10`). A call outstanding much longer degrades some clients. If the client turns choppy
+  or stops responding during a gather, lower this, or set `0` so both tools return immediately and
+  the model polls `gather_status`.
 
 The full list of server variables is in [Running the MCP server over HTTP](mcp-server.md#configuration-reference).

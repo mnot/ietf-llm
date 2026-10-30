@@ -106,8 +106,8 @@ fleet/routing/ , fleet/gather-cache/ , fleet/catalog/    shared across corpora
   `arn:aws:s3:::bucket/prefix/*`, plus `s3:ListBucket` on `arn:aws:s3:::bucket` (conditioned on
   `s3:prefix` = `prefix/*` if the role shares the bucket). R2 and MinIO need the equivalents.
 - **Scratch** in `IETF_LLM_SCRATCH_DIR`, where a replica materialises the versions it serves
-  (superseded ones are reaped). Size it for about twice the versions you actively read per corpus;
-  on tmpfs it is RAM.
+  (superseded ones are reaped). Size it for about twice the combined size of the corpora a replica
+  reads, since it briefly holds the old and new version of each; on tmpfs it is RAM.
 - **No bucket lifecycle rule.** Each publish deletes older versions after the flip (keeping the
   current one plus `IETF_LLM_RETAIN_VERSIONS - 1`) and any failed-publish orphans. Don't add an
   age-based expiry rule: it would delete the blobs of a current version that hasn't been
@@ -125,13 +125,11 @@ fleet/routing/ , fleet/gather-cache/ , fleet/catalog/    shared across corpora
 | `IETF_LLM_RETAIN_VERSIONS` | published versions kept when reaping (default `2`, floor `1`) | — |
 | `IETF_LLM_S3_CONCURRENCY` | parallel object operations and boto3 pool size (default `16`) | — |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | gathers running at once, per host and fleet-wide (default `3`) | — |
-| `IETF_LLM_HTTP_MAX_PER_HOST` | gather HTTP requests in flight per host, datatracker excluded (default `6`) | — |
-| `IETF_LLM_HTTP_MAX_DATATRACKER` | gather HTTP requests in flight to datatracker (default `2`) | — |
 | `IETF_LLM_RECORD_ACCESS` | `off` stops recording read access (default on) | — |
 
 The store settings other than the endpoint can also go in the global `config.json` (`store_backend`,
 `store_url`, `scratch_dir`, `resolve_ttl`, `retain_versions`, `gather_max_inflight`); the
-environment wins. The `IETF_LLM_HTTP_MAX_*` caps, the endpoint and credentials are environment-only.
+environment wins. The endpoint and credentials are environment-only.
 The HTTP serve path validates all this at boot and refuses to start if `cloud` is under-configured
 ([mcp-server.md](mcp-server.md#boot-time-config-validation)).
 
@@ -157,11 +155,10 @@ and datatracker identity maps, the `find_efforts` effort catalog, and the cached
 restores them first and uploads them afterwards; nothing is configured, and `--clear-cache` deletes
 the stored copies too.
 
-A failed sync costs a cold rebuild, except that stored mailing-list mail the store errors on
-fetching fails the gather before any stage runs (publishing without it would drop threads). The
-chartered-group mirror (`_groups/`) isn't synced: on cloud its refresh is skipped,
-`get_group_info` and `search_groups` report "not gathered yet", and `find_efforts` uses the
-active-only catalog.
+A failed sync costs a cold rebuild, except for stored mailing-list mail
+([below](#failures-and-recovery)). The chartered-group mirror (`_groups/`) isn't synced: on cloud
+its refresh is skipped, `get_group_info` and `search_groups` report "not gathered yet", and
+`find_efforts` uses the active-only catalog.
 
 ### Failures and recovery
 
@@ -170,8 +167,13 @@ active-only catalog.
 - **A gatherer died.** `gather_status` shows `interrupted` once its lease lapses, up to an hour after
   the last renewal. Re-run the gather then; the previous version stayed current.
 - **Lease lost mid-gather** (log: *lost the lease … stopping without publishing*): a renewal was
-  refused, failed three times running, or went unrenewed for three quarters of the TTL. Nothing is
-  published; re-run, and check store reachability if it recurs.
+  refused, failed three times running, or went unrenewed for three quarters of the TTL. The gather
+  stops at its next checkpoint, publishes and persists nothing, and records `failed` locally
+  without overwriting the new holder's status. Re-run, and check store reachability if it recurs.
+- **Gather fails before any stage** (*GatherCacheRestoreError*): stored mailing-list mail could not
+  be fetched or read from the bucket, and publishing without it would drop threads. Nothing is
+  published; re-run once the bucket is reachable. Any other cache restore or persist failure only
+  costs a cold rebuild.
 - **Publish refused** (*nothing published*): the lease was taken over, or the pointer moved, during
   the upload. Re-run; the refused upload removes its own staged prefix.
 - **Credential errors:** check the credential chain and that the policy grants every right above.

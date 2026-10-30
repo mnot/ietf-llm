@@ -27,4 +27,4 @@ For an introduction to ietf-llm, see the [main README](../README.md).
 ## Contributing
 
 - **[Architecture](architecture.md)** — the overview, corpus kinds, cache and config layout, data
-  flow, and a map of the packages.
+  flow, the operating rules for the network and the cache, and a map of the packages.

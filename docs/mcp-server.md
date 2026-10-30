@@ -61,10 +61,9 @@ scrape.
   backend. See [Storage](storage.md), including its notes on tmpfs indexes and read-only mounts.
 - **Gather on a write node** (`ietf-llm <name>`, with a writable `IETF_LLM_CACHE_DIR`); the server
   only reads, unless [in-session gather](#in-session-gather) is enabled.
-- **Run `ietf-llm --init` on the write side.** The RFC tools belong to no corpus and have no data
-  until it is installed ([why, and what it fetches](gathering.md)). `--init` installs it into the
-  `IETF_LLM_CACHE_DIR` the server reads, then exits. It needs a writable cache, so run it before the
-  mount is sealed or against the cache you then publish.
+- **Run `ietf-llm --init` on the write side** ([what it fetches](gathering.md)) to install the
+  data the RFC tools need into the `IETF_LLM_CACHE_DIR` the server reads. It needs a writable
+  cache, so run it before the mount is sealed or against the cache you then publish.
 
 ## Deployment contract
 
@@ -78,8 +77,9 @@ limiting and quota.
 - **No rate limiting.** Only the per-call deadline and the `grep_corpus` scan pool (see
   [Limits](#limits)) bound load. One client can saturate CPU, or hold every scan slot and keep
   `grep_corpus` saturated; other tools are unaffected.
-- **No quota.** `search_corpus`, `read_topic`, `search_groups` and `which_corpus` each make a metered
-  `/v1/embeddings` call, with no budget cap, circuit breaker or query-embedding cache.
+- **No quota.** Each tool that embeds its query (listed under
+  [degraded mode](#cache-freshness-and-degraded-mode)) makes a metered `/v1/embeddings` call, with
+  no budget cap, circuit breaker or query-embedding cache.
 - **No memory limit on regex scans** (see [Sizing the container](#sizing-the-container)).
 
 ## Configuration reference
@@ -102,19 +102,22 @@ Variables the serve path reads. Storage and embedding variables are in [Storage]
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds; `0` disables | `120` |
 | `IETF_LLM_SCAN_CONCURRENCY` | worker slots for `grep_corpus` | `4` |
 | `IETF_LLM_ROUTING_MIN_SCORE` | `which_corpus` abstention floor; recalibrate with `scripts/calibrate_routing.py` after changing the embedding model | `0.30` |
+| `IETF_LLM_GROUPS_MIN_SCORE` | similarity floor for charter matches in `search_groups` and `find_efforts`; recalibrate after changing the embedding model | `0.62` |
 | `IETF_LLM_ENABLE_GATHER` | register the gather tools and live Datatracker lookups; overrides the transport default | on for stdio, off for HTTP |
-| `IETF_LLM_GATHER_MAX_INFLIGHT` | gathers at once, per host and (cloud) fleet-wide | `3` |
+| `IETF_LLM_GATHER_MAX_INFLIGHT` | gathers at once, per host and (cloud) fleet-wide ([Storage](storage.md)) | `3` |
 | `IETF_LLM_GATHER_QUEUE_MAX` | queued plus running gathers per host before `start_gather` is refused | `16` |
 | `IETF_LLM_GATHER_MAX_WAIT` | seconds `start_gather` / `gather_status` block; `0` never blocks | `10` |
 | `IETF_LLM_GATHER_MIN_INTERVAL` | hours within which a corpus counts as fresh and is not re-gathered; `0` disables | `6` |
-| `IETF_LLM_HTTP_MAX_DATATRACKER` | gather requests in flight to datatracker | `2` |
-| `IETF_LLM_HTTP_MAX_PER_HOST` | gather requests in flight to each other host | `6` |
+| `IETF_LLM_HTTP_MAX_DATATRACKER` | gather requests in flight to datatracker, across all gathers in the process | `2` |
+| `IETF_LLM_HTTP_MAX_PER_HOST` | gather requests in flight to each other host, across all gathers in the process | `6` |
 
 **Sessions.** The transport is stateless by default: no `Mcp-Session-Id` state is kept, so any
 replica behind a load balancer can answer any request. `IETF_LLM_MCP_STATELESS=0` selects stateful
 sessions, which need session affinity. The server speaks the 2026-07-28 MCP revision (always
 stateless) and still answers `initialize` for older clients; a fronting proxy must pass the
-`Mcp-Method` and `Mcp-Name` headers that revision adds.
+`Mcp-Method` and `Mcp-Name` headers that revision adds. Stateful mode takes the MCP SDK defaults:
+sessions idle out after 30 minutes, at most 10,000 are held, and a request body over 4 MiB gets a
+`413`.
 
 **Host / Origin.** With `IETF_LLM_MCP_ALLOWED_HOSTS` unset the server does no `Host` validation and
 relies on the proxy. Set it when exposing the server directly; a request whose `Host` is not listed
@@ -191,20 +194,21 @@ adds gather progress notes. `IETF_LLM_DEBUG_LOG=1` writes per-request timing to 
 
 ## Sizing the container
 
-No baseline figure is given here; measure resident size with your corpora loaded, then add:
+Measure resident size with your corpora loaded, then add:
 
 - **Index on tmpfs.** `IETF_LLM_INDEX_DIR=/dev/shm/...` counts against container memory, as does the
   cloud backend's scratch directory when it is on tmpfs (see [Storage](storage.md)).
 - **Regex scans.** The scan child has no memory limit; one pathological pattern over one very long
   line has been seen at about 1.5 GB resident. Allow for `IETF_LLM_SCAN_CONCURRENCY` of them at once.
-- **In-session gather.** Each running gather is a child process at lowered scheduling priority;
-  allow for `IETF_LLM_GATHER_MAX_INFLIGHT` of them.
+- **In-session gather.** Each running gather is a child process at lowered scheduling priority
+  (`IETF_LLM_GATHER_NICE`, default `10`); allow for `IETF_LLM_GATHER_MAX_INFLIGHT` of them.
 - **RFC data.** About 650 MB on disk once installed ([Gathering](gathering.md)); an RFC-series
   `grep_corpus` scan reads about 400 MB of it.
 
 ## Cache freshness and degraded mode
 
-The serve process does not write the cache unless in-session gather is on. Fresh data reaches a
+The serve process writes no corpus data unless in-session gather is on (its only other writes are
+best-effort bookkeeping; see [Who writes what](architecture.md#who-writes-what)). Fresh data reaches a
 replica by gathering on the write side, then publishing the corpus tree and `embeddings.db` to the
 storage the replica reads (a shared mount, or a sync to local disk). Corpus files are written
 atomically, so a reader sees old bytes or new. Publish the index immutable, swap it atomically, and
@@ -212,9 +216,11 @@ read it with `IETF_LLM_INDEX_IMMUTABLE=1` on a read-only mount (see [Storage](st
 replica picks the change up without a restart. The cloud store backend does the publish and
 visibility steps for you, fleet-wide.
 
-When the embedding endpoint is down, `search_corpus`, `read_topic`, `search_groups` and
-`which_corpus` return an error and `find_efforts` falls back to keyword ranking. Every other tool
-keeps working; `grep_corpus` reads files rather than the index, so exact-string search survives.
+When the embedding endpoint is down, `search_corpus`, `search_corpora`, `read_topic`,
+`search_rfc_text` and `which_corpus` return no results or say the query could not be embedded;
+`search_groups` and `find_efforts` fall back to keyword ranking. Tools that read files or stored
+data keep working, and `grep_corpus` reads files rather than the index, so exact-string search
+survives.
 
 ## In-session gather
 
@@ -225,12 +231,12 @@ Status lives in `<corpus>/gather-status.json` and, on the cloud backend, in the 
 replica can report it. The live Datatracker lookups (`meeting_schedule`, `draft_status`) share the
 switch.
 
-These tools write and reach the network, the one exception to the server's read-only, offline
-contract. They default on for stdio and off for HTTP; `IETF_LLM_ENABLE_GATHER` overrides either way,
-and `IETF_LLM_INDEX_IMMUTABLE=1` turns the default off. On the local backend a gathered corpus is
-durable only on the box that wrote it. On the cloud backend a gather publishes a new version under a
-cross-host lease, so enabling it on a fleet is safe. On a torch-free image use a remote
-`openai-embed/...` model.
+These tools write and reach the network, the exception to the server's read-only, offline contract
+([architecture.md](architecture.md#the-one-writer-exception-in-session-gather)). They default off
+for HTTP; `IETF_LLM_ENABLE_GATHER` overrides, and `IETF_LLM_INDEX_IMMUTABLE=1` turns the default
+off. On the local backend a gathered corpus is durable only on the box that wrote it. On the cloud
+backend a gather publishes a new version under a cross-host lease, so enabling it on a fleet is
+safe. On a torch-free image use a remote `openai-embed/...` model.
 
 **Concurrency.** `IETF_LLM_GATHER_MAX_INFLIGHT` caps running gathers per host and, on the cloud
 backend, fleet-wide. Further gathers queue up to `IETF_LLM_GATHER_QUEUE_MAX`, past which
@@ -246,16 +252,14 @@ slot or status record; `--force` overrides the window. On the cloud backend a CL
 corpus lease (exiting non-zero if one is held) and shows in `gather_status`. On the local backend a
 CLI gather and an in-session gather in separate processes do not exclude each other.
 
-`IETF_LLM_HTTP_MAX_DATATRACKER` and `IETF_LLM_HTTP_MAX_PER_HOST` cap gather HTTP requests in flight
-per host across all gathers in the process; lowering them is gentler on upstreams and slower.
-
 **Scale-to-zero platforms.** A gather runs on the replica that accepted it and is durable only at
 publish. A platform that sleeps or evicts an idle instance (Cloudflare Containers' `sleepAfter` is
 one) drops the unpublished work, and the gather becomes `interrupted`. A background gather does not
 count as activity and the container cannot keep itself awake, so the deployment has to: raise the
 idle window beyond the longest gather, or renew it from the controlling runtime while `/health`
 shows `gathers_inflight` above 0, routing the renewal to the replica that owns the gather. A deploy
-or crash still loses unpublished work.
+or crash still loses unpublished work, and a first full gather of a corpus is unprotected even then:
+nothing is published to seed from and the accelerator caches are not yet persisted.
 
 ## Troubleshooting
 
@@ -264,7 +268,7 @@ or crash still loses unpublished work.
 | Exits 1 at boot | A [boot validation](#boot-time-config-validation) failure | The log names the setting. |
 | `/health` is `503`, `index_probe: failed` | A WAL `embeddings.db` on a read-only mount, or a truncated index | Set `IETF_LLM_INDEX_IMMUTABLE=1` on a read-only mount; otherwise re-publish the index. The index must be on a local POSIX filesystem, never NFS or FUSE ([Storage](storage.md)). |
 | `/health` is `200`, `index_probe: no-corpora` | No corpus gathered yet | Expected; gather on the write side. |
-| Search tools error, others work | The embedding endpoint is unreachable | Check `IETF_LLM_EMBED_BASE_URL` and the token. |
+| Search tools return nothing or say the query could not be embedded | The embedding endpoint is unreachable | Check `IETF_LLM_EMBED_BASE_URL` and the token. |
 | Replica serves stale content | The write side did not publish, or the resolve cache is stale | Compare `corpora.oldest` in `/health`. On cloud, lower `IETF_LLM_RESOLVE_TTL` and confirm the gather published; on local, confirm the sync or mount updated. |
 | `grep_corpus` replies `INCOMPLETE SCAN` | A regex outran its 20 s budget | Narrow with `file_pattern` or search a literal phrase. |
 | `start_gather` refused (queue full) | Backlog reached `IETF_LLM_GATHER_QUEUE_MAX` | Wait, or raise the cap and `IETF_LLM_GATHER_MAX_INFLIGHT` if upstreams tolerate it. |

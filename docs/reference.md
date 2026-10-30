@@ -12,7 +12,8 @@
 | `ietf-llm-search` | Semantic search over the cache | cache | stdout |
 | `ietf-llm-mcp` | Expose the cache to MCP clients | cache | stdio / HTTP (MCP) |
 
-The four are independent. The cache (`~/.cache/ietf-llm/<name>/`) is what the last three read.
+The commands are independent. The cache (`~/.cache/ietf-llm/<name>/`) is what `ietf-llm-export`,
+`ietf-llm-search` and `ietf-llm-mcp` read.
 
 ## Gather options
 
@@ -59,7 +60,8 @@ A name that is none of these and has no configured sources is rejected as a like
 - `--force` — gather even if the corpus was gathered within the last 6 hours
   (`IETF_LLM_GATHER_MIN_INTERVAL` sets the window, in hours).
 
-**Digests and search index** (the first four are [global settings](models.md#global-settings)):
+**Digests and search index** (all but `--rebuild-embeddings` are
+[global settings](models.md#global-settings)):
 
 - `--summarize` / `--summarize-model MODEL` — add LLM-generated one-liners to digests.
 - `--no-embed` / `--embed` — skip, or restore, the semantic search index that backs
@@ -104,7 +106,7 @@ A name that is none of these and has no configured sources is rejected as a like
 - `--install-skills` — install the bundled IETF skills into each supported agent harness found
   (Claude Code, Codex, Gemini CLI, opencode), overwriting existing copies, then exit.
 - `--completion SHELL` — print a completion script; see [shell completion](shell-completion.md).
-- `--quiet` / `--verbose`.
+- `--quiet` / `-q` — print only errors; `--verbose` / `-v` — detailed progress.
 
 Per-corpus settings live in `~/.config/ietf-llm/<name>/gather.json`, and tool-wide settings in
 `~/.config/ietf-llm/config.json`. To move any of these directories, see
