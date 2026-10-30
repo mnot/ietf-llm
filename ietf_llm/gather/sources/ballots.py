@@ -446,7 +446,7 @@ def _build_ballot(
                 pos_slug=pos_slug,
                 pos_label=_POSITION_LABELS.get(pos_slug, pos_slug.upper()),
                 when=when,
-                rev=str(rev) if isinstance(rev, str) and rev else None,
+                rev=rev if isinstance(rev, str) and rev else None,
                 comment=str(obj.get("comment") or "").strip(),
                 discuss=str(obj.get("discuss") or "").strip(),
             )

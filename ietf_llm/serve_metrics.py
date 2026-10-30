@@ -420,6 +420,6 @@ def _render_locked(
     lines.append("# TYPE ietf_llm_corpus_last_gathered_age_seconds gauge")
     for corpus, age in corpus_ages or ():
         lab = f'corpus="{_escape_label(corpus)}"'
-        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {int(age)}")
+        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {age}")
 
     return "\n".join(lines) + "\n"

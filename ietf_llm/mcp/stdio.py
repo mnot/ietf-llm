@@ -48,7 +48,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from io import TextIOWrapper
-from typing import Any, AsyncIterator, Optional, Tuple
+from typing import Any, AsyncGenerator, Optional, Tuple
 
 import anyio
 import anyio.lowlevel
@@ -99,11 +99,12 @@ def _increment(field: str, delta: float) -> None:
 @asynccontextmanager
 async def stdio_server_threaded_writer(
     max_queue_items: int = DEFAULT_QUEUE_MAX_ITEMS,
-) -> AsyncIterator[
+) -> AsyncGenerator[
     Tuple[
         MemoryObjectReceiveStream[SessionMessage | Exception],
         MemoryObjectSendStream[SessionMessage],
-    ]
+    ],
+    None,
 ]:
     """Drop-in replacement for `mcp.server.stdio.stdio_server`.
 

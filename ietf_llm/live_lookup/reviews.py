@@ -381,7 +381,7 @@ def fetch_review_record(
     rev = doc.get("rev")
     record = ReviewRecord(
         name=str(doc.get("name")),
-        rev=str(rev) if isinstance(rev, str) and rev else None,
+        rev=rev if isinstance(rev, str) and rev else None,
         rev_date=_revision_date(canonical, rev) or _date(doc.get("time")),
         reviews=reviews,
         positions=positions,

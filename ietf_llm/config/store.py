@@ -155,7 +155,7 @@ class CloudConfigStore(ConfigStore):
         self._cache_put(wg, scope, payload)
 
     def clear(self, wg: str) -> bool:
-        removed = bool(self._control.clear_config(wg))
+        removed = self._control.clear_config(wg)
         self._invalidate(wg)
         return removed
 

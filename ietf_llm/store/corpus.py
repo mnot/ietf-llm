@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Set, Tuple, cast
+from typing import Any, Dict, Generator, List, Mapping, Optional, Set, Tuple, cast
 
 from typing_extensions import override
 
@@ -129,7 +129,7 @@ _pin_lock = threading.Lock()
 
 
 @contextmanager
-def pin_corpus_version(corpus: str, version: str) -> Iterator[None]:
+def pin_corpus_version(corpus: str, version: str) -> Generator[None, None, None]:
     """Pin `corpus` to `version` for the duration of the block (request-scoped),
     and register it in the cross-thread in-use set the scratch reaper reads."""
     token = _pinned_versions.set({**_pinned_versions.get(), corpus: version})

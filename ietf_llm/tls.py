@@ -181,7 +181,7 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
         # platform store still applies, so this can add trust, never remove it.
         try:
             context.load_default_certs()
-        except (OSError, ssl.SSLError):
+        except OSError:  # includes ssl.SSLError
             pass  # a malformed SSL_CERT_FILE must not cost us the platform store
         if not _usable(context):
             _UNUSABLE = True

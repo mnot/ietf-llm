@@ -1370,7 +1370,7 @@ def _rank(
             Hit(
                 score=float(scores[i]),
                 file=file,
-                chunk_idx=int(chunk_idx),
+                chunk_idx=chunk_idx,
                 title=title,
                 snippet=snippet,
                 start_line=int(start_line) if start_line is not None else None,

@@ -21,7 +21,7 @@ import shutil
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator, List, Optional, Set, Tuple
+from typing import Any, Generator, List, Optional, Set, Tuple
 
 try:
     import fcntl as _fcntl
@@ -35,7 +35,7 @@ class LockHeld(Exception):
 
 
 @contextmanager
-def file_lock(lock_path: str, blocking: bool = True) -> "Iterator[None]":
+def file_lock(lock_path: str, blocking: bool = True) -> "Generator[None, None, None]":
     """Best-effort cross-process exclusive lock (flock) held for the
     `with` body. Used to serialise access to a shared resource across
     concurrent gathers — notably the single transcripts git clone, where
@@ -282,7 +282,7 @@ def _atomic_tmp_path(path: str) -> str:
 @contextmanager
 def atomic_open(
     path: str, encoding: str = "utf-8", newline: Optional[str] = None
-) -> "Iterator[Any]":
+) -> "Generator[Any, None, None]":
     """Open a text file for writing such that readers never see a
     partial result: writes go to a temp file in the same directory and
     are `os.replace`d into place (atomic on POSIX) only on clean close.
@@ -313,7 +313,7 @@ def atomic_open(
 
 
 @contextmanager
-def atomic_open_binary(path: str) -> "Iterator[Any]":
+def atomic_open_binary(path: str) -> "Generator[Any, None, None]":
     """Binary counterpart of `atomic_open`: yields a file handle opened for
     `wb` writing into a same-directory temp that is `os.replace`d into place
     only on clean close. On error (including a download that raises partway)

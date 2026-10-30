@@ -87,9 +87,10 @@ def get_credentials(
                     client_secrets_path, SCOPES
                 )
                 creds = cast(Credentials, flow.run_local_server(port=0))
-            except (GoogleAuthError, OSError, requests.RequestException) as err:
-                # OSError covers port-already-in-use and similar local
-                # binding failures from the temporary OAuth callback server.
+            except (GoogleAuthError, OSError) as err:
+                # OSError (which includes requests.RequestException) covers
+                # port-already-in-use and similar local binding failures from
+                # the temporary OAuth callback server.
                 log(
                     f"Error during OAuth flow: {type(err).__name__}: {err}",
                     verbose,

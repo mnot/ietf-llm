@@ -31,7 +31,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 
 from ..atomicio import atomic_open
 from ..config import service as service_config
@@ -232,7 +232,7 @@ def held_gather(
     owner: str,
     *,
     on_wait: Optional[Callable[[], None]] = None,
-) -> Iterator[LeaseWatch]:
+) -> Generator[LeaseWatch, None, None]:
     """Hold `corpus`'s gather lease and one fleet gather slot for the block.
 
     Takes the lease first (raising `GatherBusy` if another gatherer holds it),

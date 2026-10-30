@@ -19,7 +19,7 @@ import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
@@ -147,7 +147,7 @@ def flush_http_cache() -> None:
 
 
 @contextmanager
-def gather_http_cache(corpus: Optional[str]) -> Iterator[None]:
+def gather_http_cache(corpus: Optional[str]) -> Generator[None, None, None]:
     """Run one gather against `corpus`'s own ETag store, then flush it.
 
     The cloud gather-cache sync restores `http_cache_path(corpus)` before the

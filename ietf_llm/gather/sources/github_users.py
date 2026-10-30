@@ -203,8 +203,8 @@ def _fetch_one(  # noqa: PLR0911
         company = body.get("company")
         # Empty-string fields happen — GitHub returns "" rather than
         # null when the user clears them. Normalise to None.
-        cleaned_name = str(name).strip() if isinstance(name, str) else None
-        cleaned_company = str(company).strip() if isinstance(company, str) else None
+        cleaned_name = name.strip() if isinstance(name, str) else None
+        cleaned_company = company.strip() if isinstance(company, str) else None
         return _Outcome(
             name=cleaned_name or None,
             cacheable=True,

@@ -668,7 +668,7 @@ def pack_vector(vec: Iterable[float], codec: VectorCodec) -> bytes:
     # `bytes(...)` rather than a bare `.tobytes()`: on Python 3.11's older
     # numpy stubs the latter infers as Any, which strict mypy rejects for a
     # function declared to return bytes. The runtime value is identical.
-    return bytes(quantised.astype(np.int8).tobytes())
+    return quantised.astype(np.int8).tobytes()
 
 
 def _unpack_matrix(

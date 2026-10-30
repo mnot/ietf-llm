@@ -40,7 +40,7 @@ def choose_k(n_docs: int) -> int:
     """
     if n_docs <= 4:
         return max(1, n_docs)
-    return int(min(32, max(4, round((n_docs / 2) ** 0.5))))
+    return min(32, max(4, round((n_docs / 2) ** 0.5)))
 
 
 def _normalize_rows(

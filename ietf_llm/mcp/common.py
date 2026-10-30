@@ -9,7 +9,7 @@ import functools
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import anyio
 from anyio.lowlevel import RunVar
@@ -856,20 +856,14 @@ async def _run_offloaded(
     serve_metrics.adjust_inflight(1)
     try:
         if timeout <= 0:
-            result = cast(
-                str,
-                await anyio.to_thread.run_sync(
-                    partial, abandon_on_cancel=True, limiter=limiter
-                ),
+            result = await anyio.to_thread.run_sync(
+                partial, abandon_on_cancel=True, limiter=limiter
             )
             status = "ok"
             return result
         with anyio.move_on_after(timeout):
-            result = cast(
-                str,
-                await anyio.to_thread.run_sync(
-                    partial, abandon_on_cancel=True, limiter=limiter
-                ),
+            result = await anyio.to_thread.run_sync(
+                partial, abandon_on_cancel=True, limiter=limiter
             )
             status = "ok"
             return result

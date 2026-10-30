@@ -247,7 +247,7 @@ def _resolve_one(person_uri: str) -> Optional[DTResolved]:
     if person_body is None:
         return None
     name = person_body.get("name") or person_body.get("ascii") or None
-    cleaned_name = str(name).strip() if isinstance(name, str) else None
+    cleaned_name = name.strip() if isinstance(name, str) else None
 
     emails_body = _get_json(f"/api/v1/person/email/?person={person_id}&limit=100")
     if emails_body is None:
