@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """Draft / issue tools: draft_authors, list_drafts, get_draft,
 get_issue, draft_status, review_record."""
 
