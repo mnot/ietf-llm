@@ -73,9 +73,9 @@ def _index(wg: str = "wg") -> None:
 
 @pytest.fixture(autouse=True)
 def _stub_embedder() -> Iterable[None]:
-    embeddings._MODEL_CACHE["stub"] = _Stub()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _Stub()
     yield
-    embeddings._MODEL_CACHE.pop("stub", None)  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE.pop("stub", None)
 
 
 class _SpyStore(CloudCorpusStore):
@@ -198,16 +198,16 @@ def test_local_backend_is_unchanged(isolated_home: Path) -> None:
 
 
 def test_context_restores_state_on_exception() -> None:
-    assert storage._READS_FROM_WORKSPACE.get() is False  # pylint: disable=protected-access
+    assert storage._READS_FROM_WORKSPACE.get() is False
     with pytest.raises(RuntimeError):
         with index_reads_from_workspace():
-            assert storage._READS_FROM_WORKSPACE.get() is True  # pylint: disable=protected-access
+            assert storage._READS_FROM_WORKSPACE.get() is True
             raise RuntimeError("boom")
-    assert storage._READS_FROM_WORKSPACE.get() is False  # pylint: disable=protected-access
+    assert storage._READS_FROM_WORKSPACE.get() is False
 
 
 def test_context_nests() -> None:
-    flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
+    flag = storage._READS_FROM_WORKSPACE
     with index_reads_from_workspace():
         with index_reads_from_workspace():
             assert flag.get() is True
@@ -216,7 +216,7 @@ def test_context_nests() -> None:
 
 
 def test_context_does_not_leak_across_threads() -> None:
-    flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
+    flag = storage._READS_FROM_WORKSPACE
     inside = threading.Event()
     release = threading.Event()
     seen: List[bool] = []
@@ -237,7 +237,7 @@ def test_context_does_not_leak_across_threads() -> None:
 
 
 def test_context_does_not_leak_across_tasks() -> None:
-    flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
+    flag = storage._READS_FROM_WORKSPACE
 
     async def _scenario() -> List[bool]:
         entered = asyncio.Event()
@@ -273,7 +273,7 @@ def test_gather_one_topic_step_reads_workspace_on_cloud(
     also run inside the wrapper, so it records the flag when it is consulted."""
     _publish_v1_then_grow(isolated_home, cloud)
     _stub_pipeline(monkeypatch, (False, True))
-    flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
+    flag = storage._READS_FROM_WORKSPACE
     decision_flag: List[bool] = []
     real_has_topics = main_mod.has_topics
 
@@ -292,7 +292,7 @@ def test_gather_one_topic_step_reads_workspace_on_cloud(
     )
 
     args = main_mod.build_parser().parse_args(["wg"])
-    main_mod._gather_one(args, Verbosity.QUIET)  # pylint: disable=protected-access
+    main_mod._gather_one(args, Verbosity.QUIET)
 
     assert _n_docs_written() == 16
     assert staged_at[0] == staged_at[1], "the topic step staged the published version"
@@ -308,12 +308,12 @@ def test_topic_decision_runs_inside_the_wrapper(
     """With an unchanged index the decision consults `has_topics`; pin that
     this read happens with the workspace-read flag set."""
     _stub_pipeline(monkeypatch, (False, True))
-    flag = storage._READS_FROM_WORKSPACE  # pylint: disable=protected-access
+    flag = storage._READS_FROM_WORKSPACE
     seen: List[bool] = []
     monkeypatch.setattr(main_mod, "build_index", lambda *a, **k: False)
     monkeypatch.setattr(main_mod, "has_topics", lambda wg: seen.append(flag.get()) or True)
     monkeypatch.setattr(main_mod, "generate_topics", lambda *a, **k: seen.append(False))
     args = main_mod.build_parser().parse_args(["myorg"])
-    main_mod._gather_one(args, Verbosity.QUIET)  # pylint: disable=protected-access
+    main_mod._gather_one(args, Verbosity.QUIET)
     assert seen == [True]  # decision inside; has_topics True -> no clustering
     assert flag.get() is False

@@ -781,7 +781,7 @@ def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
     if ctype == "text/html":
         cleaned = clean_html(res.text)
         return cleaned or None
-    return str(res.text)
+    return res.text
 
 
 def _parse_meeting_date(date_str: str) -> Optional[datetime]:
@@ -793,7 +793,7 @@ def _parse_meeting_date(date_str: str) -> Optional[datetime]:
     if not date_str:
         return None
     try:
-        return datetime.strptime(date_str.split(" ")[0], "%Y-%m-%d")
+        return datetime.strptime(date_str.split(" ", 1)[0], "%Y-%m-%d")
     except (ValueError, IndexError):
         return None
 

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 @_requires_corpus
-def tool_read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def tool_read_digest(  # noqa: PLR0913, PLR0917
     wg: str,
     kind: str = "index",
     state: Optional[str] = None,
@@ -160,7 +160,7 @@ def _append_issue_bodies(wg: str, filtered_markdown: str) -> str:
 
 def register(server: "MCPServer") -> None:
     @server.tool()
-    async def read_digest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def read_digest(  # noqa: PLR0913, PLR0917
         corpus: str,
         kind: str = "index",
         state: Optional[str] = None,

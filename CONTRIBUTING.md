@@ -11,8 +11,8 @@ issues list, e-mail or other means), you are licensing your contribution under t
 ## Coding Conventions
 
 Python is formatted with [black](https://pypi.org/project/black/) (`make tidy`, which covers
-`ietf_llm/` but not `tests/`). All functions and methods need type annotations; the pylint and mypy
-settings are in `.pylintrc` and `mypy.ini`.
+`ietf_llm/` but not `tests/`). All functions and methods need type annotations; the [Ruff](https://docs.astral.sh/ruff/) and [Pyrefly](https://pyrefly.org/)
+settings are in `ruff.toml` and `pyrefly.toml`.
 
 ## Setting Up a Development Environment
 
@@ -23,8 +23,8 @@ Useful targets:
 
 * `make shell` — a shell in the virtual environment
 * `make python` — an interactive interpreter in the virtual environment
-* `make lint` — run pylint
-* `make typecheck` — run mypy
+* `make lint` — run ruff
+* `make typecheck` — run Pyrefly
 * `make tidy` — format the source
 * `make test` — run the tests
 

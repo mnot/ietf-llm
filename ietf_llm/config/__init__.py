@@ -125,7 +125,7 @@ def merge_global(
             setattr(args, name, default)
             sources[name] = "default"
     save_global(persisted)
-    setattr(args, "_global_sources", sources)
+    args._global_sources = sources
 
 
 def merge(

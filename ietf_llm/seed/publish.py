@@ -86,13 +86,11 @@ def _refresh_groups() -> None:
     writer the housekeeping step runs, without the per-run charter cap, so a
     published snapshot is complete and no client has to trickle it in."""
     # Lazy: the gather path stays off the seed module's import.
-    # pylint: disable=import-outside-toplevel
-    from ..gather.sequencer import embed_settings
-    from ..gather.sources.groups import ensure_groups_index
-    from ..log import Verbosity
-    from ..singletons import groups as group_mirror
+    from ..gather.sequencer import embed_settings  # noqa: PLC0415
+    from ..gather.sources.groups import ensure_groups_index  # noqa: PLC0415
+    from ..log import Verbosity  # noqa: PLC0415
+    from ..singletons import groups as group_mirror  # noqa: PLC0415
 
-    # pylint: enable=import-outside-toplevel
     model, embed = embed_settings()
     ensure_groups_index(
         Verbosity.STATUS,
@@ -111,8 +109,7 @@ def _refresh_groups() -> None:
 def _default_gather(corpus: str, months: int) -> None:
     """Run an incremental gather of `corpus` via the normal CLI, so the publisher
     is not a second cache writer. Raises `PublishError` on a non-zero exit."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.groups import GROUPS_CORPUS
+    from ..singletons.groups import GROUPS_CORPUS  # noqa: PLC0415
 
     if corpus == GROUPS_CORPUS:
         _refresh_groups()
@@ -261,7 +258,7 @@ def _rm(path: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def publish_store(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branches
+def publish_store(
     store_dir: str,
     *,
     process: Optional[List[str]] = None,
@@ -346,7 +343,7 @@ def publish_store(  # pylint: disable=too-many-arguments,too-many-locals,too-man
     return report
 
 
-def _publish_one(  # pylint: disable=too-many-arguments,too-many-return-statements
+def _publish_one(  # noqa: PLR0911
     store_dir: str,
     corpus: str,
     spec: MemberSpec,
@@ -435,8 +432,7 @@ def _source_for(corpus: str) -> str:
     wrong. A name that is not a known external corpus is gathered, which is
     every other member.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..mcp.rfc_text import RFC_CORPUS
+    from ..mcp.rfc_text import RFC_CORPUS  # noqa: PLC0415
 
     return SOURCE_RFC_INDEX if corpus == RFC_CORPUS else SOURCE_GATHER
 
@@ -462,21 +458,19 @@ def _refresh_external(
         return None
     # Imported here so the ordinary publish path does not pay for the network
     # stack this pulls in, and so `seed` stays importable without it.
-    # pylint: disable-next=import-outside-toplevel
-    from ..rfcindex.publish import build_from_upstream
+    from ..rfcindex.publish import build_from_upstream  # noqa: PLC0415
 
     if dry_run:
         return "dry-run"
     try:
         built = build_from_upstream(db_path, force=force)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         report.skipped.append((corpus, f"upstream build failed: {err}"))
         return None
     if built is None:
         report.skipped.append((corpus, "no RFC index published upstream yet"))
         return None
-    # pylint: disable-next=import-outside-toplevel
-    from ..rfcindex.build import assembly_version
+    from ..rfcindex.build import assembly_version  # noqa: PLC0415
 
     return assembly_version(built.release.build)
 

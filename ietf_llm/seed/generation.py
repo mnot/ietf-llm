@@ -33,8 +33,7 @@ def generation() -> str:
     earlier generations and are simply no longer pointed at.
     """
     # Local: see the module docstring on the cycle this avoids.
-    # pylint: disable-next=import-outside-toplevel
-    from ..embeddings.storage import _SCHEMA_VERSION
+    from ..embeddings.storage import _SCHEMA_VERSION  # noqa: PLC0415
 
     return f"v{_SCHEMA_VERSION}"
 

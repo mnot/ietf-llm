@@ -57,7 +57,7 @@ from ...atomicio import write_if_changed
 from ...digest.events import Event
 from ...log import LogLevel, Verbosity, log
 from ...paths import ballot_path, ballots_dir
-from .datatracker import (  # pylint: disable=protected-access
+from .datatracker import (
     _get_json,
     fetch_person_names,
 )
@@ -446,7 +446,7 @@ def _build_ballot(
                 pos_slug=pos_slug,
                 pos_label=_POSITION_LABELS.get(pos_slug, pos_slug.upper()),
                 when=when,
-                rev=str(rev) if isinstance(rev, str) and rev else None,
+                rev=rev if isinstance(rev, str) and rev else None,
                 comment=str(obj.get("comment") or "").strip(),
                 discuss=str(obj.get("discuss") or "").strip(),
             )

@@ -204,10 +204,10 @@ def _stub_fetch(monkeypatch, isolated_home):
         seen.append(url)
         return _canned(url)
 
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
     yield seen
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
 
 
 def _record() -> str:
@@ -306,7 +306,7 @@ def test_latest_position_per_balloter_wins(monkeypatch, urls) -> None:
             revised if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "| -07 | Yes | Mike Bishop | 2026-08-03 |" in out
     assert "DISCUSS" not in out
@@ -327,7 +327,7 @@ def test_unposted_positions_are_dropped(monkeypatch, urls) -> None:
             empty if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "**Ballot:** not opened." in out
     assert "Gorry Fairhurst" not in out
@@ -351,7 +351,7 @@ def test_standing_discuss_points_at_the_gathered_ballot_file(
             held if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "| -08 | **DISCUSS** | Gorry Fairhurst | 2026-08-12 |" in out
     assert "ballots/draft-ietf-httpbis-no-vary-search.md" in out
@@ -366,7 +366,7 @@ def _stub_positions(monkeypatch, objects: List[Dict[str, Any]]) -> None:
             body if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
 
 
 def test_cleared_position_does_not_stand_in_for_an_examination(
@@ -409,8 +409,8 @@ def test_iesg_position_vocabulary_matches_datatracker(urls) -> None:
     # IAB / IRSG ballots use. A slug missing from the map leaks in upper case
     # through the fallback, so the guard is that none of them do.
     for slug in ("block", "concern", "moretime", "notready", "abstain"):
-        assert slug in live_lookup.reviews._POSITION_LABELS  # pylint: disable=protected-access
-        assert live_lookup.reviews._POSITION_LABELS[slug] != slug.upper()  # pylint: disable=protected-access
+        assert slug in live_lookup.reviews._POSITION_LABELS
+        assert live_lookup.reviews._POSITION_LABELS[slug] != slug.upper()
 
 
 # --- what the record does not know ------------------------------------------
@@ -426,7 +426,7 @@ def test_a_failed_fetch_is_not_rendered_as_an_empty_record(monkeypatch, urls) ->
         return _canned(url)
 
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "Datatracker did not answer for the reviews and ballot" in out
     assert "this record is incomplete" in out
@@ -453,7 +453,7 @@ def test_never_reviewed_draft_gets_no_gap_headline(monkeypatch, urls) -> None:
             else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "Nothing in this record has examined" not in out
     assert "- **Reviews:** none requested." in out
@@ -483,7 +483,7 @@ def test_query_values_are_escaped(monkeypatch, urls) -> None:
         return plussed if "/review/reviewassignment/" in url else _canned(url)
 
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     _record()
     email_urls = [url for url in urls if "/person/email/?" in url]
     assert email_urls

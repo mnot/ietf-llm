@@ -227,7 +227,7 @@ def _load() -> Optional[RfcData]:
     re-gather. The stat comes before the read, so a file replaced in between
     only makes the next call reload.
     """
-    global _CACHE  # pylint: disable=global-statement
+    global _CACHE  # noqa: PLW0603
     try:
         stats = [os.stat(_rfc_file(name)) for name in RFC_FILES]
         # Inode and size too: an atomic replace within one mtime tick is
@@ -372,7 +372,7 @@ def _facets(rfc: Dict[str, Any]) -> str:
     return " · ".join(b for b in bits if b)
 
 
-def render_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def render_search(
     query: str,
     status: Optional[str] = None,
     stream: Optional[str] = None,

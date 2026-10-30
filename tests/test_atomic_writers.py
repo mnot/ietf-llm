@@ -197,7 +197,7 @@ def test_pdf_extract_one_failing_mid_write_keeps_old_txt(
     # A lone surrogate fails the UTF-8 encode part-way through the write.
     monkeypatch.setattr(pdf_extract, "extract_pdf_text", lambda _p: "a \ud800 b\n")
     with pytest.raises(UnicodeEncodeError):
-        pdf_extract._extract_one(  # pylint: disable=protected-access
+        pdf_extract._extract_one(
             str(pdf), "slides.pdf", str(txt), str(tmp_path)
         )
     assert txt.read_text() == "OLD TEXT"
@@ -236,7 +236,7 @@ def test_pdf_stale_txt_whose_header_is_rewritten_is_still_reextracted(
     monkeypatch.setattr(pdf_extract, "extract_pdf_text", lambda _p: "a \ud800 b\n")
     extract_all_pdfs(str(tmp_path))
     assert not txt.exists()  # nothing left for a rewrite to bump
-    assert pdf_extract._needs_extraction(  # pylint: disable=protected-access
+    assert pdf_extract._needs_extraction(
         str(pdf), str(txt)
     )
 
@@ -266,7 +266,7 @@ def test_pdf_needs_extraction_when_txt_cannot_be_statted(tmp_path: Path) -> None
     pdf = _slide(tmp_path)
     dangling = tmp_path / "slides.pdf.txt"
     os.symlink(tmp_path / "nowhere", dangling)
-    assert pdf_extract._needs_extraction(  # pylint: disable=protected-access
+    assert pdf_extract._needs_extraction(
         str(pdf), str(dangling)
     )
 
@@ -330,7 +330,7 @@ def test_gather_sweep_reaps_old_temps_in_every_dir_a_gather_writes(
     other = root / "other" / "files"  # another corpus: not this gather's to touch
     other.mkdir(parents=True)
     foreign = _old(_leaked_path(other, "foreign"))
-    sequencer._sweep_leaked_temps("wg", Verbosity.QUIET)  # pylint: disable=protected-access
+    sequencer._sweep_leaked_temps("wg", Verbosity.QUIET)
     assert not [p for p in old if p.exists()]
     assert all(p.exists() for p in fresh)
     assert foreign.exists()
@@ -343,13 +343,13 @@ def test_gather_sweep_failure_is_never_fatal(
         raise RuntimeError("sweep exploded")
 
     monkeypatch.setattr(sequencer, "sweep_stale_tmp", boom)
-    sequencer._sweep_leaked_temps("wg", Verbosity.QUIET)  # pylint: disable=protected-access
+    sequencer._sweep_leaked_temps("wg", Verbosity.QUIET)
 
 
 def test_gather_one_sweeps_after_seeding(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm.gather.cli import build_parser  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.cli import build_parser
 
     class _Stop(Exception):
         pass
@@ -364,14 +364,14 @@ def test_gather_one_sweeps_after_seeding(
     monkeypatch.setattr(sequencer, "_resolve_corpus_shape", lambda *a, **k: (False, True))
     monkeypatch.setattr(sequencer, "_sweep_leaked_temps", sweep)
     with pytest.raises(_Stop):
-        sequencer._gather_one(  # pylint: disable=protected-access
+        sequencer._gather_one(
             build_parser().parse_args(["tls"]), Verbosity.QUIET
         )
     assert calls == ["seed", "sweep:tls"]
 
 
 def test_the_sweep_is_only_reachable_from_the_gather_path() -> None:
-    import ietf_llm  # pylint: disable=import-outside-toplevel
+    import ietf_llm
 
     package = Path(ietf_llm.__file__).parent
     users = sorted(

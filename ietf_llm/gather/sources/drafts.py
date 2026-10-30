@@ -247,7 +247,7 @@ def _download_one(url: str, filepath: str, verbose: Verbosity) -> Optional[str]:
     if not res:
         return None
     try:
-        text = str(res.text)
+        text = res.text
         if not text:
             # A 2xx with an empty body is not a document; writing it would
             # leave a zero-length file that `_is_cached` re-fetches every gather.

@@ -388,9 +388,9 @@ def test_write_ballot_files_wipes_stale(isolated_home: Path) -> None:
     # window) must be removed; otherwise the consumer sees misleading
     # currently-active content.
     cache = get_wg_file_cache_dir("wg")
-    from ietf_llm.paths import ballots_dir  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import ballots_dir
     out_dir = ballots_dir(cache)
-    import os  # pylint: disable=import-outside-toplevel
+    import os
     os.makedirs(out_dir, exist_ok=True)
     stale = os.path.join(out_dir, "draft-stale.md")
     with open(stale, "w", encoding="utf-8") as fh:

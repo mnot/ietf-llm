@@ -52,7 +52,7 @@ def _no_stray_gather_child(
     that request `real_gather_child`, are unaffected."""
     if "real_gather_child" in request.fixturenames:
         return
-    from ietf_llm.gather import pipeline  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather import pipeline
 
     def _refuse(_spec: object) -> list[str]:
         raise AssertionError(
@@ -78,7 +78,7 @@ def _reset_seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     process-global, so it would otherwise leak across the per-test isolated caches
     and suppress a legitimate refresh. The background refresh runs inline so tests
     are deterministic."""
-    from ietf_llm.seed import catalog  # pylint: disable=import-outside-toplevel
+    from ietf_llm.seed import catalog
 
     catalog.reset_state()
     monkeypatch.setattr(catalog, "RUN_INLINE", True)
@@ -88,9 +88,9 @@ def _reset_seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
 def _reset_health_sweep() -> None:
     """Drop the /health freshness-sweep cache before each test — it is
     process-global and would otherwise serve one test's corpora to the next."""
-    from ietf_llm.mcp import serve  # pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp import serve
 
-    serve._reset_sweep_cache()  # pylint: disable=protected-access
+    serve._reset_sweep_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -101,13 +101,13 @@ def _drain_gather_worker() -> Iterable[None]:
     this, a job from one test could still be popping `_jobs` (or releasing its
     lease) as the next test starts, contaminating it."""
     yield
-    from ietf_llm.gather import runner as gather_runner  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather import runner as gather_runner
 
     deadline = time.time() + 5.0
     while time.time() < deadline:
-        with gather_runner._registry_lock:  # pylint: disable=protected-access
-            idle = not gather_runner._jobs  # pylint: disable=protected-access
-        if idle and gather_runner._queue.empty():  # pylint: disable=protected-access
+        with gather_runner._registry_lock:
+            idle = not gather_runner._jobs
+        if idle and gather_runner._queue.empty():
             return
         time.sleep(0.005)
 
@@ -140,7 +140,7 @@ def _no_groups_network(monkeypatch: pytest.MonkeyPatch) -> None:
     None is a failed fetch, which the writer already tolerates. Tests of the
     writer inject their own `fetch` / `charter_fetch`.
     """
-    from ietf_llm.gather.sources import groups  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import groups
 
     monkeypatch.setattr(groups, "_fetch_all", lambda url, verbosity: None)
     monkeypatch.setattr(groups, "_fetch_charter", lambda doc, rev: None)
@@ -156,8 +156,8 @@ def _no_datatracker(monkeypatch: pytest.MonkeyPatch) -> None:
     the relevant Registry method (for roles) or stub `_get_json` in
     `datatracker_history` (for governance events).
     """
-    from ietf_llm import people  # pylint: disable=import-outside-toplevel
-    from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
+    from ietf_llm import people
+    from ietf_llm.gather.sources import (
         ballots,
         datatracker,
         datatracker_github,

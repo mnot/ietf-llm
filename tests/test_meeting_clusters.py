@@ -280,7 +280,7 @@ def test_process_cluster_absorbs_the_first_sessions_legacy_dir(
     # An un-clustered gather wrote `interim2026httpbis01/` for the first
     # session; the cluster's date-based dir must receive its slides rather
     # than the cleanup deleting them.
-    from ietf_llm.paths import get_wg_file_cache_dir  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import get_wg_file_cache_dir
 
     monkeypatch.setattr(meetings, "_download_slide", lambda *a, **k: False)
     dest = get_wg_file_cache_dir("httpbis")
@@ -290,10 +290,10 @@ def test_process_cluster_absorbs_the_first_sessions_legacy_dir(
     rows = [_row("interim-2026-httpbis-01", "2026-04-14")]
     clusters = cluster_meetings(rows)
     for cluster in clusters:
-        meetings._process_cluster(  # pylint: disable=protected-access
+        meetings._process_cluster(
             cluster, "httpbis", dest, Verbosity.QUIET, {}, {}
         )
-    meetings._cleanup_absorbed_dirs(  # pylint: disable=protected-access
+    meetings._cleanup_absorbed_dirs(
         dest, clusters, {c.code for c in clusters}
     )
     moved = Path(dest) / "meetings" / "interim20260414" / "slides"
@@ -327,7 +327,7 @@ def _serve(monkeypatch, stream: _FakeStream) -> None:
 
 
 def _download(dest: Path) -> bool:
-    return meetings._download_if_pdf(  # pylint: disable=protected-access
+    return meetings._download_if_pdf(
         "https://example.test/deck", str(dest), Verbosity.QUIET
     )
 
@@ -401,7 +401,7 @@ def test_oversize_deck_is_not_requested_twice(tmp_path: Path, monkeypatch) -> No
     )()
     monkeypatch.setattr(meetings, "http_session", lambda *a, **k: session)
     for _ in range(2):
-        meetings._download_slide(  # pylint: disable=protected-access
+        meetings._download_slide(
             "https://example.test/deck", str(tmp_path), Verbosity.QUIET
         )
     assert len(asked) == 1

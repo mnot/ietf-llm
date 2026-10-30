@@ -38,7 +38,7 @@ _SESSION: "requests.Session | None" = None
 
 def _shared_session() -> "requests.Session":
     """Lazily-built session verifying through the OS trust store."""
-    global _SESSION  # pylint: disable=global-statement
+    global _SESSION  # noqa: PLW0603
     if _SESSION is None:
         session = requests.Session()
         adapter = trust_store_adapter()

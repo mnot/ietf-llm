@@ -99,7 +99,7 @@ def reset_state() -> None:
     """Clear the in-process throttle / single-flight state. For tests, which reuse
     one process across many isolated caches (the disk markers reset with the cache
     dir, but these module globals would leak)."""
-    global _LAST_ATTEMPT, _IN_FLIGHT  # pylint: disable=global-statement
+    global _LAST_ATTEMPT, _IN_FLIGHT  # noqa: PLW0603
     with _lock:
         _LAST_ATTEMPT = None
         _IN_FLIGHT = False
@@ -109,11 +109,10 @@ def reset_state() -> None:
 
 
 def _seed_url_if_enabled() -> Optional[str]:
-    # pylint: disable=import-outside-toplevel
-    from ..config import service
-    from ..freshness import gather_enabled
+    from ..config import service  # noqa: PLC0415
+    from ..freshness import gather_enabled  # noqa: PLC0415
 
-    from . import generation
+    from . import generation  # noqa: PLC0415
 
     if not gather_enabled() or not service.seeding_enabled():
         return None
@@ -121,8 +120,7 @@ def _seed_url_if_enabled() -> Optional[str]:
 
 
 def _fetch_and_cache(seed_url: str, timeout: float) -> None:
-    # pylint: disable-next=import-outside-toplevel
-    from . import fetch as seed_fetch
+    from . import fetch as seed_fetch  # noqa: PLC0415
 
     index = seed_fetch.load_index(seed_url, timeout=timeout)
     if index is not None:
@@ -156,7 +154,7 @@ def _begin_attempt() -> bool:
     in-process (survives a write-failing cache) and on disk (across processes and
     across a failed fetch). Returns False when a refresh happened recently or one
     is already running."""
-    global _LAST_ATTEMPT, _IN_FLIGHT  # pylint: disable=global-statement
+    global _LAST_ATTEMPT, _IN_FLIGHT  # noqa: PLW0603
     now = time.monotonic()
     with _lock:
         if _IN_FLIGHT:
@@ -173,7 +171,7 @@ def _begin_attempt() -> bool:
 
 
 def _end_attempt() -> None:
-    global _IN_FLIGHT  # pylint: disable=global-statement
+    global _IN_FLIGHT  # noqa: PLW0603
     with _lock:
         _IN_FLIGHT = False
 

@@ -1,0 +1,15 @@
+# === pyproject-tmpl: managed file (do not edit; overwritten by `make update-pyproject`) ===
+line-length = 100
+
+[lint]
+select = ["E", "W", "F", "B", "N", "PL", "BLE"]
+ignore = ["PLR2004", "PLW2901", "N818", "B027"]
+
+[lint.pylint]
+max-args = 10
+max-positional-args = 10
+max-branches = 25
+max-statements = 100
+
+[lint.per-file-ignores]
+"SHORTNAME/__init__.py" = ["N999"]

@@ -9,10 +9,17 @@ run in CI rather than unit-tested here.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from ietf_llm.paths import cached_wg_names
+from ietf_llm.cli import export as export_cli
+from ietf_llm.cli import search as search_cli
 from ietf_llm.cli.completion import maybe_autocomplete, wg_completer
+from ietf_llm.gather import cli as gather_cli
 
 from conftest import write_cache_file
 
@@ -89,3 +96,36 @@ def test_maybe_autocomplete_is_noop_without_env(isolated_home: Path) -> None:
     parser.add_argument("wg")
     # Should not raise or sys.exit.
     maybe_autocomplete(parser)
+
+
+class _Captured(Exception):
+    def __init__(self, parser: argparse.ArgumentParser) -> None:
+        super().__init__()
+        self.parser = parser
+
+
+def _wg_completer_of(parser: argparse.ArgumentParser) -> object:
+    (wg_action,) = [a for a in parser._actions if a.dest == "wg"]
+    return getattr(wg_action, "completer", None)
+
+
+def _parser_from_main(module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    # `main()` builds its parser inline; stop it at the autocomplete hook, which
+    # runs right after the arguments are declared and before parsing.
+    def _capture(parser: argparse.ArgumentParser) -> None:
+        raise _Captured(parser)
+
+    monkeypatch.setattr(module, "maybe_autocomplete", _capture)
+    with pytest.raises(_Captured) as caught:
+        module.main()
+    return caught.value.parser
+
+
+def test_every_cli_attaches_the_wg_completer(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # argcomplete reads `.completer` off the action; if one command drops the
+    # hookup, nothing else fails and its tab completion silently stops.
+    assert _wg_completer_of(gather_cli.build_parser()) is wg_completer
+    assert _wg_completer_of(_parser_from_main(export_cli, monkeypatch)) is wg_completer
+    assert _wg_completer_of(_parser_from_main(search_cli, monkeypatch)) is wg_completer

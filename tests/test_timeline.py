@@ -345,7 +345,7 @@ def test_chair_names_follow_the_registry_spelling(
     del isolated_home
     registry = Registry()
     registry.add_datatracker_role("Zoë Example", None, "Chair")
-    canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
+    canonical = timeline._canonical_names(registry)
     assert canonical("Zoe Example") == "Zoë Example"
     assert canonical("Nobody Known") == "Nobody Known"
 
@@ -358,7 +358,7 @@ def test_chair_names_ignore_a_worse_registry_spelling(
     registry = Registry()
     for spelling in ("avri doria", "Scharf, Michael", "Nancy Cam-Winget (ncamwing)"):
         registry.add_email_message(f'"{spelling}" <x{len(spelling)}@example.org>', None)
-    canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
+    canonical = timeline._canonical_names(registry)
     assert canonical("Avri Doria") == "Avri Doria"
     assert canonical("Michael Scharf") == "Michael Scharf"
     assert canonical("Nancy Cam-Winget") == "Nancy Cam-Winget"
@@ -370,7 +370,7 @@ def test_chair_logged_by_email_resolves_through_the_registry(
     del isolated_home
     registry = Registry()
     registry.add_datatracker_role("Barbara Stark", "bs7652@att.com", "Chair")
-    canonical = timeline._canonical_names(registry)  # pylint: disable=protected-access
+    canonical = timeline._canonical_names(registry)
     assert canonical("bs7652@att.com") == "Barbara Stark"
     assert canonical("unknown@example.org") == "unknown@example.org"
 
@@ -380,11 +380,11 @@ def test_event_kind_filter_is_exact_on_a_written_digest(
 ) -> None:
     # Rows whose text would fool a substring match: user-controlled issue and
     # mail titles that contain other kinds' marker phrases.
-    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+    from datetime import datetime, timezone
 
-    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
-    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
-    from ietf_llm.paths import digest_path  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.events import Event
+    from ietf_llm.digest.query import query_digest
+    from ietf_llm.paths import digest_path
 
     rows = [
         ("issue-opened", "Issue #1 opened: \"Rename a → b\"", None),
@@ -430,11 +430,11 @@ def test_event_kind_filter_is_exact_on_a_written_digest(
 def test_event_kind_filter_ignores_a_sidecar_that_no_longer_matches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+    from datetime import datetime, timezone
 
-    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
-    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
-    from ietf_llm.paths import digest_kinds_path, digest_path  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.events import Event
+    from ietf_llm.digest.query import query_digest
+    from ietf_llm.paths import digest_kinds_path, digest_path
 
     events = [
         Event(when=datetime(2026, 1, 1, tzinfo=timezone.utc), kind="meeting",
@@ -454,11 +454,11 @@ def test_event_kind_filter_ignores_a_sidecar_that_no_longer_matches(
 def test_an_empty_timeline_removes_its_kinds_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os  # pylint: disable=import-outside-toplevel
-    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+    import os
+    from datetime import datetime, timezone
 
-    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
-    from ietf_llm.paths import digest_kinds_path, digest_path  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.events import Event
+    from ietf_llm.paths import digest_kinds_path, digest_path
 
     event = Event(when=datetime(2026, 1, 1, tzinfo=timezone.utc), kind="meeting", title="x")
     monkeypatch.setattr(timeline, "build_events", lambda *a, **k: [event])
@@ -473,11 +473,11 @@ def test_an_empty_timeline_removes_its_kinds_sidecar(
 def test_stale_sidecar_with_the_same_row_count_is_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+    from datetime import datetime, timezone
 
-    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
-    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
-    from ietf_llm.paths import digest_kinds_path, digest_path  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.events import Event
+    from ietf_llm.digest.query import query_digest
+    from ietf_llm.paths import digest_kinds_path, digest_path
 
     def day(n: int) -> datetime:
         return datetime(2026, 1, n, tzinfo=timezone.utc)
@@ -504,11 +504,11 @@ def test_stale_sidecar_with_the_same_row_count_is_ignored(
 def test_hostile_titles_keep_rows_and_kinds_aligned_across_years(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+    from datetime import datetime, timezone
 
-    from ietf_llm.digest.events import Event  # pylint: disable=import-outside-toplevel
-    from ietf_llm.digest.query import query_digest  # pylint: disable=import-outside-toplevel
-    from ietf_llm.paths import digest_path  # pylint: disable=import-outside-toplevel
+    from ietf_llm.digest.events import Event
+    from ietf_llm.digest.query import query_digest
+    from ietf_llm.paths import digest_path
 
     events = [
         Event(datetime(2026, 3, 1, tzinfo=timezone.utc), "issue-opened",

@@ -11,13 +11,13 @@ extra still runs the rest of the CLI and the local-mirror export path.
 
 import base64
 import os
-from typing import Optional
+from typing import Optional, cast
 
 import requests
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 from .log import LogLevel, Verbosity, log
 from .tls import trust_store_adapter
@@ -38,7 +38,7 @@ def _session() -> requests.Session:
     its own session for the token refresh, so that leg still verifies against
     certifi -- `REQUESTS_CA_BUNDLE` is what reaches it.
     """
-    global _SESSION  # pylint: disable=global-statement
+    global _SESSION  # noqa: PLW0603
     if _SESSION is None:
         session = requests.Session()
         adapter = trust_store_adapter()
@@ -58,7 +58,7 @@ def get_credentials(
     creds = None
     if os.path.exists(token_path):
         try:
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)  # type: ignore
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
         except (IOError, ValueError) as err:
             log(f"Error loading token: {err}", verbose, level=LogLevel.ERROR)
 
@@ -86,10 +86,11 @@ def get_credentials(
                 flow = InstalledAppFlow.from_client_secrets_file(
                     client_secrets_path, SCOPES
                 )
-                creds = flow.run_local_server(port=0)
-            except (GoogleAuthError, OSError, requests.RequestException) as err:
-                # OSError covers port-already-in-use and similar local
-                # binding failures from the temporary OAuth callback server.
+                creds = cast(Credentials, flow.run_local_server(port=0))
+            except (GoogleAuthError, OSError) as err:
+                # OSError (which includes requests.RequestException) covers
+                # port-already-in-use and similar local binding failures from
+                # the temporary OAuth callback server.
                 log(
                     f"Error during OAuth flow: {type(err).__name__}: {err}",
                     verbose,

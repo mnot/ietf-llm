@@ -1,4 +1,3 @@
-# pylint: disable=too-many-lines
 """Shared scaffolding for the ietf-llm MCP tools: corpus-path
 resolution, the ``@_requires_corpus`` guard, freshness/inflight notes, the
 grounding + participation nudges, and the ``_offload`` dispatcher."""
@@ -10,7 +9,7 @@ import functools
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import anyio
 from anyio.lowlevel import RunVar
@@ -302,8 +301,7 @@ def _first_gather_guard(wg: str) -> Optional[str]:
     gathered" without requiring local staging (the cloud backend derives it from
     the version token itself, cheaply, since `resolve_current` was just warmed
     by this same request in `_requires_corpus`)."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     status = gather_runner.local_inflight(wg)
     if not status or get_corpus_store().gathered_at(wg) is not None:
@@ -331,8 +329,7 @@ def _index_rebuilding_note(wg: str) -> Optional[str]:
     With the atomic index swap a re-gather keeps the previous index servable
     throughout, so this is a safety net (e.g. a legacy in-place index that never
     completed): it turns a bare "no results" into "not ready yet"."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     status = gather_runner.local_inflight(wg)
     if not status or probe_index(wg):
@@ -360,8 +357,7 @@ def _timeout_inflight_note(
     corpus = args[0]
     if not isinstance(corpus, str) or not corpus.strip():
         return None
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     if not valid_corpus_name(corpus):
         return None
@@ -426,8 +422,7 @@ def _inflight_refresh_note(wg: str) -> Optional[str]:
     on every response is not worth flagging the rare case, so it is unflagged
     here.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     status = gather_runner.local_inflight(wg)
     if not status:
@@ -840,7 +835,7 @@ async def _run_offloaded(
             # Present but unreadable: a clear message, not "no index".
             debug_log.log_event(req_id, "thread_error", error=str(exc)[:500])
             return exc.tool_message()
-        except BaseException as exc:  # pylint: disable=broad-except
+        except BaseException as exc:
             debug_log.log_event(
                 req_id,
                 "thread_error",
@@ -861,26 +856,20 @@ async def _run_offloaded(
     serve_metrics.adjust_inflight(1)
     try:
         if timeout <= 0:
-            result = cast(
-                str,
-                await anyio.to_thread.run_sync(
-                    partial, abandon_on_cancel=True, limiter=limiter
-                ),
+            result = await anyio.to_thread.run_sync(
+                partial, abandon_on_cancel=True, limiter=limiter
             )
             status = "ok"
             return result
         with anyio.move_on_after(timeout):
-            result = cast(
-                str,
-                await anyio.to_thread.run_sync(
-                    partial, abandon_on_cancel=True, limiter=limiter
-                ),
+            result = await anyio.to_thread.run_sync(
+                partial, abandon_on_cancel=True, limiter=limiter
             )
             status = "ok"
             return result
         # Fell through `with` without returning → the deadline cancelled.
         status = "timeout"
-    except BaseException:  # pylint: disable=broad-except,try-except-raise
+    except BaseException:
         status = "exception"
         raise
     finally:

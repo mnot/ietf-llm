@@ -24,7 +24,7 @@ from test_search_filters import _StubModel  # noqa: F401
 def _build(wg: str, model_name: str = "stub") -> None:
     """Build an embedding index for an already-seeded corpus under a named
     stub model, so the index records `model_name` in its meta."""
-    embeddings._MODEL_CACHE[model_name] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE[model_name] = _StubModel()
     build_index(wg, get_wg_file_cache_dir(wg), model_name=model_name, verbose=Verbosity.QUIET)
 
 

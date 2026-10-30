@@ -90,7 +90,7 @@ def _resolve_zone(tz_name: Optional[str]) -> Optional[datetime.tzinfo]:
     if not tz_name:
         return None
     # Imported here so a platform without zoneinfo never breaks import.
-    from zoneinfo import (  # pylint: disable=import-outside-toplevel
+    from zoneinfo import (  # noqa: PLC0415
         ZoneInfo,
         ZoneInfoNotFoundError,
     )

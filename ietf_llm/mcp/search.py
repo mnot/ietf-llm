@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from itertools import islice
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import IndexUnreadable, index_model, probe_index, related, search
@@ -230,7 +231,7 @@ def _render_hits(hits: List[Any], k: int, group_by: Optional[str]) -> str:
 
 
 @_requires_corpus
-def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
+def tool_search(  # noqa: PLR0913, PLR0917
     wg: str,
     query: str,
     k: int = 10,
@@ -340,7 +341,7 @@ def _related_refusal(
     return None
 
 
-def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_find_related(  # noqa: PLR0913, PLR0917
     wg: str,
     file: str,
     chunk_idx: int,
@@ -454,7 +455,7 @@ def _dedup_corpus_names(corpora: List[str]) -> List[str]:
     return out
 
 
-def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+def tool_search_corpora(  # noqa: PLR0912, PLR0913, PLR0917
     corpora: List[str],
     query: str,
     k: int = 10,
@@ -592,15 +593,18 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
     else:
         # Differing models — interleave the per-group rankings round-robin
         # by rank position rather than merging on non-comparable scores.
-        final = []
-        idx = 0
-        while len(final) < k and any(idx < len(g) for g in group_ranked):
-            for grp in group_ranked:
-                if idx < len(grp):
-                    final.append(grp[idx])
-                    if len(final) >= k:
-                        break
-            idx += 1
+        depth = max(map(len, group_ranked), default=0)
+        final = list(
+            islice(
+                (
+                    grp[idx]
+                    for idx in range(depth)
+                    for grp in group_ranked
+                    if idx < len(grp)
+                ),
+                k,
+            )
+        )
 
     queried = [c for c in known if c in per_corpus]
     lines: List[str] = []
@@ -697,7 +701,7 @@ def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
 
 def register(server: "MCPServer") -> None:
     @server.tool()
-    async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_corpus(  # noqa: PLR0913, PLR0917
         corpus: str,
         query: str,
         limit: int = 10,
@@ -826,7 +830,7 @@ def register(server: "MCPServer") -> None:
         )
 
     @server.tool()
-    async def find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def find_related(  # noqa: PLR0913, PLR0917
         corpus: str,
         file: str,
         chunk_idx: int,
@@ -893,7 +897,7 @@ def register(server: "MCPServer") -> None:
         )
 
     @server.tool()
-    async def search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_corpora(  # noqa: PLR0913, PLR0917
         corpora: List[str],
         query: str,
         limit: int = 10,

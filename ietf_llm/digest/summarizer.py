@@ -126,7 +126,7 @@ class _Summarizer:
             self.model = load_openai_compat_chat(model_name, verbose)
             return
         try:
-            import llm  # pylint: disable=import-outside-toplevel,import-error
+            import llm  # noqa: PLC0415
         except ImportError:
             log(
                 "Summarization requested but `llm` package is missing — "
@@ -138,7 +138,7 @@ class _Summarizer:
             return
         try:
             self.model = llm.get_model(model_name)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             # Most common case: unknown model (provider plugin not installed).
             # llm and its provider plugins don't share a typed exception
             # hierarchy, so we catch broadly.
@@ -165,7 +165,7 @@ class _Summarizer:
             self._failures = 0
             self._note_progress()
             return text
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             # Most common case: model loaded but API key missing/invalid.
             # Surface the full setup help on the first failure, and disable the
             # summariser after several in a row so a misconfiguration doesn't

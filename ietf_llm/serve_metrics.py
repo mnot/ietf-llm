@@ -279,7 +279,7 @@ def _emit_histogram(
     `label` is a pre-rendered `key="value"` fragment (or ""). Buckets are
     emitted directly because `hist.counts` is already cumulative."""
     inner = f"{label}," if label else ""
-    for bound, count in zip(hist.buckets, hist.counts):
+    for bound, count in zip(hist.buckets, hist.counts, strict=True):
         lines.append(f'{name}_bucket{{{inner}le="{_fmt(bound)}"}} {count}')
     lines.append(f'{name}_bucket{{{inner}le="+Inf"}} {hist.count}')
     suffix = f"{{{label}}}" if label else ""
@@ -420,6 +420,6 @@ def _render_locked(
     lines.append("# TYPE ietf_llm_corpus_last_gathered_age_seconds gauge")
     for corpus, age in corpus_ages or ():
         lab = f'corpus="{_escape_label(corpus)}"'
-        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {int(age)}")
+        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {age}")
 
     return "\n".join(lines) + "\n"

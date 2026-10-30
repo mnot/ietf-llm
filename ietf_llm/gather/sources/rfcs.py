@@ -123,8 +123,7 @@ def revalidate_index() -> None:
     fetching and the caller falls back to the stale answer, which
     `singletons.rfcs.no_such_rfc` reports honestly.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ...freshness import gather_enabled
+    from ...freshness import gather_enabled  # noqa: PLC0415
 
     if not gather_enabled():
         return
@@ -152,7 +151,7 @@ def reset_state() -> None:
     """Clear the in-process throttle / single-flight state. For tests, which
     reuse one process across many isolated caches (the disk marker resets with
     the cache dir, but these module globals would leak)."""
-    global _LAST_ATTEMPT, _IN_FLIGHT  # pylint: disable=global-statement
+    global _LAST_ATTEMPT, _IN_FLIGHT  # noqa: PLW0603
     with _lock:
         _LAST_ATTEMPT = None
         _IN_FLIGHT = False
@@ -167,7 +166,7 @@ def _begin_attempt() -> bool:
     per backoff window. Throttled in-process (which survives a cache dir we
     cannot write the marker into) and on disk (which holds across processes,
     and across a fetch that failed without touching the mirror)."""
-    global _LAST_ATTEMPT, _IN_FLIGHT  # pylint: disable=global-statement
+    global _LAST_ATTEMPT, _IN_FLIGHT  # noqa: PLW0603
     now = time.monotonic()
     with _lock:
         if _IN_FLIGHT:
@@ -184,7 +183,7 @@ def _begin_attempt() -> bool:
 
 
 def _end_attempt() -> None:
-    global _IN_FLIGHT  # pylint: disable=global-statement
+    global _IN_FLIGHT  # noqa: PLW0603
     with _lock:
         _IN_FLIGHT = False
 

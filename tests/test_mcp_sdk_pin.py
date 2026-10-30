@@ -23,7 +23,7 @@ from ietf_llm.mcp.server import _mcpserver_import_error
 def test_mcpserver_is_importable() -> None:
     # Not a tautology: `mcp.types` imports fine on 1.x, so only this
     # submodule distinguishes a usable SDK from an older one.
-    from mcp.server.mcpserver import MCPServer  # pylint: disable=import-outside-toplevel
+    from mcp.server.mcpserver import MCPServer
 
     assert MCPServer is not None
 

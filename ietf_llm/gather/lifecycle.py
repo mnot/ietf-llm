@@ -31,7 +31,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 
 from ..atomicio import atomic_open
 from ..config import service as service_config
@@ -164,7 +164,7 @@ class LeaseWatch:
             return
         try:
             held = store.renew_lease(self.corpus, owner, LEASE_TTL)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             self._failures += 1
             log(
                 f"gather: could not renew the lease for {self.corpus} "
@@ -193,7 +193,7 @@ def renew_slot(store: Any, slot: str) -> None:
     cap, so a missed renewal is not worth stopping the heartbeat (or the gather)."""
     try:
         store.renew_gather_slot(slot, LEASE_TTL)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(
             f"gather: could not renew fleet slot {slot}: {type(err).__name__}: {err}",
             Verbosity.STATUS,
@@ -236,7 +236,7 @@ def held_gather(
     owner: str,
     *,
     on_wait: Optional[Callable[[], None]] = None,
-) -> Iterator[LeaseWatch]:
+) -> Generator[LeaseWatch, None, None]:
     """Hold `corpus`'s gather lease and one fleet gather slot for the block.
 
     Takes the lease first (raising `GatherBusy` if another gatherer holds it),
@@ -277,11 +277,11 @@ def held_gather(
         if slot_held.is_set():
             try:
                 store.release_gather_slot(slot)
-            except Exception:  # pylint: disable=broad-except
+            except Exception:  # noqa: BLE001
                 pass
         try:
             store.release_lease(corpus, owner)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -328,8 +328,7 @@ def clear_local_state(corpus: str, workspace: str) -> None:
     reversible for it."""
     # Deferred: `datatracker` pulls in the whole gather source stack, and this
     # module is imported by the serve path.
-    # pylint: disable-next=import-outside-toplevel
-    from .sources import datatracker
+    from .sources import datatracker  # noqa: PLC0415
 
     for path in index_extra_files(corpus, workspace).values():
         os.remove(path)
@@ -366,7 +365,7 @@ def prepare_workspace(
         seeded = store.seed_workspace(corpus, workspace) if seed else None
         if seeded:
             note(f"seeded workspace from published version {seeded}")
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         note(
             f"workspace seed skipped ({type(err).__name__}: {err}); "
             "gathering from scratch"
@@ -376,7 +375,7 @@ def prepare_workspace(
             note(problem)
     except GatherCacheRestoreError:
         raise
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         note(f"gather-cache hydrate skipped ({type(err).__name__}: {err})")
 
 
@@ -413,7 +412,7 @@ def publish_workspace(
     try:
         for problem in store.persist_gather_caches(corpus):
             note(problem)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         note(f"gather-cache persist skipped ({type(err).__name__}: {err})")
     return str(version)
 
@@ -489,7 +488,7 @@ def write_status(store: Any, status: Dict[str, Any], *, publish: bool = True) ->
         return
     try:
         store.put_gather_status(corpus, status)
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(
             f"gather: could not publish status for {corpus}: {err}",
             Verbosity.STATUS,

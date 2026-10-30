@@ -146,9 +146,10 @@ def _context_lines(
     if lines is None:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                lines = split_lines(fh.read())
+                text = fh.read()
         except OSError:
-            lines = []
+            text = ""
+        lines = split_lines(text)
         cache[path] = lines
     before = lines[max(0, lineno - 1 - context) : lineno - 1]
     after = lines[lineno : lineno + context]
@@ -271,7 +272,7 @@ def _github_edge(cache: str, eligible: List[Tuple[str, str]]) -> str:
     return coverage.record_edge_line(coverage.github_records(cache))
 
 
-def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _no_match_body(
     wg: str,
     pattern: str,
     file_pattern: Optional[str],
@@ -408,7 +409,7 @@ def _hits_footer(
     )
 
 
-def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _render_hits(
     wg: str,
     hits: List[_Hit],
     per_file: Dict[str, int],
@@ -469,7 +470,7 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
     return "\n".join(out)
 
 
-def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_grep_corpus(
     wg: str,
     pattern: str,
     file_pattern: Optional[str] = None,
@@ -568,7 +569,7 @@ def _run_scan(
 
 
 @_requires_corpus
-def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+def _grep_gathered(  # noqa: PLR0911
     wg: str,
     pattern: str,
     file_pattern: Optional[str] = None,
@@ -673,7 +674,7 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
 
 def register(server: "MCPServer") -> None:
     @server.tool()
-    async def grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def grep_corpus(
         corpus: str,
         pattern: str,
         file_pattern: Optional[str] = None,

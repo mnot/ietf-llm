@@ -19,6 +19,8 @@ dependencies = [
     "requests",
     "beautifulsoup4",
     "pypdf",
+    # `override` (typing.override is 3.12+; we support 3.10).
+    "typing_extensions",
     # Pure-Python git client used to sync the meeting-transcripts data repo,
     # so gather needs no `git` binary and isn't subject to the GitHub REST
     # API rate limit (it speaks the smart-HTTP git protocol). Floor: 0.21.7
@@ -65,12 +67,9 @@ notebooklm = [
 # the default file:// blob store and base install do not.
 s3 = ["boto3"]
 dev = [
-    # Floor, not a pin: 2.3.0 narrowed what `no-untyped-call` fires on, so the
-    # ignore it made redundant is gone from cli/completion.py. An older mypy
-    # then reports that call as newly untyped and the gate fails the other way.
-    "mypy>=2.3.0",
+    "pyrefly",
     "black",
-    "pylint",
+    "ruff",
     "pytest",
     "pytest-md",
     "validate-pyproject",

@@ -115,8 +115,7 @@ def status_note(number: str) -> str:
     Read from the `_rfc/` metadata mirror, which is a separate singleton from
     the text corpus, so this stays accurate between corpus refreshes.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.rfcs import _load
+    from ..singletons.rfcs import _load  # noqa: PLC0415
 
     data = _load()
     if data is None:
@@ -129,8 +128,7 @@ def status_note(number: str) -> str:
 
 
 def _title_of(number: str) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.rfcs import _load
+    from ..singletons.rfcs import _load  # noqa: PLC0415
 
     data = _load()
     if data is None:
@@ -139,8 +137,7 @@ def _title_of(number: str) -> str:
 
 
 def _citations_of(number: str) -> int:
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.rfcs import _load
+    from ..singletons.rfcs import _load  # noqa: PLC0415
 
     data = _load()
     if data is None:
@@ -298,7 +295,7 @@ def _render_results(
     return out, shown, skipped
 
 
-def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def tool_search_rfc_text(
     query: str,
     rfc: Optional[str] = None,
     limit: int = 10,
@@ -416,7 +413,7 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
 
 def register(server: "MCPServer") -> None:
     @server.tool()
-    async def search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfc_text(
         query: str,
         rfc: Optional[str] = None,
         limit: int = 10,

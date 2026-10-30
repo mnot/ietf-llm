@@ -44,7 +44,7 @@ class _StubModel:
 
 
 def _seed_model() -> None:
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
 
 
 def _build(wg: str, isolated_home: Path) -> None:
@@ -73,7 +73,7 @@ class _ConnProxy:
 
 def _spy_connections(monkeypatch) -> list:  # type: ignore[no-untyped-def]
     proxies: list = []
-    real = search_mod._try_connect_ro  # pylint: disable=protected-access
+    real = search_mod._try_connect_ro
 
     def spy(wg: str):  # type: ignore[no-untyped-def]
         conn = real(wg)
@@ -207,7 +207,7 @@ def test_search_closes_connection_when_model_unavailable(
     _build("wg", isolated_home)
     # Evict the stub so _get_embed_model returns None -> the `model is None`
     # early return; it must close the connection it already opened.
-    embeddings._MODEL_CACHE.pop("stub", None)  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE.pop("stub", None)
     proxies = _spy_connections(monkeypatch)
     hits = search("wg", "q", verbose=Verbosity.QUIET)
     assert hits == []

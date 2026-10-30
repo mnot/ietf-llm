@@ -103,8 +103,8 @@ def redact_record(record: Dict[str, Any]) -> Dict[str, Any]:
     `notes` and `spec` replaced by `PLACEHOLDER` and everything else dropped, so
     nothing unsanitised is ever written."""
     try:
-        return redact_value(record)  # type: ignore[no-any-return]
-    except Exception as err:  # pylint: disable=broad-except
+        return redact_value(record)
+    except Exception as err:  # noqa: BLE001
         log(
             f"gather: could not sanitise a status record ({type(err).__name__}); "
             "its free-text fields were replaced",

@@ -249,7 +249,7 @@ def _rows_for_rfc(
     return rows, len([s for s in by_section if s is not None]), empties
 
 
-def build_rfc_index(  # pylint: disable=too-many-locals
+def build_rfc_index(
     index_dir: str,
     mirror_dir: str,
     db_path: str,

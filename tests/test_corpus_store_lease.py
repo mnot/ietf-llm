@@ -243,7 +243,7 @@ def test_zombie_and_holder_publishing_concurrently_never_let_the_zombie_win(tmp_
 
 
 def _versions(store: CloudCorpusStore) -> List[str]:
-    return store._list_versions("tls")  # pylint: disable=protected-access
+    return store._list_versions("tls")
 
 
 def _published_by_a(tmp_path: Path) -> Tuple[CloudCorpusStore, KvControlPlane, _HookedBlobs]:

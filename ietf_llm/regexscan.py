@@ -253,7 +253,7 @@ class SectionScan(TypedDict):
 _MATCH_CHECK_EVERY = 1024
 
 
-def scan_sections(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def scan_sections(
     matcher: "re.Pattern[str]",
     stream: Generator[Tuple[str, Optional[str], str, str], None, None],
     keep: int,
@@ -423,8 +423,7 @@ def _child_main() -> int:
         )
     else:
         # Deferred: only a sections scan needs the sqlite/numpy-laden package.
-        # pylint: disable-next=import-outside-toplevel
-        from .embeddings.storage import iter_sections_at
+        from .embeddings.storage import iter_sections_at  # noqa: PLC0415
 
         result = scan_sections(
             matcher,

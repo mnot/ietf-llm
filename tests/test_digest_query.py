@@ -436,7 +436,7 @@ def test_timeline_filter_falls_back_to_row_text_without_kinds(
     # A digest with no kinds sidecar (written before it existed) is matched
     # on row text. Titles come from the real classifiers, so a reworded title
     # that stops matching its marker fails here.
-    from ietf_llm.gather.sources import (  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import (
         datatracker_history as dh,
     )
 
@@ -452,29 +452,29 @@ def test_timeline_filter_falls_back_to_row_text_without_kinds(
         e.title for e in dh.fetch_group_events("wg", 12, Verbosity.QUIET)
     ]
     titles = {
-        "charter-approved": dh._classify_group_event(  # pylint: disable=protected-access
+        "charter-approved": dh._classify_group_event(
             {"type": "changed_state", "desc": "Charter approved, group active"}
         )[1],
-        "group-state": dh._classify_group_event(  # pylint: disable=protected-access
+        "group-state": dh._classify_group_event(
             {"type": "changed_state", "desc": "Started group"}
         )[1],
-        "doc-adopted": dh._classify_doc_event(  # pylint: disable=protected-access
+        "doc-adopted": dh._classify_doc_event(
             {"type": "changed_state", "desc": "Adopted by WG", "doc": "/api/v1/doc/document/draft-a/"}
         )[1],
-        "doc-iesg": dh._classify_doc_event(  # pylint: disable=protected-access
+        "doc-iesg": dh._classify_doc_event(
             {"type": "iesg_approved", "doc": "/api/v1/doc/document/draft-b/"}
         )[1],
-        "doc-rfc": dh._classify_doc_event(  # pylint: disable=protected-access
+        "doc-rfc": dh._classify_doc_event(
             {"type": "published_rfc", "doc": "/api/v1/doc/document/draft-c/"}
         )[1],
-        "doc-wglc": dh._classify_doc_event(  # pylint: disable=protected-access
+        "doc-wglc": dh._classify_doc_event(
             {
                 "type": "changed_state",
                 "desc": "IETF WG state changed to <b>In WG Last Call</b> from WG Document",
                 "doc": "/api/v1/doc/document/draft-d/",
             }
         )[1],
-        "doc-lc": dh._classify_doc_event(  # pylint: disable=protected-access
+        "doc-lc": dh._classify_doc_event(
             {"type": "sent_last_call", "doc": "/api/v1/doc/document/draft-g/"}
         )[1],
         "chair-departed": chair_titles[0],

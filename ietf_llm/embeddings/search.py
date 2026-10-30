@@ -1,4 +1,3 @@
-# pylint: disable=too-many-lines
 """Build the per-WG embedding index, and query it.
 
 `build_index(wg, cache_dir, ...)` walks the cache, chunks each eligible
@@ -117,8 +116,7 @@ def _mps_empty_cache() -> Optional[Callable[[], None]]:
     or when torch is absent (or lacks MPS), so callers no-op transparently.
     """
     try:
-        # pylint: disable=import-outside-toplevel,import-error
-        import torch  # type: ignore[import-not-found,unused-ignore]
+        import torch  # pyrefly: ignore[missing-import]  # noqa: PLC0415
     except ImportError:
         return None
     mps = getattr(torch, "mps", None)
@@ -252,7 +250,9 @@ def _plan_file(
             reuse[stored_hash] = embedding
     hashes = [chunk_hash(_embed_text_of(c)) for c in chunks]
     reused: List[Optional[bytes]] = [reuse.get(h) for h in hashes]
-    texts = [_embed_text_of(c) for c, r in zip(chunks, reused) if r is None]
+    texts = [
+        _embed_text_of(c) for c, r in zip(chunks, reused, strict=True) if r is None
+    ]
     return _FilePlan(relpath, hash_key, cur_hash, chunks, texts, reused, hashes)
 
 
@@ -281,7 +281,9 @@ def _write_file(
         # chunk carrying either its reused stored vector or a freshly embedded
         # one, plus its content hash for the next build's reuse (issue #183).
         cur.execute("DELETE FROM chunks WHERE file=?", (plan.relpath,))
-        for chunk, reuse, chash in zip(plan.chunks, plan.reused, plan.hashes):
+        for chunk, reuse, chash in zip(
+            plan.chunks, plan.reused, plan.hashes, strict=True
+        ):
             embedding = reuse if reuse is not None else _pack(next(fresh))
             cur.execute(
                 "INSERT INTO chunks "
@@ -356,7 +358,7 @@ def _flush_window(
         vectors = (
             list(model.embed_multi([text for _, _, text in window])) if window else []
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # The window failed (OOM, a provider error); drop the files it touched
         # so none is stamped half-embedded, and keep going.
         log(
@@ -365,9 +367,11 @@ def _flush_window(
             verbose,
             level=LogLevel.ERROR,
         )
-        vectors = []
-    for (pos, li, _), vec in zip(window, vectors):
-        results[pos][li] = vec
+    else:
+        # Not strict: a short result leaves None slots, and the check below
+        # then withholds those files rather than stamping them half-embedded.
+        for (pos, li, _), vec in zip(window, vectors, strict=False):
+            results[pos][li] = vec
     # Evict the allocator cache between windows so its high-water stays near one
     # window's footprint (no-op off MPS / on the remote backend).
     if mps_empty is not None:
@@ -406,7 +410,8 @@ def _stream_embed(
         window.extend((pos, li, text) for li, text in enumerate(plan.texts))
         if len(window) >= _EMBED_BUFFER or len(window_plans) >= _EMBED_BUFFER_FILES:
             yield from _flush_window(model, window_plans, window, mps_empty, verbose)
-            window_plans, window = [], []
+            window_plans.clear()
+            window.clear()
     yield from _flush_window(model, window_plans, window, mps_empty, verbose)
 
 
@@ -523,7 +528,7 @@ def build_index(
         return changed
 
 
-def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,too-many-branches
+def _build_index_locked(  # noqa: PLR0912, PLR0915
     wg: str,
     cache_dir: str,
     model: Any,
@@ -580,7 +585,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
     embed_dim: Optional[int] = None
     try:
         embed_dim = len(list(model.embed("dimension probe"))) or None
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # If the probe fails the per-file embeds below will too; don't abort
         # here, just skip the dimension guard for this run.
         log(
@@ -840,7 +845,7 @@ def _build_index_locked(  # pylint: disable=too-many-locals,too-many-statements,
                                 if pending.cancel():
                                     del inflight[pending]
                         continue
-                    except Exception as err:  # pylint: disable=broad-except
+                    except Exception as err:  # noqa: BLE001
                         log(
                             f"Embedding failed for {plan.relpath}: "
                             f"{type(err).__name__}: {err}",
@@ -922,7 +927,7 @@ _MMR_LAMBDA = 0.7
 _MMR_POOL = 50
 
 
-def _build_where(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _build_where(
     file_pattern: Optional[str],
     since: Optional[str],
     until: Optional[str],
@@ -1260,7 +1265,7 @@ def _restrict_to_probed_clusters(
     )
 
 
-def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _rank(
     conn: sqlite3.Connection,
     q_vec: "np.ndarray[Any, np.dtype[np.float32]]",
     *,
@@ -1367,7 +1372,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
             Hit(
                 score=float(scores[i]),
                 file=file,
-                chunk_idx=int(chunk_idx),
+                chunk_idx=chunk_idx,
                 title=title,
                 snippet=snippet,
                 start_line=int(start_line) if start_line is not None else None,
@@ -1383,7 +1388,7 @@ def _rank(  # pylint: disable=too-many-arguments,too-many-positional-arguments,t
     return hits
 
 
-def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+def search(  # noqa: PLR0913, PLR0917
     wg: str,
     query: str,
     model_name: Optional[str] = None,
@@ -1474,7 +1479,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             # used here. Empty string for models that take no instruction.
             q_text = query_prefix(indexed_model) + query
             q_vec = np.asarray(list(model.embed(q_text)), dtype=np.float32)
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:  # noqa: BLE001
             # Same provider-variability story as build_index().
             log(
                 f"Query embedding failed: {type(err).__name__}: {err}",
@@ -1504,7 +1509,7 @@ def search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         conn.close()
 
 
-def related(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def related(  # noqa: PLR0913, PLR0917
     wg: str,
     file: str,
     chunk_idx: int,

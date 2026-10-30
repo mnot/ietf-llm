@@ -80,6 +80,8 @@ import os
 import ssl
 from typing import Any, List, Optional
 
+from typing_extensions import override
+
 from .log import LogLevel, log
 
 #: Opt out of platform verification, falling back to certifi / OpenSSL defaults.
@@ -145,7 +147,7 @@ def _usable(context: ssl.SSLContext) -> bool:
     try:
         context.verify_mode = context.verify_mode
         context.options = context.options
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return False
     return True
 
@@ -163,12 +165,12 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
     across urllib3 pools and urllib calls, and building one is cheap next to
     the request it is about to serve.
     """
-    global _UNUSABLE  # pylint: disable=global-statement
+    global _UNUSABLE  # noqa: PLW0603
 
     if _UNUSABLE or _opted_out():
         return None
     try:
-        import truststore  # pylint: disable=import-outside-toplevel
+        import truststore  # noqa: PLC0415
 
         context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         # Load the *default* CA material as extra anchors. Without this the
@@ -179,7 +181,7 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
         # platform store still applies, so this can add trust, never remove it.
         try:
             context.load_default_certs()
-        except (OSError, ssl.SSLError):
+        except OSError:  # includes ssl.SSLError
             pass  # a malformed SSL_CERT_FILE must not cost us the platform store
         if not _usable(context):
             _UNUSABLE = True
@@ -201,7 +203,7 @@ def system_trust_context() -> Optional[ssl.SSLContext]:
                 )
             return None
         return context
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -211,11 +213,10 @@ def trust_store_adapter(**pool_kwargs: Any) -> Any:
 
     The factory rather than the class, so every `requests` transport we own is
     built the same way and none of them has to know whether a context was
-    available. `requests` is imported inside, keeping this module stdlib-only at
+    available. `requests` is imported inside, keeping this module free of it at
     import time — it is reached from the serve path, which must stay light.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from requests.adapters import HTTPAdapter
+    from requests.adapters import HTTPAdapter  # noqa: PLC0415
 
     context = system_trust_context()
     if context is None:
@@ -227,10 +228,12 @@ def trust_store_adapter(**pool_kwargs: Any) -> Any:
         is usually the one reaching us through a proxy, so the proxied pool is
         exactly the one that must carry it."""
 
+        @override
         def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
             kwargs["ssl_context"] = context
             super().init_poolmanager(*args, **kwargs)
 
+        @override
         def proxy_manager_for(self, *args: Any, **kwargs: Any) -> Any:
             kwargs["ssl_context"] = context
             return super().proxy_manager_for(*args, **kwargs)

@@ -322,7 +322,7 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            import requests  # pylint: disable=import-outside-toplevel
+            import requests
 
             raise requests.HTTPError(f"status {self.status_code}")
 
@@ -502,7 +502,7 @@ def test_writer_ttl_guard_skips_network(
 def test_writer_never_raises_on_network_error(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import requests  # pylint: disable=import-outside-toplevel
+    import requests
 
     def boom(url: str, headers: Any) -> Any:  # noqa: ARG001
         raise requests.ConnectionError("down")

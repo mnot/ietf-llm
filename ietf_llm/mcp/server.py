@@ -7,7 +7,7 @@ import os
 import sqlite3
 import sys
 import threading
-from importlib import resources
+from importlib import import_module, metadata, resources
 from typing import Any, Optional
 
 import anyio
@@ -92,8 +92,6 @@ def _quiet_embedding_stack_output() -> None:
         # (import-not-found when absent, attr-defined when present, since
         # `utils` does not re-export the name). `import_module` returns
         # ModuleType, so neither arises.
-        from importlib import import_module  # pylint: disable=import-outside-toplevel
-
         import_module("huggingface_hub.utils").disable_progress_bars()
     except (ImportError, AttributeError):
         pass
@@ -154,7 +152,7 @@ def _prewarm_embedding_model_async() -> None:
     def _worker() -> None:
         try:
             _prewarm_one(model_name)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:  # noqa: BLE001
             # Best-effort: any failure here means lazy load on the
             # first search_corpus call takes over. Stay silent — we're
             # in the background; the search-path error log will fire
@@ -238,7 +236,7 @@ async def _run_with_threaded_writer(server: Any) -> None:
         # `_lowlevel_server` is the `mcp.server.lowlevel.Server` MCPServer
         # wraps. Private attribute, but the upstream `run_stdio_async` uses
         # the same name and there is no public handle to it.
-        lowlevel = server._lowlevel_server  # pylint: disable=protected-access
+        lowlevel = server._lowlevel_server
         await lowlevel.run(
             read_stream, write_stream, lowlevel.create_initialization_options()
         )
@@ -262,8 +260,6 @@ def _startup_gather_default() -> bool:
 
 def _installed_mcp_version() -> Optional[str]:
     """The installed `mcp` distribution's version, or None if absent."""
-    from importlib import metadata  # pylint: disable=import-outside-toplevel
-
     try:
         return metadata.version("mcp")
     except metadata.PackageNotFoundError:
@@ -281,18 +277,17 @@ def _reinstall_command() -> str:
     """A `pipx install --force` line preserving the extras already present.
 
     Best-effort: never raise from inside an error handler."""
-    from importlib import metadata  # pylint: disable=import-outside-toplevel
-
+    bare = "  pipx install --force ietf-llm"
     try:
         present = [
             extra
             for extra, dist in _EXTRA_MARKERS
             if _distribution_present(metadata, dist)
         ]
-    except Exception:  # pylint: disable=broad-except
-        present = []
+    except Exception:  # noqa: BLE001
+        return bare
     if not present:
-        return "  pipx install --force ietf-llm"
+        return bare
     return f"  pipx install --force 'ietf-llm[{','.join(present)}]'"
 
 
@@ -338,9 +333,9 @@ def _mcpserver_import_error(exc: ImportError) -> str:
 
 
 @graceful_keyboard_interrupt
-def main() -> None:  # pylint: disable=too-many-locals
+def main() -> None:
     try:
-        from mcp.server.mcpserver import (  # pylint: disable=import-outside-toplevel,import-error
+        from mcp.server.mcpserver import (  # noqa: PLC0415
             MCPServer,
         )
     except ImportError as exc:

@@ -765,7 +765,7 @@ def _ingest_mail(wg: str, registry: Registry, verbose: Verbosity) -> None:
                     msg = email.message_from_binary_file(
                         fh, policy=email.policy.default
                     )
-            except Exception:  # pylint: disable=broad-except
+            except Exception:  # noqa: BLE001
                 continue
             from_h = str(msg.get("From") or "")
             date = _parse_date(msg.get("Date"))

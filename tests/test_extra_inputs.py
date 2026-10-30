@@ -117,7 +117,7 @@ def test_validate_draft_names_drops_unresolved(
 ) -> None:
     # validate_draft_names should drop names that Datatracker doesn't
     # know, returning only the valid subset.
-    from ietf_llm.gather.sources import drafts  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import drafts
     from ietf_llm.log import Verbosity
 
     def fake_fetch_current_rev(name: str, _verbose: object) -> object:
@@ -141,7 +141,7 @@ class _StatusResp:
 def test_validate_list_names_drops_only_on_404(
     isolated_home: Path, monkeypatch: object,
 ) -> None:
-    from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import mbox
     from ietf_llm.log import Verbosity
 
     def fake_get(url: str, **_kwargs: object) -> _StatusResp:
@@ -163,7 +163,7 @@ def test_validate_list_names_keeps_on_transient_failure(
 ) -> None:
     # Regression: a network blip (RequestException) must NOT drop a list the
     # user explicitly passed — only a definitive 404 does.
-    from ietf_llm.gather.sources import mbox  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import mbox
     from ietf_llm.log import Verbosity
 
     def boom(url: str, **_kwargs: object) -> object:
@@ -312,7 +312,7 @@ def test_fetch_issue_comments_paginates(monkeypatch: object) -> None:
         return _JsonResp(pages.get(page, []))
 
     monkeypatch.setattr(github, "governed_get", fake_get)  # type: ignore[attr-defined]
-    out = github._fetch_issue_comments(  # pylint: disable=protected-access
+    out = github._fetch_issue_comments(
         "https://api.github.com/repos/o/r/issues/1/comments", {}
     )
     assert len(out) == 101

@@ -1,0 +1,2 @@
+# === pyproject-tmpl: managed file (do not edit; overwritten by `make update-pyproject`) ===
+preset = "strict"

@@ -3,7 +3,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
 import requests
 
@@ -13,6 +13,9 @@ from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
 from ...net.transport import RETRY_AFTER_MAX
 from .github_schema import load_archive, normalise_archive, valid_repo
+
+if TYPE_CHECKING:
+    from ...people import Registry
 
 
 def iter_issue_archives(archives_dir: str) -> "Iterator[Dict[str, Any]]":
@@ -79,7 +82,7 @@ def process_github_issues(
     include_labels: Optional[List[str]] = None,
     exclude_labels: Optional[List[str]] = None,
     verbose: Verbosity = Verbosity.STATUS,
-    registry: "Optional[object]" = None,
+    registry: "Optional[Registry]" = None,
 ) -> List[str]:
     """Process a GitHub issues JSON archive and write cleaned text to output_file.
 
@@ -92,7 +95,7 @@ def process_github_issues(
     def _canon(login: str) -> str:
         if registry is None or not login:
             return login
-        resolved = registry.canonical_for_github(login)  # type: ignore[attr-defined]
+        resolved = registry.canonical_for_github(login)
         return resolved or login
 
     log(f"Opening {input_file}...", verbose, level=LogLevel.PROGRESS)
@@ -529,7 +532,7 @@ def _comments_failure(res: Any) -> _CommentsUnavailable:
     return _CommentsUnavailable(reason + ")", rate_limited=True)
 
 
-def _fetch_all_issues(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _fetch_all_issues(
     owner: str,
     repo_name: str,
     headers: Dict[str, str],
@@ -574,7 +577,7 @@ def _fetch_all_issues(  # pylint: disable=too-many-arguments,too-many-positional
                 "state": issue.get("state"),
                 "author": issue.get("user", {}).get("login"),
                 "createdAt": issue.get("created_at"),
-                "labels": [l.get("name") for l in issue.get("labels", [])],
+                "labels": [lb.get("name") for lb in issue.get("labels", [])],
                 "body": issue.get("body"),
                 "comments": [],
             }

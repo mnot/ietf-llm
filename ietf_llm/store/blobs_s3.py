@@ -17,7 +17,7 @@ import os
 from functools import partial
 from typing import Dict, List, Union, cast
 
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError
 
 from .blobs import BlobStore, parallel_each
 from .s3 import NOT_FOUND, S3AuthError, S3Bucket

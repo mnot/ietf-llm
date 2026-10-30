@@ -210,7 +210,7 @@ def test_notebooklm_empty_corpus_creates_no_notebook(
     isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pytest.importorskip("google_auth_oauthlib")
-    from ietf_llm import notebooklm  # pylint: disable=import-outside-toplevel
+    from ietf_llm import notebooklm
 
     def forbidden(*_a: object, **_k: object) -> None:
         raise AssertionError("must not authenticate or create a notebook")

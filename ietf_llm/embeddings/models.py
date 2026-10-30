@@ -142,8 +142,7 @@ def _cuda_available() -> bool:
     """True if a CUDA device is usable. Isolated so the device default can be
     tested without importing torch (CI stays torch-free)."""
     try:
-        # pylint: disable=import-outside-toplevel,import-error
-        import torch  # type: ignore[import-untyped,import-not-found,unused-ignore]
+        import torch  # pyrefly: ignore[missing-import]  # noqa: PLC0415
 
         return bool(torch.cuda.is_available())
     except ImportError:
@@ -182,8 +181,7 @@ def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
 
 def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool) -> Any:
     """Build the underlying SentenceTransformer. Isolated for testing."""
-    # pylint: disable=import-outside-toplevel,import-error,line-too-long
-    from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
+    from sentence_transformers import (  # pyrefly: ignore[missing-import]  # noqa: PLC0415
         SentenceTransformer,
     )
 
@@ -222,8 +220,7 @@ def _load_sentence_transformer(
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
-        # pylint: disable=import-outside-toplevel,import-error,line-too-long
-        from llm_sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
+        from llm_sentence_transformers import (  # pyrefly: ignore[missing-import]  # noqa: PLC0415
             SentenceTransformerModel,
             read_models,
             write_models,
@@ -291,10 +288,10 @@ def _load_sentence_transformer(
                     flush=True,
                 )
             st_model = _construct_sentence_transformer(bare, device, local_only=False)
-        model._model = st_model  # pylint: disable=protected-access
+        model._model = st_model
         log(f"Loaded {bare} on device={device}.", verbose, level=LogLevel.PROGRESS)
         return model
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # The underlying stack (huggingface_hub, sentence-transformers,
         # torch) doesn't expose a stable exception hierarchy, so we
         # catch broadly but include the type name for debuggability. The
@@ -553,7 +550,7 @@ def _get_embed_model(
             model = _load_openai_compat(model_name, verbose)
         else:
             try:
-                import llm  # pylint: disable=import-outside-toplevel,import-error
+                import llm  # noqa: PLC0415
             except ImportError:
                 log(
                     "`llm` package is missing — this should ship with "
@@ -563,10 +560,8 @@ def _get_embed_model(
                 )
                 return None
             try:
-                model = llm.get_embedding_model(  # type: ignore[no-untyped-call]
-                    model_name
-                )
-            except Exception as err:  # pylint: disable=broad-except
+                model = llm.get_embedding_model(model_name)
+            except Exception as err:  # noqa: BLE001
                 # `llm.get_embedding_model` and the various provider
                 # plugins don't share a typed exception hierarchy.
                 log(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import os
 import threading
 import time
@@ -92,7 +93,7 @@ def _refresh_sweep(stale: "Optional[_Sweep]") -> _Sweep:
                 (wg, when) for wg in wgs if (when := last_gathered(wg)) is not None
             ],
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:
         with _state_lock:
             _SWEEP_FAILURE[:] = [(time.monotonic(), err)]
         if stale is None:
@@ -119,7 +120,6 @@ def _freshness_sweep() -> _Sweep:
         usable, stale = _peek_sweep()
         if usable is not None:
             return usable
-        # pylint: disable-next=consider-using-with
         if _refresh_lock.acquire(blocking=False):
             try:
                 return _refresh_sweep(stale)
@@ -207,8 +207,7 @@ def _readiness() -> "tuple[bool, dict[str, Any]]":
 
 
 async def _health_endpoint(_request: Any) -> Any:
-    # pylint: disable=import-outside-toplevel
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse  # noqa: PLC0415
 
     # Blocking filesystem and (on the cloud backend) S3 reads: keep them off the
     # event loop so a probe cannot stall in-flight MCP sessions.
@@ -233,8 +232,7 @@ def _corpus_ages() -> "List[Tuple[str, int]]":
 
 
 async def _metrics_endpoint(_request: Any) -> Any:
-    # pylint: disable=import-outside-toplevel
-    from starlette.responses import PlainTextResponse
+    from starlette.responses import PlainTextResponse  # noqa: PLC0415
 
     ages = await anyio.to_thread.run_sync(_corpus_ages, limiter=_probe_limiter())
     body = serve_metrics.render(ages, version=__version__)
@@ -313,7 +311,7 @@ def _transport_security_settings() -> "Any":
     This lets an operator front the server directly (no proxy enforcing Host)
     without exposure to DNS-rebinding, which is otherwise the proxy's job.
     """
-    from mcp.server.transport_security import (  # pylint: disable=import-outside-toplevel,import-error
+    from mcp.server.transport_security import (  # noqa: PLC0415
         TransportSecuritySettings,
     )
 
@@ -372,8 +370,6 @@ def _torch_importable() -> bool:
     `find_spec` only inspects the import system, so a torch-free serve
     image pays nothing and a present-but-heavy torch isn't loaded just to
     answer the question."""
-    import importlib.util  # pylint: disable=import-outside-toplevel
-
     try:
         return importlib.util.find_spec("torch") is not None
     except (ImportError, ValueError):
@@ -536,7 +532,7 @@ def _run_http(server: Any) -> None:
     near-transparent. uvicorn ships transitively with `mcp`. The custom
     threaded-writer transport is stdio-specific and does not apply here.
     """
-    import uvicorn  # pylint: disable=import-outside-toplevel
+    import uvicorn  # noqa: PLC0415
 
     host, port = _resolve_bind()
     # Boot-time config validation + posture banner (issue #46): fail fast

@@ -1,4 +1,3 @@
-# pylint: disable=too-many-lines
 """SQLite layer for the per-WG embedding index.
 
 One DB per WG at <index-dir>/<wg>/embeddings.db (the index dir defaults to
@@ -102,7 +101,6 @@ def _copy_file_range(src: str, dst: str) -> None:
     copy_range = getattr(os, "copy_file_range", None)
     if copy_range is None:
         raise AttributeError("os.copy_file_range unavailable")
-    # pylint: disable=not-callable  # guarded above; getattr() infers as Any/None
     with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
         remaining = os.fstat(fsrc.fileno()).st_size
         while remaining > 0:
@@ -210,7 +208,7 @@ def _db_path_ro(wg: str) -> str:
     Inside `index_reads_from_workspace` it is the workspace path instead."""
     if _READS_FROM_WORKSPACE.get():
         return _db_path(wg)
-    from ..store.corpus import (  # pylint: disable=import-outside-toplevel
+    from ..store.corpus import (  # noqa: PLC0415
         get_corpus_store,
     )
 
@@ -365,11 +363,11 @@ def _open_db(wg: str, path: Optional[str] = None) -> sqlite3.Connection:
             end_line   INTEGER,
             chunk_date TEXT,              -- ISO 8601 UTC, NULL for undated chunks
             labels     TEXT,              -- comma-separated, lowercased; for issue chunks
-            state      TEXT,              -- 'open'/'closed' for issue chunks; NULL elsewhere
-            url        TEXT,              -- citation URL: GitHub issue / Archived-At / draft / charter; NULL elsewhere
+            state      TEXT,              -- 'open'/'closed' for issues; NULL elsewhere
+            url        TEXT,              -- citation URL; NULL elsewhere
             duplicate_of INTEGER,          -- issue chunks only: this issue marked dup of #N
             closing_rationale TEXT,        -- issue chunks only: last comment body when closed
-            chunk_hash TEXT,               -- SHA-256 of the embedded text; per-chunk incremental reuse
+            chunk_hash TEXT,               -- SHA-256 of embedded text; per-chunk incremental reuse
             section    TEXT,               -- document section label ('7.2', 'A.1'); RFC corpus only
             cluster_id INTEGER,             -- IVF partition, when the index has one
             UNIQUE (file, chunk_idx, sub_idx)
@@ -667,10 +665,7 @@ def pack_vector(vec: Iterable[float], codec: VectorCodec) -> bytes:
     if norm:
         arr = arr / norm
     quantised = np.rint(arr / np.float32(codec.scale)).clip(-127, 127)
-    # `bytes(...)` rather than a bare `.tobytes()`: on Python 3.11's older
-    # numpy stubs the latter infers as Any, which strict mypy rejects for a
-    # function declared to return bytes. The runtime value is identical.
-    return bytes(quantised.astype(np.int8).tobytes())
+    return quantised.astype(np.int8).tobytes()
 
 
 def _unpack_matrix(
@@ -946,7 +941,8 @@ def iter_sections_at(
             if here != key or section is None:
                 if key is not None:
                     yield (key[0], key[1], title, "\n".join(buf))
-                key, title, buf = here, str(row_title or ""), []
+                key, title = here, str(row_title or "")
+                buf.clear()
             buf.append(str(text or ""))
         if key is not None:
             yield (key[0], key[1], title, "\n".join(buf))

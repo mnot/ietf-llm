@@ -49,7 +49,7 @@ def last_comment_quote(
     return f"_by {author} on {when}:_\n\n{quoted}"
 
 
-def write_record_files(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def write_record_files(
     archives_dir: str,
     out_root: str,
     records_key: str,

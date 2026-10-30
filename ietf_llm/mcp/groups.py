@@ -105,7 +105,7 @@ def semantic_ranking(
             state=slug,
             diversify=False,
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # An unreachable embedding backend must not take `find_efforts` down
         # with it: the keyword ranking still answers.
         log(f"Group charter search unavailable: {err}", level=LogLevel.WARN)
@@ -127,7 +127,7 @@ def semantic_ranking(
     return scores
 
 
-def tool_search_groups(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_search_groups(
     query: str,
     area: Optional[str] = None,
     state: Optional[str] = None,
@@ -202,7 +202,7 @@ def register(server: "MCPServer") -> None:
         return await _offload(mirror.render_group, acronym, include_charter)
 
     @server.tool()
-    async def search_groups(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_groups(
         query: str,
         area: Optional[str] = None,
         state: Optional[str] = None,
@@ -236,7 +236,7 @@ def register(server: "MCPServer") -> None:
         return await _offload(tool_search_groups, query, area, state, kind, limit)
 
     @server.tool()
-    async def list_milestones(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def list_milestones(
         group: Optional[str] = None,
         area: Optional[str] = None,
         status: str = "open",

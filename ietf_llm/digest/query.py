@@ -72,7 +72,7 @@ SUPPORTED_FILTERS: Dict[str, "frozenset[str]"] = {
 def _is_set(value: Any) -> bool:
     """A filter value that was really given. `0` is a value (`limit=0`);
     `False`, `None`, "" and the -1 sentinel are not."""
-    return value is not None and value is not False and value != "" and value != -1
+    return value is not None and value is not False and value not in ("", -1)
 
 
 def unsupported_filter_message(
@@ -351,7 +351,7 @@ def filter_rows(section: Section, kind: str, filters: Dict[str, Any]) -> Section
     return Section(section.heading, section.columns, keep)
 
 
-def _row_matches(  # pylint: disable=too-many-return-statements
+def _row_matches(  # noqa: PLR0911
     row: List[str], columns: List[str], kind: str, filters: Dict[str, Any]
 ) -> bool:
     if kind in ("issues", "pulls"):

@@ -86,7 +86,7 @@ def process_session_polls(
         res = fetch_resource(poll_url)
         if not res:
             continue
-        body = _render_polls_body(str(res.text))
+        body = _render_polls_body(res.text)
         if not body:
             continue
         markdown = _render_polls_file(

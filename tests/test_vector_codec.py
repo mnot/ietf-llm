@@ -132,7 +132,7 @@ def test_a_normal_gather_still_writes_float32(isolated_home: Path) -> None:
         "threads/2026-01-01-t.md",
         "# T\n\n## Messages\n\n### [1] 2026-01-01 09:00 — A\n\nA response may be stored.\n",
     )
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index("wg", get_wg_file_cache_dir("wg"), model_name="stub", verbose=Verbosity.QUIET)
 
     conn = _connect_ro("wg")
@@ -154,7 +154,7 @@ def test_search_reads_an_int8_index_end_to_end(isolated_home: Path) -> None:
         "threads/2026-01-01-t.md",
         "# T\n\n## Messages\n\n### [1] 2026-01-01 09:00 — A\n\nA response may be stored.\n",
     )
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index("wg", get_wg_file_cache_dir("wg"), model_name="stub", verbose=Verbosity.QUIET)
 
     codec = VectorCodec(ENCODING_INT8, 0.01)

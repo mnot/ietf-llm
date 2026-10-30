@@ -88,7 +88,7 @@ def test_failed_build_does_not_displace_the_cached_store(
 def test_concurrent_first_calls_build_one_store(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from concurrent.futures import ThreadPoolExecutor  # pylint: disable=import-outside-toplevel
+    from concurrent.futures import ThreadPoolExecutor
 
     _select_cloud(isolated_home / "store", monkeypatch)
     with ThreadPoolExecutor(max_workers=8) as pool:

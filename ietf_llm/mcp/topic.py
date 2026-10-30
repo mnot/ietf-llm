@@ -162,7 +162,7 @@ def _topic_thread_map(
 
 
 @_requires_corpus
-def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+def tool_read_topic(  # noqa: PLR0912, PLR0915
     wg: str,
     query: str,
     since: Optional[str] = None,
@@ -678,7 +678,7 @@ def register(server: "MCPServer") -> None:
         return await _offload(tool_tally_positions, corpus, file)
 
     @server.tool()
-    async def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def read_topic(
         corpus: str,
         query: str,
         since: Optional[str] = None,

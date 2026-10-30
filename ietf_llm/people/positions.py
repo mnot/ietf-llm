@@ -282,7 +282,7 @@ def _excerpt_for(match: re.Match[str], text: str) -> str:
     return line
 
 
-def extract_position(  # pylint: disable=too-many-return-statements
+def extract_position(  # noqa: PLR0911
     body: str, allow_bare_hash: bool = True
 ) -> Tuple[str, str, str, Optional[str]]:
     """Return (label, confidence, excerpt, poll_choice) for one message
@@ -580,7 +580,7 @@ def _confidence_split(positions: List[Position], label: str) -> Tuple[int, int]:
     return len(rows) - low, low
 
 
-def render_tally(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def render_tally(
     file: str,
     positions: List[Position],
     summary: Dict[str, int],

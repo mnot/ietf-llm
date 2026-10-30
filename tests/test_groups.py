@@ -226,7 +226,7 @@ def test_chair_feed_backfills_a_mirror_that_predates_it(
 
 def test_chair_events_for_an_unknown_group_are_dropped() -> None:
     feeds: Dict[str, Dict[str, Dict[str, Any]]] = {
-        name: {} for name in writer._FEEDS  # pylint: disable=protected-access
+        name: {} for name in writer._FEEDS
     }
     feeds["chair-events"] = {
         "1": {"id": 1, "group": "/api/v1/group/group/999/",
@@ -380,7 +380,7 @@ def test_batch_stops_after_consecutive_transient_failures() -> None:
         return None
 
     fetched: Dict[str, Dict[str, Any]] = {}
-    texts = writer._fetch_charter_batch(_fake_groups(12), fetched, down, 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    texts = writer._fetch_charter_batch(_fake_groups(12), fetched, down, 100, Verbosity.QUIET)
     assert len(calls) == 5 and texts == {}
     assert all(v["tries"] == 1 and not v["ok"] for v in fetched.values()) and len(fetched) == 5
 
@@ -392,14 +392,14 @@ def test_a_success_resets_the_failure_streak() -> None:
         return next(answers)
 
     fetched: Dict[str, Dict[str, Any]] = {}
-    texts = writer._fetch_charter_batch(_fake_groups(10), fetched, flaky, 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    texts = writer._fetch_charter_batch(_fake_groups(10), fetched, flaky, 100, Verbosity.QUIET)
     assert len(texts) == 2 and sum(v["ok"] for v in fetched.values()) == 2
     assert len(fetched) == 10  # the failures are counted, not forgotten
 
 
 def test_absent_revisions_do_not_end_a_batch() -> None:
     fetched: Dict[str, Dict[str, Any]] = {}
-    texts = writer._fetch_charter_batch(_fake_groups(8), fetched, lambda d, r: "", 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    texts = writer._fetch_charter_batch(_fake_groups(8), fetched, lambda d, r: "", 100, Verbosity.QUIET)
     assert texts == {} and len(fetched) == 8 and not any(v["ok"] for v in fetched.values())
 
 
@@ -425,7 +425,7 @@ def _fetch_with(monkeypatch: pytest.MonkeyPatch, outcome: Any) -> Optional[str]:
 
 
 def test_charter_fetch_distinguishes_absent_from_failed(monkeypatch: pytest.MonkeyPatch) -> None:
-    import requests  # pylint: disable=import-outside-toplevel
+    import requests
 
     assert _fetch_with(monkeypatch, _Response(200, "the charter")) == "the charter"
     assert _fetch_with(monkeypatch, _Response(404, "<html>")) == ""
@@ -472,7 +472,7 @@ def test_unmirrored_cache_reports_not_gathered(isolated_home: Path) -> None:  # 
 
 def test_charter_chunks_carry_state_area_and_type(mirror: _Datatracker, isolated_home: Path) -> None:  # noqa: ARG001
     path = reader.charter_file("l3vpn")
-    chunks = chunking._chunk_file(path, "charters/l3vpn.md")  # pylint: disable=protected-access
+    chunks = chunking._chunk_file(path, "charters/l3vpn.md")
     assert chunks
     first = chunks[0]
     assert first.state == "conclude"
@@ -482,7 +482,7 @@ def test_charter_chunks_carry_state_area_and_type(mirror: _Datatracker, isolated
 
 
 def test_state_dir_is_not_embedded(mirror: _Datatracker) -> None:  # noqa: ARG001
-    files = chunking._eligible_files(reader.groups_files_dir(), "_groups")  # pylint: disable=protected-access
+    files = chunking._eligible_files(reader.groups_files_dir(), "_groups")
     assert files and all("/state/" not in f for f in files)
     assert all(f.endswith(".md") for f in files)
 
@@ -502,13 +502,13 @@ class _AreaModel:
 
 @pytest.fixture(name="indexed")
 def _indexed(mirror: _Datatracker) -> _Datatracker:
-    embeddings._MODEL_CACHE["stub"] = _AreaModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _AreaModel()
     _refresh(mirror, embed=True, embed_model="stub", force=False)
     return mirror
 
 
 def test_index_is_built_and_hidden_from_corpus_listing(indexed: _Datatracker) -> None:  # noqa: ARG001
-    from ietf_llm.paths import cached_wg_names  # pylint: disable=import-outside-toplevel
+    from ietf_llm.paths import cached_wg_names
 
     assert tools.index_installed()
     assert "_groups" not in cached_wg_names()
@@ -597,7 +597,7 @@ def test_mirror_is_stamped_fresh(mirror: _Datatracker) -> None:  # noqa: ARG001
 
 
 def _publish(tmp_path: Path) -> str:
-    from ietf_llm.seed import publish  # pylint: disable=import-outside-toplevel
+    from ietf_llm.seed import publish
 
     base = str(tmp_path / "store")
     publish.publish_store(
@@ -610,9 +610,9 @@ def _publish(tmp_path: Path) -> str:
 
 
 def test_published_bundle_carries_text_state_and_index(indexed: _Datatracker, tmp_path: Path) -> None:  # noqa: ARG001
-    import tarfile  # pylint: disable=import-outside-toplevel
+    import tarfile
 
-    from ietf_llm.seed import publish  # pylint: disable=import-outside-toplevel
+    from ietf_llm.seed import publish
 
     base = _publish(tmp_path)
     bundles = list(Path(publish.generation_dir(base)).glob("_groups/*.tar.gz"))
@@ -626,7 +626,7 @@ def test_published_bundle_carries_text_state_and_index(indexed: _Datatracker, tm
 def test_fresh_machine_installs_the_seed_then_only_asks_for_the_delta(
     indexed: _Datatracker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import shutil  # pylint: disable=import-outside-toplevel
+    import shutil
 
     base = _publish(tmp_path)
     shutil.rmtree(Path(get_cache_dir()) / reader.GROUPS_CORPUS)
@@ -646,7 +646,7 @@ def test_fresh_machine_installs_the_seed_then_only_asks_for_the_delta(
 def test_no_seed_means_a_cold_build(
     indexed: _Datatracker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import shutil  # pylint: disable=import-outside-toplevel
+    import shutil
 
     base = _publish(tmp_path)
     shutil.rmtree(Path(get_cache_dir()) / reader.GROUPS_CORPUS)
@@ -673,10 +673,10 @@ def test_an_existing_mirror_is_never_replaced_by_the_seed(
 def test_seed_members_are_not_offered_as_corpora_to_gather(
     indexed: _Datatracker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: ARG001
 ) -> None:
-    from ietf_llm.mcp import corpus as corpus_tools  # pylint: disable=import-outside-toplevel
-    from ietf_llm.seed import catalog as seed_catalog  # pylint: disable=import-outside-toplevel
-    from ietf_llm.seed import fetch as seed_fetch  # pylint: disable=import-outside-toplevel
-    from ietf_llm.seed import generation  # pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp import corpus as corpus_tools
+    from ietf_llm.seed import catalog as seed_catalog
+    from ietf_llm.seed import fetch as seed_fetch
+    from ietf_llm.seed import generation
 
     base = _publish(tmp_path)
     monkeypatch.setenv("IETF_LLM_SEED_URL", base)
@@ -685,7 +685,7 @@ def test_seed_members_are_not_offered_as_corpora_to_gather(
     seed_catalog.cache_index(index)
     monkeypatch.setattr(seed_catalog, "refresh_mirror", lambda: None)
     monkeypatch.setattr(corpus_tools, "gather_enabled", lambda: True)
-    assert "_groups" not in corpus_tools._available_to_seed([])  # pylint: disable=protected-access
+    assert "_groups" not in corpus_tools._available_to_seed([])
 
 
 def test_cloud_backend_skips_the_refresh(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG001
@@ -696,7 +696,7 @@ def test_cloud_backend_skips_the_refresh(isolated_home: Path, monkeypatch: pytes
 
 
 def test_embed_settings_resolve_like_a_gather(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG001
-    from ietf_llm.gather.sequencer import embed_settings  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sequencer import embed_settings
 
     assert embed_settings() == (None, True)
     monkeypatch.setenv("IETF_LLM_EMBED_MODEL", "some/model")
@@ -705,9 +705,9 @@ def test_embed_settings_resolve_like_a_gather(isolated_home: Path, monkeypatch: 
 
 
 def test_the_tools_are_registered() -> None:
-    import asyncio  # pylint: disable=import-outside-toplevel
+    import asyncio
 
-    from mcp.server.mcpserver import MCPServer  # pylint: disable=import-outside-toplevel
+    from mcp.server.mcpserver import MCPServer
 
     server = MCPServer("t")
     tools.register(server)
@@ -833,10 +833,10 @@ def test_not_gathered_message_is_honest_on_cloud(isolated_home: Path, monkeypatc
 
 
 def test_resolved_args_are_not_merged_twice(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG001
-    import argparse  # pylint: disable=import-outside-toplevel
+    import argparse
 
-    from ietf_llm import config  # pylint: disable=import-outside-toplevel
-    from ietf_llm.gather.sequencer import embed_settings  # pylint: disable=import-outside-toplevel
+    from ietf_llm import config
+    from ietf_llm.gather.sequencer import embed_settings
 
     def boom(*_a: Any, **_k: Any) -> None:
         raise AssertionError("merged again")
@@ -852,7 +852,7 @@ def test_resolved_args_are_not_merged_twice(isolated_home: Path, monkeypatch: py
 def _model_availability(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
     """Make the embedding model come and go without undoing other patches
     (which would also undo the sandboxed HOME)."""
-    embeddings._MODEL_CACHE["stub"] = _AreaModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _AreaModel()
     state: Dict[str, Any] = {"model": None}
     monkeypatch.setattr(embeddings, "_get_embed_model", lambda name, verbose: state["model"])
     return state
@@ -875,7 +875,7 @@ def test_stale_index_is_rebuilt_after_a_failure_that_left_it_behind(
     indexed: _Datatracker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: List[int] = []
-    real = writer._index  # pylint: disable=protected-access
+    real = writer._index
     available = _model_availability(monkeypatch)
     indexed.extra_milestones = [_milestone(40, 1, "Changed", "2099-01-01", time_="2026-04-01T00:00:00Z")]
     _refresh(indexed, embed=True, embed_model="stub", force=True)
@@ -903,33 +903,33 @@ def test_a_charter_that_always_fails_cannot_hold_the_queue() -> None:
         return None if doc in poison else "text"
 
     fetched: Dict[str, Dict[str, Any]] = {}
-    for _ in range(writer._MAX_TRIES):  # pylint: disable=protected-access
-        got = writer._fetch_charter_batch(groups, fetched, fetch, 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    for _ in range(writer._MAX_TRIES):
+        got = writer._fetch_charter_batch(groups, fetched, fetch, 100, Verbosity.QUIET)
         assert got == {}  # each batch ends on the same five
-    got = writer._fetch_charter_batch(groups, fetched, fetch, 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    got = writer._fetch_charter_batch(groups, fetched, fetch, 100, Verbosity.QUIET)
     assert set(got) == {"g05", "g06"}
 
 
 def test_a_set_aside_charter_is_tried_again_after_the_lockout() -> None:
     groups = _fake_groups(1)
     now = time.time()
-    tries = writer._MAX_TRIES  # pylint: disable=protected-access
+    tries = writer._MAX_TRIES
     fetched = {"g00": {"rev": "01", "ok": False, "at": now, "tries": tries}}
-    assert writer._pending_charters(groups, fetched, now) == []  # pylint: disable=protected-access
-    later = now + writer._TRANSIENT_LOCKOUT + 1  # pylint: disable=protected-access
-    assert writer._pending_charters(groups, fetched, later) == groups  # pylint: disable=protected-access
+    assert writer._pending_charters(groups, fetched, now) == []
+    later = now + writer._TRANSIENT_LOCKOUT + 1
+    assert writer._pending_charters(groups, fetched, later) == groups
 
 
 def test_fewer_than_the_limit_failures_stay_pending() -> None:
     groups = _fake_groups(1)
     fetched = {"g00": {"rev": "01", "ok": False, "at": time.time(), "tries": 2}}
-    assert writer._pending_charters(groups, fetched, time.time()) == groups  # pylint: disable=protected-access
+    assert writer._pending_charters(groups, fetched, time.time()) == groups
 
 
 def test_attempt_count_restarts_for_a_new_revision() -> None:
     groups = _fake_groups(1)
     fetched = {"g00": {"rev": "00", "ok": False, "at": time.time(), "tries": 4}}
-    writer._fetch_charter_batch(groups, fetched, lambda d, r: None, 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    writer._fetch_charter_batch(groups, fetched, lambda d, r: None, 100, Verbosity.QUIET)
     assert fetched["g00"]["tries"] == 1 and fetched["g00"]["rev"] == "01"
 
 
@@ -937,11 +937,11 @@ def test_records_from_before_attempts_were_counted_keep_the_old_window() -> None
     groups = _fake_groups(1)
     now = time.time()
     legacy = {"g00": {"rev": "01", "ok": False, "at": now}}
-    assert writer._pending_charters(groups, legacy, now) == []  # pylint: disable=protected-access
-    assert writer._pending_charters(groups, legacy, now + writer._RETRY_AFTER + 1) == groups  # pylint: disable=protected-access
+    assert writer._pending_charters(groups, legacy, now) == []
+    assert writer._pending_charters(groups, legacy, now + writer._RETRY_AFTER + 1) == groups
 
 
 def test_absent_revision_is_recorded_as_absent() -> None:
     fetched: Dict[str, Dict[str, Any]] = {}
-    writer._fetch_charter_batch(_fake_groups(1), fetched, lambda d, r: "", 100, Verbosity.QUIET)  # pylint: disable=protected-access
+    writer._fetch_charter_batch(_fake_groups(1), fetched, lambda d, r: "", 100, Verbosity.QUIET)
     assert fetched["g00"]["absent"] is True and fetched["g00"]["ok"] is False

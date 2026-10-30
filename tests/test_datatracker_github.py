@@ -253,7 +253,7 @@ def test_expired_hit_is_refreshed_and_a_failed_refresh_keeps_it(
     assert out["ioggstream"].emails == ["old@x.example", "new@x.example"]
 
     _age_file("ioggstream", 40)
-    real = dtg._get_json  # pylint: disable=protected-access
+    real = dtg._get_json
 
     def flaky(path: str, timeout: float = 10.0) -> Optional[dict[str, Any]]:
         if "personextresource" in path:
@@ -268,7 +268,7 @@ def test_expired_hit_is_refreshed_and_a_failed_refresh_keeps_it(
 def test_refreshes_per_run_are_capped(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cap = dtg._MAX_REFRESH  # pylint: disable=protected-access
+    cap = dtg._MAX_REFRESH
     n = cap + 5
     logins = [f"user{i}" for i in range(n)]
     calls: List[str] = []
@@ -290,7 +290,7 @@ def test_refreshes_per_run_are_capped(
 def test_entries_missing_from_the_index_do_not_starve_real_refreshes(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cap = dtg._MAX_REFRESH  # pylint: disable=protected-access
+    cap = dtg._MAX_REFRESH
     old = "2020-01-01T00:00:00Z"
     gone = [f"gone{i}" for i in range(cap + 10)]
     cache: dict[str, Any] = {
@@ -396,7 +396,7 @@ def test_index_expires_after_seven_days_not_thirty(
 def test_failed_refresh_backs_off_and_spends_no_slot(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cap = dtg._MAX_REFRESH  # pylint: disable=protected-access
+    cap = dtg._MAX_REFRESH
     old = "2020-01-01T00:00:00Z"
     dead = [f"dead{i}" for i in range(cap)]
     live_uri = "/api/v1/person/person/1/"
