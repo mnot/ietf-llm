@@ -406,7 +406,7 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
     gather, so one client cannot cancel another's. Cooperative and best-effort:
     the worker honours it at its next stage boundary or download batch (see
     `_progress`), so this reports "stopping", not "stopped". The same-host case
-    is race-free (an in-process event, shown in `read_status` as
+    is race-free (an in-process event, shown by `read_status` on this host as
     `cancel_requested` without being written); cross-host (cloud backend) rides the
     published `cancel_requested` flag, which the worker polls — a stop set in the
     brief window before the worker republishes its status can be missed and need
@@ -451,7 +451,8 @@ def request_stop(corpus: str, token: str) -> Dict[str, Any]:
     from ..store import corpus as corpus_store
 
     store = corpus_store.get_corpus_store()
-    latest = read_status(corpus)
+    # The stored record, not `read_status`: its overlay must never be written back.
+    latest = _read_stored_status(corpus)
     if latest is not None and latest.get("state") in ("queued", "running"):
         latest["cancel_requested"] = True
         _write_status(store, latest)
@@ -767,15 +768,22 @@ def read_status(corpus: str) -> Optional[Dict[str, Any]]:
     record (the worker owns it, and a write-back would race its terminal write),
     so the stop would otherwise be invisible until the worker reaches a
     checkpoint. It is overlaid here, at read time and never written back, and only
-    onto a live (`queued`/`running`) record of a job registered on this host: the
-    event is dropped with the job, and a terminal record is left as it is."""
+    onto a live (`queued`/`running`) record while this host holds the job's
+    cancel event, which is dropped with the job: a terminal record is left as it
+    is, and so is the next gather of the corpus (a new event). It is visible on
+    this host only: other replicas, and the cloud listing in `all_statuses`, show
+    the stored record, which carries no flag until the worker writes the terminal
+    one.
+
+    The event is looked up without `_registry_lock`: `start` holds that lock across
+    the lease acquisition (a store round trip), and a status read must not queue
+    behind it. A plain `dict.get` is atomic and entries are only added and removed
+    whole."""
     status = _read_stored_status(corpus)
     if status is None or status.get("state") not in ("queued", "running"):
         return status
-    with _registry_lock:
-        event = _cancel_events.get(corpus)
-        live = _jobs.get(corpus) in ("queued", "running")
-    if live and event is not None and event.is_set():
+    event = _cancel_events.get(corpus)
+    if event is not None and event.is_set():
         status["cancel_requested"] = True
     return status
 

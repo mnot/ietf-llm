@@ -535,31 +535,91 @@ def test_stop_is_acknowledged_by_gather_status_without_being_written(
         progress("b", 2, 3)
         return GatherOutcome.GATHERED
 
+    def stored() -> Dict[str, Any]:
+        with open(lifecycle.status_path("tls"), encoding="utf-8") as handle:
+            return dict(json.load(handle))
+
     monkeypatch.setattr(sequencer, "run_gather", run)
-    started = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
-    assert holding[0].wait(30.0)
-    assert "stop requested" not in gather_tools.tool_gather_status("tls")
+    try:
+        started = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+        assert holding[0].wait(30.0)
+        assert "stop requested" not in gather_tools.tool_gather_status("tls")
 
-    assert "Requested stop" in gather_tools.tool_stop_gather("tls", started["cancel_token"])
-    shown = gather_tools.tool_gather_status("tls")
-    assert "running" in shown and "stop requested" in shown
-    # An overlay on read: nothing was written for the request itself.
-    with open(lifecycle.status_path("tls"), encoding="utf-8") as handle:
-        assert not json.load(handle).get("cancel_requested")
+        reply = gather_tools.tool_stop_gather("tls", started["cancel_token"])
+        assert "Requested stop" in reply
+        shown = gather_tools.tool_gather_status("tls")
+        assert "running" in shown and "stop requested" in shown
+        # An overlay on read: nothing was written for the request itself.
+        assert not stored().get("cancel_requested")
 
-    gates[0].set()
-    assert _wait_terminal("tls")["state"] == "cancelled"
-    _wait_idle("tls")
-    assert "stop requested" not in gather_tools.tool_gather_status("tls")
+        gates[0].set()
+        assert _wait_terminal("tls")["state"] == "cancelled"
+        _wait_idle("tls")
+        # The terminal record is the worker's own, and reads as a finished stop,
+        # not as a stop still pending.
+        assert stored()["state"] == "cancelled" and stored()["cancel_requested"] is True
+        assert "stopped on request" in gather_tools.tool_gather_status("tls")
 
-    # The next gather of the same corpus starts clean.
-    again = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
-    assert again["started"], again
-    assert holding[1].wait(30.0)
-    shown = gather_tools.tool_gather_status("tls")
-    assert "running" in shown and "stop requested" not in shown
-    gates[1].set()
-    _wait_idle("tls")
+        # The next gather of the same corpus starts clean.
+        again = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
+        assert again["started"], again
+        assert holding[1].wait(30.0)
+        shown = gather_tools.tool_gather_status("tls")
+        assert "running" in shown and "stop requested" not in shown
+        assert not gather_runner.read_status("tls").get("cancel_requested")
+    finally:
+        # A failed assertion must not leave a worker holding the corpus, which
+        # would fail the next test too.
+        for gate in gates:
+            gate.set()
+        _wait_idle("tls")
+
+
+def test_status_read_does_not_wait_behind_start_holding_the_registry_lock(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`start` holds the registry lock across the lease acquisition, a store round
+    trip on the cloud backend. A status read of another in-flight corpus must not
+    queue behind it."""
+
+    class _Slow(_Store):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_acquire = threading.Event()
+            self.release = threading.Event()
+
+        def acquire_lease(self, corpus: str, owner: str, ttl: float) -> bool:
+            self.in_acquire.set()
+            assert self.release.wait(30.0)
+            return True
+
+        def get_gather_status(self, corpus: str) -> Optional[Dict[str, Any]]:
+            if corpus == "quic":  # in flight on another job, per the fleet record
+                return {"corpus": corpus, "state": "running"}
+            return None
+
+    store = _Slow()
+    _patch_store(monkeypatch, store)
+    monkeypatch.setattr(sequencer, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
+    starter = threading.Thread(
+        target=gather_runner.start, args=(gather_runner.GatherSpec(corpus="tls"),)
+    )
+    results: List[Any] = []
+    reader = threading.Thread(
+        target=lambda: results.append(gather_runner.read_status("quic"))
+    )
+    try:
+        starter.start()
+        assert store.in_acquire.wait(30.0)  # start() now holds the registry lock
+        reader.start()
+        reader.join(timeout=10.0)
+        assert not reader.is_alive(), "read_status queued behind start()"
+        assert results and results[0]["state"] == "running"
+    finally:
+        store.release.set()
+        starter.join(timeout=30.0)
+        reader.join(timeout=30.0)
+        _wait_idle("tls")
 
 
 def test_stop_for_a_job_on_another_host_writes_the_flag_only_to_a_live_record(
