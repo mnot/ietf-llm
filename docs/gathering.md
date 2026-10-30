@@ -49,7 +49,7 @@ on its own and exits:
 ietf-llm --init
 ```
 
-It downloads about 285 MB (about 700 MB on disk once installed), gathers nothing, is safe to re-run, and needs a writable cache. If it
+It downloads about 285 MB (about 650 MB on disk once installed), gathers nothing, is safe to re-run, and needs a writable cache. If it
 reports the full text as `NOT installed`, it gives the reason (seeding is off, no seed store is
 configured, the store is unreachable, or a TLS certificate can't be verified). `--init --seed`
 re-enables seeding first, if an earlier `--no-seed` turned it off.

@@ -199,7 +199,7 @@ No baseline figure is given here; measure resident size with your corpora loaded
   line has been seen at about 1.5 GB resident. Allow for `IETF_LLM_SCAN_CONCURRENCY` of them at once.
 - **In-session gather.** Each running gather is a child process at lowered scheduling priority;
   allow for `IETF_LLM_GATHER_MAX_INFLIGHT` of them.
-- **RFC data.** About 700 MB on disk once installed ([Gathering](gathering.md)); an RFC-series
+- **RFC data.** About 650 MB on disk once installed ([Gathering](gathering.md)); an RFC-series
   `grep_corpus` scan reads about 400 MB of it.
 
 ## Cache freshness and degraded mode
