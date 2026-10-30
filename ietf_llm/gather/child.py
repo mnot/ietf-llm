@@ -25,10 +25,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
+from types import TracebackType
 from typing import Any, Optional
 
-from ..embeddings.oai_compat import redact_userinfo
 from ..log import Verbosity
+from ..redact import redact_userinfo
 from .pipeline import OUTCOME_EXIT_CODES
 from .sequencer import run_gather
 
@@ -89,7 +91,7 @@ def main() -> None:
         )
 
     def _note(message: str) -> None:
-        _emit({"t": "note", "msg": message})
+        _emit({"t": "note", "msg": redact_userinfo(message)})
 
     try:
         outcome = run_gather(
@@ -116,5 +118,18 @@ def main() -> None:
     sys.exit(OUTCOME_EXIT_CODES[outcome])
 
 
+def _redacting_excepthook(
+    exc_type: "type[BaseException]",
+    exc: BaseException,
+    tb: Optional[TracebackType],
+) -> None:
+    """The default traceback printer, minus URL credentials: stderr is what a
+    container log collector captures."""
+    sys.stderr.write(
+        redact_userinfo("".join(traceback.format_exception(exc_type, exc, tb)))
+    )
+
+
 if __name__ == "__main__":
+    sys.excepthook = _redacting_excepthook
     main()

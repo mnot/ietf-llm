@@ -706,7 +706,9 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
                 # that is a failure, not a requested stop.
                 fenced = True
                 status["state"] = "failed"
-                status["error"] = str(lifecycle.lease_lost_error(watch))[:500]
+                status["error"] = lifecycle.error_text(
+                    str(lifecycle.lease_lost_error(watch))
+                )
             else:
                 # Stop requested: do not publish (the cache is partial); leave it
                 # for the next gather to overwrite. A cancelled record is
@@ -717,10 +719,10 @@ def _run_one(store: Any, owner: str, spec: GatherSpec) -> None:
         except LeaseLost as err:
             fenced = True
             status["state"] = "failed"
-            status["error"] = f"{type(err).__name__}: {err}"[:500]
+            status["error"] = lifecycle.status_error(err)
         except BaseException as err:  # pylint: disable=broad-except
             status["state"] = "failed"
-            status["error"] = f"{type(err).__name__}: {err}"[:500]
+            status["error"] = lifecycle.status_error(err)
         finally:
             status["finished"] = _now_iso()
             _mark_finishing(corpus)
@@ -741,7 +743,7 @@ def _fail_lease_lost(
     """Finalise a queued job whose lease went before it got a slot: failed, and
     recorded locally only (the fleet record belongs to the new holder)."""
     status["state"] = "failed"
-    status["error"] = str(lifecycle.lease_lost_error(watch))[:500]
+    status["error"] = lifecycle.error_text(str(lifecycle.lease_lost_error(watch)))
     status["finished"] = _now_iso()
     _mark_finishing(corpus)
     _write_status(store, status, publish=False)

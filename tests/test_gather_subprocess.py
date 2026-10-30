@@ -67,7 +67,9 @@ def test_child_renices_by_default_and_can_be_disabled(
 
 
 def _run_child_capturing(
-    monkeypatch: pytest.MonkeyPatch, outcome: GatherOutcome
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: GatherOutcome,
+    note: str = "auto-tracked o/r",
 ) -> tuple:
     """Run `gather_child.main()` with a stubbed pipeline and capture the JSON
     records it writes to the progress fd plus its exit code."""
@@ -77,7 +79,7 @@ def _run_child_capturing(
         progress("charter", 1, 3, None)
         progress("mailing list", 2, 3, "5/5 messages")
         if note_fn:
-            note_fn("auto-tracked o/r")
+            note_fn(note)
         return outcome
 
     monkeypatch.setattr(gather_child, "run_gather", fake_run_gather)
@@ -165,6 +167,47 @@ def test_child_error_record_hides_credentials_in_urls(
     )
     assert lines[0]["msg"] == "POST https://***@embed.example/v1/embeddings failed"
     assert "s3cret" not in json.dumps(lines)
+
+
+def test_child_error_redacts_before_cutting_to_the_length_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Sweep the credential across the 300-character cut: cut-then-redact would
+    # leave "https://svc:s3cr" (no "@", so nothing left to recognise) in some of
+    # these.
+    cap = gather_child._ERROR_MSG_MAX
+    for pad in range(cap - 40, cap):
+        lines, _raised = _run_child_that_raises(
+            monkeypatch,
+            ConnectionError("x" * pad + " https://svc:s3cret-token@embed.example/v1"),
+        )
+        assert len(lines[0]["msg"]) <= cap
+        for fragment in ("svc", "s3c"):
+            assert fragment not in lines[0]["msg"], pad
+
+
+def test_child_note_records_hide_credentials_in_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines, _rc = _run_child_capturing(
+        monkeypatch, GatherOutcome.GATHERED, note="seed https://svc:s3cret@seed.example/x"
+    )
+    assert lines[-1] == {"t": "note", "msg": "seed https://***@seed.example/x"}
+
+
+def test_child_traceback_on_stderr_hides_credentials(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    try:
+        try:
+            raise OSError("https://svc:s3cret@embed.example/v1 refused")
+        except OSError as cause:
+            raise RuntimeError("wrapped") from cause
+    except RuntimeError as err:
+        gather_child._redacting_excepthook(type(err), err, err.__traceback__)
+    shown = capsys.readouterr().err
+    assert "RuntimeError: wrapped" in shown and "https://***@embed.example/v1" in shown
+    assert "s3cret" not in shown
 
 
 def test_child_unusable_corpus_maps_to_distinct_exit(
