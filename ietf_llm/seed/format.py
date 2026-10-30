@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..atomicio import TMP_SUFFIX
 from ..paths import INDEX_FILE_NAMES
 
 #: Bumped only on an incompatible change to the JSON schema below. A consumer
@@ -432,7 +433,7 @@ def _excluded_from_bundle(arc: str) -> bool:
         return True
     # Index files come from index_dir explicitly (below); a scratch build DB is
     # never shipped.
-    if arc in INDEX_FILES or arc.endswith(".building"):
+    if arc in INDEX_FILES or arc.endswith((".building", TMP_SUFFIX)):
         return True
     return False
 

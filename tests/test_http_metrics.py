@@ -9,6 +9,7 @@ and `_get_json`) actually record into the current accumulator.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -126,6 +127,25 @@ def test_persist_writes_json(tmp_path: Path) -> None:
     data = json.loads((tmp_path / "gather-metrics.json").read_text())
     assert data["requests"] == 1 and data["bytes_received"] == 7
     assert data["by_host"]["datatracker.ietf.org"]["bytes"] == 7
+
+
+def test_persist_leaves_no_temp_and_uses_per_writer_temp_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http_metrics.reset()
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def spy(src: str, dst: str) -> None:
+        seen.append(os.path.basename(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("ietf_llm.atomicio.os.replace", spy)
+    http_metrics.persist(str(tmp_path))
+    http_metrics.persist(str(tmp_path))
+    assert len(seen) == 2 and seen[0] != seen[1]  # never a shared fixed tmp
+    assert all(n.startswith(".gather-metrics.json.") for n in seen)
+    assert os.listdir(tmp_path) == ["gather-metrics.json"]
 
 
 def test_persist_is_best_effort(tmp_path: Path) -> None:

@@ -252,7 +252,15 @@ Key invariants:
   multiple emails, GitHub logins — into one canonical `Person`, resolving
   addresses through Datatracker's curated email→person table (exact-match, so
   collision-free) and linking GitHub logins by each person's Datatracker
-  `github_username` profile (`people.linking`). A `Person` carries
+  `github_username` profile (`people.linking`). Both lookups are cached across
+  corpora (`_datatracker-people.json`, `_datatracker-github.json`); a "not on
+  Datatracker" answer is re-asked after 30 days (`identity_cache.TTL_SECONDS`)
+  and the `github_username` index after 7 (`INDEX_TTL_SECONDS`), since people
+  add addresses and profile resources later. Resolved per-login entries are
+  refreshed after 30 days, at most 50 entries (100 requests) per corpus gather;
+  a refresh that fails keeps the old value and is not retried for another 30
+  days (`checked_at`). A hit for an address is kept: it always wins a merge
+  over a miss. A `Person` carries
   **affiliations** and the set of **email domains** seen as distinct fields
   (email domain ≠ affiliation). Threads, issues, and github text all render
   authorship with these canonical names.
@@ -1166,7 +1174,13 @@ eligibility rules change (an existing cache sheds the now-skipped
 revisions on its next gather, no `--rebuild` needed).
 
 Every-gather corpus writes also go through `atomicio.atomic_open` (temp +
-`os.replace`), so the write is atomic — see the concurrency note below.
+`os.replace`), so the write is atomic — see the concurrency note below. That
+includes fetched draft and RFC bodies (which are skip-if-cached, so a torn file
+would never be repaired; a zero-length one is treated as absent), enriched
+transcripts, the cross-corpus identity caches and `gather-metrics.json`. The temp
+is dot-prefixed (`.<name>.<pid>.<n>.tmp`) and `.tmp` files are skipped by
+`list_files`, `grep_corpus`, the cloud publish walk and the seed bundle, so a
+gather killed mid-write cannot leak a partial file into reads or a published version.
 
 ### Concurrency: gathers and servers can overlap
 

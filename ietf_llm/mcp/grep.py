@@ -31,6 +31,7 @@ import re
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from .. import coverage
+from ..atomicio import TMP_SUFFIX
 from ..embeddings import chunk_spans
 from .common import (
     _append_participation_nudge,
@@ -229,6 +230,8 @@ def _eligible(
     derived = 0
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
+            if name.endswith(TMP_SUFFIX):
+                continue  # a killed gather's partial temp: not a skipped binary
             path = os.path.join(dirpath, name)
             if not os.path.isfile(path):
                 continue

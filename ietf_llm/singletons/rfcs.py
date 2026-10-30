@@ -214,22 +214,29 @@ class RfcData:
 
 # --- Memoised load (mtime-keyed so a re-gather is picked up live) ---------
 
-_CACHE: Optional[Tuple[float, RfcData]] = None
+_CACHE: Optional[Tuple[Tuple[Tuple[int, int, int], ...], RfcData]] = None
 
 
 def _load() -> Optional[RfcData]:
     """Return the parsed index, or None if it hasn't been gathered.
 
-    Memoised on `rfcs.json`'s mtime so a long-running MCP server picks up
-    a re-gather without a restart, while warm calls skip the parse.
+    Memoised on the mtimes of all three files, so a long-running MCP server
+    picks up a re-gather without a restart while warm calls skip the parse.
+    The writer replaces them one at a time; keyed on `rfcs.json` alone, a
+    read between the replaces would pin a mixed-generation set until the next
+    re-gather. The stat comes before the read, so a file replaced in between
+    only makes the next call reload.
     """
     global _CACHE  # pylint: disable=global-statement
     try:
-        mtime = os.path.getmtime(_rfc_file("rfcs.json"))
+        stats = [os.stat(_rfc_file(name)) for name in RFC_FILES]
+        # Inode and size too: an atomic replace within one mtime tick is
+        # still a different file.
+        key = tuple((st.st_mtime_ns, st.st_ino, st.st_size) for st in stats)
     except OSError:
         _CACHE = None
         return None
-    if _CACHE is not None and _CACHE[0] == mtime:
+    if _CACHE is not None and _CACHE[0] == key:
         return _CACHE[1]
     try:
         rfcs = _read_json("rfcs.json")
@@ -238,7 +245,7 @@ def _load() -> Optional[RfcData]:
     except (OSError, ValueError):
         return None
     data = RfcData(rfcs, refs, tags)
-    _CACHE = (mtime, data)
+    _CACHE = (key, data)
     return data
 
 
