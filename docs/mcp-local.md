@@ -9,6 +9,7 @@ To serve many clients from one shared process instead, see
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
+- [Install as a plugin (Claude Code, Codex)](#install-as-a-plugin-claude-code-codex)
 - [1. Install the package](#1-install-the-package)
 - [2. Register the server with your client](#2-register-the-server-with-your-client)
 - [3. Gather](#3-gather)
@@ -16,6 +17,24 @@ To serve many clients from one shared process instead, see
 - [Tuning the MCP server](#tuning-the-mcp-server)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
+## Install as a plugin (Claude Code, Codex)
+
+This repository is also a plugin marketplace. The plugin bundles the MCP server and the IETF skills,
+and runs the server with `uvx … @latest`, so it picks up new releases without a reinstall. It needs
+[uv](https://docs.astral.sh/uv/). Skip steps 1, 2 and 4 below.
+
+```bash
+# Claude Code
+claude plugin marketplace add mnot/ietf-llm
+claude plugin install ietf-llm@ietf-llm
+
+# Codex
+codex plugin marketplace add mnot/ietf-llm
+codex plugin add ietf-llm@ietf-llm
+```
+
+The first start downloads the embedding backend (torch), which can take a few minutes.
 
 ## 1. Install the package
 

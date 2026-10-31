@@ -1,0 +1,5 @@
+{
+  "name": "ietf-llm",
+  "description": "Query the public record of IETF/IRTF working groups, plus the IETF skills",
+  "skills": "./ietf_llm/data/skills/"
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "uvx",
+      "args": ["--from", "ietf-llm[local-embeddings]@latest", "ietf-llm-mcp"]
+    }
+  }
+}
