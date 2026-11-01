@@ -55,14 +55,6 @@ the client, then restart it:
 uvx --python 3.12 --from 'ietf-llm[local-embeddings]@latest' ietf-llm --help
 ```
 
-The server comes from PyPI; the plugin manifests and skills currently come from the repository's
-`main` branch. Codex supports a Git source with a `ref` in its marketplace entry, so it can follow
-the planned `release` branch too:
-
-```json
-"source": {"source": "url", "url": "https://github.com/mnot/ietf-llm.git", "ref": "release"}
-```
-
 ## 1. Install the package
 
 [pipx](https://pipx.pypa.io/stable/) is recommended:
