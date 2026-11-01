@@ -38,6 +38,7 @@ from .storage import (
     any_indexed_wg,
     chunk_counts,
     chunk_spans,
+    count_chunks,
     find_chunks_by_url,
     get_chunk,
     get_messages,
@@ -47,6 +48,7 @@ from .storage import (
     read_topics,
     section_outline,
     section_rows,
+    select_chunks,
 )
 from .topics import build_topics, generate_topics, has_topics, topics_stale
 
@@ -61,6 +63,7 @@ __all__ = [
     "build_topics",
     "chunk_counts",
     "chunk_spans",
+    "count_chunks",
     "find_chunks_by_url",
     "generate_topics",
     "has_topics",
@@ -73,6 +76,7 @@ __all__ = [
     "read_topics",
     "section_outline",
     "section_rows",
+    "select_chunks",
     "topics_stale",
     "related",
     "search",

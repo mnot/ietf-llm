@@ -1187,6 +1187,92 @@ def get_messages(
         conn.close()
 
 
+def _chunk_filter(  # noqa: PLR0913
+    file: Optional[str],
+    kind: Optional[str],
+    since: Optional[str],
+    until: Optional[str],
+    author: Optional[str],
+    contains: Optional[str],
+) -> Tuple[str, List[object]]:
+    """The WHERE clause and its args shared by `select_chunks` / `count_chunks`."""
+    where = ["sub_idx=0"]
+    args: List[object] = []
+    for clause, value in (
+        ("file=?", file),
+        ("file LIKE ? || '/%'", kind),
+        ("chunk_date>=?", since),
+        ("chunk_date<?", until and until + "~"),  # inclusive of the `until` day
+        ("instr(lower(title), lower(?))>0", author),
+        ("instr(lower(text), lower(?))>0", contains),
+    ):
+        if value:
+            where.append(clause)
+            args.append(value)
+    return " AND ".join(where), args
+
+
+def count_chunks(  # noqa: PLR0913
+    wg: str,
+    *,
+    file: Optional[str] = None,
+    kind: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    author: Optional[str] = None,
+    contains: Optional[str] = None,
+) -> int:
+    """How many chunks `select_chunks` would match with no limit. 0 when the
+    corpus has no index."""
+    where, args = _chunk_filter(file, kind, since, until, author, contains)
+    conn = _try_connect_ro(wg)
+    if conn is None:
+        return 0
+    try:
+        return conn.execute(
+            f"SELECT count(*) FROM chunks WHERE {where}", args
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def select_chunks(  # noqa: PLR0913
+    wg: str,
+    *,
+    file: Optional[str] = None,
+    kind: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    author: Optional[str] = None,
+    contains: Optional[str] = None,
+    chars: Optional[int] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """Whole indexed chunks (one per message / issue comment / draft window)
+    as dicts, filtered in SQL and ordered by (date, file, chunk_idx).
+
+    `kind` is the top-level directory (`threads`, `issues`, `pulls`, `drafts`,
+    `meetings`, ...); `author` and `contains` are case-insensitive substring
+    matches on the header line and the body; `chars` truncates the body in SQL
+    (0 drops it). Empty list when the corpus has no index."""
+    where, args = _chunk_filter(file, kind, since, until, author, contains)
+    body = "text" if chars is None else f"substr(text, 1, {max(int(chars), 0)})"
+    conn = _try_connect_ro(wg)
+    if conn is None:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"SELECT file, chunk_idx AS idx, chunk_date AS date, title, url, state, "
+            f"labels, {body} AS text FROM chunks WHERE {where} "
+            "ORDER BY chunk_date, file, chunk_idx LIMIT ?",
+            [*args, max(int(limit), 0)],
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{**row, "title": _clean_title(row["title"])} for row in map(dict, rows)]
+
+
 def get_chunk(
     wg: str, file: str, chunk_idx: int
 ) -> Optional[Tuple[str, str, Optional[int], Optional[int]]]:

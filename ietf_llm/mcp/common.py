@@ -9,7 +9,7 @@ import functools
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import anyio
 from anyio.lowlevel import RunVar
@@ -185,7 +185,10 @@ def _corpus_exists(wg: str) -> bool:
     )
 
 
-def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
+_R = TypeVar("_R")
+
+
+def _requires_corpus(fn: Callable[..., _R]) -> Callable[..., _R | str]:
     """Guard a `tool_*(wg, ...)` so an unknown corpus returns a clear message —
     rather than creating a junk cache dir and rendering a hollow result from it.
 
@@ -202,7 +205,7 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
     also can't get a good version, surface the actionable message instead."""
 
     @functools.wraps(fn)
-    def wrapper(wg: str, *args: Any, **kwargs: Any) -> str:
+    def wrapper(wg: str, *args: Any, **kwargs: Any) -> _R | str:
         # Before any path is built: `os.path.join` drops the cache root for an
         # absolute name, and `..` climbs out of it.
         if not readable_corpus_name(wg):
@@ -213,7 +216,7 @@ def _requires_corpus(fn: Callable[..., str]) -> Callable[..., str]:
         if version is None:
             return unknown_corpus_message(wg)
 
-        def _guarded_call() -> str:
+        def _guarded_call() -> _R | str:
             # Refuse rather than serve half-built content while a corpus's
             # *first* gather runs — there is no prior snapshot to fall back
             # on, so the cache is being built in place. A re-gather is not

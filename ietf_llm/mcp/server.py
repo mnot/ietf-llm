@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import threading
 from importlib import import_module, metadata, resources
+from types import ModuleType
 from typing import Any, Optional
 
 import anyio
@@ -299,6 +300,27 @@ def _distribution_present(metadata: Any, dist: str) -> bool:
         return False
 
 
+def _load_codemode() -> ModuleType | None:
+    """The `codemode` module when `IETF_LLM_CODE_MODE` opts in, else None.
+
+    Imported only then: its sandbox (`pydantic-monty`) is the optional
+    `codemode` extra, so a base install never loads it. Opted in without the
+    extra is a startup error, not a silently missing tool."""
+    flag = os.environ.get("IETF_LLM_CODE_MODE", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return None
+    try:
+        from . import codemode  # noqa: PLC0415 -- optional extra
+    except ImportError as exc:
+        print(
+            f"IETF_LLM_CODE_MODE is set but code mode cannot load ({exc}). "
+            "Install it with: pip install 'ietf-llm[codemode]'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return codemode
+
+
 def _mcpserver_import_error(exc: ImportError) -> str:
     """Explain a failed `mcp.server.mcpserver` import.
 
@@ -367,7 +389,12 @@ def main() -> None:
     # every client — Claude / Codex / Gemini / Cursor / Zed / opencode — so
     # routing needs no separately-installed skill. The version/feature footer
     # is appended so a client can feature-gate from the prompt.
-    server_instructions = _load_server_instructions() + _capability_footer()
+    codemode = _load_codemode()
+    server_instructions = (
+        _load_server_instructions()
+        + (codemode.INSTRUCTIONS if codemode is not None else "")
+        + _capability_footer()
+    )
     # `version` is what the `initialize` handshake and 2026-07-28 `server/discover`
     # report as `serverInfo.version` (what `claude mcp`, Cursor, etc. display);
     # left unset it would be the `mcp` SDK's. The HTTP knobs (stateless
@@ -395,6 +422,13 @@ def main() -> None:
     grep.register(server)
     topic.register(server)
     chunks.register(server)
+    # Experimental code mode, opt-in (IETF_LLM_CODE_MODE=1): `execute` swaps
+    # in for the read tools it is meant to replace, so an evaluation sees the
+    # replacement alone rather than the model falling back to the old tools.
+    if codemode is not None:
+        codemode.register(server)
+        for name in codemode.REPLACES:
+            server.remove_tool(name)
     drafts.register(server)
     meetings.register(server)
 

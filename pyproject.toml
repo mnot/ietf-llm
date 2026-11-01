@@ -66,6 +66,9 @@ notebooklm = [
 # Only the `cloud` store backend with an `s3://` IETF_LLM_BLOB_DIR needs it;
 # the default file:// blob store and base install do not.
 s3 = ["boto3"]
+# Code mode: the experimental `execute` tool's sandbox (a Rust Python
+# interpreter + worker pool). Only needed with IETF_LLM_CODE_MODE=1.
+codemode = ["pydantic-monty>=1.4,<2"]
 dev = [
     "pyrefly",
     "black",
@@ -86,6 +89,7 @@ dev = [
     "google-auth-httplib2",
     "boto3",
     "moto",
+    "pydantic-monty>=1.4,<2",
 ]
 
 [project.urls]
