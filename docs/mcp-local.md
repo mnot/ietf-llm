@@ -24,6 +24,19 @@ This repository is also a plugin marketplace. The plugin bundles the MCP server 
 and runs the server with `uvx … @latest`, so it picks up new releases without a reinstall. It needs
 [uv](https://docs.astral.sh/uv/). Skip steps 1, 2 and 4 below.
 
+Before switching an existing installation:
+
+1. Remove the manually registered MCP server with `claude mcp remove ietf-llm` or
+   `codex mcp remove ietf-llm`, as applicable. For Claude Code, run this from the project where you
+   registered it; use `--scope local`, `--scope user` or `--scope project` if it exists in multiple
+   scopes, removing each registration you are replacing.
+2. If you used `ietf-llm --install-skills`, remove its `ietf-contributing`, `ietf-http`,
+   `ietf-interpreting` and `ietf-reviewing` directories from `~/.claude/skills/` (Claude Code) or
+   `~/.agents/skills/` (Codex), preserving any local edits first.
+3. If you no longer need the standalone CLI or its server for another client, uninstall it with
+   the original installer: `pipx uninstall ietf-llm`, `uv tool uninstall ietf-llm`, or
+   `python -m pip uninstall ietf-llm` in the Python environment where you installed it.
+
 ```bash
 # Claude Code
 claude plugin marketplace add mnot/ietf-llm
@@ -34,7 +47,21 @@ codex plugin marketplace add mnot/ietf-llm
 codex plugin add ietf-llm@ietf-llm
 ```
 
-The first start downloads the embedding backend (torch), which can take a few minutes.
+The first start downloads the embedding backend (torch), which can take a few minutes. The plugin
+allows up to ten minutes for startup in Codex. If your client times out, finish the download outside
+the client, then restart it:
+
+```bash
+uvx --python 3.12 --from 'ietf-llm[local-embeddings]@latest' ietf-llm --help
+```
+
+The server comes from PyPI; the plugin manifests and skills currently come from the repository's
+`main` branch. Codex supports a Git source with a `ref` in its marketplace entry, so it can follow
+the planned `release` branch too:
+
+```json
+"source": {"source": "url", "url": "https://github.com/mnot/ietf-llm.git", "ref": "release"}
+```
 
 ## 1. Install the package
 
