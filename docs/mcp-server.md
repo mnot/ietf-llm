@@ -100,9 +100,10 @@ Variables the serve path reads. Storage and embedding variables are in [Storage]
 | `IETF_LLM_LOG_LEVEL` | `quiet`, `status` or `verbose` | `status` on HTTP, `quiet` on stdio |
 | `IETF_LLM_DEBUG_LOG` | per-request timing telemetry; registers `get_session_log` | off |
 | `IETF_LLM_TOOL_TIMEOUT` | per-tool-call deadline, seconds; `0` disables | `120` |
-| `IETF_LLM_SCAN_CONCURRENCY` | worker slots for `grep_corpus` | `4` |
+| `IETF_LLM_SCAN_CONCURRENCY` | worker slots for `grep_corpus` and `execute` | `4` |
 | `IETF_LLM_ROUTING_MIN_SCORE` | `which_corpus` abstention floor; recalibrate with `scripts/calibrate_routing.py` after changing the embedding model | `0.30` |
 | `IETF_LLM_GROUPS_MIN_SCORE` | similarity floor for charter matches in `search_groups` and `find_efforts`; recalibrate after changing the embedding model | `0.62` |
+| `IETF_LLM_CODE_MODE` | experimental code mode (needs the `codemode` extra): register `execute` and drop `read_topic`, `search_corpora`, `find_replies`, `get_chunks_batch` | off |
 | `IETF_LLM_ENABLE_GATHER` | register the gather tools and live Datatracker lookups; overrides the transport default | on for stdio, off for HTTP |
 | `IETF_LLM_GATHER_MAX_INFLIGHT` | gathers at once, per host and (cloud) fleet-wide ([Storage](storage.md)) | `3` |
 | `IETF_LLM_GATHER_QUEUE_MAX` | queued plus running gathers per host before `start_gather` is refused | `16` |
@@ -182,6 +183,10 @@ adds gather progress notes. `IETF_LLM_DEBUG_LOG=1` writes per-request timing to 
   with a 20 s budget (also for the RFC series), killed 3 s later if it has not stopped; the reply
   then begins `INCOMPLETE SCAN` and must not be read as a negative result. At most
   `IETF_LLM_SCAN_CONCURRENCY` scans run at once, in a pool separate from the other tools.
+- **`execute` (code mode, `IETF_LLM_CODE_MODE=1`).** Model-written Python runs in a Monty worker subprocess with no
+  filesystem, network or environment access; its only exits are the read-only `ietf` functions.
+  Each call gets 20 s of interpreter time (time spent in those functions is not counted), 2,000 host
+  calls, 512 MB, and returns at most 60,000 characters. It shares the `grep_corpus` scan pool.
 - **`grep_corpus` output.** At most 200 matching lines are rendered per call; the totals stay
   complete.
 - **`read_file_section`.** 400 lines by default, 5000 at most, and about 40,000 characters. A cut read
@@ -198,6 +203,7 @@ Measure resident size with your corpora loaded, then add:
 
 - **Index on tmpfs.** `IETF_LLM_INDEX_DIR=/dev/shm/...` counts against container memory, as does the
   cloud backend's scratch directory when it is on tmpfs (see [Storage](storage.md)).
+- **Code mode.** Each running `execute` holds one Monty worker process (up to 512 MB).
 - **Regex scans.** The scan child has no memory limit; one pathological pattern over one very long
   line has been seen at about 1.5 GB resident. Allow for `IETF_LLM_SCAN_CONCURRENCY` of them at once.
 - **In-session gather.** Each running gather is a child process at lowered scheduling priority
