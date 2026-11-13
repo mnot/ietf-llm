@@ -47,7 +47,7 @@ def float_section_note(value: object) -> str:
     and resolves to a different section without any error. The caller can
     only learn that from the reply.
     """
-    if not isinstance(value, float) or value.is_integer():
+    if not isinstance(value, float) or float(value).is_integer():
         return ""
     return (
         f"_Note: `section` arrived as the number {value!r}, and a number drops "
@@ -73,7 +73,7 @@ def loose_str(value: Optional[LooseStr]) -> Optional[str]:
     """
     if value is None or isinstance(value, str):
         return value
-    if isinstance(value, float) and value.is_integer():
+    if isinstance(value, float) and float(value).is_integer():
         return str(int(value))
     return str(value)
 
