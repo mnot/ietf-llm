@@ -17,7 +17,7 @@ from ..singletons.rfcs import (
     render_search,
     working_group,
 )
-from .common import _list_wgs, _offload
+from .common import LooseStr, _list_wgs, _offload, loose_str
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -160,7 +160,7 @@ def _render_rfc_live(number: str) -> str:
 def register(server: "MCPServer") -> None:
     @server.tool()
     async def search_rfc_index(
-        query: str,
+        query: LooseStr,
         status: Optional[str] = None,
         stream: Optional[str] = None,
         level: Optional[str] = None,
@@ -189,10 +189,12 @@ def register(server: "MCPServer") -> None:
         Follow a hit with `get_rfc_info(rfc)` for full metadata and its
         reference graph.
         """
-        return await _offload(render_search, query, status, stream, level, group, limit)
+        return await _offload(
+            render_search, loose_str(query), status, stream, level, group, limit
+        )
 
     @server.tool()
-    async def get_rfc_info(rfc: str) -> str:
+    async def get_rfc_info(rfc: LooseStr) -> str:
         """Catalogue metadata and the reference graph for one RFC — **not
         the document text**, which is what the name says and what
         `get_rfc_section` is for.
@@ -217,4 +219,4 @@ def register(server: "MCPServer") -> None:
         and that mirror is stale, it is refreshed live before answering,
         so a just-published RFC still resolves.
         """
-        return await _offload(_render_rfc_live, rfc)
+        return await _offload(_render_rfc_live, loose_str(rfc))

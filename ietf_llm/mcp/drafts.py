@@ -14,12 +14,15 @@ from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import DIR_DRAFTS, drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
 from ..store.blobs import parallel_each
 from .common import (
+    LooseStr,
     _files_dir,
     _list_corpus_files,
     _list_wgs,
     _offload,
     _requires_corpus,
     _with_freshness,
+    float_section_note,
+    loose_str,
 )
 from .rfc_text import normalise_section
 
@@ -680,7 +683,7 @@ def register(server: "MCPServer") -> None:
     @server.tool()
     async def get_draft(
         name: str,
-        section: Optional[str] = None,
+        section: Optional[LooseStr] = None,
         start_line: Optional[int] = None,
         max_lines: int = 2000,
     ) -> str:
@@ -699,9 +702,12 @@ def register(server: "MCPServer") -> None:
           with its title, start line, and length. A draft is typically 2,000
           to 4,000 lines, far past what one result can carry, so start here
           and read what you need.
-        - **`section="4.2"`** — that section, in full. `4.2`, `§4.2`,
-          `Section 4.2` and `Appendix B` are all accepted, and a parent label
-          takes everything beneath it (`section="4"` gives §4, §4.1, §4.2…).
+        - **`section="4.2"`** — that section, in full. Pass it as a string:
+          `"4.2"`, `"§4.2"`, `"Section 4.2"` and `"Appendix B"` all work, and
+          a parent label takes everything beneath it (`section="4"` gives §4,
+          §4.1, §4.2…). A JSON number is tolerated, but it drops trailing
+          zeros (`4.10` arrives as `4.1`), so the reply carries a note when a
+          non-integer number is received.
         - **`start_line=1`** — the document from the top, in pages, for when
           you genuinely want to read it end to end.
 
@@ -711,12 +717,14 @@ def register(server: "MCPServer") -> None:
         client's limit and that banner is the only truncation in play — but
         check for it before treating what you got as the whole section.
         """
-        return await _offload(tool_get_draft, name, section, start_line, max_lines)
+        return float_section_note(section) + await _offload(
+            tool_get_draft, name, loose_str(section), start_line, max_lines
+        )
 
     @server.tool()
     async def get_issue(
         corpus: str,
-        number: str,
+        number: LooseStr,
         repo: str = "",
         start_line: int = 1,
         max_lines: int = 3000,
@@ -736,7 +744,7 @@ def register(server: "MCPServer") -> None:
         record with `start_line` (the truncation footer says where to resume).
         """
         return await _offload(
-            tool_get_issue, corpus, number, repo, start_line, max_lines
+            tool_get_issue, corpus, loose_str(number), repo, start_line, max_lines
         )
 
 

@@ -9,7 +9,7 @@ import functools
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
 
 import anyio
 from anyio.lowlevel import RunVar
@@ -33,6 +33,49 @@ from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from . import debug_log
 
 MAX_LINES_DEFAULT = 400
+
+#: A text parameter whose value looks like a number (an RFC number, a section
+#: label, an issue number). A client that sends the bare `3` or `3.3` delivers a
+#: JSON number, which a plain `str` parameter rejects before the tool runs.
+LooseStr = Union[str, int, float]
+
+
+def float_section_note(value: object) -> str:
+    """A leading note for a section that arrived as a float, else "".
+
+    A float cannot keep a trailing zero, so `3.10` reaches the tool as `3.1`
+    and resolves to a different section without any error. The caller can
+    only learn that from the reply.
+    """
+    if not isinstance(value, float) or float(value).is_integer():
+        return ""
+    return (
+        f"_Note: `section` arrived as the number {value!r}, and a number drops "
+        f"trailing zeros (`3.10` becomes `3.1`). If you meant a different "
+        f'label, pass it as a string: `section="3.10"`._\n\n'
+    )
+
+
+@overload
+def loose_str(value: None) -> None: ...
+
+
+@overload
+def loose_str(value: LooseStr) -> str: ...
+
+
+def loose_str(value: Optional[LooseStr]) -> Optional[str]:
+    """`value` as the string the tool bodies expect, `None` passing through.
+
+    An integral float (`3.0`) becomes `"3"`. A float cannot carry a trailing
+    zero, so a section `3.10` arrives as `3.1`; the tool docstrings tell
+    callers to pass a string for those.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, float) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 # Raised from 2000 once consumers reported hitting it on long issue

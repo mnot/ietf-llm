@@ -39,7 +39,7 @@ from ..embeddings.storage import (
 )
 from ..singletons.rfc_rank import rank_documents
 from ..singletons.rfcs import rfc_num_to_name
-from .common import _offload
+from .common import LooseStr, _offload, float_section_note, loose_str
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -191,6 +191,25 @@ def section_text(number: str, section: Optional[str]) -> Optional[str]:
     return "\n".join(text for _idx, text in rows).strip()
 
 
+def matched_passage(
+    number: str, section: Optional[str], chunk_idx: int
+) -> Optional[str]:
+    """The text from the matched chunk to the end of its section, or None.
+
+    What the search matched is one chunk, not the section's opening. A leading
+    `…` marks a passage that starts partway through its section.
+    """
+    file = _rfc_file(number)
+    if file is None:
+        return None
+    rows = section_rows(RFC_CORPUS, file, section)
+    for pos, (idx, _text) in enumerate(rows):
+        if idx == chunk_idx:
+            text = "\n".join(t for _i, t in rows[pos:]).strip()
+            return f"… {text}" if pos else text
+    return None
+
+
 def _outline(number: str) -> List[Tuple[str, str, int]]:
     """`(section, title, characters)` for every indexed section of an RFC."""
     file = _rfc_file(number)
@@ -270,7 +289,7 @@ def _render_results(
                 skipped += 1
                 continue
             label = f"§{sec}" if sec else "(unsectioned)"
-            body = section_text(number, sec) or hit.snippet
+            body = matched_passage(number, sec, hit.chunk_idx) or hit.snippet
             snippet = " ".join(body.split())[:snippet_chars]
             lines = [
                 f"- **{label} {hit.title}** — score {hit.score:.3f}",
@@ -349,9 +368,9 @@ def tool_search_rfc_text(
     out += body
     out.append(
         f"_{len(ranked)} RFCs matched; showing {shown}. "
-        "Snippets are the opening of each section, not the passage that "
-        "matched — read the section with `get_rfc_section` before quoting "
-        "it._"
+        "Each snippet is the passage that matched, cut at `snippet_chars`; a "
+        "leading … means it starts partway through its section. Read the "
+        "section with `get_rfc_section` before quoting beyond it._"
     )
     if notes:
         out.append("")
@@ -415,7 +434,7 @@ def register(server: "MCPServer") -> None:
     @server.tool()
     async def search_rfc_text(
         query: str,
-        rfc: Optional[str] = None,
+        rfc: Optional[LooseStr] = None,
         limit: int = 10,
         sections_per_rfc: int = _SECTIONS_PER_RFC,
         snippet_chars: int = _SNIPPET_CHARS,
@@ -454,26 +473,38 @@ def register(server: "MCPServer") -> None:
         The reply as a whole stops at about 40,000 characters, and says how
         many sections it left out.
 
-        Results are **sections**, ranked by document. Snippets are the
-        opening of each matched section, not the passage that matched, so
-        follow a hit with `get_rfc_section` before quoting.
+        Results are **sections**, ranked by document. Each snippet is the
+        passage that matched (from the matching chunk onward, up to
+        `snippet_chars`), so most hits need no follow-up read; use
+        `get_rfc_section` for the rest of a section or before quoting at
+        length.
 
         Obsoleted RFCs are included and **marked**; the series is the whole
         historical record, so check the marker before citing anything as
         current.
         """
         return await _offload(
-            tool_search_rfc_text, query, rfc, limit, sections_per_rfc, snippet_chars
+            tool_search_rfc_text,
+            query,
+            loose_str(rfc),
+            limit,
+            sections_per_rfc,
+            snippet_chars,
         )
 
     @server.tool()
-    async def get_rfc_section(rfc: str, section: Optional[str] = None) -> str:
+    async def get_rfc_section(rfc: LooseStr, section: Optional[LooseStr] = None) -> str:
         """Read one section of an RFC from the local text corpus, offline.
 
-        `rfc` is an RFC number ("9111"). `section` is a label as cited —
-        `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted. A
+        `rfc` is an RFC number ("9111"). Pass `section` as a **string**: the
+        label as cited, `"7.2"`. The `Section ` or `§` prefix is optional, so
+        `"7.2"`, `"§7.2"`, `"Section 7.2"` and `"Appendix A"` all work. A
         parent label returns it and everything beneath it, so `section="7"`
         gives §7, §7.1, §7.2…
+
+        A JSON number (`7`, `7.2`) is tolerated, but a number drops trailing
+        zeros, so `7.10` arrives as `7.1` and reads the wrong section; the
+        reply carries a note when a non-integer number is received.
 
         With no `section`, returns that RFC's indexed outline: every section
         with its title and size. That is the way to find the citation you
@@ -488,4 +519,6 @@ def register(server: "MCPServer") -> None:
         This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
-        return await _offload(tool_get_rfc_section, rfc, section)
+        return float_section_note(section) + await _offload(
+            tool_get_rfc_section, loose_str(rfc), loose_str(section)
+        )

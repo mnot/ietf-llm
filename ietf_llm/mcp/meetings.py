@@ -17,7 +17,14 @@ from ..paths import (
     transcripts_dir,
     valid_corpus_name,
 )
-from .common import _files_dir, _offload, _requires_corpus, _with_freshness
+from .common import (
+    LooseStr,
+    _files_dir,
+    _offload,
+    _requires_corpus,
+    _with_freshness,
+    loose_str,
+)
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -309,7 +316,7 @@ def register(server: "MCPServer") -> None:
         return await _offload(tool_list_meetings, corpus)
 
     @server.tool()
-    async def read_minutes(corpus: str, meeting: str = "") -> str:
+    async def read_minutes(corpus: str, meeting: LooseStr = "") -> str:
         """Read the gathered minutes for one meeting, plus any recorded poll
         tallies. Offline, from the cache; the authoritative record of what a
         meeting discussed and decided.
@@ -321,12 +328,12 @@ def register(server: "MCPServer") -> None:
         exists, a count and a pointer to the full roster are appended;
         attendance is presence, not a position.
         """
-        return await _offload(tool_read_minutes, corpus, meeting)
+        return await _offload(tool_read_minutes, corpus, loose_str(meeting))
 
 
 def register_live(server: "MCPServer") -> None:
     @server.tool()
-    async def meeting_schedule(corpus: str, meeting: str = "") -> str:
+    async def meeting_schedule(corpus: str, meeting: LooseStr = "") -> str:
         """A group's **live** meeting schedule from Datatracker — its session
         logistics at an IETF meeting (building an agenda is the obvious
         case). The live counterpart to the offline gathered record
@@ -356,4 +363,4 @@ def register_live(server: "MCPServer") -> None:
             meeting: A numbered meeting (`126`) or interim id
                 (`interim-2026-aipref-05`); omit to list upcoming meetings.
         """
-        return await _offload(tool_meeting_schedule, corpus, meeting)
+        return await _offload(tool_meeting_schedule, corpus, loose_str(meeting))
