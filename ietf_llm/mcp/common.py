@@ -40,6 +40,22 @@ MAX_LINES_DEFAULT = 400
 LooseStr = Union[str, int, float]
 
 
+def float_section_note(value: object) -> str:
+    """A leading note for a section that arrived as a float, else "".
+
+    A float cannot keep a trailing zero, so `3.10` reaches the tool as `3.1`
+    and resolves to a different section without any error. The caller can
+    only learn that from the reply.
+    """
+    if not isinstance(value, float) or value.is_integer():
+        return ""
+    return (
+        f"_Note: `section` arrived as the number {value!r}, and a number drops "
+        f"trailing zeros (`3.10` becomes `3.1`). If you meant a different "
+        f'label, pass it as a string: `section="3.10"`._\n\n'
+    )
+
+
 @overload
 def loose_str(value: None) -> None: ...
 

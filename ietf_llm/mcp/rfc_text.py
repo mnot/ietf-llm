@@ -39,7 +39,7 @@ from ..embeddings.storage import (
 )
 from ..singletons.rfc_rank import rank_documents
 from ..singletons.rfcs import rfc_num_to_name
-from .common import LooseStr, _offload, loose_str
+from .common import LooseStr, _offload, float_section_note, loose_str
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -496,11 +496,15 @@ def register(server: "MCPServer") -> None:
     async def get_rfc_section(rfc: LooseStr, section: Optional[LooseStr] = None) -> str:
         """Read one section of an RFC from the local text corpus, offline.
 
-        `rfc` is an RFC number ("9111"). `section` is a label as cited —
-        `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted, as is
-        a bare number (`7`, `7.2`); pass a string for a label like `7.10`,
-        whose trailing zero a number loses. A parent label returns it and
-        everything beneath it, so `section="7"` gives §7, §7.1, §7.2…
+        `rfc` is an RFC number ("9111"). Pass `section` as a **string**: the
+        label as cited, `"7.2"`. The `Section ` or `§` prefix is optional, so
+        `"7.2"`, `"§7.2"`, `"Section 7.2"` and `"Appendix A"` all work. A
+        parent label returns it and everything beneath it, so `section="7"`
+        gives §7, §7.1, §7.2…
+
+        A JSON number (`7`, `7.2`) is tolerated, but a number drops trailing
+        zeros, so `7.10` arrives as `7.1` and reads the wrong section; the
+        reply carries a note when a non-integer number is received.
 
         With no `section`, returns that RFC's indexed outline: every section
         with its title and size. That is the way to find the citation you
@@ -515,4 +519,6 @@ def register(server: "MCPServer") -> None:
         This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
-        return await _offload(tool_get_rfc_section, loose_str(rfc), loose_str(section))
+        return float_section_note(section) + await _offload(
+            tool_get_rfc_section, loose_str(rfc), loose_str(section)
+        )

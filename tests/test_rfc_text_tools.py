@@ -454,3 +454,25 @@ async def test_every_numeric_looking_text_parameter_takes_a_bare_number() -> Non
         schema = tools[tool][param]
         kinds = {s["type"] for s in schema.get("anyOf", [schema]) if "type" in s}
         assert {"string", "integer"} <= kinds, (tool, param, kinds)
+
+
+@pytest.mark.anyio
+async def test_a_float_section_carries_a_note_but_an_int_or_string_does_not(
+    corpus: Path,
+) -> None:
+    """`3.10` as a number is `3.1`, which resolves to another section without
+    any error, so the reply has to say what happened."""
+    from mcp.server.mcpserver import MCPServer
+
+    server = MCPServer("t")
+    rfc_text.register(server)
+
+    async def text(section: Any) -> str:
+        result = await server.call_tool("get_rfc_section", {"rfc": "9111", "section": section})
+        return str(result)
+
+    floated = await text(3.3)
+    assert "arrived as the number 3.3" in floated and "trailing zeros" in floated
+    assert floated.index("Note") < floated.index("Incomplete")
+    for clean in (3, 3.0, "3.3", "Section 3"):
+        assert "Note:" not in await text(clean), clean

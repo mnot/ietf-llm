@@ -21,6 +21,7 @@ from .common import (
     _offload,
     _requires_corpus,
     _with_freshness,
+    float_section_note,
     loose_str,
 )
 from .rfc_text import normalise_section
@@ -701,11 +702,12 @@ def register(server: "MCPServer") -> None:
           with its title, start line, and length. A draft is typically 2,000
           to 4,000 lines, far past what one result can carry, so start here
           and read what you need.
-        - **`section="4.2"`** — that section, in full. `4.2`, `§4.2`,
-          `Section 4.2` and `Appendix B` are all accepted, and a parent label
-          takes everything beneath it (`section="4"` gives §4, §4.1, §4.2…).
-          A bare number (`4`, `4.2`) is accepted too; pass a string for a
-          label like `4.10`, whose trailing zero a number loses.
+        - **`section="4.2"`** — that section, in full. Pass it as a string:
+          `"4.2"`, `"§4.2"`, `"Section 4.2"` and `"Appendix B"` all work, and
+          a parent label takes everything beneath it (`section="4"` gives §4,
+          §4.1, §4.2…). A JSON number is tolerated, but it drops trailing
+          zeros (`4.10` arrives as `4.1`), so the reply carries a note when a
+          non-integer number is received.
         - **`start_line=1`** — the document from the top, in pages, for when
           you genuinely want to read it end to end.
 
@@ -715,7 +717,7 @@ def register(server: "MCPServer") -> None:
         client's limit and that banner is the only truncation in play — but
         check for it before treating what you got as the whole section.
         """
-        return await _offload(
+        return float_section_note(section) + await _offload(
             tool_get_draft, name, loose_str(section), start_line, max_lines
         )
 
