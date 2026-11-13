@@ -9,7 +9,8 @@ durable guard against writer/reader format drift.
 
 Data shapes mirror what rfc.fyi actually serves:
   rfcs.json : {"RFC9110": {title, status, stream, level, wg, area,
-               keywords, obsoletes:[<RFC-name>, ...]}}
+               keywords, obsoletes:[<RFC-name>, ...],
+               updates:[<RFC-name>, ...]}}
   refs.json : {"9110": {normative:[<bare-num>], informative:[<bare-num>]}}
   tags.json : {"collection": {...}}   (facets are derived by the reader)
 """
