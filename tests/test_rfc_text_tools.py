@@ -367,3 +367,58 @@ def test_the_first_section_is_always_shown(
     monkeypatch.setattr(rfc_text, "_MAX_REPLY_CHARS", 10)
     out = rfc_text.tool_search_rfc_text("caching", rfc="9111")
     assert "## RFC 9111" in out and "showing 1." in out
+
+
+@pytest.mark.parametrize(
+    "given,expected",
+    [(None, None), ("3.3", "3.3"), (3, "3"), (3.3, "3.3"), (3.0, "3"), ("Section 3", "Section 3")],
+)
+def test_loose_str_accepts_numbers(given: Any, expected: Any) -> None:
+    from ietf_llm.mcp.common import loose_str
+
+    assert loose_str(given) == expected
+
+
+@pytest.mark.anyio
+async def test_the_tool_accepts_a_bare_number_section(corpus: Path) -> None:
+    from mcp.server.mcpserver import MCPServer
+
+    server = MCPServer("t")
+    rfc_text.register(server)
+    for value in (3, 3.3, "3", "Section 3"):
+        result = await server.call_tool("get_rfc_section", {"rfc": "9111", "section": value})
+        assert "Storing" in str(result), value
+    # The RFC number itself may arrive bare, too.
+    result = await server.call_tool("get_rfc_section", {"rfc": 9111, "section": 3})
+    assert "Storing" in str(result)
+    result = await server.call_tool("search_rfc_text", {"query": "caching", "rfc": 9111})
+    assert "Error" not in str(result)[:40]
+
+
+@pytest.mark.anyio
+async def test_every_numeric_looking_text_parameter_takes_a_bare_number() -> None:
+    """The schema, not just the body: a client validates against it, and a
+    plain `str` parameter is what made a bare `3` fail before the tool ran."""
+    from mcp.server.mcpserver import MCPServer
+
+    from ietf_llm.mcp import drafts, meetings, rfcs
+
+    server = MCPServer("t")
+    for module in (rfcs, rfc_text, drafts, meetings):
+        module.register(server)
+    meetings.register_live(server)
+    tools = {t.name: t.input_schema["properties"] for t in await server.list_tools()}
+    for tool, param in [
+        ("get_rfc_info", "rfc"),
+        ("search_rfc_index", "query"),
+        ("get_rfc_section", "rfc"),
+        ("get_rfc_section", "section"),
+        ("search_rfc_text", "rfc"),
+        ("get_draft", "section"),
+        ("get_issue", "number"),
+        ("read_minutes", "meeting"),
+        ("meeting_schedule", "meeting"),
+    ]:
+        schema = tools[tool][param]
+        kinds = {s["type"] for s in schema.get("anyOf", [schema]) if "type" in s}
+        assert {"string", "integer"} <= kinds, (tool, param, kinds)

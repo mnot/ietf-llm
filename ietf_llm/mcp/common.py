@@ -9,7 +9,7 @@ import functools
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
 
 import anyio
 from anyio.lowlevel import RunVar
@@ -33,6 +33,33 @@ from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
 from . import debug_log
 
 MAX_LINES_DEFAULT = 400
+
+#: A text parameter whose value looks like a number (an RFC number, a section
+#: label, an issue number). A client that sends the bare `3` or `3.3` delivers a
+#: JSON number, which a plain `str` parameter rejects before the tool runs.
+LooseStr = Union[str, int, float]
+
+
+@overload
+def loose_str(value: None) -> None: ...
+
+
+@overload
+def loose_str(value: LooseStr) -> str: ...
+
+
+def loose_str(value: Optional[LooseStr]) -> Optional[str]:
+    """`value` as the string the tool bodies expect, `None` passing through.
+
+    An integral float (`3.0`) becomes `"3"`. A float cannot carry a trailing
+    zero, so a section `3.10` arrives as `3.1`; the tool docstrings tell
+    callers to pass a string for those.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 # Raised from 2000 once consumers reported hitting it on long issue

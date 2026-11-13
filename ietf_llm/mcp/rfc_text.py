@@ -39,7 +39,7 @@ from ..embeddings.storage import (
 )
 from ..singletons.rfc_rank import rank_documents
 from ..singletons.rfcs import rfc_num_to_name
-from .common import _offload
+from .common import LooseStr, _offload, loose_str
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -415,7 +415,7 @@ def register(server: "MCPServer") -> None:
     @server.tool()
     async def search_rfc_text(
         query: str,
-        rfc: Optional[str] = None,
+        rfc: Optional[LooseStr] = None,
         limit: int = 10,
         sections_per_rfc: int = _SECTIONS_PER_RFC,
         snippet_chars: int = _SNIPPET_CHARS,
@@ -463,17 +463,23 @@ def register(server: "MCPServer") -> None:
         current.
         """
         return await _offload(
-            tool_search_rfc_text, query, rfc, limit, sections_per_rfc, snippet_chars
+            tool_search_rfc_text,
+            query,
+            loose_str(rfc),
+            limit,
+            sections_per_rfc,
+            snippet_chars,
         )
 
     @server.tool()
-    async def get_rfc_section(rfc: str, section: Optional[str] = None) -> str:
+    async def get_rfc_section(rfc: LooseStr, section: Optional[LooseStr] = None) -> str:
         """Read one section of an RFC from the local text corpus, offline.
 
         `rfc` is an RFC number ("9111"). `section` is a label as cited —
-        `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted. A
-        parent label returns it and everything beneath it, so `section="7"`
-        gives §7, §7.1, §7.2…
+        `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted, as is
+        a bare number (`7`, `7.2`); pass a string for a label like `7.10`,
+        whose trailing zero a number loses. A parent label returns it and
+        everything beneath it, so `section="7"` gives §7, §7.1, §7.2…
 
         With no `section`, returns that RFC's indexed outline: every section
         with its title and size. That is the way to find the citation you
@@ -488,4 +494,4 @@ def register(server: "MCPServer") -> None:
         This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
-        return await _offload(tool_get_rfc_section, rfc, section)
+        return await _offload(tool_get_rfc_section, loose_str(rfc), loose_str(section))

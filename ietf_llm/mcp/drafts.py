@@ -14,12 +14,14 @@ from ..gather.sources.documents_manifest import load_documents_manifest
 from ..paths import DIR_DRAFTS, drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
 from ..store.blobs import parallel_each
 from .common import (
+    LooseStr,
     _files_dir,
     _list_corpus_files,
     _list_wgs,
     _offload,
     _requires_corpus,
     _with_freshness,
+    loose_str,
 )
 from .rfc_text import normalise_section
 
@@ -680,7 +682,7 @@ def register(server: "MCPServer") -> None:
     @server.tool()
     async def get_draft(
         name: str,
-        section: Optional[str] = None,
+        section: Optional[LooseStr] = None,
         start_line: Optional[int] = None,
         max_lines: int = 2000,
     ) -> str:
@@ -702,6 +704,8 @@ def register(server: "MCPServer") -> None:
         - **`section="4.2"`** — that section, in full. `4.2`, `§4.2`,
           `Section 4.2` and `Appendix B` are all accepted, and a parent label
           takes everything beneath it (`section="4"` gives §4, §4.1, §4.2…).
+          A bare number (`4`, `4.2`) is accepted too; pass a string for a
+          label like `4.10`, whose trailing zero a number loses.
         - **`start_line=1`** — the document from the top, in pages, for when
           you genuinely want to read it end to end.
 
@@ -711,12 +715,14 @@ def register(server: "MCPServer") -> None:
         client's limit and that banner is the only truncation in play — but
         check for it before treating what you got as the whole section.
         """
-        return await _offload(tool_get_draft, name, section, start_line, max_lines)
+        return await _offload(
+            tool_get_draft, name, loose_str(section), start_line, max_lines
+        )
 
     @server.tool()
     async def get_issue(
         corpus: str,
-        number: str,
+        number: LooseStr,
         repo: str = "",
         start_line: int = 1,
         max_lines: int = 3000,
@@ -736,7 +742,7 @@ def register(server: "MCPServer") -> None:
         record with `start_line` (the truncation footer says where to resume).
         """
         return await _offload(
-            tool_get_issue, corpus, number, repo, start_line, max_lines
+            tool_get_issue, corpus, loose_str(number), repo, start_line, max_lines
         )
 
 
