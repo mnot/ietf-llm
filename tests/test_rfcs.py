@@ -9,7 +9,8 @@ durable guard against writer/reader format drift.
 
 Data shapes mirror what rfc.fyi actually serves:
   rfcs.json : {"RFC9110": {title, status, stream, level, wg, area,
-               keywords, obsoletes:[<RFC-name>, ...]}}
+               keywords, obsoletes:[<RFC-name>, ...],
+               updates:[<RFC-name>, ...]}}
   refs.json : {"9110": {normative:[<bare-num>], informative:[<bare-num>]}}
   tags.json : {"collection": {...}}   (facets are derived by the reader)
 """
@@ -64,6 +65,7 @@ _RFCS: Dict[str, Dict[str, Any]] = {
         "area": "irtf",
         "keywords": ["messaging"],
         "obsoletes": [],
+        "updates": ["RFC200"],
     },
 }
 
@@ -222,6 +224,29 @@ def test_render_rfc_obsoletes_and_obsoleted_by(isolated_home: Path) -> None:
     assert "Obsoletes: RFC100" in out200
     out100 = rfcs.render_rfc("100")
     assert "Obsoleted by: RFC200" in out100  # inversion
+
+
+def test_render_rfc_updates_and_updated_by(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    assert "Updates: RFC200" in rfcs.render_rfc("300")
+    out200 = rfcs.render_rfc("200")
+    assert "Updated by: RFC300" in out200  # inversion
+    # The field exists in this mirror, so an RFC with none says so.
+    assert "Updates: —" in out200
+    assert "Updated by: —" in rfcs.render_rfc("100")
+
+
+def test_render_rfc_without_the_updates_field_is_not_reported_as_none(
+    isolated_home: Path,
+) -> None:
+    """A mirror fetched before rfc.fyi emitted `updates` has no record with the
+    key. Rendering `Updated by: —` there would answer "nothing amends this"."""
+    rfc_dir = _seed(isolated_home)
+    legacy = {k: {f: v for f, v in rec.items() if f != "updates"} for k, rec in _RFCS.items()}
+    (rfc_dir / "rfcs.json").write_text(json.dumps(legacy), encoding="utf-8")
+    out = rfcs.render_rfc("200")
+    assert "Updates / Updated by: unknown" in out
+    assert "Updated by: —" not in out and "Updates: —" not in out
 
 
 def test_render_rfc_reference_counts(isolated_home: Path) -> None:
