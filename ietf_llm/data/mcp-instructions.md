@@ -151,7 +151,8 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
     full, offline. No argument but the number returns the outline, which is
     also what a miss returns.
   - `get_rfc_info` — catalogue metadata and the reference graph: status,
-    stream, what it obsoletes, its normative and informative references,
+    stream, what it obsoletes and updates and what obsoletes or updates it,
+    its normative and informative references,
     how many RFCs cite it. **Never the document text** — that is
     `get_rfc_section`. It is also the authority on whether an RFC
     exists, since it revalidates its mirror before reporting a miss.

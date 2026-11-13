@@ -201,7 +201,7 @@ def register(server: "MCPServer") -> None:
 
         Full metadata for one RFC from the published series: title,
         status, stream, level, working group, keywords, what it
-        obsoletes / is obsoleted by, its normative + informative
+        obsoletes / is obsoleted by, updates / is updated by, its normative + informative
         references, how many RFCs cite it, and links to the text.
 
         `rfc` is an RFC number or name ("9110" or "RFC9110").
