@@ -1,0 +1,5 @@
+{
+  "name": "ietf-llm",
+  "owner": {"name": "Mark Nottingham"},
+  "plugins": [{"name": "ietf-llm", "source": "./"}]
+}

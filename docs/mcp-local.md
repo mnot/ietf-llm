@@ -9,6 +9,7 @@ To serve many clients from one shared process instead, see
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
+- [Install as a plugin (Claude Code, Codex)](#install-as-a-plugin-claude-code-codex)
 - [1. Install the package](#1-install-the-package)
 - [2. Register the server with your client](#2-register-the-server-with-your-client)
 - [3. Gather](#3-gather)
@@ -16,6 +17,43 @@ To serve many clients from one shared process instead, see
 - [Tuning the MCP server](#tuning-the-mcp-server)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
+## Install as a plugin (Claude Code, Codex)
+
+This repository is also a plugin marketplace. The plugin bundles the MCP server and the IETF skills,
+and runs the server with `uvx … @latest`, so it picks up new releases without a reinstall. It needs
+[uv](https://docs.astral.sh/uv/). Skip steps 1, 2 and 4 below.
+
+Before switching an existing installation:
+
+1. Remove the manually registered MCP server with `claude mcp remove ietf-llm` or
+   `codex mcp remove ietf-llm`, as applicable. For Claude Code, run this from the project where you
+   registered it; use `--scope local`, `--scope user` or `--scope project` if it exists in multiple
+   scopes, removing each registration you are replacing.
+2. If you used `ietf-llm --install-skills`, remove its `ietf-contributing`, `ietf-http`,
+   `ietf-interpreting` and `ietf-reviewing` directories from `~/.claude/skills/` (Claude Code) or
+   `~/.agents/skills/` (Codex), preserving any local edits first.
+3. If you no longer need the standalone CLI or its server for another client, uninstall it with
+   the original installer: `pipx uninstall ietf-llm`, `uv tool uninstall ietf-llm`, or
+   `python -m pip uninstall ietf-llm` in the Python environment where you installed it.
+
+```bash
+# Claude Code
+claude plugin marketplace add mnot/ietf-llm
+claude plugin install ietf-llm@ietf-llm
+
+# Codex
+codex plugin marketplace add mnot/ietf-llm
+codex plugin add ietf-llm@ietf-llm
+```
+
+The first start downloads the embedding backend (torch), which can take a few minutes. The plugin
+allows up to ten minutes for startup in Codex. If your client times out, finish the download outside
+the client, then restart it:
+
+```bash
+uvx --python 3.12 --from 'ietf-llm[local-embeddings]@latest' ietf-llm --help
+```
 
 ## 1. Install the package
 
