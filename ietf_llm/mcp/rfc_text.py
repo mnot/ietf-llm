@@ -191,6 +191,25 @@ def section_text(number: str, section: Optional[str]) -> Optional[str]:
     return "\n".join(text for _idx, text in rows).strip()
 
 
+def matched_passage(
+    number: str, section: Optional[str], chunk_idx: int
+) -> Optional[str]:
+    """The text from the matched chunk to the end of its section, or None.
+
+    What the search matched is one chunk, not the section's opening. A leading
+    `…` marks a passage that starts partway through its section.
+    """
+    file = _rfc_file(number)
+    if file is None:
+        return None
+    rows = section_rows(RFC_CORPUS, file, section)
+    for pos, (idx, _text) in enumerate(rows):
+        if idx == chunk_idx:
+            text = "\n".join(t for _i, t in rows[pos:]).strip()
+            return f"… {text}" if pos else text
+    return None
+
+
 def _outline(number: str) -> List[Tuple[str, str, int]]:
     """`(section, title, characters)` for every indexed section of an RFC."""
     file = _rfc_file(number)
@@ -270,7 +289,7 @@ def _render_results(
                 skipped += 1
                 continue
             label = f"§{sec}" if sec else "(unsectioned)"
-            body = section_text(number, sec) or hit.snippet
+            body = matched_passage(number, sec, hit.chunk_idx) or hit.snippet
             snippet = " ".join(body.split())[:snippet_chars]
             lines = [
                 f"- **{label} {hit.title}** — score {hit.score:.3f}",
@@ -349,9 +368,9 @@ def tool_search_rfc_text(
     out += body
     out.append(
         f"_{len(ranked)} RFCs matched; showing {shown}. "
-        "Snippets are the opening of each section, not the passage that "
-        "matched — read the section with `get_rfc_section` before quoting "
-        "it._"
+        "Each snippet is the passage that matched, cut at `snippet_chars`; a "
+        "leading … means it starts partway through its section. Read the "
+        "section with `get_rfc_section` before quoting beyond it._"
     )
     if notes:
         out.append("")
@@ -454,9 +473,11 @@ def register(server: "MCPServer") -> None:
         The reply as a whole stops at about 40,000 characters, and says how
         many sections it left out.
 
-        Results are **sections**, ranked by document. Snippets are the
-        opening of each matched section, not the passage that matched, so
-        follow a hit with `get_rfc_section` before quoting.
+        Results are **sections**, ranked by document. Each snippet is the
+        passage that matched (from the matching chunk onward, up to
+        `snippet_chars`), so most hits need no follow-up read; use
+        `get_rfc_section` for the rest of a section or before quoting at
+        length.
 
         Obsoleted RFCs are included and **marked**; the series is the whole
         historical record, so check the marker before citing anything as

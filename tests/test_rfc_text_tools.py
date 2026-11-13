@@ -297,7 +297,7 @@ def test_search_snippet_and_section_counts_are_clamped(
         conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr(rfc_text, "section_text", lambda _n, _s: "word " * 5000)
+    monkeypatch.setattr(rfc_text, "matched_passage", lambda _n, _s, _i: "word " * 5000)
     out = rfc_text.tool_search_rfc_text(
         "caching", rfc="9111", sections_per_rfc=10**6, snippet_chars=10**9
     )
@@ -330,7 +330,7 @@ def test_reply_is_cut_at_the_character_budget_and_says_so(
 
     embeddings._MODEL_CACHE["stub"] = _StubModel()
     _add_rfcs(30)
-    monkeypatch.setattr(rfc_text, "section_text", lambda _n, _s: "word " * 2000)
+    monkeypatch.setattr(rfc_text, "matched_passage", lambda _n, _s, _i: "word " * 2000)
     budget = rfc_text._MAX_REPLY_CHARS
     out = rfc_text.tool_search_rfc_text("caching", limit=50, snippet_chars=2000)
 
@@ -367,6 +367,38 @@ def test_the_first_section_is_always_shown(
     monkeypatch.setattr(rfc_text, "_MAX_REPLY_CHARS", 10)
     out = rfc_text.tool_search_rfc_text("caching", rfc="9111")
     assert "## RFC 9111" in out and "showing 1." in out
+
+
+def test_a_snippet_is_the_matched_passage_not_the_section_opening(corpus: Path) -> None:
+    from ietf_llm import embeddings
+
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
+    conn = _open_db(rfc_text.RFC_CORPUS)
+    try:
+        far = np.array([0, 1, 0, 0], dtype=np.float32).tobytes()
+        near = np.array([1, 0, 0, 0], dtype=np.float32).tobytes()
+        conn.executemany(
+            "INSERT INTO chunks(file, chunk_idx, sub_idx, title, text, embedding, "
+            "section) VALUES(?,?,0,?,?,?,?)",
+            [
+                ("rfc9999.txt", 0, "Long", "Opening of the section.", far, "5"),
+                ("rfc9999.txt", 1, "Long", "The passage that matched.", near, "5"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    out = rfc_text.tool_search_rfc_text("anything", rfc="9999")
+    assert "… The passage that matched." in out
+    assert "Opening of the section." not in out
+
+
+def test_a_snippet_at_the_section_start_has_no_leading_ellipsis(corpus: Path) -> None:
+    assert rfc_text.matched_passage("9111", "3", 1) == (
+        "A cache MUST NOT store a response\nunless the method is understood."
+    )
+    assert rfc_text.matched_passage("9111", "3", 2) == "… unless the method is understood."
+    assert rfc_text.matched_passage("9111", "3", 99) is None
 
 
 @pytest.mark.parametrize(
