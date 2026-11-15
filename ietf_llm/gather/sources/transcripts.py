@@ -2,13 +2,14 @@ import io
 import os
 import re
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
 from dulwich import porcelain
 
 from ...atomicio import atomic_open, file_lock
 from ...log import LogLevel, Verbosity, log
+from ...months import window_start
 from ...paths import get_cache_dir, transcript_path, transcripts_dir
 
 if TYPE_CHECKING:
@@ -121,9 +122,7 @@ def process_transcripts(
 
     # WG name in the filename is uppercase in the repo (e.g., AIPREF)
     wg_upper = wg_name.upper()
-    cutoff_date = (
-        datetime.now() - timedelta(days=months * 30) if months is not None else None
-    )
+    cutoff_date = window_start(months, datetime.now())
 
     # Source filenames look like `IETF125-AIPREF-20260316-0330.md` (a
     # numbered IETF meeting) or `IETF-AIPREF-20260415-1315.md` (an

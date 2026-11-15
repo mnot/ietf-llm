@@ -50,12 +50,13 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...atomicio import write_if_changed
 from ...digest.events import Event
 from ...log import LogLevel, Verbosity, log
+from ...months import window_start
 from ...paths import ballot_path, ballots_dir
 from .datatracker import (
     _get_json,
@@ -157,13 +158,14 @@ class Ballot:
 # --- API helpers -----------------------------------------------------------
 
 
-def _cutoff(months: int) -> datetime:
-    """tz-aware UTC cutoff `months` months before now, at midnight. Mirrors
-    `datatracker_history._cutoff` (same 30-day approximation) but rounded to
-    the day: the cutoff is part of the scoping URL, and one that changed every
-    second could never revalidate against the ETag cache."""
+def _cutoff(months: int) -> Optional[datetime]:
+    """tz-aware UTC cutoff `months` months before now, at midnight, or None
+    for all history (`months=0`). Mirrors `datatracker_history._cutoff` (same
+    30-day approximation) but rounded to the day: the cutoff is part of the
+    scoping URL, and one that changed every second could never revalidate
+    against the ETag cache."""
     now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    return now - timedelta(days=30 * months)
+    return window_start(months, now)
 
 
 def _parse_dt_time(value: Any) -> Optional[datetime]:
@@ -289,14 +291,14 @@ def fetch_ballots(
     event wins".
     """
     cutoff = _cutoff(months)
-    cutoff_param = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    since = f"&time__gte={cutoff.strftime('%Y-%m-%dT%H:%M:%S')}" if cutoff else ""
     # Page through `meta.next` (like `_fetch_ballot_bodies`): a balloted WG can
     # have more than 500 in-window position events, and a single capped request
     # would drop the overflow — under-scoping which drafts are considered.
     path: Optional[str] = (
         f"{_API_BASE}/doc/ballotpositiondocevent/"
         f"?doc__group__acronym={wg}"
-        f"&time__gte={cutoff_param}"
+        f"{since}"
         "&limit=500"
     )
     in_window: List[Dict[str, Any]] = []
@@ -328,8 +330,9 @@ def fetch_ballots(
             seen.add(slug)
             doc_names.append(slug)
     if not doc_names:
+        window = f"the last {months} months" if months else "its history"
         log(
-            f"No drafts with ballot activity in the last {months} months.",
+            f"No drafts with ballot activity in {window}.",
             verbose,
             level=LogLevel.PROGRESS,
         )
@@ -391,7 +394,7 @@ def fetch_ballots(
 def _build_ballot(
     doc_name: str,
     body: Dict[str, Any],
-    cutoff: datetime,
+    cutoff: Optional[datetime],
     person_cache: Dict[str, str],
     current: Optional[frozenset[str]] = None,
 ) -> Optional[Ballot]:
@@ -412,7 +415,7 @@ def _build_ballot(
         events.append((balloter, obj, when))
         if first_event is None or when < first_event:
             first_event = when
-        if when >= cutoff:
+        if cutoff is None or when >= cutoff:
             if latest_in_window is None or when > latest_in_window:
                 latest_in_window = when
                 rev = obj.get("rev")
@@ -643,7 +646,7 @@ def write_ballot_files(
 def ballot_events(
     ballots: List[Ballot],
     cache_dir: str,
-    cutoff: datetime,
+    cutoff: Optional[datetime],
 ) -> List[Event]:
     """Build timeline Event records for each in-window ballot
     position. One Event per (doc, AD, latest-in-window position).
@@ -660,7 +663,7 @@ def ballot_events(
         for pos in ballot.positions:
             # Render in-window position events only — the historical
             # tail belongs in the ballot file, not the timeline.
-            if pos.when < cutoff:
+            if cutoff is not None and pos.when < cutoff:
                 continue
             title = f"`{ballot.doc_name}`: {pos.name} → {pos.pos_label}"
             events.append(

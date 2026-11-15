@@ -274,6 +274,37 @@ def test_download_slide_downloads_when_neither_exists(
     assert called["n"] == 1
 
 
+# --- process_meetings --months window ---------------------------------------
+
+
+def _stub_meeting_io(monkeypatch: Any, rows: List[Dict[str, Any]]) -> None:
+    # Only the date filter and clustering run; every fetch and write is stubbed.
+    monkeypatch.setattr(meetings, "get_meeting_links", lambda wg, verbose: rows)
+    monkeypatch.setattr(meetings, "_material_revs", lambda wg: {})
+    monkeypatch.setattr(meetings, "load_manifest", lambda wg: {})
+    monkeypatch.setattr(meetings, "save_manifest", lambda wg, manifest: None)
+    monkeypatch.setattr(meetings, "_process_cluster", lambda *a, **k: None)
+    monkeypatch.setattr(meetings, "process_session_polls", lambda *a, **k: None)
+    monkeypatch.setattr(meetings, "_cleanup_absorbed_dirs", lambda *a, **k: None)
+
+
+def test_months_zero_keeps_past_meetings(monkeypatch: Any, tmp_path: Path) -> None:
+    # months=0 is all history; it used to become a cutoff of "now" and drop
+    # every past meeting.
+    rows = [_row("IETF 113", "2022-03-21"), _row("IETF 125", "2026-03-16")]
+    _stub_meeting_io(monkeypatch, rows)
+    clusters = meetings.process_meetings("moq", str(tmp_path), Verbosity.QUIET, months=0)
+    assert {c.code for c in clusters} == {"ietf113", "ietf125"}
+
+
+def test_bounded_months_drops_older_meetings(monkeypatch: Any, tmp_path: Path) -> None:
+    recent = datetime.now().strftime("%Y-%m-%d")
+    rows = [_row("IETF 113", "2022-03-21"), _row("IETF 999", recent)]
+    _stub_meeting_io(monkeypatch, rows)
+    clusters = meetings.process_meetings("moq", str(tmp_path), Verbosity.QUIET, months=6)
+    assert {c.code for c in clusters} == {"ietf999"}
+
+
 def test_process_cluster_absorbs_the_first_sessions_legacy_dir(
     isolated_home: Path, monkeypatch
 ) -> None:

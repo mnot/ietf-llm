@@ -9,6 +9,7 @@ the runner writes under the sandboxed HOME.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import threading
@@ -1041,3 +1042,19 @@ def test_spec_to_argv_round_trips_sources() -> None:
     parsed = main_mod.build_parser().parse_args(argv)
     assert parsed.wg == "x-foo"
     assert parsed.months == 6
+
+
+def test_stored_new_drafts_with_all_history_skips_discovery_and_pruning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A stored --new-drafts meeting a forced `--months 0` must not search for
+    # -00 submissions since today and then prune what was already gathered.
+    def boom(*a: Any, **k: Any) -> Any:
+        raise AssertionError("new-draft discovery or pruning ran")
+
+    monkeypatch.setattr(main_mod, "fetch_new_draft_names", boom)
+    monkeypatch.setattr(main_mod, "prune_drafts", boom)
+    args = argparse.Namespace(
+        wg="x-new", author=None, new_drafts=True, months=0, draft=None
+    )
+    main_mod._gather_dynamic_drafts(args, str(tmp_path), {}, Verbosity.QUIET)

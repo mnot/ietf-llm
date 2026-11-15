@@ -5,13 +5,14 @@ import re
 import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
 from ...atomicio import atomic_open, atomic_open_binary, write_if_changed
 from ...log import LogLevel, Verbosity, log
+from ...months import window_start
 from ...net import (
     DEFAULT_HEADERS,
     clean_html,
@@ -414,9 +415,9 @@ def process_meetings(
         )
         return []
 
-    # Filter meetings by date if months is specified.
-    if months is not None:
-        cutoff_date = datetime.now() - timedelta(days=months * 30)
+    # Filter meetings by date when the window is bounded (months=0 keeps all).
+    cutoff_date = window_start(months, datetime.now())
+    if cutoff_date is not None:
         filtered = []
         for meeting in meetings:
             m_date = _parse_meeting_date(meeting["date"])

@@ -1,7 +1,8 @@
 """The gather ``--months`` window policy.
 
-Validate a requested window (`months_request_error` / `months_request_caution`)
-and resolve the effective one after config merge (`resolve_months`). `months=0`
+Validate a requested window (`months_request_error` / `months_request_caution`),
+resolve the effective one after config merge (`resolve_months`), and turn it
+into a cutoff for the sources that filter by date (`window_start`). `months=0`
 means all-history and is honoured only with ``--force``. Shared by the
 `ietf-llm` CLI, the MCP `start_gather` tool, and the readers that surface the
 default window. Stdlib-only.
@@ -9,12 +10,22 @@ default window. Stdlib-only.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 DEFAULT_MONTHS = 12
 
 
-def months_request_error(months: Optional[int], force: bool) -> Optional[str]:
+NEW_DRAFTS_UNBOUNDED = (
+    "--new-drafts needs a bounded window: months=0 (all history) would search "
+    "for -00 submissions since today and prune the new drafts already "
+    "gathered. Pass a positive months value."
+)
+
+
+def months_request_error(
+    months: Optional[int], force: bool, new_drafts: bool = False
+) -> Optional[str]:
     """Validate a requested `--months` window, returning a refusal message or
     None.
 
@@ -24,9 +35,14 @@ def months_request_error(months: Optional[int], force: bool) -> Optional[str]:
     it publishes). So it is honoured only with `force`, to keep it from being
     selected by accident (e.g. a caller meaning "minimal" passing 0). A negative
     window is nonsensical. A bounded window (>=1) — or an unset `None` that later
-    defaults to `DEFAULT_MONTHS` — is always allowed."""
+    defaults to `DEFAULT_MONTHS` — is always allowed.
+
+    `new_drafts` (a rolling "new Internet-Drafts" window) has no all-history
+    meaning, so it refuses `months=0` even with `force`."""
     if months is None:
         return None
+    if months == 0 and new_drafts:
+        return NEW_DRAFTS_UNBOUNDED
     if months < 0:
         return (
             f"months must be 0 or a positive number (got {months}): 0 means all "
@@ -67,3 +83,13 @@ def resolve_months(months: Optional[int], force: bool) -> Tuple[int, Optional[st
             f"default {DEFAULT_MONTHS}-month window"
         )
     return (DEFAULT_MONTHS if months is None else months), None
+
+
+def window_start(months: Optional[int], now: datetime) -> Optional[datetime]:
+    """The earliest date a `months` window covers, counting back from `now`
+    (30-day months), or None when the window is unbounded: `months` unset, or
+    0, the all-history sentinel. A source with a None cutoff keeps everything.
+    `now` sets the timezone: pass the clock the caller compares against."""
+    if not months:
+        return None
+    return now - timedelta(days=30 * months)
