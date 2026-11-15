@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 import requests
 
@@ -97,6 +97,12 @@ def is_remote_embed_model(model_name: str) -> bool:
 # stock headroom even when a gather asks for less concurrency.
 _DEFAULT_POOL_MAXSIZE = 10
 
+#: Retries for a single query-time embed (`IETF_LLM_EMBED_QUERY_RETRIES`), and
+#: the longest `Retry-After` it will wait out; bulk ingest keeps the larger
+#: `IETF_LLM_EMBED_RETRIES` budget and `oai_compat.RETRY_AFTER_MAX`.
+_DEFAULT_QUERY_RETRIES = 1
+_QUERY_RETRY_AFTER_MAX = 30.0
+
 
 def embed_concurrency() -> int:
     """How many files a gather embeds in parallel on the remote backend.
@@ -136,8 +142,7 @@ def _cuda_available() -> bool:
     """True if a CUDA device is usable. Isolated so the device default can be
     tested without importing torch (CI stays torch-free)."""
     try:
-        # pylint: disable=import-outside-toplevel,import-error
-        import torch  # type: ignore[import-untyped,import-not-found,unused-ignore]
+        import torch  # type: ignore[import-not-found]  # noqa: PLC0415
 
         return bool(torch.cuda.is_available())
     except ImportError:
@@ -176,8 +181,7 @@ def _embed_device(verbose: Verbosity = Verbosity.QUIET) -> str:
 
 def _construct_sentence_transformer(bare: str, device: str, *, local_only: bool) -> Any:
     """Build the underlying SentenceTransformer. Isolated for testing."""
-    # pylint: disable=import-outside-toplevel,import-error,line-too-long
-    from sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
+    from sentence_transformers import (  # type: ignore[import-not-found]  # noqa: PLC0415
         SentenceTransformer,
     )
 
@@ -216,8 +220,7 @@ def _load_sentence_transformer(
     """
     bare = model_name[len(_ST_PREFIX) :]
     try:
-        # pylint: disable=import-outside-toplevel,import-error,line-too-long
-        from llm_sentence_transformers import (  # type: ignore[import-untyped,import-not-found,unused-ignore]
+        from llm_sentence_transformers import (  # type: ignore[import-not-found]  # noqa: PLC0415
             SentenceTransformerModel,
             read_models,
             write_models,
@@ -236,7 +239,7 @@ def _load_sentence_transformer(
         )
         return None
     try:
-        models = read_models()
+        models: List[Dict[str, Any]] = read_models()
         if not any(m.get("name") == bare for m in models):
             models.append({"name": bare, "trust_remote_code": False})
             write_models(models)
@@ -285,10 +288,10 @@ def _load_sentence_transformer(
                     flush=True,
                 )
             st_model = _construct_sentence_transformer(bare, device, local_only=False)
-        model._model = st_model  # pylint: disable=protected-access
+        model._model = st_model
         log(f"Loaded {bare} on device={device}.", verbose, level=LogLevel.PROGRESS)
         return model
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # The underlying stack (huggingface_hub, sentence-transformers,
         # torch) doesn't expose a stable exception hierarchy, so we
         # catch broadly but include the type name for debuggability. The
@@ -324,7 +327,9 @@ class _OpenAICompatEmbeddingModel:
 
     ``embed_multi`` batches to ``batch_size`` inputs per request and
     retries 429 / 5xx with exponential backoff + jitter (bulk ingest is
-    rate-sensitive); ``embed`` is the single-input query-time case.
+    rate-sensitive); ``embed`` is the single-input query-time case, where
+    someone is waiting (on the serve path, an anyio worker thread is pinned),
+    so it gets its own small retry budget and a shorter ``Retry-After`` cap.
     """
 
     def __init__(
@@ -336,6 +341,7 @@ class _OpenAICompatEmbeddingModel:
         batch_size: int,
         timeout: float,
         max_retries: int,
+        query_retries: int = _DEFAULT_QUERY_RETRIES,
         pool_maxsize: int = _DEFAULT_POOL_MAXSIZE,
     ) -> None:
         self._model_id = model_id
@@ -344,6 +350,12 @@ class _OpenAICompatEmbeddingModel:
         self._batch_size = max(1, batch_size)
         self._timeout = timeout
         self._max_retries = max(0, max_retries)
+        self._query_retries = min(self._max_retries, max(0, query_retries))
+        # Monotonic time before which the upstream said not to come back (an
+        # over-cap Retry-After, clamped); every thread sharing this model then
+        # fails without a request, so a parallel bulk embed stops asking at once.
+        self._blocked_until = 0.0
+        self._blocked_by: oai_compat.UpstreamRateLimited | None = None
         # One keep-alive session for the model's lifetime (it is process-cached
         # in _MODEL_CACHE): a bulk index fires many batches back-to-back at one
         # host, so reusing the connection drops a TCP + TLS handshake per batch.
@@ -360,16 +372,39 @@ class _OpenAICompatEmbeddingModel:
         self._session.mount("http://", adapter)
 
     def embed(self, text: str) -> list[float]:
-        return self._embed_batch([text])[0]
+        return self._embed_batch(
+            [text],
+            max_retries=self._query_retries,
+            retry_after_max=_QUERY_RETRY_AFTER_MAX,
+        )[0]
 
     def embed_multi(self, texts: Iterable[str]) -> list[list[float]]:
         items = list(texts)
         out: list[list[float]] = []
         for start in range(0, len(items), self._batch_size):
-            out.extend(self._embed_batch(items[start : start + self._batch_size]))
+            out.extend(
+                self._embed_batch(
+                    items[start : start + self._batch_size],
+                    max_retries=self._max_retries,
+                    retry_after_max=oai_compat.RETRY_AFTER_MAX,
+                )
+            )
         return out
 
-    def _embed_batch(self, batch: Sequence[str]) -> list[list[float]]:
+    def _check_not_blocked(self) -> None:
+        remaining = self._blocked_until - time.monotonic()
+        cause = self._blocked_by
+        if remaining > 0 and cause is not None:
+            # Carries the original wait, so whichever thread's error a caller
+            # sees first still says what the server asked for.
+            raise oai_compat.UpstreamRateLimited(
+                f"{cause} (not asking again for another {remaining:.0f}s)",
+                cause.retry_after,
+            )
+
+    def _embed_batch(
+        self, batch: Sequence[str], *, max_retries: int, retry_after_max: float
+    ) -> list[list[float]]:
         if not batch:
             return []
         payload = {"model": self._model_id, "input": list(batch)}
@@ -380,15 +415,27 @@ class _OpenAICompatEmbeddingModel:
         start = time.monotonic()
         errored = True
         try:
-            body = oai_compat.post_json_with_retry(
-                self._url,
-                payload,
-                self._headers,
-                timeout=self._timeout,
-                max_retries=self._max_retries,
-                auth_hint="IETF_LLM_EMBED_TOKEN / IETF_LLM_EMBED_HEADERS",
-                session=self._session,
-            )
+            self._check_not_blocked()
+            try:
+                body = oai_compat.post_json_with_retry(
+                    self._url,
+                    payload,
+                    self._headers,
+                    timeout=self._timeout,
+                    max_retries=max_retries,
+                    retry_after_max=retry_after_max,
+                    auth_hint="IETF_LLM_EMBED_TOKEN / IETF_LLM_EMBED_HEADERS",
+                    session=self._session,
+                )
+            except oai_compat.UpstreamRateLimited as err:
+                # Capped: the header is advisory, and a bogus hour must not
+                # lock queries out for an hour after the provider recovers.
+                self._blocked_until = max(
+                    self._blocked_until,
+                    time.monotonic() + min(err.retry_after, oai_compat.RETRY_AFTER_MAX),
+                )
+                self._blocked_by = err
+                raise
             errored = False
         finally:
             serve_metrics.record_embed(time.monotonic() - start, error=errored)
@@ -453,6 +500,9 @@ def _load_openai_compat(model_name: str, verbose: Verbosity) -> Any:
         batch_size=oai_compat.env_int("IETF_LLM_EMBED_BATCH", 96),
         timeout=oai_compat.env_float("IETF_LLM_EMBED_TIMEOUT", 10.0),
         max_retries=oai_compat.env_int("IETF_LLM_EMBED_RETRIES", 3),
+        query_retries=oai_compat.env_int(
+            "IETF_LLM_EMBED_QUERY_RETRIES", _DEFAULT_QUERY_RETRIES
+        ),
         # Never below requests' stock pool, so the query path keeps its
         # headroom; raised to the fan-out when a gather embeds concurrently.
         pool_maxsize=max(_DEFAULT_POOL_MAXSIZE, embed_concurrency()),
@@ -500,7 +550,7 @@ def _get_embed_model(
             model = _load_openai_compat(model_name, verbose)
         else:
             try:
-                import llm  # pylint: disable=import-outside-toplevel,import-error
+                import llm  # noqa: PLC0415
             except ImportError:
                 log(
                     "`llm` package is missing — this should ship with "
@@ -510,10 +560,8 @@ def _get_embed_model(
                 )
                 return None
             try:
-                model = llm.get_embedding_model(  # type: ignore[no-untyped-call]
-                    model_name
-                )
-            except Exception as err:  # pylint: disable=broad-except
+                model = llm.get_embedding_model(model_name)
+            except Exception as err:  # noqa: BLE001
                 # `llm.get_embedding_model` and the various provider
                 # plugins don't share a typed exception hierarchy.
                 log(

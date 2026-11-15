@@ -58,9 +58,9 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-from .paths import get_cache_dir
+from .paths import checked_corpus, get_cache_dir, readable_corpus_name
 
 #: Cache older than this prompts the warning. Picked to be long enough
 #: that day-to-day reading doesn't constantly nag, but short enough that
@@ -103,7 +103,7 @@ def set_gather_default(enabled: bool) -> None:
     defaults it off. An explicit env value still overrides either way, so
     this only moves the *default* — it is not a second on-switch.
     """
-    global _GATHER_DEFAULT  # pylint: disable=global-statement
+    global _GATHER_DEFAULT  # noqa: PLW0603
     _GATHER_DEFAULT = enabled
 
 
@@ -121,7 +121,7 @@ def set_deployment_mode(mode: str) -> None:
     so tool output can state whether the deployment is local single-user or
     possibly shared (which is what scopes the 'a wide gather costs everyone'
     cautions). Anything but 'http' normalises to 'stdio'."""
-    global _DEPLOYMENT_MODE  # pylint: disable=global-statement
+    global _DEPLOYMENT_MODE  # noqa: PLW0603
     _DEPLOYMENT_MODE = "http" if mode == "http" else "stdio"
 
 
@@ -179,6 +179,22 @@ def gather_suggestion(corpus: str, *, purpose: str = "", force: bool = False) ->
     return f"{cmd} {purpose}".rstrip() if purpose else cmd
 
 
+def unknown_corpus_message(corpus: str) -> str:
+    """What a read tool says for a corpus that is not cached, or whose name
+    could not be one (no gather command is suggested for that: it would not
+    run)."""
+    if not readable_corpus_name(corpus):
+        return (
+            f"{corpus[:80]!r} is not a valid corpus name: it must be a single "
+            "plain name, not a path. Call `list_corpora` to see what is available."
+        )
+    return (
+        f"Unknown corpus '{corpus}'. Nothing is cached under that name — "
+        f"{gather_suggestion(corpus, purpose='to gather it')}, or call "
+        "`list_corpora` to see what is available."
+    )
+
+
 def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
     """The sentinel path in the local gather *workspace* — `<cache>/<wg>/name`.
 
@@ -186,7 +202,7 @@ def _sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> str:
     publish, into the tree that becomes the new version, never into an
     already-materialised (immutable) one. See `_read_sentinel_path` for the
     read side."""
-    return os.path.join(get_cache_dir(), wg, name)
+    return os.path.join(get_cache_dir(), checked_corpus(wg), name)
 
 
 def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str]:
@@ -215,11 +231,10 @@ def _read_sentinel_path(wg: str, name: str = _GATHERED_SENTINEL) -> Optional[str
     so a top-level import here would cycle.
     """
     try:
-        # pylint: disable-next=import-outside-toplevel,cyclic-import
-        from .store.corpus import get_corpus_store
+        from .store.corpus import get_corpus_store  # noqa: PLC0415
 
         root = get_corpus_store().materialised_corpus_dir(wg)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return None
     return os.path.join(root, name) if root else None
 
@@ -497,8 +512,17 @@ def _format_hours(hours: float) -> str:
     return f"{hours:g}h"
 
 
+#: Where a debounce reads a corpus's last-gathered time: `local_last_gathered`
+#: by default, or a `CorpusStore.gathered_at` for a caller that decides before
+#: the workspace is seeded and so has no local sentinel yet.
+GatheredAt = Callable[[str], Optional[datetime]]
+
+
 def debounce_reason(
-    wg: str, *, min_interval_hours: Optional[float] = None
+    wg: str,
+    *,
+    min_interval_hours: Optional[float] = None,
+    gathered_at: Optional[GatheredAt] = None,
 ) -> Optional[str]:
     """One-line 'fresh, skipped' note if `wg` was gathered within the
     debounce window, else None.
@@ -510,11 +534,13 @@ def debounce_reason(
     this. A returned string is a success state, not an error: the existing
     snapshot is fresh enough to query as-is.
 
-    Local-only: this guards a gather about to write the local workspace
-    (the CLI's pre-flight check, and the MCP gather-entry path), so it must
-    read what's actually there regardless of the ambient
+    By default local-only: it guards a gather about to write the local
+    workspace, so it reads what's actually there regardless of the ambient
     `IETF_LLM_STORE_BACKEND` — a plain local `ietf-llm <wg>` run must not
-    depend on cloud store config it has nothing to do with.
+    depend on cloud store config it has nothing to do with. A caller that
+    decides *before* the workspace is seeded (the CLI pre-flight) passes the
+    store's `gathered_at`, which on the cloud backend answers from the
+    published version without downloading it.
     """
     hours = (
         gather_min_interval_hours()
@@ -523,7 +549,7 @@ def debounce_reason(
     )
     if hours <= 0:
         return None
-    when = local_last_gathered(wg)
+    when = (gathered_at or local_last_gathered)(wg)
     if when is None:
         return None
     age = datetime.now(timezone.utc) - when
@@ -557,7 +583,9 @@ _SOURCE_CHANGE_FLAGS = (
 )
 
 
-def cli_debounce_skip(args: Any) -> Optional[str]:
+def cli_debounce_skip(
+    args: Any, *, gathered_at: Optional[GatheredAt] = None
+) -> Optional[str]:
     """The freshness-debounce skip message for a CLI gather `args` namespace,
     or None to go ahead and gather.
 
@@ -571,4 +599,4 @@ def cli_debounce_skip(args: Any) -> Optional[str]:
         return None
     if any(getattr(args, name, None) for name in _SOURCE_CHANGE_FLAGS):
         return None
-    return debounce_reason(args.wg)
+    return debounce_reason(args.wg, gathered_at=gathered_at)

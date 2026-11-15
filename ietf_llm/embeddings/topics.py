@@ -16,6 +16,7 @@ stays clustered and routing keeps complete coverage.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -28,10 +29,12 @@ from ..log import LogLevel, Verbosity, log
 from .clustering import choose_k, mini_batch_kmeans
 from .search import index_model
 from .storage import (
+    META_BUILD_ID,
     Document,
     _topics_path,
     encode_centroid,
     load_documents,
+    read_meta,
     write_topics,
 )
 
@@ -42,6 +45,27 @@ def has_topics(wg: str) -> bool:
     a sidecar is already present, so a first build (or one whose earlier topic
     step failed) still gets one (issue #190)."""
     return os.path.isfile(_topics_path(wg, write=True))
+
+
+def topics_stale(wg: str) -> bool:
+    """True if the topic-map sidecar was derived from a different index build
+    than the one now in place (write side).
+
+    Covers a crash between promoting a build and writing the sidecar: the next
+    gather sees an unchanged index and an existing sidecar, and would otherwise
+    keep the stale map until the content changed again. An index with no build
+    id (built before ids were stamped) is not judged stale; its next change
+    stamps one.
+    """
+    build_id = read_meta(wg, [META_BUILD_ID]).get(META_BUILD_ID)
+    if build_id is None:
+        return False
+    try:
+        with open(_topics_path(wg, write=True), "r", encoding="utf-8") as handle:
+            stamped = json.load(handle).get("index_build_id")
+    except (OSError, ValueError, AttributeError):
+        return True
+    return bool(stamped != build_id)
 
 
 #: Below this many documents a corpus is too small to theme usefully — skip
@@ -200,6 +224,7 @@ def build_topics(wg: str) -> Optional[Dict[str, Any]]:
         "model_id": model,
         "dim": int(matrix.shape[1]),
         "doc_unit": "file",
+        "index_build_id": read_meta(wg, [META_BUILD_ID]).get(META_BUILD_ID),
         "n_docs": len(docs),
         "clusters": clusters,
     }

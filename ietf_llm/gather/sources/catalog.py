@@ -43,8 +43,9 @@ from . import _mirror
 _API = "https://datatracker.ietf.org/api/v1/group/group/"
 
 #: Source slices to mirror, each a (local-name, query) pair. `limit=0`
-#: returns the whole slice in one response; both are well under
-#: Datatracker's 1000-row cap (active ≈ 465, bof ≈ 1), so no paging.
+#: returns the whole slice in one response only while it is under
+#: Datatracker's 1000-row cap (active ≈ 470, bof ≈ 1); `_refresh_source`
+#: refuses a response that says there is a next page.
 _SOURCES: Tuple[Tuple[str, str], ...] = (
     ("raw-active.json", f"{_API}?state=active&format=json&limit=0"),
     ("raw-bof.json", f"{_API}?state=bof&format=json&limit=0"),
@@ -119,11 +120,32 @@ def _refresh_source(target_dir: str, name: str, url: str, verbosity: Verbosity) 
             LogLevel.PROGRESS,
         )
         return False
+    if _is_truncated(response.content):
+        # Keep the last complete mirror (and its ETag) rather than build a
+        # catalog that silently lacks the tail.
+        log(
+            f"Catalog: {name} was truncated by the server's page cap; keeping "
+            "the previous copy.",
+            verbosity,
+            LogLevel.PROGRESS,
+        )
+        return False
     if not _mirror.write_body(body_path, response.content, verbosity, "Catalog"):
         return False
     _mirror.write_sidecar(etag_path, response.headers.get("ETag"))
     log(f"Catalog: updated {name}", verbosity, LogLevel.PROGRESS)
     return True
+
+
+def _is_truncated(body: bytes) -> bool:
+    """True if a Tastypie list response has more pages (`meta.next`).
+
+    `limit=0` asks for everything, but Datatracker caps it at 1000 rows."""
+    try:
+        meta = json.loads(body).get("meta")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(meta, dict) and bool(meta.get("next"))
 
 
 def _rebuild_catalog(target_dir: str, catalog_path: str, verbosity: Verbosity) -> None:

@@ -204,7 +204,7 @@ def test_merge_carries_localities_and_years(isolated_home: Path) -> None:
     drop = r.person_for_email("mnot@pobox.com")
     assert keep is not None and drop is not None and keep is not drop
     # `_merge_persons` is what every identity-linking pass funnels into.
-    r._merge_persons(keep, drop)  # pylint: disable=protected-access
+    r._merge_persons(keep, drop)
     assert "prahran" in keep.localities
     assert keep.affiliation_years["draft:draft-a"] == 2024
     assert [g.display for g in group_affiliations(keep)] == ["Cloudflare"]

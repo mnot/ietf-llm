@@ -37,7 +37,7 @@ def _set_gathered(wg: str, when: str) -> None:
     path.write_text(when, encoding="utf-8")
 
 
-def _write_archive(  # pylint: disable=too-many-arguments
+def _write_archive(
     home: Path,
     wg: str,
     slug: str,

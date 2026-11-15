@@ -17,7 +17,7 @@ import os
 from functools import partial
 from typing import Dict, List, Union, cast
 
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError
 
 from .blobs import BlobStore, parallel_each
 from .s3 import NOT_FOUND, S3AuthError, S3Bucket
@@ -46,10 +46,15 @@ class S3BlobStore(BlobStore):
 
     def get(self, key: str) -> bytes:
         bkt = self._b
-        obj = bkt.call(
-            "read an object",
-            lambda: self._s3.get_object(Bucket=bkt.bucket, Key=bkt.key(key)),
-        )
+        try:
+            obj = bkt.call(
+                "read an object",
+                lambda: self._s3.get_object(Bucket=bkt.bucket, Key=bkt.key(key)),
+            )
+        except ClientError as err:
+            if err.response.get("Error", {}).get("Code") in NOT_FOUND:
+                raise FileNotFoundError(key) from err
+            raise
         return cast(bytes, obj["Body"].read())
 
     def exists(self, key: str) -> bool:

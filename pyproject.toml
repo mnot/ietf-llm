@@ -19,6 +19,8 @@ dependencies = [
     "requests",
     "beautifulsoup4",
     "pypdf",
+    # `override` (typing.override is 3.12+; we support 3.10).
+    "typing_extensions",
     # Pure-Python git client used to sync the meeting-transcripts data repo,
     # so gather needs no `git` binary and isn't subject to the GitHub REST
     # API rate limit (it speaks the smart-HTTP git protocol). Floor: 0.21.7
@@ -33,10 +35,10 @@ dependencies = [
     # serve / index against a remote OpenAI-compatible endpoint instead.
     "llm",
     "numpy",
-    # We use the FastMCP bundled in the SDK (`mcp.server.fastmcp`), which 2.0
-    # removed; the floor is the oldest release with `transport_security`.
-    # Lifting the ceiling means porting off it -- issue #202.
-    "mcp>=1.10,<2",
+    # `mcp.server.mcpserver.MCPServer` (FastMCP's successor) arrived in 2.0.0,
+    # the oldest stable release; 1.x does not provide it. 2.x speaks the
+    # 2026-07-28 protocol revision and still serves the 2025-era ones.
+    "mcp>=2,<3",
     # Shell tab-completion (completes cached WG shortnames)
     "argcomplete",
     # OS-trust-store TLS verification, so a corporate proxy root the machine
@@ -65,12 +67,9 @@ notebooklm = [
 # the default file:// blob store and base install do not.
 s3 = ["boto3"]
 dev = [
-    # Floor, not a pin: 2.3.0 narrowed what `no-untyped-call` fires on, so the
-    # ignore it made redundant is gone from cli/completion.py. An older mypy
-    # then reports that call as newly untyped and the gate fails the other way.
-    "mypy>=2.3.0",
+    "pyrefly",
     "black",
-    "pylint",
+    "ruff",
     "pytest",
     "pytest-md",
     "validate-pyproject",

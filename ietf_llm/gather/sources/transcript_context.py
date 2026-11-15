@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ...atomicio import atomic_open
 from ...log import LogLevel, Verbosity, log
 from ...paths import (
     DIR_MEETINGS,
@@ -212,7 +213,7 @@ def enrich_transcripts(
             try:
                 with open(path, "r", encoding="utf-8") as fh:
                     body = fh.read()
-                with open(path, "w", encoding="utf-8") as fh:
+                with atomic_open(path) as fh:
                     fh.write(_render_header(relpath, ctx))
                     fh.write("\n")
                     fh.write(body)

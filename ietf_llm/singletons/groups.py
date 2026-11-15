@@ -340,7 +340,8 @@ def render_timeline(acronym: str, year: Optional[int] = None) -> str:
     lines += [
         "",
         "_From Datatracker group, charter and milestone records and the RFC "
-        "series. It does not cover chair changes, draft adoption or meetings; "
+        "series, plus chair changes recorded since the Datatracker event log began. "
+        "It does not cover draft adoption or meetings; "
         "a gathered corpus's own timeline (`read_digest`) has those._",
     ]
     return "\n".join(lines)

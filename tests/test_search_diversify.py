@@ -38,7 +38,7 @@ class _KeywordStubModel:
 
 
 def _build_with_keyword_stub(wg: str) -> None:
-    embeddings._MODEL_CACHE["kw"] = _KeywordStubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["kw"] = _KeywordStubModel()
     cache = get_wg_file_cache_dir(wg)
     build_index(wg, cache, model_name="kw", verbose=Verbosity.QUIET)
 

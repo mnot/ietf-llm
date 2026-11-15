@@ -48,13 +48,13 @@ def _seed_and_build(isolated_home: Path, wg: str = "wg") -> None:
         for i in (1, 2, 3):
             body += f"### [{i}] 2025-01-0{i} 10:00 — P{n}\n\nalpha bravo msg {n}\n\n"
         write_cache_file(isolated_home, wg, f"threads/t{n:02d}-topic.md", body)
-    embeddings._MODEL_CACHE["kw"] = _KeywordStubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["kw"] = _KeywordStubModel()
     build_index(wg, get_wg_file_cache_dir(wg), model_name="kw", verbose=Verbosity.QUIET)
 
 
 def _traced_search(monkeypatch, wg: str, **kwargs) -> List[str]:
     """Run a search, returning every SELECT issued against `chunks`."""
-    import sqlite3  # pylint: disable=import-outside-toplevel
+    import sqlite3
 
     seen: List[str] = []
     real_connect = sqlite3.connect
@@ -111,7 +111,7 @@ def test_vector_fetch_is_bounded_by_the_mmr_pool(isolated_home, monkeypatch) -> 
 
 
 def _fake_scan_rows(count: int, dim: int, files: int = 4) -> List[Any]:
-    import numpy as np  # pylint: disable=import-outside-toplevel
+    import numpy as np
 
     vec = np.ones(dim, dtype=np.float32).tobytes()
     # Each f-string builds a fresh str object even when the value repeats,
@@ -122,7 +122,7 @@ def _fake_scan_rows(count: int, dim: int, files: int = 4) -> List[Any]:
 def test_scan_is_streamed_not_materialised() -> None:
     # The scan must never pull the whole candidate set into memory: it
     # scores batch by batch and lets each batch go.
-    import numpy as np  # pylint: disable=import-outside-toplevel
+    import numpy as np
 
     dim = len(_VOCAB)
     rows = _fake_scan_rows(_SCAN_BATCH * 2 + 7, dim)
@@ -153,7 +153,7 @@ def test_scan_is_streamed_not_materialised() -> None:
 def test_scan_interns_file_names() -> None:
     # File paths repeat once per chunk, so the key list must hold one
     # string per file rather than one per row.
-    import numpy as np  # pylint: disable=import-outside-toplevel
+    import numpy as np
 
     dim = len(_VOCAB)
     rows = _fake_scan_rows(500, dim, files=4)

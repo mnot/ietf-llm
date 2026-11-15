@@ -9,7 +9,8 @@ durable guard against writer/reader format drift.
 
 Data shapes mirror what rfc.fyi actually serves:
   rfcs.json : {"RFC9110": {title, status, stream, level, wg, area,
-               keywords, obsoletes:[<RFC-name>, ...]}}
+               keywords, obsoletes:[<RFC-name>, ...],
+               updates:[<RFC-name>, ...]}}
   refs.json : {"9110": {normative:[<bare-num>], informative:[<bare-num>]}}
   tags.json : {"collection": {...}}   (facets are derived by the reader)
 """
@@ -64,6 +65,7 @@ _RFCS: Dict[str, Dict[str, Any]] = {
         "area": "irtf",
         "keywords": ["messaging"],
         "obsoletes": [],
+        "updates": ["RFC200"],
     },
 }
 
@@ -92,6 +94,28 @@ def _reset_reader_cache() -> Any:
     rfcs._CACHE = None
     yield
     rfcs._CACHE = None
+
+
+def test_load_rekeys_on_every_file_not_just_rfcs_json(isolated_home: Path) -> None:
+    # The writer replaces rfcs.json, refs.json and tags.json one at a time. A
+    # reader between replaces parses a mixed set; it must not stay pinned to it
+    # once the rest have landed, even though rfcs.json's mtime never moves again.
+    rfc_dir = _seed(isolated_home)
+    first = rfcs._load()
+    assert first is not None
+    assert rfcs._load() is first
+    new_refs = {"100": {"normative": [], "informative": ["200"]}}
+    path = rfc_dir / "refs.json"
+    path.write_text(json.dumps(new_refs), encoding="utf-8")
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    second = rfcs._load()
+    assert second is not first
+    assert second is not None and second.refs == new_refs
+    tags = rfc_dir / "tags.json"
+    st = tags.stat()
+    os.utime(tags, ns=(st.st_atime_ns, st.st_mtime_ns + 7_000_000_000))
+    assert rfcs._load() is not second
 
 
 # --- Reader: search --------------------------------------------------------
@@ -200,6 +224,29 @@ def test_render_rfc_obsoletes_and_obsoleted_by(isolated_home: Path) -> None:
     assert "Obsoletes: RFC100" in out200
     out100 = rfcs.render_rfc("100")
     assert "Obsoleted by: RFC200" in out100  # inversion
+
+
+def test_render_rfc_updates_and_updated_by(isolated_home: Path) -> None:
+    _seed(isolated_home)
+    assert "Updates: RFC200" in rfcs.render_rfc("300")
+    out200 = rfcs.render_rfc("200")
+    assert "Updated by: RFC300" in out200  # inversion
+    # The field exists in this mirror, so an RFC with none says so.
+    assert "Updates: —" in out200
+    assert "Updated by: —" in rfcs.render_rfc("100")
+
+
+def test_render_rfc_without_the_updates_field_is_not_reported_as_none(
+    isolated_home: Path,
+) -> None:
+    """A mirror fetched before rfc.fyi emitted `updates` has no record with the
+    key. Rendering `Updated by: —` there would answer "nothing amends this"."""
+    rfc_dir = _seed(isolated_home)
+    legacy = {k: {f: v for f, v in rec.items() if f != "updates"} for k, rec in _RFCS.items()}
+    (rfc_dir / "rfcs.json").write_text(json.dumps(legacy), encoding="utf-8")
+    out = rfcs.render_rfc("200")
+    assert "Updates / Updated by: unknown" in out
+    assert "Updated by: —" not in out and "Updates: —" not in out
 
 
 def test_render_rfc_reference_counts(isolated_home: Path) -> None:
@@ -408,7 +455,7 @@ def test_failed_revalidation_falls_back_to_the_honest_miss(
     _age_mirror(rfc_dir, 8 * 86400)
 
     def _boom(url: str, hdrs: Dict[str, str]) -> Any:
-        import requests  # pylint: disable=import-outside-toplevel
+        import requests
 
         raise requests.ConnectionError("rfc.fyi unreachable")
 
@@ -426,7 +473,7 @@ def test_revalidation_is_throttled_across_misses(
     _age_mirror(rfc_dir, 8 * 86400)
 
     def _boom(url: str, hdrs: Dict[str, str]) -> Any:
-        import requests  # pylint: disable=import-outside-toplevel
+        import requests
 
         raise requests.ConnectionError("rfc.fyi unreachable")
 
@@ -534,7 +581,7 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            import requests  # pylint: disable=import-outside-toplevel
+            import requests
 
             raise requests.HTTPError(f"status {self.status_code}")
 
@@ -682,7 +729,7 @@ def test_writer_network_error_preserves_cache_and_does_not_raise(
     rfc_dir = isolated_home / ".cache" / "ietf-llm" / rfcs.RFC_DIR
     original = (rfc_dir / "rfcs.json").read_bytes()
 
-    import requests  # pylint: disable=import-outside-toplevel
+    import requests
 
     def boom(url: str, hdrs: Dict[str, str]) -> _FakeResponse:
         raise requests.ConnectionError("network down")
@@ -746,7 +793,7 @@ def test_rendered_entry_says_body_is_unavailable(isolated_home: Path) -> None:
 
 
 def test_rendered_entry_points_at_a_cached_body(isolated_home: Path) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
@@ -757,7 +804,7 @@ def test_rendered_entry_points_at_a_cached_body(isolated_home: Path) -> None:
 
 def test_body_note_is_per_rfc_not_per_corpus(isolated_home: Path) -> None:
     # A corpus holding rfc200's body says nothing about rfc300's.
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "the actual prose")
@@ -784,46 +831,50 @@ def test_body_lookup_stays_offline(
     assert calls == []
 
 
-# --- Body lookup must not materialise the fleet ----------------------------
+# --- Body lookup asks the store; it never materialises a corpus ---------------
 #
 # On the cloud backend, resolving a corpus's files dir *materialises* that
 # version's blobs onto scratch. `get_rfc_info` is a high-frequency metadata
-# lookup, so sweeping every gathered corpus through the forcing resolver
-# would download the whole fleet on one call. The sweep uses the
-# non-forcing resolver; only the publishing WG's own corpus -- one corpus,
-# the overwhelmingly likely holder -- is worth the materialisation.
+# lookup that wants one boolean per corpus, so it asks `has_file` -- exact on
+# every corpus, and fetching nothing -- rather than resolving any files dir.
 
 
 class _RecordingStore:
-    """Answers like the local backend, but records which corpora were
-    resolved through the *materialising* path (`local_cache_dir`)."""
+    """Answers like the local backend, but records which corpora were asked
+    `has_file` and which were resolved through a materialising/staged-dir
+    accessor (which a body lookup must never touch)."""
 
     def __init__(self, corpora: List[str]) -> None:
         self._corpora = corpora
-        self.forced: List[str] = []
-
-    def _files(self, corpus: str) -> Optional[str]:
-        path = os.path.join(get_cache_dir(), corpus, "files")
-        return path if os.path.isdir(path) else None
+        self.asked: List[str] = []
+        self.resolved: List[str] = []
 
     def list_corpora(self) -> List[str]:
         return list(self._corpora)
 
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        self.asked.append(corpus)
+        return os.path.isfile(os.path.join(get_cache_dir(), corpus, "files", relpath))
+
     def local_cache_dir(self, corpus: str) -> Optional[str]:
-        self.forced.append(corpus)
-        return self._files(corpus)
+        self.resolved.append(corpus)
+        return None
 
     def materialised_cache_dir(self, corpus: str) -> Optional[str]:
-        return self._files(corpus)
+        self.resolved.append(corpus)
+        return None
 
 
 def _install_store(
     monkeypatch: pytest.MonkeyPatch, corpora: List[str]
 ) -> _RecordingStore:
-    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp import common
 
     store = _RecordingStore(corpora)
+    # `_list_wgs` reaches the store through `common`, the body lookup through
+    # `mcp_rfcs`'s own import.
     monkeypatch.setattr(common, "get_corpus_store", lambda: store)
+    monkeypatch.setattr(mcp_rfcs, "get_corpus_store", lambda: store)
     return store
 
 
@@ -836,10 +887,10 @@ def test_working_group_accessor(isolated_home: Path) -> None:
     assert rfcs.working_group("99999") is None
 
 
-def test_sweep_never_forces_materialisation(
+def test_sweep_finds_a_body_without_resolving_any_dir(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
@@ -847,80 +898,65 @@ def test_sweep_never_forces_materialisation(
     # RFC300 has no wg, so this is a pure sweep -- and it still finds the body.
     out = mcp_rfcs._render_rfc_live("300")
     assert 'read_file_section("other", "drafts/rfc300.txt")' in out
-    assert store.forced == []
+    assert store.resolved == []
 
 
-def test_owner_corpus_is_the_one_worth_materialising(
+def test_unstaged_corpus_is_still_found(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
-
-    _seed(isolated_home)
-    write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "prose")
-    store = _install_store(monkeypatch, ["other", "phone"])
-    out = mcp_rfcs._render_rfc_live("200")
-    assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
-    # Exactly one -- the publishing WG -- not every gathered corpus.
-    assert store.forced == ["phone"]
-
-
-def test_a_miss_forces_only_the_owner(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The common case. A miss must not escalate into resolving the fleet.
-    _seed(isolated_home)
-    store = _install_store(monkeypatch, ["other", "phone"])
-    assert "not reachable from here" in mcp_rfcs._render_rfc_live("200")
-    assert store.forced == ["phone"]
-
-
-class _UnstagedStore(_RecordingStore):
-    """A cloud replica with nothing staged: the non-forcing resolver finds
-    nothing even though the bodies are on disk."""
-
-    def materialised_cache_dir(self, corpus: str) -> Optional[str]:
-        return None
-
-
-def test_unstaged_corpus_reads_as_unreachable(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The behaviour change that will actually be hit on cloud. The body is
-    # published, this replica just can't see it without materialising, so the
-    # note claims unreachability rather than absence -- and still doesn't
-    # download the fleet to find out.
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    # The cold-replica case: nothing is staged (the dir accessors both answer
+    # None), but the body is published. `has_file` is exact, so it is found
+    # rather than reported as "not reachable from here".
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
-    store = _UnstagedStore(["other", "phone"])
-    from ietf_llm.mcp import common  # pylint: disable=import-outside-toplevel
-
-    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
-
+    _install_store(monkeypatch, ["other", "phone"])
     out = mcp_rfcs._render_rfc_live("300")
-    assert "not reachable from here" in out
-    assert store.forced == []
+    assert 'read_file_section("other", "drafts/rfc300.txt")' in out
+    assert "not reachable from here" not in out
 
 
-def test_owner_not_gathered_skips_the_probe(
+def test_owner_is_asked_first_and_a_hit_ends_the_lookup(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The majority case: only ~4% of the series has a wg that is also a
-    # gathered corpus, so usually there is no owner to probe at all.
+    from conftest import write_cache_file
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "phone", "drafts/rfc200.txt", "prose")
+    store = _install_store(monkeypatch, ["aaa", "other", "phone"])
+    out = mcp_rfcs._render_rfc_live("200")
+    assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
+    assert store.asked == ["phone"]
+    assert store.resolved == []
+
+
+def test_a_miss_asks_every_corpus_once_and_resolves_none(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["other", "phone"])
+    assert "not reachable from here" in mcp_rfcs._render_rfc_live("200")
+    assert sorted(store.asked) == ["other", "phone"]
+    assert store.resolved == []
+
+
+def test_owner_not_gathered_is_not_asked(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _seed(isolated_home)
     store = _install_store(monkeypatch, ["other"])  # 'phone' not gathered
     assert rfcs.working_group("200") == "phone"
     assert "not reachable from here" in mcp_rfcs._render_rfc_live("200")
-    assert store.forced == []
+    assert store.asked == ["other"]
 
 
 def test_owner_wins_when_several_corpora_hold_the_body(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Precedence: previously first-alphabetical, now the publishing WG --
-    # a better answer, since a body under an unrelated corpus is coincidence.
-    from conftest import write_cache_file  # pylint: disable=import-outside-toplevel
+    # Precedence: the publishing WG -- a body under an unrelated corpus is
+    # coincidence.
+    from conftest import write_cache_file
 
     _seed(isolated_home)
     write_cache_file(isolated_home, "aaa", "drafts/rfc200.txt", "prose")
@@ -928,6 +964,109 @@ def test_owner_wins_when_several_corpora_hold_the_body(
     _install_store(monkeypatch, ["aaa", "phone"])
     out = mcp_rfcs._render_rfc_live("200")
     assert 'read_file_section("phone", "drafts/rfc200.txt")' in out
+
+
+def test_without_an_owner_the_first_corpus_in_order_wins(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import write_cache_file
+
+    _seed(isolated_home)
+    for corpus in ("zzz", "aaa", "mmm"):
+        write_cache_file(isolated_home, corpus, "drafts/rfc300.txt", "prose")
+    _install_store(monkeypatch, ["zzz", "aaa", "mmm"])
+    out = mcp_rfcs._render_rfc_live("300")
+    assert 'read_file_section("aaa", "drafts/rfc300.txt")' in out
+
+
+def test_a_corpus_that_cannot_answer_does_not_fail_the_lookup(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import write_cache_file
+    from ietf_llm.store.corpus import VersionVanished
+
+    _seed(isolated_home)
+    write_cache_file(isolated_home, "other", "drafts/rfc300.txt", "prose")
+    store = _install_store(monkeypatch, ["broken", "gone", "other"])
+    real = store.has_file
+
+    def _has_file(corpus: str, relpath: str) -> bool:
+        if corpus == "broken":
+            raise RuntimeError("object store unreachable")
+        if corpus == "gone":
+            raise VersionVanished(corpus, "v1", "v2")
+        return real(corpus, relpath)
+
+    monkeypatch.setattr(store, "has_file", _has_file)
+    out = mcp_rfcs._render_rfc_live("300")
+    assert 'read_file_section("other", "drafts/rfc300.txt")' in out
+
+
+def test_a_failing_corpus_is_logged(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["broken"])
+
+    def _boom(corpus: str, relpath: str) -> bool:
+        raise RuntimeError("object store unreachable")
+
+    monkeypatch.setattr(store, "has_file", _boom)
+    assert "not reachable from here" in mcp_rfcs._render_rfc_live("300")
+    assert "object store unreachable" in capsys.readouterr().err
+
+
+def test_a_version_pin_reaches_the_sweep_workers(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ietf_llm.store.corpus import (
+        pin_corpus_version,
+        pinned_version,
+    )
+
+    _seed(isolated_home)
+    store = _install_store(monkeypatch, ["aaa", "bbb"])
+    seen: Dict[str, Optional[str]] = {}
+
+    def _has_file(corpus: str, relpath: str) -> bool:
+        seen[corpus] = pinned_version(corpus)
+        return False
+
+    monkeypatch.setattr(store, "has_file", _has_file)
+    with pin_corpus_version("aaa", "v1"), pin_corpus_version("bbb", "v2"):
+        mcp_rfcs._cached_body("300")
+    assert seen == {"aaa": "v1", "bbb": "v2"}
+
+
+def test_a_cold_cloud_replica_finds_a_published_body_without_staging(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End to end through a real CloudCorpusStore: the body is published, the
+    # replica has staged nothing, and the note still points at it.
+    from ietf_llm.mcp import common
+    from ietf_llm.store.blobs import FileBlobStore
+    from ietf_llm.store.cloud import CloudCorpusStore
+    from ietf_llm.store.control import KvControlPlane
+    from ietf_llm.store.kv import InMemoryKvStore
+
+    _seed(isolated_home)
+    ws = isolated_home / "ws"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    (ws / "files" / "drafts" / "rfc300.txt").write_text("prose")
+    (ws / "embeddings.db").write_text("db")
+    scratch = isolated_home / "scratch"
+    store = CloudCorpusStore(
+        KvControlPlane(InMemoryKvStore()),
+        FileBlobStore(str(isolated_home / "bucket")),
+        str(scratch),
+    )
+    store.publish("other", str(ws), version="v1")
+    monkeypatch.setattr(common, "get_corpus_store", lambda: store)
+    monkeypatch.setattr(mcp_rfcs, "get_corpus_store", lambda: store)
+
+    out = mcp_rfcs._render_rfc_live("300")
+    assert 'read_file_section("other", "drafts/rfc300.txt")' in out
+    assert not scratch.exists()
 
 
 def test_a_reference_written_as_a_name_still_resolves() -> None:
@@ -970,3 +1109,16 @@ def test_one_bad_reference_does_not_abort_the_index(isolated_home: Path) -> None
     out = data.outbound_refs("RFC9786")
     assert out["normative"] == ["RFC9785"]  # the junk is dropped, not blank
     assert len(data.inbound_refs("RFC9785")) == 1
+
+
+def test_load_rekeys_on_a_replace_within_the_same_mtime(isolated_home: Path) -> None:
+    rfc_dir = _seed(isolated_home)
+    first = rfcs._load()
+    path = rfc_dir / "refs.json"
+    before = path.stat()
+    new_refs = {"100": {"normative": ["200"], "informative": []}}
+    path.write_text(json.dumps(new_refs), encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))  # same tick
+    second = rfcs._load()
+    assert second is not first
+    assert second is not None and second.refs == new_refs

@@ -168,7 +168,7 @@ def test_a_failed_scan_never_renders_as_absence(corpus: Path, monkeypatch: Any) 
     rendered as a complete one — under a paragraph calling it real evidence of
     absence. An incomplete scan has no denominator and must say so."""
     assert corpus
-    from ietf_llm.mcp import grep as grep_mod
+    from ietf_llm.mcp import grep_rfc as grep_mod
 
     real = grep_mod.iter_sections
 
@@ -190,7 +190,7 @@ def test_an_unscoped_scan_names_no_files(corpus: Path, monkeypatch: Any) -> None
     thing that needs the IN clause."""
     assert corpus
     seen: Dict[str, Any] = {}
-    from ietf_llm.mcp import grep as grep_mod
+    from ietf_llm.mcp import grep_rfc as grep_mod
 
     real = grep_mod.iter_sections
 
@@ -209,7 +209,7 @@ def test_a_budgeted_stop_refuses_to_support_a_negative(
     corpus: Path, monkeypatch: Any
 ) -> None:
     assert corpus
-    from ietf_llm.mcp import grep as grep_mod
+    from ietf_llm.mcp import grep_rfc as grep_mod
 
     monkeypatch.setattr(grep_mod, "_RFC_SCAN_BUDGET_S", -1.0)
     monkeypatch.setattr(grep_mod, "_RFC_SCAN_CHECK_EVERY", 1)

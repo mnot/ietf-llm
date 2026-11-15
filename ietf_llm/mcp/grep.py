@@ -19,54 +19,70 @@ matching line to the chunk containing it.
 at a time. The RFC series (`corpus="rfcs"`) has no files to scan — only the
 `embeddings.db` that `ietf-llm --init` installs — so it is scanned as assembled
 section text instead, which also lets a phrase match across the 72-column wrap.
-The dispatcher at `tool_grep_corpus` picks; the differences a caller sees are
-set out above `_grep_rfc_corpus`.
+The dispatcher at `tool_grep_corpus` picks; the RFC scan lives in `grep_rfc`,
+where the differences a caller sees are set out above `_grep_rfc_corpus`.
 """
 
 from __future__ import annotations
 
-import bisect
 import fnmatch
 import os
 import re
-import sqlite3
-import time
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from .. import coverage
+from ..atomicio import TMP_SUFFIX
 from ..embeddings import chunk_spans
-from ..embeddings.storage import indexed_files, iter_sections
+from ..regexscan import (
+    FileScan,
+    ScanFailed,
+    ScanTimedOut,
+    elide,
+    run_bounded,
+    scan_files,
+    split_lines,
+)
 from .common import (
     _append_participation_nudge,
     _files_dir,
-    _offload,
+    _offload_scan,
     _requires_corpus,
     _with_freshness,
 )
-from .rfc_text import RFC_CORPUS, provenance_line, status_note
+from .grep_common import (
+    _MAX_GREP_LIMIT,
+    _REGEX_SCAN_BUDGET_S,
+    _SCAN_FAILED_REPLY,
+    _incomplete_scan_head,
+    _mode_phrase,
+    _note_scan_stop,
+)
+from .grep_rfc import _grep_rfc_corpus
+from .rfc_text import RFC_CORPUS
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
-
-#: Upper bound on how many matching lines one call will render, so a
-#: three-letter pattern can't return the whole corpus. The scan itself is
-#: always complete — only the *rendering* is capped, and the cap is reported
-#: alongside the true total, so the count stays trustworthy.
-_MAX_GREP_LIMIT = 200
 
 #: Cap on `context` lines either side of a hit.
 _MAX_CONTEXT = 5
-
-#: Longest rendered line before it is elided. Draft text wraps at ~72 columns,
-#: but a pasted log line or a base64 blob in a message can run for thousands.
-_MAX_LINE_CHARS = 400
 
 #: Extensions skipped by the scan: binary payloads the corpus carries
 #: alongside its text (a slide deck, an image). Decoding them with
 #: `errors="replace"` would not crash, but it would burn time and could
 #: produce meaningless "matches" out of mojibake.
-_SKIP_SUFFIXES = (".pdf", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".gz", ".db")
+#: The `.kinds.json` digest sidecar is machine data, not corpus text.
+_SKIP_SUFFIXES = (
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".zip",
+    ".gz",
+    ".db",
+    ".kinds.json",
+)
 
 #: Directories holding a second copy of material that already has a
 #: first-class per-item file: `raw/` is the year-bundled mail dump behind
@@ -79,7 +95,7 @@ _DERIVED_PREFIXES = ("raw/", "github/")
 
 
 class _Hit(NamedTuple):
-    """One matching line: where it is and what it says."""
+    """One matching line: where it is and what it says (already elided)."""
 
     file: str
     lineno: int
@@ -91,7 +107,7 @@ def _compile(pattern: str, regex: bool, case_sensitive: bool) -> "re.Pattern[str
     handled by a separate substring path, so matching, counting, and context
     rendering all run through one code path.
 
-    `re.MULTILINE` is not optional. `_scan_file` prefilters by searching the
+    `re.MULTILINE` is not optional. The scan prefilters by searching the
     file's whole text before it looks at individual lines, so without it `^`
     and `$` would anchor to the file rather than the line: `^From:` would fail
     the prefilter, the file would be skipped entirely, and the tool would
@@ -101,66 +117,6 @@ def _compile(pattern: str, regex: bool, case_sensitive: bool) -> "re.Pattern[str
     """
     flags = re.MULTILINE if case_sensitive else re.MULTILINE | re.IGNORECASE
     return re.compile(pattern if regex else re.escape(pattern), flags)
-
-
-def _scan_file(
-    path: str,
-    relpath: str,
-    matcher: "re.Pattern[str]",
-    hits: List[_Hit],
-    keep: int,
-) -> int:
-    """Count every matching line in one file; append the first `keep` of them
-    (across the whole scan) to `hits`. Returns the count, which is complete
-    whether or not the lines were retained.
-
-    Reads the file whole and prefilters with a single search over the entire
-    text: the overwhelmingly common case is a file with no match at all, and
-    one C-level scan is far cheaper than splitting a 30 KB message thread into
-    lines to check each one.
-
-    Counting past `keep` but not retaining is what lets the reported total stay
-    honest without holding a `_Hit` per match: a one-character pattern matches
-    over a million lines in a real corpus, and keeping them all would be a
-    memory-exhaustion lever on a shared server. Files are scanned in relpath
-    order, so the retained hits are exactly the ones the renderer would have
-    shown after sorting.
-    """
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        return 0
-    if not matcher.search(text):
-        return 0
-    found = 0
-    for lineno, line in enumerate(text.splitlines(), 1):
-        if matcher.search(line):
-            found += 1
-            if len(hits) < keep:
-                hits.append(_Hit(relpath, lineno, line))
-    return found
-
-
-def _elide(line: str, matcher: Optional["re.Pattern[str]"] = None) -> str:
-    """Bound one rendered line, keeping the match visible.
-
-    Truncating from the left would render a "hit" line with no match in it
-    whenever the match sits past the budget — which is precisely the case this
-    cap exists for (a pasted log line, a base64 blob). So when the line is over
-    budget we window around the first match instead, marking each elided side.
-    """
-    stripped = line.rstrip()
-    if len(stripped) <= _MAX_LINE_CHARS:
-        return stripped
-    match = matcher.search(stripped) if matcher is not None else None
-    if match is None or match.start() < _MAX_LINE_CHARS - 1:
-        return stripped[: _MAX_LINE_CHARS - 1] + "…"
-    # Centre the window on the match, clamped to the end of the line.
-    half = (_MAX_LINE_CHARS - 2) // 2
-    start = max(0, match.start() - half)
-    end = min(len(stripped), start + _MAX_LINE_CHARS - 2)
-    return "…" + stripped[start:end] + ("…" if end < len(stripped) else "")
 
 
 def _chunk_for_line(
@@ -190,20 +146,14 @@ def _context_lines(
     if lines is None:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                lines = fh.read().splitlines()
+                text = fh.read()
         except OSError:
-            lines = []
+            text = ""
+        lines = split_lines(text)
         cache[path] = lines
     before = lines[max(0, lineno - 1 - context) : lineno - 1]
     after = lines[lineno : lineno + context]
-    return ([_elide(line) for line in before], [_elide(line) for line in after])
-
-
-def _mode_phrase(regex: bool, case_sensitive: bool) -> str:
-    return (
-        f"{'regex' if regex else 'literal'}, "
-        f"{'case-sensitive' if case_sensitive else 'case-insensitive'}"
-    )
+    return ([elide(line) for line in before], [elide(line) for line in after])
 
 
 def _wants_derived(file_pattern: Optional[str]) -> bool:
@@ -248,6 +198,8 @@ def _eligible(
     derived = 0
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
+            if name.endswith(TMP_SUFFIX):
+                continue  # a killed gather's partial temp: not a skipped binary
             path = os.path.join(dirpath, name)
             if not os.path.isfile(path):
                 continue
@@ -320,7 +272,7 @@ def _github_edge(cache: str, eligible: List[Tuple[str, str]]) -> str:
     return coverage.record_edge_line(coverage.github_records(cache))
 
 
-def _no_match_body(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _no_match_body(
     wg: str,
     pattern: str,
     file_pattern: Optional[str],
@@ -401,25 +353,100 @@ def _render_files_only(
     return "\n".join(out)
 
 
-def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _hits_footer(
+    hits: List[_Hit],
+    per_file: Dict[str, int],
+    total: int,
+    max_per_file: Optional[int],
+) -> str:
+    """The note under a capped listing, or "" when nothing was cut.
+
+    Lines can be cut by two caps that compose in a fixed order: `max_per_file`
+    first, then `limit` over what is left. So the shortfall splits cleanly
+    into the part the per-file cap removed and the part `limit` removed, and
+    the note names each, so a caller knows which knob to turn.
+    """
+    if max_per_file is None:
+        if total > len(hits):
+            return (
+                f"\n_Showing {len(hits)} of {total} matching line(s) — the "
+                "count is the complete scan, only the listing is capped. "
+                f"Raise `limit` (max {_MAX_GREP_LIMIT}), narrow with "
+                "`file_pattern`, or pass `files_only=True` for one row per "
+                "file._"
+            )
+        return ""
+    after_cap = sum(min(count, max_per_file) for count in per_file.values())
+    by_cap = total - after_cap
+    by_limit = after_cap - len(hits)
+    if not by_cap and not by_limit:
+        return ""
+    reasons: List[str] = []
+    if by_cap:
+        capped = sum(1 for count in per_file.values() if count > max_per_file)
+        reasons.append(
+            f"{by_cap} omitted by `max_per_file={max_per_file}` "
+            f"({capped} file(s) had more)"
+        )
+    if by_limit:
+        reasons.append(f"{by_limit} omitted by `limit`")
+    unlisted = len(per_file) - len({hit.file for hit in hits})
+    if unlisted:
+        reasons.append(f"{unlisted} matching file(s) have no line listed")
+    # Advise only the cap that removed lines: raising one that cut nothing
+    # would change nothing, and raising `max_per_file` while `limit` is the
+    # binding cap would just spend the budget on fewer files.
+    raise_what: List[str] = []
+    if by_cap:
+        raise_what.append("`max_per_file`")
+    if by_limit:
+        raise_what.append(f"`limit` (max {_MAX_GREP_LIMIT})")
+    return (
+        f"\n_Showing {len(hits)} of {total} matching line(s) — the count is "
+        f"the complete scan, only the listing is capped: {'; '.join(reasons)}. "
+        f"Raise {' or '.join(raise_what)}, narrow with `file_pattern`, or "
+        "pass `files_only=True` for one row per file._"
+    )
+
+
+def _render_hits(
     wg: str,
     hits: List[_Hit],
+    per_file: Dict[str, int],
     total: int,
     header: str,
     context: int,
     cache: str,
-    matcher: "re.Pattern[str]",
+    max_per_file: Optional[int] = None,
 ) -> str:
     """Render matching lines grouped by file, annotated with the chunk that
-    contains each one where the index knows it."""
+    contains each one where the index knows it.
+
+    Under `max_per_file`, each file's group ends with its true match count, so
+    a capped file reads as "3 of 120" rather than as a file with 3 matches.
+    `context` lines are rendered around a shown hit but are never counted
+    against either cap: both caps count matching lines.
+    """
     spans_by_file = chunk_spans(wg, [hit.file for hit in hits])
     line_cache: Dict[str, List[str]] = {}
     out = [header, ""]
     current: Optional[str] = None
+    shown_here = 0
+
+    def _close_group() -> None:
+        if max_per_file is not None and current and shown_here < per_file[current]:
+            out.append(
+                f"  … {shown_here} of {per_file[current]} matching line(s) "
+                "in this file shown"
+            )
+
     for hit in hits:
         if hit.file != current:
+            _close_group()
             current = hit.file
+            shown_here = 0
             out.append(f"## {hit.file}")
+        shown_here += 1
         spans = spans_by_file.get(hit.file, [])
         where = _chunk_for_line(spans, hit.lineno)
         tag = f"  [chunk {where[0]}: {where[1]}]" if where else ""
@@ -429,367 +456,21 @@ def _render_hits(  # pylint: disable=too-many-arguments,too-many-positional-argu
             )
             for offset, line in enumerate(before, start=hit.lineno - len(before)):
                 out.append(f"  {offset:>6}- {line}")
-            out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
+            out.append(f"  {hit.lineno:>6}: {hit.text}{tag}")
             for offset, line in enumerate(after, start=hit.lineno + 1):
                 out.append(f"  {offset:>6}- {line}")
             out.append("")
         else:
-            out.append(f"  {hit.lineno:>6}: {_elide(hit.text, matcher)}{tag}")
-    if total > len(hits):
-        out.append(
-            f"\n_Showing {len(hits)} of {total} matching line(s) — the count "
-            "is the complete scan, only the listing is capped. Raise `limit` "
-            f"(max {_MAX_GREP_LIMIT}), narrow with `file_pattern`, or pass "
-            "`files_only=True` for one row per file._"
-        )
+            out.append(f"  {hit.lineno:>6}: {hit.text}{tag}")
+    _close_group()
+    footer = _hits_footer(hits, per_file, total, max_per_file)
+    if footer:
+        out.append(footer)
     out.append(_next_footer(wg))
     return "\n".join(out)
 
 
-# --- the RFC series ----------------------------------------------------------
-#
-# The RFC corpus is not a gathered corpus: it has no `files/` dir, only an
-# `embeddings.db` installed by `ietf-llm --init`. The plain-text mirror this
-# would otherwise scan (`_rfc/text/`) is publisher-side and absent on a client,
-# so the chunk table *is* the text on every machine that has the corpus at all
-# — and scanning it is the only implementation that works for the people who
-# installed it rather than built it.
-#
-# Two consequences the caller sees. Hits are located as **RFC + section**, not
-# file + line: the index carries rfc.fyi's byte offsets, and `start_line` is
-# NULL for every row, so a line number does not exist to report. That is the
-# better citation unit anyway — a section is what `get_rfc_section` takes.
-# And a literal pattern matches **across line breaks**, because RFC text is
-# hard-wrapped at 72 columns: line-bounded matching would miss any phrase
-# longer than about ten words, which is most of what anyone asks this.
-
-
-#: Sections rendered per RFC, and matches rendered per section. A broad
-#: pattern hits thousands of sections; these keep one call readable while the
-#: reported totals stay complete.
-_RFC_SECTIONS_PER_DOC = 3
-_RFC_MATCHES_PER_SECTION = 2
-
-#: Wall-clock budget for one RFC-series scan. A literal phrase crosses the
-#: whole corpus in ~2.5s, but a plausible regex is far slower — `[A-Za-z]+ing`
-#: takes ~25s and `(\s|\w)+$` ~88s over the same ~400 MB, and nothing about
-#: either is adversarial. Every call re-scans from scratch on an `_offload`
-#: worker, so without a bound a few concurrent calls saturate the pool on the
-#: shared deployment. Stopping and *saying so* is the only safe behaviour: a
-#: truncated scan that rendered as a normal result would be the unsound
-#: negative this tool exists to prevent.
-_RFC_SCAN_BUDGET_S = 20.0
-
-#: How often the budget is polled, in sections. A clock read per section would
-#: be ~264k of them for no gain; this is a small fraction of the corpus either
-#: way.
-_RFC_SCAN_CHECK_EVERY = 512
-
-
-def _rfc_number(file: str) -> str:
-    """`rfc9111.txt` → `9111`. The corpus filename is the only identifier the
-    chunk rows carry."""
-    return file[3:-4] if file.startswith("rfc") and file.endswith(".txt") else file
-
-
-def _compile_phrase(
-    pattern: str, regex: bool, case_sensitive: bool
-) -> "re.Pattern[str]":
-    """Compile a pattern for matching against assembled section text.
-
-    A literal pattern has every run of whitespace turned into "any whitespace",
-    so a phrase matches regardless of where the publisher's 72-column wrap fell
-    in the middle of it. That is the whole point of scanning sections rather
-    than lines, and it is why this cannot reuse `_compile`.
-
-    A regex is the caller's own and is passed through untouched, under
-    MULTILINE so `^` and `$` still mean line edges within the section.
-    """
-    flags = re.MULTILINE if case_sensitive else re.MULTILINE | re.IGNORECASE
-    if regex:
-        return re.compile(pattern, flags)
-    return re.compile(r"\s+".join(re.escape(word) for word in pattern.split()), flags)
-
-
-def _excerpts(
-    text: str, matcher: "re.Pattern[str]", context: int, max_matches: int
-) -> List[List[str]]:
-    """The lines covering each of the first `max_matches` matches in `text`,
-    with `context` lines either side.
-
-    A match may straddle a wrap, so the span is taken from the line holding its
-    first character to the line holding its last — rendering only the opening
-    line would cut the phrase the caller searched for in half.
-    """
-    lines = text.splitlines()
-    offsets: List[int] = []
-    running = 0
-    for line in lines:
-        offsets.append(running)
-        running += len(line) + 1
-    out: List[List[str]] = []
-    for count, match in enumerate(matcher.finditer(text)):
-        if count >= max_matches:
-            break
-        first = max(0, bisect.bisect_right(offsets, match.start()) - 1)
-        last = max(
-            first, bisect.bisect_right(offsets, max(match.start(), match.end() - 1)) - 1
-        )
-        low = max(0, first - context)
-        high = min(len(lines), last + 1 + context)
-        out.append([_elide(line) for line in lines[low:high]])
-    return out
-
-
-class _RfcHit(NamedTuple):
-    """One matching section of one RFC."""
-
-    number: str
-    section: Optional[str]
-    title: str
-    #: Not `count` — that is `tuple.count`, and shadowing it here is a type
-    #: error rather than a style question.
-    matches: int
-    excerpts: List[List[str]]
-
-
-def _rfc_scope_phrase(file_pattern: Optional[str], docs: int, sections: int) -> str:
-    scope = f"`{file_pattern}`" if file_pattern else "the whole series"
-    return f"scanned {docs} RFC(s) / {sections} section(s) — {scope}"
-
-
-def _rfc_no_match_body(
-    pattern: str, file_pattern: Optional[str], mode: str, docs: int, sections: int
-) -> str:
-    """A zero over the whole series is a strong claim, so it states its own
-    scope and its own two remaining limits."""
-    lines = [
-        f"(no matches for `{pattern}` in the RFC series — {mode}; "
-        f"{_rfc_scope_phrase(file_pattern, docs, sections)}.)",
-        "",
-        "_This is a complete scan of the indexed text of every RFC above, so "
-        "it is real evidence of absence — unlike a semantic miss. Two limits "
-        "bound the claim. **Front and back matter is not indexed** (status of "
-        "this memo, copyright, authors' addresses, the reference list), so a "
-        "string that appears only there will not be found. And the corpus is "
-        "a dated snapshot — the provenance line below says which — so an RFC "
-        "published since is not in it._",
-    ]
-    if file_pattern:
-        lines.append(
-            f"\n_Scoped to `{file_pattern}` — re-run without `file_pattern` "
-            "before treating this as absence from the series._"
-        )
-    return "\n".join(lines)
-
-
-def _rfc_footer() -> str:
-    return (
-        "\n_Next: read a hit in full with "
-        '`get_rfc_section(rfc="<number>", section="<section>")` — the '
-        "excerpts above are windows, not the section. `search_rfc_text` for "
-        "the semantic view of the same corpus._"
-    )
-
-
-def _render_rfc_files_only(
-    per_doc: Dict[str, int], total: int, header: str, limit: int
-) -> str:
-    ranked = sorted(per_doc.items(), key=lambda kv: (-kv[1], _int_or_zero(kv[0])))
-    shown = ranked[:limit]
-    out = [header, ""]
-    for number, count in shown:
-        out.append(f"{count:>6} match(es)  RFC {number}{status_note(number)}")
-    if len(ranked) > len(shown):
-        out.append(
-            f"\n_{len(ranked) - len(shown)} more RFC(s) matched "
-            f"(showing {len(shown)} of {len(ranked)}); raise `limit`._"
-        )
-    out.append(
-        f"\n_{total} match(es) across {len(ranked)} RFC(s). "
-        "Drop `files_only` to see the passages themselves._"
-    )
-    out.append(_rfc_footer())
-    return "\n".join(out)
-
-
-def _int_or_zero(value: str) -> int:
-    """Sort key for an RFC number that may carry a trailing letter (`17a`)."""
-    digits = "".join(c for c in value if c.isdigit())
-    return int(digits) if digits else 0
-
-
-def _render_rfc_hits(
-    hits: List[_RfcHit], matching_sections: int, header: str, limit: int
-) -> str:
-    """`matching_sections` is the true count from the scan, not `len(hits)` —
-    which is a retention artefact, capped both overall and per RFC, and so
-    cannot be the denominator in a sentence claiming the counts are complete."""
-    out = [header, ""]
-    current: Optional[str] = None
-    shown = 0
-    for hit in hits:
-        if shown >= limit:
-            break
-        if hit.number != current:
-            current = hit.number
-            out.append(f"## RFC {hit.number}{status_note(hit.number)}")
-        label = f"§{hit.section}" if hit.section else "(unsectioned)"
-        suffix = f" ({hit.matches} matches)" if hit.matches > 1 else ""
-        out.append(f"- **{label} {hit.title}**{suffix}")
-        for block in hit.excerpts:
-            for line in block:
-                out.append(f"      {line}")
-            out.append("")
-        shown += 1
-    if matching_sections > shown:
-        out.append(
-            f"_Showing {shown} of {matching_sections} matching section(s), at "
-            f"most {_RFC_SECTIONS_PER_DOC} per RFC — the totals above are the "
-            "complete scan, only this listing is capped. Raise `limit` "
-            f"(max {_MAX_GREP_LIMIT}), narrow with `file_pattern`, or pass "
-            "`files_only=True` for one row per RFC._"
-        )
-    out.append(_rfc_footer())
-    return "\n".join(out)
-
-
-def _rfc_scan_scope(
-    file_pattern: Optional[str],
-) -> Tuple[List[str], Optional[str]]:
-    """The RFCs a scan will cover, or a message saying why it will not run."""
-    files = indexed_files(RFC_CORPUS)
-    if not files:
-        return [], (
-            "The RFC full-text corpus is not installed on this server, so "
-            "there is nothing to scan — `ietf-llm --init` installs it. "
-            "`search_rfc_index` searches titles and keywords either way."
-        )
-    if not file_pattern:
-        return files, None
-    narrowed = [f for f in files if fnmatch.fnmatch(f, file_pattern)]
-    if not narrowed:
-        return [], (
-            f"(no RFC matches `{file_pattern}`, so nothing was scanned — "
-            "this is **not** evidence of absence. The scan globs the "
-            "corpus filename, which is `rfc9111.txt`, so `rfc91*` works "
-            "and `9111` does not.)"
-        )
-    return narrowed, None
-
-
-def _grep_rfc_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    pattern: str,
-    file_pattern: Optional[str],
-    regex: bool,
-    case_sensitive: bool,
-    limit: int,
-    context: int,
-    files_only: bool,
-) -> str:
-    """Literal scan over the assembled section text of the RFC series."""
-    try:
-        matcher = _compile_phrase(pattern, regex, case_sensitive)
-    except re.error as exc:
-        return (
-            f"Invalid regex `{pattern}`: {exc}. Fix the pattern, or drop "
-            "`regex=True` to search for it as a literal string."
-        )
-
-    files, refusal = _rfc_scan_scope(file_pattern)
-    if refusal is not None:
-        return refusal
-
-    hits: List[_RfcHit] = []
-    per_doc: Dict[str, int] = {}
-    total = 0
-    sections = 0
-    matching_sections = 0
-    stopped_early = False
-    keep = 0 if files_only else _MAX_GREP_LIMIT
-    deadline = time.monotonic() + _RFC_SCAN_BUDGET_S
-    # A glob is the only reason to name files: an unscoped scan would otherwise
-    # build an `IN (?,?,…)` clause with one parameter per RFC — 9,813 of them,
-    # past the 999-parameter default of SQLite before 3.32, which older
-    # distribution Pythons still ship. That is exactly where a swallowed error
-    # would have turned into a confident claim of absence.
-    scoped = files if file_pattern else None
-    try:
-        stream = iter_sections(RFC_CORPUS, scoped)
-        for file, section, title, text in stream:
-            sections += 1
-            if not sections % _RFC_SCAN_CHECK_EVERY and time.monotonic() > deadline:
-                stopped_early = True
-                stream.close()
-                break
-            found = sum(1 for _ in matcher.finditer(text))
-            if not found:
-                continue
-            matching_sections += 1
-            number = _rfc_number(file)
-            total += found
-            per_doc[number] = per_doc.get(number, 0) + found
-            if len(hits) >= keep or sum(1 for h in hits if h.number == number) >= (
-                _RFC_SECTIONS_PER_DOC
-            ):
-                continue
-            hits.append(
-                _RfcHit(
-                    number,
-                    section,
-                    title,
-                    found,
-                    _excerpts(text, matcher, context, _RFC_MATCHES_PER_SECTION),
-                )
-            )
-    except sqlite3.Error as exc:
-        # An incomplete scan must never render as absence. Whatever was found
-        # before the failure is still true, but the denominator is not, so the
-        # one thing this must not do is stay quiet.
-        return (
-            f"The scan of the RFC series failed after {sections} section(s): "
-            f"{exc}. **Nothing can be concluded from this** — in particular a "
-            "partial scan is not evidence that the pattern is absent. Retry, "
-            "or narrow with `file_pattern`."
-        )
-
-    mode = _mode_phrase(regex, case_sensitive) + (
-        "" if regex else ", across line breaks"
-    )
-    if stopped_early:
-        # Same rule as a failed scan: a truncated denominator cannot support a
-        # negative, so say what was covered and refuse to imply the rest.
-        found_note = (
-            f"{total} match(es) in {len(per_doc)} RFC(s) before it stopped"
-            if per_doc
-            else "no matches before it stopped"
-        )
-        return (
-            f"**INCOMPLETE SCAN — stopped after {_RFC_SCAN_BUDGET_S:.0f}s.** "
-            f"`{pattern}` ({mode}): {found_note}, having read {sections} of "
-            f"the corpus's section(s). A regex over ~400 MB can run for "
-            "minutes; a literal phrase scans the whole series in seconds. "
-            "**This cannot support a negative claim** — narrow with "
-            "`file_pattern`, or search a literal phrase instead.\n\n"
-            f"_{provenance_line()}_"
-        )
-    if not per_doc:
-        body = _rfc_no_match_body(pattern, file_pattern, mode, len(files), sections)
-        return f"{body}\n\n_{provenance_line()}_"
-
-    header = (
-        f"_grep `{pattern}` in the RFC series ({mode}): {total} match(es) in "
-        f"{len(per_doc)} RFC(s); "
-        f"{_rfc_scope_phrase(file_pattern, len(files), sections)}._"
-    )
-    if files_only:
-        body = _render_rfc_files_only(per_doc, total, header, limit)
-    else:
-        body = _render_rfc_hits(hits, matching_sections, header, limit)
-    return f"{body}\n\n_{provenance_line()}_"
-
-
-def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_grep_corpus(
     wg: str,
     pattern: str,
     file_pattern: Optional[str] = None,
@@ -798,6 +479,7 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     limit: int = 50,
     context: int = 0,
     files_only: bool = False,
+    max_per_file: Optional[int] = None,
 ) -> str:
     """Dispatch to the gathered-files scan or the RFC-series scan.
 
@@ -805,12 +487,29 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
     string appear, and where" — and a caller should not have to know that one
     reads files and the other reads a chunk table. They differ in what a hit
     can be located by; see the RFC section above.
+
+    `max_per_file` is refused here rather than clamped: unlike `limit`, a zero
+    or negative value has no sensible reading, and silently substituting one
+    would present a different listing from the one asked for. It shapes only
+    the gathered line view; the RFC scan already caps sections per RFC.
     """
     if not (pattern or "").strip():
         return (
             "grep_corpus needs a non-empty `pattern` — the literal string to "
             'look for, e.g. `grep_corpus("httpbis", "8890")`.'
         )
+    if max_per_file is not None:
+        # `True` would pass `int()` as 1, and `inf` raises OverflowError; neither
+        # is a line count the caller meant.
+        try:
+            max_per_file = 0 if isinstance(max_per_file, bool) else int(max_per_file)
+        except (TypeError, ValueError, OverflowError):
+            max_per_file = 0
+        if max_per_file < 1:
+            return (
+                "grep_corpus needs `max_per_file` to be a positive integer "
+                "(lines to show per file), or unset for no per-file cap."
+            )
     try:
         limit = max(1, min(int(limit), _MAX_GREP_LIMIT))
     except (TypeError, ValueError):
@@ -824,12 +523,53 @@ def tool_grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-
             pattern, file_pattern, regex, case_sensitive, limit, context, files_only
         )
     return _grep_gathered(
-        wg, pattern, file_pattern, regex, case_sensitive, limit, context, files_only
+        wg,
+        pattern,
+        file_pattern,
+        regex,
+        case_sensitive,
+        limit,
+        context,
+        files_only,
+        max_per_file,
+    )
+
+
+_FILE_SCAN_KEYS = ("hits", "per_file", "total", "scanned", "complete")
+
+
+def _run_scan(
+    matcher: "re.Pattern[str]",
+    regex: bool,
+    eligible: List[Tuple[str, str]],
+    keep: int,
+    max_per_file: Optional[int],
+) -> FileScan:
+    """Scan `eligible` for `matcher`. The caller's own regex runs in a child
+    process that is killed at the budget (`regexscan`); a literal cannot
+    backtrack catastrophically and is scanned here, unbudgeted as it always
+    was."""
+    if not regex or not eligible:
+        return scan_files(matcher, eligible, keep, max_per_file)
+    return cast(
+        FileScan,
+        run_bounded(
+            {
+                "kind": "files",
+                "pattern": matcher.pattern,
+                "flags": matcher.flags,
+                "files": eligible,
+                "keep": keep,
+                "per_file_cap": max_per_file,
+            },
+            _REGEX_SCAN_BUDGET_S,
+            _FILE_SCAN_KEYS,
+        ),
     )
 
 
 @_requires_corpus
-def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements
+def _grep_gathered(  # noqa: PLR0911
     wg: str,
     pattern: str,
     file_pattern: Optional[str] = None,
@@ -838,9 +578,10 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     limit: int = 50,
     context: int = 0,
     files_only: bool = False,
+    max_per_file: Optional[int] = None,
 ) -> str:
-    # `pattern`, `limit` and `context` are already validated and clamped by the
-    # dispatcher, which has to do it for both backends.
+    # `pattern`, `limit`, `context` and `max_per_file` are already validated by
+    # the dispatcher, which has to do it for both backends.
     try:
         matcher = _compile(pattern, regex, case_sensitive)
     except re.error as exc:
@@ -858,17 +599,43 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     # counts are all it needs, and a broad pattern over a large corpus would
     # otherwise hold a hit per match for nothing.
     keep = 0 if files_only else limit
-    hits: List[_Hit] = []
-    per_file: Dict[str, int] = {}
-    total = 0
-    for relpath, path in eligible:
-        found = _scan_file(path, relpath, matcher, hits, keep)
-        if found:
-            per_file[relpath] = found
-            total += found
+    mode = _mode_phrase(regex, case_sensitive)
+    try:
+        scan = _run_scan(matcher, regex, eligible, keep, max_per_file)
+    except ScanTimedOut:
+        _note_scan_stop("timeout")
+        # No counts survive a kill, and a partial denominator supports no
+        # negative, so say only that the scan did not finish.
+        return _with_freshness(
+            wg,
+            _incomplete_scan_head(
+                pattern,
+                mode,
+                _REGEX_SCAN_BUDGET_S,
+                "no result was recovered",
+                f"an unknown number of the {len(eligible)} file(s)",
+            ),
+        )
+    except ScanFailed as exc:
+        _note_scan_stop("failed", exc)
+        return _SCAN_FAILED_REPLY
+    if not scan["complete"]:
+        return _with_freshness(
+            wg,
+            _incomplete_scan_head(
+                pattern,
+                mode,
+                _REGEX_SCAN_BUDGET_S,
+                f"{scan['total']} matching line(s) in {len(scan['per_file'])} "
+                "file(s) before it stopped",
+                f"{scan['scanned']} of {len(eligible)} file(s)",
+            ),
+        )
+    hits = [_Hit(*hit) for hit in scan["hits"]]
+    per_file = scan["per_file"]
+    total = scan["total"]
     scanned = len(eligible)
 
-    mode = _mode_phrase(regex, case_sensitive)
     # Nothing scanned means there is no denominator, so the evidence-of-absence
     # body below would be a claim resting on zero files. Say what happened
     # instead — the glob matched nothing, or matched only files the scan
@@ -885,7 +652,9 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
         return _with_freshness(wg, body)
 
     # `eligible` is relpath-sorted and retention stopped at `keep`, so `hits`
-    # is already the first `limit` in (file, line) order — no sort needed.
+    # is already in (file, line) order — no sort needed. Without a per-file cap
+    # it is the first `limit` matches; with one, the first `max_per_file` of
+    # each file, up to `limit` in all.
     header = (
         f"_grep `{pattern}` in {wg} ({mode}): {total} matching line(s) in "
         f"{len(per_file)} file(s); "
@@ -894,16 +663,18 @@ def _grep_gathered(  # pylint: disable=too-many-arguments,too-many-positional-ar
     if files_only:
         body = _render_files_only(wg, per_file, total, header, limit)
     else:
-        body = _render_hits(wg, hits, total, header, context, cache, matcher)
+        body = _render_hits(
+            wg, hits, per_file, total, header, context, cache, max_per_file
+        )
     return _append_participation_nudge(list(per_file.keys()), _with_freshness(wg, body))
 
 
 # --- MCP server wiring -------------------------------------------------------
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
-    async def grep_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def grep_corpus(
         corpus: str,
         pattern: str,
         file_pattern: Optional[str] = None,
@@ -912,6 +683,7 @@ def register(server: "FastMCP") -> None:
         limit: int = 50,
         context: int = 0,
         files_only: bool = False,
+        max_per_file: Optional[int] = None,
     ) -> str:
         """Exact-string (or regex) search over a corpus's gathered files —
         the lexical counterpart to `search_corpus`. Returns matching lines as
@@ -953,8 +725,12 @@ def register(server: "FastMCP") -> None:
         result — the zero-match reply says so. `file_pattern` globs the corpus
         filename, which is `rfc9111.txt`.
 
-        **Everywhere else, a match is within one line.** A phrase broken
-        across a mail wrap will not match. Search the most distinctive single
+        **Everywhere else, a match is within one line.** A line is what lies
+        between `\n`s, exactly as `read_file_section` and the chunk spans count
+        them, so the line numbers here can be passed straight to them. A form
+        feed (the page break in a draft) does not end a line, so `^` anchors
+        only after a real newline. A phrase broken across a mail wrap will not
+        match. Search the most distinctive single
         token — `8890`, not `RFC 8890` — then widen once you have the files.
 
         A zero over `issues/` / `pulls/` also reports **where the GitHub
@@ -968,11 +744,26 @@ def register(server: "FastMCP") -> None:
             `list_files` takes. Narrowing also narrows what a zero result can
             claim, so scan unscoped before concluding absence.
           - `regex=True`: treat `pattern` as a Python regex instead of a
-            literal string. An invalid pattern is reported, not raised.
+            literal string. An invalid pattern is reported, not raised. A
+            regex scan has a time budget (20s on a gathered corpus): a
+            pattern that cannot finish in it — catastrophic backtracking, or
+            just too much text — is stopped and reported as an INCOMPLETE
+            SCAN, which supports no negative claim. Narrow with
+            `file_pattern` or simplify the pattern. A literal is not budgeted.
           - `case_sensitive=True`: default is case-insensitive.
           - `limit`: cap on rendered rows — matching lines normally, files
             under `files_only` (default 50, max 200). The scan and the
             reported totals are always complete; only the listing is cut.
+          - `max_per_file=N`: show at most N matching lines per file, so
+            one noisy file cannot use up `limit` ahead of the others. Applied
+            before `limit`, which still bounds the total lines, so a small N
+            reaches more files but not necessarily all of them: the footer
+            says how many matching files got no line, and how many lines each
+            cap omitted. Counts matching lines only; `context` lines are
+            extra. Totals and per-file counts stay complete.
+            Unset (default) means no per-file cap; must be at least 1.
+            Gathered corpora only: ignored under `files_only`, and the RFC
+            series already shows at most 3 sections per RFC.
           - `context=N`: N lines either side of each hit (max 5).
           - `files_only=True`: one row per file with its match count — the
             breadth view for "which threads mention X at all".
@@ -987,7 +778,7 @@ def register(server: "FastMCP") -> None:
         files. Pivot to `read_file_section` or `get_chunk_text` to read a hit
         in context.
         """
-        return await _offload(
+        return await _offload_scan(
             tool_grep_corpus,
             corpus,
             pattern,
@@ -997,4 +788,5 @@ def register(server: "FastMCP") -> None:
             limit=limit,
             context=context,
             files_only=files_only,
+            max_per_file=max_per_file,
         )

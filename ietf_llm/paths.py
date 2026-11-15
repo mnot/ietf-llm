@@ -52,6 +52,7 @@ Relative paths from `files/` are what the chunker stores in
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from typing import Any, Iterator, List, Optional, Tuple
@@ -60,7 +61,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 #: index machinery, not corpus content: the embeddings DB (`embeddings/
 #: storage.py`), its SQLite WAL/SHM sidecars, and the topic-routing sidecar
 #: (`embeddings/topics.py`). This is the one place both directions of the
-#: split-index round trip name the set — `gather.runner._index_extra_files`
+#: split-index round trip name the set — `gather.lifecycle.index_extra_files`
 #: (write: what a split `IETF_LLM_INDEX_DIR` uploads to a published version's
 #: root), `store.cloud.CloudCorpusStore.seed_workspace` (read: what to
 #: relocate back out of a freshly staged version into the index dir), and
@@ -133,7 +134,11 @@ def seed_index_cache_path() -> str:
 
 
 def get_wg_file_cache_dir(wg_name: str) -> str:
-    """Get the local file cache directory for a Working Group."""
+    """Get the local file cache directory for a Working Group, creating it.
+
+    For the gather path only, which builds the corpus. A reader (MCP tools,
+    export) must resolve through `CorpusStore.local_cache_dir`, which never
+    creates: here a mistyped corpus name becomes a junk corpus."""
     cache_dir = os.path.join(get_cache_dir(), wg_name, "files")
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
@@ -179,6 +184,62 @@ def is_synthetic_wg(name: str) -> bool:
     return name.startswith("x-")
 
 
+# Gathering is strict about corpus names: one safe path segment of letters,
+# digits, `.`, `-` and `_`, starting with an alphanumeric. Real corpus names (WG
+# shortnames, list names, `x-` synthetics) all satisfy it. Reading is looser
+# (`readable_corpus_name`), so a corpus the CLI gathered under an unusual label
+# stays readable.
+_VALID_CORPUS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_MAX_CORPUS_LEN = 128
+
+
+def valid_corpus_name(name: str) -> bool:
+    """True if `name` is a safe single path segment usable as a cache dir."""
+    return (
+        bool(name)
+        and len(name) <= _MAX_CORPUS_LEN
+        and _VALID_CORPUS.fullmatch(name) is not None
+    )
+
+
+def readable_corpus_name(name: str) -> bool:
+    """True if `name` may be looked up as a corpus by a read tool: one plain
+    path segment (see `is_plain_segment`) that is not hidden and has no control
+    characters. Looser than `valid_corpus_name`, which gathering requires, so
+    that a corpus the CLI gathered under a custom label is still readable;
+    every name it refuses is one that could leave the cache or is not a name."""
+    return (
+        len(name) <= _MAX_CORPUS_LEN
+        and is_plain_segment(name)
+        and not name.startswith(".")
+        and name.isprintable()
+    )
+
+
+def is_plain_segment(name: str) -> bool:
+    """True if `name` is one path component that cannot leave its parent: not
+    empty, not `.`/`..`, no separator of either flavour, no NUL. The
+    store-level check, looser still than `readable_corpus_name`."""
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and not any(c in name for c in ("/", "\\", "\0"))
+    )
+
+
+def checked_corpus(corpus: str) -> str:
+    """`corpus` unchanged, or ValueError if it could not be one path component.
+
+    The stores, the freshness sentinels, the control-plane keys and the index
+    path all build paths or keys from a corpus name, and `os.path.join` discards
+    everything before an absolute component. The MCP boundary rejects bad names
+    first; this keeps a caller that forgot to from reading or writing outside
+    the cache."""
+    if not is_plain_segment(corpus):
+        raise ValueError(f"not a valid corpus name: {corpus!r}")
+    return corpus
+
+
 # Top-level subdirectories under <wg>/files/.
 DIR_DIGESTS = "digests"
 DIR_DRAFTS = "drafts"
@@ -217,6 +278,17 @@ def digest_path(cache_dir: str, kind: str) -> str:
     return os.path.join(cache_dir, DIR_DIGESTS, f"{kind}.md")
 
 
+def digest_fingerprint(text: str) -> str:
+    """Hash of a digest's text, recorded in its sidecar so a reader can tell the
+    sidecar still describes the file beside it."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def digest_kinds_path(digest_file: str) -> str:
+    """Sidecar beside a digest file that lists the kind of each of its rows."""
+    return os.path.splitext(digest_file)[0] + ".kinds.json"
+
+
 def remove_stale_digest(cache_dir: str, kind: str) -> None:
     """Delete a pre-existing digest when a re-gather produced no entries.
 
@@ -230,8 +302,9 @@ def remove_stale_digest(cache_dir: str, kind: str) -> None:
     under the gather lease, so the existence check has no race.
     """
     path = digest_path(cache_dir, kind)
-    if os.path.exists(path):
-        os.remove(path)
+    for stale in (path, digest_kinds_path(path)):
+        if os.path.exists(stale):
+            os.remove(stale)
 
 
 def drafts_dir(cache_dir: str) -> str:

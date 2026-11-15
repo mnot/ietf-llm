@@ -459,3 +459,172 @@ def test_the_seed_reason_carries_the_hint(
     monkeypatch.setattr(sf, "read_index", _read)
     reason = rfc_corpus.ensure_rfc_corpus(Verbosity.QUIET, interval=0.0)
     assert reason and "SSL_CERT_FILE" in reason
+
+
+# --- IMAP -------------------------------------------------------------------
+
+
+def _capture_imap_context(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Run one `_imap_sync_attempt`'s connect against a stand-in `IMAP4_SSL`
+    and return the kwargs it was given. `imaplib` builds an *unverified* context
+    when handed none, so what we hand it is the whole control."""
+    from ietf_llm.gather.sources import mbox
+    from ietf_llm.log import Verbosity
+
+    seen: dict[str, Any] = {}
+
+    def _connect(*_a: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        raise OSError("stop after connect")
+
+    monkeypatch.setattr(mbox.imaplib, "IMAP4_SSL", _connect)
+    with pytest.raises(OSError):
+        mbox._imap_sync_attempt("moq", None, "/nonexistent", Verbosity.QUIET, None)
+    return seen
+
+
+def test_imap_connects_with_a_verifying_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(tls._ENV, raising=False)
+    ctx = _capture_imap_context(monkeypatch)["ssl_context"]
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+
+
+def test_imap_still_verifies_when_the_platform_store_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(tls._ENV, "off")
+    assert tls.system_trust_context() is None
+    ctx = _capture_imap_context(monkeypatch)["ssl_context"]
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+
+
+def test_an_imap_certificate_failure_is_named_and_not_retried(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from ietf_llm.gather.sources import mbox
+    from ietf_llm.log import Verbosity
+
+    monkeypatch.setenv("IETF_LLM_CACHE_DIR", str(tmp_path))
+    calls: list[int] = []
+
+    def _attempt(*_a: Any) -> Any:
+        calls.append(1)
+        raise _verify_error()
+
+    monkeypatch.setattr(mbox, "_imap_sync_attempt", _attempt)
+    notes: list[str] = []
+    assert mbox._sync_one_list("moq", "moq", 12, Verbosity.QUIET, note_fn=notes.append) == []
+    assert len(calls) == 1
+    assert "SSL_CERT_FILE" in notes[0]
+
+
+# --- IMAP: a real handshake ---------------------------------------------------
+
+
+@pytest.fixture
+def _tls_server(tmp_path: Any) -> Any:
+    """A local TLS server with a certificate for `localhost` from a throwaway CA that
+    answers like an IMAP server. Yields `(port, path to the CA that signed it)`."""
+    import shutil
+    import socket
+    import subprocess
+    import threading
+
+    if shutil.which("openssl") is None:
+        pytest.skip("needs the openssl CLI to mint a certificate")
+    def _openssl(*args: str) -> None:
+        try:
+            subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=tmp_path)
+        except subprocess.CalledProcessError:
+            pytest.skip("this openssl cannot mint the test certificate")
+
+    # A CA and a leaf it signed: the platform verifiers on macOS and Windows
+    # refuse a bare self-signed leaf as an anchor.
+    (tmp_path / "leaf.ext").write_text(
+        "subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n"
+        "basicConstraints=CA:FALSE\nauthorityKeyIdentifier=keyid\n"
+    )
+    cert, key = tmp_path / "leaf.pem", tmp_path / "leaf.key"
+    _openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+             "-subj", "/CN=test-ca", "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+             "-keyout", "ca.key", "-out", "ca.pem")
+    _openssl("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost",
+             "-keyout", str(key), "-out", "leaf.csr")
+    _openssl("x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
+             "-CAcreateserial", "-days", "1", "-extfile", "leaf.ext", "-out", str(cert))
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(str(cert), str(key))
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    listener.settimeout(5)
+
+    def _serve() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                with server_ctx.wrap_socket(conn, server_side=True) as tls_conn:
+                    tls_conn.sendall(b"* OK hello\r\n")
+            except (ssl.SSLError, OSError):
+                pass
+
+    threading.Thread(target=_serve, daemon=True).start()
+    yield listener.getsockname()[1], tmp_path / "ca.pem"
+    listener.close()
+
+
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_the_imap_context_rejects_an_untrusted_certificate_and_trusts_a_supplied_one(
+    _tls_server: Any, monkeypatch: pytest.MonkeyPatch, opt_out: bool
+) -> None:
+    """The attribute checks above show what we asked for; this shows the context
+    does it, with and without the platform store."""
+    import socket
+
+    from ietf_llm.gather.sources import mbox
+
+    port, ca = _tls_server
+    if opt_out:
+        monkeypatch.setenv(tls._ENV, "off")
+    else:
+        monkeypatch.delenv(tls._ENV, raising=False)
+
+    def _connect() -> bytes:
+        sock = socket.create_connection(("localhost", port), timeout=5)
+        with mbox._imap_ssl_context().wrap_socket(sock, server_hostname="localhost") as tls_sock:
+            return tls_sock.recv(64)
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    with pytest.raises(ssl.SSLCertVerificationError):
+        _connect()
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    assert _connect().startswith(b"* OK")
+
+
+def test_the_opt_out_context_carries_certifi(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For an image without `ca-certificates`, certifi is the only anchor."""
+    import requests
+
+    from ietf_llm.gather.sources import mbox
+
+    monkeypatch.setenv(tls._ENV, "off")
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent")
+    monkeypatch.setenv("SSL_CERT_DIR", "/nonexistent")
+    seen: list[str] = []
+    real = ssl.SSLContext.load_verify_locations
+
+    def _spy(self: ssl.SSLContext, *a: Any, **kw: Any) -> Any:
+        seen.append(kw.get("cafile") or "")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", _spy)
+    ctx = mbox._imap_ssl_context()
+    assert requests.certs.where() in seen
+    assert ctx.cert_store_stats()["x509_ca"] > 0

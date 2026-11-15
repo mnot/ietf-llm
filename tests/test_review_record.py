@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
+import requests
 
 from ietf_llm import live_lookup
 from ietf_llm.mcp.drafts import tool_review_record
@@ -203,10 +204,10 @@ def _stub_fetch(monkeypatch, isolated_home):
         seen.append(url)
         return _canned(url)
 
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
     yield seen
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
 
 
 def _record() -> str:
@@ -305,7 +306,7 @@ def test_latest_position_per_balloter_wins(monkeypatch, urls) -> None:
             revised if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "| -07 | Yes | Mike Bishop | 2026-08-03 |" in out
     assert "DISCUSS" not in out
@@ -326,7 +327,7 @@ def test_unposted_positions_are_dropped(monkeypatch, urls) -> None:
             empty if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "**Ballot:** not opened." in out
     assert "Gorry Fairhurst" not in out
@@ -350,7 +351,7 @@ def test_standing_discuss_points_at_the_gathered_ballot_file(
             held if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "| -08 | **DISCUSS** | Gorry Fairhurst | 2026-08-12 |" in out
     assert "ballots/draft-ietf-httpbis-no-vary-search.md" in out
@@ -365,7 +366,7 @@ def _stub_positions(monkeypatch, objects: List[Dict[str, Any]]) -> None:
             body if "/ballotpositiondocevent/" in url else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
 
 
 def test_cleared_position_does_not_stand_in_for_an_examination(
@@ -408,8 +409,8 @@ def test_iesg_position_vocabulary_matches_datatracker(urls) -> None:
     # IAB / IRSG ballots use. A slug missing from the map leaks in upper case
     # through the fallback, so the guard is that none of them do.
     for slug in ("block", "concern", "moretime", "notready", "abstain"):
-        assert slug in live_lookup.reviews._POSITION_LABELS  # pylint: disable=protected-access
-        assert live_lookup.reviews._POSITION_LABELS[slug] != slug.upper()  # pylint: disable=protected-access
+        assert slug in live_lookup.reviews._POSITION_LABELS
+        assert live_lookup.reviews._POSITION_LABELS[slug] != slug.upper()
 
 
 # --- what the record does not know ------------------------------------------
@@ -419,22 +420,24 @@ def test_a_failed_fetch_is_not_rendered_as_an_empty_record(monkeypatch, urls) ->
     """A Datatracker outage on the list endpoints must not read as a draft
     nobody has reviewed. The doc fetch still answers (it can come off the disk
     cache), so without the flag this renders a confident, wrong absence."""
-    monkeypatch.setattr(
-        live_lookup.cache,
-        "_fetch_json",
-        lambda url, timeout=10.0: (
-            None
-            if ("/review/reviewassignment/" in url or "/ballotpositiondocevent/" in url)
-            else _canned(url)
-        ),
-    )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    def _fetch(url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        if "/review/reviewassignment/" in url or "/ballotpositiondocevent/" in url:
+            raise requests.ConnectionError("simulated outage")
+        return _canned(url)
+
+    monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
+    live_lookup._reset_cache()
     out = _record()
     assert "Datatracker did not answer for the reviews and ballot" in out
     assert "this record is incomplete" in out
     # None of the absence claims may appear.
     assert "none requested" not in out
     assert "not opened" not in out
+    # Nor may the section bodies, which render separately from the verdict.
+    assert "No review has been requested" not in out
+    assert "No ballot has been opened" not in out
+    assert "## Reviews\n\n_Not retrieved" in out
+    assert "## Ballot\n\n_Not retrieved" in out
     assert "Nothing in this record has examined" not in out
 
 
@@ -450,7 +453,7 @@ def test_never_reviewed_draft_gets_no_gap_headline(monkeypatch, urls) -> None:
             else _canned(url)
         ),
     )
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     out = _record()
     assert "Nothing in this record has examined" not in out
     assert "- **Reviews:** none requested." in out
@@ -480,7 +483,7 @@ def test_query_values_are_escaped(monkeypatch, urls) -> None:
         return plussed if "/review/reviewassignment/" in url else _canned(url)
 
     monkeypatch.setattr(live_lookup.cache, "_fetch_json", _fetch)
-    live_lookup._reset_cache()  # pylint: disable=protected-access
+    live_lookup._reset_cache()
     _record()
     email_urls = [url for url in urls if "/person/email/?" in url]
     assert email_urls
@@ -495,3 +498,22 @@ def test_unknown_document_is_reported(urls) -> None:
 
 def test_empty_name_is_refused(urls) -> None:
     assert "Provide a draft name" in tool_review_record("  ")
+
+
+def test_positions_from_a_closed_ballot_are_not_current(monkeypatch, urls) -> None:
+    """A re-balloted draft's history carries the old ballot's rows. A DISCUSS
+    on the closed ballot must not appear as a standing position, nor count
+    toward what the ballot examined."""
+    old, new = "/api/v1/doc/ballotdocevent/1/", "/api/v1/doc/ballotdocevent/2/"
+    _stub_positions(
+        monkeypatch,
+        [
+            _position(10, "discuss", "05", "2026-01-03T10:00:00Z", ballot=old, discuss="x"),
+            _position(11, "yes", "05", "2026-01-04T10:00:00Z", ballot=old),
+            _position(10, "yes", "08", "2026-08-12T10:00:00Z", ballot=new),
+        ],
+    )
+    out = _record()
+    assert "## Ballot (1 positions)" in out
+    assert "DISCUSS" not in out
+    assert "**Ballot:** 1 against -08" in out

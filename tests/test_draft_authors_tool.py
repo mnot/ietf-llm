@@ -2,16 +2,18 @@
 
 The author *parser* is covered in `test_draft_authors.py`; here we test the
 tool that locates the newest cached revision across corpora and renders it.
-The corpus-scan seams (`_list_wgs` / `_files_dir`) are monkeypatched so the
-test needs no corpus-store setup — just a drafts dir on disk.
+The corpus is seeded in the sandboxed local cache, so the locator runs against
+the real store.
 """
 
 from __future__ import annotations
 from ietf_llm import mcp
 
-import os
+from pathlib import Path
 
 import pytest
+
+from conftest import write_cache_file
 
 
 _DRAFT = """\
@@ -32,15 +34,11 @@ Authors' Addresses
 
 
 @pytest.fixture
-def _seeded(tmp_path, monkeypatch):
+def _seeded(isolated_home: Path) -> Path:
     """A cache with two revisions of one draft; -02 is newest."""
-    ddir = tmp_path / "files" / "drafts"
-    ddir.mkdir(parents=True)
-    (ddir / "draft-ietf-xtest-foo-01.txt").write_text("old rev\n", encoding="utf-8")
-    (ddir / "draft-ietf-xtest-foo-02.txt").write_text(_DRAFT, encoding="utf-8")
-    monkeypatch.setattr(mcp.drafts, "_list_wgs", lambda: ["xtest"])
-    monkeypatch.setattr(mcp.drafts, "_files_dir", lambda wg: str(tmp_path / "files"))
-    return tmp_path
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-foo-01.txt", "old rev\n")
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-foo-02.txt", _DRAFT)
+    return isolated_home
 
 
 def test_draft_authors_picks_newest_revision_and_roles(_seeded):
@@ -66,9 +64,58 @@ def test_draft_authors_empty_name():
     assert "Provide a draft name" in mcp.drafts.tool_draft_authors("")
 
 
-def test_find_latest_draft_file_none_when_absent(tmp_path, monkeypatch):
-    (tmp_path / "files" / "drafts").mkdir(parents=True)
-    monkeypatch.setattr(mcp.drafts, "_list_wgs", lambda: ["xtest"])
-    monkeypatch.setattr(mcp.drafts, "_files_dir", lambda wg: str(tmp_path / "files"))
+def test_find_latest_draft_file_none_when_absent(isolated_home):
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-bar-00.txt")
     assert mcp.drafts._find_latest_draft_file("draft-ietf-xtest-foo") is None
-    assert os.path.isdir(tmp_path / "files" / "drafts")
+
+
+def test_revision_beats_a_lexically_larger_name(isolated_home):
+    """-10 is newer than -9 (an int compare, not a string one)."""
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-foo-9.txt")
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-foo-10.txt")
+    path = mcp.drafts._find_latest_draft_file("draft-ietf-xtest-foo")
+    assert path is not None and path.endswith("draft-ietf-xtest-foo-10.txt")
+
+
+def test_draft_held_by_a_non_owning_corpus_is_still_found(isolated_home):
+    """The name implies a WG, but the draft may be cached only under another
+    corpus (an individual-draft or topic corpus)."""
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-other-00.txt")
+    write_cache_file(isolated_home, "xother", "drafts/draft-ietf-xtest-foo-03.txt")
+    path = mcp.drafts._find_latest_draft_file("draft-ietf-xtest-foo")
+    assert path is not None
+    assert path.endswith("xother/files/drafts/draft-ietf-xtest-foo-03.txt")
+
+
+def test_individual_draft_has_no_owner_but_is_found(isolated_home):
+    write_cache_file(isolated_home, "xtest", "drafts/draft-someone-foo-01.txt")
+    assert mcp.drafts._find_latest_draft_file("draft-someone-foo") is not None
+
+
+def test_owner_candidates_handle_hyphenated_acronyms():
+    owners = mcp.drafts._owner_candidates
+    corpora = ["dns-sd", "dns", "tls"]
+    assert owners("draft-ietf-dns-sd-foo", corpora) == ["dns-sd", "dns"]
+    assert owners("draft-irtf-tls-foo", corpora) == ["tls"]
+    assert owners("draft-someone-tls-foo", corpora) == []
+    # The draft's own name keeps at least one token, so a corpus named for it
+    # is not mistaken for the owner.
+    assert owners("draft-ietf-tls", corpora) == []
+
+
+def test_a_failing_corpus_does_not_fail_the_lookup(isolated_home, monkeypatch):
+    """One corpus whose listing raises (an S3 error, a bad manifest) is treated
+    as holding nothing, for the owner and the non-owner sweep alike."""
+    write_cache_file(isolated_home, "xother", "drafts/draft-ietf-xtest-foo-03.txt")
+    write_cache_file(isolated_home, "xtest", "drafts/draft-ietf-xtest-bar-00.txt")
+    write_cache_file(isolated_home, "xbad", "drafts/draft-ietf-xtest-foo-09.txt")
+    real = mcp.drafts._list_corpus_files
+
+    def _flaky(wg: str, subdir: str):
+        if wg in ("xbad", "xtest"):
+            raise RuntimeError("boom")
+        return real(wg, subdir)
+
+    monkeypatch.setattr(mcp.drafts, "_list_corpus_files", _flaky)
+    path = mcp.drafts._find_latest_draft_file("draft-ietf-xtest-foo")
+    assert path is not None and path.endswith("xother/files/drafts/draft-ietf-xtest-foo-03.txt")

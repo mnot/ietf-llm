@@ -51,7 +51,63 @@ def test_read_file_section_respects_max_lines(isolated_home: Path) -> None:
     # 10 lines of content plus a "truncated" marker
     assert any(l.startswith("line 10") for l in lines)
     assert not any(l.startswith("line 11") for l in lines)
-    assert any("truncated" in l for l in lines)
+    assert any("PARTIAL READ" in l and "lines 1–10 of 100" in l for l in lines)
+    assert any("start_line=11" in l for l in lines)
+
+
+def test_read_file_section_is_bounded_by_characters(isolated_home: Path) -> None:
+    # 500 lines of 200 characters is far under the 5000-line cap and far over
+    # the character budget.
+    content = "\n".join(f"{i:04d} " + "x" * 195 for i in range(1, 501))
+    write_cache_file(isolated_home, "wg", "wide.txt", content)
+    out = mcp.chunks.tool_read_file_section("wg", "wide.txt", max_lines=5000)
+    shown = [l for l in out.splitlines() if l.startswith("0")]
+    assert 0 < len(shown) < 500
+    assert len(out) < mcp.drafts._MAX_WINDOW_CHARS + 1000
+    assert out.startswith("**PARTIAL READ")
+    assert out.count("PARTIAL READ") == 2
+    # The banner's continuation point is exactly where the content stopped.
+    assert f"start_line={len(shown) + 1}" in out
+    nxt = mcp.chunks.tool_read_file_section(
+        "wg", "wide.txt", start_line=len(shown) + 1, max_lines=5000
+    )
+    assert f"{len(shown) + 1:04d} " in nxt
+
+
+def test_read_file_section_cuts_a_single_oversized_line(isolated_home: Path) -> None:
+    blob = "A" * (mcp.drafts._MAX_WINDOW_CHARS * 5)
+    write_cache_file(isolated_home, "wg", "blob.txt", f"before\n{blob}\nafter")
+    out = mcp.chunks.tool_read_file_section("wg", "blob.txt", start_line=2)
+    assert len(out) < mcp.drafts._MAX_WINDOW_CHARS + 1000
+    assert "…[line truncated]" in out
+    # The banner says the line was cut and points past it, not into it.
+    assert "line 2 is longer than" in out
+    assert "cannot be reached with `start_line`" in out
+    assert "start_line=3" in out
+    assert "% of the file" not in out
+
+
+def test_read_file_section_oversized_last_line_has_no_dead_end(
+    isolated_home: Path,
+) -> None:
+    blob = "A" * (mcp.drafts._MAX_WINDOW_CHARS * 2)
+    write_cache_file(isolated_home, "wg", "blob.txt", f"before\n{blob}")
+    out = mcp.chunks.tool_read_file_section("wg", "blob.txt", start_line=2)
+    assert "line 2 is longer than" in out
+    assert "start_line=" not in out
+
+
+def test_read_file_section_line_of_exactly_the_budget_is_not_cut(
+    isolated_home: Path,
+) -> None:
+    line = "B" * mcp.drafts._MAX_WINDOW_CHARS
+    write_cache_file(isolated_home, "wg", "exact.txt", line)
+    assert mcp.chunks.tool_read_file_section("wg", "exact.txt") == line
+
+
+def test_read_file_section_small_file_has_no_banner(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "small.txt", "a\nb\nc")
+    assert mcp.chunks.tool_read_file_section("wg", "small.txt") == "a\nb\nc"
 
 
 def test_read_file_section_rejects_oversized_request(isolated_home: Path) -> None:
@@ -1369,7 +1425,7 @@ def test_get_chunks_batch_rejects_non_numeric_index(
 
 
 def test_descendants_is_cycle_safe() -> None:
-    from ietf_llm.mcp.topic import _descendants# pylint: disable=import-outside-toplevel
+    from ietf_llm.mcp.topic import _descendants
 
     # A malformed self-reply (graph[5] = [5]) must not list the root as its own
     # descendant, and a cycle must not loop forever.
@@ -1415,7 +1471,7 @@ def test_read_file_window_past_eof(tmp_path) -> None:
 def test_load_server_instructions_is_markdown_heading() -> None:
     # The instructions floor is a package-owned markdown string (no YAML
     # frontmatter): it opens with a heading and carries no `---` sentinel.
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert out is not None
     assert out.lstrip().startswith("#")
     assert "---" not in out.splitlines()[0]
@@ -1431,7 +1487,7 @@ def test_load_server_instructions_states_session_mode(
 
     monkeypatch.setattr(freshness, "_DEPLOYMENT_MODE", "stdio")
     monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert "{{SESSION}}" not in out  # placeholder resolved
     assert "## This session" in out
     assert "single-user stdio server" in out.lower()
@@ -1450,7 +1506,7 @@ def test_load_server_instructions_prepends_session_when_marker_missing(
     monkeypatch.setattr(
         mcp.server, "_strip_frontmatter", lambda _t: "# Routing\n\nbody, no marker"
     )
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert "{{SESSION}}" not in out
     assert "Fixed for this server's lifetime" in out  # the session section
     # Prepended, not appended, so it leads.
@@ -1461,7 +1517,7 @@ def test_load_server_instructions_includes_load_bearing_content() -> None:
     # Spot-check that the routing rules the skill carries actually land
     # in the instructions string. If this regresses, the non-Claude
     # harnesses lose the guidance.
-    out = mcp.server._load_server_instructions()  # pylint: disable=protected-access
+    out = mcp.server._load_server_instructions()
     assert out is not None
     # Routing rules.
     assert "overview" in out
@@ -1508,3 +1564,212 @@ def test_read_ietf_participation_norms_returns_bundled_doc() -> None:
     assert "IETF.md" not in out
     assert "PARTICIPATING.md" not in out
     assert "Where AI help is uncontroversial" in out
+
+
+# --- corpus names and other path-component arguments -----------------------
+#
+# A tool argument that becomes a path component must not reach outside the
+# cache: `os.path.join` drops everything before an absolute component, and
+# `..` climbs out.
+
+
+def _outside_corpus(isolated_home: Path) -> Path:
+    """A directory beside the cache root that looks like a corpus."""
+    outside = isolated_home / ".cache" / "outside"
+    (outside / "files").mkdir(parents=True)
+    (outside / "files" / "secret.md").write_text("TOP SECRET LINE")
+    return outside
+
+
+def _escaping_names(outside: Path) -> list[str]:
+    return ["../outside", str(outside), "wg/../../outside", "..", "/", ""]
+
+
+def test_corpus_traversal_is_unknown_for_every_per_corpus_tool(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "ok.txt")
+    outside = _outside_corpus(isolated_home)
+    for name in _escaping_names(outside):
+        for out in (
+            mcp.chunks.tool_read_file_section(name, "secret.md"),
+            mcp.corpus.tool_list_files(name),
+            mcp.corpus.tool_overview(name),
+            mcp.grep.tool_grep_corpus(name, "SECRET"),
+            mcp.search.tool_find_related(name, "secret.md", 0),
+            mcp.search.tool_search_corpora("SECRET", [name]),
+        ):
+            assert "TOP SECRET" not in out, name
+    for out in (
+        mcp.corpus.tool_list_files("../outside"),
+        mcp.search.tool_find_related("../outside", "secret.md", 0),
+    ):
+        assert "not a valid corpus name" in out
+        assert "ietf-llm" not in out  # no gather command for a name that cannot run
+    assert "Unknown corpus 'nope'" in mcp.corpus.tool_list_files("nope")
+
+
+def test_rejected_corpus_name_writes_nothing(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "ok.txt")
+    outside = _outside_corpus(isolated_home)
+    mcp.chunks.tool_read_file_section("../outside", "secret.md")
+    mcp.corpus.tool_list_files(str(outside))
+    assert sorted(p.name for p in outside.iterdir()) == ["files"]  # no last-accessed
+
+
+def test_a_real_corpus_still_reads(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "ok.txt", "hello")
+    assert "hello" in mcp.chunks.tool_read_file_section("wg", "ok.txt")
+
+
+def test_get_issue_number_and_repo_cannot_traverse(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "issues/o-r/1.md", "# Issue #1\nlegit")
+    secret = isolated_home / ".cache" / "ietf-llm" / "wg" / "x.md"
+    secret.write_text("TOP SECRET LINE")
+    # files/issues/o-r/../../../x.md is <wg>/x.md
+    assert "TOP SECRET" not in mcp.drafts.tool_get_issue("wg", "../../../x", repo="o/r")
+    assert "TOP SECRET" not in mcp.drafts.tool_get_issue("wg", "../../../x")
+    assert "legit" in mcp.drafts.tool_get_issue("wg", "1", repo="o/r")
+    assert "legit" in mcp.drafts.tool_get_issue("wg", 1, repo="o/r")  # type: ignore[arg-type]
+    # A repo that is not owner/repo is refused rather than slugged.
+    assert "not an owner/repo" in mcp.drafts.tool_get_issue("wg", "1", repo="../..")
+    assert "not an owner/repo" in mcp.drafts.tool_get_issue("wg", "1", repo="..")
+    assert "not an owner/repo" in mcp.drafts.tool_get_issue("wg", "1", repo="a/b/c")
+    # The slug the digests and list_files show works too.
+    assert "legit" in mcp.drafts.tool_get_issue("wg", "1", repo="o-r")
+
+
+def test_read_minutes_meeting_cannot_traverse(isolated_home: Path) -> None:
+    write_cache_file(isolated_home, "wg", "meetings/ietf125/minutes.md", "legit minutes")
+    cache = isolated_home / ".cache" / "ietf-llm"
+    # files/meetings/../../../outside2 is <cache>/outside2
+    (cache / "outside2" / "polls").mkdir(parents=True)
+    (cache / "outside2" / "minutes.md").write_text("TOP SECRET LINE")
+    (cache / "outside2" / "polls" / "p.md").write_text("TOP SECRET POLL")
+    for meeting in ("../../../outside2", "/abs", "ietf125/../../../../outside2", "."):
+        out = mcp.meetings.tool_read_minutes("wg", meeting)
+        assert "TOP SECRET" not in out, meeting
+        assert "No minutes gathered" in out
+    assert "legit minutes" in mcp.meetings.tool_read_minutes("wg", "ietf125")
+
+
+# --- the store's own check --------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["../outside", "/etc", "a/b", "a\\b", "..", ".", "", "a\0b"])
+def test_local_store_refuses_a_name_that_is_not_one_component(
+    isolated_home: Path, name: str
+) -> None:
+    from ietf_llm.store.corpus import LocalCorpusStore
+
+    store = LocalCorpusStore()
+    for call in (
+        store.resolve_current,
+        store.local_cache_dir,
+        store.local_corpus_dir,
+        store.local_index_dir,
+    ):
+        with pytest.raises(ValueError):
+            call(name)
+
+
+def test_local_store_still_resolves_a_legacy_custom_label(isolated_home: Path) -> None:
+    """Stricter than the store would be a regression for a CLI-gathered label
+    that predates the MCP-side rule."""
+    from ietf_llm.store.corpus import LocalCorpusStore
+
+    write_cache_file(isolated_home, "my corpus", "x.txt")
+    assert LocalCorpusStore().resolve_current("my corpus") is not None
+
+
+def test_cloud_store_refuses_a_name_that_is_not_one_component(isolated_home: Path) -> None:
+    from ietf_llm.store.blobs import FileBlobStore
+    from ietf_llm.store.cloud import CloudCorpusStore
+    from ietf_llm.store.control import KvControlPlane
+    from ietf_llm.store.kv import InMemoryKvStore
+
+    store = CloudCorpusStore(
+        KvControlPlane(InMemoryKvStore()),
+        FileBlobStore(str(isolated_home / "bucket")),
+        str(isolated_home / "scratch"),
+    )
+    for name in ("../outside", "/etc", "a/b"):
+        with pytest.raises(ValueError):
+            store.resolve_current(name)
+
+
+def test_a_name_with_a_trailing_newline_is_not_a_corpus_name() -> None:
+    from ietf_llm.paths import valid_corpus_name
+
+    assert valid_corpus_name("wg") and not valid_corpus_name("wg\n")
+
+
+def test_other_name_to_path_builders_are_checked_too(isolated_home: Path) -> None:
+    """The sentinel write is the one the problem statement cites; a caller that
+    skips the MCP boundary must not reach it."""
+    from ietf_llm import freshness
+    from ietf_llm.embeddings.storage import _db_path
+    from ietf_llm.store.control import KvControlPlane
+    from ietf_llm.store.corpus import LocalCorpusStore
+    from ietf_llm.store.kv import InMemoryKvStore
+
+    outside = isolated_home / ".cache" / "outside"
+    outside.mkdir(parents=True)
+    store = LocalCorpusStore()
+    control = KvControlPlane(InMemoryKvStore())
+    for name in ("../outside", str(outside)):
+        for call in (
+            store.record_access,
+            store.last_accessed,
+            store.gathered_at,
+            _db_path,
+            freshness._sentinel_path,
+            control.resolve_current,
+            control.get_gather_status,
+            control.get_access,
+            control.lease_holder,
+            control.clear_config,
+        ):
+            with pytest.raises(ValueError):
+                call(name)
+        with pytest.raises(ValueError):
+            control.set_access(name, "x")
+        with pytest.raises(ValueError):
+            control.acquire_lease(name, "me", 10.0)
+    assert list(outside.iterdir()) == []
+
+
+def test_a_mailing_list_name_must_be_a_plain_list_name() -> None:
+    from ietf_llm.gather.sources.mbox import normalize_list_name
+
+    assert normalize_list_name(" Foo@ietf.org ") == "foo"
+    assert normalize_list_name("ietf-http_wg.2") == "ietf-http_wg.2"
+    for bad in ("../../escape", "/abs/path", "a/b", "..", ".x", "a b", 'a"b', "a\nb", "-x", ""):
+        assert normalize_list_name(bad) == "", bad
+
+
+def test_a_bad_list_name_is_never_synced(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ietf_llm.gather.sources import mbox
+    from ietf_llm.log import Verbosity
+
+    monkeypatch.setattr(mbox, "_sync_one_list", lambda *a, **k: pytest.fail("synced"))
+    mbox.sync_mailing_list(
+        "x-t", str(isolated_home / "dest"), extra_lists=["../../escape", "/abs/p"],
+        auto_discover=False, verbose=Verbosity.QUIET,
+    )
+    assert not (isolated_home / "abs").exists()
+
+
+def test_a_cli_gathered_label_outside_the_gather_rule_is_still_readable(isolated_home: Path) -> None:
+    """Gathering is strict about names; reading only refuses what is not a name."""
+    for label in ("my corpus", "wg+plus", "wg@x", "-dash", "Ünï"):
+        write_cache_file(isolated_home, label, "ok.txt", "hello")
+        assert "hello" in mcp.chunks.tool_read_file_section(label, "ok.txt"), label
+        assert mcp.common._corpus_exists(label), label
+
+
+def test_names_that_are_not_corpus_names_are_refused(isolated_home: Path) -> None:
+    from ietf_llm.paths import readable_corpus_name
+
+    for bad in ("", ".", "..", ".hidden", "a/b", "a\\b", "wg\n", "a\x00b", "a\tb", "x" * 129):
+        assert not readable_corpus_name(bad), repr(bad)
+    for good in ("httpbis", "x-foo", "my corpus", "a.b"):
+        assert readable_corpus_name(good), good

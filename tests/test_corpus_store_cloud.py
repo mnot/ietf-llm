@@ -262,6 +262,110 @@ def test_genuine_loss_of_live_version_reraises_plain(tmp_path: Path) -> None:
     assert not isinstance(exc.value, VersionVanished)
 
 
+# --- has_file: existence from the manifest, without staging the version ------
+
+
+def _rfc_workspace(tmp_path: Path, name: str, *rfcs: str) -> str:
+    ws = tmp_path / name
+    (ws / "files" / "drafts").mkdir(parents=True)
+    for rfc in rfcs:
+        (ws / "files" / "drafts" / rfc).write_text("prose")
+    (ws / "embeddings.db").write_text("db")
+    return str(ws)
+
+
+class _CountingBlobs(FileBlobStore):
+    def __init__(self, base_dir: str) -> None:
+        super().__init__(base_dir)
+        self.gets = 0
+
+    def get(self, key: str) -> bytes:
+        self.gets += 1
+        return super().get(key)
+
+
+def _counting_store(tmp_path: Path) -> Tuple[CloudCorpusStore, _CountingBlobs]:
+    blobs = _CountingBlobs(str(tmp_path / "bucket"))
+    control = KvControlPlane(InMemoryKvStore())
+    return CloudCorpusStore(control, blobs, str(tmp_path / "scratch")), blobs
+
+
+def test_has_file_answers_without_staging_the_version(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _rfc_workspace(tmp_path, "ws", "rfc1.txt"), version="v1")
+    assert store.has_file("tls", "drafts/rfc1.txt") is True
+    assert store.has_file("tls", "drafts/rfc2.txt") is False
+    # Neither the files nor the index were fetched to say so.
+    assert not (tmp_path / "scratch").exists()
+
+
+def test_has_file_absent_corpus(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    assert store.has_file("ghost", "drafts/rfc1.txt") is False
+    assert not (tmp_path / "scratch").exists()
+
+
+def test_has_file_only_looks_inside_files(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _rfc_workspace(tmp_path, "ws", "rfc1.txt"), version="v1")
+    # embeddings.db is in the version, but not under files/.
+    for rel in ("embeddings.db", "../embeddings.db", "", ".", "/drafts/rfc1.txt"):
+        assert store.has_file("tls", rel) is False
+    assert store.has_file("tls", "files/drafts/rfc1.txt") is False
+
+
+def test_has_file_reads_each_manifest_once(tmp_path: Path) -> None:
+    store, blobs = _counting_store(tmp_path)
+    store.publish("tls", _rfc_workspace(tmp_path, "ws", "rfc1.txt"), version="v1")
+    for _ in range(3):
+        store.has_file("tls", "drafts/rfc1.txt")
+        store.has_file("tls", "drafts/rfc2.txt")
+    assert blobs.gets == 1
+
+
+def test_has_file_follows_a_new_version(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _rfc_workspace(tmp_path, "w1", "rfc1.txt"), version="v1")
+    assert store.has_file("tls", "drafts/rfc2.txt") is False
+    store.publish("tls", _rfc_workspace(tmp_path, "w2", "rfc2.txt"), version="v2")
+    assert store.has_file("tls", "drafts/rfc2.txt") is True
+    assert store.has_file("tls", "drafts/rfc1.txt") is False
+
+
+def test_has_file_prefers_a_staged_copy(tmp_path: Path) -> None:
+    store, blobs = _counting_store(tmp_path)
+    store.publish("tls", _rfc_workspace(tmp_path, "ws", "rfc1.txt"), version="v1")
+    assert store.local_cache_dir("tls") is not None  # stage it
+    before = blobs.gets
+    assert store.has_file("tls", "drafts/rfc1.txt") is True
+    assert store.has_file("tls", "drafts/rfc2.txt") is False
+    assert blobs.gets == before
+
+
+def test_has_file_missing_manifest_is_a_loud_failure(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    store.publish("tls", _rfc_workspace(tmp_path, "ws", "rfc1.txt"), version="v1")
+    store._blobs.delete_prefix("corpora/tls/versions/v1/")
+    with pytest.raises(FileNotFoundError):
+        store.has_file("tls", "drafts/rfc1.txt")
+
+
+def test_has_file_recovers_from_reaped_version(tmp_path: Path) -> None:
+    reader, writer, _ = _two_replicas(tmp_path, reader_ttl=100.0)
+    reader.publish("tls", _rfc_workspace(tmp_path, "w1", "rfc1.txt"), version="v1")
+    writer.publish("tls", _rfc_workspace(tmp_path, "w2", "rfc2.txt"), version="v2")
+    assert reader.has_file("tls", "drafts/rfc2.txt") is True
+
+
+def test_pinned_has_file_raises_version_vanished(tmp_path: Path) -> None:
+    reader, writer, _ = _two_replicas(tmp_path)
+    reader.publish("tls", _rfc_workspace(tmp_path, "w1", "rfc1.txt"), version="v1")
+    writer.publish("tls", _rfc_workspace(tmp_path, "w2", "rfc2.txt"), version="v2")
+    with pin_corpus_version("tls", "v1"):
+        with pytest.raises(VersionVanished):
+            reader.has_file("tls", "drafts/rfc1.txt")
+
+
 # --- seed_workspace: pre-populate a gather workspace from the current version
 
 

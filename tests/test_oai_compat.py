@@ -8,6 +8,7 @@ env_float coercers.
 from __future__ import annotations
 
 import pytest
+import requests
 from types import SimpleNamespace
 
 from ietf_llm.embeddings import oai_compat
@@ -67,6 +68,84 @@ def test_backoff_jitters_on_exponential_path(monkeypatch):
     slept = _capture_backoff(monkeypatch, jitter=0.4)
     oai_compat._sleep_backoff(2, None)
     assert slept == [4.4]
+
+
+def test_backoff_refuses_retry_after_beyond_cap(monkeypatch):
+    # An hour-long Retry-After must not be slept on (it would pin a worker
+    # thread); the caller is told to give up instead.
+    slept = _capture_backoff(monkeypatch)
+    resp = _Resp(429)
+    resp.headers = {"Retry-After": "3600"}
+    assert oai_compat._sleep_backoff(0, resp) is False
+    assert slept == []
+    # Within the cap it sleeps, and the cap is per call.
+    resp.headers = {"Retry-After": "45"}
+    assert oai_compat._sleep_backoff(0, resp, 30.0) is False
+    assert oai_compat._sleep_backoff(0, resp, 60.0) is True
+    assert slept == [45.4]
+
+
+def test_post_gives_up_at_once_on_oversized_retry_after(monkeypatch):
+    slept = _capture_backoff(monkeypatch)
+    calls = {"n": 0}
+
+    def fake(url, headers, json, timeout):
+        calls["n"] += 1
+        resp = _Resp(429)
+        resp.headers = {"Retry-After": "3600"}
+        return resp
+
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
+    with pytest.raises(Exception):
+        oai_compat.post_json_with_retry(
+            "https://host/v1/embeddings", {}, {}, timeout=5.0, max_retries=3,
+        )
+    assert calls["n"] == 1 and slept == []
+
+
+def test_backoff_refuses_retry_after_beyond_cap(monkeypatch):
+    # An hour-long Retry-After must not be slept on (it would pin a worker
+    # thread); the caller is told to give up instead.
+    slept = _capture_backoff(monkeypatch)
+    resp = _Resp(429)
+    resp.headers = {"Retry-After": "3600"}
+    assert oai_compat._sleep_backoff(0, resp) is False
+    assert slept == []
+    # Within the cap it sleeps, and the cap is per call.
+    resp.headers = {"Retry-After": "45"}
+    assert oai_compat._sleep_backoff(0, resp, 30.0) is False
+    assert oai_compat._sleep_backoff(0, resp, 60.0) is True
+    assert slept == [45.4]
+
+
+def test_post_gives_up_at_once_on_oversized_retry_after(monkeypatch):
+    slept = _capture_backoff(monkeypatch)
+    calls = {"n": 0}
+
+    def _raise_429():
+        raise requests.HTTPError("429")
+
+    def fake(url, headers, json, timeout):
+        calls["n"] += 1
+        resp = _Resp(429)
+        resp.headers = {"Retry-After": "3600"}
+        resp.raise_for_status = _raise_429
+        return resp
+
+    monkeypatch.setattr(
+        oai_compat, "_shared_session", lambda: SimpleNamespace(post=fake)
+    )
+    with pytest.raises(oai_compat.UpstreamRateLimited) as exc:
+        oai_compat.post_json_with_retry(
+            "https://host/v1/embeddings", {}, {}, timeout=5.0, max_retries=3,
+        )
+    assert calls["n"] == 1 and slept == []
+    # A plain HTTPError to callers that only know that, but it names the cause.
+    assert isinstance(exc.value, requests.HTTPError)
+    assert exc.value.retry_after == 3600.0
+    assert "HTTP 429" in str(exc.value) and "3600s" in str(exc.value)
 
 
 def test_build_headers_bearer_and_map():
@@ -144,3 +223,93 @@ def test_env_int_and_float(monkeypatch):
     assert oai_compat.env_int("IETF_LLM_X", 7) == 42
     monkeypatch.setenv("IETF_LLM_X", "bad")
     assert oai_compat.env_int("IETF_LLM_X", 7) == 7
+
+
+# --- credentials embedded in the base URL must not reach error text --------
+
+_SECRET_URL = "https://user:s3cr3t@host.example/v1/embeddings"
+
+
+def _real_response(status: int, url: str):
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = status
+    resp.reason = "Nope"
+    resp.url = url
+    return resp
+
+
+def test_redact_userinfo():
+    assert oai_compat.redact_userinfo(_SECRET_URL) == (
+        "https://***@host.example/v1/embeddings"
+    )
+    for plain in (
+        "https://host.example/a@b",
+        "https://host.example/x?e=a@b",
+        "https://host.example?e=a@b",
+        "https://host.example/x#a@b",
+    ):
+        assert oai_compat.redact_userinfo(plain) == plain
+
+
+def test_redact_userinfo_covers_an_at_sign_in_the_password():
+    out = oai_compat.redact_userinfo("see https://u:p@ss@host.example/x now")
+    assert out == "see https://***@host.example/x now"
+    assert "ss" not in out
+
+
+def test_a_clean_error_keeps_its_chain():
+    import requests
+
+    inner = OSError("urllib3 detail")
+
+    def boom(*_a, **_k):
+        try:
+            raise inner
+        except OSError as err:
+            raise requests.ConnectionError("cannot reach host.example") from err
+
+    with pytest.raises(requests.ConnectionError) as info:
+        oai_compat.post_json_with_retry(
+            "https://host.example/v1", {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=boom),
+        )
+    assert info.value.__cause__ is inner
+
+
+def test_auth_error_message_redacts_the_url():
+    with pytest.raises(oai_compat.UpstreamAuthError) as info:
+        oai_compat.post_json_with_retry(
+            _SECRET_URL, {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=lambda *a, **k: _real_response(401, _SECRET_URL)),
+        )
+    assert "s3cr3t" not in str(info.value)
+    assert "host.example" in str(info.value)
+
+
+def test_http_error_redacts_the_url():
+    import requests
+
+    with pytest.raises(requests.HTTPError) as info:
+        oai_compat.post_json_with_retry(
+            _SECRET_URL, {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=lambda *a, **k: _real_response(503, _SECRET_URL)),
+        )
+    assert "s3cr3t" not in str(info.value)
+    assert "503" in str(info.value)
+    assert "s3cr3t" not in repr(info.value.__cause__)
+
+
+def test_connection_error_redacts_the_url(monkeypatch):
+    import requests
+
+    def boom(*_a, **_k):
+        raise requests.ConnectionError(f"cannot reach {_SECRET_URL}")
+
+    with pytest.raises(requests.ConnectionError) as info:
+        oai_compat.post_json_with_retry(
+            _SECRET_URL, {}, {}, timeout=1.0, max_retries=0,
+            session=SimpleNamespace(post=boom),
+        )
+    assert "s3cr3t" not in str(info.value)

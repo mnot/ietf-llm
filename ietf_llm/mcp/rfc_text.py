@@ -39,10 +39,10 @@ from ..embeddings.storage import (
 )
 from ..singletons.rfc_rank import rank_documents
 from ..singletons.rfcs import rfc_num_to_name
-from .common import _offload
+from .common import LooseStr, _offload, float_section_note, loose_str
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 #: The corpus name the imported RFC series is installed under.
 RFC_CORPUS = "rfcs"
@@ -56,6 +56,18 @@ _RETRIEVE_CHUNKS = 200
 _SECTIONS_PER_RFC = 3
 
 _SNIPPET_CHARS = 320
+
+#: Ceilings on the caller-supplied result size. Without them `limit=200,
+#: snippet_chars=10**9` renders whole sections for up to 200 RFCs. Matches the
+#: `_MAX_SEARCH_K` approach in `mcp/search.py`: clamp, don't refuse.
+_MAX_LIMIT = 50
+_MAX_SECTIONS_PER_RFC = 10
+_MAX_SNIPPET_CHARS = 2000
+
+#: Budget for the whole reply, the figure `get_draft` / `get_issue` /
+#: `read_file_section` use, so one search cannot return ten times a document
+#: read.
+_MAX_REPLY_CHARS = 40_000
 
 #: `Section 7.2`, `§7.2`, `7.2.`, `sec 7.2`, `Appendix A` all mean the label
 #: the index stores, which is bare: `7.2`, `A`.
@@ -103,8 +115,7 @@ def status_note(number: str) -> str:
     Read from the `_rfc/` metadata mirror, which is a separate singleton from
     the text corpus, so this stays accurate between corpus refreshes.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.rfcs import _load
+    from ..singletons.rfcs import _load  # noqa: PLC0415
 
     data = _load()
     if data is None:
@@ -117,8 +128,7 @@ def status_note(number: str) -> str:
 
 
 def _title_of(number: str) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.rfcs import _load
+    from ..singletons.rfcs import _load  # noqa: PLC0415
 
     data = _load()
     if data is None:
@@ -127,8 +137,7 @@ def _title_of(number: str) -> str:
 
 
 def _citations_of(number: str) -> int:
-    # pylint: disable-next=import-outside-toplevel
-    from ..singletons.rfcs import _load
+    from ..singletons.rfcs import _load  # noqa: PLC0415
 
     data = _load()
     if data is None:
@@ -182,6 +191,25 @@ def section_text(number: str, section: Optional[str]) -> Optional[str]:
     return "\n".join(text for _idx, text in rows).strip()
 
 
+def matched_passage(
+    number: str, section: Optional[str], chunk_idx: int
+) -> Optional[str]:
+    """The text from the matched chunk to the end of its section, or None.
+
+    What the search matched is one chunk, not the section's opening. A leading
+    `…` marks a passage that starts partway through its section.
+    """
+    file = _rfc_file(number)
+    if file is None:
+        return None
+    rows = section_rows(RFC_CORPUS, file, section)
+    for pos, (idx, _text) in enumerate(rows):
+        if idx == chunk_idx:
+            text = "\n".join(t for _i, t in rows[pos:]).strip()
+            return f"… {text}" if pos else text
+    return None
+
+
 def _outline(number: str) -> List[Tuple[str, str, int]]:
     """`(section, title, characters)` for every indexed section of an RFC."""
     file = _rfc_file(number)
@@ -211,13 +239,100 @@ def _render_outline(number: str, rows: List[Tuple[str, str, int]]) -> str:
     return "\n".join(lines)
 
 
-def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _clamp(name: str, value: Any, hi: int, default: int, notes: List[str]) -> int:
+    """`value` as an int in `[1, hi]`; a non-number falls back to `default`.
+    Anything changed is recorded in `notes` so the reply can say so."""
+    try:
+        wanted = int(value)
+    except (TypeError, ValueError):
+        notes.append(f"{name}={value!r} is not a number; using {default}")
+        return default
+    clamped = max(1, min(wanted, hi))
+    if clamped != wanted:
+        notes.append(f"{name} {wanted} clamped to {clamped}")
+    return clamped
+
+
+def _render_results(
+    entries: List[Any], sections_per_rfc: int, snippet_chars: int, used: int
+) -> Tuple[List[str], int, int]:
+    """`(lines, rfcs_shown, sections_skipped)` for the ranked RFCs, stopping
+    once the reply would pass `_MAX_REPLY_CHARS`.
+
+    The clamps bound each term but not their product (200 retrieved chunks
+    can still render ~400 KB), so the reply carries its own budget. The first
+    section is always shown, so a hit is never answered with nothing; skipped
+    sections are counted from the section lists without being read.
+    """
+    out: List[str] = []
+    shown = 0
+    skipped = 0
+    full = False
+    for entry in entries:
+        number = entry.doc
+        title = _title_of(number)
+        # The title comes from the `_rfc/` metadata mirror, a separate
+        # singleton — on a machine that has the text corpus but has not
+        # mirrored the metadata yet, it is empty, and a dangling em-dash is
+        # worse than no title at all.
+        heading = f"## RFC {number} — {title}" if title else f"## RFC {number}"
+        heading += status_note(number)
+        seen: Dict[Optional[str], Any] = {}
+        for hit in entry.hits:
+            if hit.section not in seen:
+                seen[hit.section] = hit
+            if len(seen) >= sections_per_rfc:
+                break
+        pending: Optional[str] = heading
+        for sec, hit in seen.items():
+            if full:
+                skipped += 1
+                continue
+            label = f"§{sec}" if sec else "(unsectioned)"
+            body = matched_passage(number, sec, hit.chunk_idx) or hit.snippet
+            snippet = " ".join(body.split())[:snippet_chars]
+            lines = [
+                f"- **{label} {hit.title}** — score {hit.score:.3f}",
+                f"  {snippet}…",
+            ]
+            cost = sum(len(ln) + 1 for ln in lines)
+            if pending is not None:
+                cost += len(pending) + 1
+            if out and used + cost > _MAX_REPLY_CHARS:
+                full = True
+                skipped += 1
+                continue
+            if pending is not None:
+                out.append(pending)
+                pending = None
+                shown += 1
+            out += lines
+            used += cost
+        if pending is None:
+            out.append("")
+            used += 1
+    return out, shown, skipped
+
+
+def tool_search_rfc_text(
     query: str,
     rfc: Optional[str] = None,
     limit: int = 10,
     sections_per_rfc: int = _SECTIONS_PER_RFC,
     snippet_chars: int = _SNIPPET_CHARS,
 ) -> str:
+    notes: List[str] = []
+    limit = _clamp("limit", limit, _MAX_LIMIT, 10, notes)
+    sections_per_rfc = _clamp(
+        "sections_per_rfc",
+        sections_per_rfc,
+        _MAX_SECTIONS_PER_RFC,
+        _SECTIONS_PER_RFC,
+        notes,
+    )
+    snippet_chars = _clamp(
+        "snippet_chars", snippet_chars, _MAX_SNIPPET_CHARS, _SNIPPET_CHARS, notes
+    )
     file_pattern = _rfc_file(rfc) if rfc else None
     if rfc and file_pattern is None:
         return f"'{rfc}' is not an RFC number."
@@ -247,38 +362,33 @@ def tool_search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positio
     )
 
     out: List[str] = [f"# RFC full-text search: {query!r}", ""]
-    for entry in ranked[:limit]:
-        number = entry.doc
-        title = _title_of(number)
-        # The title comes from the `_rfc/` metadata mirror, a separate
-        # singleton — on a machine that has the text corpus but has not
-        # mirrored the metadata yet, it is empty, and a dangling em-dash is
-        # worse than no title at all.
-        heading = f"## RFC {number} — {title}" if title else f"## RFC {number}"
-        out.append(f"{heading}{status_note(number)}")
-        seen: Dict[Optional[str], Any] = {}
-        for hit in entry.hits:
-            if hit.section not in seen:
-                seen[hit.section] = hit
-            if len(seen) >= sections_per_rfc:
-                break
-        for sec, hit in seen.items():
-            label = f"§{sec}" if sec else "(unsectioned)"
-            body = section_text(number, sec) or hit.snippet
-            snippet = " ".join(body.split())[:snippet_chars]
-            out.append(f"- **{label} {hit.title}** — score {hit.score:.3f}")
-            out.append(f"  {snippet}…")
-        out.append("")
-    out.append(
-        f"_{len(ranked)} RFCs matched; showing {min(limit, len(ranked))}. "
-        "Snippets are the opening of each section, not the passage that "
-        "matched — read the section with `get_rfc_section` before quoting "
-        "it._"
+    body, shown, skipped = _render_results(
+        ranked[:limit], sections_per_rfc, snippet_chars, len(out[0]) + 1
     )
+    out += body
+    out.append(
+        f"_{len(ranked)} RFCs matched; showing {shown}. "
+        "Each snippet is the passage that matched, cut at `snippet_chars`; a "
+        "leading … means it starts partway through its section. Read the "
+        "section with `get_rfc_section` before quoting beyond it._"
+    )
+    if notes:
+        out.append("")
+        out.append(f"_Adjusted: {'; '.join(notes)}._")
     provenance = provenance_line()
     if provenance:
         out.append("")
         out.append(f"_{provenance}_")
+    if skipped:
+        # Banner at both ends, like read_file_section: a client that cuts the
+        # reply further eats the tail first, and this must survive that.
+        notice = (
+            f"**PARTIAL RESULT — reply cut at the {_MAX_REPLY_CHARS:,}-character "
+            f"budget; {skipped} more section{'s' if skipped != 1 else ''} not "
+            "shown. Narrow the query (`rfc=` limits it to one document), or "
+            "lower `limit` / `snippet_chars`.**"
+        )
+        out = [notice, ""] + out + ["", notice]
     return "\n".join(out)
 
 
@@ -320,11 +430,11 @@ def tool_get_rfc_section(number: str, section: Optional[str] = None) -> str:
     return "\n".join(parts)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
-    async def search_rfc_text(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_rfc_text(
         query: str,
-        rfc: Optional[str] = None,
+        rfc: Optional[LooseStr] = None,
         limit: int = 10,
         sections_per_rfc: int = _SECTIONS_PER_RFC,
         snippet_chars: int = _SNIPPET_CHARS,
@@ -358,26 +468,43 @@ def register(server: "FastMCP") -> None:
         `rfc` narrows to a single document, which turns this into
         search-within-this-RFC — useful when the document is large.
 
-        Results are **sections**, ranked by document. Snippets are the
-        opening of each matched section, not the passage that matched, so
-        follow a hit with `get_rfc_section` before quoting.
+        Result size is clamped: `limit` to 50 RFCs, `sections_per_rfc` to 10
+        and `snippet_chars` to 2000; the reply says when one was clamped.
+        The reply as a whole stops at about 40,000 characters, and says how
+        many sections it left out.
+
+        Results are **sections**, ranked by document. Each snippet is the
+        passage that matched (from the matching chunk onward, up to
+        `snippet_chars`), so most hits need no follow-up read; use
+        `get_rfc_section` for the rest of a section or before quoting at
+        length.
 
         Obsoleted RFCs are included and **marked**; the series is the whole
         historical record, so check the marker before citing anything as
         current.
         """
         return await _offload(
-            tool_search_rfc_text, query, rfc, limit, sections_per_rfc, snippet_chars
+            tool_search_rfc_text,
+            query,
+            loose_str(rfc),
+            limit,
+            sections_per_rfc,
+            snippet_chars,
         )
 
     @server.tool()
-    async def get_rfc_section(rfc: str, section: Optional[str] = None) -> str:
+    async def get_rfc_section(rfc: LooseStr, section: Optional[LooseStr] = None) -> str:
         """Read one section of an RFC from the local text corpus, offline.
 
-        `rfc` is an RFC number ("9111"). `section` is a label as cited —
-        `7.2`, `§7.2`, `Section 7.2` and `Appendix A` are all accepted. A
+        `rfc` is an RFC number ("9111"). Pass `section` as a **string**: the
+        label as cited, `"7.2"`. The `Section ` or `§` prefix is optional, so
+        `"7.2"`, `"§7.2"`, `"Section 7.2"` and `"Appendix A"` all work. A
         parent label returns it and everything beneath it, so `section="7"`
         gives §7, §7.1, §7.2…
+
+        A JSON number (`7`, `7.2`) is tolerated, but a number drops trailing
+        zeros, so `7.10` arrives as `7.1` and reads the wrong section; the
+        reply carries a note when a non-integer number is received.
 
         With no `section`, returns that RFC's indexed outline: every section
         with its title and size. That is the way to find the citation you
@@ -392,4 +519,6 @@ def register(server: "FastMCP") -> None:
         This is the document text, so it *is* quotable — unlike `get_rfc_info`,
         which returns catalogue metadata only.
         """
-        return await _offload(tool_get_rfc_section, rfc, section)
+        return float_section_note(section) + await _offload(
+            tool_get_rfc_section, loose_str(rfc), loose_str(section)
+        )

@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from ietf_llm.gather.sources.transcript_context import (
     _SENTINEL,
     enrich_transcripts,
@@ -149,3 +151,19 @@ def test_enrich_orphan_without_companion_minutes(tmp_path: Path) -> None:
     assert "**Date / time:** 2026-01-01 10:00" in text
     assert "**Meeting:**" not in text
     assert "**Minutes:**" not in text
+
+
+def test_enrich_failure_leaves_original_transcript_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The rewrite goes through atomic_open: a failure mid-write must leave the
+    # original body, not a header-only or truncated file with no sentinel.
+    transcript = _make_transcript(tmp_path, "_orphans", "202601011000", body="BODY\n")
+
+    def dying_replace(src: str, dst: str) -> None:
+        raise OSError("killed before rename")
+
+    monkeypatch.setattr("ietf_llm.atomicio.os.replace", dying_replace)
+    assert enrich_transcripts(str(tmp_path), wg="aipref") == []
+    assert transcript.read_text() == "BODY\n"
+    assert [p.name for p in transcript.parent.iterdir()] == [transcript.name]

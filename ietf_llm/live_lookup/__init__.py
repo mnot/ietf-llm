@@ -29,7 +29,9 @@ scraped HTML page (see `docs/architecture.md`, "Use the Datatracker API").
 Implementation is split across cohesive submodules:
 
   cache.py     — the TTL-cached fetch seam (`_fetch_json`), the in-process +
-                 on-disk cache, shared base URLs / datetime helpers, age_stamp
+                 on-disk cache, shared base URLs / datetime helpers, age_stamp,
+                 and the `(body, fetched_at, answered)` result that keeps an
+                 outage (`LiveUnavailable`) apart from a 404
   meetings.py  — a group's sessions at a meeting + its upcoming meetings
   drafts.py    — per-draft live status + overview reconciliation
   reviews.py   — per-draft review assignments joined to ballot positions,
@@ -45,11 +47,13 @@ the intra-`cache` call sites.
 from __future__ import annotations
 
 from .cache import (
+    LiveUnavailable,
     _cached_json,
     _disk_get,
     _live_cache_path,
     _reset_cache,
     age_stamp,
+    unreachable_note,
 )
 from .drafts import (
     DraftReconciliation,
@@ -92,7 +96,9 @@ __all__ = [
     "PositionRow",
     "fetch_review_record",
     # Cache / rendering
+    "LiveUnavailable",
     "age_stamp",
+    "unreachable_note",
     # Re-exported for tests
     "_cached_json",
     "_disk_get",

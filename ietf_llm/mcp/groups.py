@@ -19,7 +19,7 @@ from ..singletons.catalog import render_efforts
 from .common import _offload
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 #: Chunks retrieved before collapsing to one score per group. A charter is one
 #: to a few chunks, so this is a few dozen distinct groups.
@@ -105,7 +105,7 @@ def semantic_ranking(
             state=slug,
             diversify=False,
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         # An unreachable embedding backend must not take `find_efforts` down
         # with it: the keyword ranking still answers.
         log(f"Group charter search unavailable: {err}", level=LogLevel.WARN)
@@ -127,7 +127,7 @@ def semantic_ranking(
     return scores
 
 
-def tool_search_groups(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_search_groups(
     query: str,
     area: Optional[str] = None,
     state: Optional[str] = None,
@@ -179,7 +179,7 @@ def tool_find_efforts(query: str, limit: int = 15) -> str:
     return render_efforts(query, limit, semantic=semantic)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def get_group_info(acronym: str, include_charter: bool = True) -> str:
         """Everything the IETF/IRTF record holds about **one chartered group**,
@@ -202,7 +202,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(mirror.render_group, acronym, include_charter)
 
     @server.tool()
-    async def search_groups(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_groups(
         query: str,
         area: Optional[str] = None,
         state: Optional[str] = None,
@@ -236,7 +236,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_search_groups, query, area, state, kind, limit)
 
     @server.tool()
-    async def list_milestones(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def list_milestones(
         group: Optional[str] = None,
         area: Optional[str] = None,
         status: str = "open",
@@ -281,7 +281,9 @@ def register(server: "FastMCP") -> None:
         moved, completed or dropped, and the RFCs it published. Newest first,
         grouped by year; `year` narrows to one.
 
-        It does **not** cover chair changes, document adoption, or meetings.
+        Chair appointments and departures are included, as far back as the
+        Datatracker's event log goes (a group's founding chairs have no
+        event). It does **not** cover document adoption or meetings.
         For a group you have gathered, `read_digest` has a fuller timeline
         built from its own mail, drafts and meetings.
         """

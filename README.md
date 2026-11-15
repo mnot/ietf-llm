@@ -20,59 +20,65 @@ gathered into one queryable corpus, an LLM can help you:
 - **Fact-check assertions** about what's happened so far — grounded in the actual list traffic and
   chair statements, not someone's recollection.
 
-> **Tip:** for an IRTF Research Group, pass its shortname (e.g. `cfrg`, `hrpc`, `pearg`) wherever
-> the docs use `<name>` — it works the same as a WG.
+## Quick start
 
-## What the MCP tools cover
+1. Install with [pipx](https://pipx.pypa.io/stable/):
 
-The MCP server exposes the record as areas you can ask about, not one tool per source. The RFC and
-chartered-group tools work out of the box; the rest read a corpus you've gathered. A few draft and
-meeting tools also make live Datatracker lookups, so you get current state rather than the
-snapshot.
+   ```bash
+   pipx install 'ietf-llm[local-embeddings]'
+   ```
 
-| Area | You can ask | Main tools | Needs a gather? |
-| --- | --- | --- | --- |
-| **Orientation** | What's gathered, what a group is doing, who's active, what's open | `overview`, `list_corpora`, `which_corpus` | Yes |
-| **Chartered groups** | Which group covers a topic; a group's charter, milestones and history, for every WG and RG, active or concluded | `find_efforts`, `get_group_info`, `search_groups`, `list_milestones`, `group_timeline` | No |
-| **Discussion** | What was argued about a topic, as ranked excerpts or a chronological narrative; replies to a message; chair calls and polls | `search_corpus`, `search_corpora`, `read_topic`, `find_related`, `find_replies`, `tally_positions` | Yes |
-| **Absence and exact wording** | Whether something was *ever* said, cited or proposed; which revision first used a term | `grep_corpus` | Yes |
-| **Issues and pull requests** | Filtered catalogues of issues, PRs, threads and people; why the text says what it does (the PR that changed it, and the issue behind it) | `read_digest`, `get_issue`, `list_labels`, `list_files`, `get_by_url` | Yes |
-| **Drafts** | Lifecycle of a group's drafts; verbatim text by section; authors; where a draft is cited in discussion; live state and who reviewed or balloted, on which revision | `list_drafts`, `get_draft`, `draft_authors`, `find_citations`, `find_message_citations`, `draft_status`, `review_record` | Yes, except the live `draft_status` and `review_record` |
-| **Meetings** | Minutes with poll tallies, attendance, and the upcoming schedule | `list_meetings`, `read_minutes`, `meeting_schedule` | Yes, except the live `meeting_schedule` |
-| **RFCs** | Which RFC covers a topic; what it says, semantically or as an exact string across the whole series; status, what it obsoletes, who cites it | `search_rfc_index`, `search_rfc_text`, `get_rfc_section`, `get_rfc_info`, `grep_corpus` | No |
-| **Norms** | How to read the record without overclaiming consensus; how to contribute without wasting the group's time | `read_ietf_interpretation_norms`, `read_ietf_participation_norms` | No |
-| **Gathering** | Add or refresh a corpus from inside the client (on by default for a local server) | `start_gather`, `gather_status` | n/a |
+2. Gather a group (here `httpbis`; an IRTF Research Group such as `cfrg` works the same way):
 
+   ```bash
+   ietf-llm httpbis
+   ```
 
-## Modes of operation
+3. Register the MCP server with your client — for Claude Code:
 
-There are three supported workflows:
+   ```bash
+   claude mcp add ietf-llm -- ietf-llm-mcp
+   ```
 
-1. **Use it as an MCP server** — register it with Claude, Codex, Cursor, Gemini, Zed,
-   etc. and ask questions across any corpus you've gathered. Two ways to run it:
-   - **[Local MCP](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md)** — one server
-     subprocess per client, on your own machine. <-- **Best starting point**
-   - **[As a shared HTTP MCP
-     server](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-server.md)** — one process serving
-     many concurrent clients (hosted).
-3. **[Use it from the CLI](https://github.com/mnot/ietf-llm/blob/main/docs/search-cli.md)** — run
-   semantic search over the cache directly with `ietf-llm-search`, no LLM client required.
+   Other clients are covered in [Running the MCP server locally](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md).
 
-See the workflow documentation linked above for installation and use instructions, or the
-[full documentation listing](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
+4. Ask your client about the group.
 
-All three read a corpus you first **gather** with `ietf-llm <corpus>`, except where the table above
-says otherwise: the RFC tools cover **every published RFC** and belong to no corpus, and the
-chartered-group tools read a mirror of the Datatracker that gather housekeeping (or `ietf-llm
---init`) keeps current. See [gathering](https://github.com/mnot/ietf-llm/blob/main/docs/gathering.md).
+## What you can ask
 
-> **Heads up — gathering reaches the network by default.** To make a first gather fast, `ietf-llm`
-> pulls a prebuilt snapshot of covered corpora from the public
-> [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at
-> `seed-store.mnot.net` (and `list_corpora` looks its catalog up there), then freshens only the
-> delta — skipping most of the embedding and download cost. The same store holds the RFC full
-> text and the chartered-group mirror that `ietf-llm --init` installs. **To turn this off:** `ietf-llm <corpus>
-> --no-seed` (it *persists* across gathers; re-enable with `--seed`), or set `IETF_LLM_SEED_ENABLED=off`
-> (or `IETF_LLM_SEED_URL=off`) in your environment. With seeding off, gathers run fully cold and
-> offline. It is best-effort either way — an unreachable or unlisted corpus just gathers from scratch.
+The norms tools need nothing gathered. The RFC and chartered-group tools need the series data that
+`ietf-llm --init` or any gather installs; the rest read a corpus you've gathered. `draft_status`,
+`review_record` and `meeting_schedule` also look up current state on the Datatracker. The full tool
+list is served to the client with the server's
+[instructions](https://github.com/mnot/ietf-llm/blob/main/ietf_llm/data/mcp-instructions.md).
 
+- **Orientation** — what's gathered, what a group is doing, who's active, what's open.
+- **Chartered groups and RFCs** — which group or RFC covers a topic; charters, milestones, history,
+  and RFC text across the whole series.
+- **Discussion** — what was argued about a topic, replies to a message, chair calls and polls, and
+  whether something was *ever* said or proposed.
+- **Issues, pull requests and drafts** — filtered catalogues, verbatim draft text by section, and
+  why the text says what it does.
+- **Meetings** — minutes with poll tallies, attendance, the upcoming schedule.
+- **Norms** — how to read the record without overclaiming consensus, and how to contribute without
+  wasting the group's time.
+
+## Ways to run it
+
+- **[Local MCP server](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md)** — one server per client, on your own machine. Best
+  starting point.
+- **[Shared HTTP MCP server](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-server.md)** — one hosted process serving many clients.
+- **[CLI search](https://github.com/mnot/ietf-llm/blob/main/docs/search-cli.md)** — semantic search over the cache with `ietf-llm-search`, no
+  LLM client needed.
+- **[NotebookLM export](https://github.com/mnot/ietf-llm/blob/main/docs/notebooklm.md)** — mirror a corpus to files, or push it to NotebookLM
+  Enterprise.
+
+Every mode reads a corpus you first [gather](https://github.com/mnot/ietf-llm/blob/main/docs/gathering.md) with `ietf-llm <corpus>`. The full
+documentation listing is in [docs/README.md](https://github.com/mnot/ietf-llm/blob/main/docs/README.md).
+
+> **Gathering reaches the network.** To make a first gather fast, `ietf-llm` pulls a prebuilt
+> snapshot of covered corpora from the public [seed store](https://github.com/mnot/ietf-llm/blob/main/docs/seed-store.md) at
+> `seed-store.mnot.net`, then freshens only the delta; `list_corpora` looks its catalog up there too.
+> To turn this off, run `ietf-llm <corpus> --no-seed` (it persists across gathers; `--seed`
+> re-enables it), or set `IETF_LLM_SEED_ENABLED=off` or `IETF_LLM_SEED_URL=off`. With seeding off,
+> gathers run fully cold. An unreachable or unlisted corpus just gathers from scratch.

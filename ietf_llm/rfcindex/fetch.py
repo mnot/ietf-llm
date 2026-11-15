@@ -9,9 +9,11 @@ Pages workflow uses to stitch the index into a deploy.
 
 Two properties make this cheap and safe to depend on:
 
-**Anonymous.** The releases API and the asset are public reads, so no token
-is needed. Only the *publisher* calls this — monthly, when re-bundling for
-the seed store — so the 60-requests-per-hour anonymous limit is never near.
+**Public reads.** The releases API and the asset need no token. The listing
+call sends `GITHUB_TOKEN` when it is set, which lifts the 60-requests-per-hour
+anonymous cap; a publisher run that has just gathered dozens of members from
+the same address can use that cap up. The asset download never carries the
+token.
 
 **Tags sort.** `manifest.build` is a normalised UTC stamp with no
 separators, precisely so it is a legal git ref; lexical order over those
@@ -27,6 +29,7 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..log import LogLevel, Verbosity, log
@@ -68,11 +71,45 @@ class IndexRelease:
     asset_bytes: int
 
 
+def _list_headers() -> Dict[str, str]:
+    """Headers for the releases listing: authenticated when GITHUB_TOKEN is set."""
+    headers = dict(DEFAULT_HEADERS)
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
+    return headers
+
+
+def _rate_limit_note(response: Any) -> str:
+    """Why a 403/429 from the listing was GitHub's rate limit, or ''.
+
+    Says when the limit resets and what lifts it, so the operator sees
+    something to act on rather than a bare status code.
+    """
+    headers = getattr(response, "headers", None) or {}
+    exhausted = headers.get("X-RateLimit-Remaining") == "0"
+    if response.status_code not in (403, 429) or not exhausted:
+        return ""
+    try:
+        reset = datetime.fromtimestamp(int(headers["X-RateLimit-Reset"])).astimezone()
+        when = f"resets at {reset:%H:%M:%S %Z}"
+    except (KeyError, ValueError, OverflowError, OSError):
+        when = "try again later"
+    hint = (
+        ""
+        if os.environ.get("GITHUB_TOKEN")
+        else "; set GITHUB_TOKEN to lift the 60/hour anonymous limit"
+    )
+    return f" (GitHub rate limit reached, {when}{hint})"
+
+
 def _releases(repo: str) -> List[Dict[str, Any]]:
     url = _API.format(repo=repo)
-    response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=_LIST_TIMEOUT)
+    response = governed_get(url, headers=_list_headers(), timeout=_LIST_TIMEOUT)
     if response.status_code != 200:
-        raise RfcIndexError(f"{url}: HTTP {response.status_code}")
+        raise RfcIndexError(
+            f"{url}: HTTP {response.status_code}{_rate_limit_note(response)}"
+        )
     body = response.json()
     if not isinstance(body, list):
         raise RfcIndexError(f"{url}: expected a list of releases")

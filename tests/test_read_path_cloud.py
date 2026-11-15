@@ -164,3 +164,97 @@ def test_files_dir_raises_without_current_version(
     assert mcp.common._corpus_exists("ghost") is False
     with pytest.raises(FileNotFoundError):
         mcp.common._files_dir("ghost")
+
+
+_DRAFT_TEXT = """\
+Internet-Draft                                              Example Draft
+
+1.  Introduction
+
+   Hello.
+
+Authors' Addresses
+
+   Alice Example
+   Email: alice@example.com
+"""
+
+
+def _publish_drafts(
+    store: CloudCorpusStore, root: Path, corpus: str, drafts: dict[str, str]
+) -> None:
+    ws = root / f"ws-{corpus}"
+    (ws / "files" / "drafts").mkdir(parents=True)
+    for name, body in drafts.items():
+        (ws / "files" / "drafts" / name).write_text(body)
+    store.publish(corpus, str(ws), version="v1")
+
+
+def _staged(root: Path) -> set[str]:
+    scratch = root / "scratch"
+    return {p.name for p in scratch.iterdir()} if scratch.exists() else set()
+
+
+@pytest.fixture
+def cloud_drafts(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Four published corpora, none staged on this replica yet."""
+    root = isolated_home / "cloud"
+    store = _cloud_store(root)
+    _publish_drafts(
+        store,
+        root,
+        "httpbis",
+        {
+            "draft-ietf-httpbis-foo-01.txt": "old\n",
+            "draft-ietf-httpbis-foo-02.txt": _DRAFT_TEXT,
+        },
+    )
+    _publish_drafts(store, root, "tls", {"draft-ietf-tls-bar-00.txt": _DRAFT_TEXT})
+    _publish_drafts(store, root, "quic", {"draft-ietf-httpbis-qux-00.txt": _DRAFT_TEXT})
+    _publish_drafts(store, root, "cfrg", {})
+    assert not (root / "scratch").exists()  # publish uploads; it never stages
+    monkeypatch.setattr(mcp.common, "get_corpus_store", lambda: store)
+    return root
+
+
+def test_get_draft_stages_only_the_owning_corpus(cloud_drafts: Path) -> None:
+    """A cold replica answering one `get_draft` must not download the fleet
+    (issue #296): the owner is asked first, and only the hit is staged."""
+    out = mcp.drafts.tool_get_draft("draft-ietf-httpbis-foo")
+    assert "Introduction" in out
+    assert _staged(cloud_drafts) == {"httpbis"}
+
+
+def test_draft_authors_stages_only_the_owning_corpus(cloud_drafts: Path) -> None:
+    out = mcp.drafts.tool_draft_authors("draft-ietf-httpbis-foo")
+    assert "alice@example.com" in out and "foo-02.txt" in out  # newest revision
+    assert _staged(cloud_drafts) == {"httpbis"}
+
+
+def test_get_draft_finds_a_draft_cached_under_another_corpus(
+    cloud_drafts: Path,
+) -> None:
+    """The owner (httpbis) misses, so every corpus is asked by manifest -- and
+    only the one that holds the draft is staged."""
+    out = mcp.drafts.tool_get_draft("draft-ietf-httpbis-qux")
+    assert "Introduction" in out
+    assert _staged(cloud_drafts) == {"quic"}
+
+
+def test_get_draft_miss_stages_nothing(cloud_drafts: Path) -> None:
+    assert "No cached draft" in mcp.drafts.tool_get_draft("draft-ietf-httpbis-nope")
+    assert _staged(cloud_drafts) == set()
+
+
+def test_store_list_files_reads_the_manifest_then_the_staged_dir(
+    cloud_drafts: Path,
+) -> None:
+    store = mcp.common.get_corpus_store()
+    expected = ["draft-ietf-httpbis-foo-01.txt", "draft-ietf-httpbis-foo-02.txt"]
+    assert store.list_files("httpbis", "drafts") == expected
+    assert _staged(cloud_drafts) == set()
+    assert store.list_files("httpbis", "nonesuch") == []
+    assert store.list_files("ghost", "drafts") == []
+    assert store.list_files("httpbis", "../x") == []
+    assert store.local_cache_dir("httpbis") is not None  # now staged
+    assert store.list_files("httpbis", "drafts") == expected

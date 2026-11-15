@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 import threading
 from contextlib import contextmanager
-from typing import Dict, Iterator
+from typing import Dict, Generator
 from urllib.parse import urlsplit
 
 #: Hosts that get the tighter, datatracker-tier cap, matched by exact netloc.
@@ -90,7 +90,7 @@ def _sem_for(host: str) -> threading.BoundedSemaphore:
 
 
 @contextmanager
-def host_slot(url: str) -> "Iterator[None]":
+def host_slot(url: str) -> "Generator[None, None, None]":
     """Hold a per-host concurrency slot for the body, blocking until one is
     free. Keyed on the URL's netloc, so all gather egress to one host shares a
     single pool regardless of which stage or gather thread issued it."""

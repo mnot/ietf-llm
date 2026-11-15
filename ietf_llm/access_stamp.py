@@ -71,7 +71,7 @@ def note_access(corpus: str) -> None:
         _last_stamped[corpus] = now
     try:
         get_corpus_store().record_access(corpus)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 

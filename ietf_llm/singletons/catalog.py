@@ -86,7 +86,7 @@ def _load() -> Optional[List[Dict[str, Any]]]:
     Memoised on `catalog.json`'s mtime so a long-running MCP server picks
     up a re-gather without a restart, while warm calls skip the parse.
     """
-    global _CACHE  # pylint: disable=global-statement
+    global _CACHE  # noqa: PLW0603
     path = _catalog_file()
     try:
         mtime = os.path.getmtime(path)

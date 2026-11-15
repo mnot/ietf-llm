@@ -32,15 +32,12 @@ from ...atomicio import write_if_changed
 from ...config import service as service_config
 from ...freshness import record_gather
 from ...log import LogLevel, Verbosity, log
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...paths import get_index_dir
-from ...net import (
-    DEFAULT_HEADERS,
-    governed_get,
-    http_error_detail,
-    http_metrics,
-)
 from ...singletons import groups as reader
 from . import _mirror
+from .charter import approved_rev
+from .datatracker_history import chair_changes, chair_event_title
 
 _API = "https://datatracker.ietf.org/api/v1"
 _PAGE = 1000
@@ -79,6 +76,11 @@ _FEEDS: Dict[str, str] = {
     "state-events": f"{_API}/group/groupevent/?type=changed_state&group__type__in={_GROUP_TYPES}",
     "charter-revs": f"{_API}/doc/docevent/?doc__type=charter&type=new_revision",
     "charter-approvals": f"{_API}/doc/docevent/?doc__type=charter&type=iesg_approved",
+    # Chair changes: "Chairs changed to <b>A, B</b> from A".
+    "chair-events": (
+        f"{_API}/group/groupevent/?type=info_changed&desc__startswith=Chair"
+        f"&group__type__in={_GROUP_TYPES}"
+    ),
     "milestones": f"{_API}/group/groupmilestone/?group__type__in={_GROUP_TYPES}",
     "milestone-history": f"{_API}/group/groupmilestonehistory/?group__type__in={_GROUP_TYPES}",
     "rfc-published": f"{_API}/doc/docevent/?type=published_rfc",
@@ -106,14 +108,12 @@ def _fetch_all(url: str, verbosity: Verbosity) -> Optional[List[Dict[str, Any]]]
             response.raise_for_status()
             body = response.json()
         except (requests.RequestException, ValueError) as err:
-            http_metrics.record(next_url, 0, 0, error=True)
             log(
                 f"Groups: fetch {next_url} failed: {http_error_detail(err)}",
                 verbosity,
                 LogLevel.PROGRESS,
             )
             return None
-        http_metrics.record(next_url, response.status_code, len(response.content))
         objects.extend(o for o in body.get("objects") or [] if isinstance(o, dict))
         nxt = (body.get("meta") or {}).get("next")
         next_url = f"https://datatracker.ietf.org{nxt}" if nxt else None
@@ -147,6 +147,7 @@ def _slim(feed: str, obj: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only what the derived files need; raw rows are large."""
     keep = {
         "state-events": ("id", "group", "desc", "time"),
+        "chair-events": ("id", "group", "desc", "time"),
         "charter-revs": ("id", "doc", "rev", "time"),
         "charter-approvals": ("id", "doc", "rev", "desc", "time"),
         "milestones": (
@@ -228,31 +229,6 @@ def _plain(text: Any) -> str:
     return " ".join(_TAG_RE.sub("", str(text or "")).split())
 
 
-#: Datatracker charter state `approved`; its URI ends in this id.
-_CHARTER_APPROVED = "88"
-
-
-def _approved_rev(charter: Dict[str, Any]) -> Tuple[str, str]:
-    """`(revision of the approved charter, status)` for a charter document.
-
-    A plain revision (`09`) is an approved charter. A dashed one (`01-05`) is
-    a working revision: with a non-zero base, a recharter is in progress and
-    the approved text is the base revision (`01`); with base `00` the charter
-    was never approved. The status is "" when the document's latest revision
-    is the approved one, else `rechartering` or `unapproved`.
-    """
-    rev = str(charter.get("rev") or "")
-    approved_state = any(
-        _slug(s) == _CHARTER_APPROVED for s in charter.get("states") or []
-    )
-    if not rev or "-" not in rev or approved_state:
-        return rev, ""
-    base = rev.split("-", 1)[0]
-    if base.strip("0"):
-        return base, "rechartering"
-    return rev, "unapproved"
-
-
 def build_groups(
     groups: List[Dict[str, Any]],
     areas: List[Dict[str, Any]],
@@ -272,7 +248,7 @@ def build_groups(
             continue
         area, area_name = parents.get(obj.get("parent") or "", ("", ""))
         charter = revs.get(obj.get("resource_uri")) or {}
-        rev, status = _approved_rev(charter)
+        rev, status = approved_rev(charter)
         out.append(
             {
                 "acronym": acronym,
@@ -398,6 +374,15 @@ def build_timeline(
             "group-state",
             _plain(row.get("desc")),
         )
+    for row in feeds["chair-events"].values():
+        changes = chair_changes({"type": "info_changed", "desc": row.get("desc")})
+        for kind, name in changes:
+            add(
+                by_uri.get(row.get("group") or "", ""),
+                row.get("time"),
+                kind,
+                chair_event_title(kind, name),
+            )
     for row in feeds["charter-revs"].values():
         add(
             _acronym_of_charter(row.get("doc") or ""),
@@ -432,10 +417,9 @@ def build_timeline(
 def _rfc_lookup() -> Callable[[str], Optional[Tuple[str, str]]]:
     """`rfcN` -> (publishing WG, title) from the offline `_rfc/` mirror."""
     # Lazy: keeps the two singletons' readers independent at import time.
-    # pylint: disable-next=import-outside-toplevel
-    from ...singletons import rfcs as rfc_reader
+    from ...singletons import rfcs as rfc_reader  # noqa: PLC0415
 
-    data = rfc_reader._load()  # pylint: disable=protected-access
+    data = rfc_reader._load()
 
     def lookup(name: str) -> Optional[Tuple[str, str]]:
         if data is None:
@@ -500,20 +484,15 @@ def _fetch_charter(doc: str, rev: str) -> Optional[str]:
     try:
         response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=_TIMEOUT)
     except requests.RequestException as err:
-        http_metrics.record(url, 0, 0, error=True)
         log(
             f"Groups: fetch {url} failed: {http_error_detail(err)}", level=LogLevel.WARN
         )
         return None
-    size = len(response.content)
     if response.status_code in _ABSENT_STATUSES:
-        http_metrics.record(url, response.status_code, size, error=True)
         return ""
     if not response.ok or not response.text:
-        http_metrics.record(url, response.status_code, size, error=True)
         log(f"Groups: fetch {url} returned {response.status_code}", level=LogLevel.WARN)
         return None
-    http_metrics.record(url, response.status_code, size)
     return response.text
 
 
@@ -592,11 +571,11 @@ def ensure_groups_index(
             batch,
             reindex,
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"Groups: refresh failed: {err}", verbosity, LogLevel.PROGRESS)
 
 
-def _ensure(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def _ensure(
     verbosity: Verbosity,
     force: bool,
     fetch: Fetcher,
@@ -677,12 +656,10 @@ def install_seed(verbosity: Verbosity = Verbosity.STATUS) -> bool:
         return False
     # Lazy: the seed consumer is gather-path only, and this keeps it off any
     # path that merely reads.
-    # pylint: disable=import-outside-toplevel
-    from ...seed import fetch as seed_fetch
-    from ...seed import format as seed_fmt
-    from ...seed import generation as seed_generation
+    from ...seed import fetch as seed_fetch  # noqa: PLC0415
+    from ...seed import format as seed_fmt  # noqa: PLC0415
+    from ...seed import generation as seed_generation  # noqa: PLC0415
 
-    # pylint: enable=import-outside-toplevel
     seed_url = seed_generation.store_url()
     if not seed_url:
         return False
@@ -864,8 +841,11 @@ def _index(verbosity: Verbosity, embed_model: Optional[str], embed: bool) -> boo
     alone. Incremental on file content, so a pass over unchanged files is cheap."""
     if not embed or not os.path.isdir(reader.charters_dir()):
         return False
-    # pylint: disable-next=import-outside-toplevel
-    from ...embeddings import DEFAULT_EMBED_MODEL, _get_embed_model, build_index
+    from ...embeddings import (  # noqa: PLC0415
+        DEFAULT_EMBED_MODEL,
+        _get_embed_model,
+        build_index,
+    )
 
     model_name = embed_model or DEFAULT_EMBED_MODEL
     # build_index reports an unavailable model as "nothing changed", which is
@@ -879,7 +859,7 @@ def _index(verbosity: Verbosity, embed_model: Optional[str], embed: bool) -> boo
             model_name=model_name,
             verbose=verbosity,
         )
-    except Exception as err:  # pylint: disable=broad-except
+    except Exception as err:  # noqa: BLE001
         log(f"Groups: charter index not built: {err}", verbosity, LogLevel.PROGRESS)
         return False
     return True

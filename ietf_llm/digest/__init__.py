@@ -35,6 +35,7 @@ from typing import List, Optional
 
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path
+from ..people import Registry
 from .helpers import (
     _fmt_size,
     _normalize_subject,
@@ -71,7 +72,7 @@ def generate_digests(
     cache_dir: str,
     summarize_model: Optional[str] = None,
     verbose: Verbosity = Verbosity.STATUS,
-    registry: "Optional[object]" = None,
+    registry: Optional[Registry] = None,
 ) -> List[str]:
     """Generate all digest files for the WG. Returns paths of generated files.
 
@@ -90,19 +91,19 @@ def generate_digests(
     generated: List[str] = []
 
     issues_path = _build_issues_digest(
-        cache_dir, wg, summarizer, verbose, registry=registry  # type: ignore[arg-type]
+        cache_dir, wg, summarizer, verbose, registry=registry
     )
     if issues_path:
         generated.append(issues_path)
 
     pulls_path = _build_pulls_digest(
-        cache_dir, wg, summarizer, verbose, registry=registry  # type: ignore[arg-type]
+        cache_dir, wg, summarizer, verbose, registry=registry
     )
     if pulls_path:
         generated.append(pulls_path)
 
     threads_path = _build_threads_digest(
-        wg, cache_dir, summarizer, verbose, registry=registry  # type: ignore[arg-type]
+        wg, cache_dir, summarizer, verbose, registry=registry
     )
     if threads_path:
         generated.append(threads_path)

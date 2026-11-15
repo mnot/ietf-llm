@@ -9,7 +9,7 @@ The data is three JSON blobs mirrored from rfc.fyi by
 `gather.sources.rfcs.ensure_rfc_index` (the only writer):
 
   _rfc/rfcs.json   per-RFC metadata (title, status, stream, level,
-                   keywords, wg, area, obsoletes)
+                   keywords, wg, area, obsoletes, updates)
   _rfc/refs.json   normative / informative references between RFCs
   _rfc/tags.json   curated rfc.fyi collections
 
@@ -119,6 +119,11 @@ class RfcData:
         self.all_rfcs = sorted(self.rfcs)
         self.in_refs: Dict[str, List[Tuple[bool, str]]] = {}
         self.obsoleted_by: Dict[str, List[str]] = {}
+        self.updated_by: Dict[str, List[str]] = {}
+        # rfc.fyi emits `updates` only for an RFC that has some, so a mirror
+        # in which no record has the key predates the field. "Updates: none"
+        # would be a false answer there, not an empty one.
+        self.has_updates_field = any("updates" in rec for rec in self.rfcs.values())
         self._derive_tags()
         self._compute_references()
 
@@ -152,6 +157,8 @@ class RfcData:
         for name in self.all_rfcs:
             for old in self.rfcs[name].get("obsoletes", []):
                 self.obsoleted_by.setdefault(old, []).append(name)
+            for target in self.rfcs[name].get("updates", []):
+                self.updated_by.setdefault(target, []).append(name)
 
     def has(self, name: str) -> bool:
         return name in self.rfcs
@@ -214,22 +221,29 @@ class RfcData:
 
 # --- Memoised load (mtime-keyed so a re-gather is picked up live) ---------
 
-_CACHE: Optional[Tuple[float, RfcData]] = None
+_CACHE: Optional[Tuple[Tuple[Tuple[int, int, int], ...], RfcData]] = None
 
 
 def _load() -> Optional[RfcData]:
     """Return the parsed index, or None if it hasn't been gathered.
 
-    Memoised on `rfcs.json`'s mtime so a long-running MCP server picks up
-    a re-gather without a restart, while warm calls skip the parse.
+    Memoised on the mtimes of all three files, so a long-running MCP server
+    picks up a re-gather without a restart while warm calls skip the parse.
+    The writer replaces them one at a time; keyed on `rfcs.json` alone, a
+    read between the replaces would pin a mixed-generation set until the next
+    re-gather. The stat comes before the read, so a file replaced in between
+    only makes the next call reload.
     """
-    global _CACHE  # pylint: disable=global-statement
+    global _CACHE  # noqa: PLW0603
     try:
-        mtime = os.path.getmtime(_rfc_file("rfcs.json"))
+        stats = [os.stat(_rfc_file(name)) for name in RFC_FILES]
+        # Inode and size too: an atomic replace within one mtime tick is
+        # still a different file.
+        key = tuple((st.st_mtime_ns, st.st_ino, st.st_size) for st in stats)
     except OSError:
         _CACHE = None
         return None
-    if _CACHE is not None and _CACHE[0] == mtime:
+    if _CACHE is not None and _CACHE[0] == key:
         return _CACHE[1]
     try:
         rfcs = _read_json("rfcs.json")
@@ -238,7 +252,7 @@ def _load() -> Optional[RfcData]:
     except (OSError, ValueError):
         return None
     data = RfcData(rfcs, refs, tags)
-    _CACHE = (mtime, data)
+    _CACHE = (key, data)
     return data
 
 
@@ -365,7 +379,7 @@ def _facets(rfc: Dict[str, Any]) -> str:
     return " · ".join(b for b in bits if b)
 
 
-def render_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def render_search(
     query: str,
     status: Optional[str] = None,
     stream: Optional[str] = None,
@@ -405,9 +419,24 @@ def _ref_list(names: List[str], limit: int = 30) -> str:
     return ", ".join(names[:limit]) + f", … (+{len(names) - limit} more)"
 
 
+def _updates_lines(data: RfcData, name: str, rfc: Dict[str, Any]) -> List[str]:
+    """The `Updates` / `Updated by` rows, or one row saying the mirror cannot
+    answer. An empty row from a mirror without the field would read as "nothing
+    amends this RFC", which is the question a caller is asking."""
+    if not data.has_updates_field:
+        return [
+            "- Updates / Updated by: unknown — the local mirror predates the "
+            "field and gets it on the next gather; do not read this as none"
+        ]
+    return [
+        f"- Updates: {_ref_list(rfc.get('updates', []))}",
+        f"- Updated by: {_ref_list(data.updated_by.get(name, []))}",
+    ]
+
+
 def render_rfc(number: str) -> str:
     """Full metadata for one RFC as markdown: facets, keywords, the
-    obsoletes graph, references in and out, and links to the text."""
+    obsoletes / updates graph, references in and out, and links to the text."""
     data = _load()
     if data is None:
         return _NOT_GATHERED
@@ -437,6 +466,7 @@ def render_rfc(number: str) -> str:
     lines += [
         f"- Obsoletes: {_ref_list(rfc.get('obsoletes', []))}",
         f"- Obsoleted by: {_ref_list(data.obsoleted_by.get(name, []))}",
+        *_updates_lines(data, name, rfc),
         f"- References (normative): {_ref_list(outbound['normative'])}",
         f"- References (informative): {_ref_list(outbound['informative'])}",
         f"- Cited by: {norm_cites} normative, {info_cites} informative",

@@ -8,9 +8,10 @@ place so the two mirrors can't drift apart (and so pylint doesn't see two
 copies of it).
 
 Every function here is best-effort: a failed write or stat is logged at
-PROGRESS and degrades gracefully, never raised. Atomicity is temp-file +
-`os.replace`; the body is always written before its `.etag` sidecar, so
-an etag never points at a body we failed to write.
+PROGRESS and degrades gracefully, never raised. Writes go through
+`atomicio.atomic_open` (a per-writer temp + `os.replace`); the body is always
+written before its `.etag` sidecar, so an etag never points at a body we
+failed to write.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import os
 import time
 from typing import Optional
 
+from ...atomicio import atomic_open, atomic_open_binary
 from ...log import LogLevel, Verbosity, log
 
 
@@ -53,15 +55,12 @@ def touch(path: str) -> None:
 def write_body(path: str, content: bytes, verbosity: Verbosity, what: str) -> bool:
     """Atomically write `content` to `path`. `what` names the mirror for
     the failure log (e.g. "RFC index", "Catalog"). Returns success."""
-    tmp = path + ".tmp"
     try:
-        with open(tmp, "wb") as handle:
+        with atomic_open_binary(path) as handle:
             handle.write(content)
-        os.replace(tmp, path)
         return True
     except OSError as err:
         log(f"{what}: write {path} failed: {err}", verbosity, LogLevel.PROGRESS)
-        unlink(tmp)
         return False
 
 
@@ -71,13 +70,11 @@ def write_sidecar(etag_path: str, etag: Optional[str]) -> None:
     if not etag:
         unlink(etag_path)
         return
-    tmp = etag_path + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as handle:
+        with atomic_open(etag_path) as handle:
             handle.write(etag)
-        os.replace(tmp, etag_path)
     except OSError:
-        unlink(tmp)
+        pass
 
 
 def unlink(path: str) -> None:

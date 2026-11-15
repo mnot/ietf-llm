@@ -2,7 +2,8 @@
 
 Atomic writes (`atomic_open` / `atomic_open_binary` / `write_if_changed`) so a
 reader — an MCP tool reading the corpus while a gather runs — never sees a
-partial file; `swap_dir` / `swap_dirs` / `scratch_sibling_name` for the
+partial file, and `sweep_stale_tmp` to reap the temp a killed writer leaves
+behind; `swap_dir` / `swap_dirs` / `scratch_sibling_name` for the
 directory-level equivalent (moving one or several whole trees into place as
 one unit, or naming the scratch/backup dirs that must never be mistaken for a
 real one); and best-effort cross-process advisory locks (`file_lock` /
@@ -15,15 +16,17 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 import shutil
+import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator, List, Optional, Set, Tuple
+from typing import Any, Generator, List, Optional, Set, Tuple
 
 try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
-    _fcntl = None  # type: ignore[assignment]
+    _fcntl = None
 
 
 class LockHeld(Exception):
@@ -32,7 +35,7 @@ class LockHeld(Exception):
 
 
 @contextmanager
-def file_lock(lock_path: str, blocking: bool = True) -> "Iterator[None]":
+def file_lock(lock_path: str, blocking: bool = True) -> "Generator[None, None, None]":
     """Best-effort cross-process exclusive lock (flock) held for the
     `with` body. Used to serialise access to a shared resource across
     concurrent gathers — notably the single transcripts git clone, where
@@ -252,11 +255,34 @@ def swap_dirs(swaps: "List[Tuple[str, str]]") -> None:
 #: threads writing the same path; `next()` is atomic under the GIL.
 _atomic_tmp_counter = itertools.count()
 
+#: Suffix of every atomic-write temp. Listers and publish walks skip on it.
+#: (Matches earlier undotted `<name>.<pid>.<n>.tmp` leftovers too.)
+TMP_SUFFIX = ".tmp"
+
+#: A temp this old is presumed to belong to a dead writer. An `atomic_open`
+#: write takes seconds, so an hour leaves a wide margin for a concurrent gather
+#: that is still writing (and for clock skew on a shared filesystem).
+STALE_TMP_SECONDS = 3600.0
+
+#: Exactly the names `_atomic_tmp_path` produces.
+_ATOMIC_TMP_RE = re.compile(r"\..+\.\d+\.\d+" + re.escape(TMP_SUFFIX))
+
+
+def _atomic_tmp_path(path: str) -> str:
+    """`.<name>.<pid>.<n>.tmp` beside `path`. Dot-prefixed (like
+    `scratch_sibling_name`) because a process killed mid-write leaves its temp
+    behind, and every walker that skips dotfiles then ignores the leftover
+    rather than listing, reading or publishing a partial file."""
+    parent, name = os.path.split(path)
+    return os.path.join(
+        parent, f".{name}.{os.getpid()}.{next(_atomic_tmp_counter)}{TMP_SUFFIX}"
+    )
+
 
 @contextmanager
 def atomic_open(
     path: str, encoding: str = "utf-8", newline: Optional[str] = None
-) -> "Iterator[Any]":
+) -> "Generator[Any, None, None]":
     """Open a text file for writing such that readers never see a
     partial result: writes go to a temp file in the same directory and
     are `os.replace`d into place (atomic on POSIX) only on clean close.
@@ -271,10 +297,8 @@ def atomic_open(
     `newline` is passed through to `open` — `write_if_changed` uses
     `"\n"` so the bytes written match its LF-normalised comparison.
     """
-    tmp = f"{path}.{os.getpid()}.{next(_atomic_tmp_counter)}.tmp"
-    handle = open(  # pylint: disable=consider-using-with
-        tmp, "w", encoding=encoding, newline=newline
-    )
+    tmp = _atomic_tmp_path(path)
+    handle = open(tmp, "w", encoding=encoding, newline=newline)
     try:
         yield handle
         handle.close()
@@ -289,15 +313,15 @@ def atomic_open(
 
 
 @contextmanager
-def atomic_open_binary(path: str) -> "Iterator[Any]":
+def atomic_open_binary(path: str) -> "Generator[Any, None, None]":
     """Binary counterpart of `atomic_open`: yields a file handle opened for
     `wb` writing into a same-directory temp that is `os.replace`d into place
     only on clean close. On error (including a download that raises partway)
     the temp is removed and any prior file is left intact — so a crash or a
     truncated transfer never leaves a partial blob cached under the final name.
     """
-    tmp = f"{path}.{os.getpid()}.{next(_atomic_tmp_counter)}.tmp"
-    handle = open(tmp, "wb")  # pylint: disable=consider-using-with
+    tmp = _atomic_tmp_path(path)
+    handle = open(tmp, "wb")
     try:
         yield handle
         handle.close()
@@ -309,6 +333,67 @@ def atomic_open_binary(path: str) -> "Iterator[Any]":
         except OSError:
             pass
         raise
+
+
+def sweep_stale_tmp(
+    root: str,
+    max_age: float = STALE_TMP_SECONDS,
+    recursive: bool = True,
+    now: Optional[float] = None,
+) -> Tuple[List[str], List[str]]:
+    """Delete `atomic_open` temps under `root` that are older than `max_age`
+    seconds; returns `(removed_paths, error_messages)`. Never raises.
+
+    A writer killed mid-write (SIGKILL, power loss) leaves its temp behind:
+    invisible to readers (dot-prefixed, skipped by every walker) but never
+    reclaimed. Only names `_atomic_tmp_path` generates are touched, and only
+    once their mtime is past `max_age`, because a concurrent gather may be
+    writing a younger one right now. Nothing at or below `root` is followed
+    through a symlink: a symlinked `root` is skipped (reported in the errors),
+    and below it a symlink, to a file or a directory, is neither deleted nor
+    descended into, so the walk cannot leave `root` through a planted link.
+    (A symlink in a parent of `root` is not examined.) This module cannot log,
+    so the caller reports what came back.
+    """
+    removed: List[str] = []
+    errors: List[str] = []
+    if os.path.islink(root):
+        return removed, [f"{root}: is a symlink; not swept"]
+    cutoff = (time.time() if now is None else now) - max_age
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except FileNotFoundError:
+            continue
+        except OSError as err:
+            errors.append(f"{directory}: {err}")
+            continue
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if recursive:
+                        pending.append(entry.path)
+                elif _is_stale_tmp(entry, cutoff):
+                    os.unlink(entry.path)
+                    removed.append(entry.path)
+            except FileNotFoundError:
+                continue  # a concurrent writer renamed or removed it
+            except OSError as err:
+                errors.append(f"{entry.path}: {err}")
+    return removed, errors
+
+
+def _is_stale_tmp(entry: "os.DirEntry[str]", cutoff: float) -> bool:
+    return bool(
+        _ATOMIC_TMP_RE.fullmatch(entry.name)
+        and entry.is_file(follow_symlinks=False)
+        and entry.stat(follow_symlinks=False).st_mtime < cutoff
+    )
 
 
 def write_if_changed(path: str, content: str) -> bool:

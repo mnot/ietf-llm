@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Iterable, List
 
 import pytest
 
 from ietf_llm import embeddings
+from ietf_llm.embeddings import storage
+from ietf_llm.atomicio import file_lock
 from ietf_llm.embeddings.search import build_index, search
 from ietf_llm.embeddings.storage import (
     _AUTO_UPGRADE_FROM,
@@ -46,7 +50,7 @@ def _built(home: Path) -> None:
         home, "wg", "threads/2026-01-01-t.md",
         "# T\n\n## Messages\n\n### [1] 2026-01-01 09:00 — A\n\nA response may be stored.\n",
     )
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index("wg", get_wg_file_cache_dir("wg"), model_name="stub",
                 verbose=Verbosity.QUIET)
 
@@ -128,3 +132,42 @@ def test_a_current_index_is_not_touched(isolated_home: Path) -> None:
     before = os.path.getmtime(_db_path("wg"))
     assert search("wg", "stored response", k=1)
     assert os.path.getmtime(_db_path("wg")) == before
+
+
+def test_a_build_holding_the_lock_is_not_waited_for(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gather embeds under the same lock for minutes. A reader finding it
+    held falls back to the older-schema message instead of hanging."""
+    monkeypatch.setattr(storage, "_UPGRADE_LOCK_WAIT_S", 0.2)
+    _built(isolated_home)
+    _age_to(_AUTO_UPGRADE_FROM)
+    with file_lock(_db_path("wg") + ".lock"):
+        assert not try_upgrade_schema("wg", _AUTO_UPGRADE_FROM)
+        assert _schema() == _AUTO_UPGRADE_FROM
+    assert try_upgrade_schema("wg", _AUTO_UPGRADE_FROM)
+
+
+def test_a_concurrent_upgrade_is_waited_for(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two readers hitting an old index together: the one that loses the lock
+    waits out the other's short upgrade instead of reporting an old schema."""
+    monkeypatch.setattr(storage, "_UPGRADE_LOCK_WAIT_S", 5.0)
+    _built(isolated_home)
+    _age_to(_AUTO_UPGRADE_FROM)
+    held = threading.Event()
+
+    def winner() -> None:
+        with file_lock(_db_path("wg") + ".lock"):
+            held.set()
+            time.sleep(0.3)
+            conn = storage._open_db("wg")
+            conn.close()
+
+    thread = threading.Thread(target=winner)
+    thread.start()
+    held.wait()
+    assert try_upgrade_schema("wg", _AUTO_UPGRADE_FROM)
+    thread.join()
+    assert _schema() == _SCHEMA_VERSION

@@ -12,12 +12,13 @@ from __future__ import annotations
 import argparse
 import copy
 import os
-import shutil
 import sys
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .. import config, paths
+from ..atomicio import sweep_stale_tmp
 from ..net import http_metrics
 from ..corpus import canonical
 from ..config import service as service_config
@@ -29,14 +30,21 @@ from ..embeddings import (
     build_index,
     generate_topics,
     has_topics,
+    index_reads_from_workspace,
+    topics_stale,
 )
-from ..freshness import local_last_gathered, parse_iso, record_gather
+from ..freshness import GatheredAt, local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
 from ..months import DEFAULT_MONTHS, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
 from ..people import build_registry, write_people_digest
+from ..singletons.catalog import CATALOG_DIR
+from ..singletons.groups import GROUPS_DIR
+from ..singletons.rfcs import RFC_DIR
 from .cli import build_parser
+from .lifecycle import GatherOutcome, clear_local_state
 from .plan import _gather_plan_summary
+from .sources import datatracker
 from .sources.author import fetch_author_draft_names, resolve_person
 from .sources.charter import process_charter
 from .sources.citations import (
@@ -104,10 +112,10 @@ def embed_settings(
 def _default_llm_model(verbose: Verbosity) -> str:
     """Return the user's configured default `llm` model name, or a fallback."""
     try:
-        import llm  # pylint: disable=import-outside-toplevel,import-error
+        import llm  # noqa: PLC0415
 
-        return str(llm.get_default_model())  # type: ignore[no-untyped-call]
-    except Exception as err:  # pylint: disable=broad-except
+        return str(llm.get_default_model())
+    except Exception as err:  # noqa: BLE001
         # llm.get_default_model() can fail many ways depending on what
         # plugins/config the user has; this is a fallback so we don't
         # narrow.
@@ -327,10 +335,9 @@ def _client_compat(args: argparse.Namespace) -> Any:
     the configured embedding model plus this build's schema/chunker versions.
     vector_dim is left unknown (not known until embedding; the gate treats unknown
     as compatible)."""
-    # pylint: disable=import-outside-toplevel
-    from ..embeddings.chunking import CHUNKER_VERSION
-    from ..embeddings.storage import _SCHEMA_VERSION
-    from ..seed.format import CompatTuple
+    from ..embeddings.chunking import CHUNKER_VERSION  # noqa: PLC0415
+    from ..embeddings.storage import _SCHEMA_VERSION  # noqa: PLC0415
+    from ..seed.format import CompatTuple  # noqa: PLC0415
 
     return CompatTuple(
         schema_version=_SCHEMA_VERSION,
@@ -432,7 +439,7 @@ def _log_seeded(
     log(msg, verbosity, level=LogLevel.STATUS)
 
 
-def _maybe_seed(  # pylint: disable=too-many-return-statements
+def _maybe_seed(  # noqa: PLR0911
     args: argparse.Namespace,
     on_cloud: bool,
     verbosity: Verbosity,
@@ -451,18 +458,15 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
         return
     # Lazy for the same reason as the block below: the seed consumer is
     # gather-path only.
-    # pylint: disable-next=import-outside-toplevel
-    from ..seed import generation as seed_generation
+    from ..seed import generation as seed_generation  # noqa: PLC0415
 
     seed_url = seed_generation.store_url()
     if not seed_url:
         return
     # Lazy: the seed consumer is gather-path only.
-    # pylint: disable=import-outside-toplevel
-    from ..seed import fetch as seed_fetch
-    from ..seed import format as seed_fmt
+    from ..seed import fetch as seed_fetch  # noqa: PLC0415
+    from ..seed import format as seed_fmt  # noqa: PLC0415
 
-    # pylint: enable=import-outside-toplevel
     index = seed_fetch.load_index(seed_url)
     if index is None:
         return
@@ -504,49 +508,85 @@ def _maybe_seed(  # pylint: disable=too-many-return-statements
         )
 
 
+def _sweep_leaked_temps(wg: str, verbosity: Verbosity) -> None:
+    """Reap `atomic_open` temps that a killed writer left behind (see
+    `atomicio.sweep_stale_tmp`): across this corpus and its IMAP `.eml` cache,
+    and in the shared dirs a gather also writes through `atomic_open` (the
+    cache root's identity caches, the `_rfc` / `_catalog` mirrors, the `_groups`
+    singleton). Gather path only, so a read tool never deletes anything;
+    best-effort, never fatal."""
+    root = get_cache_dir()
+    targets = (
+        (os.path.join(root, wg), True),
+        (os.path.join(root, "imap-cache", wg), True),
+        (root, False),
+        (os.path.join(root, RFC_DIR), False),
+        (os.path.join(root, CATALOG_DIR), False),
+        (os.path.join(root, GROUPS_DIR), True),
+    )
+    try:
+        for directory, recursive in targets:
+            removed, errors = sweep_stale_tmp(directory, recursive=recursive)
+            for path in removed:
+                log(f"Removed leaked temp file {path}", verbosity, LogLevel.PROGRESS)
+            for message in errors:
+                log(f"Temp sweep: {message}", verbosity, LogLevel.PROGRESS)
+    except Exception as err:  # noqa: BLE001
+        log(f"Temp sweep failed: {err}", verbosity, LogLevel.PROGRESS)
+
+
 def run_gather(
     argv: List[str],
     verbosity: Verbosity = Verbosity.STATUS,
     progress: Optional[ProgressFn] = None,
     note_fn: Optional[Callable[[str], None]] = None,
-) -> bool:
+) -> GatherOutcome:
     """Programmatic gather entry point: gather one corpus from a CLI-style
     `argv` (`[corpus, "--mailing-list", "foo", ...]`).
 
     Parses through `build_parser()` so defaults and validation match the
-    CLI exactly, then runs the pipeline. Returns True on success, False if
-    the corpus name was unusable (a typo'd WG that is neither a group, a
-    known list, nor configured with sources). Used by the MCP gather
-    runner; not wired to any console script. `note_fn` forwards one-line
-    outcome notes (e.g. auto-tracked GitHub repos) to the caller's status.
+    CLI exactly, then runs the pipeline. Returns what it did: `GATHERED`,
+    `SKIPPED` (fresh, or a reuse hint -- nothing worth publishing), or
+    `UNUSABLE` (a typo'd WG that is neither a group, a known list, nor
+    configured with sources). Used by the MCP gather runner; not wired to
+    any console script. `note_fn` forwards one-line outcome notes (e.g.
+    auto-tracked GitHub repos) to the caller's status.
     """
     args = build_parser().parse_args(argv)
     return _gather_one(args, verbosity, progress=progress, note_fn=note_fn)
 
 
-def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
+@dataclass(frozen=True)
+class Preflight:
+    """What `preflight` decided about one corpus before any gather work.
+
+    `outcome` is `UNUSABLE` or `SKIPPED` when the run should stop there, and
+    None to proceed with the classification below."""
+
+    outcome: Optional[GatherOutcome]
+    persisted: Dict[str, Any]
+    synth: bool
+    group_backed: bool
+
+
+def preflight(
     args: argparse.Namespace,
     verbosity: Verbosity,
-    progress: Optional[ProgressFn] = None,
-    note_fn: Optional[Callable[[str], None]] = None,
-) -> bool:
-    """Run the full gather pipeline for a single WG.
+    *,
+    gathered_at: Optional[GatheredAt] = None,
+) -> Preflight:
+    """Decide whether `args.wg` is worth gathering at all: classify the name,
+    then apply the reuse hint and the freshness debounce.
 
-    Loads the WG's persisted config first (so per-WG --github lists etc.
-    apply), then walks the gather stages in order. Mutates args in place
-    via config.merge; safe to call repeatedly with different args.wg
-    values for --all. Returns True on success, False if the corpus name
-    was unusable (logged). `progress`, when given, is called as each
-    stage begins (see `_stage_plan`).
+    Runs before a CLI gather takes its lease, fleet slot, status record or
+    seeded workspace, so a mistyped name or a corpus that is not due costs none
+    of them. `gathered_at` is where the debounce reads the last-gathered time
+    (the store's, since nothing is seeded yet); the default is the local
+    sentinel. Mutates `args` the way `_gather_one` always has (`--clear-config`,
+    a bare list name folded into `mailing_list`). `--force` bypasses the skips,
+    not the classification.
     """
     http_metrics.reset()  # fresh per-corpus egress accounting; see `http_metrics`
-
-    # Suppress regenerable / non-served bulk when the CLI flag (always set by
-    # an MCP gather via to_argv) OR a cloud backend asks for it (a cloud-served
-    # version is never grepped locally). Computed once, threaded as a boolean.
-    on_cloud = service_config.store_backend() == "cloud"
-    suppress_pdf = bool(args.no_pdf) or on_cloud
-    suppress_raw = bool(args.no_raw) or on_cloud
 
     if args.clear_config:
         if config.clear(args.wg) and not args.quiet:
@@ -557,7 +597,8 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
 
     shape = _resolve_corpus_shape(args, persisted, verbosity)
     if shape is None:
-        return False  # unusable name (typo); _resolve_corpus_shape logged why
+        # Unusable name (typo); _resolve_corpus_shape logged why.
+        return Preflight(GatherOutcome.UNUSABLE, persisted, False, False)
     synth, group_backed = shape
 
     # Persist a --no-seed / --seed toggle before anything can short-circuit (a
@@ -569,10 +610,64 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     # in persisted sources): a reuse hint when a new custom/synthetic corpus
     # duplicates an existing one, or a freshness debounce when a cached corpus
     # is refreshed too soon. --force runs anyway; a skip here is success.
-    skip = canonical.cli_gather_skip(args, synthetic=synth, group_backed=group_backed)
+    skip = canonical.cli_gather_skip(
+        args, synthetic=synth, group_backed=group_backed, gathered_at=gathered_at
+    )
     if skip is not None:
         log(skip, verbosity, level=LogLevel.STATUS)
-        return True
+        return Preflight(GatherOutcome.SKIPPED, persisted, synth, group_backed)
+    return Preflight(None, persisted, synth, group_backed)
+
+
+def _gather_one(
+    args: argparse.Namespace,
+    verbosity: Verbosity,
+    progress: Optional[ProgressFn] = None,
+    note_fn: Optional[Callable[[str], None]] = None,
+    pre: Optional[Preflight] = None,
+) -> GatherOutcome:
+    """Run the full gather pipeline for a single WG.
+
+    Runs `preflight` first unless the caller already did (the CLI does, ahead
+    of its lease), then merges the WG's persisted config (so per-WG --github
+    lists etc. apply) and walks the gather stages in order. Mutates args in
+    place via config.merge; safe to call repeatedly with different args.wg
+    values for --all. Returns `GATHERED` when the stages ran, `SKIPPED`
+    when the freshness debounce or a reuse hint left the cache as it was
+    (success, but nothing new to publish), or `UNUSABLE` if the corpus
+    name resolved to nothing (logged). `progress`, when given, is called
+    as each stage begins (see `_stage_plan`).
+
+    On the cloud backend the stages run against the corpus's own ETag file,
+    flushed when they end: the sync that restores and uploads it runs in the
+    process that drives the gather, which is not this one when the pipeline runs
+    in the gather child.
+    """
+    if pre is None:
+        pre = preflight(args, verbosity)
+    if pre.outcome is not None:
+        return pre.outcome
+    on_cloud = service_config.store_backend() == "cloud"
+    with datatracker.gather_http_cache(args.wg if on_cloud else None):
+        return _gather_stages(args, verbosity, progress, note_fn, pre)
+
+
+def _gather_stages(  # noqa: PLR0915
+    args: argparse.Namespace,
+    verbosity: Verbosity,
+    progress: Optional[ProgressFn],
+    note_fn: Optional[Callable[[str], None]],
+    pre: Preflight,
+) -> GatherOutcome:
+    """The stages of `_gather_one`, once `preflight` has said to proceed."""
+    # Suppress regenerable / non-served bulk when the CLI flag (always set by
+    # an MCP gather via to_argv) OR a cloud backend asks for it (a cloud-served
+    # version is never grepped locally). Computed once, threaded as a boolean.
+    on_cloud = service_config.store_backend() == "cloud"
+    suppress_pdf = bool(args.no_pdf) or on_cloud
+    suppress_raw = bool(args.no_raw) or on_cloud
+
+    persisted, synth, group_backed = pre.persisted, pre.synth, pre.group_backed
 
     # Validate the *new* CLI-provided --draft / --mailing-list / --github
     # values against their authoritative sources before config.merge
@@ -625,14 +720,14 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
     cache_dir = get_wg_file_cache_dir(args.wg)
     if args.clear_cache:
         log(f"Clearing cache for {args.wg}...", verbosity, level=LogLevel.STATUS)
-        if os.path.exists(wg_cache_dir):
-            shutil.rmtree(wg_cache_dir)
+        clear_local_state(args.wg, wg_cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
     # Seed from the public seed store before the stages run, if it offers a
     # fresher, compatible base than what is local (issue #182). Best-effort and
     # opt-out; a no-op unless IETF_LLM_SEED_URL is configured.
     _maybe_seed(args, on_cloud, verbosity, note_fn)
+    _sweep_leaked_temps(args.wg, verbosity)
 
     # `synth` (x-) and `group_backed` were resolved above. A corpus
     # that's neither is "custom" (list/draft/github sources only).
@@ -863,17 +958,23 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
         # otherwise good gather. Recomputing is O(corpus) k-means, so skip it when
         # the index didn't change and a sidecar already exists — the recompute is
         # dead CPU on a no-op re-gather or a seeded corpus whose delta was zero
-        # (issue #190).
+        # (issue #190) — unless the sidecar was derived from an earlier build
+        # (a crash after the index was promoted but before the map was written).
         tracker.begin("topic map")
-        if index_changed or not has_topics(args.wg):
-            try:
-                generate_topics(args.wg, verbose=verbosity)
-            except Exception as err:  # pylint: disable=broad-except
-                log(
-                    f"Topic map skipped ({type(err).__name__}: {err}).",
-                    verbosity,
-                    level=LogLevel.PROGRESS,
-                )
+        try:
+            # The skip decision and the clustering both read the index; they
+            # must see the one just built, not the published version a cloud
+            # store would otherwise stage for reads. Keep any index-reading
+            # check (e.g. a staleness test) inside this block.
+            with index_reads_from_workspace():
+                if index_changed or not has_topics(args.wg) or topics_stale(args.wg):
+                    generate_topics(args.wg, verbose=verbosity)
+        except Exception as err:  # noqa: BLE001
+            log(
+                f"Topic map skipped ({type(err).__name__}: {err}).",
+                verbosity,
+                level=LogLevel.PROGRESS,
+            )
 
     # Record successful gather so freshness checks (export warning,
     # MCP staleness banner) know when to nag. Best-effort; never fatal.
@@ -889,4 +990,4 @@ def _gather_one(  # pylint: disable=too-many-branches,too-many-statements
             "(or --create <GCP_PROJECT>).",
             file=sys.stderr,
         )
-    return True
+    return GatherOutcome.GATHERED

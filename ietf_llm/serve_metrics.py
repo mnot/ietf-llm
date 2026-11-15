@@ -133,6 +133,10 @@ _embed = _Histogram()
 #: how many run concurrently, how many have started, the terminal outcomes by
 #: state, and a duration histogram. Near-idle when gather is disabled.
 _gather_inflight = [0]
+#: `grep_corpus` regex scans that did not finish, by reason ("timeout" | "failed").
+#: The tool still returns an ordinary string, so `record_tool` sees them as
+#: successes; this is what makes a flood of pathological patterns visible.
+_scan_stops: Dict[str, int] = {}
 _gather_started = [0]
 #: terminal state ("done" | "failed" | "cancelled") -> count
 _gather_outcomes: Dict[str, int] = {}
@@ -160,6 +164,12 @@ def record_tool(
             hist = _Histogram()
             _tools[tool] = hist
         hist.observe(elapsed, error=error, timeout=timeout)
+
+
+def record_scan_stop(reason: str) -> None:
+    """Count one regex scan that was killed ("timeout") or failed ("failed")."""
+    with _LOCK:
+        _scan_stops[reason] = _scan_stops.get(reason, 0) + 1
 
 
 def record_embed(elapsed: float, *, error: bool) -> None:
@@ -236,6 +246,7 @@ def reset() -> None:
     with _LOCK:
         _tools.clear()
         _store.clear()
+        _scan_stops.clear()
         _embed.reset()
         _inflight[0] = 0
         _gather_inflight[0] = 0
@@ -268,7 +279,7 @@ def _emit_histogram(
     `label` is a pre-rendered `key="value"` fragment (or ""). Buckets are
     emitted directly because `hist.counts` is already cumulative."""
     inner = f"{label}," if label else ""
-    for bound, count in zip(hist.buckets, hist.counts):
+    for bound, count in zip(hist.buckets, hist.counts, strict=True):
         lines.append(f'{name}_bucket{{{inner}le="{_fmt(bound)}"}} {count}')
     lines.append(f'{name}_bucket{{{inner}le="+Inf"}} {hist.count}')
     suffix = f"{{{label}}}" if label else ""
@@ -344,6 +355,16 @@ def _render_locked(
         lab = f'tool="{_escape_label(tool)}"'
         _emit_histogram(lines, "ietf_llm_tool_latency_seconds", lab, hist)
 
+    lines.append(
+        "# HELP ietf_llm_grep_scan_stops_total grep_corpus regex scans killed at "
+        "the budget or failed."
+    )
+    lines.append("# TYPE ietf_llm_grep_scan_stops_total counter")
+    for reason, count in sorted(_scan_stops.items()):
+        lines.append(
+            f'ietf_llm_grep_scan_stops_total{{reason="{_escape_label(reason)}"}} {count}'
+        )
+
     # Embed backend (remote /embeddings).
     lines.append("# HELP ietf_llm_embed_requests_total Remote /embeddings requests.")
     lines.append("# TYPE ietf_llm_embed_requests_total counter")
@@ -399,6 +420,6 @@ def _render_locked(
     lines.append("# TYPE ietf_llm_corpus_last_gathered_age_seconds gauge")
     for corpus, age in corpus_ages or ():
         lab = f'corpus="{_escape_label(corpus)}"'
-        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {int(age)}")
+        lines.append(f"ietf_llm_corpus_last_gathered_age_seconds{{{lab}}} {age}")
 
     return "\n".join(lines) + "\n"

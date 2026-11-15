@@ -505,7 +505,7 @@ def test_issue_body_containing_a_discussion_heading_is_not_truncated(
 def test_tally_positions_reads_pr_authors_without_the_review_tag(
     isolated_home: Path,
 ) -> None:
-    """Regression: `_THREAD_MSG_RE` has to consume `_(review: VERDICT)_` and
+    """Regression: `THREAD_MSG_HEADER_RE` has to consume `_(review: VERDICT)_` and
     `_(opened pull request)_`, or a reviewer who also comments splits into
     two identities and renders as `bob _(review: APPROVED)_`."""
     from ietf_llm.people.positions import file_supports_tally, tally_thread

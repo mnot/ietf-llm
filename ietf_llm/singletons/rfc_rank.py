@@ -96,7 +96,7 @@ def title_overlap(query: str, title: str) -> float:
     return sum(1 for w in words if w in haystack) / len(words)
 
 
-def rank_documents(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def rank_documents(
     query: str,
     hits: Sequence[T],
     *,

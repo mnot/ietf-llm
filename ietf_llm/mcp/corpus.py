@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING, List, Optional
 
 from .. import coverage
+from ..atomicio import TMP_SUFFIX
 from ..corpus import describe, kind_status, status_cell
 from ..digest.overview import (
     _label_frequencies,
@@ -33,7 +34,7 @@ from .common import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 _NEXT_TOOLS_HINT = (
@@ -83,13 +84,11 @@ def _available_to_seed(local: List[str]) -> str:
     cached catalog and revalidates in the background, blocking only on a cold miss
     (nothing cached yet) so a fresh client still sees it. Empty when seeding is
     disabled or the store is unreachable."""
-    # pylint: disable-next=import-outside-toplevel
-    from ..config import service
+    from ..config import service  # noqa: PLC0415
 
     if not gather_enabled() or not service.seeding_enabled():
         return ""
-    # pylint: disable-next=import-outside-toplevel
-    from ..seed import catalog as seed_catalog
+    from ..seed import catalog as seed_catalog  # noqa: PLC0415
 
     seed_catalog.refresh_mirror()
     index = seed_catalog.cached_index()
@@ -162,15 +161,24 @@ def tool_list_corpora() -> str:
 def _overview_live_reconciliation(wg: str, live: bool) -> str:
     """The optional 'live draft reconciliation' section appended to overview.
 
-    Empty on a read-only (gather-disabled) deployment — the live tools aren't
-    available there, so neither is this. When gather is enabled but `live` is
-    off, a one-line pointer to the live check (the default stays offline and
-    fast). When `live` is on, it cross-checks the cache's active-draft list
-    against Datatracker (`live_lookup.reconcile_active_drafts`) and reports any
-    divergence, so a stale curated list can't silently mislead an agenda.
+    On a read-only (gather-disabled) deployment the live tools aren't
+    available: the section is empty, except that `live=True` gets a one-line
+    note so its absence is not mistaken for a clean reconciliation. When gather
+    is enabled but `live` is off, a one-line pointer to the live check (the
+    default stays offline and fast). When `live` is on, it cross-checks the
+    cache's active-draft list against Datatracker
+    (`live_lookup.reconcile_active_drafts`) and reports any divergence, so a
+    stale curated list can't silently mislead an agenda; an unreachable
+    Datatracker is said so, not reported as a match.
     """
     if not gather_enabled():
-        return ""
+        return (
+            "\n\n_Live draft reconciliation is unavailable on this server "
+            "(it is read-only and does not reach Datatracker); the active-draft "
+            "list above is from the gather cache._"
+            if live
+            else ""
+        )
     if not live:
         return (
             "\n\n_The active-draft list above is from the gather cache and can "
@@ -178,12 +186,17 @@ def _overview_live_reconciliation(wg: str, live: bool) -> str:
             "it live, or `draft_status(name)` to check one draft._"
         )
 
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
-    from ..digest.overview import (  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
+    from ..digest.overview import (  # noqa: PLC0415
         active_draft_names,
     )
 
-    recon, fetched = live_lookup.reconcile_active_drafts(wg, active_draft_names(wg))
+    try:
+        recon, fetched = live_lookup.reconcile_active_drafts(wg, active_draft_names(wg))
+    except live_lookup.LiveUnavailable as err:
+        return "\n\n## Live draft reconciliation\n\n" + live_lookup.unreachable_note(
+            "this group's drafts", err.tried_at
+        )
     lines = ["\n\n## Live draft reconciliation\n"]
     if not recon.advanced and not recon.revived:
         lines.append(
@@ -228,8 +241,7 @@ def _gather_notes_available(wg: str) -> bool:
     """
     if not gather_enabled():
         return False
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     return gather_runner.has_local_status(wg)
 
@@ -370,6 +382,8 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
     entries = []
     for dirpath, _dirnames, filenames in os.walk(cache):
         for name in filenames:
+            if name.endswith(TMP_SUFFIX):
+                continue  # a killed gather's partial atomic-write temp
             path = os.path.join(dirpath, name)
             if not os.path.isfile(path):
                 continue
@@ -398,6 +412,8 @@ def tool_list_files(wg: str, pattern: Optional[str] = None) -> str:
                 f"{size:>10}  (digest)     {relpath}  "
                 f"-> read_digest(wg, kind='{kind}')"
             )
+        elif relpath.endswith(".kinds.json"):
+            rows.append(f"{size:>10}  (sidecar)    {relpath}")
         else:
             # "not indexed" when the DB itself is empty (build hasn't
             # run yet); "no chunks" for the rare case of an indexed
@@ -494,7 +510,7 @@ def tool_which_corpus(query: str, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def list_corpora() -> str:
         """List the IETF/IRTF efforts gathered locally by ietf-llm —
@@ -610,7 +626,9 @@ def register(server: "FastMCP") -> None:
         themes especially, built from the embedding index in the gather's
         *final* stage — are complete only after `gather_status` reports `done`.
         A *first* gather **refuses** the read (no prior snapshot to serve); a
-        re-gather serves the previous, *stale* one. If you just called
+        re-gather stays readable but is mid-update (themes come from the
+        previous index; on the local backend other sections are rewritten in
+        place). If you just called
         `start_gather`, don't reason "overview only needs structural facts, so I
         can read it mid-gather" — the whole cache is still being written; wait
         for `done`.
@@ -676,7 +694,9 @@ def register(server: "FastMCP") -> None:
         and consider). Use it when building an agenda or whenever the
         active-draft list must be exactly right; it hits Datatracker live (so
         it is only available where the live tools are enabled — see **This
-        session**) and is slower than the default offline overview.
+        session**; elsewhere the section is a one-line "unavailable" note) and
+        is slower than the default offline overview. If Datatracker cannot be
+        reached the section says so rather than reporting a match.
 
         Args:
             corpus: The corpus shortname (`httpbis`, `tls`, …).

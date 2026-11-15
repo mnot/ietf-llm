@@ -102,7 +102,7 @@ class _StubModel:
 
 def _build_with_stub(wg: str) -> None:
     cache = get_wg_file_cache_dir(wg)
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index(wg, cache, model_name="stub", verbose=Verbosity.QUIET)
 
 

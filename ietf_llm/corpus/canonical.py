@@ -26,7 +26,7 @@ SCOPE = "gather"
 def _norm_draft(name: str) -> str:
     # Lazy import keeps the gather pipeline's deps off the read-only path;
     # this module is only consulted at the gather entry point.
-    from ..gather.sources.drafts import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.drafts import (  # noqa: PLC0415
         normalize_draft_name,
     )
 
@@ -34,7 +34,7 @@ def _norm_draft(name: str) -> str:
 
 
 def _norm_list(name: str) -> str:
-    from ..gather.sources.mbox import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.mbox import (  # noqa: PLC0415
         normalize_list_name,
     )
 
@@ -152,7 +152,13 @@ def canonicalize_skip(
     return _overlap_hint(corpus, existing, shared)
 
 
-def cli_gather_skip(args: Any, *, synthetic: bool, group_backed: bool) -> Optional[str]:
+def cli_gather_skip(
+    args: Any,
+    *,
+    synthetic: bool,
+    group_backed: bool,
+    gathered_at: Optional[freshness.GatheredAt] = None,
+) -> Optional[str]:
     """The skip message for a CLI gather invocation, or None to proceed.
 
     Combines the two entry-point guards: a reuse hint when a *new* custom /
@@ -174,7 +180,7 @@ def cli_gather_skip(args: Any, *, synthetic: bool, group_backed: bool) -> Option
     )
     if hint is not None:
         return hint
-    return freshness.cli_debounce_skip(args)
+    return freshness.cli_debounce_skip(args, gathered_at=gathered_at)
 
 
 def mcp_canonicalize_skip(spec: Any) -> Optional[str]:

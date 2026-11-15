@@ -142,7 +142,7 @@ def _load_table() -> "Tuple[Dict[str, RoutingEntry], set[str]]":
     graph). The table is intersected with the cached set: the cloud key is
     additive per publish, so a removed corpus can linger there and must not be
     scored (the local scan is already cache-bounded)."""
-    from ..store.corpus import (  # pylint: disable=import-outside-toplevel
+    from ..store.corpus import (  # noqa: PLC0415
         get_corpus_store,
     )
 
@@ -293,10 +293,10 @@ def _scan_local(corpora: List[str]) -> Dict[str, Any]:
     """Assemble the routing table from local `topics.json` sidecars — the local
     backend's path (the cloud backend supplies a fleet key instead). Reads
     `embeddings` here so `store.corpus` stays off that import graph."""
-    from ..embeddings.storage import (  # pylint: disable=import-outside-toplevel
+    from ..embeddings.storage import (  # noqa: PLC0415
         read_topics,
     )
-    from ..embeddings.topics import (  # pylint: disable=import-outside-toplevel
+    from ..embeddings.topics import (  # noqa: PLC0415
         routing_projection,
     )
 
@@ -317,7 +317,7 @@ def _embed_query(
     """Embed and L2-normalise `query` with `model_id`, or None if the model
     can't load or the embed fails (same provider-variability story as
     `search`)."""
-    from ..embeddings.models import (  # pylint: disable=import-outside-toplevel
+    from ..embeddings.models import (  # noqa: PLC0415
         _get_embed_model,
     )
 
@@ -326,7 +326,7 @@ def _embed_query(
         return None
     try:
         vec = np.asarray(list(model.embed(query)), dtype=np.float32)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return None
     norm = float(np.linalg.norm(vec))
     if norm:
@@ -368,5 +368,5 @@ def persist_corpus_entry(kv: KvStore, corpus: str, entry: Dict[str, Any]) -> Non
             payload = json.dumps(remote, sort_keys=True).encode("utf-8")
             if kv.put(FLEET_ROUTING_KEY, payload, expect=expect) is not None:
                 return
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass

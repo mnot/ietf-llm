@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
+from itertools import islice
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from ..embeddings import index_model, related, search
-from ..freshness import gather_enabled, staleness_warning
+from ..embeddings import IndexUnreadable, index_model, probe_index, related, search
+from ..freshness import gather_enabled, staleness_warning, unknown_corpus_message
 from ..log import Verbosity
+from ..paths import readable_corpus_name
 from .common import (
     _corpus_exists,
     _grounding_frame,
@@ -20,7 +22,7 @@ from .common import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 #: Upper bound on `k` for search_corpus, so a huge value can't return
@@ -29,6 +31,53 @@ _MAX_SEARCH_K = 100
 
 
 # --- Tool implementations (plain functions, also usable for unit tests) -----
+
+
+def _empty_search_message(
+    wg: str,
+    what: str,
+    filters: "List[Tuple[str, Optional[str]]]",
+    *,
+    scope: str = "",
+) -> str:
+    """The parenthetical for a semantic search that returned nothing, saying
+    which of three things happened: the index cannot be served (absent or being
+    rebuilt), a filter excluded everything, or the query simply matched nothing.
+
+    Only the first warrants a re-gather hint; blaming the index when it is
+    there sends the caller after the wrong thing. `what` is the lead-in
+    ("no results for 'q'"); `filters` are the optional facets the caller passed,
+    as `(name, value)` pairs, unset ones being falsy; `scope` is an extra
+    clause for a tool that narrows the search implicitly."""
+    rebuilding = _index_rebuilding_note(wg)
+    if rebuilding is not None:
+        return f"(no results yet — {rebuilding})"
+    if not probe_index(wg):
+        no_index = (
+            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
+            if gather_enabled()
+            else f"has `ietf-llm {wg} --embed` been run?"
+        )
+        return f"({what} — {no_index})"
+    active = [f"{name}={value!r}" for name, value in filters if value]
+    # `search()` also returns [] when the embedding model is unavailable or
+    # embedding the query fails, and the caller cannot tell the two apart.
+    if not active:
+        return (
+            f"({what} — the search index is present, but the query matched no "
+            f"chunks{scope} or could not be embedded.)"
+        )
+    hint = (
+        " `author=` matches the sender named in the chunk header, so check the "
+        f'spelling of the name in `read_digest(corpus="{wg}", kind="people")`.'
+        if any(name == "author" and value for name, value in filters)
+        else ""
+    )
+    return (
+        f"({what} — the search index is present, but no chunks matched with "
+        f"{', '.join(active)}{scope}, or the query could not be embedded. "
+        f"Loosen or drop a filter.{hint})"
+    )
 
 
 def _flatten_rationale(rationale: str, limit: int) -> str:
@@ -182,7 +231,7 @@ def _render_hits(hits: List[Any], k: int, group_by: Optional[str]) -> str:
 
 
 @_requires_corpus
-def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
+def tool_search(  # noqa: PLR0913, PLR0917
     wg: str,
     query: str,
     k: int = 10,
@@ -234,15 +283,23 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        rebuilding = _index_rebuilding_note(wg)
-        if rebuilding is not None:
-            return _with_freshness(wg, f"(no results yet — {rebuilding})")
-        no_index = (
-            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
-            if gather_enabled()
-            else f"has `ietf-llm {wg} --embed` been run?"
+        return _with_freshness(
+            wg,
+            _empty_search_message(
+                wg,
+                f"no results for {query!r}",
+                [
+                    ("file_pattern", file_pattern),
+                    ("since", since),
+                    ("until", until),
+                    ("label", label),
+                    ("state", state),
+                    ("sort", sort if sort == "date" else None),
+                    ("author", author),
+                    ("role", role),
+                ],
+            ),
         )
-        return _with_freshness(wg, f"(no results — {no_index})")
     dropped = 0
     if collapse_versions:
         hits, dropped = _collapse_draft_versions(hits)
@@ -272,7 +329,19 @@ def tool_search(  # pylint: disable=too-many-arguments,too-many-positional-argum
     return _with_freshness(wg, f"{frame}\n{body}" if frame else body)
 
 
-def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _related_refusal(
+    wg: str, since: Optional[str], until: Optional[str]
+) -> Optional[str]:
+    if not readable_corpus_name(wg):
+        return unknown_corpus_message(wg)
+    for field, value in (("since", since), ("until", until)):
+        date_error = _invalid_date_message(value, field)
+        if date_error:
+            return date_error
+    return None
+
+
+def tool_find_related(  # noqa: PLR0913, PLR0917
     wg: str,
     file: str,
     chunk_idx: int,
@@ -287,10 +356,11 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
     diversify: bool = True,
     collapse_versions: bool = True,
 ) -> str:
-    for field, value in (("since", since), ("until", until)):
-        date_error = _invalid_date_message(value, field)
-        if date_error:
-            return date_error
+    # Not behind `_requires_corpus` (a missing index is an answer here, not an
+    # unknown corpus), but it still reaches the index dir by name.
+    refusal = _related_refusal(wg, since, until)
+    if refusal:
+        return refusal
     try:
         k = max(1, min(int(k), _MAX_SEARCH_K))
     except (TypeError, ValueError):
@@ -319,14 +389,36 @@ def tool_find_related(  # pylint: disable=too-many-arguments,too-many-positional
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        no_index = (
-            f"no search index, or no chunk {chunk_idx} in {file} — "
-            f"re-gather with {_regather_call(wg)}"
-            if gather_enabled()
-            else f"no chunk {chunk_idx} in {file}, or `ietf-llm {wg} --embed` "
-            "has not been run"
+        rebuilding = _index_rebuilding_note(wg)
+        if rebuilding is not None:
+            return _with_freshness(wg, f"(no related chunks yet — {rebuilding})")
+        seed = f"no chunk {chunk_idx} in {file}"
+        if not probe_index(wg):
+            no_index = (
+                f"no search index, or {seed} — re-gather with {_regather_call(wg)}"
+                if gather_enabled()
+                else f"{seed}, or `ietf-llm {wg} --embed` has not been run"
+            )
+            return _with_freshness(wg, f"(no related chunks — {no_index})")
+        active = [
+            f"{name}={value!r}"
+            for name, value in (
+                ("file_pattern", file_pattern),
+                ("since", since),
+                ("until", until),
+                ("label", label),
+                ("state", state),
+            )
+            if value
+        ]
+        reason = (
+            f"no chunks matched with {', '.join(active)}, or the index has {seed}"
+            if active
+            else f"the index has {seed}"
         )
-        return _with_freshness(wg, f"(no related chunks — {no_index})")
+        return _with_freshness(
+            wg, f"(no related chunks — the search index is present, but {reason})"
+        )
     dropped = 0
     if collapse_versions:
         hits, dropped = _collapse_draft_versions(hits)
@@ -363,7 +455,7 @@ def _dedup_corpus_names(corpora: List[str]) -> List[str]:
     return out
 
 
-def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+def tool_search_corpora(  # noqa: PLR0912, PLR0913, PLR0917
     corpora: List[str],
     query: str,
     k: int = 10,
@@ -409,27 +501,33 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
     no_index: List[str] = []
     empty: List[str] = []
     dropped_versions = 0
+    unreadable: List[Tuple[str, BaseException]] = []
     for corpus in known:
-        model = index_model(corpus)
-        if model is None:
-            no_index.append(corpus)
+        try:
+            model = index_model(corpus)
+            if model is None:
+                no_index.append(corpus)
+                continue
+            # Over-fetch when collapsing draft revisions so each corpus can
+            # still contribute k distinct items to the merge.
+            fetch_k = max(k * 4, 20) if collapse_versions else k
+            hits = search(
+                corpus,
+                query,
+                k=fetch_k,
+                since=since,
+                until=until,
+                label=label,
+                state=state,
+                author=author,
+                role=role,
+                snippet_chars=snippet_chars,
+                verbose=Verbosity.QUIET,
+            )
+        except IndexUnreadable as err:
+            # One bad index must not take the other corpora's results with it.
+            unreadable.append((corpus, err.__cause__ or err))
             continue
-        # Over-fetch when collapsing draft revisions so each corpus can
-        # still contribute k distinct items to the merge.
-        fetch_k = max(k * 4, 20) if collapse_versions else k
-        hits = search(
-            corpus,
-            query,
-            k=fetch_k,
-            since=since,
-            until=until,
-            label=label,
-            state=state,
-            author=author,
-            role=role,
-            snippet_chars=snippet_chars,
-            verbose=Verbosity.QUIET,
-        )
         if collapse_versions and hits:
             hits, dropped = _collapse_draft_versions(hits)
             dropped_versions += dropped
@@ -459,9 +557,18 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
             + ", ".join(dropped_for_cap)
         )
 
+    unreadable_lines = [
+        f"_Skipped (index unreadable): {corpus}: {cause}._"
+        for corpus, cause in unreadable
+    ]
     if not per_corpus:
-        body = [f"(no results for {query!r} across the requested corpora)"]
-        body += [f"_Skipped — {n}._" for n in skip_notes]
+        what = (
+            "every requested corpus's index exists but cannot be read"
+            if unreadable and len(unreadable) == len(known)
+            else f"no results for {query!r} across the requested corpora"
+        )
+        body = [f"({what})"]
+        body += [f"_Skipped — {n}._" for n in skip_notes] + unreadable_lines
         return "\n".join(body)
 
     # Group corpora by embedding-model id (insertion order = first-seen).
@@ -486,15 +593,18 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
     else:
         # Differing models — interleave the per-group rankings round-robin
         # by rank position rather than merging on non-comparable scores.
-        final = []
-        idx = 0
-        while len(final) < k and any(idx < len(g) for g in group_ranked):
-            for grp in group_ranked:
-                if idx < len(grp):
-                    final.append(grp[idx])
-                    if len(final) >= k:
-                        break
-            idx += 1
+        depth = max(map(len, group_ranked), default=0)
+        final = list(
+            islice(
+                (
+                    grp[idx]
+                    for idx in range(depth)
+                    for grp in group_ranked
+                    if idx < len(grp)
+                ),
+                k,
+            )
+        )
 
     queried = [c for c in known if c in per_corpus]
     lines: List[str] = []
@@ -519,6 +629,7 @@ def tool_search_corpora(  # pylint: disable=too-many-arguments,too-many-position
         lines.append(f"_Stale (consider re-gathering): {', '.join(stale)}._")
     for note in skip_notes:
         lines.append(f"_Skipped — {note}._")
+    lines += unreadable_lines
     lines.append("")
 
     for i, (corpus, hit) in enumerate(final, 1):
@@ -588,9 +699,9 @@ def _collapse_draft_versions(hits: List[Any]) -> "Tuple[List[Any], int]":
     return kept, dropped
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
-    async def search_corpus(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_corpus(  # noqa: PLR0913, PLR0917
         corpus: str,
         query: str,
         limit: int = 10,
@@ -719,7 +830,7 @@ def register(server: "FastMCP") -> None:
         )
 
     @server.tool()
-    async def find_related(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def find_related(  # noqa: PLR0913, PLR0917
         corpus: str,
         file: str,
         chunk_idx: int,
@@ -786,7 +897,7 @@ def register(server: "FastMCP") -> None:
         )
 
     @server.tool()
-    async def search_corpora(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def search_corpora(  # noqa: PLR0913, PLR0917
         corpora: List[str],
         query: str,
         limit: int = 10,
@@ -815,8 +926,9 @@ def register(server: "FastMCP") -> None:
         call.
 
         `corpora` is **required**: unknown names, corpora with no embedding
-        index, and any past the 12-corpus cap are skipped and reported, not
-        silently dropped.
+        index, corpora whose index exists but cannot be read (permissions,
+        corruption; reported with the cause), and any past the 12-corpus cap
+        are skipped and reported, not silently dropped.
 
         **Score comparability.** Cosine scores compare directly only across
         corpora built with the **same embedding model**. One shared model →

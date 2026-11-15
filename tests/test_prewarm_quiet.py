@@ -167,7 +167,7 @@ def test_unknown_device_override_is_a_warning_not_an_error(
 def test_quiet_embedding_stack_silences_sentence_transformers_logger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # FastMCP's configure_logging() puts the root logger at INFO, which turns
+    # MCPServer's configure_logging() puts the root logger at INFO, which turns
     # on both the INFO record and the `Batches` bar in sentence-transformers.
     import logging
 

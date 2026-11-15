@@ -260,9 +260,7 @@ def test_ghclient_records_5xx_as_incident(monkeypatch: pytest.MonkeyPatch) -> No
         def json() -> Any:  # pragma: no cover - not reached on a 5xx
             return None
 
-    monkeypatch.setattr(
-        rd, "http_session", lambda: type("S", (), {"get": lambda *a, **k: _Resp()})()
-    )
+    monkeypatch.setattr(rd, "governed_get", lambda *a, **k: _Resp())
     client = rd._GhClient(token=None)
     status, data = client.get("https://api.github.com/orgs/fakewg/repos")
     assert status == 503

@@ -18,6 +18,8 @@ precision:
 2. `resolve_github_user_names` — the GitHub users API real name, matched
    by display name. Wider reach, name-only, so a last resort. Also
    upgrades bare logins to real names and records `company` affiliation.
+3. `link_github_logins_by_name` — a login that is itself a name (`Jo-Levy`),
+   for actors the users API gave no name for. Weakest, so last.
 
 Kept out of `people.py` purely to hold that module under its line
 budget; every function drives `Registry` through its public methods.
@@ -25,12 +27,14 @@ budget; every function drives `Registry` through its public methods.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING, Dict, Iterable, List
 
 from ..gather.sources.datatracker_github import resolve_via_datatracker
 from ..gather.sources.datatracker_people import resolve_addresses
 from ..gather.sources.github_users import resolve_logins
 from ..log import LogLevel, Verbosity, log
+from .names import login_as_name, name_key
 
 if TYPE_CHECKING:
     from . import Person, Registry
@@ -43,9 +47,10 @@ def _consolidate_groups(
     """Merge each group of Persons that resolved to one Datatracker person id.
 
     The survivor is the most-active member (messages + issues), tie-broken by
-    canonical name, so the more-established display name wins. Canonical-name
-    handling stays merge-only — `merge_into` adopts the absorbed name only when
-    the survivor's is still email-ish — so recognised names don't churn.
+    canonical name, so the more-established display name wins. `merge_into`
+    adopts the absorbed name only when the survivor's is still email-ish, or
+    when the absorbed spelling is the undecorated form of the same name
+    (`Philippe Dellaert` over `Dellaert, Philippe`); otherwise names don't churn.
     Returns the number of merges performed.
     """
     merged = 0
@@ -210,6 +215,55 @@ def resolve_github_user_names(
         log(
             f"  GitHub names: linked {n_linked}, named {n_named} login(s); "
             f"{n_companies} affiliation(s) from `company`",
+            verbose,
+            level=LogLevel.STATUS,
+        )
+
+
+def link_github_logins_by_name(
+    registry: "Registry",
+    verbose: Verbosity,
+) -> None:
+    """Link still-unlinked GitHub logins that read as a name (`Jo-Levy`) to the
+    mailing-list Person of that name.
+
+    Runs after the two lookup-based passes, for the actors they could not
+    help: no `github_username` on Datatracker and no real name on the GitHub
+    profile, so the Person is still labelled by its bare login (an actor the
+    GitHub API did name is left alone, whatever its login looks like). The
+    match is the registry's usual exact name match (see `names.name_key`) and,
+    as there, needs a Person with mail signal to land on. A login that is a
+    single word (`mirjak`) is never tried, nor is a name two mail Persons
+    share, since the login cannot say which it means.
+    """
+    n_linked = 0
+    merged: "set[int]" = set()
+    mail_names = Counter(
+        name_key(p.canonical_name)
+        for p in registry.persons
+        if p.emails or p.message_count > 0
+    )
+    for login, gh_person in _unlinked_github_logins(registry).items():
+        if (
+            id(gh_person) in merged
+            or gh_person.canonical_name not in gh_person.github_logins
+            or login_as_name(login) is None
+            or mail_names[name_key(login)] > 1
+        ):
+            continue
+        target = registry.person_for_name(login)
+        if (
+            target is None
+            or target is gh_person
+            or not (target.emails or target.message_count > 0)
+        ):
+            continue
+        registry.merge_into(target, gh_person)
+        merged.add(id(gh_person))
+        n_linked += 1
+    if n_linked:
+        log(
+            f"  GitHub login as name: linked {n_linked} login(s)",
             verbose,
             level=LogLevel.STATUS,
         )

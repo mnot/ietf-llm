@@ -52,6 +52,7 @@ from ...paths import (
     remove_stale_digest,
     threads_dir,
 )
+from .mail_threads import THREAD_MSG_HEADER_RE
 
 # Archive permalinks, as they appear both on `_Archived-At:_` lines (the
 # resolver index) and inline in bodies (the citations we scan). Trailing
@@ -63,14 +64,8 @@ _ARCHIVE_URL_RE = re.compile(
 
 # Per-thread / per-issue section header — `### [N] DATE — Sender`.
 _SECTION_RE = re.compile(r"^### \[(\d+)\]", re.MULTILINE)
-# Same, but capturing date (group 2) and sender (group 3) for display.
-_SECTION_HEADER_RE = re.compile(
-    r"^### \[(\d+)\] (\S+(?:\s+\S+)?) — (.+?)$", re.MULTILINE
-)
 _ARCHIVED_AT_RE = re.compile(r"^_Archived-At:_\s*(\S+)", re.MULTILINE)
 _SUBJECT_RE = re.compile(r"^_Subject:_\s*(.+?)\s*$", re.MULTILINE)
-# Trailing "(reply to [N])" the thread renderer appends to a sender.
-_REPLY_TO_RE = re.compile(r"\s*\(reply to \[\d+\]\)\s*$")
 # Mailarchive list shortname: `/arch/msg/<list>/<token>`.
 _LIST_FROM_URL_RE = re.compile(r"/arch/msg/([^/]+)/", re.IGNORECASE)
 
@@ -130,10 +125,6 @@ def _read(path: str) -> str:
         return ""
 
 
-def _clean_sender(raw: str) -> str:
-    return _REPLY_TO_RE.sub("", raw).strip()
-
-
 def _strip_for_scan(text: str) -> str:
     """Drop quoted lines and `_Archived-At:_` lines before scanning.
 
@@ -182,7 +173,7 @@ def build_resolver(cache_dir: str) -> Dict[str, MessageRef]:
             path = os.path.join(dirpath, name)
             relpath = os.path.relpath(path, cache_dir)
             text = _read(path)
-            sections = list(_SECTION_HEADER_RE.finditer(text))
+            sections = list(THREAD_MSG_HEADER_RE.finditer(text))
             for i, sec in enumerate(sections):
                 end = sections[i + 1].start() if i + 1 < len(sections) else len(text)
                 block = text[sec.start() : end]
@@ -192,9 +183,9 @@ def build_resolver(cache_dir: str) -> Dict[str, MessageRef]:
                 subject = _SUBJECT_RE.search(block)
                 index[canonical_archive_url(archived.group(1))] = MessageRef(
                     file=relpath,
-                    chunk_idx=int(sec.group(1)),
-                    sender=_clean_sender(sec.group(3)),
-                    date=sec.group(2),
+                    chunk_idx=int(sec.group("idx")),
+                    sender=sec.group("sender").strip(),
+                    date=sec.group("date") or "",
                     subject=subject.group(1).strip() if subject else "",
                 )
     return index

@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 
 from .. import __version__
-from ..cli.completion import wg_completer
+from ..cli.completion import set_wg_completer
 from ..months import DEFAULT_MONTHS
 
 
@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Optional when using --install-skills or --all.",
     )
     # Tab-completes already-gathered WG shortnames from the cache.
-    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
+    set_wg_completer(wg_arg)
     parser.add_argument(
         "--list",
         action="store_true",
@@ -74,7 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Refresh every gathered corpus the configured store knows about, "
         "using each one's persisted gather config. Mutually exclusive with a "
-        "positional NAME argument; --clear-config is refused in this mode.",
+        "positional NAME argument; --clear-config and --clear-cache are refused in "
+        "this mode. Exits non-zero if any corpus failed to gather.",
     )
     parser.add_argument(
         "--used-within",
@@ -284,7 +285,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--clear-cache",
         action="store_true",
-        help="Clear the local file cache for this corpus and re-download.",
+        help="Wipe everything cached for this corpus -- its gathered files, its "
+        "cached mailing-list mail, and (on the cloud backend) the copies held in "
+        "the store -- and re-download. Mail older than --months can't be "
+        "re-downloaded, so this discards it for good.",
     )
     parser.add_argument(
         "--clear-config",

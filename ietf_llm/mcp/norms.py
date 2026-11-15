@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from .common import _offload, _strip_frontmatter
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 def _read_bundled_skill_body(skill: str) -> str:
@@ -53,7 +53,7 @@ def tool_read_participation_norms() -> str:
     return _read_bundled_skill_body("ietf-contributing")
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def read_ietf_interpretation_norms() -> str:
         """Return the interpretive norms for reading an IETF corpus:

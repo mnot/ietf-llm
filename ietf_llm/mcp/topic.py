@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..embeddings import get_messages, search
-from ..freshness import gather_enabled
+from ..gather.sources.mail_threads import THREAD_MSG_HEADER_RE
 from ..log import Verbosity
 from ..people.positions import (
     extract_chair_statements,
@@ -20,28 +20,17 @@ from .common import (
     _append_participation_nudge,
     _files_dir,
     _grounding_frame,
-    _index_rebuilding_note,
     _offload,
     _participation_nudge,
-    _regather_call,
     _requires_corpus,
     _safe_path,
     _thread_sizes,
     _with_freshness,
 )
+from .search import _empty_search_message
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
-
-
-# Matches the thread message section header so we can build the reply
-# graph for include_replies. Mirrors `_THREAD_MSG_RE` in chunking.py but
-# captures the parent index instead of stripping it.
-_THREAD_REPLY_RE = re.compile(
-    r"^### \[(\d+)\] \S+(?:\s+\S+)? — .+? \(reply to \[(\d+)\]\)$",
-    re.MULTILINE,
-)
-
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 # Cap on rendered messages so a runaway include_replies expansion can't
 # blow the context window. Sized at 3× the default k=20, so a typical
@@ -92,9 +81,11 @@ def _parse_reply_graph(text: str) -> Dict[int, List[int]]:
     order (= chronological order, since the file is written that way).
     """
     graph: Dict[int, List[int]] = {}
-    for match in _THREAD_REPLY_RE.finditer(text):
-        child = int(match.group(1))
-        parent = int(match.group(2))
+    for match in THREAD_MSG_HEADER_RE.finditer(text):
+        if match.group("reply_to") is None:
+            continue
+        child = int(match.group("idx"))
+        parent = int(match.group("reply_to"))
         graph.setdefault(parent, []).append(child)
     return graph
 
@@ -171,7 +162,7 @@ def _topic_thread_map(
 
 
 @_requires_corpus
-def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
+def tool_read_topic(  # noqa: PLR0912, PLR0915
     wg: str,
     query: str,
     since: Optional[str] = None,
@@ -212,15 +203,15 @@ def tool_read_topic(  # pylint: disable=too-many-arguments,too-many-positional-a
         verbose=Verbosity.QUIET,
     )
     if not hits:
-        rebuilding = _index_rebuilding_note(wg)
-        if rebuilding is not None:
-            return _with_freshness(wg, f"(no results yet — {rebuilding})")
-        no_index = (
-            f"the corpus may have no search index — re-gather it with {_regather_call(wg)}"
-            if gather_enabled()
-            else f"has `ietf-llm {wg} --embed` been run?"
+        return _with_freshness(
+            wg,
+            _empty_search_message(
+                wg,
+                f"no results for {query!r}",
+                [("file_pattern", file_pattern), ("since", since), ("until", until)],
+                scope=" (only dated thread and issue messages are searched)",
+            ),
         )
-        return _with_freshness(wg, f"(no results for {query!r} — {no_index})")
 
     # Keep only chunks from thread/issue files that have a date — those
     # are the only chunks that represent a "message" in a debate.
@@ -535,7 +526,15 @@ def tool_tally_positions(wg: str, file: str) -> str:
     procedural language (`rough consensus`, `consensus call`, `WGLC`,
     `adopting`, closure) surfaced at the top, the load-bearing messages in a long
     thread — and **option polls** (`option N` / `#N` / `I prefer N`), counted
-    per choice.
+    per choice. Poll rows are keyword matches too: each carries a confidence
+    tag, a line-start `#N` is read as a vote only in mailing-list threads (in
+    issue / PR files it is a cross-reference), and a low-coverage thread gets a
+    caveat on the poll counts. Check the rows against the messages before
+    quoting a split.
+
+    Support and oppose are reported as separate high- and low-confidence
+    counts (low = hedged, bare `I agree.`, or idiom-only matches such as
+    `Support for …`); quote them separately, never as one total.
 
     The support/oppose tally is a **keyword heuristic** (`+1`, `-1`,
     `I support`, `I object`, `LGTM`, `DISCUSS`, near the message start). It is
@@ -546,6 +545,12 @@ def tool_tally_positions(wg: str, file: str) -> str:
     messages themselves. Never quote a low-coverage count as the level of
     support. Each row is enriched with role / affiliation from the people
     digest when known.
+
+    Known limitations (keyword matching, accepted): `I agree with Martin that
+    …` followed by a negative claim that uses none of the listed negative words
+    stays high-confidence support; a negation *after* a poll marker (`option 2,
+    not 3`) is not seen; and a negation more than a couple of words before an
+    intent phrase is not seen either.
     """
     cache_dir = _files_dir(wg)
     if not file_supports_tally(file):
@@ -558,7 +563,9 @@ def tool_tally_positions(wg: str, file: str) -> str:
     text = read_file_text(cache_dir, file)
     if text is None:
         return f"File not found in {wg} cache: `{file}`"
-    positions, summary = tally_thread(text)
+    # A line-start `#N` is a poll vote in a mailing-list thread but a
+    # cross-reference in a GitHub issue / PR.
+    positions, summary = tally_thread(text, file.lower().startswith("threads/"))
     if not positions:
         return (
             f"No messages found in `{file}`. The file may be empty or "
@@ -581,7 +588,7 @@ def tool_tally_positions(wg: str, file: str) -> str:
     return _with_freshness(wg, body)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def find_replies(
         corpus: str,
@@ -671,7 +678,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_tally_positions, corpus, file)
 
     @server.tool()
-    async def read_topic(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def read_topic(
         corpus: str,
         query: str,
         since: Optional[str] = None,

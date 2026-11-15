@@ -8,58 +8,131 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from ..freshness import gather_suggestion
+from ..log import LogLevel, log
 from ..gather.sources.citations import normalize_draft_name
 from ..gather.sources.documents_manifest import load_documents_manifest
-from ..paths import drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
-from .common import _files_dir, _list_wgs, _offload, _requires_corpus, _with_freshness
+from ..paths import DIR_DRAFTS, drafts_dir, issue_path, issues_dir, pull_path, pulls_dir
+from ..store.blobs import parallel_each
+from .common import (
+    LooseStr,
+    _files_dir,
+    _list_corpus_files,
+    _list_wgs,
+    _offload,
+    _requires_corpus,
+    _with_freshness,
+    float_section_note,
+    loose_str,
+)
 from .rfc_text import normalise_section
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
     from ..live_lookup.reviews import ReviewRecord  # pragma: no cover
 
 
-def _find_latest_draft_file(name: str) -> Optional[str]:
-    """Locate the highest-revision cached `.txt` for a draft across all corpora.
+_OWNED_DRAFT_RE = re.compile(r"draft-(?:ietf|irtf)-([a-z0-9-]+)")
 
-    A draft name (e.g. `draft-ietf-httpbis-foo`) implies its WG but can be
-    cached under more than one corpus; this scans every gathered corpus's
-    `drafts/` dir and returns the newest revision found anywhere, or None.
-    Read-only — uses the same per-corpus files dir the read tools resolve.
+
+def _owner_candidates(base: str, corpora: List[str]) -> List[str]:
+    """Gathered corpora that could own `base`, most specific first.
+
+    `draft-ietf-<wg>-...` and `draft-irtf-<rg>-...` name their group, but a
+    group acronym may itself contain a hyphen, so every prefix of the remainder
+    is tried against the corpora that exist. Individual drafts name no group.
+    """
+    match = _OWNED_DRAFT_RE.fullmatch(base)
+    if match is None:
+        return []
+    parts = match.group(1).split("-")
+    known = set(corpora)
+    return [
+        acronym
+        for acronym in ("-".join(parts[:n]) for n in range(len(parts) - 1, 0, -1))
+        if acronym in known
+    ]
+
+
+def _newest_revision(wg: str, pattern: "re.Pattern[str]") -> Optional[Tuple[int, str]]:
+    """`(revision, filename)` of the highest cached revision in `wg`, or None.
+
+    Asked of the store's `list_files`, which on the cloud backend reads the
+    version's manifest rather than staging it, so a corpus that does not hold
+    the draft costs one small GET and no download.
+    """
+    try:
+        names = _list_corpus_files(wg, DIR_DRAFTS)
+    except Exception as err:  # noqa: BLE001
+        # A corpus that cannot answer holds nothing for this lookup; one bad
+        # manifest or store hiccup must not fail it for every draft (as
+        # `rfcs._corpus_has`).
+        log(f"list_files({wg!r}, {DIR_DRAFTS!r}) failed: {err!r}", level=LogLevel.WARN)
+        return None
+    hits = [
+        (int(match.group(1)), fname)
+        for fname in names
+        if (match := pattern.match(fname.lower()))
+    ]
+    return max(hits) if hits else None
+
+
+def _find_latest_draft_file(name: str) -> Optional[str]:
+    """Locate the highest-revision cached `.txt` for a draft, or None.
+
+    The owning group's corpus is asked first, since it is where a draft is
+    gathered, and a hit there ends the lookup: the owner's copy wins even if
+    another corpus caches a newer revision. Otherwise every gathered corpus
+    is asked concurrently, and the highest revision found wins (the first in
+    sorted order on a tie, so the answer doesn't move between calls). Only the
+    corpus holding the winner is then staged (`_files_dir`): on the cloud
+    backend a scan that staged each corpus would download the fleet to answer
+    one draft. Read-only.
     """
     base = normalize_draft_name(name)
     pattern = re.compile(rf"^{re.escape(base)}-(\d+)\.txt$")
-    best_version = -1
-    best_path: Optional[str] = None
-    for wg in _list_wgs():
-        try:
-            cache = _files_dir(wg)
-        except FileNotFoundError:
-            continue
-        ddir = drafts_dir(cache)
-        if not os.path.isdir(ddir):
-            continue
-        for fname in os.listdir(ddir):
-            match = pattern.match(fname.lower())
-            if not match:
-                continue
-            version = int(match.group(1))
-            if version > best_version:
-                best_version = version
-                best_path = os.path.join(ddir, fname)
-    return best_path
+    corpora = sorted(_list_wgs())
+    found: Optional[Tuple[str, str]] = None
+    owners = _owner_candidates(base, corpora)
+    for owner in owners:
+        hit = _newest_revision(owner, pattern)
+        if hit is not None:
+            found = (owner, hit[1])
+            break
+    if found is None:
+        corpora = [wg for wg in corpora if wg not in owners]
+        best: Dict[str, Tuple[int, str]] = {}
+
+        def _ask(wg: str) -> None:
+            hit = _newest_revision(wg, pattern)
+            if hit is not None:
+                best[wg] = hit
+
+        parallel_each(_ask, corpora)
+        top = -1
+        for wg in corpora:
+            if wg in best and best[wg][0] > top:
+                top = best[wg][0]
+                found = (wg, best[wg][1])
+    if found is None:
+        return None
+    wg, fname = found
+    try:
+        cache = _files_dir(wg)
+    except FileNotFoundError:
+        return None
+    return os.path.join(drafts_dir(cache), fname)
 
 
 def tool_draft_authors(name: str) -> str:
     """Render a draft's authors/editors with contact emails, from the cache.
 
     Reads the Authors' Addresses section of the newest cached revision (the
-    same text gather already parses) — no network. Returns what the draft
-    itself records; a chair may know a better working address from mail and
-    can override.
+    same text gather already parses; the owning WG's corpus is preferred) — no
+    network. Returns what the draft itself records; a chair may know a better
+    working address from mail and can override.
     """
-    from ..gather.sources.draft_authors import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.draft_authors import (  # noqa: PLC0415
         parse_authors,
     )
 
@@ -408,8 +481,9 @@ def tool_get_draft(
     start_line: Optional[int] = None,
     max_lines: int = _DRAFT_MAX_LINES,
 ) -> str:
-    """The newest cached revision of draft `name`: its outline, one section of
-    it, or a verbatim line window."""
+    """The cached copy of draft `name` (its newest revision there): its outline,
+    one section of it, or a verbatim line window. The owning WG's corpus is
+    preferred; another corpus's copy is used only when the owner has none."""
     path = _find_latest_draft_file(name)
     if path is None:
         return (
@@ -423,9 +497,33 @@ def tool_get_draft(
     return _draft_by_section(path, section, capped)
 
 
+_ISSUE_NUMBER_RE = re.compile(r"[0-9]+")
+#: `owner/repo`, or the slug the digests and `list_files` show
+#: (`owner-repo`); a bare slug may not be only dots, since it is a directory name.
+_REPO_RE = re.compile(r"[\w-]+/[\w.-]+|(?!\.+$)[\w.-]+", re.ASCII)
+
+
+def _issue_ref_error(number: str, repo: str) -> Optional[str]:
+    """Both become path components under `issues/` and `pulls/`."""
+    if _ISSUE_NUMBER_RE.fullmatch(number) is None:
+        return f"'{number}' is not an issue or PR number."
+    if repo and _REPO_RE.fullmatch(repo) is None:
+        return f"'{repo}' is not an owner/repo name."
+    return None
+
+
 def _resolve_issue_file(
     cache: str, number: str, repo: str
 ) -> Tuple[Optional[str], str]:
+    """`_lookup_issue_file` behind a check that `number` and `repo` are what
+    they claim to be, since they are joined into a path."""
+    bad_ref = _issue_ref_error(number, repo)
+    if bad_ref:
+        return None, bad_ref
+    return _lookup_issue_file(cache, number, repo)
+
+
+def _lookup_issue_file(cache: str, number: str, repo: str) -> Tuple[Optional[str], str]:
     """Resolve a per-issue *or* per-PR file by number, within `repo` if given
     else searched across every gathered repo. Returns (path, note); path is
     None with an actionable note on a miss or an ambiguous number.
@@ -501,7 +599,7 @@ def tool_draft_status(name: str) -> str:
     state, expiry, RFC number, and the derived in-wg / in-iesg / published /
     dead signal an agenda decision turns on.
     """
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     name = (name or "").strip()
     if not name:
@@ -510,7 +608,12 @@ def tool_draft_status(name: str) -> str:
             "(the version suffix is optional)."
         )
 
-    status, fetched = live_lookup.fetch_draft_status(name)
+    try:
+        status, fetched = live_lookup.fetch_draft_status(name)
+    except live_lookup.LiveUnavailable as err:
+        return live_lookup.unreachable_note(
+            f"`{normalize_draft_name(name)}`", err.tried_at
+        )
     if status is None:
         canonical = normalize_draft_name(name)
         return (
@@ -543,14 +646,15 @@ def tool_draft_status(name: str) -> str:
     return "\n".join(lines)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def draft_authors(name: str) -> str:
         """The authors/editors of a draft, with contact emails — for a
         call-for-presenters or to reach a draft's owners.
 
         Reads the Authors' Addresses section of the newest **cached** revision
-        of the draft (across all gathered corpora); offline, no network. Each
+        of the draft, preferring the owning WG's corpus over other gathered
+        corpora that cache it; offline, no network. Each
         entry gives the name, role (author/editor), organisation, and the
         email the draft itself lists. The owning corpus (the draft's WG) must
         be gathered. These are draft-stated addresses — a chair may have a
@@ -579,12 +683,14 @@ def register(server: "FastMCP") -> None:
     @server.tool()
     async def get_draft(
         name: str,
-        section: Optional[str] = None,
+        section: Optional[LooseStr] = None,
         start_line: Optional[int] = None,
         max_lines: int = 2000,
     ) -> str:
-        """Verbatim text of a cached Internet-Draft by name (newest cached
-        revision, across all gathered corpora).
+        """Verbatim text of a cached Internet-Draft by name (its newest cached
+        revision). The owning WG's corpus is preferred even if another gathered
+        corpus caches a newer revision; other corpora are consulted only when
+        the owner has none.
 
         Use this to quote a draft's ACTUAL wording — to ground a review, a
         citation, or a contribution in primary text rather than a search
@@ -596,9 +702,12 @@ def register(server: "FastMCP") -> None:
           with its title, start line, and length. A draft is typically 2,000
           to 4,000 lines, far past what one result can carry, so start here
           and read what you need.
-        - **`section="4.2"`** — that section, in full. `4.2`, `§4.2`,
-          `Section 4.2` and `Appendix B` are all accepted, and a parent label
-          takes everything beneath it (`section="4"` gives §4, §4.1, §4.2…).
+        - **`section="4.2"`** — that section, in full. Pass it as a string:
+          `"4.2"`, `"§4.2"`, `"Section 4.2"` and `"Appendix B"` all work, and
+          a parent label takes everything beneath it (`section="4"` gives §4,
+          §4.1, §4.2…). A JSON number is tolerated, but it drops trailing
+          zeros (`4.10` arrives as `4.1`), so the reply carries a note when a
+          non-integer number is received.
         - **`start_line=1`** — the document from the top, in pages, for when
           you genuinely want to read it end to end.
 
@@ -608,12 +717,14 @@ def register(server: "FastMCP") -> None:
         client's limit and that banner is the only truncation in play — but
         check for it before treating what you got as the whole section.
         """
-        return await _offload(tool_get_draft, name, section, start_line, max_lines)
+        return float_section_note(section) + await _offload(
+            tool_get_draft, name, loose_str(section), start_line, max_lines
+        )
 
     @server.tool()
     async def get_issue(
         corpus: str,
-        number: str,
+        number: LooseStr,
         repo: str = "",
         start_line: int = 1,
         max_lines: int = 3000,
@@ -633,7 +744,7 @@ def register(server: "FastMCP") -> None:
         record with `start_line` (the truncation footer says where to resume).
         """
         return await _offload(
-            tool_get_issue, corpus, number, repo, start_line, max_lines
+            tool_get_issue, corpus, loose_str(number), repo, start_line, max_lines
         )
 
 
@@ -776,7 +887,7 @@ def tool_review_record(name: str) -> str:
     reviewed *this* text. See `live_lookup.reviews` for why the join has to
     happen here rather than being left to the caller.
     """
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     name = (name or "").strip()
     if not name:
@@ -784,7 +895,12 @@ def tool_review_record(name: str) -> str:
             "Provide a draft name, e.g. `draft-ietf-httpbis-no-vary-search` "
             "(the version suffix is optional)."
         )
-    record, fetched = live_lookup.fetch_review_record(name)
+    try:
+        record, fetched = live_lookup.fetch_review_record(name)
+    except live_lookup.LiveUnavailable as err:
+        return live_lookup.unreachable_note(
+            f"`{normalize_draft_name(name)}`", err.tried_at
+        )
     if record is None:
         canonical = normalize_draft_name(name)
         return (
@@ -800,6 +916,8 @@ def tool_review_record(name: str) -> str:
     if record.reviews:
         lines += ["", f"## Reviews ({len(record.reviews)})", ""]
         lines += _review_rows(record)
+    elif "reviews" in record.unavailable:
+        lines += ["", "## Reviews", "", "_Not retrieved: Datatracker did not answer._"]
     else:
         lines += ["", "## Reviews", "", "_No review has been requested._"]
     if record.positions:
@@ -812,6 +930,8 @@ def tool_review_record(name: str) -> str:
                 "\n_A DISCUSS holds publication. Its text is in the gathered "
                 f"`ballots/{record.name}.md` — read that for the substance._"
             )
+    elif "ballot" in record.unavailable:
+        lines += ["", "## Ballot", "", "_Not retrieved: Datatracker did not answer._"]
     else:
         lines += ["", "## Ballot", "", "_No ballot has been opened._"]
     lines.append("")
@@ -819,7 +939,7 @@ def tool_review_record(name: str) -> str:
     return "\n".join(lines)
 
 
-def register_live(server: "FastMCP") -> None:
+def register_live(server: "MCPServer") -> None:
     @server.tool()
     async def draft_status(name: str) -> str:
         """**First call for where an IETF draft actually stands** — prefer

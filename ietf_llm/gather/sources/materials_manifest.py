@@ -10,7 +10,10 @@ unchanged ones every gather.
 The manifest is machinery, not corpus: it lives at
 `~/.cache/ietf-llm/<wg>/materials.json` (beside the embeddings DB and
 the last-gathered sentinel), so it is neither indexed nor exported.
-It maps `<doc-name> → <rev>`, e.g. `{"minutes-125-httpbis": "01"}`.
+It maps `<doc-name> → <rev>`, e.g. `{"minutes-125-httpbis": "01"}`, plus
+`format:<code>/<kind> → <layout version>` stamps recording which layout each
+minutes / agenda aggregate was written in, so a layout change regenerates
+files whose documents have not been revised.
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from ietf_llm.text import _has_reply_prefix
 from ietf_llm.digest import (
     _normalize_subject,
     _parse_date,
@@ -50,6 +51,29 @@ def test_normalize_subject_empty_falls_back_to_raw_stripped() -> None:
     # Stripping all prefixes from "Re:" alone leaves nothing; the function
     # should fall back to the raw subject (stripped) rather than empty.
     assert _normalize_subject("Re:") == "Re:"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Cookie partitioning", False),
+        ("[wg] Cookie partitioning", False),  # a list tag is not a reply
+        ("Re: Cookie partitioning", True),
+        ("RE: Cookie partitioning", True),
+        ("  re:Cookie partitioning", True),
+        ("Fwd: Cookie partitioning", True),
+        ("Fw: Cookie partitioning", True),
+        ("AW: Cookie partitioning", True),
+        ("SV: Cookie partitioning", True),
+        ("[wg] Re: Cookie partitioning", True),
+        ("Re: [wg] Cookie partitioning", True),
+        ("Reminder: Cookie partitioning", False),
+        ("Response: Cookie partitioning", False),
+        ("Cookie partitioning (Re: foo)", False),
+    ],
+)
+def test_has_reply_prefix(raw: str, expected: bool) -> None:
+    assert _has_reply_prefix(raw) is expected
 
 
 # --- _state_is_open --------------------------------------------------------

@@ -3,16 +3,30 @@ ephemeral host (scale-to-zero) doesn't rebuild them by re-hitting rate-limited
 upstreams after its scratch is wiped (issue #82).
 
 Only the cloud CorpusStore backend calls in; the local backend keeps these
-caches on persistent disk and needs no sync. The caches have different
-contention profiles, so each is scoped to the unit that already guarantees a
-single writer:
+caches on persistent disk and needs no sync.
 
-  - `.http-cache.json` — the datatracker ETag store. Sharded **per corpus** under
-    that corpus's prefix. #85's per-corpus gather lease serialises writers across
-    the fleet, and `bind_gather_corpus` binds a per-corpus ETag store to *this
-    thread* so the runner's up-to-N concurrent in-process gathers each write their
-    own corpus file (not one shared root file). Together that makes hydrate ->
-    gather -> flush -> persist a plain read-modify-write — no CAS, no lost delta.
+This module is the *filesystem* half and runs in the process that owns the
+lease: `hydrate` restores the stored caches to disk before the gather, `persist`
+reads them off disk and uploads after. It holds no gather-time state. The gather
+itself may run in another process (the MCP runner's child), so what it computes
+reaches `persist` only as files: the ETag store flushed to the `http_cache_path`
+directory (`datatracker.gather_http_cache`), and the per-list `.verified-uidvalidity`
+sidecar the IMAP sync writes (`mbox.record_verified`).
+
+The caches have different contention profiles, so each is scoped to the unit that
+already guarantees a single writer:
+
+  - The datatracker ETag store (a directory: an index plus one gzip file per
+    cached body; see `http_cache`), stored as **one tar** (`http-cache.tar`; the
+    bodies are already compressed, so the tar is not). Sharded **per corpus**
+    under that corpus's prefix. #85's per-corpus gather lease serialises writers across
+    the fleet, and the gather binds a per-corpus ETag store to its thread so the
+    runner's up-to-N concurrent in-process gathers each write their own corpus
+    store (not one shared root one). Together that makes hydrate -> gather ->
+    persist a plain read-modify-write — no CAS, no lost delta. A blob stored
+    before the directory layout (`http-cache.json`, one JSON object holding
+    every body) is restored to where the store looks for it to migrate, and
+    deleted once the tar is stored.
   - `_github-users.json` / `_datatracker-github.json` / `_datatracker-people.json`
     — corpus-independent identity maps, **shared** at a fleet prefix. Two
     different-corpus gathers can run at once, so persist does a bounded
@@ -27,25 +41,78 @@ single writer:
     fleet prefix; the restored sidecars let the next gather revalidate (304)
     rather than re-fetch. (`_rfc/` — the same shape but a non-rate-limited CDN
     mirror — is deferred; see issue #82.)
+  - `imap-cache/<corpus>/<list>/` — the raw `.eml` mail. Thread reconstruction
+    re-reads *every* cached message and deletes thread files it doesn't
+    regenerate, so a fresh host needs the whole archive back, not just what is
+    new. Sharded **per corpus** (lease-serialised, so no CAS) into gzip-tar
+    chunks of `_IMAP_CHUNK_UIDS` consecutive UIDs, so a restore is tens of GETs
+    rather than one per message, plus a per-list `index.json` naming each
+    chunk's UIDs and the UIDVALIDITY epoch. A chunk's UIDs are not frozen (a
+    wider `--months` window fills in older ones), so persist re-uploads any
+    chunk whose UID set changed, and never overwrites a stored chunk with fewer
+    messages than it holds: mail that has aged out of the window survives only
+    in the cache. A differing UIDVALIDITY epoch replaces the stored mail only
+    when this gather's sync confirmed the local epoch with the server, and the
+    replaced epoch's mail is kept as its own archive unit (`<list>/epoch-<n>/`,
+    the same index-plus-chunks shape) rather than dropped: it is real mail, and
+    the only copy of anything older than the window.
 
-Best-effort throughout: a sync failure must never fail a gather (it just means a
-cold rebuild next time), matching how `_save_cache`/`_HttpCache.flush` already
-swallow their own write errors. Each cache syncs independently, so one cache's
-failure never skips the others.
+Best-effort throughout, with one exception: a sync failure doesn't fail a gather
+(it just means a cold rebuild next time), matching how
+`_save_cache`/`HttpCache.flush` already swallow their own write errors, and each
+cache syncs independently, so one cache's failure never skips the others. The
+exception is a stored IMAP chunk that can't be fetched. A rebuild from what's
+left would publish a version without the threads whose mail didn't come back
+(the thread writer deletes any thread file it doesn't regenerate), so `hydrate`
+raises `GatherCacheRestoreError` and the gather fails; the next one retries.
+Failures a retry can't fix (a chunk or index that is missing or corrupt) are
+notes, since failing would wedge the corpus: persist rebuilds them from local.
 """
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
-from typing import Any, Callable, Dict, Optional
+import re
+import tarfile
+import zlib
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
+from ...paths import get_cache_dir
 from ...singletons.catalog import catalog_index_dir
+from ...store.corpus import GatherCacheRestoreError
 from ...store.kv import ABSENT, KvStore
-from . import datatracker, datatracker_github, datatracker_people, github_users
+from . import (
+    datatracker,
+    datatracker_github,
+    datatracker_people,
+    github_users,
+    http_cache,
+    mbox,
+)
 
 #: Per-corpus key — lease-serialised single writer, so a plain RMW is safe.
-_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
+_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.tar"
+#: Beside the store's own files: what the stored tar held when this host last
+#: matched it (restored from it, or uploaded). Never packed.
+_SYNCED_NAME = ".synced.json"
+#: How far an entry's `last_used` may move past the stored one before that alone
+#: earns an upload.
+_TOUCH_GRACE = 86400.0
+#: What earlier versions stored there: one JSON blob of every cached body.
+_LEGACY_HTTP_CACHE_KEY = "corpora/{corpus}/gather-cache/http-cache.json"
+#: Per-corpus prefix for the IMAP mail cache: `<list>/index.json` plus
+#: `<list>/chunk-<n>.tar.gz`. Same single-writer (lease) reasoning as above.
+_IMAP_PREFIX = "corpora/{corpus}/gather-cache/imap/"
+_IMAP_INDEX = "index.json"
+#: Consecutive UIDs per chunk. Messages run ~10-30 KB, so a chunk is a few MB
+#: compressed: big enough that a large list is tens of objects, small enough
+#: that the tail chunk a gather touches is cheap to re-upload.
+_IMAP_CHUNK_UIDS = 512
+_EML_NAME = re.compile(r"^(\d+)\.eml$")
+_EPOCH_DIR = re.compile(rf"^{re.escape(mbox.EPOCH_DIR_PREFIX)}(\d+)$")
 #: Shared fleet keys — concurrent writers, so persist uses a CAS-merge.
 _GITHUB_USERS_KEY = "fleet/gather-cache/github-users.json"
 _DATATRACKER_GITHUB_KEY = "fleet/gather-cache/datatracker-github.json"
@@ -60,43 +127,32 @@ _CAS_RETRIES = 8
 MergeFn = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
 
 
-def hydrate(kv: KvStore, corpus: str) -> None:
+def hydrate(kv: KvStore, corpus: str) -> List[str]:
     """Pull the persisted caches into the local cache dir before a gather, so the
     gather revalidates (304s) and reuses identity lookups instead of re-fetching.
-    Never raises."""
-    _restore(
-        kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
-    )
-    # Bind this thread's ETag store to the freshly-hydrated per-corpus file. The
-    # runner gathers up to N corpora concurrently, one per worker thread, so a
-    # per-thread per-corpus store is what keeps them off one shared file.
-    try:
-        datatracker.bind_gather_corpus(corpus)
-    except Exception:  # pylint: disable=broad-except
-        pass
+    Returns notes for failures worth surfacing. Raises `GatherCacheRestoreError`,
+    after restoring everything else, if stored IMAP mail couldn't be fetched (see
+    `_restore_imap`); nothing else here raises."""
+    # A UIDVALIDITY confirmation is good for one gather, from here to persist.
+    # One left over from an earlier gather would let persist replace the stored
+    # mail on the strength of a check this gather never made.
+    mbox.forget_verified(corpus)
+    _restore_http_cache(kv, corpus)
     _restore(kv, _GITHUB_USERS_KEY, github_users.cache_path())
     _restore(kv, _DATATRACKER_GITHUB_KEY, datatracker_github.cache_path())
     _restore(kv, _DATATRACKER_PEOPLE_KEY, datatracker_people.cache_path())
     _restore_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
+    problems: List[str] = []
+    fatal = _restore_imap(kv, corpus, problems)
+    if fatal:
+        raise GatherCacheRestoreError("; ".join(fatal + problems))
+    return problems
 
 
-def persist(kv: KvStore, corpus: str) -> None:
-    """Push the caches back to durable storage after a gather. Never raises."""
-    # The ETag store flushes only at interpreter exit, which never fires between
-    # gathers in the serve worker — force it so the file reflects this gather.
-    try:
-        datatracker.flush_http_cache()
-    except Exception:  # pylint: disable=broad-except
-        pass
-    _put_plain(
-        kv, _HTTP_CACHE_KEY.format(corpus=corpus), datatracker.http_cache_path(corpus)
-    )
-    # Unbind this thread's per-corpus store (release it; the next gather on this
-    # reused worker binds its own).
-    try:
-        datatracker.bind_gather_corpus(None)
-    except Exception:  # pylint: disable=broad-except
-        pass
+def persist(kv: KvStore, corpus: str) -> List[str]:
+    """Push the caches back to durable storage after a gather. Never raises;
+    returns notes for failures worth surfacing (see `_persist_imap`)."""
+    _persist_http_cache(kv, corpus)
     _cas_merge(
         kv, _GITHUB_USERS_KEY, github_users.cache_path(), github_users.merge_cache
     )
@@ -113,6 +169,33 @@ def persist(kv: KvStore, corpus: str) -> None:
         datatracker_people.merge_cache,
     )
     _persist_tree(kv, _CATALOG_PREFIX, catalog_index_dir())
+    problems: List[str] = []
+    _persist_imap(kv, corpus, problems)
+    return problems
+
+
+def clear(kv: KvStore, corpus: str) -> None:
+    """Delete this corpus's stored gather caches (`--clear-cache`): the ETag store
+    and all the IMAP mail, archives included. Unlike hydrate and persist this
+    raises on a store error, since the caller asked for the state to be gone and
+    a half-done clear would let the next hydrate bring it back. Per-corpus keys
+    only: the shared identity maps and the catalog are other corpora's too."""
+    kv.delete(_HTTP_CACHE_KEY.format(corpus=corpus))
+    kv.delete(_LEGACY_HTTP_CACHE_KEY.format(corpus=corpus))
+    prefix = _IMAP_PREFIX.format(corpus=corpus)
+    for name in kv.list_children(prefix):
+        _clear_imap_unit(kv, f"{prefix}{name}/")
+
+
+def _clear_imap_unit(kv: KvStore, prefix: str) -> None:
+    """Delete a list's stored units, the index before its chunks so a failure
+    part way leaves an index naming fewer chunks, never a chunk-less index claim."""
+    children = kv.list_children(prefix)
+    for name in sorted(children, key=lambda child: child != _IMAP_INDEX):
+        if _EPOCH_DIR.match(name):
+            _clear_imap_unit(kv, f"{prefix}{name}/")
+        else:
+            kv.delete(prefix + name)
 
 
 # --- per-cache operations -------------------------------------------------
@@ -126,7 +209,164 @@ def _restore(kv: KvStore, key: str, path: str) -> None:
         if record is None:
             return
         _atomic_write(path, record[0])
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --- ETag store (per corpus, one tar) -------------------------------------
+
+
+def _pack_http_cache(directory: str) -> Optional[bytes]:
+    """The store at `directory` as a deterministic tar (no timestamps): its body
+    files, then its index. None if there is no readable index, so a store that
+    was never written, or is corrupt, never replaces the stored copy."""
+    entries = http_cache.read_index(directory)
+    if not entries:
+        return None
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        names = sorted({entry["file"] for entry in entries.values()})
+        for name in names + [http_cache.INDEX_NAME]:
+            data = _read(os.path.join(directory, name))
+            if data is None:  # a body the index names but the disk lost
+                continue
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _unpack_http_cache(blob: bytes, directory: str) -> None:
+    """Restore a packed store into `directory`. Only files of the store's own
+    shape are taken, whatever the archive names, and the index goes in last and
+    only if the whole archive read cleanly, so a truncated one leaves an index
+    that still describes what is there. Sparse members are skipped (their real
+    size is not their size in the archive), and the files taken are capped in
+    number and total size at what a store may hold, so a malformed archive can
+    neither fill the disk nor memory; it raises."""
+    index: Optional[bytes] = None
+    count = total = 0
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
+        for member in tar:
+            if not member.isreg() or member.issparse():
+                continue
+            if member.name != http_cache.INDEX_NAME and not (
+                http_cache.BODY_NAME.match(member.name)
+            ):
+                continue
+            count += 1
+            total += member.size
+            if (
+                count > http_cache.MAX_ENTRIES + 1
+                or total > http_cache.MAX_BYTES + http_cache.INDEX_ALLOWANCE
+            ):
+                raise ValueError("stored ETag archive exceeds the store's bounds")
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            if member.name == http_cache.INDEX_NAME:
+                index = handle.read()
+            elif http_cache.BODY_NAME.match(member.name):
+                _atomic_write(os.path.join(directory, member.name), handle.read())
+    if index is not None:
+        _atomic_write(os.path.join(directory, http_cache.INDEX_NAME), index)
+
+
+def _synced_path(directory: str) -> str:
+    return os.path.join(directory, _SYNCED_NAME)
+
+
+def _read_synced(directory: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """What the stored tar held when this host last matched it, or None."""
+    synced = _read_json(_synced_path(directory))
+    if synced is None:
+        return None
+    return {
+        url: entry
+        for url, entry in synced.items()
+        if isinstance(url, str) and isinstance(entry, dict)
+    }
+
+
+def _write_synced(directory: str, entries: Dict[str, Dict[str, Any]]) -> None:
+    snapshot = {
+        url: {key: entry.get(key) for key in ("etag", "file", "last_used")}
+        for url, entry in entries.items()
+    }
+    _atomic_write(
+        _synced_path(directory),
+        json.dumps(snapshot, sort_keys=True).encode("utf-8"),
+    )
+
+
+def _differs_from_synced(
+    current: Dict[str, Dict[str, Any]], synced: Optional[Dict[str, Dict[str, Any]]]
+) -> bool:
+    """Whether the local store holds something the stored tar does not: a URL
+    added or gone, a changed ETag or body, or an entry last used more than
+    `_TOUCH_GRACE` after the stored time. A gather revalidates (and so touches)
+    nearly every entry; re-uploading the whole store for that alone would cost
+    its full size in egress per gather. The stored `last_used` therefore lags by
+    up to a day, which the 90-day age eviction does not notice."""
+    if synced is None or current.keys() != synced.keys():
+        return True
+    for url, entry in current.items():
+        old = synced[url]
+        if entry["etag"] != old.get("etag") or entry["file"] != old.get("file"):
+            return True
+        used, was = entry["last_used"], old.get("last_used")
+        if not isinstance(was, (int, float)) or used - was > _TOUCH_GRACE:
+            return True
+    return False
+
+
+def _restore_http_cache(kv: KvStore, corpus: str) -> None:
+    """Restore the corpus's ETag store to disk. A store with nothing in the tar
+    form yet gets the older single-file blob, if any, placed where the store
+    migrates it from -- unless this host already holds a store of its own. Best
+    effort: any error leaves local state as it was (and persist uploading)."""
+    directory = datatracker.http_cache_path(corpus)
+    try:
+        # Whatever this host last matched no longer describes what it is about
+        # to hold; persist uploads unless the restore below re-establishes it.
+        os.remove(_synced_path(directory))
+    except OSError:
+        pass
+    try:
+        record = kv.get(_HTTP_CACHE_KEY.format(corpus=corpus))
+        if record is not None:
+            _unpack_http_cache(record[0], directory)
+            restored = http_cache.read_index(directory)
+            if restored is not None:
+                _write_synced(directory, restored)
+        elif http_cache.read_index(directory) is None:
+            _restore(
+                kv,
+                _LEGACY_HTTP_CACHE_KEY.format(corpus=corpus),
+                datatracker.legacy_http_cache_path(corpus),
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _persist_http_cache(kv: KvStore, corpus: str) -> None:
+    """Upload the corpus's ETag store if it holds anything the stored tar does
+    not (see `_differs_from_synced`; CAS-free: the caller holds the per-corpus
+    gather lease), then drop the older blob it supersedes. Never raises."""
+    directory = datatracker.http_cache_path(corpus)
+    try:
+        current = http_cache.read_index(directory)
+        if current is None or not _differs_from_synced(
+            current, _read_synced(directory)
+        ):
+            return
+        blob = _pack_http_cache(directory)
+        if blob is None:
+            return
+        kv.put(_HTTP_CACHE_KEY.format(corpus=corpus), blob)
+        _write_synced(directory, current)
+        kv.delete(_LEGACY_HTTP_CACHE_KEY.format(corpus=corpus))
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -138,7 +378,7 @@ def _put_plain(kv: KvStore, key: str, path: str) -> None:
         if data is None:
             return
         kv.put(key, data)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -162,7 +402,7 @@ def _cas_merge(kv: KvStore, key: str, path: str, merge: MergeFn) -> None:
             payload = json.dumps(merge(remote, local), sort_keys=True).encode("utf-8")
             if kv.put(key, payload, expect=expect) is not None:
                 return
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -176,7 +416,7 @@ def _restore_tree(kv: KvStore, prefix: str, local_dir: str) -> None:
     re-fetch. Best-effort per file — one failure never skips the rest."""
     try:
         names = kv.list_children(prefix)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # noqa: BLE001
         return
     for name in names:
         _restore(kv, prefix + name, os.path.join(local_dir, name))
@@ -201,6 +441,327 @@ def _persist_tree(kv: KvStore, prefix: str, local_dir: str) -> None:
         path = os.path.join(local_dir, name)
         if os.path.isfile(path):
             _put_plain(kv, prefix + name, path)
+
+
+# --- IMAP mail cache (per corpus, chunked) --------------------------------
+
+
+class _ImapIndex(NamedTuple):
+    """What a list's stored chunks hold: the UIDVALIDITY epoch they were fetched
+    under (None if unknown) and the UIDs in each chunk."""
+
+    uidvalidity: Optional[str]
+    chunks: Dict[int, Set[int]]
+
+
+def _imap_root(corpus: str) -> str:
+    return os.path.join(get_cache_dir(), "imap-cache", corpus)
+
+
+def _chunk_key(prefix: str, chunk: int) -> str:
+    return f"{prefix}chunk-{chunk}.tar.gz"
+
+
+class _CorruptIndex(ValueError):
+    """The stored index isn't readable as one."""
+
+
+def _load_imap_index(kv: KvStore, key: str) -> _ImapIndex:
+    """The stored index, or an empty one if none is stored yet. Raises
+    `_CorruptIndex` on a corrupt one (callers skip the list rather than treat the
+    store as empty and overwrite chunks they can no longer account for), and
+    whatever the store raises if it can't be read."""
+    record = kv.get(key)
+    if record is None:
+        return _ImapIndex(None, {})
+    try:
+        parsed = json.loads(record[0])
+        chunks = {
+            int(c): {int(u) for u in uids} for c, uids in parsed["chunks"].items()
+        }
+        epoch = parsed.get("uidvalidity")
+    except (ValueError, KeyError, TypeError, AttributeError) as err:
+        raise _CorruptIndex(f"unreadable index {key}") from err
+    return _ImapIndex(str(epoch) if epoch else None, chunks)
+
+
+def _dump_imap_index(index: _ImapIndex) -> bytes:
+    payload = {
+        "uidvalidity": index.uidvalidity,
+        "chunks": {str(c): sorted(uids) for c, uids in sorted(index.chunks.items())},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _local_chunks(list_dir: str) -> Dict[int, Set[int]]:
+    """The cached UIDs under `list_dir`, grouped by chunk."""
+    chunks: Dict[int, Set[int]] = {}
+    try:
+        names = os.listdir(list_dir)
+    except OSError:
+        return chunks
+    for name in names:
+        match = _EML_NAME.match(name)
+        if match:
+            uid = int(match.group(1))
+            chunks.setdefault(uid // _IMAP_CHUNK_UIDS, set()).add(uid)
+    return chunks
+
+
+def _epochs_differ(local: Optional[str], stored: Optional[str]) -> bool:
+    """Both epochs known and unequal. An unknown side matches anything: the
+    sync adopts a cache that has no marker, so there is nothing to contradict."""
+    return local is not None and stored is not None and local != stored
+
+
+def _pack_chunk(members: Dict[int, bytes]) -> bytes:
+    """Deterministic gzip tar of `<uid>.eml` members (no timestamps), so the same
+    mail always yields the same bytes."""
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:
+            for uid, data in sorted(members.items()):
+                info = tarfile.TarInfo(f"{uid}.eml")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _unpack_chunk(blob: bytes) -> Dict[int, bytes]:
+    members: Dict[int, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        for member in tar:
+            match = _EML_NAME.match(member.name)
+            handle = tar.extractfile(member) if match and member.isreg() else None
+            if match and handle is not None:
+                members[int(match.group(1))] = handle.read()
+    return members
+
+
+def _restore_imap(kv: KvStore, corpus: str, problems: List[str]) -> List[str]:
+    """Restore every stored list's mail into the local IMAP cache. A failure on
+    one list or chunk never skips the rest. Returns what couldn't be fetched
+    because the store errored (a retry may succeed); `hydrate` fails the gather
+    on those. What a retry can't fix -- a chunk or index that is missing or
+    corrupt -- goes in `problems` as a note. Either way mail older than the
+    search window would be absent when threads are rebuilt, and the thread
+    writer deletes any thread file it doesn't regenerate."""
+    fatal: List[str] = []
+    prefix = _IMAP_PREFIX.format(corpus=corpus)
+    try:
+        names = kv.list_children(prefix)
+    except Exception as err:  # noqa: BLE001
+        return [f"IMAP mail cache not restored (listing failed: {err})"]
+    root = _imap_root(corpus)
+    for name in names:
+        if os.path.basename(name) != name or name.startswith("."):
+            continue
+        try:
+            failed, lost = _restore_imap_list(
+                kv, f"{prefix}{name}/", os.path.join(root, name)
+            )
+        except _CorruptIndex as err:
+            problems.append(f"IMAP mail cache for '{name}' not restored ({err})")
+            continue
+        except Exception as err:  # noqa: BLE001
+            fatal.append(f"IMAP mail cache for '{name}' not restored ({err})")
+            continue
+        if failed:
+            fatal.append(
+                f"IMAP mail cache for '{name}': {failed} stored chunk(s) could "
+                "not be fetched"
+            )
+        if lost:
+            problems.append(
+                f"IMAP mail cache for '{name}': {lost} stored chunk(s) missing "
+                "or unreadable; the next persist rebuilds them from this host"
+            )
+    return fatal
+
+
+def _restore_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Tuple[int, int]:
+    """Restore one list; returns `(fetch failures, chunks missing or corrupt)`.
+
+    A list is a main unit (the current epoch's mail, in `list_dir`) plus one
+    archive unit per earlier epoch (`epoch-<n>/`, see `mbox.EPOCH_DIR_PREFIX`),
+    each stored as its own index and chunks. Mail from a different epoch than
+    the local cache's lands in its own archive dir rather than being skipped or
+    mixed in: its UIDs name other messages, but the mail is real and thread
+    reconstruction walks the list dir recursively."""
+    index = _load_imap_index(kv, prefix + _IMAP_INDEX)
+    local_epoch = mbox.read_uidvalidity(list_dir)
+    if _epochs_differ(local_epoch, index.uidvalidity):
+        target = os.path.join(list_dir, f"{mbox.EPOCH_DIR_PREFIX}{index.uidvalidity}")
+        failed, lost = _restore_unit(kv, prefix, index, target)
+    else:
+        if local_epoch is None and index.uidvalidity is not None:
+            os.makedirs(list_dir, exist_ok=True)
+            _atomic_write(
+                os.path.join(list_dir, mbox.UIDVALIDITY_FILE),
+                index.uidvalidity.encode("ascii"),
+            )
+        failed, lost = _restore_unit(kv, prefix, index, list_dir)
+    for name in kv.list_children(prefix):
+        match = _EPOCH_DIR.match(name)
+        # An archive of the epoch the local cache is now in would only duplicate it.
+        if not match or match.group(1) == local_epoch:
+            continue
+        unit_prefix = f"{prefix}{name}/"
+        try:
+            unit_index = _load_imap_index(kv, unit_prefix + _IMAP_INDEX)
+        except _CorruptIndex:
+            lost += 1
+            continue
+        except Exception:  # noqa: BLE001
+            failed += 1
+            continue
+        more_failed, more_lost = _restore_unit(
+            kv, unit_prefix, unit_index, os.path.join(list_dir, name)
+        )
+        failed += more_failed
+        lost += more_lost
+    return failed, lost
+
+
+def _restore_unit(
+    kv: KvStore, prefix: str, index: _ImapIndex, unit_dir: str
+) -> Tuple[int, int]:
+    """Fetch the chunks of one stored unit that `unit_dir` doesn't already hold."""
+    local = _local_chunks(unit_dir)
+    failed = lost = 0
+    for chunk, uids in sorted(index.chunks.items()):
+        # A warm host already holding the chunk's mail fetches nothing.
+        if uids <= local.get(chunk, set()):
+            continue
+        try:
+            record = kv.get(_chunk_key(prefix, chunk))
+        except Exception:  # noqa: BLE001
+            failed += 1
+            continue
+        if record is None:
+            lost += 1
+            continue
+        try:
+            members = _unpack_chunk(record[0])
+        except (tarfile.TarError, EOFError, OSError, zlib.error):
+            lost += 1
+            continue
+        for uid, data in members.items():
+            path = os.path.join(unit_dir, f"{uid}.eml")
+            if not os.path.exists(path):
+                _atomic_write(path, data)
+    return failed, lost
+
+
+def _persist_imap(kv: KvStore, corpus: str, problems: List[str]) -> None:
+    """Upload each local list's mail as chunks. Never raises; a failure on one
+    list never skips the rest, and is reported in `problems` (a persistent one
+    means every fresh container does a full refetch)."""
+    prefix = _IMAP_PREFIX.format(corpus=corpus)
+    root = _imap_root(corpus)
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return
+    for name in names:
+        list_dir = os.path.join(root, name)
+        if not os.path.isdir(list_dir):
+            continue
+        try:
+            skipped = _persist_imap_list(kv, f"{prefix}{name}/", list_dir)
+        except Exception as err:  # noqa: BLE001
+            problems.append(f"IMAP mail cache for '{name}' not persisted ({err})")
+            continue
+        if skipped:
+            problems.append(f"IMAP mail cache for '{name}' not persisted ({skipped})")
+
+
+def _persist_imap_list(kv: KvStore, prefix: str, list_dir: str) -> Optional[str]:
+    """Upload one list: its archive units, then its main unit. Returns why the
+    main unit was deliberately left alone, or `None`."""
+    stored = _load_imap_index(kv, prefix + _IMAP_INDEX)
+    epoch = mbox.read_uidvalidity(list_dir)
+    # Replace the stored mail only when this gather's sync confirmed the local
+    # epoch against the server: epochs are labels, not an order, so a differing
+    # one could just as well be a stale cache on a host whose sync failed, and
+    # the store may hold a newer epoch's mail (including mail outside the
+    # window, which exists nowhere else).
+    superseded = _epochs_differ(epoch, stored.uidvalidity)
+    if superseded and mbox.verified_uidvalidity(list_dir) != epoch:
+        return "local epoch differs from the stored one and was not confirmed"
+    # Archives first. When the main unit is about to be replaced, the old
+    # epoch's mail must be safely stored as an archive before the stored copy
+    # goes. Normally the local `epoch-<old>/` dir already holds it (the sync moved
+    # it there, or hydrate restored it there); fill in anything it lacks from the
+    # stored main unit so this doesn't depend on that. A failure to fetch it, or
+    # to store the archive, abandons the list with the stored main unit untouched.
+    if superseded and stored.chunks:
+        archive_dir = os.path.join(
+            list_dir, f"{mbox.EPOCH_DIR_PREFIX}{stored.uidvalidity}"
+        )
+        failed, _ = _restore_unit(kv, prefix, stored, archive_dir)
+        if failed:
+            raise OSError(
+                f"{failed} stored chunk(s) of the old epoch could not be fetched "
+                "to archive"
+            )
+    for name in sorted(os.listdir(list_dir)):
+        match = _EPOCH_DIR.match(name)
+        unit_dir = os.path.join(list_dir, name)
+        # An archive of the epoch the cache is now in (a restore put it there
+        # from the stored main unit) would only duplicate that unit.
+        if not match or not os.path.isdir(unit_dir) or match.group(1) == epoch:
+            continue
+        unit_prefix = f"{prefix}{name}/"
+        unit_stored = _load_imap_index(kv, unit_prefix + _IMAP_INDEX)
+        _persist_unit(kv, unit_prefix, unit_dir, None, unit_stored)
+    _persist_unit(kv, prefix, list_dir, epoch, stored)
+    return None
+
+
+def _persist_unit(
+    kv: KvStore, prefix: str, unit_dir: str, epoch: Optional[str], stored: _ImapIndex
+) -> None:
+    """Upload one unit's chunks and index. `stored` is what the store holds for
+    it; a unit whose stored epoch differs from `epoch` is replaced wholesale."""
+    local = _local_chunks(unit_dir)
+    if not local:
+        return
+    superseded = _epochs_differ(epoch, stored.uidvalidity)
+    base: Dict[int, Set[int]] = {} if superseded else stored.chunks
+    chunks = dict(base)
+    index_key = prefix + _IMAP_INDEX
+    if superseded:
+        # Invalidate the old index before touching its chunks: a failure part
+        # way through then leaves an index naming no chunks, never one naming
+        # chunks whose contents belong to another epoch.
+        kv.put(index_key, _dump_imap_index(_ImapIndex(epoch, {})))
+    for chunk, uids in sorted(local.items()):
+        have = base.get(chunk, set())
+        if uids == have:
+            continue
+        members: Dict[int, bytes] = {}
+        for uid in uids:
+            data = _read(os.path.join(unit_dir, f"{uid}.eml"))
+            if data is not None:
+                members[uid] = data
+        if not uids >= have:
+            # The store holds mail this host lacks (a partial hydrate, say):
+            # fold it in rather than overwrite it with less. A failed fetch
+            # raises, abandoning the list with the stored chunk untouched.
+            record = kv.get(_chunk_key(prefix, chunk))
+            if record is not None:
+                for uid, data in _unpack_chunk(record[0]).items():
+                    members.setdefault(uid, data)
+        kv.put(_chunk_key(prefix, chunk), _pack_chunk(members))
+        chunks[chunk] = set(members)
+    index = _ImapIndex(epoch or stored.uidvalidity, chunks)
+    if superseded or index != stored:
+        # Chunks first, index last: a crash in between leaves chunks the index
+        # doesn't list yet, which the next persist re-covers.
+        kv.put(index_key, _dump_imap_index(index))
+    for chunk in stored.chunks.keys() - chunks.keys():
+        kv.delete(_chunk_key(prefix, chunk))
 
 
 # --- local file helpers ---------------------------------------------------

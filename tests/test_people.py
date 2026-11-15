@@ -325,7 +325,7 @@ def test_build_registry_links_github_via_datatracker(
         [make_issue(1, "Hi", author="ioggstream")],
     )
 
-    from ietf_llm.gather.sources import datatracker_github as dtg  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import datatracker_github as dtg
 
     def fake_get_json(
         path_or_url: str, timeout: float = 10.0,  # noqa: ARG001
@@ -372,8 +372,8 @@ def test_build_registry_reconciles_mail_via_datatracker_person(
         "Tue, 02 Jan 2024 10:00:00 +0000",
     )
 
-    from ietf_llm.gather.sources import datatracker_people as dtp  # pylint: disable=import-outside-toplevel
-    from urllib.parse import unquote  # pylint: disable=import-outside-toplevel
+    from ietf_llm.gather.sources import datatracker_people as dtp
+    from urllib.parse import unquote
 
     def fake_get_json(
         path_or_url: str, timeout: float = 10.0,  # noqa: ARG001
@@ -712,7 +712,7 @@ def test_format_affiliations_shows_source_provenance(
         "draft:draft-foo": "Cloudflare",
     }
     # _format_affiliations is the digest-rendering helper.
-    from ietf_llm.people import _format_affiliations  # pylint: disable=import-outside-toplevel
+    from ietf_llm.people import _format_affiliations
     rendered = _format_affiliations(person)
     # Both sources agreed → Cloudflare appears once with both source tags.
     assert "Cloudflare" in rendered
@@ -734,7 +734,7 @@ def test_format_affiliations_shows_disagreement(isolated_home: Path) -> None:
     )
     person = r.person_for_name("Mark Nottingham")
     assert person is not None
-    from ietf_llm.people import _format_affiliations  # pylint: disable=import-outside-toplevel
+    from ietf_llm.people import _format_affiliations
     rendered = _format_affiliations(person)
     # Both orgs present, each with its own source tag.
     assert "Cloudflare (draft)" in rendered

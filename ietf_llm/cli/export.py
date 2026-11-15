@@ -16,6 +16,10 @@ Per project policy, every export is complete and fresh — there is no
 incremental / delta mode. To get a fresh NotebookLM with current state,
 re-run this and create a new notebook (delete the old one in the UI).
 
+Exit status is 1 when the corpus has not been gathered (or the name is not a
+valid corpus name); a gathered corpus with nothing exportable exits 0 after
+logging that nothing was exported.
+
 Per-corpus flags are persisted in ~/.config/ietf-llm/<name>/export.json so you
 don't have to repeat them. Use `ietf-llm <name> --clear-config` to reset.
 """
@@ -27,7 +31,7 @@ import os
 import sys
 
 from .. import __version__, config, export
-from .completion import maybe_autocomplete, wg_completer
+from .completion import maybe_autocomplete, set_wg_completer
 from ..freshness import local_staleness_warning
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_config_dir
@@ -52,7 +56,7 @@ def main() -> None:
     wg_arg = parser.add_argument(
         "wg", metavar="NAME", help="Corpus name (e.g. 'httpbis')"
     )
-    wg_arg.completer = wg_completer  # type: ignore[attr-defined]
+    set_wg_completer(wg_arg)
     sink = parser.add_mutually_exclusive_group()
     sink.add_argument(
         "--destination",
@@ -91,6 +95,18 @@ def main() -> None:
     maybe_autocomplete(parser)
     args = parser.parse_args()
 
+    verbosity = Verbosity.STATUS
+    if args.quiet:
+        verbosity = Verbosity.QUIET
+    elif args.verbose:
+        verbosity = Verbosity.VERBOSE
+
+    # Before anything keyed on the name: config.merge persists a per-corpus
+    # file, and the freshness check builds a path from it, so a typo or an
+    # unsafe name would otherwise leave state behind (or escape the config dir).
+    if export.existing_cache_dir(args.wg, verbosity) is None:
+        sys.exit(1)
+
     config.merge(
         args,
         wg=args.wg,
@@ -102,12 +118,6 @@ def main() -> None:
             "token_file": default_token,
         },
     )
-
-    verbosity = Verbosity.STATUS
-    if args.quiet:
-        verbosity = Verbosity.QUIET
-    elif args.verbose:
-        verbosity = Verbosity.VERBOSE
 
     if not args.destination and not args.create:
         print(

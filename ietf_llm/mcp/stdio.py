@@ -22,14 +22,16 @@ thread. The loop never awaits a kernel write, so a slow client can
 never stall the event loop — until the queue itself fills, which is
 named, logged, and bounded.
 
-The reader half is unchanged from upstream — backpressure on the
-inbound side doesn't have the same single-serialization-point problem,
-and the upstream reader is correct.
+The reader half follows upstream (plus debug markers) — backpressure
+on the inbound side doesn't have the same single-serialization-point
+problem. Unlike upstream's `stdio_server`, this transport does not claim
+fds 0 and 1 to divert stray stdout to stderr, so nothing in-process may
+print to stdout.
 
 This is a drop-in replacement for `stdio_server`: same yield contract
 (`read_stream`, `write_stream`), used the same way by the lowlevel
 `Server.run`. We don't monkey-patch anything; we reach the lowlevel
-server via `FastMCP._mcp_server` and pass our streams to it directly.
+server via `MCPServer._lowlevel_server` and pass our streams to it directly.
 
 Observability: `queue_state()` returns a snapshot of queue depth,
 high-water mark, bytes/items written, time the loop has spent blocked
@@ -46,7 +48,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from io import TextIOWrapper
-from typing import Any, AsyncIterator, Optional, Tuple
+from typing import Any, AsyncGenerator, Optional, Tuple
 
 import anyio
 import anyio.lowlevel
@@ -97,11 +99,12 @@ def _increment(field: str, delta: float) -> None:
 @asynccontextmanager
 async def stdio_server_threaded_writer(
     max_queue_items: int = DEFAULT_QUEUE_MAX_ITEMS,
-) -> AsyncIterator[
+) -> AsyncGenerator[
     Tuple[
         MemoryObjectReceiveStream[SessionMessage | Exception],
         MemoryObjectSendStream[SessionMessage],
-    ]
+    ],
+    None,
 ]:
     """Drop-in replacement for `mcp.server.stdio.stdio_server`.
 
@@ -178,8 +181,10 @@ async def stdio_server_threaded_writer(
                 async for line in stdin:
                     debug_log.log_event(0, "reader_line", nbytes=len(line))
                     try:
-                        message = types.JSONRPCMessage.model_validate_json(line)
-                    except Exception as exc:  # pylint: disable=broad-except
+                        message = types.jsonrpc_message_adapter.validate_json(
+                            line, by_name=False
+                        )
+                    except Exception as exc:  # noqa: BLE001
                         await read_stream_writer.send(exc)
                         debug_log.log_event(0, "reader_dispatched", parse_error=True)
                         continue
@@ -208,7 +213,7 @@ async def stdio_server_threaded_writer(
             async with write_stream_reader:
                 async for session_message in write_stream_reader:
                     json_text = session_message.message.model_dump_json(
-                        by_alias=True, exclude_none=True
+                        by_alias=True, exclude_unset=True
                     )
                     data = (json_text + "\n").encode("utf-8")
                     try:

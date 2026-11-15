@@ -24,21 +24,46 @@ from __future__ import annotations
 
 import contextvars
 import importlib
+import ntpath
 import os
+import posixpath
 import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
+from types import MappingProxyType
+from typing import Any, Dict, Generator, List, Mapping, Optional, Set, Tuple, cast
+
+from typing_extensions import override
 
 from .. import freshness
 from ..config import service as service_config
-from ..paths import cached_wg_names, get_cache_dir, get_index_dir
+from ..paths import cached_wg_names, checked_corpus, get_cache_dir, get_index_dir
 
 #: Version token the local backend returns for any present corpus. The local
 #: cache is single-version (the live tree on disk), so the value is opaque — it
 #: only has to be non-None to mean "this corpus is present".
 LOCAL_VERSION = "local"
+
+
+class GatherCacheRestoreError(RuntimeError):
+    """Stored gather state couldn't be restored in a way that would change what
+    the gather publishes (an unreadable chunk of the IMAP mail cache: the thread
+    writer deletes any thread file it doesn't regenerate, so publishing anyway
+    would lose the threads whose mail didn't come back). The gather fails; a
+    retry can succeed. Every other restore failure stays a note."""
+
+
+class LeaseLost(RuntimeError):
+    """A publish was refused because the publisher no longer holds the corpus's
+    gather lease, or the current-version pointer moved while it was publishing:
+    another gather took over (or published), and flipping the pointer now would
+    put this one's older content over theirs. Nothing was flipped; the
+    already-uploaded blobs are orphans the next publish's reap collects."""
+
+    def __init__(self, corpus: str, detail: str) -> None:
+        super().__init__(f"gather lease for '{corpus}' lost: {detail}")
+        self.corpus = corpus
 
 
 class VersionVanished(FileNotFoundError):
@@ -63,10 +88,25 @@ class VersionVanished(FileNotFoundError):
         self.new_version = new_version
 
 
+def clean_relpath(relpath: str) -> Optional[str]:
+    """`relpath` as a normalised `/`-separated path inside a corpus's `files/`
+    tree, or None when it is empty, absolute or climbs out of it. Both backends
+    answer `has_file` from this, so a name that could not be read is never
+    reported present."""
+    rel = posixpath.normpath(relpath.replace(os.sep, "/"))
+    if rel in ("", ".") or rel.startswith("/") or rel == ".." or rel.startswith("../"):
+        return None
+    # A drive-qualified path ("C:/x") is not absolute to posixpath, but
+    # `os.path.join` would let it replace `files/` on a host that has drives.
+    if os.path.splitdrive(rel)[0] or ntpath.splitdrive(rel)[0]:
+        return None
+    return rel
+
+
 def _local_files_dir(corpus: str) -> str:
     """The `<cache>/<corpus>/files` path under the local cache root. Pure path
     construction — does not touch the filesystem (so it never creates a dir)."""
-    return os.path.join(get_cache_dir(), corpus, "files")
+    return os.path.join(get_cache_dir(), checked_corpus(corpus), "files")
 
 
 #: Request-scoped pinned versions: corpus -> version. Set once at the MCP tool
@@ -74,8 +114,8 @@ def _local_files_dir(corpus: str) -> str:
 #: version, and a publish landing mid-request cannot mix two versions into one
 #: answer. Only the cloud backend consults it; the local backend is
 #: single-version. A ContextVar so it is isolated per request/worker thread.
-_pinned_versions: contextvars.ContextVar[Dict[str, str]] = contextvars.ContextVar(
-    "ietf_llm_pinned_versions", default={}
+_pinned_versions: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
+    "ietf_llm_pinned_versions", default=MappingProxyType({})
 )
 
 
@@ -89,7 +129,7 @@ _pin_lock = threading.Lock()
 
 
 @contextmanager
-def pin_corpus_version(corpus: str, version: str) -> Iterator[None]:
+def pin_corpus_version(corpus: str, version: str) -> Generator[None, None, None]:
     """Pin `corpus` to `version` for the duration of the block (request-scoped),
     and register it in the cross-thread in-use set the scratch reaper reads."""
     token = _pinned_versions.set({**_pinned_versions.get(), corpus: version})
@@ -120,7 +160,7 @@ def pinned_versions_in_use(corpus: str) -> Set[str]:
         return {ver for (cor, ver), n in _pin_counts.items() if cor == corpus and n > 0}
 
 
-class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
+class CorpusStore(ABC):
     """Brokers materialisation (read) and publication (write) of a corpus.
 
     Backends: `LocalCorpusStore` (filesystem, single-version) today; a SQL +
@@ -154,6 +194,34 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         Callers read it through the `paths.py` helpers. Read-only — never
         creates the directory. The local backend returns the existing tree; a
         cloud backend materialises the version's blobs here first.
+        """
+
+    @abstractmethod
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        """True if the current version of `corpus` holds `relpath`, a path inside
+        its `files/` tree (what `local_cache_dir` points at; the same relpath
+        `read_file_section` takes). False for an absent corpus, an absent file,
+        or a path that is not inside `files/`.
+
+        Exact, and answered without fetching the version's content: a caller
+        that only needs to know whether a file is there must not pay for the
+        bytes of a corpus it will never read. `local_cache_dir` stages the whole
+        version on the cloud backend (`files/` and `embeddings.db`), which is
+        the cost this method exists to avoid. Read-only — never creates
+        anything. Honours the request pin like the other read accessors.
+        """
+
+    @abstractmethod
+    def list_files(self, corpus: str, subdir: str) -> List[str]:
+        """Sorted names of the files directly inside `subdir` (a path inside
+        `files/`, e.g. `drafts`) in the current version of `corpus`. Empty for
+        an absent corpus or directory, or a `subdir` that is not inside `files/`.
+
+        The listing counterpart of `has_file`, with the same contract: answered
+        without fetching the version's content, so a caller hunting for a file
+        whose exact name it cannot yet build (a draft's newest revision) can ask
+        every corpus and stage only the one that has it. Read-only; honours the
+        request pin like the other read accessors.
         """
 
     @abstractmethod
@@ -198,9 +266,15 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
         workspace: str,
         *,
         extra_files: Optional[Dict[str, str]] = None,
+        lease_owner: Optional[str] = None,
     ) -> str:
         """Publish the gathered tree at local `workspace` as a new version of
         `corpus`, atomically, and return its version token.
+
+        `lease_owner` is the owner the caller took the gather lease under. A
+        cloud backend refuses to flip the pointer (raising `LeaseLost`) unless
+        that owner still holds the lease and no one else has moved the pointer
+        since publish began; without it only the pointer check applies.
 
         `extra_files` maps a version-relative path to an absolute local path for
         files that live *outside* `workspace` but belong in the version — notably
@@ -280,20 +354,34 @@ class CorpusStore(ABC):  # pylint: disable=too-many-public-methods
 
     # --- gather accelerator caches (default: persistent local disk) -------
 
-    def hydrate_gather_caches(self, corpus: str) -> None:
+    def hydrate_gather_caches(self, corpus: str) -> List[str]:
         """Pull the gather accelerator caches (the datatracker ETag store, the
-        GitHub/datatracker identity maps, and the effort catalog) into the local
-        cache dir before a gather of `corpus`, so an ephemeral host revalidates
-        instead of re-hitting rate-limited upstreams to rebuild them (issue #82).
+        GitHub/datatracker identity maps, the effort catalog, and the IMAP mail
+        cache) into the local cache dir before a gather of `corpus`, so an
+        ephemeral host revalidates instead of re-hitting rate-limited upstreams
+        to rebuild them (issues #82, #260). Returns notes for failures to
+        surface. Raises `GatherCacheRestoreError` when the IMAP mail cache could
+        not be fetched, since publishing without it would drop threads.
 
         Default no-op: the local backend keeps these caches on persistent disk
         under `get_cache_dir()`, so there is nothing to fetch. The cloud backend
         overrides this to restore them from durable object storage."""
+        return []
 
-    def persist_gather_caches(self, corpus: str) -> None:
+    def persist_gather_caches(self, corpus: str) -> List[str]:
         """Push the gather accelerator caches back to durable storage after a
-        gather of `corpus`. Default no-op (local backend); the cloud backend
-        overrides it. Best-effort — a failure must never fail the gather."""
+        gather of `corpus`; returns notes for failures worth surfacing. Default
+        no-op (local backend); the cloud backend overrides it. Best-effort — a
+        failure must never fail the gather."""
+        return []
+
+    def clear_gather_caches(self, corpus: str) -> None:
+        """Delete the gather state the store holds for `corpus` between gathers
+        (`--clear-cache`), so the next gather can't restore it: on the cloud
+        backend the mailing-list mail and the per-corpus conditional-GET store.
+        Called under the gather lease. Raises if the store can't be cleared --
+        the caller must not carry on as if it had been. Default no-op: the local
+        backend's caches are plain files the caller removes itself."""
 
     # --- write-side gather lease (default: no-op single writer) -----------
 
@@ -417,6 +505,35 @@ class LocalCorpusStore(CorpusStore):
         files = _local_files_dir(corpus)
         return files if os.path.isdir(files) else None
 
+    def has_file(self, corpus: str, relpath: str) -> bool:
+        rel = clean_relpath(relpath)
+        files = self.local_cache_dir(corpus)
+        if rel is None or files is None:
+            return False
+        # A symlink out of files/ is a file `read_file_section` refuses (its
+        # realpath check), so it must not read as present here.
+        path = os.path.realpath(os.path.join(files, rel))
+        return path.startswith(os.path.realpath(files) + os.sep) and os.path.isfile(
+            path
+        )
+
+    def list_files(self, corpus: str, subdir: str) -> List[str]:
+        rel = clean_relpath(subdir)
+        files = self.local_cache_dir(corpus)
+        if rel is None or files is None:
+            return []
+        root = os.path.realpath(files)
+        directory = os.path.realpath(os.path.join(files, rel))
+        if not directory.startswith(root + os.sep) or not os.path.isdir(directory):
+            return []
+        # As in `has_file`, a symlink out of files/ is not a file a reader may open.
+        return sorted(
+            name
+            for name in os.listdir(directory)
+            if os.path.realpath(os.path.join(directory, name)).startswith(root + os.sep)
+            and os.path.isfile(os.path.join(directory, name))
+        )
+
     def local_corpus_dir(self, corpus: str) -> Optional[str]:
         # `<cache>/<corpus>` — pure path composition, no existence check and no
         # mkdir, exactly where the root-level artifacts have always been read
@@ -424,8 +541,9 @@ class LocalCorpusStore(CorpusStore):
         # is: a root artifact is read straight off disk, so an absent corpus
         # simply reads as an absent file (which is what the callers expect) and
         # a gather can read what it has already written before `files/` exists.
-        return os.path.join(get_cache_dir(), corpus)
+        return os.path.join(get_cache_dir(), checked_corpus(corpus))
 
+    @override
     def materialised_corpus_dir(self, corpus: str) -> Optional[str]:
         # The base class default (`return self.local_corpus_dir(corpus)`)
         # would inherit `local_corpus_dir`'s deliberate no-existence-check —
@@ -442,7 +560,7 @@ class LocalCorpusStore(CorpusStore):
         # The live index dir — `<index_root>/<corpus>` — exactly where
         # `_db_path` has always resolved it, so local read behaviour is
         # unchanged. Returned even if no DB exists yet (search handles that).
-        return os.path.join(get_index_dir(), corpus)
+        return os.path.join(get_index_dir(), checked_corpus(corpus))
 
     def publish(
         self,
@@ -450,15 +568,18 @@ class LocalCorpusStore(CorpusStore):
         workspace: str,
         *,
         extra_files: Optional[Dict[str, str]] = None,
+        lease_owner: Optional[str] = None,
     ) -> str:
         # No-op finalise: the local cache is the single live version, the gather
         # writes straight into it, and the index is read from its own dir — so
         # there is nothing to upload or flip (`extra_files` is irrelevant here).
         return LOCAL_VERSION
 
+    @override
     def record_access(self, corpus: str) -> None:
         freshness.record_access(corpus)
 
+    @override
     def last_accessed(self, corpus: str) -> Optional[datetime]:
         # local_last_accessed, not last_accessed -- same reasoning as
         # gathered_at below: this instance IS the local backend, so it must
@@ -466,6 +587,7 @@ class LocalCorpusStore(CorpusStore):
         # get_corpus_store(), which could answer a different store's state.
         return freshness.local_last_accessed(corpus)
 
+    @override
     def gathered_at(self, corpus: str) -> Optional[datetime]:
         # local_last_gathered, not last_gathered: this method is already the
         # local backend, so it must read straight off local disk through
@@ -476,17 +598,27 @@ class LocalCorpusStore(CorpusStore):
         return freshness.local_last_gathered(corpus)
 
 
+#: The one memoized cloud store: `{store_config_key(): store}`, holding at most
+#: one entry. Reusing it keeps one boto3 client (and its connection pool) per
+#: process instead of one per call; a changed config is a different key, so it
+#: replaces the entry rather than serving a store built for the old config.
+_CLOUD_STORE: Dict[Tuple[Any, ...], CorpusStore] = {}
+_CLOUD_STORE_LOCK = threading.Lock()
+
+
 def get_corpus_store() -> CorpusStore:
     """The `CorpusStore` selected by service config.
 
     `store_backend` (env `IETF_LLM_STORE_BACKEND` > global config > `local`)
     chooses the backend: `local` (the laptop / single-box default, today's
     behaviour) or `cloud` (a SQL control plane + object-store blob plane; see
-    `corpus_store_cloud`). Constructed per call — both backends are cheap,
-    stateless handles that open no connection until used. An unrecognised
-    backend value **raises** rather than silently falling back to local — so a
-    typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead of writing to
-    a local cache and never publishing to the fleet."""
+    `corpus_store_cloud`). The local store is a stateless handle, built per
+    call. The cloud store owns an S3 client, so it is memoized on the config it
+    was built from (`cloud.store_config_key`): repeated calls under unchanged
+    config share one store, and a changed config builds a fresh one. An
+    unrecognised backend value **raises** rather than silently falling back to
+    local — so a typo (e.g. `Cloud`) on a cron/CLI gather fails loudly instead
+    of writing to a local cache and never publishing to the fleet."""
     backend = service_config.store_backend()
     if backend == "local":
         return LocalCorpusStore()
@@ -496,7 +628,15 @@ def get_corpus_store() -> CorpusStore:
         # from here, so a static back-import would be a cycle. The cloud
         # machinery stays out of the default local path entirely.
         cloud = importlib.import_module(f"{__package__}.cloud")
-        return cast(CorpusStore, cloud.build_cloud_store())
+        key = cloud.store_config_key()
+        with _CLOUD_STORE_LOCK:
+            store = _CLOUD_STORE.get(key)
+            if store is None:
+                # An under-configured build raises and leaves the cache as it was.
+                store = cast(CorpusStore, cloud.build_cloud_store())
+                _CLOUD_STORE.clear()
+                _CLOUD_STORE[key] = store
+            return store
     raise ValueError(
         f"unrecognised IETF_LLM_STORE_BACKEND={backend!r} (expected 'local' or 'cloud')"
     )

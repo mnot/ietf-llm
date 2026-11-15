@@ -40,7 +40,7 @@ def choose_k(n_docs: int) -> int:
     """
     if n_docs <= 4:
         return max(1, n_docs)
-    return int(min(32, max(4, round((n_docs / 2) ** 0.5))))
+    return min(32, max(4, round((n_docs / 2) ** 0.5)))
 
 
 def _normalize_rows(
@@ -123,7 +123,7 @@ def mini_batch_kmeans(
             np.zeros((0,), dtype=np.intp)
         )
     k = max(1, min(k, n_rows))
-    rng = np.random.RandomState(seed)  # pylint: disable=no-member
+    rng = np.random.RandomState(seed)
     centres = _kmeans_pp_init(mat, k, rng)
     counts = np.zeros(k, dtype=np.float64)
 

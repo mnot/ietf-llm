@@ -8,6 +8,8 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..months import months_request_caution, months_request_error
+from ..paths import valid_corpus_name
+from ..redact import redact_record
 from . import debug_log
 from .common import (
     _corpus_exists,
@@ -16,11 +18,12 @@ from .common import (
     _gather_status_call,
     _offload,
     _stage_phrase,
+    _store_is_local,
     _tool_timeout_seconds,
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 def tool_get_session_log(limit: int, since_seconds: Optional[float]) -> str:
@@ -95,8 +98,7 @@ def _await_gather(corpus: str, budget: float) -> Optional[Dict[str, Any]]:
     Runs inside the `_offload` worker thread, so the blocking `time.sleep` is
     off the event loop and the server stays responsive to other requests.
     """
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     deadline = time.monotonic() + budget
     status = gather_runner.read_status(corpus)
@@ -123,7 +125,7 @@ def _format_waited_result(status: Dict[str, Any], corpus: str) -> str:
     return line
 
 
-def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def tool_start_gather(  # noqa: PLR0913, PLR0917
     corpus: str,
     mailing_list: Optional[List[str]] = None,
     draft: Optional[List[str]] = None,
@@ -138,14 +140,13 @@ def tool_start_gather(  # pylint: disable=too-many-arguments,too-many-positional
     force: bool = False,
     wait: Optional[float] = None,
 ) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     wait_started = time.monotonic()
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a corpus name to gather (e.g. a WG shortname like `tls`)."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return (
             f"'{corpus}' is not a valid corpus name. Use letters, digits, "
             "'.', '-' or '_' (no path separators or spaces), starting with a "
@@ -264,13 +265,12 @@ def _format_start_result(result: Dict[str, Any], corpus: str) -> str:
 def tool_gather_status(
     corpus: Optional[str] = None, wait: Optional[float] = None
 ) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     wait_started = time.monotonic()
     if corpus:
         corpus = corpus.strip()
-        if not gather_runner.valid_corpus_name(corpus):
+        if not valid_corpus_name(corpus):
             return f"'{corpus}' is not a valid corpus name."
         status = gather_runner.read_status(corpus)
         if status is None:
@@ -292,16 +292,30 @@ def tool_gather_status(
 
 
 def tool_stop_gather(corpus: str, token: str) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from ..gather import runner as gather_runner  # noqa: PLC0415
 
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide the corpus name of the gather to stop."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
     return _format_stop_result(
         gather_runner.request_stop(corpus, (token or "").strip()), corpus
+    )
+
+
+def _stop_effect() -> str:
+    """What a stopped gather leaves behind, for the backend in use. Local: the
+    gather writes into the live cache, so a stop only ends the process and
+    whatever it already wrote stays. Cloud: nothing is visible until publish."""
+    if _store_is_local():
+        return (
+            "Files the gather already wrote stay in place (it writes into the "
+            "live cache); the search index stays the previous one."
+        )
+    return (
+        "The partial gather is not published, so the corpus keeps its "
+        "previous contents (if any)."
     )
 
 
@@ -311,8 +325,7 @@ def _format_stop_result(result: Dict[str, Any], corpus: str) -> str:
         return (
             f"Requested stop for '{corpus}'. It ends at the next stage boundary "
             f'(download batch / stage); poll `gather_status(corpus="{corpus}")` '
-            "until it reports `cancelled`. The partial gather is not published, "
-            "so the corpus keeps its previous contents (if any)."
+            f"until it reports `cancelled`. {_stop_effect()}"
         )
     reason = result.get("reason")
     if reason == "not running":
@@ -328,11 +341,22 @@ def _format_stop_result(result: Dict[str, Any], corpus: str) -> str:
     return f"'{corpus}' is not a valid corpus name."
 
 
+def _cancelled_effect() -> str:
+    if _store_is_local():
+        return "files already written stay in place, search index unchanged"
+    return "partial gather discarded"
+
+
 def _format_gather_status(status: Dict[str, Any]) -> str:
-    """One compact line for a gather status record."""
+    """One compact line for a gather status record. Redacted again here: a
+    record stored before the writer did so, or by an older host in a mixed
+    fleet, must not show a URL's credentials."""
+    status = redact_record(status)
     corpus = status.get("corpus", "?")
     state = status.get("state", "?")
     parts = [f"**{corpus}** — {state}"]
+    if status.get("driver") == "cli":
+        parts.append("via the ietf-llm CLI")
     if state == "queued":
         parts.append("waiting for a gather slot (gathers are capped to a few at once)")
     if state == "running":
@@ -360,7 +384,7 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
     if state == "interrupted":
         parts.append("the gather process ended before completion; re-run it")
     if state == "cancelled":
-        parts.append("stopped on request; partial gather discarded, re-run to retry")
+        parts.append(f"stopped on request; {_cancelled_effect()}, re-run to retry")
     if state == "failed" and status.get("error"):
         parts.append(f"error: {status['error']}")
     line = " · ".join(parts)
@@ -373,9 +397,7 @@ def _format_gather_status(status: Dict[str, Any]) -> str:
 
 
 def tool_suggest_github_repos(corpus: str) -> str:
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
-    from ..gather.sources.repo_discovery import (  # pylint: disable=import-outside-toplevel
+    from ..gather.sources.repo_discovery import (  # noqa: PLC0415
         discover_group_repos,
         format_discovery,
     )
@@ -383,14 +405,14 @@ def tool_suggest_github_repos(corpus: str) -> str:
     corpus = (corpus or "").strip()
     if not corpus:
         return "Provide a Working Group shortname (e.g. `tls`) to discover repos for."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
     return format_discovery(discover_group_repos(corpus))
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
-    async def start_gather(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    async def start_gather(  # noqa: PLR0913, PLR0917
         corpus: str,
         mailing_list: Optional[List[str]] = None,
         draft: Optional[List[str]] = None,
@@ -425,8 +447,13 @@ def register(server: "FastMCP") -> None:
         The corpus isn't queryable until `done`. While a **first** gather
         runs the read tools refuse (there's no prior snapshot to serve),
         telling you the stage and how many are left — so poll rather than
-        read early. A **re-gather** keeps serving the previous snapshot
-        (flagged as a refresh in progress), so querying it meanwhile is fine.
+        read early. A **re-gather** stays readable (responses are flagged as a
+        refresh in progress), but what you see depends on the backend. On the
+        default local backend the files are updated in place, so counts and
+        file lists (a `grep_corpus` scan, say) can change between calls; only
+        the search index is the previous one until it is swapped. On the cloud
+        backend readers see the last published version until the gather
+        publishes.
 
         The corpus **shape is inferred** from what you pass — you don't
         declare it:
@@ -548,12 +575,14 @@ def register(server: "FastMCP") -> None:
         corpus: Optional[str] = None, wait: Optional[float] = None
     ) -> str:
         """Report the progress of background gathers started with
-        `start_gather`.
+        `start_gather` — and of gathers the `ietf-llm` CLI runs (a cron
+        refresh, say), which record their progress the same way and are
+        marked as the CLI's.
 
         With `corpus`, returns that corpus's state: `running` (with the
         current stage, e.g. `stage 7/17 (github issues)`, and elapsed
         time), `done`, `failed` (with the error), or `interrupted` (the
-        server process ended mid-gather — re-run `start_gather`). With no
+        gathering process ended mid-gather — re-run `start_gather`). With no
         argument, lists every recorded gather, most-recently-active
         first. Once a corpus reports `done`, the read tools (`overview`,
         `search_corpus`, …) work on it.
@@ -606,8 +635,10 @@ def register(server: "FastMCP") -> None:
         Cooperative and best-effort: the gather ends at its next stage
         boundary or download batch, so this reports that a stop was
         *requested* — poll `gather_status(corpus=...)` until it reports
-        `cancelled`. The partial download is discarded (not published), so a
-        previously-gathered snapshot of the corpus is left intact.
+        `cancelled`. On the cloud backend the partial gather is discarded (not
+        published), so the corpus keeps its previous contents. On the default
+        local backend the gather writes into the live cache, so files it
+        already wrote stay in place and only the search index is unchanged.
 
         Requires the `token` returned by the `start_gather` call that began
         this gather: it is the only capability that can stop it, so one
@@ -651,7 +682,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_suggest_github_repos, corpus)
 
 
-def register_session_log(server: "FastMCP") -> None:
+def register_session_log(server: "MCPServer") -> None:
     @server.tool()
     async def get_session_log(
         limit: int = 200, since_seconds: Optional[float] = None

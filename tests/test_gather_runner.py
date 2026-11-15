@@ -22,9 +22,14 @@ import pytest
 from ietf_llm.gather import sequencer as main_mod
 from ietf_llm import config, freshness, months, serve_metrics
 from ietf_llm.gather import runner as gather_runner
+from ietf_llm.paths import valid_corpus_name
+from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.stages import stage_plan
 from ietf_llm.log import Verbosity
 from ietf_llm.paths import get_wg_file_cache_dir
+
+# These tests stub `run_gather` / the stages, which only works in-process.
+pytestmark = pytest.mark.usefixtures("gather_in_process")
 
 
 # --- to_argv suppression flags --------------------------------------------
@@ -269,12 +274,21 @@ def test_cloud_backend_trips_both_without_flags(
     assert seen == {"pdf": True, "raw": True}
 
 
+@pytest.mark.parametrize("outcome", list(GatherOutcome))
+def test_run_gather_returns_the_outcome_not_a_success_flag(
+    monkeypatch: pytest.MonkeyPatch, outcome: GatherOutcome
+) -> None:
+    # SKIPPED used to read as success, so the runner published an unchanged tree.
+    monkeypatch.setattr(main_mod, "_gather_one", lambda *a, **k: outcome)
+    assert main_mod.run_gather(["tls"]) is outcome
+
+
 def test_gather_one_returns_false_on_unusable_name(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(main_mod, "_resolve_corpus_shape", lambda a, p, v: None)
     args = main_mod.build_parser().parse_args(["typo"])
-    assert main_mod._gather_one(args, Verbosity.QUIET) is False
+    assert main_mod._gather_one(args, Verbosity.QUIET) is GatherOutcome.UNUSABLE
 
 
 # --- runner ---------------------------------------------------------------
@@ -293,10 +307,10 @@ def _wait_terminal(corpus: str, timeout: float = 5.0) -> dict:
 def test_start_runs_to_done_with_progress(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
+    def fake_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
         progress("mailing list", 1, 2)
         progress("digests", 2, 2)
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", fake_run)
     result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
@@ -315,7 +329,7 @@ def test_gather_records_lifecycle_metrics(
     # The terminal status is written in the inner finally and the metric in the
     # outer one, so poll the metric rather than racing it.
     serve_metrics.reset()
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
     assert _wait_terminal("tls")["state"] == "done"
 
@@ -334,7 +348,7 @@ def test_gather_records_failed_outcome_metric(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     serve_metrics.reset()
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: False)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.UNUSABLE)
     gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
     assert _wait_terminal("tls")["state"] == "failed"
 
@@ -355,10 +369,10 @@ def test_progress_detail_lands_in_status(
     # gather_status can show a long stage moving.
     def fake_run(
         argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None
-    ) -> bool:
+    ) -> GatherOutcome:
         progress("mailing list", 1, 2)
         progress("mailing list", 1, 2, "ietf-http-wg: 5/10 messages downloaded")
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", fake_run)
     gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
@@ -372,9 +386,9 @@ def test_pipeline_notes_land_in_status(
 ) -> None:
     def fake_run(
         argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None
-    ) -> bool:
+    ) -> GatherOutcome:
         note_fn("Auto-tracked 1 GitHub repo(s): httpwg/http-extensions.")
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", fake_run)
     gather_runner.start(gather_runner.GatherSpec(corpus="httpbis"))
@@ -385,7 +399,7 @@ def test_pipeline_notes_land_in_status(
 def test_start_returns_a_cancel_token(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
     assert isinstance(result.get("cancel_token"), str) and result["cancel_token"]
     _wait_terminal("tls")
@@ -399,12 +413,12 @@ def test_request_stop_cancels_running_gather(
 
     def fake_run(
         argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None
-    ) -> bool:
+    ) -> GatherOutcome:
         progress("mailing list", 1, 2)  # running; first cancel poll (none yet)
         started.set()
         proceed.wait(timeout=5.0)
         progress("digests", 2, 2)  # stage transition: polls, sees stop, raises
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", fake_run)
     result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
@@ -443,7 +457,7 @@ def test_request_stop_no_active_gather(isolated_home: Path) -> None:
 def test_start_records_failed_on_unusable_name(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: False)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.UNUSABLE)
     gather_runner.start(gather_runner.GatherSpec(corpus="typo"))
     status = _wait_terminal("typo")
     assert status["state"] == "failed"
@@ -453,7 +467,7 @@ def test_start_records_failed_on_unusable_name(
 def test_start_records_failed_on_exception(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(*_a: Any, **_k: Any) -> bool:
+    def boom(*_a: Any, **_k: Any) -> GatherOutcome:
         raise RuntimeError("network down")
 
     monkeypatch.setattr(main_mod, "run_gather", boom)
@@ -468,10 +482,10 @@ def test_second_start_reports_already_running(
 ) -> None:
     release = threading.Event()
 
-    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
         progress("mailing list", 1, 1)
         release.wait(timeout=5.0)
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", blocking_run)
     first = gather_runner.start(gather_runner.GatherSpec(corpus="httpbis"))
@@ -485,15 +499,66 @@ def test_second_start_reports_already_running(
     _wait_terminal("httpbis")
 
 
+def test_restart_straight_after_a_terminal_status_is_accepted(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that sees `done` and re-calls `start` at once must not be told
+    "already running" while the worker is still releasing the lease and the
+    registry slot behind the terminal status. A slow lease release (a cloud
+    store round-trip) widens that window so the test hits it every time."""
+    from ietf_llm.store.corpus import LocalCorpusStore
+
+    class _SlowRelease(LocalCorpusStore):
+        def release_lease(self, corpus: str, owner: str) -> None:
+            time.sleep(0.3)
+            super().release_lease(corpus, owner)
+
+    _patch_store(monkeypatch, _SlowRelease())
+    ran: List[str] = []
+
+    def fake_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
+        ran.append(argv[0])
+        return GatherOutcome.GATHERED
+
+    monkeypatch.setattr(main_mod, "run_gather", fake_run)
+    assert gather_runner.start(gather_runner.GatherSpec(corpus="tls"))["started"]
+    assert _wait_terminal("tls")["state"] == "done"
+    # The terminal state is on disk; the worker is still inside release_lease.
+    assert gather_runner.local_inflight("tls") is None
+    second = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
+    assert second["started"] is True, second
+    deadline = time.time() + 5.0
+    while len(ran) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    assert ran == ["tls", "tls"]
+    _wait_terminal("tls")
+
+
+def test_start_gives_up_on_a_wedged_finish(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wait for a finishing job is bounded: a worker stuck in cleanup
+    yields the ordinary refusal rather than hanging the caller."""
+    monkeypatch.setattr(gather_runner, "_FINISH_WAIT_S", 0.05)
+    with gather_runner._registry_lock:
+        gather_runner._jobs["tls"] = "finishing"
+    try:
+        result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
+    finally:
+        with gather_runner._registry_lock:
+            gather_runner._jobs.pop("tls", None)
+    assert result == {"started": False, "reason": "already running", "corpus": "tls"}
+
+
 def _blocking_gather(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
     """Patch run_gather to block on the returned event, so a gather stays in
     flight while the test inspects the queue."""
     release = threading.Event()
 
-    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
         progress("mailing list", 1, 1)
         release.wait(timeout=5.0)
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", blocking_run)
     return release
@@ -509,14 +574,14 @@ def test_two_corpora_run_concurrently(
     started: set[str] = set()
     lock = threading.Lock()
 
-    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> bool:
+    def blocking_run(argv: List[str], verbosity: Any, progress: Any = None, note_fn: Any = None) -> GatherOutcome:
         progress("mailing list", 1, 1)
         with lock:
             started.add(argv[0])
             if len(started) >= 2:
                 both_running.set()
         release.wait(timeout=5.0)
-        return True
+        return GatherOutcome.GATHERED
 
     monkeypatch.setattr(main_mod, "run_gather", blocking_run)
     first = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
@@ -645,7 +710,7 @@ def test_lease_denied_at_enqueue_refuses_without_clobbering(
 def test_all_statuses_and_read_status(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     assert gather_runner.read_status("nope") is None
     assert gather_runner.all_statuses() == []
     gather_runner.start(gather_runner.GatherSpec(corpus="cfrg"))
@@ -708,7 +773,7 @@ def _backdate_hours(corpus: str, hours: float) -> None:
 def test_start_debounces_a_freshly_gathered_corpus(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(*_a: Any, **_k: Any) -> bool:
+    def boom(*_a: Any, **_k: Any) -> GatherOutcome:
         raise AssertionError("run_gather must not be reached for a fresh corpus")
 
     monkeypatch.setattr(main_mod, "run_gather", boom)
@@ -722,7 +787,7 @@ def test_start_debounces_a_freshly_gathered_corpus(
 def test_start_force_bypasses_debounce(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     freshness.record_gather("tls")
     result = gather_runner.start(gather_runner.GatherSpec(corpus="tls", force=True))
     assert result["started"] is True
@@ -733,7 +798,7 @@ def test_start_source_change_bypasses_debounce(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A request that supplies sources isn't a plain refresh -> not debounced.
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     freshness.record_gather("tls")
     result = gather_runner.start(
         gather_runner.GatherSpec(corpus="tls", draft=["draft-x"])
@@ -745,7 +810,7 @@ def test_start_source_change_bypasses_debounce(
 def test_start_not_debounced_once_stale(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     freshness.record_gather("tls")
     _backdate_hours("tls", freshness.GATHER_MIN_INTERVAL_DEFAULT_HOURS + 1)
     result = gather_runner.start(gather_runner.GatherSpec(corpus="tls"))
@@ -834,7 +899,7 @@ def _seed_corpus(corpus: str, **sources: Any) -> None:
 def test_start_steers_new_overlapping_corpus_to_reuse(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(*_a: Any, **_k: Any) -> bool:
+    def boom(*_a: Any, **_k: Any) -> GatherOutcome:
         raise AssertionError("run_gather must not run for a duplicate corpus")
 
     monkeypatch.setattr(main_mod, "run_gather", boom)
@@ -850,7 +915,7 @@ def test_start_steers_new_overlapping_corpus_to_reuse(
 def test_start_force_bypasses_canonicalisation(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     _seed_corpus("x-existing", draft=["draft-foo-bar"])
     result = gather_runner.start(
         gather_runner.GatherSpec(corpus="x-new", draft=["draft-foo-bar"], force=True)
@@ -862,7 +927,7 @@ def test_start_force_bypasses_canonicalisation(
 def test_start_no_overlap_gathers(
     isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: True)
+    monkeypatch.setattr(main_mod, "run_gather", lambda *a, **k: GatherOutcome.GATHERED)
     _seed_corpus("x-existing", draft=["draft-foo-bar"])
     result = gather_runner.start(
         gather_runner.GatherSpec(corpus="x-new", draft=["draft-distinct"])
@@ -878,7 +943,7 @@ def test_start_no_overlap_gathers(
     "name", ["tls", "httpbis", "last-call", "x-webbotauth", "draft.foo_bar", "a"]
 )
 def test_valid_corpus_name_accepts_real_names(name: str) -> None:
-    assert gather_runner.valid_corpus_name(name) is True
+    assert valid_corpus_name(name) is True
 
 
 @pytest.mark.parametrize(
@@ -889,7 +954,7 @@ def test_valid_corpus_name_accepts_real_names(name: str) -> None:
     ],
 )
 def test_valid_corpus_name_rejects_unsafe(name: str) -> None:
-    assert gather_runner.valid_corpus_name(name) is False
+    assert valid_corpus_name(name) is False
 
 
 def test_start_rejects_traversal_without_writing(

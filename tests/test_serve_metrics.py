@@ -34,7 +34,7 @@ def _reset_metrics():
 
 
 class _FakeServer:
-    def streamable_http_app(self) -> Any:
+    def streamable_http_app(self, **_kwargs: Any) -> Any:
         return Starlette(routes=[])
 
 

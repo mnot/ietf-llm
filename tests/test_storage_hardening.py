@@ -178,12 +178,12 @@ class _RenewSpy:
 
 
 def test_heartbeat_renews_until_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm.gather import runner as gr
+    from ietf_llm.gather import lifecycle
 
-    monkeypatch.setattr(gr, "_LEASE_HEARTBEAT_S", 0.01)
+    monkeypatch.setattr(lifecycle, "LEASE_HEARTBEAT_S", 0.01)
     spy: Any = _RenewSpy(result=True)
     stop = threading.Event()
-    t = threading.Thread(target=gr._heartbeat_lease, args=(spy, "tls", "me", stop))
+    t = threading.Thread(target=lifecycle.heartbeat, args=(spy, "tls", "me", stop))
     t.start()
     time.sleep(0.06)
     stop.set()
@@ -193,12 +193,12 @@ def test_heartbeat_renews_until_stopped(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_heartbeat_stops_when_lease_lost(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ietf_llm.gather import runner as gr
+    from ietf_llm.gather import lifecycle
 
-    monkeypatch.setattr(gr, "_LEASE_HEARTBEAT_S", 0.01)
+    monkeypatch.setattr(lifecycle, "LEASE_HEARTBEAT_S", 0.01)
     spy: Any = _RenewSpy(result=False)  # lease was stolen after an expiry
     stop = threading.Event()
-    t = threading.Thread(target=gr._heartbeat_lease, args=(spy, "tls", "me", stop))
+    t = threading.Thread(target=lifecycle.heartbeat, args=(spy, "tls", "me", stop))
     t.start()
     t.join(timeout=1.0)
     assert not t.is_alive()  # exited on its own once renew returned False
@@ -398,7 +398,7 @@ def test_publish_includes_extra_files(tmp_path: Path) -> None:
 
 def test_publish_tolerates_extra_file_vanishing_mid_upload(tmp_path: Path) -> None:
     """An `extra_files` entry (the split-index files) can disappear benignly
-    between `_index_extra_files` listing it and `publish` reading it — e.g.
+    between `index_extra_files` listing it and `publish` reading it — e.g.
     SQLite checkpointing away `embeddings.db`'s WAL/SHM sidecars. That must
     not fail the whole gather, and the vanished file must not be named in the
     manifest either (a materialising reader later would otherwise find the
@@ -531,20 +531,20 @@ def test_publish_still_raises_for_a_namesake_with_no_sibling_db(
 def test_index_extra_files_empty_when_inside_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm.gather import runner as gr
+    from ietf_llm.gather import lifecycle
 
     ws = tmp_path / "cache" / "tls"
     ws.mkdir(parents=True)
     (ws / "embeddings.db").write_bytes(b"DB")
     # Default layout: index dir == cache, so the version walk already gets it.
-    monkeypatch.setattr(gr, "get_index_dir", lambda: str(tmp_path / "cache"))
-    assert gr._index_extra_files("tls", str(ws)) == {}
+    monkeypatch.setattr(lifecycle, "get_index_dir", lambda: str(tmp_path / "cache"))
+    assert lifecycle.index_extra_files("tls", str(ws)) == {}
 
 
 def test_index_extra_files_captures_split_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ietf_llm.gather import runner as gr
+    from ietf_llm.gather import lifecycle
 
     ws = tmp_path / "cache" / "tls"
     ws.mkdir(parents=True)
@@ -552,8 +552,8 @@ def test_index_extra_files_captures_split_index(
     (split / "tls").mkdir(parents=True)
     (split / "tls" / "embeddings.db").write_bytes(b"DB")
     (split / "tls" / "embeddings.db-wal").write_bytes(b"W")  # sidecar too
-    monkeypatch.setattr(gr, "get_index_dir", lambda: str(split))
-    extras = gr._index_extra_files("tls", str(ws))
+    monkeypatch.setattr(lifecycle, "get_index_dir", lambda: str(split))
+    extras = lifecycle.index_extra_files("tls", str(ws))
     assert set(extras) == {"embeddings.db", "embeddings.db-wal"}
     assert extras["embeddings.db"] == str(split / "tls" / "embeddings.db")
 
@@ -566,7 +566,7 @@ def test_index_extra_files_excludes_non_index_files(
     must not be uploaded to the version root as if it were corpus content
     (the write-side half of the issue #224 round trip: a future re-widening
     of this filter is what the read side's regression test can't catch)."""
-    from ietf_llm.gather import runner as gr
+    from ietf_llm.gather import lifecycle
 
     ws = tmp_path / "cache" / "tls"
     ws.mkdir(parents=True)
@@ -574,8 +574,8 @@ def test_index_extra_files_excludes_non_index_files(
     (split / "tls").mkdir(parents=True)
     (split / "tls" / "embeddings.db").write_bytes(b"DB")
     (split / "tls" / "documents.json").write_text("{}")  # not an index file
-    monkeypatch.setattr(gr, "get_index_dir", lambda: str(split))
-    extras = gr._index_extra_files("tls", str(ws))
+    monkeypatch.setattr(lifecycle, "get_index_dir", lambda: str(split))
+    extras = lifecycle.index_extra_files("tls", str(ws))
     assert set(extras) == {"embeddings.db"}
 
 

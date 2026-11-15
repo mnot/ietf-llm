@@ -6,17 +6,26 @@ import html
 import imaplib
 import os
 import re
+import ssl
 from datetime import datetime, timedelta
 from email.message import EmailMessage, MIMEPart
 from typing import Callable, Dict, List, NamedTuple, Optional
 
+import certifi
 import requests
 
-from ...atomicio import atomic_open_binary, write_if_changed
+from ...atomicio import write_if_changed
 from ...datatracker_api import get_mailing_list_name
 from ...log import LogLevel, Verbosity, log
 from ...net import DEFAULT_HEADERS, governed_get
 from ...paths import get_cache_dir, raw_dir, raw_mail_archive_path
+from ...tls import certificate_error, certificate_hint, system_trust_context
+from .imap_fetch import (
+    BISECT_MAX_REQUESTS,
+    ShortFetch,
+    fetch_into_cache,
+    isolate_undeliverable,
+)
 
 IMAP_SERVER = "imap.ietf.org"
 IMAP_PORT = 993
@@ -36,6 +45,16 @@ IMAP_TIMEOUT = 60
 # without turning a genuinely-down server into a long stall. A folder that
 # won't select is *not* retried — that's a wrong list name, not a transient.
 IMAP_RETRIES = 1
+# Per-list file recording the IMAP UIDVALIDITY the cached `<uid>.eml` files were
+# fetched under. UIDs only name a message within one UIDVALIDITY epoch.
+UIDVALIDITY_FILE = ".uidvalidity"
+_LIST_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+# Where a list's cached messages go when the server renumbers the folder:
+# `<list>/epoch-<old UIDVALIDITY>/`. Their UIDs no longer name anything on the
+# server, but the messages are still real mail (and the only copy of anything
+# older than the search window), and thread reconstruction walks the list dir
+# recursively, so they keep their threads.
+EPOCH_DIR_PREFIX = "epoch-"
 
 
 def validate_list_names(
@@ -56,7 +75,7 @@ def validate_list_names(
         norm = normalize_list_name(raw)
         if not norm:
             log(
-                f"--mailing-list {raw!r}: empty name; not persisting.",
+                f"--mailing-list {raw!r}: not a mailing list name; not persisting.",
                 verbose,
                 level=LogLevel.STATUS,
             )
@@ -99,12 +118,14 @@ def normalize_list_name(raw: str) -> str:
 
     Whitespace stripped; case lowered to match IMAP folder convention.
     Used by both `--mailing-list` argument parsing and the sync entry
-    point so callers can pass either form.
+    point so callers can pass either form. A name that is not a plain
+    list name (it becomes a directory and an IMAP folder) comes back
+    empty, which callers already treat as "no list".
     """
     cleaned = raw.strip().lower()
     if "@" in cleaned:
         cleaned = cleaned.split("@", 1)[0]
-    return cleaned
+    return cleaned if _LIST_NAME_RE.fullmatch(cleaned) else ""
 
 
 def extract_text_content(msg: EmailMessage) -> str:
@@ -154,7 +175,7 @@ def clean_email_text(text: str) -> str:
     text = html.unescape(text)
 
     lines = text.splitlines()
-    cleaned_lines = []
+    cleaned_lines: List[str] = []
 
     # Common signature starts (case-insensitive)
     sig_patterns = [
@@ -203,11 +224,20 @@ def _download_batches(
     cache_dir: str,
     verbose: Verbosity,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    isolate: bool = False,
 ) -> int:
     """Download messages in batches and save to cache. Returns count of new
     messages. `on_progress`, when given, is called after each batch with
-    `(downloaded_so_far, total_to_download)` for live progress reporting."""
-    new_count = 0
+    `(downloaded_so_far, total_to_download)` for live progress reporting.
+
+    Every batch is attempted, then `ShortFetch` is raised if any requested UID
+    was not written: a non-OK reply, or a reply that left some UIDs out, would
+    otherwise read as a complete sync and the mail would be absent from this
+    run's threads. With `isolate` (the final attempt), a batch that came up
+    short is halved to find which UIDs the server won't deliver."""
+    written: set[str] = set()
+    undeliverable: List[str] = []
+    budget = [BISECT_MAX_REQUESTS]
     log(
         f"Downloading {len(missing_uids)} new messages in batches of {BATCH_SIZE}...",
         verbose,
@@ -215,46 +245,157 @@ def _download_batches(
     )
     for i in range(0, len(missing_uids), BATCH_SIZE):
         batch = missing_uids[i : i + BATCH_SIZE]
-        batch_str = ",".join(b.decode() for b in batch)
-        status, msg_data = mail.uid("fetch", batch_str, "(RFC822)")
+        got = fetch_into_cache(mail, batch, cache_dir, verbose)
+        written |= got
+        left = [uid for uid in batch if uid.decode() not in got]
+        if left and isolate:
+            more, bad = isolate_undeliverable(mail, left, cache_dir, verbose, budget)
+            written |= more
+            undeliverable.extend(bad)
 
-        if status != "OK" or not msg_data:
-            continue
-
-        for item in msg_data:
-            if not isinstance(item, tuple) or len(item) < 2:
-                continue
-
-            # item[0] is the response header, item[1] is the message body
-            header = item[0]
-            if not isinstance(header, bytes):
-                continue
-            resp_header = header.decode()
-
-            # Find UID in the response header
-            uid_match = re.search(r"UID\s+(\d+)", resp_header)
-            if not uid_match:
-                continue
-
-            msg_uid = uid_match.group(1)
-            cache_file = os.path.join(cache_dir, f"{msg_uid}.eml")
-            body = item[1]
-            if not isinstance(body, bytes):
-                continue
-
-            with atomic_open_binary(cache_file) as file_handle:
-                file_handle.write(body)
-            new_count += 1
-
-        if new_count > 0:
+        if written:
             log(
-                f"Downloaded {new_count}/{len(missing_uids)} new messages...",
+                f"Downloaded {len(written)}/{len(missing_uids)} new messages...",
                 verbose,
                 level=LogLevel.PROGRESS,
             )
         if on_progress is not None:
-            on_progress(new_count, len(missing_uids))
-    return new_count
+            on_progress(len(written), len(missing_uids))
+    if len(written) < len(missing_uids):
+        raise ShortFetch(
+            len(missing_uids) - len(written), len(missing_uids), undeliverable
+        )
+    return len(written)
+
+
+#: Per-list sidecar recording the UIDVALIDITY the server reported *this gather*.
+#: Lets the cloud persist tell "this gather confirmed the local cache's epoch
+#: with the server" from "the cache is whatever an earlier run left" -- only the
+#: former may replace stored mail. A file rather than process memory because the
+#: sync runs in the gather child and the persist in the server that spawned it.
+#: Scoped to one gather: `forget_verified` deletes a corpus's sidecars when its
+#: gather starts, and each list's sync deletes its own before reaching the
+#: server, so a gather that never syncs a list (its discovery failed, or the
+#: list left the corpus) can't inherit an earlier gather's confirmation. It says
+#: only that the server's epoch matched the local one: a FETCH shortfall (see
+#: `ShortFetch`) leaves it in place, because the persist archives the old
+#: epoch's mail before replacing it.
+VERIFIED_FILE = ".verified-uidvalidity"
+
+
+def verified_uidvalidity(cache_dir: str) -> Optional[str]:
+    """The epoch the server confirmed for `cache_dir` during this gather's sync,
+    or `None` if the sync didn't reach the server (or hasn't run)."""
+    return _read_epoch(os.path.join(cache_dir, VERIFIED_FILE))
+
+
+def record_verified(cache_dir: str, epoch: str) -> None:
+    """Record that the server confirmed `epoch` for `cache_dir` this gather. A
+    write failure leaves the epoch unconfirmed, the safe side for persist."""
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        write_if_changed(os.path.join(cache_dir, VERIFIED_FILE), epoch)
+    except OSError as err:
+        # Without this, persist's later "was not confirmed" points at the IMAP
+        # server when the cause is the disk.
+        log(
+            f"could not record the confirmed UIDVALIDITY for {cache_dir}: {err}; "
+            "the cloud persist will not replace stored mail for this list",
+            level=LogLevel.WARN,
+        )
+
+
+def clear_verified(cache_dir: str) -> None:
+    """Drop `cache_dir`'s confirmation, if any."""
+    try:
+        os.remove(os.path.join(cache_dir, VERIFIED_FILE))
+    except FileNotFoundError:
+        pass
+
+
+def forget_verified(wg_name: str) -> None:
+    """Drop every confirmation recorded for `wg_name`'s lists, so a new gather
+    starts with none."""
+    root = os.path.join(get_cache_dir(), "imap-cache", wg_name)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    for name in names:
+        list_dir = os.path.join(root, name)
+        # A stray file here must not abort the caller (hydrate).
+        if os.path.isdir(list_dir):
+            clear_verified(list_dir)
+
+
+def _read_epoch(path: str) -> Optional[str]:
+    """The bare-number epoch in `path`, or `None` if it is missing or holds
+    anything else."""
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    return text.decode("ascii") if text.isdigit() else None
+
+
+def read_uidvalidity(cache_dir: str) -> Optional[str]:
+    """The epoch recorded for a list's cache, or `None` if there is no usable
+    marker. A marker that isn't a bare number counts as absent, so a corrupt one
+    is adopted over rather than read as a changed epoch."""
+    return _read_epoch(os.path.join(cache_dir, UIDVALIDITY_FILE))
+
+
+def _server_uidvalidity(mail: imaplib.IMAP4_SSL) -> Optional[str]:
+    """UIDVALIDITY the server reported for the selected folder, or `None` if it
+    didn't (or sent something unparseable)."""
+    try:
+        _, data = mail.response("UIDVALIDITY")
+    except (imaplib.IMAP4.error, OSError):
+        return None
+    raw = data[0] if data else None
+    # imaplib's response-code regex is greedy, so trailing text containing a
+    # further `]` comes through attached to the number; take just the digits.
+    match = re.match(rb"\s*(\d+)(?!\w)", raw) if isinstance(raw, bytes) else None
+    return match.group(1).decode() if match else None
+
+
+def _reconcile_uidvalidity(
+    mail: imaplib.IMAP4_SSL, cache_dir: str, verbose: Verbosity
+) -> None:
+    """Drop the cached messages when the folder's UIDVALIDITY has changed.
+
+    A changed value means the server renumbered the folder, so a cached
+    `<uid>.eml` may be a different message from the one now at that UID -- and
+    the "already cached" check would then skip fetching the real one. The cache
+    is refetched rather than trusted, and the old files move to
+    `epoch-<old>/` rather than being deleted: a windowed refetch can't bring
+    back mail older than the window. A cache with no recorded epoch (first sync,
+    or one that predates the marker) is adopted as-is."""
+    current = _server_uidvalidity(mail)
+    if current is None:
+        log(
+            "  server reported no usable UIDVALIDITY; cached messages not checked.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        return
+    previous = read_uidvalidity(cache_dir)
+    if previous is not None and previous != current:
+        archive = os.path.join(cache_dir, f"{EPOCH_DIR_PREFIX}{previous}")
+        log(
+            f"  UIDVALIDITY changed ({previous} -> {current}); moving the cached "
+            f"messages for this list to {os.path.basename(archive)}/ and refetching.",
+            verbose,
+            level=LogLevel.WARN,
+        )
+        os.makedirs(archive, exist_ok=True)
+        for name in os.listdir(cache_dir):
+            if name.endswith(".eml"):
+                os.replace(os.path.join(cache_dir, name), os.path.join(archive, name))
+    if previous != current:
+        write_if_changed(os.path.join(cache_dir, UIDVALIDITY_FILE), current)
+    record_verified(cache_dir, current)
 
 
 class _FolderSelectError(Exception):
@@ -306,12 +447,29 @@ def _folder_freshness(mail: imaplib.IMAP4_SSL) -> Optional[_FolderFreshness]:
         return None
 
 
+def _imap_ssl_context() -> ssl.SSLContext:
+    """A context that verifies the server certificate and hostname.
+
+    `imaplib.IMAP4_SSL` with no `ssl_context` builds an *unverified* one, so
+    this is never optional. Without the platform trust store (opted out, or
+    unusable here) it is OpenSSL's defaults plus certifi's bundle, which is
+    what `IETF_LLM_SYSTEM_TRUST_STORE=off` promises and the only anchors an
+    image without `ca-certificates` has.
+    """
+    context = system_trust_context()
+    if context is None:
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 def _imap_sync_attempt(
     list_name: str,
     months: Optional[int],
     cache_dir: str,
     verbose: Verbosity,
     on_progress: Optional[Callable[[int, int], None]],
+    isolate: bool = False,
 ) -> tuple[List[str], int, Optional[_FolderFreshness]]:
     """One IMAP connect -> select -> search -> download pass for a single list.
 
@@ -321,14 +479,17 @@ def _imap_sync_attempt(
     the caller treats an unprobeable folder as unknown, not as empty. Raises
     `_FolderSelectError` when the folder can't be selected (not retryable) and
     `imaplib.IMAP4.error` / `OSError` on a connection-level fault the caller may
-    retry."""
-    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT)
+    retry; `ShortFetch` (an `IMAP4.error`) when some messages were not fetched."""
+    mail = imaplib.IMAP4_SSL(
+        IMAP_SERVER, IMAP_PORT, timeout=IMAP_TIMEOUT, ssl_context=_imap_ssl_context()
+    )
     try:
         mail.login(IMAP_USER, IMAP_PASS)
         folder = f'"Shared Folders/{list_name}"'
         status, _ = mail.select(folder, readonly=True)
         if status != "OK":
             raise _FolderSelectError(folder)
+        _reconcile_uidvalidity(mail, cache_dir, verbose)
         search_criteria = "ALL"
         if months:
             since_date = (datetime.now() - timedelta(days=30 * months)).strftime(
@@ -357,9 +518,13 @@ def _imap_sync_attempt(
         missing_uids = [uid for uid in uids if f"{uid.decode()}.eml" not in cached]
         new_count = 0
         if missing_uids:
-            new_count = _download_batches(
-                mail, missing_uids, cache_dir, verbose, on_progress
-            )
+            try:
+                new_count = _download_batches(
+                    mail, missing_uids, cache_dir, verbose, on_progress, isolate
+                )
+            except ShortFetch as short:
+                short.uids = [u.decode() for u in uids]
+                raise
         # Probe whenever the search came up empty, windowed or not: on an
         # all-history search the probe is a second no-op SEARCH ALL, and its
         # success is what distinguishes a folder we know is empty from one we
@@ -407,6 +572,19 @@ def _empty_window_message(
     )
 
 
+def _undeliverable_detail(short: ShortFetch) -> str:
+    """The UIDs the server refused to deliver one at a time, for the shortfall
+    note; any remainder is a part of the batch the request cap left unexamined."""
+    if not short.undeliverable:
+        return ""
+    shown = ", ".join(short.undeliverable[:20])
+    extra = len(short.undeliverable) - 20
+    more = f" and {extra} more" if extra > 0 else ""
+    unexamined = short.missing - len(short.undeliverable)
+    rest = f"; {unexamined} others not isolated" if unexamined > 0 else ""
+    return f" (undeliverable UIDs: {shown}{more}{rest})"
+
+
 def _sync_one_list(
     wg_name: str,
     list_name: str,
@@ -441,12 +619,20 @@ def _sync_one_list(
 
     cache_dir = os.path.join(get_cache_dir(), "imap-cache", wg_name, list_name)
     os.makedirs(cache_dir, exist_ok=True)
+    clear_verified(cache_dir)
     window = f"the last {months} month(s)" if months else "all history"
+    fetched_before_retry = 0
     for attempt in range(IMAP_RETRIES + 1):
         try:
             uids, new_count, freshness = _imap_sync_attempt(
-                list_name, months, cache_dir, verbose, on_progress
+                list_name,
+                months,
+                cache_dir,
+                verbose,
+                on_progress,
+                attempt == IMAP_RETRIES,
             )
+            new_count += fetched_before_retry
         except _FolderSelectError:
             report(
                 f"Mailing list '{list_name}': no such folder on the IETF IMAP "
@@ -455,18 +641,42 @@ def _sync_one_list(
                 LogLevel.ERROR,
             )
             return []
-        except (imaplib.IMAP4.error, OSError) as err:
+        except ShortFetch as short:
+            fetched_before_retry += short.written
             if attempt < IMAP_RETRIES:
+                log(
+                    f"  {short} on '{list_name}'; retrying...",
+                    verbose,
+                    level=LogLevel.WARN,
+                )
+                continue
+            # What did arrive is cached and threaded; what didn't is missing
+            # until a later gather fetches it. The epoch stays confirmed: the
+            # server did vouch for it, and the cloud persist archives the old
+            # epoch's mail before replacing it, so a partial new epoch loses
+            # nothing.
+            report(
+                f"Mailing list '{list_name}': {short.missing} message(s) in "
+                f"{window} could not be fetched after {IMAP_RETRIES + 1} "
+                f"attempts{_undeliverable_detail(short)}; they are missing from "
+                "this run's threads until a later gather fetches them.",
+                LogLevel.ERROR,
+            )
+            return short.uids
+        except (imaplib.IMAP4.error, OSError) as err:
+            # A certificate that fails verification will fail again.
+            bad_cert = certificate_error(err) is not None
+            if attempt < IMAP_RETRIES and not bad_cert:
                 log(
                     f"  IMAP error on '{list_name}' ({err}); retrying...",
                     verbose,
                     level=LogLevel.WARN,
                 )
                 continue
+            tried = "" if bad_cert else f" after {IMAP_RETRIES + 1} attempts"
             report(
-                f"Mailing list '{list_name}': IMAP sync failed after "
-                f"{IMAP_RETRIES + 1} attempts ({err}); no mail gathered "
-                "this run.",
+                f"Mailing list '{list_name}': IMAP sync failed{tried} "
+                f"({err}){certificate_hint(err)}; no mail gathered this run.",
                 LogLevel.ERROR,
             )
             return []
@@ -535,7 +745,7 @@ def sync_mailing_list(
     list_names: List[str] = []
     seen: set[str] = set()
     if auto_discover:
-        auto = get_mailing_list_name(wg_name)
+        auto = normalize_list_name(get_mailing_list_name(wg_name) or "")
         if auto:
             list_names.append(auto)
             seen.add(auto)
@@ -575,9 +785,7 @@ def sync_mailing_list(
             # Bind the list name so the caller can label progress when a WG
             # follows several lists. Default-arg capture avoids the late-binding
             # loop-variable trap.
-            def per_list_cb(  # pylint: disable=function-redefined
-                done: int, total: int, _name: str = list_name
-            ) -> None:
+            def per_list_cb(done: int, total: int, _name: str = list_name) -> None:
                 on_progress(_name, done, total)
 
         per_list_uids[list_name] = _sync_one_list(

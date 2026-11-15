@@ -1,17 +1,27 @@
+import hashlib
 import json
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
-from ...atomicio import atomic_open_binary, write_if_changed
+from ...atomicio import atomic_open, atomic_open_binary, write_if_changed
 from ...log import LogLevel, Verbosity, log
 from ...months import window_start
-from ...net import DEFAULT_HEADERS, clean_html, fetch_resource, governed_get
+from ...net import (
+    DEFAULT_HEADERS,
+    clean_html,
+    fetch_resource,
+    http_metrics,
+    http_session,
+)
+from ...net.http_governor import host_slot
+from ...net.transport import meter_stream
 from ...paths import (
     ORPHAN_MEETING_CODE,
     agenda_path,
@@ -38,6 +48,55 @@ def format_filename(name: str) -> str:
 # (numerous) revisions every gather.
 _REV_GATED_KINDS = ("minutes", "agenda")
 
+#: Layout version of the minutes / agenda aggregates, recorded per file in
+#: the materials manifest. Bump it to regenerate every already-gathered
+#: aggregate once, since `_needs_rebuild` otherwise fires only on a
+#: document revision change. 2: sessions sharing an identical body are
+#: written once under a merged heading.
+_AGGREGATE_FORMAT = "2"
+
+
+def _format_key(code: str, kind: str) -> str:
+    """Manifest key recording the layout version of one aggregate. The
+    colon keeps it clear of document names, which share the manifest."""
+    return f"format:{code}/{kind}"
+
+
+@dataclass
+class _Block:
+    """One distinct body in an aggregate, with every session and URL that
+    carried it."""
+
+    body: str
+    sessions: List[Tuple[str, str]] = field(default_factory=list)  # (date, number)
+    urls: List[str] = field(default_factory=list)
+
+    def add(self, date: str, number: str, url: str) -> None:
+        if (date, number) not in self.sessions:
+            self.sessions.append((date, number))
+        if url not in self.urls:
+            self.urls.append(url)
+
+
+def _block_heading(sessions: List[Tuple[str, str]]) -> str:
+    """`## Session <date> (<number>)` for one session; for several, one
+    `## Sessions` heading naming each, grouped by date."""
+    if len(sessions) == 1:
+        date, number = sessions[0]
+        return f"## Session {date} ({number})\n"
+    by_date: Dict[str, List[str]] = {}
+    for date, number in sessions:
+        numbers = by_date.setdefault(date, [])
+        if number not in numbers:
+            numbers.append(number)
+    groups = "; ".join(f"{date} ({', '.join(nums)})" for date, nums in by_date.items())
+    return f"## Sessions {groups}\n"
+
+
+def _render_block(block: _Block) -> str:
+    urls = "".join(f"URL: {url}\n" for url in block.urls)
+    return f"{_block_heading(block.sessions)}{urls}\n{block.body}\n\n---\n\n"
+
 
 @dataclass
 class MeetingCluster:
@@ -46,8 +105,8 @@ class MeetingCluster:
     Datatracker lists each interim *session* as its own row. A
     multi-day interim event (or several sessions on one day) is one
     meeting; we cluster contiguous-date interim rows into a single
-    `MeetingCluster` with one canonical `code` (the earliest
-    session's) and a date span. Numbered IETF meetings are never
+    `MeetingCluster` with one canonical `code` (`interim<YYYYMMDD>` of
+    the earliest session's date) and a date span. Numbered IETF meetings are never
     clustered — each is already one event, in its own singleton
     cluster.
 
@@ -55,7 +114,7 @@ class MeetingCluster:
     matching can ask "does this transcript's date fall in the span?".
     """
 
-    code: str  # canonical safe-code, e.g. "interim2026aipref05"
+    code: str  # canonical safe-code, e.g. "interim20260414"
     start: datetime
     end: datetime
     sessions: List[Dict[str, Any]] = field(default_factory=list)
@@ -399,14 +458,17 @@ def _needs_rebuild(
     links: List[Dict[str, Any]],
     revs: Dict[str, str],
     manifest: Dict[str, str],
+    format_key: str,
 ) -> bool:
     """Whether a minutes / agenda aggregate must be re-fetched & rebuilt.
 
-    True if the output file is missing, or any constituent document's
-    current revision differs from what we last wrote (manifest). A doc
-    with no known current rev (not in `revs`) is treated as changed so
-    we don't silently freeze it."""
+    True if the output file is missing, was written under an older
+    layout (`format_key` not stamped at `_AGGREGATE_FORMAT`), or any
+    constituent document's current revision differs from what we last
+    wrote (manifest)."""
     if not os.path.isfile(out_file):
+        return True
+    if manifest.get(format_key) != _AGGREGATE_FORMAT:
         return True
     for link in links:
         docname = link["docname"]
@@ -438,8 +500,9 @@ def _process_cluster(
     os.makedirs(canonical, exist_ok=True)
 
     # Fold in any pre-existing per-session dirs (migration from the
-    # old one-dir-per-row layout).
-    for session in cluster.sessions[1:]:
+    # old one-dir-per-row layout). Every session's: the canonical code is
+    # date-based, so even the first session's old dir is a different one.
+    for session in cluster.sessions:
         _absorb_meeting_dir(
             meeting_dir(destination, _safe_meeting_code(session["number"])),
             canonical,
@@ -479,7 +542,13 @@ def _process_cluster(
         ]
         if not links:
             continue
-        if not _needs_rebuild(out_file, links, revs, manifest):
+        fmt_key = _format_key(code, kind)
+        # A lone link renders as one block in every layout so far, so an
+        # existing file needs no refetch to be current; just stamp it.
+        # Revisit when bumping _AGGREGATE_FORMAT.
+        if len(links) == 1 and os.path.isfile(out_file):
+            manifest[fmt_key] = _AGGREGATE_FORMAT
+        if not _needs_rebuild(out_file, links, revs, manifest, fmt_key):
             log(
                 f"Skipping {code} {kind}: unchanged.",
                 verbose,
@@ -489,19 +558,46 @@ def _process_cluster(
 
         parts: List[str] = _header(title)
         fetched: List[Dict[str, Any]] = []
+        # Sessions often point at one shared document (or re-upload the
+        # same text), so a body already written for this cluster is not
+        # repeated: its session joins the earlier block instead.
+        blocks: List[_Block] = []
+        by_digest: Dict[str, _Block] = {}
+        texts: Dict[str, Optional[str]] = {}
         for session in cluster.sessions:
             session_date = session.get("date", "")
             for link in session["links"]:
                 if link["type"] != kind:
                     continue
-                content = _fetch_text(link["url"], verbose)
+                url = link["url"]
+                # A document attached to several sessions is listed once
+                # per session; fetch it once.
+                if url not in texts:
+                    texts[url] = _fetch_text(url, verbose)
+                content = texts[url]
                 if content:
-                    # Headed per-session so multi-session clusters stay
-                    # legible (same-day sessions get the number too).
-                    parts.append(f"## Session {session_date} ({session['number']})\n")
-                    parts.append(f"URL: {link['url']}\n\n")
-                    parts.append(content.strip() + "\n\n---\n\n")
+                    body = content.strip()
+                    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+                    block = by_digest.get(digest)
+                    if block is None:
+                        block = by_digest[digest] = _Block(body)
+                        blocks.append(block)
+                    block.add(session_date, session["number"], url)
                     fetched.append(link)
+        parts.extend(_render_block(block) for block in blocks)
+
+        # A partial fetch must not replace a complete file: the sessions that
+        # failed would be dropped, and their revs (unchanged, so already in
+        # the manifest) would stop anything retrying them. Keep the old file
+        # and change nothing, so the next gather retries the whole cluster.
+        incomplete = len(fetched) < len(links)
+        if incomplete and os.path.isfile(out_file):
+            log(
+                f"Keeping {out_file}: not every {kind} fetched.",
+                verbose,
+                level=LogLevel.PROGRESS,
+            )
+            continue
 
         # Only write if a session actually contributed content (the header
         # alone is ~3 short lines); otherwise the meeting has no agenda /
@@ -516,6 +612,10 @@ def _process_cluster(
                 docname = link["docname"]
                 if docname in revs:
                     manifest[docname] = revs[docname]
+            # A partial file (first write, nothing to lose) stays unstamped,
+            # so the next gather rebuilds it.
+            if not incomplete:
+                manifest[fmt_key] = _AGGREGATE_FORMAT
 
 
 def _cleanup_absorbed_dirs(
@@ -557,27 +657,106 @@ def _download_slide(url: str, out_dir: str, verbose: Verbosity) -> bool:
     return _download_if_pdf(url, pdf_dest, verbose)
 
 
+#: Largest slide deck we will download. Decks are normally a few MB; this
+#: only stops a pathological upload from filling the cache.
+MAX_PDF_BYTES = 50 * 1024 * 1024
+
+#: Wall-clock budget for one slide download. The per-host slot is held for the
+#: whole transfer and `timeout` only bounds each read, so a server that
+#: trickles bytes could otherwise pin one of datatracker's slots indefinitely.
+MAX_PDF_SECONDS = 120.0
+
+
+class _Abandon(Exception):
+    """A download that exceeded a bound; `oversize` marks a size breach."""
+
+    def __init__(self, oversize: bool) -> None:
+        super().__init__()
+        self.oversize = oversize
+
+
 def _download_if_pdf(url: str, dest_path: str, verbose: Verbosity) -> bool:
-    """Check head/stream for PDF content type and download."""
+    """Download `url` to `dest_path` if it serves a PDF within `MAX_PDF_BYTES`
+    and `MAX_PDF_SECONDS`; returns True if it was written.
+
+    The body is streamed so it can be bounded, which means the per-host slot
+    (normally held by `governed_get` only until it returns) is held here
+    across the transfer instead. A deck over the size cap leaves a stub
+    `.pdf.txt` so later gathers do not request it again."""
+    deadline = time.monotonic() + MAX_PDF_SECONDS
     try:
-        p_res = governed_get(
-            url,
-            timeout=60,
-            stream=True,
-            headers=DEFAULT_HEADERS,
+        with host_slot(url):
+            try:
+                res = http_session().get(
+                    url, timeout=60, stream=True, headers=DEFAULT_HEADERS
+                )
+            except requests.RequestException:
+                http_metrics.record(url, 0, 0, error=True)
+                raise
+            meter_stream(url, res)
+            try:
+                res.raise_for_status()
+                c_type = res.headers.get("Content-Type", "").lower()
+                if "application/pdf" not in c_type:
+                    return False
+                if _too_big(res.headers.get("Content-Length")):
+                    raise _Abandon(oversize=True)
+                log(
+                    f"Downloading PDF: {dest_path}...",
+                    verbose,
+                    level=LogLevel.PROGRESS,
+                )
+                _write_bounded(res, dest_path, deadline)
+                return True
+            finally:
+                res.close()
+    except _Abandon as bound:
+        log(
+            f"Skipping {'oversized' if bound.oversize else 'too slow'} PDF: {url}",
+            verbose,
+            level=LogLevel.PROGRESS,
         )
-        p_res.raise_for_status()
-        c_type = p_res.headers.get("Content-Type", "").lower()
-        if "application/pdf" in c_type:
-            log(f"Downloading PDF: {dest_path}...", verbose, level=LogLevel.PROGRESS)
-            with atomic_open_binary(dest_path) as pdf_fh:
-                for chunk in p_res.iter_content(chunk_size=8192):
-                    pdf_fh.write(chunk)
-            return True
-        p_res.close()
+        if bound.oversize:
+            _mark_oversize(dest_path, url)
+        return False
     except (requests.RequestException, OSError):
+        return False
+
+
+def _too_big(content_length: Optional[str]) -> bool:
+    try:
+        return int(content_length or 0) > MAX_PDF_BYTES
+    except ValueError:
+        return False
+
+
+def _write_bounded(res: requests.Response, dest_path: str, deadline: float) -> None:
+    """Stream `res` to `dest_path`; raises `_Abandon` (leaving nothing under
+    the final name) past `MAX_PDF_BYTES` or `deadline`. Content-Length may be
+    absent or wrong, so the bytes are counted as they arrive."""
+    written = 0
+    with atomic_open_binary(dest_path) as pdf_fh:
+        for chunk in res.iter_content(chunk_size=8192):
+            written += len(chunk)
+            if written > MAX_PDF_BYTES:
+                raise _Abandon(oversize=True)
+            if time.monotonic() > deadline:
+                raise _Abandon(oversize=False)
+            pdf_fh.write(chunk)
+
+
+def _mark_oversize(pdf_path: str, url: str) -> None:
+    """Write the `.pdf.txt` stub that stands in for a deck that was too large
+    to fetch; `_download_slide` treats it as already handled."""
+    name = os.path.basename(pdf_path)
+    try:
+        with atomic_open(pdf_path + ".txt") as fh:
+            fh.write(
+                f"# {name}\n\n\n_Deck not downloaded: larger than "
+                f"{MAX_PDF_BYTES // (1024 * 1024)} MB. Source: {url}_\n"
+            )
+    except OSError:
         pass
-    return False
 
 
 def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
@@ -588,15 +767,22 @@ def _fetch_text(url: str, verbose: Verbosity) -> Optional[str]:
     older ones — both pass through untouched. Without the header it
     would serve the HTML doc-viewer page; a few older minutes are also
     authored directly in HTML even with the header. We clean any HTML
-    response down to readable text so the corpus stays LLM-friendly."""
+    response down to readable text so the corpus stays LLM-friendly.
+    Anything that is not `text/*` (a PDF-uploaded agenda) becomes a
+    one-line pointer rather than decoded binary."""
     log(f"Fetching {url}...", verbose, level=LogLevel.PROGRESS)
     res = fetch_resource(url, headers={"Accept": "text/markdown"})
     if not res:
         return None
-    if "text/html" in res.headers.get("Content-Type", "").lower():
+    ctype = res.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if ctype and not ctype.startswith("text/"):
+        # A PDF (or other binary) upload would decode to mojibake; say what it
+        # is. The block header already carries the URL.
+        return f"[Non-text material ({ctype}); text not extracted.]"
+    if ctype == "text/html":
         cleaned = clean_html(res.text)
         return cleaned or None
-    return str(res.text)
+    return res.text
 
 
 def _parse_meeting_date(date_str: str) -> Optional[datetime]:
@@ -608,7 +794,7 @@ def _parse_meeting_date(date_str: str) -> Optional[datetime]:
     if not date_str:
         return None
     try:
-        return datetime.strptime(date_str.split(" ")[0], "%Y-%m-%d")
+        return datetime.strptime(date_str.split(" ", 1)[0], "%Y-%m-%d")
     except (ValueError, IndexError):
         return None
 

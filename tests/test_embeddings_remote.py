@@ -145,8 +145,77 @@ def test_retry_then_succeed(monkeypatch, status):
         return _FakeResp(status) if n["i"] <= 2 else _FakeResp(200, _echo(json["input"]))
 
     monkeypatch.setattr(requests.Session, "post", fake)
-    assert _model(max_retries=3).embed("hi") == [2.0, 1.0]
+    assert _model(max_retries=3).embed_multi(["hi"]) == [[2.0, 1.0]]
     assert n["i"] == 3
+
+
+def test_query_embed_has_its_own_small_retry_budget(monkeypatch):
+    # `embed` is the query path, with a caller waiting: one retry by default
+    # however large the bulk budget is; `embed_multi` keeps the full budget.
+    monkeypatch.setattr(oai_compat.time, "sleep", lambda *a, **k: None)
+    n = {"i": 0}
+
+    def fake(self, url, headers, json, timeout):
+        n["i"] += 1
+        return _FakeResp(503)
+
+    monkeypatch.setattr(requests.Session, "post", fake)
+    with pytest.raises(requests.HTTPError):
+        _model(max_retries=3).embed("hi")
+    assert n["i"] == 2
+    n["i"] = 0
+    with pytest.raises(requests.HTTPError):
+        _model(max_retries=3).embed_multi(["hi"])
+    assert n["i"] == 4
+    n["i"] = 0
+    with pytest.raises(requests.HTTPError):
+        _model(max_retries=3, query_retries=0).embed("hi")
+    assert n["i"] == 1
+
+
+def test_query_retries_never_exceed_bulk_retries(monkeypatch):
+    monkeypatch.setattr(oai_compat.time, "sleep", lambda *a, **k: None)
+    n = {"i": 0}
+
+    def fake(self, url, headers, json, timeout):
+        n["i"] += 1
+        return _FakeResp(503)
+
+    monkeypatch.setattr(requests.Session, "post", fake)
+    with pytest.raises(requests.HTTPError):
+        _model(max_retries=0, query_retries=5).embed("hi")
+    assert n["i"] == 1
+
+
+def test_query_embed_does_not_wait_out_a_long_retry_after(monkeypatch):
+    slept = []
+    monkeypatch.setattr(oai_compat.time, "sleep", slept.append)
+    n = {"i": 0}
+
+    def fake(self, url, headers, json, timeout):
+        n["i"] += 1
+        return _FakeResp(429, headers={"Retry-After": "45"})
+
+    monkeypatch.setattr(requests.Session, "post", fake)
+    with pytest.raises(requests.HTTPError):
+        _model(max_retries=3).embed("hi")
+    # 45 s is over the 30 s query-path cap: fail at once, no sleep.
+    assert (n["i"], slept) == (1, [])
+    # The same header is within the bulk cap, so ingest waits it out.
+    with pytest.raises(requests.HTTPError):
+        _model(max_retries=1).embed_multi(["hi"])
+    assert len(slept) == 1 and 45.0 <= slept[0] <= 46.0
+
+
+def test_load_reads_query_retries_from_env(monkeypatch):
+    monkeypatch.setenv("IETF_LLM_EMBED_BASE_URL", "https://host/v1")
+    monkeypatch.setenv("IETF_LLM_EMBED_RETRIES", "5")
+    monkeypatch.setenv("IETF_LLM_EMBED_QUERY_RETRIES", "2")
+    m = _load_openai_compat("openai-embed/m", Verbosity.QUIET)
+    assert (m._max_retries, m._query_retries) == (5, 2)
+    monkeypatch.delenv("IETF_LLM_EMBED_QUERY_RETRIES")
+    m = _load_openai_compat("openai-embed/m", Verbosity.QUIET)
+    assert m._query_retries == 1
 
 
 def test_retry_exhausted_raises(monkeypatch):

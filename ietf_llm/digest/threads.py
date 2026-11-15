@@ -18,7 +18,7 @@ from ..gather.sources.mbox import clean_email_text
 from ..log import LogLevel, Verbosity, log
 from ..paths import digest_path, remove_stale_digest, thread_path
 from ..people import Registry
-from .summarizer import _Summarizer
+from .summarizer import SUMMARY_COLUMN, _Summarizer
 
 _THREAD_PROMPT = (
     "Summarize this IETF working group mailing list thread in ONE sentence "
@@ -63,8 +63,9 @@ def _build_threads_digest(
 
         if summarizer.active():
             fh.write(
-                "| Subject | Msgs | Participants | First | Last | Summary |\n"
-                "|---------|------|--------------|-------|------|---------|\n"
+                "| Subject | Msgs | Participants | First | Last | "
+                f"{SUMMARY_COLUMN} |\n"
+                "|---------|------|--------------|-------|------|-------------|\n"
             )
         else:
             fh.write(

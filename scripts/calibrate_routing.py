@@ -75,7 +75,7 @@ FLOORS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 … 0.90
 
 
 def _build_table() -> Dict[str, routing.RoutingEntry]:
-    from ietf_llm.utils import cached_wg_names  # pylint: disable=import-outside-toplevel
+    from ietf_llm.utils import cached_wg_names
 
     names = CORPORA or cached_wg_names()
     table: Dict[str, routing.RoutingEntry] = {}
@@ -91,13 +91,13 @@ def _build_table() -> Dict[str, routing.RoutingEntry]:
 
 
 def _ranked(table: Dict[str, routing.RoutingEntry], model_id: str, query: str):
-    q = routing._embed_query(model_id, query, Verbosity.QUIET)  # pylint: disable=protected-access
+    q = routing._embed_query(model_id, query, Verbosity.QUIET)
     if q is None:
         raise SystemExit(
             "Could not embed a probe — is the embedding model installed in THIS "
             "Python? (the serve venv is torch-free; use your ietf-llm env)."
         )
-    matches = routing._score_group(  # pylint: disable=protected-access
+    matches = routing._score_group(
         query=q, corpora=list(table), table=table
     )
     matches.sort(key=lambda m: -m.score)

@@ -15,16 +15,27 @@ from ..paths import (
     minutes_path,
     polls_dir,
     transcripts_dir,
+    valid_corpus_name,
 )
-from .common import _files_dir, _offload, _requires_corpus, _with_freshness
+from .common import (
+    LooseStr,
+    _files_dir,
+    _offload,
+    _requires_corpus,
+    _with_freshness,
+    loose_str,
+)
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP  # pragma: no cover
+    from mcp.server.mcpserver import MCPServer  # pragma: no cover
 
 
 #: Line cap for a single gathered minutes read, so a pathological transcript-
 #: sized minutes file cannot blow the context window in one call.
 _MINUTES_MAX_LINES = 2000
+
+#: A meeting code is one directory name (`ietf125`, `interim2026aipref05`).
+_MEETING_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _read_text_capped(path: str, max_lines: int, relpath: str = "") -> str:
@@ -49,14 +60,28 @@ def _read_text_capped(path: str, max_lines: int, relpath: str = "") -> str:
 
 
 def _session_date(cache: str, code: str) -> str:
-    """Best-effort session date from a meeting's minutes header, or ''."""
-    try:
-        with open(minutes_path(cache, code), encoding="utf-8") as handle:
-            head = handle.read(2000)
-    except OSError:
-        return ""
-    match = re.search(r"(?im)^\s*Date:\s*(\d{4}-\d{2}-\d{2})", head)
-    return match.group(1) if match else ""
+    """Best-effort session date, or ''.
+
+    From the `Date:` header of the minutes, else of the agenda (which is posted
+    first, so a meeting not yet minuted still has one), else from the earliest
+    transcript's `YYYYMMDDHHmm` filename.
+    """
+    for path in (minutes_path(cache, code), agenda_path(cache, code)):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                head = handle.read(2000)
+        except OSError:
+            continue
+        match = re.search(r"(?im)^\s*Date:\s*(\d{4}-\d{2}-\d{2})", head)
+        if match:
+            return match.group(1)
+    tdir = transcripts_dir(cache, code)
+    if os.path.isdir(tdir):
+        for name in sorted(os.listdir(tdir)):
+            match = re.fullmatch(r"(\d{4})(\d{2})(\d{2})\d{4}\.md", name)
+            if match:
+                return "-".join(match.groups())
+    return ""
 
 
 def _dir_md_count(directory: str) -> int:
@@ -155,7 +180,9 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
             f'`list_meetings("{wg}")` to see the gathered meetings and their '
             "codes.",
         )
-    path = minutes_path(cache, meeting)
+    # `meeting` becomes a directory name; a code that is not a plain segment
+    # cannot be one we gathered.
+    path = minutes_path(cache, meeting) if _MEETING_RE.fullmatch(meeting) else ""
     if not os.path.isfile(path):
         return _with_freshness(
             wg,
@@ -186,7 +213,7 @@ def tool_read_minutes(wg: str, meeting: str = "") -> str:
 def _render_upcoming_meetings(corpus: str) -> str:
     """The discovery listing: `corpus`'s upcoming numbered + interim meetings,
     each drillable by passing its id back as `meeting`."""
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     meetings, fetched, error = live_lookup.fetch_upcoming_meetings(corpus)
     if error:
@@ -218,16 +245,13 @@ def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
     in; registered only behind the gather gate. Times are venue-local,
     converted from the agenda's UTC.
     """
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
-
-    # pylint: disable-next=import-outside-toplevel
-    from ..gather import runner as gather_runner
+    from .. import live_lookup  # noqa: PLC0415
 
     corpus = (corpus or "").strip()
     meeting = str(meeting or "").strip()
     if not corpus:
         return "Provide a Working Group shortname (e.g. `httpbis`)."
-    if not gather_runner.valid_corpus_name(corpus):
+    if not valid_corpus_name(corpus):
         return f"'{corpus}' is not a valid corpus name."
     if not meeting:
         return _render_upcoming_meetings(corpus)
@@ -242,7 +266,7 @@ def tool_meeting_schedule(corpus: str, meeting: str = "") -> str:
 
 def _render_meeting_sessions(corpus: str, meeting: str) -> str:
     """Render one meeting's sessions (numbered or interim), venue-local."""
-    from .. import live_lookup  # pylint: disable=import-outside-toplevel
+    from .. import live_lookup  # noqa: PLC0415
 
     label = live_lookup.meeting_id_label(meeting)
     sessions, fetched, error = live_lookup.fetch_meeting_sessions(corpus, meeting)
@@ -281,7 +305,7 @@ def _render_meeting_sessions(corpus: str, meeting: str) -> str:
     return "\n".join(lines)
 
 
-def register(server: "FastMCP") -> None:
+def register(server: "MCPServer") -> None:
     @server.tool()
     async def list_meetings(corpus: str) -> str:
         """List a corpus's gathered meetings — each meeting code with its date
@@ -292,7 +316,7 @@ def register(server: "FastMCP") -> None:
         return await _offload(tool_list_meetings, corpus)
 
     @server.tool()
-    async def read_minutes(corpus: str, meeting: str = "") -> str:
+    async def read_minutes(corpus: str, meeting: LooseStr = "") -> str:
         """Read the gathered minutes for one meeting, plus any recorded poll
         tallies. Offline, from the cache; the authoritative record of what a
         meeting discussed and decided.
@@ -304,12 +328,12 @@ def register(server: "FastMCP") -> None:
         exists, a count and a pointer to the full roster are appended;
         attendance is presence, not a position.
         """
-        return await _offload(tool_read_minutes, corpus, meeting)
+        return await _offload(tool_read_minutes, corpus, loose_str(meeting))
 
 
-def register_live(server: "FastMCP") -> None:
+def register_live(server: "MCPServer") -> None:
     @server.tool()
-    async def meeting_schedule(corpus: str, meeting: str = "") -> str:
+    async def meeting_schedule(corpus: str, meeting: LooseStr = "") -> str:
         """A group's **live** meeting schedule from Datatracker — its session
         logistics at an IETF meeting (building an agenda is the obvious
         case). The live counterpart to the offline gathered record
@@ -325,8 +349,11 @@ def register_live(server: "FastMCP") -> None:
         the agenda's free-text remote instructions (a Meetecho URL, a Teams
         note, …) instead.
 
-        **Omit `meeting`** to list the group's upcoming meetings (numbered +
-        interim) — the way to discover an interim id, which isn't guessable.
+        Cancelled sessions and the vacated slot of a rescheduled one are
+        omitted. **Omit `meeting`** to list the group's upcoming meetings
+        (numbered + interim) — the way to discover an interim id, which isn't
+        guessable; a meeting stays listed until its last day has passed, even if
+        the group's only session there was cancelled.
 
         Live (short TTL + freshness stamp; it reaches the network). Times
         are venue-local — never quote the UTC start as the local time.
@@ -336,4 +363,4 @@ def register_live(server: "FastMCP") -> None:
             meeting: A numbered meeting (`126`) or interim id
                 (`interim-2026-aipref-05`); omit to list upcoming meetings.
         """
-        return await _offload(tool_meeting_schedule, corpus, meeting)
+        return await _offload(tool_meeting_schedule, corpus, loose_str(meeting))

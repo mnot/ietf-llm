@@ -34,7 +34,7 @@ class _StubModel:
 
 def _build_with_stub(wg: str) -> None:
     cache = get_wg_file_cache_dir(wg)
-    embeddings._MODEL_CACHE["stub"] = _StubModel()  # pylint: disable=protected-access
+    embeddings._MODEL_CACHE["stub"] = _StubModel()
     build_index(wg, cache, model_name="stub", verbose=Verbosity.QUIET)
 
 
@@ -167,16 +167,16 @@ def test_read_topic_include_replies_pulls_descendants(
         "### [2] 2026-04-11 09:00 — Bob (reply to [1])\n"
         "### [3] 2026-04-12 09:00 — Carol (reply to [2])\n"
     )
-    graph = mcp.topic._parse_reply_graph(text)  # pylint: disable=protected-access
+    graph = mcp.topic._parse_reply_graph(text)
     assert graph == {1: [2], 2: [3]}
 
     # Descendants of 1 = [2, 3] (BFS).
-    desc = mcp.topic._descendants(graph, 1)  # pylint: disable=protected-access
+    desc = mcp.topic._descendants(graph, 1)
     assert desc == [2, 3]
     # Descendants of 2 = [3].
-    assert mcp.topic._descendants(graph, 2) == [3]  # pylint: disable=protected-access
+    assert mcp.topic._descendants(graph, 2) == [3]
     # Leaf node has no descendants.
-    assert mcp.topic._descendants(graph, 3) == []  # pylint: disable=protected-access
+    assert mcp.topic._descendants(graph, 3) == []
 
 
 def test_read_topic_include_replies_renders_replies_in_output(
