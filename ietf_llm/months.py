@@ -16,7 +16,16 @@ from typing import Optional, Tuple
 DEFAULT_MONTHS = 12
 
 
-def months_request_error(months: Optional[int], force: bool) -> Optional[str]:
+NEW_DRAFTS_UNBOUNDED = (
+    "--new-drafts needs a bounded window: months=0 (all history) would search "
+    "for -00 submissions since today and prune the new drafts already "
+    "gathered. Pass a positive months value."
+)
+
+
+def months_request_error(
+    months: Optional[int], force: bool, new_drafts: bool = False
+) -> Optional[str]:
     """Validate a requested `--months` window, returning a refusal message or
     None.
 
@@ -26,9 +35,14 @@ def months_request_error(months: Optional[int], force: bool) -> Optional[str]:
     it publishes). So it is honoured only with `force`, to keep it from being
     selected by accident (e.g. a caller meaning "minimal" passing 0). A negative
     window is nonsensical. A bounded window (>=1) — or an unset `None` that later
-    defaults to `DEFAULT_MONTHS` — is always allowed."""
+    defaults to `DEFAULT_MONTHS` — is always allowed.
+
+    `new_drafts` (a rolling "new Internet-Drafts" window) has no all-history
+    meaning, so it refuses `months=0` even with `force`."""
     if months is None:
         return None
+    if months == 0 and new_drafts:
+        return NEW_DRAFTS_UNBOUNDED
     if months < 0:
         return (
             f"months must be 0 or a positive number (got {months}): 0 means all "

@@ -35,7 +35,7 @@ from ..embeddings import (
 )
 from ..freshness import GatheredAt, local_last_gathered, parse_iso, record_gather
 from ..log import LogLevel, Verbosity, log
-from ..months import DEFAULT_MONTHS, resolve_months
+from ..months import DEFAULT_MONTHS, NEW_DRAFTS_UNBOUNDED, resolve_months
 from ..paths import get_cache_dir, get_wg_file_cache_dir, is_synthetic_wg
 from ..people import build_registry, write_people_digest
 from ..singletons.catalog import CATALOG_DIR
@@ -219,7 +219,16 @@ def _gather_dynamic_drafts(
             process_extra_drafts(author_names, cache_dir, verbose=verbosity)
             _persist_author_name(args.wg, resolved[1])
 
-    if args.new_drafts:
+    if args.new_drafts and not args.months:
+        # A stored --new-drafts meeting a forced `--months 0`, which the
+        # request-time check cannot see. Leave the gathered drafts alone:
+        # the empty window would otherwise prune them all.
+        log(
+            f"{args.wg}: {NEW_DRAFTS_UNBOUNDED} Skipping new-draft discovery.",
+            verbosity,
+            level=LogLevel.WARN,
+        )
+    elif args.new_drafts:
         new_names = fetch_new_draft_names(args.months, verbose=verbosity)
         process_extra_drafts(new_names, cache_dir, verbose=verbosity)
         keep = (

@@ -152,7 +152,7 @@ def tool_start_gather(  # noqa: PLR0913, PLR0917
             "'.', '-' or '_' (no path separators or spaces), starting with a "
             "letter or digit."
         )
-    months_error = months_request_error(months, force)
+    months_error = months_request_error(months, force, new_drafts)
     if months_error:
         return months_error
     spec = gather_runner.GatherSpec(
@@ -532,7 +532,8 @@ def register(server: "MCPServer") -> None:
                 subscription over the `months` window.
             months: Months of mailing-list / meeting history to fetch
                 (default 12). 0 means all history — an unbounded, slow
-                gather, so it is refused unless `force=True`.
+                gather, so it is refused unless `force=True`, and always
+                with `new_drafts` (which needs a bounded window).
             add_mentioned_drafts: Also pull in drafts the corpus cites
                 but doesn't already have.
             include_related_drafts: Also gather related (un-adopted)

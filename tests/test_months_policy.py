@@ -64,3 +64,15 @@ def test_window_start_keeps_the_callers_timezone() -> None:
     naive = datetime(2026, 10, 24, 12, 0)
     start = window_start(1, naive)
     assert start is not None and start.tzinfo is None
+
+
+def test_new_drafts_refuses_all_history_even_with_force() -> None:
+    # A rolling new-drafts window has no all-history meaning.
+    for force in (False, True):
+        err = months_request_error(0, force=force, new_drafts=True)
+        assert err is not None and "--new-drafts needs a bounded window" in err
+
+
+def test_new_drafts_allows_a_bounded_or_unset_window() -> None:
+    assert months_request_error(6, force=False, new_drafts=True) is None
+    assert months_request_error(None, force=False, new_drafts=True) is None

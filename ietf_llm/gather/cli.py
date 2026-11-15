@@ -175,7 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MONTHS,
         help=f"Months of mailing list / meeting history to fetch "
         f"(default: {DEFAULT_MONTHS}). 0 means all history — an unbounded, slow "
-        "gather, so it requires --force.",
+        "gather, so it requires --force (and is refused with --new-drafts, "
+        "which needs a bounded window).",
     )
     parser.add_argument(
         "--summarize",

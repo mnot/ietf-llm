@@ -230,7 +230,7 @@ def main() -> None:  # noqa: PLR0912
     elif args.verbose:
         verbosity = Verbosity.VERBOSE
 
-    months_error = months_request_error(args.months, args.force)
+    months_error = months_request_error(args.months, args.force, args.new_drafts)
     if months_error:
         parser.error(months_error)
 
