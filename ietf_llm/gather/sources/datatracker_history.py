@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ...digest.events import Event
 from ...log import LogLevel, Verbosity, log
+from ...months import window_start
 from .datatracker import _get_json
 
 _API_BASE = "https://datatracker.ietf.org/api/v1"
@@ -112,7 +113,7 @@ def fetch_group_events(
             continue
         # Policy (2): charter events skip the cutoff; others respect it.
         always_include = event_kind == "charter-approved"
-        if not always_include and when < cutoff:
+        if not always_include and cutoff is not None and when < cutoff:
             continue
         out.append(
             Event(
@@ -136,15 +137,15 @@ def fetch_doc_events(
     """
     cutoff = _cutoff(months)
     # `time__gte` filters server-side so we don't drag down a full
-    # group's history just to discard most of it.
-    cutoff_param = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    # group's history just to discard most of it. All history has no bound.
+    since = f"&time__gte={cutoff.strftime('%Y-%m-%dT%H:%M:%S')}" if cutoff else ""
     objects = _paged_objects(
         f"{_API_BASE}/doc/docevent/"
         f"?doc__group__acronym={wg}"
         # The group's charter document is in the group too; its events would
         # render as document events beside the group's own charter event.
         "&doc__type__in=draft,rfc"
-        f"&time__gte={cutoff_param}"
+        f"{since}"
         "&limit=500"
     )
     if not objects:
@@ -158,7 +159,7 @@ def fetch_doc_events(
     out: List[Event] = []
     for obj in objects:
         when = _parse_dt_time(obj.get("time"))
-        if when is None or when < cutoff:
+        if when is None or (cutoff is not None and when < cutoff):
             continue
         event_kind, title = _classify_doc_event(obj)
         if event_kind is None:
@@ -322,11 +323,12 @@ def _plain(value: Any) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
 
 
-def _cutoff(months: int) -> datetime:
-    """tz-aware cutoff `months` months before now. 30-day approximation
-    is fine for digest purposes (events near the boundary are not
-    semantically different from events just inside)."""
-    return datetime.now(timezone.utc) - timedelta(days=30 * max(1, months))
+def _cutoff(months: int) -> Optional[datetime]:
+    """tz-aware cutoff `months` months before now, or None for all history
+    (`months=0`). 30-day approximation is fine for digest purposes (events
+    near the boundary are not semantically different from events just
+    inside)."""
+    return window_start(months, datetime.now(timezone.utc))
 
 
 def _parse_dt_time(value: Any) -> Optional[datetime]:

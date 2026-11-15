@@ -722,3 +722,50 @@ def test_written_ballot_reads_back_with_the_right_tally(
     assert "Alice Chen → DISCUSS" in rows
     assert "Bob Smith → Yes" in rows
     assert "Dana Fox" not in rows  # her only position was on the closed ballot
+
+
+# --- months=0 (all history) -----------------------------------------------
+
+
+def test_months_zero_scopes_without_a_time_bound(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # months=0 is all history: the scoping query must omit time__gte (it used
+    # to send "now"), and an old ballot must still be fetched and kept.
+    old = "2019-03-01T12:00:00Z"
+    calls = _stub_get_json(monkeypatch, {
+        "doc__group__acronym": {
+            "objects": [_position_event("draft-foo", 101, "noobj", old)],
+        },
+        "doc__name__in=draft-foo": {
+            "objects": [_position_event("draft-foo", 101, "noobj", old)],
+        },
+        "/api/v1/person/person/101/": {"name": "Alice Chen"},
+    })
+    out = fetch_ballots("wg", months=0, verbose=Verbosity.QUIET)
+    assert "time__gte" not in calls[0]
+    assert out is not None and [b.doc_name for b in out] == ["draft-foo"]
+    assert out[0].latest_in_window is not None
+
+
+def test_bounded_months_still_sends_a_time_bound(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_get_json(monkeypatch, {"doc__group__acronym": {"objects": []}})
+    fetch_ballots("wg", months=12, verbose=Verbosity.QUIET)
+    assert "time__gte=" in calls[0]
+
+
+def test_ballot_events_with_no_cutoff_keeps_every_position(
+    isolated_home: Path,
+) -> None:
+    cache = get_wg_file_cache_dir("wg")
+    old = datetime.now(timezone.utc) - timedelta(days=2000)
+    ballot = Ballot(
+        doc_name="draft-foo",
+        positions=[_pos("Alice Chen", "noobj", when=old)],
+        first_event=old,
+        latest_in_window=old,
+        latest_rev="12",
+    )
+    assert len(ballot_events([ballot], cache, None)) == 1

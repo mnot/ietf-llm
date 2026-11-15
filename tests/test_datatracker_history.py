@@ -519,6 +519,30 @@ def test_doc_events_respects_months_cutoff(
     assert events == []
 
 
+def test_doc_events_months_zero_is_all_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # months=0 used to clamp to one month; it must send no time bound and
+    # keep old events.
+    called = _stub_get_json(monkeypatch, {
+        "/doc/docevent/": {
+            "objects": [
+                {
+                    "time": _now_minus(365 * 5),
+                    "type": "published_rfc",
+                    "doc": "/api/v1/doc/document/draft-old/",
+                    "desc": "Published as RFC 1234.",
+                },
+            ],
+        },
+    })
+    events = datatracker_history.fetch_doc_events(
+        "wg", months=0, verbose=Verbosity.QUIET,
+    )
+    assert len(events) == 1
+    assert "time__gte" not in called[0]
+
+
 def test_doc_events_handles_missing_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
