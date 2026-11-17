@@ -435,8 +435,10 @@ record is a file inside the `ietf` corpus, `files/attendance/plenary.json`, writ
   is never merged with a side event (the per-meeting `attendance.md` rosters still merge all of a
   group's sessions). It covers all history, regardless of the gather window.
 - **Refresh.** A session with attendees that is over a month old is final and not refetched; the
-  rest are refetched each gather. Attendees are only ever added, and a failed fetch or an outage
-  leaves the stored file as it is.
+  rest are refetched each gather. Attendees are only ever added. Stored sessions and meetings are
+  carried forward when a listing or lookup comes back short, and a chunk of attendee rows is kept only
+  if every page arrived (a truncated list would otherwise look final), so a failed request can't
+  erase or truncate the record.
 - **Reader.** `person_attendance` reads the file offline. A name matching several people returns a
   candidate list keyed by person id; it never guesses. Where the `ietf` corpus is not gathered and
   live lookups are enabled (a local stdio server), the tool queries the Datatracker directly
@@ -451,9 +453,11 @@ record is a file inside the `ietf` corpus, `files/attendance/plenary.json`, writ
   type, which the lookup does not need. A meeting is final a month after it is held. Registering is
   not attending, and the tool says so.
 - **Seeding.** Both files are under `files/`, so a seed bundle of `ietf` carries them with no format
-  change (JSON is not embedded, so the compatibility tuple is unchanged). The raw API pages, which
-  carry registrants' email, stay in the local ETag store (`.http-cache/`), which is neither published
-  nor seeded.
+  change (JSON is not embedded, so the compatibility tuple is unchanged). The raw registration pages
+  carry registrants' email, so they are fetched without the ETag store (which is persisted to the
+  cloud bucket): neither the version content, a seed bundle nor the bucket's gather caches hold them.
+  The local live-lookup cache (`.live-cache.json`, excluded from seeds) holds a live registration
+  response for its short TTL.
 
 ### IMAP cache lives outside the per-WG directory
 

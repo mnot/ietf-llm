@@ -15,14 +15,16 @@ from urllib.parse import quote
 
 from ..gather.sources.meetings import _uri_id
 from ..meeting_registration import MeetingRegistration, Registrant
+from ..people.names import name_key
 from ..plenary_attendance import PLENARY_GROUP, PlenarySession
+from ..plenary_attendance import find_people as match_people
 from .cache import _API_BASE, _DT_BASE, _cached_json, _now_utc, unreachable_note
 
 #: Ids per `id__in` request, and a ceiling on `attended` pages followed.
 _CHUNK = 50
 _MAX_PAGES = 20
 #: Name-search results requested (a full page means there may be more).
-PAGE = 20
+PAGE = 100
 
 
 class _Unavailable(Exception):
@@ -42,22 +44,34 @@ def _get(url: str) -> Tuple[Optional[Dict[str, Any]], datetime.datetime]:
 
 def find_people(query: str) -> Tuple[List[Tuple[str, str]], datetime.datetime, str]:
     """`(candidates, fetched_at, error)`: `(person id, name)` pairs matching a
-    person id or a name substring. `error` is non-empty on an outage."""
+    person id or a name, by the same rules as the stored record (case, accents
+    and `Last, First` order folded; every word must match). The Datatracker is
+    asked for the longest word only, by name and by its ASCII form, and the
+    results are filtered here. `error` is non-empty on an outage."""
     query = (query or "").strip()
+    rows: List[Dict[str, Any]] = []
     try:
         if query.isdigit():
             body, fetched = _get(f"{_API_BASE}/person/person/{query}/?format=json")
             rows = [body] if body else []
         else:
-            body, fetched = _get(
-                f"{_API_BASE}/person/person/?name__icontains={quote(query)}"
-                f"&limit={PAGE}&format=json"
-            )
-            rows = (body or {}).get("objects") or []
+            words = name_key(query).split()
+            if not words:
+                return [], _now_utc(), ""
+            word = quote(max(words, key=len))
+            for field in ("name", "ascii"):
+                body, fetched = _get(
+                    f"{_API_BASE}/person/person/?{field}__icontains={word}"
+                    f"&limit={PAGE}&format=json"
+                )
+                rows.extend((body or {}).get("objects") or [])
     except _Unavailable as err:
         return [], err.tried_at, unreachable_note("the person lookup", err.tried_at)
-    found = [(str(r["id"]), str(r.get("name") or "")) for r in rows if r.get("id")]
-    return found, fetched, ""
+    names = {str(r["id"]): str(r.get("name") or "") for r in rows if r.get("id")}
+    if query.isdigit():
+        return [(pid, name) for pid, name in names.items()], fetched, ""
+    matched = match_people(names, query)
+    return [(pid, names[pid]) for pid in matched], fetched, ""
 
 
 def _batched(urls_for: str, ids: List[str], extra: str = "") -> List[Dict[str, Any]]:

@@ -13,8 +13,11 @@ by the corpus's mail window.
 
 Incremental and best-effort. A session that ended long ago and has attendees
 is final and never refetched; every other session is refetched each gather.
-Attendees are only ever added to, so a partial fetch (the API client swallows
-failures) can't shrink a stored record, and an outage leaves the file as it is.
+
+Nothing a failed request leaves out can erase or truncate the record: stored
+sessions are carried forward when a listing or lookup comes back short, and a
+chunk of attendees is accepted only if every one of its pages arrived, because
+a truncated list would otherwise look final and stay that way.
 """
 
 from __future__ import annotations
@@ -35,8 +38,8 @@ from ...plenary_attendance import (
 )
 from .datatracker import _get_json
 from .meetings import (
+    _ATTENDED_CHUNK,
     _batch_fetch_meetings,
-    _fetch_attendance,
     _resolve_person_names,
     _uri_id,
 )
@@ -67,6 +70,40 @@ def _list_plenary_sessions() -> Dict[str, Dict[str, str]]:
                     "name": str(sess.get("name") or "Plenary"),
                 }
         path = (body.get("meta") or {}).get("next") or None
+    return out
+
+
+def _fetch_attended(session_ids: List[str]) -> Dict[str, Set[str]]:
+    """`{session_id: {person_uri, ...}}` for the sessions whose rows arrived
+    in full. Sessions are asked for in chunks; a chunk with any failed page is
+    dropped whole (its sessions keep what they had and are retried next
+    gather), since a partial page set would store a truncated list."""
+    out: Dict[str, Set[str]] = {}
+    ordered = sorted(session_ids)
+    for start in range(0, len(ordered), _ATTENDED_CHUNK):
+        chunk = ",".join(ordered[start : start + _ATTENDED_CHUNK])
+        found: Dict[str, Set[str]] = {
+            sid: set() for sid in ordered[start : start + _ATTENDED_CHUNK]
+        }
+        path: Optional[str] = (
+            f"https://datatracker.ietf.org/api/v1/meeting/attended/"
+            f"?session__in={chunk}&limit=500"
+        )
+        complete = True
+        while path:
+            body = _get_json(path)
+            if body is None:
+                complete = False
+                break
+            for att in body.get("objects") or []:
+                sess, person = att.get("session"), att.get("person")
+                if sess and person:
+                    found.setdefault(_uri_id(str(sess)), set()).add(
+                        str(person).rstrip("/")
+                    )
+            path = (body.get("meta") or {}).get("next") or None
+        if complete:
+            out.update(found)
     return out
 
 
@@ -101,25 +138,26 @@ def process_plenary_attendance(
         return  # outage or empty answer: leave what we have
     meta = _batch_fetch_meetings({v["meeting_id"] for v in listed.values()})
 
-    sessions: List[PlenarySession] = []
+    # Start from what we hold, so a short listing or a failed meeting lookup
+    # leaves the rest of the record alone; refresh only what resolved.
+    by_id: Dict[str, PlenarySession] = dict(prior)
     for sess_id, info in listed.items():
         found = meta.get(info["meeting_id"])
         if not found:
             continue
         _display, number, when = found
         old = prior.get(sess_id)
-        sessions.append(
-            PlenarySession(
-                id=sess_id,
-                meeting=number,
-                date=when,
-                name=info["name"],
-                attendees=list(old.attendees) if old else [],
-            )
+        by_id[sess_id] = PlenarySession(
+            id=sess_id,
+            meeting=number,
+            date=when,
+            name=info["name"],
+            attendees=list(old.attendees) if old else [],
         )
+    sessions = list(by_id.values())
 
     stale = [s for s in sessions if not _is_final(s, today)]
-    fetched = _fetch_attendance([s.id for s in stale])
+    fetched = _fetch_attended([s.id for s in stale])
     for sess in stale:
         uris = fetched.get(sess.id) or set()
         sess.attendees = sorted(

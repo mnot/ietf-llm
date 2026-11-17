@@ -82,6 +82,9 @@ class _Datatracker:
         self.attended_requests: List[Set[str]] = []
         self.registration_requests: List[str] = []
         self.down = False
+        self.meeting_lookup_down = False
+        self.listed_sessions: Optional[Set[str]] = None
+        self.attended_page2_fails = False
 
     def __call__(self, url: str, *_args: Any, **_kw: Any) -> Optional[Dict[str, Any]]:
         if self.down:
@@ -95,6 +98,7 @@ class _Datatracker:
                         "name": name,
                     }
                     for sid, (mid, name) in _SESSIONS.items()
+                    if self.listed_sessions is None or sid in self.listed_sessions
                 ],
                 "meta": {"next": None},
             }
@@ -103,6 +107,8 @@ class _Datatracker:
             self.registration_requests.append(number)
             return {"objects": _REGS.get(number, []), "meta": {"next": None}}
         if "/meeting/meeting/" in url:
+            if self.meeting_lookup_down and "id__in" in url:
+                return None
             return {
                 "objects": [
                     {
@@ -116,7 +122,10 @@ class _Datatracker:
             }
         if "/meeting/attended/" in url:
             asked = set(re.search(r"session__in=([\d,]+)", url).group(1).split(","))  # type: ignore[union-attr]
+            if self.attended_page2_fails and "offset=500" in url:
+                return None
             self.attended_requests.append(asked)
+            more = self.attended_page2_fails
             return {
                 "objects": [
                     {
@@ -126,7 +135,14 @@ class _Datatracker:
                     for sid in sorted(asked)
                     for pid in _ATTENDED.get(sid, [])
                 ],
-                "meta": {"next": None},
+                "meta": {
+                    "next": (
+                        f"/api/v1/meeting/attended/?session__in={','.join(sorted(asked))}"
+                        "&limit=500&offset=500"
+                        if more
+                        else None
+                    )
+                },
             }
         if "/person/person/" in url:
             ids = re.search(r"id__in=([\d,]+)", url).group(1).split(",")  # type: ignore[union-attr]
@@ -146,6 +162,7 @@ def dt(monkeypatch: pytest.MonkeyPatch) -> _Datatracker:
     monkeypatch.setattr("ietf_llm.gather.sources.plenary_attendance._get_json", fake)
     monkeypatch.setattr("ietf_llm.gather.sources.meetings._get_json", fake)
     monkeypatch.setattr("ietf_llm.gather.sources.meeting_registration._get_json", fake)
+    monkeypatch.setattr("ietf_llm.gather.sources.meeting_registration._get_page", fake)
     return fake
 
 
@@ -448,3 +465,126 @@ def test_registration_line_treats_unknown_type_as_not_recorded() -> None:
     assert "hackathon onsite + onsite · checked in" in _registration_line(
         mtg, Registrant("1", ["hackathon_onsite", "onsite"], True)
     )
+
+
+# --- partial failures -------------------------------------------------------
+
+
+def test_a_failed_meeting_lookup_does_not_wipe_the_plenary_record(
+    isolated_home: Path, dt: _Datatracker
+) -> None:
+    cache = _write()
+    before = open(plenary_attendance_path(cache), encoding="utf-8").read()
+    dt.meeting_lookup_down = True
+    _write()
+    assert open(plenary_attendance_path(cache), encoding="utf-8").read() == before
+
+
+def test_a_short_session_listing_keeps_the_other_sessions(
+    isolated_home: Path, dt: _Datatracker
+) -> None:
+    cache = _write()
+    dt.listed_sessions = {"101"}
+    _write()
+    ids = {s["id"] for s in _stored(cache)["sessions"]}
+    assert ids == {"100", "101"}
+
+
+def test_a_partial_attendee_fetch_is_not_stored_as_final(
+    isolated_home: Path, dt: _Datatracker
+) -> None:
+    dt.attended_page2_fails = True
+    cache = _write(_LATER)
+    stored = {s["id"]: s for s in _stored(cache)["sessions"]}
+    assert stored["101"]["attendees"] == []  # not a truncated first page
+    dt.attended_page2_fails = False
+    cache = _write(_LATER)
+    stored = {s["id"]: s for s in _stored(cache)["sessions"]}
+    assert stored["101"]["attendees"] == ["1", "2", "3"]
+
+
+def test_a_short_meeting_listing_keeps_the_other_registrations(
+    isolated_home: Path, dt: _Datatracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _write_registration()
+    monkeypatch.setattr(
+        "ietf_llm.gather.sources.meeting_registration._list_meetings",
+        lambda: {"108": "2020-07-27"},
+    )
+    _write_registration()
+    numbers = {m["number"] for m in _stored_registration(cache)["meetings"]}
+    assert numbers == {"107", "108"}
+
+
+def test_registration_pages_bypass_the_etag_store(
+    isolated_home: Path, dt: _Datatracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The cached client is what gets persisted to the cloud bucket; the pages
+    # carry registrants' email, so they must not go through it.
+    def cached(url: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+        assert "/meeting/registration/" not in url
+        return dt(url)
+
+    monkeypatch.setattr(
+        "ietf_llm.gather.sources.meeting_registration._get_json", cached
+    )
+    _write_registration()
+    assert dt.registration_requests
+
+
+# --- live name matching -----------------------------------------------------
+
+
+def test_live_name_search_folds_order_and_accents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ietf_llm.live_lookup import attendance as live
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    urls: List[str] = []
+
+    def fake(url: str) -> Any:
+        urls.append(url)
+        if "name__icontains" in url:
+            objs = [
+                {"id": 1, "name": "Mark Nottingham"},
+                {"id": 9, "name": "Nottingham Forest"},
+            ]
+        elif "ascii__icontains=muller" in url:
+            objs = [{"id": 4, "name": "Zoë Müller"}]
+        else:
+            objs = []
+        return {"objects": objs}, now, True
+
+    monkeypatch.setattr("ietf_llm.live_lookup.attendance._cached_json", fake)
+    found, _fetched, error = live.find_people("Nottingham, Mark")
+    assert error == "" and found == [("1", "Mark Nottingham")]
+    assert any("name__icontains=nottingham" in u for u in urls)  # longest word only
+    found, _fetched, _error = live.find_people("Zoe Muller")
+    assert found == [("4", "Zoë Müller")]
+
+
+# --- the tool around the edges ----------------------------------------------
+
+
+def test_tool_refuses_during_a_first_gather_but_goes_live_when_it_can(
+    isolated_home: Path, dt: _Datatracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write()
+    monkeypatch.setattr(
+        "ietf_llm.mcp.attendance._first_gather_guard", lambda _wg: "still gathering"
+    )
+    monkeypatch.setattr("ietf_llm.mcp.attendance._answer_live", lambda _q: "LIVE")
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "0")
+    assert tool_person_attendance("Mark Nottingham") == "still gathering"
+    monkeypatch.setenv("IETF_LLM_ENABLE_GATHER", "1")
+    assert tool_person_attendance("Mark Nottingham") == "LIVE"
+
+
+def test_tool_says_when_one_of_the_records_is_missing(
+    isolated_home: Path, dt: _Datatracker
+) -> None:
+    _write()  # plenary record only: an older `ietf` version
+    out = tool_person_attendance("Mark Nottingham")
+    assert "IETF 108 · 2020-07-27 · IETF Plenary" in out
+    assert "## Registration\nNot recorded in this version" in out

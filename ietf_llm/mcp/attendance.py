@@ -32,7 +32,7 @@ from ..plenary_attendance import (
 )
 from ..plenary_attendance import load as load_plenary
 from ..store.corpus import VersionVanished, get_corpus_store, pin_corpus_version
-from .common import _files_dir, _offload
+from .common import _files_dir, _first_gather_guard, _offload
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer  # pragma: no cover
@@ -41,6 +41,14 @@ if TYPE_CHECKING:
 _MAX_CANDIDATES = 15
 
 Registered = List[Tuple[MeetingRegistration, Registrant]]
+
+
+def _not_in_version() -> str:
+    return (
+        f"Not recorded in this version of the `{PLENARY_GROUP}` corpus (it was "
+        "gathered before this record was added) -- "
+        f"{gather_suggestion(PLENARY_GROUP, purpose='to add it', force=True)}."
+    )
 
 
 def _caveat(registration_from: Optional[str]) -> str:
@@ -58,24 +66,33 @@ def _caveat(registration_from: Optional[str]) -> str:
     )
 
 
-def _stored() -> Tuple[Optional[PlenaryAttendance], Optional[RegistrationRecord]]:
-    """The plenary and registration records from the current `ietf` corpus
-    version; `(None, None)` when it is not gathered here (or predates them)."""
+def _stored() -> (
+    Tuple[Optional[PlenaryAttendance], Optional[RegistrationRecord], Optional[str]]
+):
+    """`(plenary, registration, busy)` from the current `ietf` corpus version.
+
+    `(None, None, None)` when that corpus is not gathered here (or predates the
+    records). `busy` is the refusal message while the corpus's first gather is
+    still running, when the records may be half written."""
     version = get_corpus_store().resolve_current(PLENARY_GROUP)
     if version is None:
-        return None, None
+        return None, None, None
     for _attempt in range(2):
         try:
             with pin_corpus_version(PLENARY_GROUP, version):
                 note_access(PLENARY_GROUP)
+                busy = _first_gather_guard(PLENARY_GROUP)
+                if busy is not None:
+                    return None, None, busy
                 files = _files_dir(PLENARY_GROUP)
                 return (
                     load_plenary(plenary_attendance_path(files)),
                     load_registration(registration_path(files)),
+                    None,
                 )
         except VersionVanished as vanished:
             version = vanished.new_version
-    return None, None
+    return None, None, None
 
 
 def _session_line(sess: PlenarySession) -> str:
@@ -104,7 +121,9 @@ def _render_history(
         f" (Datatracker person {person_id})",
         "",
     ]
-    if plenaries is not None:
+    if plenaries is None:
+        lines.extend(["## Plenaries", _not_in_version(), ""])
+    else:
         lines.append("## Plenaries")
         if plenaries:
             lines.append(f"Recorded at {len(plenaries)} plenary session(s){span}:\n")
@@ -112,7 +131,9 @@ def _render_history(
         else:
             lines.append(f"No plenary attendance is recorded{span}.")
         lines.append("")
-    if registered is not None:
+    if registered is None:
+        lines.extend(["## Registration", _not_in_version(), ""])
+    else:
         lines.append("## Registration")
         if registered:
             lines.append(f"Registered for {len(registered)} meeting(s):\n")
@@ -235,7 +256,9 @@ def tool_person_attendance(person: str) -> str:
             "Provide a person's name (e.g. `Jane Doe`) or Datatracker person id "
             "(e.g. `103881`)."
         )
-    plenary, registration = _stored()
+    plenary, registration, busy = _stored()
+    if busy is not None and not gather_enabled():
+        return busy
     if plenary is not None or registration is not None:
         return _answer_from_records(plenary, registration, person)
     if gather_enabled():

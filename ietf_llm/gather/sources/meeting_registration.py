@@ -10,17 +10,26 @@ bundle, carry it.
 Incremental and best-effort. A past meeting is final once it is a month old and
 has rows (or is old enough that no registration data will ever appear), and is
 never refetched. Every other meeting is fetched in full and replaces its stored
-rows only if every page arrived, so a partial fetch can't shrink a record.
+rows only if every page arrived. Stored meetings are carried forward when the
+meeting listing comes back short, so neither a failed page nor a failed fetch
+can shrink the record.
+
+The registration pages carry registrants' email, which this record doesn't
+keep, so they are fetched without the ETag store: that store is persisted to
+the cloud bucket, and the pages should not be.
 """
 
 from __future__ import annotations
 
 import os
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+import requests
 
 from ...atomicio import write_if_changed
 from ...log import LogLevel, Verbosity, log
+from ...net import DEFAULT_HEADERS, governed_get, http_error_detail
 from ...meeting_registration import (
     MeetingRegistration,
     Registrant,
@@ -59,6 +68,25 @@ def _list_meetings() -> Dict[str, str]:
     return out
 
 
+def _get_page(url: str) -> Optional[Dict[str, Any]]:
+    """GET one registration page straight from the Datatracker, bypassing the
+    ETag store (see the module docstring). None on any failure."""
+    try:
+        if "format=" not in url:
+            url += "&format=json"
+        response = governed_get(url, headers=dict(DEFAULT_HEADERS), timeout=30.0)
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError) as err:
+        log(
+            f"Registration fetch failed: {http_error_detail(err)}",
+            Verbosity.STATUS,
+            level=LogLevel.PROGRESS,
+        )
+        return None
+    return body if isinstance(body, dict) else None
+
+
 def _fetch_meeting(
     number: str,
 ) -> Optional["tuple[List[Registrant], Dict[str, str]]"]:
@@ -68,7 +96,7 @@ def _fetch_meeting(
     names: Dict[str, str] = {}
     path: Optional[str] = f"{_REG_API}{number}"
     while path:
-        body = _get_json(path)
+        body = _get_page(path)
         if body is None:
             return None
         for reg in body.get("objects") or []:
@@ -132,7 +160,8 @@ def process_meeting_registration(
     if not listed:
         return  # outage or empty answer: leave what we have
 
-    meetings: List[MeetingRegistration] = []
+    # Start from the stored meetings: a short listing must not drop the rest.
+    by_number: Dict[str, MeetingRegistration] = dict(prior)
     people = dict(previous.people)
     for number, when in listed.items():
         old = prior.get(number)
@@ -142,7 +171,8 @@ def process_meeting_registration(
             if fetched is not None:
                 mtg.rows, names = fetched
                 people.update(names)
-        meetings.append(mtg)
+        by_number[number] = mtg
+    meetings = list(by_number.values())
 
     wanted = {r.person for m in meetings for r in m.rows}
     record = RegistrationRecord(
