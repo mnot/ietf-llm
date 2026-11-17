@@ -67,9 +67,11 @@ from .sources.group_info import write_group_info
 from .sources.issue_files import write_issue_files
 from .sources.mail_threads import write_thread_files
 from .sources.mbox import sync_mailing_list, validate_list_names
+from .sources.meeting_registration import process_meeting_registration
 from .sources.meetings import process_attendance, process_meetings
 from .sources.message_citations import build_message_citations
 from .sources.pdf_extract import extract_all_pdfs
+from .sources.plenary_attendance import process_plenary_attendance
 from .sources.pull_files import write_pull_files
 from .sources.recent_drafts import fetch_new_draft_names, prune_drafts
 from .sources.repo_discovery import autotrack_github
@@ -788,6 +790,11 @@ def _gather_stages(  # noqa: PLR0915
         # attendance.md / attendance.json beside each meeting's minutes; the
         # registry reads the sidecars back to link attendees by person id.
         process_attendance(args.wg, cache_dir, meeting_clusters, verbose=verbosity)
+        # IETF-wide plenary attendance and meeting registration, carried by the
+        # `ietf` corpus only (no-ops for any other), so a published version serves
+        # a replica.
+        process_plenary_attendance(args.wg, cache_dir, verbose=verbosity)
+        process_meeting_registration(args.wg, cache_dir, verbose=verbosity)
 
     # Mailing list. Auto-discovery (Datatracker → list name) skipped
     # for synthetic corpora; --mailing-list extras still work.

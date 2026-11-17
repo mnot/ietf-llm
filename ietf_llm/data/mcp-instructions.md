@@ -101,6 +101,16 @@ means, call `find_efforts(topic)`; ask only if that doesn't resolve it.
   tallies + attendance count for one), `meeting_schedule` (live schedule).
   A meeting's full attendance roster is in `meetings/<code>/attendance.md`
   (`read_file_section`); attendance is presence, NOT a position.
+- **Person attendance:** `person_attendance(person)` — which IETF plenaries a
+  named person was recorded at, and which IETF meetings they registered for
+  (onsite / remote / hackathon, and whether checked in). The question is about
+  a *person*, not a group, so it is not tied to a corpus. It reads the records
+  the `ietf` corpus carries; with that corpus not gathered, a local server
+  answers live. Several matches return a candidate list with person ids —
+  re-call with the id, never guess. Plenary records start at **IETF 108
+  (2020-07)** and registration where the answer says; earlier meetings have no
+  data, so never say someone did not attend from it, and registering is not
+  attending.
 - **Drafts:** `list_drafts` (offline lifecycle), `draft_status` (live state —
   the WG state is where WGLC shows up; a draft in WGLC is still `I-D Exists`
   on the IESG side), `review_record` (live — who reviewed or balloted, and on

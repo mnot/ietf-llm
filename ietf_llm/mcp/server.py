@@ -19,6 +19,7 @@ from ..freshness import set_deployment_mode, set_gather_default
 from ..log import Verbosity, graceful_keyboard_interrupt
 from ..paths import get_index_dir
 from . import (
+    attendance,
     chunks,
     citations,
     corpus,
@@ -206,6 +207,7 @@ SERVER_FEATURES: tuple[str, ...] = (
     "live-lookup",  # overview(live=), draft_status, draft_authors, meeting_schedule
     "review-record",  # review_record — reviews + ballot positions, per revision
     "label-digest",  # read_digest(label=) — label-filtered issue/thread digests
+    "person-attendance",  # person_attendance — plenary attendance for a person
 )
 
 
@@ -397,6 +399,7 @@ def main() -> None:
     chunks.register(server)
     drafts.register(server)
     meetings.register(server)
+    attendance.register(server)
 
     # `get_session_log` is only registered when telemetry is enabled
     # (IETF_LLM_DEBUG_LOG=1). With logging off the tool wouldn't have
