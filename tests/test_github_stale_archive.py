@@ -128,19 +128,110 @@ def test_a_stale_archive_with_a_token_refetches_issues_and_keeps_pulls_and_label
     assert len(notes) == 1 and "2025-11-09" in notes[0] and "PRs" in notes[0]
 
 
-def test_a_failed_api_refetch_keeps_the_stale_archive(
+def _boom(*a: Any, **k: Any) -> Any:
+    raise requests.ConnectionError("down")
+
+
+def _cached(tmp_path: Path, exported: str, title: str, **extra: Any) -> Path:
+    dest = tmp_path / "o-r.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "repo": "o/r",
+                "timestamp": exported,
+                "issues": [{"number": 1, "title": title, "state": "open"}],
+                **extra,
+            }
+        )
+    )
+    return dest
+
+
+def test_a_failed_api_refetch_with_nothing_cached_keeps_the_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Net(monkeypatch, _archive("2025-11-09T00:00:00+00:00"))
+    monkeypatch.setattr(github, "_fetch_all_issues", _boom)
+    ok, saved, notes = _run(tmp_path, token="tok")
+    assert ok
+    assert [i["title"] for i in saved["issues"]] == ["old issue"]
+    assert len(notes) == 1 and "re-fetch failed; kept the archive" in notes[0]
+    assert "re-fetched via" not in notes[0]
+
+
+def test_a_failed_api_refetch_does_not_overwrite_a_fresher_cached_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Net(monkeypatch, _archive("2025-11-09T00:00:00+00:00"))
+    monkeypatch.setattr(github, "_fetch_all_issues", _boom)
+    # Fetched after the repo's last activity, so current, but marked partial so
+    # that it is retried rather than skipped.
+    _cached(tmp_path, "2026-03-01T00:00:00+00:00", "cached api", partial=True)
+    ok, saved, notes = _run(tmp_path, token="tok")
+    assert ok
+    assert [i["title"] for i in saved["issues"]] == ["cached api"]
+    assert len(notes) == 1 and "kept the cached copy from 2026-03-01" in notes[0]
+
+
+def test_a_failed_api_refetch_replaces_a_cache_older_than_the_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Net(monkeypatch, _archive("2025-11-09T00:00:00+00:00"))
+    monkeypatch.setattr(github, "_fetch_all_issues", _boom)
+    _cached(tmp_path, "2025-06-01T00:00:00+00:00", "older archive")
+    ok, saved, _notes = _run(tmp_path, token="tok")
+    assert ok
+    assert [i["title"] for i in saved["issues"]] == ["old issue"]
+
+
+def test_a_cached_copy_newer_than_the_repo_activity_is_not_refetched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Net(monkeypatch, _archive("2025-11-09T00:00:00+00:00"))
+    monkeypatch.setattr(
+        github, "_fetch_all_issues", lambda *a, **k: pytest.fail("refetched a current copy")
+    )
+    _cached(tmp_path, "2026-03-01T00:00:00+00:00", "cached api")
+    ok, saved, notes = _run(tmp_path, token="tok")
+    assert ok
+    assert [i["title"] for i in saved["issues"]] == ["cached api"]
+    assert len(notes) == 1 and "2025-11-09" in notes[0] and "is current" in notes[0]
+
+
+def test_a_cached_copy_older_than_the_repo_activity_is_refetched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Net(monkeypatch, _archive("2025-11-09T00:00:00+00:00"))
+    monkeypatch.setattr(
+        github, "_fetch_all_issues", lambda *a, **k: [{"number": 1, "title": "fresh"}]
+    )
+    _cached(tmp_path, "2026-01-01T00:00:00+00:00", "cached api")
+    ok, saved, _notes = _run(tmp_path, token="tok")
+    assert ok
+    assert [i["title"] for i in saved["issues"]] == ["fresh"]
+    assert "partial" not in saved
+
+
+def test_a_refetch_with_issues_left_at_cached_copies_is_marked_partial(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _Net(monkeypatch, _archive("2025-11-09T00:00:00+00:00"))
 
-    def boom(*a: Any, **k: Any) -> Any:
-        raise requests.ConnectionError("down")
+    def fetch(*a: Any, report: Any, **k: Any) -> Any:
+        report.add(1, "HTTP 500", True)
+        return [{"number": 1, "title": "kept"}]
 
-    monkeypatch.setattr(github, "_fetch_all_issues", boom)
-    ok, saved, notes = _run(tmp_path, token="tok")
-    assert ok
-    assert [i["title"] for i in saved["issues"]] == ["old issue"]
-    assert len(notes) == 1
+    monkeypatch.setattr(github, "_fetch_all_issues", fetch)
+    ok, saved, _notes = _run(tmp_path, token="tok")
+    assert ok and saved["partial"] is True
+
+
+def test_an_archive_within_the_grace_period_is_not_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Net(monkeypatch, _archive("2026-02-04T00:00:00+00:00"))  # probe: 2026-02-14
+    ok, _saved, notes = _run(tmp_path, token="tok")
+    assert ok and notes == []
 
 
 @pytest.mark.parametrize(

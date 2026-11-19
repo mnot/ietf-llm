@@ -247,10 +247,11 @@ def validate_github_repos(
 
 
 #: How far a repo's latest issue/PR activity may run ahead of its archive's export
-#: date before the archive counts as stale. The i-d-template workflow re-exports
-#: on every issue event, so ordinary lag is minutes; a scheduled-only or disabled
-#: workflow falls behind by far more.
-_ARCHIVE_STALE_AFTER = timedelta(days=7)
+#: date before the archive counts as stale. The i-d-template workflow runs on a
+#: Sunday/Tuesday/Thursday schedule (or when dispatched), so ordinary lag is up to
+#: about 3 days and two missed runs reach about a week; a disabled workflow falls
+#: behind by far more.
+_ARCHIVE_STALE_AFTER = timedelta(days=14)
 
 
 def _parse_iso(value: object) -> Optional[datetime]:
@@ -310,6 +311,119 @@ def _stale_archive_activity(
     return latest
 
 
+def _behind_message(repo_short: str, archive: Dict[str, Any], latest: datetime) -> str:
+    exported = str(archive.get("timestamp"))[:10]
+    return (
+        f"GitHub {repo_short}: archive.json was last exported {exported} but the "
+        f"repo's issues/PRs changed {latest.date().isoformat()}; its archive "
+        "workflow may have stopped (GitHub disables scheduled workflows after 60 "
+        "days of inactivity)"
+    )
+
+
+def _read_cached(dest_path: str, verbose: Verbosity) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(dest_path):
+        return None
+    return load_archive(dest_path, verbose, level=LogLevel.PROGRESS)
+
+
+def _stamp(archive: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    return _parse_iso(archive.get("timestamp")) if archive else None
+
+
+def _write_json(dest_path: str, data: Dict[str, Any]) -> None:
+    with atomic_open(dest_path) as json_fh:
+        json.dump(data, json_fh, indent=2)
+
+
+def _refresh_stale_archive(
+    owner: str,
+    repo: str,
+    dest_path: str,
+    archive: Dict[str, Any],
+    latest: datetime,
+    headers: Dict[str, str],
+    verbose: Verbosity,
+    report: Callable[[str], None],
+) -> bool:
+    """Bring `dest_path` up to date for a stale `archive` using the API (a token
+    is in `headers`), keeping the archive's PRs and labels, which the API path
+    does not fetch.
+
+    The cached copy is left alone when it is already current (an earlier run's
+    refetch, so a dead archive costs one full fetch rather than one per gather),
+    and when a refetch fails, since the cache may hold fresher issues than the
+    archive. The archive is written then only if it is newer than the cache.
+    """
+    behind = _behind_message(f"{owner}/{repo}", archive, latest)
+    cached = _read_cached(dest_path, verbose)
+    stamp = _stamp(cached)
+    if cached and stamp and stamp >= latest and not cached.get("partial"):
+        report(
+            f"{behind}. Issues are as of the API fetch on {stamp.date().isoformat()}, "
+            "which is current; PRs are as of the archive."
+        )
+        return True
+    if _fetch_via_api(owner, repo, dest_path, headers, verbose, cached, archive):
+        report(
+            f"{behind}. Issues re-fetched via the API; PRs are as of the archive "
+            "(the API path does not fetch them)."
+        )
+        return True
+    archive_stamp = _stamp(archive)
+    if stamp is None or (archive_stamp is not None and archive_stamp > stamp):
+        _write_json(dest_path, archive)
+        report(f"{behind}. The API re-fetch failed; kept the archive.")
+    else:
+        report(
+            f"{behind}. The API re-fetch failed; kept the cached copy from "
+            f"{stamp.date().isoformat()}."
+        )
+    return True
+
+
+def _fetch_via_api(
+    owner: str,
+    repo: str,
+    dest_path: str,
+    headers: Dict[str, str],
+    verbose: Verbosity,
+    cached: Optional[Dict[str, Any]],
+    base: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Write `dest_path` from the issues API (plus `base`'s other keys, when given);
+    False, writing nothing, if the fetch fails. `cached` supplies the fallback copy
+    of an issue whose comments cannot be fetched."""
+    log(
+        f"Fetching GitHub issues via API for {owner}/{repo}...",
+        verbose,
+        level=LogLevel.STATUS,
+    )
+    previous = {i["number"]: i for i in (cached or {}).get("issues", [])}
+    stale = _StaleReport()
+    try:
+        all_issues = _fetch_all_issues(
+            owner, repo, headers, verbose, previous=previous, report=stale
+        )
+        if stale.stale:
+            log(stale.summary(f"{owner}/{repo}"), verbose, level=LogLevel.WARN)
+        export_data: Dict[str, Any] = {
+            **(base or {}),
+            "repo": f"{owner}/{repo}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "issues": all_issues,
+        }
+        if stale.stale:
+            # Some issues are at their cached copies: not a complete fetch, so a
+            # later gather must not treat this file as current.
+            export_data["partial"] = True
+        _write_json(dest_path, export_data)
+        return True
+    except (requests.RequestException, OSError) as err:
+        log(f"Error fetching GitHub issues: {err}", verbose, level=LogLevel.ERROR)
+        return False
+
+
 def download_github_issues(
     repo_short: str,
     dest_path: str,
@@ -350,7 +464,6 @@ def download_github_issues(
         verbose,
         level=LogLevel.STATUS,
     )
-    stale_archive: Optional[Dict[str, Any]] = None
     try:
         response = governed_get(archive_url, headers=DEFAULT_HEADERS, timeout=30)
         if response.status_code == 200:
@@ -378,39 +491,32 @@ def download_github_issues(
                 )
                 if archive_data is not None:
                     latest = _stale_archive_activity(archive_data, owner, repo, headers)
-                    if latest is None:
-                        with atomic_open(dest_path) as json_fh:
-                            json.dump(archive_data, json_fh, indent=2)
-                        return True
-                    exported = str(archive_data.get("timestamp"))[:10]
-                    behind = (
-                        f"GitHub {repo_short}: archive.json was last exported "
-                        f"{exported} but the repo's issues/PRs changed "
-                        f"{latest.date().isoformat()}; its archive workflow may have "
-                        "stopped (GitHub disables scheduled workflows after 60 days "
-                        "of inactivity)"
-                    )
-                    if not github_token:
-                        report(
-                            f"{behind}. Issues and PRs since then are missing; "
-                            "set GITHUB_TOKEN to have them fetched via the API."
+                    if latest is not None and github_token:
+                        return _refresh_stale_archive(
+                            owner,
+                            repo,
+                            dest_path,
+                            archive_data,
+                            latest,
+                            headers,
+                            verbose,
+                            report,
                         )
-                        with atomic_open(dest_path) as json_fh:
-                            json.dump(archive_data, json_fh, indent=2)
-                        return True
-                    report(
-                        f"{behind}. Issues re-fetched via the API; PRs are as of "
-                        "the archive (the API path does not fetch them)."
-                    )
-                    stale_archive = archive_data
+                    if latest is not None:
+                        report(
+                            f"{_behind_message(repo_short, archive_data, latest)}. "
+                            "Issues and PRs since then are missing; set GITHUB_TOKEN "
+                            "to have them fetched via the API."
+                        )
+                    _write_json(dest_path, archive_data)
+                    return True
             except (ValueError, TypeError, RecursionError) as err:
                 log(
                     f"Error parsing archive JSON: {err}",
                     Verbosity.VERBOSE,
                     level=LogLevel.STATUS,
                 )
-        if stale_archive is None:
-            log("No archive found on gh-pages.", verbose, level=LogLevel.PROGRESS)
+        log("No archive found on gh-pages.", verbose, level=LogLevel.PROGRESS)
     except (requests.RequestException, OSError) as err:
         log(
             f"Error checking gh-pages archive: {err}",
@@ -418,40 +524,9 @@ def download_github_issues(
             level=LogLevel.STATUS,
         )
 
-    log(
-        f"Fetching GitHub issues via API for {owner}/{repo}...",
-        verbose,
-        level=LogLevel.STATUS,
+    return _fetch_via_api(
+        owner, repo, dest_path, headers, verbose, _read_cached(dest_path, verbose)
     )
-
-    previous: Dict[Any, Dict[str, Any]] = {}
-    if os.path.exists(dest_path):
-        cached = load_archive(dest_path, verbose, level=LogLevel.PROGRESS)
-        previous = {i["number"]: i for i in (cached or {}).get("issues", [])}
-    report_stale = _StaleReport()
-    try:
-        all_issues = _fetch_all_issues(
-            owner, repo, headers, verbose, previous=previous, report=report_stale
-        )
-        if report_stale.stale:
-            log(report_stale.summary(f"{owner}/{repo}"), verbose, level=LogLevel.WARN)
-        export_data: Dict[str, Any] = {
-            **(stale_archive or {}),
-            "repo": f"{owner}/{repo}",
-            "timestamp": datetime.now().isoformat(),
-            "issues": all_issues,
-        }
-        with atomic_open(dest_path) as json_fh:
-            json.dump(export_data, json_fh, indent=2)
-        return True
-    except (requests.RequestException, OSError) as err:
-        log(f"Error fetching GitHub issues: {err}", verbose, level=LogLevel.ERROR)
-        if stale_archive is None:
-            return False
-        # The stale archive is still better than leaving the previous copy.
-        with atomic_open(dest_path) as json_fh:
-            json.dump(stale_archive, json_fh, indent=2)
-        return True
 
 
 def download_github_archives(

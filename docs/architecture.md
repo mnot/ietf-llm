@@ -151,11 +151,13 @@ with `_` are machinery and are excluded from `list_corpora` and `ietf-llm --list
   API as fallback). `pulls/` is written but **not embedded**, so `search_corpus`, `read_topic` and
   `find_related` do not see PR text; reach it through `get_issue`, `read_digest(kind="pulls")`,
   `grep_corpus` and `get_by_url`. On the REST fallback, an issue whose comment paging fails keeps its
-  previous cached copy instead of being written truncated. A published archive more than a week
+  previous cached copy instead of being written truncated. A published archive more than two weeks
   behind the repo's latest issue/PR update (one `issues?sort=updated` call; a stopped i-d-template
-  workflow causes this) is reported in the `gather_status` notes. With a GitHub token the issues are
-  then re-fetched over the API, keeping the archive's PRs and labels, which the API does not fetch;
-  without one the archive is kept as it is.
+  workflow causes this) is reported in the
+  `gather_status` notes. With a GitHub token the issues are then re-fetched over the API, keeping the
+  archive's PRs and labels, which the API does not fetch; a cached copy already newer than the repo's
+  activity is not re-fetched, and a failed re-fetch never replaces a newer cached copy. Without a
+  token the archive is kept as it is.
 - **`digests/*.md` are deterministic** and regenerated every gather; read them through
   `read_digest` / `overview`.
 - **`ballots/<draft>.md`** holds the current IESG ballot for drafts with ballot activity in the
