@@ -859,7 +859,7 @@ def _gather_stages(  # noqa: PLR0915
     if args.github:
         tracker.begin("github archives")
     gh_pending = download_github_archives(
-        args.github, cache_dir, verbosity, suppress_raw=suppress_raw
+        args.github, cache_dir, verbosity, suppress_raw=suppress_raw, note_fn=note_fn
     )
 
     # Identity registry — consolidates mail/GitHub/Datatracker/draft
