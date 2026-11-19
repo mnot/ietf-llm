@@ -52,7 +52,9 @@ def _stub_github_download(monkeypatch: pytest.MonkeyPatch) -> None:
     success, so download_github_archives reaches its raw/.txt decision."""
     from ietf_llm.gather.sources import github
 
-    def fake_download(repo: str, json_path: str, verbose: Any = None) -> bool:
+    def fake_download(
+        repo: str, json_path: str, verbose: Any = None, note_fn: Any = None
+    ) -> bool:
         with open(json_path, "w", encoding="utf-8") as handle:
             handle.write("{}")
         return True
