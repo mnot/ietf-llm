@@ -40,7 +40,8 @@ gathered into one queryable corpus, an LLM can help you:
    claude mcp add ietf-llm -- ietf-llm-mcp
    ```
 
-   Other clients are covered in [Running the MCP server locally](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md).
+   Or install it as a [Claude Code or Codex plugin](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md#install-as-a-plugin-claude-code-codex),
+   which keeps itself up to date. Other clients are covered in [Running the MCP server locally](https://github.com/mnot/ietf-llm/blob/main/docs/mcp-local.md).
 
 4. Ask your client about the group.
 
