@@ -273,18 +273,37 @@ def _has_outlook_header_block(lines: List[str], i: int) -> bool:
     return has_sent and has_subject
 
 
+#: A line that only marks an omission between an attribution and the `>` quote
+#: it introduces: `...`, `[...]`, `Snip`, or a short bracketed note such as
+#: `[ removed dance@ from the thread ]`.
+_SNIP_LINE_RE = re.compile(
+    r"^(?:\.{3}|\u2026|snip\.?|[\[(<{][^\]\)>}]{0,60}[\])>}])$", re.IGNORECASE
+)
+
+#: How many such lines may follow the attribution before the `>` quote.
+_ATTRIBUTION_SNIP_LINES = 2
+
+
 def _is_marked_quote_after(lines: List[str], i: int) -> bool:
-    """Whether the first non-blank line after index `i` is a `>`-quoted
-    line. An attribution followed by `>`-prefixed quoting is an inline /
+    """Whether `>`-quoted text follows index `i`, allowing a snip line or two
+    in between. An attribution followed by `>`-prefixed quoting is an inline /
     bottom-posted reply (the dominant IETF style): the per-line run-collapse
     already keeps the author's own interleaved prose and collapses only the
     quoted runs, so the whole trail must NOT be cut. The trail-cut is for the
     *unprefixed* verbatim pastes, where the attribution is followed by the
-    prior message with no per-line signal to collapse on."""
+    prior message with no per-line signal to collapse on. Any other unquoted
+    line before the first `>` means this is such a paste, whose own older
+    `>` quoting sits further down."""
+    snips = 0
     for line in lines[i + 1 :]:
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             continue
-        return line.lstrip().startswith(">")
+        if stripped.startswith(">"):
+            return True
+        snips += 1
+        if snips > _ATTRIBUTION_SNIP_LINES or not _SNIP_LINE_RE.match(stripped):
+            return False
     return False
 
 

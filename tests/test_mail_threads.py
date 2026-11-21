@@ -321,6 +321,67 @@ def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
     assert "> [3 quoted lines elided]" in result
 
 
+def test_elide_quotes_keeps_inline_reply_after_attribution_and_snip_line() -> None:
+    # An attribution, a short non-quote line (a snip marker or a note), then
+    # `>` quoting with the author's replies between: still an inline reply,
+    # so nothing is trail-cut and the replies survive.
+    for filler in ("...", "[ removed dance@ from the thread ]"):
+        text = (
+            "On Fri, 21 Nov 2025, Petr Smith wrote:\n\n"
+            f"{filler}\n\n"
+            "> Oh, okay. What I had on mind is to display the key id.\n"
+            "> I think that is always SHA256 now.\n"
+            "> And a third quoted line.\n\n"
+            "I clearly misunderstood your idea.\n\n"
+            "> My primary motivation was an easy check.\n"
+            "> Whether that user has changed key.\n"
+            "> And another quoted line.\n\n"
+            "If they migrated keys, you have to fetch the new one.\n"
+        )
+        result = elide_quotes(text)
+        assert "quoted reply trail elided" not in result, filler
+        assert "I clearly misunderstood your idea." in result, filler
+        assert "If they migrated keys" in result, filler
+
+
+def test_elide_quotes_cuts_unmarked_trail_that_has_nested_quotes_later() -> None:
+    # A top-post whose pasted original has no `>` markers but itself contains
+    # older `>` quoting further down. The attribution is followed by a long
+    # unmarked stretch, so it is still a trail, not an inline reply.
+    text = (
+        "Agreed.\n\n"
+        "On Tue, 10 Jun 2026, Someone <x@example.org> wrote:\n\n"
+        "Hi all,\n"
+        "first paragraph of the original message,\n"
+        "second paragraph of the original message,\n"
+        "third paragraph of the original message.\n\n"
+        "> an older quoted line\n> another older line\n> and another\n"
+    )
+    result = elide_quotes(text)
+    assert "Agreed." in result
+    assert "quoted reply trail elided" in result
+    assert "first paragraph of the original" not in result
+
+
+def test_elide_quotes_cuts_unmarked_original_with_short_opening_lines() -> None:
+    # Outlook's plain-text copy of the original: a greeting and a sentence,
+    # then a `>` quote nested inside it. Only snip lines may precede the `>`
+    # quote for the attribution to count as inline, so this is still a trail.
+    text = (
+        "Fine by me.\n\n"
+        'On 12/18/25, 2:32 PM, "Pat" <pat@example.org> wrote:\n\n'
+        "Hi Tim -\n\n"
+        "Your PR might explain this, but I have a question.\n\n"
+        "> an older quoted line\n> another\n> and another\n\n"
+        "If I understand this you mean something else.\n"
+    )
+    result = elide_quotes(text)
+    assert "Fine by me." in result
+    assert "quoted reply trail elided" in result
+    assert "Your PR might explain this" not in result
+    assert "If I understand this" not in result
+
+
 # --- build_threads ---------------------------------------------------------
 
 
