@@ -189,6 +189,95 @@ def test_elide_quotes_collapses_outlook_header_block() -> None:
     assert "From: John Mattsson" not in result
 
 
+def test_elide_quotes_collapses_localized_header_blocks() -> None:
+    # Outlook and webmail clients localize the From/Sent/Subject labels; some
+    # use the full-width colon, pad labels with spaces, or put blank lines
+    # between the fields.
+    blocks = {
+        "chinese-outlook": (
+            "-----邮件原件-----\n"
+            "发件人: Pat <pat@example.org>\n"
+            "发送时间: 2026年4月21日 6:45\n"
+            "收件人: tls@ietf.org\n"
+            "主题: [TLS] Re: call\n"
+        ),
+        "chinese-fullwidth-spaced": (
+            "发件人：Pat <pat@example.org>\n"
+            "日　期：2026年10月28日 20:40:50\n"
+            "收件人：tls@ietf.org\n"
+            "主　题：Re: call\n"
+        ),
+        "french": (
+            "De : Pat <pat@example.org>\n"
+            "Envoyé : mercredi 14 janvier 2026 19:48\n"
+            "À : tls@ietf.org\n"
+            "Objet : Re: call\n"
+        ),
+        "spanish": (
+            "De: Pat <pat@example.org>\n"
+            "Enviado el: martes, 20 de enero de 2026 16:29\n"
+            "Para: tls@ietf.org\n"
+            "Asunto: Re: call\n"
+        ),
+        "german": (
+            "Von: Pat <pat@example.org>\n"
+            "Gesendet: Montag, 11. Mai 2026 15:50\n"
+            "An: tls@ietf.org\n"
+            "Betreff: Re: call\n"
+        ),
+        "no-space-after-colon": (
+            "From:Pat <pat@example.org>\n"
+            "Send Time:Tue, Aug 4, 2026, 00:41\n"
+            "To:tls@ietf.org\n"
+            "Subject:Re: call\n"
+        ),
+        "blank-lines-between-fields": (
+            "Original\n\n"
+            "From: Pat <pat@example.org>\n  \n"
+            "To: tls@ietf.org\n  \n"
+            "Cc: last-call@ietf.org\n  \n"
+            "Date: 2026年10月08日 05:54\n  \n"
+            "Subject: Re: call\n  \n"
+        ),
+    }
+    for label, block in blocks.items():
+        text = f"My reply.\n\n{block}\nthe earlier message\nmore of it\n"
+        result = elide_quotes(text)
+        assert "My reply." in result, label
+        assert "quoted reply trail elided" in result, label
+        assert "the earlier message" not in result, label
+        assert "Pat <pat@example.org>" not in result, label
+
+
+def test_elide_quotes_collapses_run_on_original_message_divider() -> None:
+    # Android clients run the header fields on after the divider, on one line.
+    text = (
+        "Sounds good.\n\n"
+        "-------- Original message --------From: Pat <pat@example.org> "
+        "Date: 8/2/26 11:01 AM To: tls@ietf.org Subject: Re: call\n"
+        "the earlier message\n"
+    )
+    result = elide_quotes(text)
+    assert "Sounds good." in result
+    assert "quoted reply trail elided" in result
+    assert "the earlier message" not in result
+
+
+def test_elide_quotes_keeps_header_like_lines_without_a_full_block() -> None:
+    # A From: line needs both a sent/date field and a subject field; a
+    # forwarded-mail summary or prose that mentions one is not a trail.
+    text = (
+        "Forwarding for context.\n\n"
+        "From: Pat <pat@example.org>\n"
+        "To: tls@ietf.org\n"
+        "Date: Monday\n\n"
+        "My own analysis of that follows.\n"
+    )
+    result = elide_quotes(text)
+    assert "quoted reply trail elided" not in result
+    assert "My own analysis of that follows." in result
+
+
 def test_elide_quotes_collapses_on_wrote_attribution() -> None:
     text = (
         "My objection stands.\n\n"
@@ -199,6 +288,21 @@ def test_elide_quotes_collapses_on_wrote_attribution() -> None:
     assert "My objection stands." in result
     assert "quoted reply trail elided" in result
     assert "big quoted table" not in result
+
+
+def test_elide_quotes_collapses_wrapped_attribution_from_its_first_line() -> None:
+    # The attribution wraps (`On <date>, <name> <addr>` then `wrote:`); the cut
+    # starts at the opener so it is not left dangling above the marker.
+    text = (
+        "Fine by me.\n\n"
+        "On Thu, 2 Jul 2026 at 10:55, Michael Richardson <mcr@example.org>\n"
+        "wrote:\n\n"
+        "the earlier message\nmore of it\n"
+    )
+    result = elide_quotes(text)
+    assert "Fine by me." in result
+    assert "On Thu, 2 Jul 2026" not in result
+    assert "quoted reply trail elided" in result
 
 
 def test_elide_quotes_keeps_prose_ending_in_wrote() -> None:

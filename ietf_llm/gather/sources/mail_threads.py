@@ -218,8 +218,15 @@ def _normalize_archived_at(value: Optional[str]) -> Optional[str]:
 # --- Quote elision ---------------------------------------------------------
 
 
-#: An Outlook "-----Original Message-----" separator.
-_ORIGINAL_MSG_RE = re.compile(r"^-{2,}\s*Original Message\s*-{2,}\s*$", re.IGNORECASE)
+#: An "-----Original Message-----" separator, in English or Chinese
+#: (`邮件原件` Outlook, `原始邮件` QQ Mail). Android clients run the header
+#: fields on after it, so nothing is required to follow the dashes.
+_ORIGINAL_MSG_RE = re.compile(
+    r"^-{2,}\s*(?:Original Message|邮件原件|原始邮件)\s*-{2,}", re.IGNORECASE
+)
+
+#: QQ Mail's bare "Original" divider, which sits above a header block.
+_BARE_ORIGINAL_RE = re.compile(r"^Original$", re.IGNORECASE)
 
 #: The verb-tail of an attribution line in any language we've seen in the
 #: corpus. The line ends in `<verb>[ <name>]?<optional whitespace>:`.
@@ -264,13 +271,49 @@ def _is_attribution(stripped: str) -> bool:
     return stripped in _BARE_TAIL_ATTRIBUTIONS
 
 
+#: Quoted-header field labels by role, as clients localize them. Labels are
+#: compared lowercased with all whitespace removed (`主 题`, `Enviado el`,
+#: `Send Time`), and before either colon (`:` or the full-width `：`).
+_HEADER_LABELS = {
+    "from": frozenset({"from", "de", "von", "da", "van", "发件人"}),
+    "sent": frozenset(
+        {"sent", "date", "sendtime", "gesendet", "datum", "envoyé", "enviado"}
+        | {"enviadoel", "enviadaem", "enviadoem", "fecha", "data", "inviato"}
+        | {"verzonden", "发送时间", "发件时间", "时间", "日期"}
+    ),
+    "subject": frozenset(
+        {"subject", "betreff", "objet", "asunto", "assunto", "oggetto"}
+        | {"onderwerp", "主题", "主旨"}
+    ),
+}
+_HEADER_LABEL_RE = re.compile(r"^\s*([^:：\n]{1,20}?)\s*[:：]")
+
+#: Non-blank lines after a `From:` that may carry the rest of its header block.
+_HEADER_BLOCK_LINES = 8
+
+
+def _header_role(line: str) -> Optional[str]:
+    """`from`, `sent` or `subject` if `line` opens with such a field label."""
+    match = _HEADER_LABEL_RE.match(line)
+    if not match:
+        return None
+    label = re.sub(r"\s+", "", match.group(1)).casefold()
+    for role, labels in _HEADER_LABELS.items():
+        if label in labels:
+            return role
+    return None
+
+
 def _has_outlook_header_block(lines: List[str], i: int) -> bool:
-    """A `From:` line that opens an Outlook/Exchange quoted-header block —
-    a `Sent:`/`Date:` and a `Subject:` within the next few lines."""
-    window = [ln.strip().lower() for ln in lines[i : i + 6]]
-    has_sent = any(w.startswith(("sent:", "date:")) for w in window)
-    has_subject = any(w.startswith("subject:") for w in window)
-    return has_sent and has_subject
+    """A `From:` line (or its localization) that opens an Outlook/Exchange
+    quoted-header block — a sent/date field and a subject field among the
+    next few non-blank lines. Some HTML-to-text conversions put blank lines
+    between the fields, so blanks are not counted against the window."""
+    if _header_role(lines[i]) != "from":
+        return False
+    following = [ln for ln in lines[i + 1 : i + 40] if ln.strip()]
+    roles = {_header_role(ln) for ln in following[:_HEADER_BLOCK_LINES]}
+    return {"sent", "subject"} <= roles
 
 
 #: A line that only marks an omission between an attribution and the `>` quote
@@ -314,8 +357,14 @@ def _is_trail_boundary(lines: List[str], i: int) -> bool:
     stripped = lines[i].strip()
     if _ORIGINAL_MSG_RE.match(stripped):
         return True
-    if stripped.lower().startswith("from:") and _has_outlook_header_block(lines, i):
+    if _has_outlook_header_block(lines, i):
         return True
+    if _BARE_ORIGINAL_RE.match(stripped):
+        j = next(
+            (j for j in range(i + 1, i + 6) if j < len(lines) and lines[j].strip()),
+            None,
+        )
+        return j is not None and _has_outlook_header_block(lines, j)
     return _is_attribution(stripped) and not _is_marked_quote_after(lines, i)
 
 
@@ -341,6 +390,17 @@ def _has_prose(lines: List[str]) -> bool:
     )
 
 
+def _wrapped_attribution_start(lines: List[str], i: int) -> int:
+    """Where the trail cut should begin for the boundary at `i`. A wrapped
+    attribution (`On <date>, <name> <addr>` / `wrote:`) is only recognised on
+    its last line; start at the first so the opener isn't left dangling."""
+    if i > 0 and _is_attribution(lines[i].strip()):
+        prev = lines[i - 1].strip()
+        if _DATE_PREFIX_RE.match(prev) and not prev.endswith(":"):
+            return i - 1
+    return i
+
+
 def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     """Index of the first line that begins a no-`>` quoted reply trail
     (Outlook / Exchange / Apple top-post markers), or None. Everything
@@ -350,7 +410,7 @@ def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     run-collapse so the author's own prose survives."""
     for i, line in enumerate(lines):
         if line.strip() and _is_trail_boundary(lines, i):
-            return i
+            return _wrapped_attribution_start(lines, i)
     return None
 
 
