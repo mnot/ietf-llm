@@ -307,6 +307,40 @@ def _is_marked_quote_after(lines: List[str], i: int) -> bool:
     return False
 
 
+def _is_trail_boundary(lines: List[str], i: int) -> bool:
+    """Whether line `i` opens a no-`>` quoted trail: an Original Message
+    separator, an Outlook header block, or an attribution that no `>` quote
+    follows."""
+    stripped = lines[i].strip()
+    if _ORIGINAL_MSG_RE.match(stripped):
+        return True
+    if stripped.lower().startswith("from:") and _has_outlook_header_block(lines, i):
+        return True
+    return _is_attribution(stripped) and not _is_marked_quote_after(lines, i)
+
+
+def _is_boundary(lines: List[str], i: int) -> bool:
+    """Whether line `i` ends a signature block: it starts a quote, an
+    attribution, or a trail."""
+    return (
+        lines[i].lstrip().startswith(">")
+        or _is_attribution(lines[i].strip())
+        or _is_trail_boundary(lines, i)
+    )
+
+
+def _has_prose(lines: List[str]) -> bool:
+    """Whether the author wrote anything of their own in `lines`: a line that
+    is neither quoted, an attribution, nor part of a trail cut at the end."""
+    end = _quoted_trail_start(lines)
+    return any(
+        re.search(r"\w", ln)
+        and not ln.lstrip().startswith(">")
+        and not _is_attribution(ln.strip())
+        for ln in lines[:end]
+    )
+
+
 def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     """Index of the first line that begins a no-`>` quoted reply trail
     (Outlook / Exchange / Apple top-post markers), or None. Everything
@@ -315,14 +349,7 @@ def _quoted_trail_start(lines: List[str]) -> Optional[int]:
     `>`-prefixed quote is skipped — that is an inline reply, handled by the
     run-collapse so the author's own prose survives."""
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if _ORIGINAL_MSG_RE.match(stripped):
-            return i
-        if stripped.lower().startswith("from:") and _has_outlook_header_block(lines, i):
-            return i
-        if _is_attribution(stripped) and not _is_marked_quote_after(lines, i):
+        if line.strip() and _is_trail_boundary(lines, i):
             return i
     return None
 
@@ -402,15 +429,23 @@ def elide_quotes(text: str, keep_threshold: int = 2) -> str:
     """
     lines = _strip_pgp(text.splitlines())
 
-    # Drop a trailing signature block at the RFC 3676 `-- ` delimiter (also
-    # the bare `--` some clients send). Only an unquoted delimiter counts — a
-    # quoted `> --` stays with its quote run. This is the one piece of
-    # signature trimming kept from the old clean_email_text pre-pass; the
-    # aggressive heuristics there (Regards/Sent-from/dashes) are dropped
-    # because they truncate real prose.
+    # Drop the signature block at the RFC 3676 `-- ` delimiter (also the bare
+    # `--` some clients send). Only an unquoted delimiter counts — a quoted
+    # `> --` stays with its quote run. The block runs to the next quote or
+    # trail boundary, or to the end: some clients put the signature above the
+    # quoted thread, and the inline replies below it must survive. This is the
+    # one piece of signature trimming kept from the old clean_email_text
+    # pre-pass; the aggressive heuristics there (Regards/Sent-from/dashes) are
+    # dropped because they truncate real prose.
     for idx, line in enumerate(lines):
         if line.rstrip() == "--":
-            lines = lines[:idx]
+            resume = next(
+                (j for j in range(idx + 1, len(lines)) if _is_boundary(lines, j)),
+                len(lines),
+            )
+            if not _has_prose(lines[resume:]):
+                resume = len(lines)
+            lines = lines[:idx] + lines[resume:]
             break
 
     trail_marker: Optional[str] = None

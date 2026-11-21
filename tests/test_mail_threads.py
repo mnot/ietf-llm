@@ -305,6 +305,47 @@ def test_elide_quotes_trims_signature_at_delimiter() -> None:
     assert "> [3 quoted lines elided]" in result
 
 
+def test_elide_quotes_signature_above_quote_keeps_inline_replies() -> None:
+    # Some clients put the signature above the quoted thread. The signature
+    # ends where the attribution begins, so the inline replies below survive.
+    text = (
+        "Hi Med, see inline.\n\n"
+        "--\n"
+        "Aron Wussler\n"
+        "Sent with ProtonMail\n\n"
+        "On Monday, 15 December 2025 at 15:32, Med <med@example.org> wrote:\n\n"
+        "> Hi Aron,\n> Thanks for the follow-up.\n> Please see inline.\n\n"
+        "[Aron] We split the normative sections from the rest.\n\n"
+        "> Cheers,\n> Med\n> Bye\n\n"
+        "[Aron] Done\n"
+    )
+    result = elide_quotes(text)
+    assert "Hi Med, see inline." in result
+    assert "Aron Wussler" not in result
+    assert "Sent with ProtonMail" not in result
+    assert "[Aron] We split the normative sections" in result
+    assert "[Aron] Done" in result
+    assert "quoted reply trail elided" not in result
+
+
+def test_elide_quotes_signature_with_nothing_of_the_authors_after_it_is_cut() -> None:
+    # Where only a quote or trail follows the signature there is no prose to
+    # rescue, so everything from the delimiter on is dropped as before.
+    text = (
+        "Agreed.\n\n"
+        "-- \n"
+        "Jane Doe\nExample Corp\n\n"
+        "On Tue, 10 Jun 2026, Pat <pat@example.org> wrote:\n"
+        "> the earlier message\n> more of it\n> and more\n"
+        "\u200b\u200b\u200b\n"
+    )
+    result = elide_quotes(text)
+    assert "Agreed." in result
+    assert "Jane Doe" not in result
+    assert "On Tue, 10 Jun 2026" not in result
+    assert "quoted lines elided" not in result
+
+
 def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
     # A `>`-prefixed top-post: the reply is above, the attribution introduces
     # the quoted original. Run-collapse handles the quote; nothing is trail-cut,
