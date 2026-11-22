@@ -1,0 +1,36 @@
+# Project-specific: not managed by pyproject-tmpl (test.yml is, and has no
+# room for a second runner OS). Covers the one thing Linux CI cannot: the
+# gather child's progress transport, which must work without POSIX `pass_fds`
+# (issue #368). Deliberately narrow -- the full suite assumes POSIX in places.
+name: Test (Windows)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+    - 'ietf_llm/gather/**'
+    - 'tests/test_gather_subprocess.py'
+    - '.github/workflows/test-windows.yml'
+
+  pull_request:
+    branches: [ main ]
+    paths:
+    - 'ietf_llm/gather/**'
+    - 'tests/test_gather_subprocess.py'
+    - '.github/workflows/test-windows.yml'
+
+jobs:
+  gather-child:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.13"
+    - name: Install
+      run: python -m pip install -e . pytest
+    - name: Test the gather child transport
+      run: python -m pytest tests/test_gather_subprocess.py -v

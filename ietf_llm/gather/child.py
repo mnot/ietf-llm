@@ -5,10 +5,9 @@ in-process thread, so a CPU-heavy stage — notably the embedding-index build �
 can never hold the GIL and stall the server's event loop (a read that stalled
 during that stage was indistinguishable from a dead server). The child runs the
 exact same pipeline as the in-process path (`run_gather`) and streams stage
-progress back to the parent as newline-delimited JSON on the fd named by the
-`IETF_LLM_PROGRESS_FD` env var; the parent turns those records back into the
-status-record updates it already writes, so nothing downstream of the worker
-changes.
+progress back to the parent as newline-delimited JSON on its stdout (see
+`_claim_stdout`); the parent turns those records back into the status-record
+updates it already writes, so nothing downstream of the worker changes.
 
 Invoked as `python -m ietf_llm.gather.child <corpus> [--source ...]` — the same
 argv `GatherSpec.to_argv()` produces for the in-process path.
@@ -27,7 +26,7 @@ import os
 import sys
 import traceback
 from types import TracebackType
-from typing import Any, Optional
+from typing import Any, Optional, TextIO
 
 from ..log import Verbosity
 from ..redact import redact_userinfo
@@ -61,14 +60,28 @@ def _renice() -> None:
         pass
 
 
+def _claim_stdout() -> TextIO:
+    """Take the progress channel: the pipe the parent attached to our stdout.
+
+    The original fd 1 moves to a private (non-inheritable) duplicate, and fd 1
+    itself is pointed at the null device, so a stray `print()` or a C-level
+    write can't corrupt the record stream. Using stdout rather than a passed fd
+    is what keeps this portable: `Popen(pass_fds=)` does not exist on Windows."""
+    sys.stdout.flush()
+    sink = os.fdopen(os.dup(1), "w", encoding="utf-8")
+    null_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null_fd, 1)
+    finally:
+        os.close(null_fd)
+    return sink
+
+
 def main() -> None:
     _renice()
-    fd_env = os.environ.get("IETF_LLM_PROGRESS_FD")
-    sink = os.fdopen(int(fd_env), "w", encoding="utf-8") if fd_env else None
+    sink = _claim_stdout()
 
     def _emit(record: "dict[str, Any]") -> None:
-        if sink is None:
-            return
         try:
             sink.write(json.dumps(record) + "\n")
             sink.flush()
@@ -113,8 +126,7 @@ def main() -> None:
     finally:
         # Close the writer so the parent's reader sees EOF and stops pumping,
         # even if run_gather raises (the traceback still reaches stderr).
-        if sink is not None:
-            sink.close()
+        sink.close()
     sys.exit(OUTCOME_EXIT_CODES[outcome])
 
 

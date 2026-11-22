@@ -24,6 +24,10 @@ from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.runner import GatherSpec
 
 
+def posix_only(reason: str):  # type: ignore[no-untyped-def]
+    return pytest.mark.skipif(sys.platform == "win32", reason=reason)
+
+
 # --- CPU-contention hardening: nice + thread caps --------------------------
 
 
@@ -47,6 +51,7 @@ def test_limit_child_cpu_respects_operator_setting(
     assert env["MKL_NUM_THREADS"] == "7"  # the unset ones still filled
 
 
+@posix_only("os.nice does not exist on Windows; `_renice` skips it there")
 def test_child_renices_by_default_and_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -72,7 +77,7 @@ def _run_child_capturing(
     note: str = "auto-tracked o/r",
 ) -> tuple:
     """Run `gather_child.main()` with a stubbed pipeline and capture the JSON
-    records it writes to the progress fd plus its exit code."""
+    records it writes to the progress sink plus its exit code."""
     read_fd, write_fd = os.pipe()
 
     def fake_run_gather(argv, _verbosity, progress=None, note_fn=None):  # type: ignore[no-untyped-def]
@@ -83,13 +88,16 @@ def _run_child_capturing(
         return outcome
 
     monkeypatch.setattr(gather_child, "run_gather", fake_run_gather)
-    monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
+    # main() owns the sink (it closes it), so the read end sees EOF without the
+    # test closing anything. Stand in for the stdout claim, which would
+    # redirect the test runner's own fd 1.
+    monkeypatch.setattr(
+        gather_child, "_claim_stdout", lambda: os.fdopen(write_fd, "w", encoding="utf-8")
+    )
 
     code = {}
 
     def _go() -> None:
-        # main() owns write_fd (it fdopens and closes it), so the read end sees
-        # EOF without the test closing anything.
         try:
             gather_child.main()
         except SystemExit as exc:
@@ -101,6 +109,51 @@ def _run_child_capturing(
         lines = [json.loads(line) for line in pipe if line.strip()]
     thread.join()
     return lines, code.get("rc")
+
+
+def test_claim_stdout_keeps_stray_output_off_the_progress_channel() -> None:
+    """The child's stdout is the progress pipe, so after `_claim_stdout` a
+    `print()` or a raw fd-1 write must not reach the parent."""
+    import subprocess
+
+    code = (
+        "import os, sys\n"
+        "from ietf_llm.gather.child import _claim_stdout\n"
+        "sink = _claim_stdout()\n"
+        "print('stray print')\n"
+        "os.write(1, b'stray raw write\\n')\n"
+        "sink.write('{\"t\": \"note\", \"msg\": \"ok\"}\\n'); sink.close()\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, check=True
+    ).stdout
+    assert out.decode().splitlines() == ['{"t": "note", "msg": "ok"}']
+
+
+def test_claim_stdout_keeps_grandchildren_off_the_progress_channel() -> None:
+    """A process the child spawns must neither write into the record stream (a
+    JSON line would be taken as a record) nor hold the pipe open past the
+    child's exit, which would stall the parent's reader."""
+    import subprocess
+
+    grandchild = (
+        "import os, time; print('grandchild'); "
+        "os.write(1, b'{\"t\": \"note\", \"msg\": \"leak\"}\\n'); "
+        "time.sleep(6)"
+    )
+    code = (
+        "import subprocess, sys\n"
+        "from ietf_llm.gather.child import _claim_stdout\n"
+        "sink = _claim_stdout()\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "sink.write('{\"t\": \"note\", \"msg\": \"ok\"}\\n'); sink.close()\n"
+    )
+    started = time.monotonic()
+    out = subprocess.run(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, check=True, timeout=30
+    ).stdout
+    assert out.decode().splitlines() == ['{"t": "note", "msg": "ok"}']
+    assert time.monotonic() - started < 4  # EOF did not wait for the sleeper
 
 
 def test_child_emits_progress_notes_and_success_code(
@@ -128,7 +181,9 @@ def _run_child_that_raises(
         raise error
 
     monkeypatch.setattr(gather_child, "run_gather", exploding_run_gather)
-    monkeypatch.setenv("IETF_LLM_PROGRESS_FD", str(write_fd))
+    monkeypatch.setattr(
+        gather_child, "_claim_stdout", lambda: os.fdopen(write_fd, "w", encoding="utf-8")
+    )
     raised: list = []
 
     def _go() -> None:
@@ -233,7 +288,7 @@ def _fake_child(tmp_path: Path) -> Path:
     script = tmp_path / "fake_child.py"
     script.write_text(
         "import os, sys, json, time\n"
-        "w = os.fdopen(int(os.environ['IETF_LLM_PROGRESS_FD']), 'w')\n"
+        "w = sys.stdout\n"
         "w.write(json.dumps({'t':'progress','name':'charter',"
         "'index':1,'total':2,'detail':None})+chr(10)); w.flush()\n"
         "w.write(json.dumps({'t':'note','msg':'hi'})+chr(10)); w.flush()\n"
@@ -313,6 +368,7 @@ def test_parent_carries_the_childs_error_into_the_crash_message(
     )
 
 
+@posix_only("a Windows process cannot die from a signal; it exits with a code")
 def test_parent_names_the_signal_that_killed_the_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
