@@ -28,6 +28,7 @@ re-exported by `runner` for callers), so the dependency runs one way
 from __future__ import annotations
 
 import atexit
+import io
 import json
 import os
 import queue
@@ -170,30 +171,19 @@ def _run_pipeline_child(
     child's pipe (GIL released), so the server stays responsive throughout. The
     child's exit code carries its `GatherOutcome`."""
     corpus = spec.corpus
-    read_fd, write_fd = os.pipe()
     env = dict(os.environ)
-    env["IETF_LLM_PROGRESS_FD"] = str(write_fd)
     _limit_child_cpu(env)
-    try:
-        proc = subprocess.Popen(
-            _child_command(spec),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            pass_fds=(write_fd,),
-            env=env,
-        )
-    except BaseException:
-        os.close(read_fd)
-        os.close(write_fd)
-        raise
-    os.close(write_fd)  # the child holds the writer now; the parent only reads
+    # Progress comes back on the child's stdout: `pass_fds` is POSIX-only.
+    proc = subprocess.Popen(
+        _child_command(spec),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        env=env,
+    )
     with _children_lock:
         _children[corpus] = proc
     try:
-        # Owns + closes read_fd.
-        child_error = _pump_child(
-            corpus, proc, read_fd, progress, note, cancel_requested
-        )
+        child_error = _pump_child(corpus, proc, progress, note, cancel_requested)
         rc = proc.wait()
     finally:
         _terminate_child(proc)  # no-op if it already exited; kills on the cancel path
@@ -224,7 +214,6 @@ def _describe_exit(rc: int) -> str:
 def _pump_child(
     corpus: str,
     proc: "subprocess.Popen[bytes]",
-    read_fd: int,
     progress: ProgressCallback,
     note: NoteCallback,
     cancel_requested: CancelCheck,
@@ -239,10 +228,12 @@ def _pump_child(
     cancel decision. On a cancel it terminates the child, which EOFs the pipe
     and ends the reader. Portable (no `select`), so it works off POSIX too."""
     records: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
+    stdout = proc.stdout
+    assert stdout is not None  # spawned with stdout=PIPE
 
     def _reader() -> None:
         try:
-            with os.fdopen(read_fd, "r", encoding="utf-8") as pipe:
+            with io.TextIOWrapper(stdout, encoding="utf-8") as pipe:
                 # readline (not `for line in pipe`) so a line is delivered as
                 # soon as it arrives, not after a read-ahead buffer fills.
                 for line in iter(pipe.readline, ""):

@@ -391,7 +391,9 @@ hints in tool output.
   (`gather/runner.py`) owns the queue, leases, heartbeat and status; the pipeline itself runs in a
   **child process** (`gather/pipeline.py`, `gather/child.py`), so a CPU-bound index build cannot
   starve the server's event loop. `stop_gather` terminates the child, and a child crash fails one
-  gather rather than the server.
+  gather rather than the server. The child streams progress to the parent as JSON lines on its
+  stdout (it moves the real pipe aside and points fd 1 at the null device, so stray output can't
+  corrupt the stream); this avoids `pass_fds`, which Windows does not support.
 - **One gather per corpus** at a time within a server process; on the cloud backend the lease
   extends that across hosts. Different corpora run in parallel. A CLI gather and an in-session
   gather in separate processes on the local backend do not exclude each other.
