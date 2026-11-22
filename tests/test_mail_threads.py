@@ -189,6 +189,95 @@ def test_elide_quotes_collapses_outlook_header_block() -> None:
     assert "From: John Mattsson" not in result
 
 
+def test_elide_quotes_collapses_localized_header_blocks() -> None:
+    # Outlook and webmail clients localize the From/Sent/Subject labels; some
+    # use the full-width colon, pad labels with spaces, or put blank lines
+    # between the fields.
+    blocks = {
+        "chinese-outlook": (
+            "-----邮件原件-----\n"
+            "发件人: Pat <pat@example.org>\n"
+            "发送时间: 2026年4月21日 6:45\n"
+            "收件人: tls@ietf.org\n"
+            "主题: [TLS] Re: call\n"
+        ),
+        "chinese-fullwidth-spaced": (
+            "发件人：Pat <pat@example.org>\n"
+            "日　期：2026年10月28日 20:40:50\n"
+            "收件人：tls@ietf.org\n"
+            "主　题：Re: call\n"
+        ),
+        "french": (
+            "De : Pat <pat@example.org>\n"
+            "Envoyé : mercredi 14 janvier 2026 19:48\n"
+            "À : tls@ietf.org\n"
+            "Objet : Re: call\n"
+        ),
+        "spanish": (
+            "De: Pat <pat@example.org>\n"
+            "Enviado el: martes, 20 de enero de 2026 16:29\n"
+            "Para: tls@ietf.org\n"
+            "Asunto: Re: call\n"
+        ),
+        "german": (
+            "Von: Pat <pat@example.org>\n"
+            "Gesendet: Montag, 11. Mai 2026 15:50\n"
+            "An: tls@ietf.org\n"
+            "Betreff: Re: call\n"
+        ),
+        "no-space-after-colon": (
+            "From:Pat <pat@example.org>\n"
+            "Send Time:Tue, Aug 4, 2026, 00:41\n"
+            "To:tls@ietf.org\n"
+            "Subject:Re: call\n"
+        ),
+        "blank-lines-between-fields": (
+            "Original\n\n"
+            "From: Pat <pat@example.org>\n  \n"
+            "To: tls@ietf.org\n  \n"
+            "Cc: last-call@ietf.org\n  \n"
+            "Date: 2026年10月08日 05:54\n  \n"
+            "Subject: Re: call\n  \n"
+        ),
+    }
+    for label, block in blocks.items():
+        text = f"My reply.\n\n{block}\nthe earlier message\nmore of it\n"
+        result = elide_quotes(text)
+        assert "My reply." in result, label
+        assert "quoted reply trail elided" in result, label
+        assert "the earlier message" not in result, label
+        assert "Pat <pat@example.org>" not in result, label
+
+
+def test_elide_quotes_collapses_run_on_original_message_divider() -> None:
+    # Android clients run the header fields on after the divider, on one line.
+    text = (
+        "Sounds good.\n\n"
+        "-------- Original message --------From: Pat <pat@example.org> "
+        "Date: 8/2/26 11:01 AM To: tls@ietf.org Subject: Re: call\n"
+        "the earlier message\n"
+    )
+    result = elide_quotes(text)
+    assert "Sounds good." in result
+    assert "quoted reply trail elided" in result
+    assert "the earlier message" not in result
+
+
+def test_elide_quotes_keeps_header_like_lines_without_a_full_block() -> None:
+    # A From: line needs both a sent/date field and a subject field; a
+    # forwarded-mail summary or prose that mentions one is not a trail.
+    text = (
+        "Forwarding for context.\n\n"
+        "From: Pat <pat@example.org>\n"
+        "To: tls@ietf.org\n"
+        "Date: Monday\n\n"
+        "My own analysis of that follows.\n"
+    )
+    result = elide_quotes(text)
+    assert "quoted reply trail elided" not in result
+    assert "My own analysis of that follows." in result
+
+
 def test_elide_quotes_collapses_on_wrote_attribution() -> None:
     text = (
         "My objection stands.\n\n"
@@ -199,6 +288,21 @@ def test_elide_quotes_collapses_on_wrote_attribution() -> None:
     assert "My objection stands." in result
     assert "quoted reply trail elided" in result
     assert "big quoted table" not in result
+
+
+def test_elide_quotes_collapses_wrapped_attribution_from_its_first_line() -> None:
+    # The attribution wraps (`On <date>, <name> <addr>` then `wrote:`); the cut
+    # starts at the opener so it is not left dangling above the marker.
+    text = (
+        "Fine by me.\n\n"
+        "On Thu, 2 Jul 2026 at 10:55, Michael Richardson <mcr@example.org>\n"
+        "wrote:\n\n"
+        "the earlier message\nmore of it\n"
+    )
+    result = elide_quotes(text)
+    assert "Fine by me." in result
+    assert "On Thu, 2 Jul 2026" not in result
+    assert "quoted reply trail elided" in result
 
 
 def test_elide_quotes_keeps_prose_ending_in_wrote() -> None:
@@ -305,6 +409,64 @@ def test_elide_quotes_trims_signature_at_delimiter() -> None:
     assert "> [3 quoted lines elided]" in result
 
 
+def test_elide_quotes_signature_above_quote_keeps_inline_replies() -> None:
+    # Some clients put the signature above the quoted thread. The signature
+    # ends where the attribution begins, so the inline replies below survive.
+    text = (
+        "Hi Med, see inline.\n\n"
+        "--\n"
+        "Aron Wussler\n"
+        "Sent with ProtonMail\n\n"
+        "On Monday, 15 December 2025 at 15:32, Med <med@example.org> wrote:\n\n"
+        "> Hi Aron,\n> Thanks for the follow-up.\n> Please see inline.\n\n"
+        "[Aron] We split the normative sections from the rest.\n\n"
+        "> Cheers,\n> Med\n> Bye\n\n"
+        "[Aron] Done\n"
+    )
+    result = elide_quotes(text)
+    assert "Hi Med, see inline." in result
+    assert "Aron Wussler" not in result
+    assert "Sent with ProtonMail" not in result
+    assert "[Aron] We split the normative sections" in result
+    assert "[Aron] Done" in result
+    assert "quoted reply trail elided" not in result
+
+
+def test_elide_quotes_signature_with_nothing_of_the_authors_after_it_is_cut() -> None:
+    # Where only a quote or trail follows the signature there is no prose to
+    # rescue, so everything from the delimiter on is dropped as before.
+    text = (
+        "Agreed.\n\n"
+        "-- \n"
+        "Jane Doe\nExample Corp\n\n"
+        "On Tue, 10 Jun 2026, Pat <pat@example.org> wrote:\n"
+        "> the earlier message\n> more of it\n> and more\n"
+        "\u200b\u200b\u200b\n"
+    )
+    result = elide_quotes(text)
+    assert "Agreed." in result
+    assert "Jane Doe" not in result
+    assert "On Tue, 10 Jun 2026" not in result
+    assert "quoted lines elided" not in result
+
+
+def test_elide_quotes_signature_quote_then_list_footer_is_cut() -> None:
+    # A list footer or a URL wrapped onto its own line below the quote is not
+    # the author's prose, so it does not rescue the text after the signature.
+    footer = (
+        "_______________________________________________\n"
+        "TLS mailing list -- tls@ietf.org\n"
+        "To unsubscribe send an email to tls-leave@ietf.org\n"
+    )
+    for tail in (footer, "https://example.org/a/very/long/wrapped/url?x=1\n\n" + footer):
+        text = (
+            "Hi,\n\n--\nAron\n\n"
+            "On Mon, 15 Dec 2025, Med <med@example.org> wrote:\n\n"
+            "> a\n> b\n> c\n\n" + tail
+        )
+        assert elide_quotes(text).strip() == "Hi,"
+
+
 def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
     # A `>`-prefixed top-post: the reply is above, the attribution introduces
     # the quoted original. Run-collapse handles the quote; nothing is trail-cut,
@@ -319,6 +481,67 @@ def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
     assert "On Tue, 10 Jun 2026" in result
     assert "quoted reply trail elided" not in result
     assert "> [3 quoted lines elided]" in result
+
+
+def test_elide_quotes_keeps_inline_reply_after_attribution_and_snip_line() -> None:
+    # An attribution, a short non-quote line (a snip marker or a note), then
+    # `>` quoting with the author's replies between: still an inline reply,
+    # so nothing is trail-cut and the replies survive.
+    for filler in ("...", "[ removed dance@ from the thread ]"):
+        text = (
+            "On Fri, 21 Nov 2025, Petr Smith wrote:\n\n"
+            f"{filler}\n\n"
+            "> Oh, okay. What I had on mind is to display the key id.\n"
+            "> I think that is always SHA256 now.\n"
+            "> And a third quoted line.\n\n"
+            "I clearly misunderstood your idea.\n\n"
+            "> My primary motivation was an easy check.\n"
+            "> Whether that user has changed key.\n"
+            "> And another quoted line.\n\n"
+            "If they migrated keys, you have to fetch the new one.\n"
+        )
+        result = elide_quotes(text)
+        assert "quoted reply trail elided" not in result, filler
+        assert "I clearly misunderstood your idea." in result, filler
+        assert "If they migrated keys" in result, filler
+
+
+def test_elide_quotes_cuts_unmarked_trail_that_has_nested_quotes_later() -> None:
+    # A top-post whose pasted original has no `>` markers but itself contains
+    # older `>` quoting further down. The attribution is followed by a long
+    # unmarked stretch, so it is still a trail, not an inline reply.
+    text = (
+        "Agreed.\n\n"
+        "On Tue, 10 Jun 2026, Someone <x@example.org> wrote:\n\n"
+        "Hi all,\n"
+        "first paragraph of the original message,\n"
+        "second paragraph of the original message,\n"
+        "third paragraph of the original message.\n\n"
+        "> an older quoted line\n> another older line\n> and another\n"
+    )
+    result = elide_quotes(text)
+    assert "Agreed." in result
+    assert "quoted reply trail elided" in result
+    assert "first paragraph of the original" not in result
+
+
+def test_elide_quotes_cuts_unmarked_original_with_short_opening_lines() -> None:
+    # Outlook's plain-text copy of the original: a greeting and a sentence,
+    # then a `>` quote nested inside it. Only snip lines may precede the `>`
+    # quote for the attribution to count as inline, so this is still a trail.
+    text = (
+        "Fine by me.\n\n"
+        'On 12/18/25, 2:32 PM, "Pat" <pat@example.org> wrote:\n\n'
+        "Hi Tim -\n\n"
+        "Your PR might explain this, but I have a question.\n\n"
+        "> an older quoted line\n> another\n> and another\n\n"
+        "If I understand this you mean something else.\n"
+    )
+    result = elide_quotes(text)
+    assert "Fine by me." in result
+    assert "quoted reply trail elided" in result
+    assert "Your PR might explain this" not in result
+    assert "If I understand this" not in result
 
 
 # --- build_threads ---------------------------------------------------------
