@@ -125,6 +125,32 @@ def test_claim_stdout_keeps_stray_output_off_the_progress_channel() -> None:
     assert out.decode().splitlines() == ['{"t": "note", "msg": "ok"}']
 
 
+def test_claim_stdout_keeps_grandchildren_off_the_progress_channel() -> None:
+    """A process the child spawns must neither write into the record stream (a
+    JSON line would be taken as a record) nor hold the pipe open past the
+    child's exit, which would stall the parent's reader."""
+    import subprocess
+
+    grandchild = (
+        "import os, time; print('grandchild'); "
+        "os.write(1, b'{\"t\": \"note\", \"msg\": \"leak\"}\\n'); "
+        "time.sleep(6)"
+    )
+    code = (
+        "import subprocess, sys\n"
+        "from ietf_llm.gather.child import _claim_stdout\n"
+        "sink = _claim_stdout()\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "sink.write('{\"t\": \"note\", \"msg\": \"ok\"}\\n'); sink.close()\n"
+    )
+    started = time.monotonic()
+    out = subprocess.run(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, check=True, timeout=30
+    ).stdout
+    assert out.decode().splitlines() == ['{"t": "note", "msg": "ok"}']
+    assert time.monotonic() - started < 4  # EOF did not wait for the sleeper
+
+
 def test_child_emits_progress_notes_and_success_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
