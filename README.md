@@ -60,6 +60,8 @@ list is served to the client with the server's
 - **Issues, pull requests and drafts** — filtered catalogues, verbatim draft text by section, and
   why the text says what it does.
 - **Meetings** — minutes with poll tallies, attendance, the upcoming schedule.
+- **Person attendance** — which plenaries a person was recorded at and which meetings they
+  registered for (`person_attendance`; carried by the `ietf` corpus).
 - **Norms** — how to read the record without overclaiming consensus, and how to contribute without
   wasting the group's time.
 

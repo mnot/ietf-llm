@@ -25,6 +25,7 @@ store, and are linked where they apply.
   - [The MCP server reads only the cache](#the-mcp-server-reads-only-the-cache)
   - [The one writer exception: in-session gather](#the-one-writer-exception-in-session-gather)
   - [The networked read exception: live Datatracker lookups and get_rfc_info](#the-networked-read-exception-live-datatracker-lookups-and-get_rfc_info)
+  - [Person attendance rides in the `ietf` corpus](#person-attendance-rides-in-the-ietf-corpus)
   - [IMAP cache lives outside the per-WG directory](#imap-cache-lives-outside-the-per-wg-directory)
   - [Cross-corpus singletons: the RFC series and the effort catalog](#cross-corpus-singletons-the-rfc-series-and-the-effort-catalog)
   - [The chartered-group mirror](#the-chartered-group-mirror)
@@ -100,6 +101,7 @@ per-corpus `embeddings.db` files, e.g. on tmpfs); see [storage.md](storage.md).
 │   │   ├── digests/                      # index issues pulls threads people timeline
 │   │   │                                 # citations message_citations (.md)
 │   │   ├── drafts/                       # draft-*.txt, rfc*.txt
+│   │   ├── attendance/                   # `ietf` corpus only: plenary.json registration.json
 │   │   ├── meetings/<code>/              # minutes.md agenda.md attendance.md/.json
 │   │   │   ├── slides/<slug>.pdf(.txt)   #   (meetings/_orphans/ holds unmatched transcripts)
 │   │   │   ├── transcripts/<YYYYMMDDHHmm>.md
@@ -426,6 +428,44 @@ A narrower break from the no-network rule, behind the same gate as in-session ga
   the reference graph can lag a brand-new RFC.
 
 The seed catalog refresh in `list_corpora` is the other networked read behind this gate.
+
+### Person attendance rides in the `ietf` corpus
+
+"Which plenaries did this person attend?" is about a person across the IETF, not a group, so a
+per-group gather is the wrong shape for it. But it must also reach the read-only replica, which sees
+only published corpus versions: the singleton mirrors (`_rfc/`, `_catalog/`, `_groups/`) are read
+from local cache and never reach it (`_groups` is not available on cloud for that reason). So the
+record is a file inside the `ietf` corpus, `files/attendance/plenary.json`, written by
+`gather/sources/plenary_attendance.py` and published with the corpus like anything else.
+
+- **Contents.** Plenary sessions of the Datatracker group `ietf` (`type=plenary`), each with the
+  person ids the `attended` API recorded, plus an id→name map. Sessions are kept apart, so a plenary
+  is never merged with a side event (the per-meeting `attendance.md` rosters still merge all of a
+  group's sessions). It covers all history, regardless of the gather window.
+- **Refresh.** A session with attendees that is over a month old is final and not refetched; the
+  rest are refetched each gather. Attendees are only ever added. Stored sessions and meetings are
+  carried forward when a listing or lookup comes back short, and a chunk of attendee rows is kept only
+  if every page arrived (a truncated list would otherwise look final), so a failed request can't
+  erase or truncate the record.
+- **Reader.** `person_attendance` reads the file offline. A name matching several people returns a
+  candidate list keyed by person id; it never guesses. Where the `ietf` corpus is not gathered and
+  live lookups are enabled (a local stdio server), the tool queries the Datatracker directly
+  instead (`live_lookup/attendance.py`: `attended?person=…&session__group__acronym=ietf`), so a
+  local user needs no gather. A replica without the corpus reports it as unavailable.
+- **Coverage.** The Datatracker records attendance only from IETF 108 (July 2020); the tool says so,
+  and treats earlier plenaries as "no data", never "did not attend".
+- **Registration.** `files/attendance/registration.json` is written the same way
+  (`gather/sources/meeting_registration.py`) from the Datatracker registration API, one row per
+  person and numbered meeting: person id, attendance types (onsite, remote, hackathon) and the
+  check-in flag, plus a display name for lookup. It drops email, affiliation, country and ticket
+  type, which the lookup does not need. A meeting is final a month after it is held. Registering is
+  not attending, and the tool says so.
+- **Seeding.** Both files are under `files/`, so a seed bundle of `ietf` carries them with no format
+  change (JSON is not embedded, so the compatibility tuple is unchanged). The raw registration pages
+  carry registrants' email, so they are fetched without the ETag store (which is persisted to the
+  cloud bucket): neither the version content, a seed bundle nor the bucket's gather caches hold them.
+  The local live-lookup cache (`.live-cache.json`, excluded from seeds) holds a live registration
+  response for its short TTL.
 
 ### IMAP cache lives outside the per-WG directory
 

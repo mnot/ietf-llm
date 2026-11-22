@@ -250,6 +250,7 @@ DIR_PULLS = "pulls"
 DIR_GITHUB = "github"
 DIR_RAW = "raw"
 DIR_BALLOTS = "ballots"
+DIR_ATTENDANCE = "attendance"
 
 # Per-meeting subdirs.
 SUBDIR_SLIDES = "slides"
@@ -391,6 +392,19 @@ def attendance_data_path(cache_dir: str, code: str) -> str:
     `{"name", "person"}` rows the registry reads back to link attendees to
     known participants by Datatracker person id."""
     return os.path.join(meeting_dir(cache_dir, code), "attendance.json")
+
+
+def plenary_attendance_path(cache_dir: str) -> str:
+    """IETF-wide plenary attendance record, written only into the `ietf`
+    corpus (see `plenary_attendance`). Lives under `files/` so it is
+    published with the corpus and reaches a read-only replica."""
+    return os.path.join(cache_dir, DIR_ATTENDANCE, "plenary.json")
+
+
+def registration_path(cache_dir: str) -> str:
+    """IETF-wide meeting registration record, written only into the `ietf`
+    corpus (see `meeting_registration`)."""
+    return os.path.join(cache_dir, DIR_ATTENDANCE, "registration.json")
 
 
 def slides_dir(cache_dir: str, code: str) -> str:
