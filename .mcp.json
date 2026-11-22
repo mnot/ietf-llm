@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ietf-llm": {
+      "command": "uvx",
+      "startup_timeout_sec": 600,
+      "args": ["--python", "3.12", "--from", "ietf-llm[local-embeddings]@latest", "ietf-llm-mcp"]
+    }
+  }
+}
