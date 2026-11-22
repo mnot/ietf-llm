@@ -378,14 +378,26 @@ def _is_boundary(lines: List[str], i: int) -> bool:
     )
 
 
+#: A mailing-list footer rule (Mailman puts a line of underscores above it).
+_LIST_FOOTER_RE = re.compile(r"^_{10,}\s*$")
+
+#: A line holding only a URL, such as a Safelinks URL wrapped off a quote.
+_URL_ONLY_RE = re.compile(r"^<?(?:https?|mailto):\S+>?$", re.IGNORECASE)
+
+
 def _has_prose(lines: List[str]) -> bool:
     """Whether the author wrote anything of their own in `lines`: a line that
-    is neither quoted, an attribution, nor part of a trail cut at the end."""
+    is neither quoted, an attribution, a bare URL, nor part of a trail or list
+    footer cut at the end."""
     end = _quoted_trail_start(lines)
+    footer = next((i for i, ln in enumerate(lines) if _LIST_FOOTER_RE.match(ln)), None)
+    if footer is not None and (end is None or footer < end):
+        end = footer
     return any(
         re.search(r"\w", ln)
         and not ln.lstrip().startswith(">")
         and not _is_attribution(ln.strip())
+        and not _URL_ONLY_RE.match(ln.strip())
         for ln in lines[:end]
     )
 

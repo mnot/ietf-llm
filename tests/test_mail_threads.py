@@ -450,6 +450,23 @@ def test_elide_quotes_signature_with_nothing_of_the_authors_after_it_is_cut() ->
     assert "quoted lines elided" not in result
 
 
+def test_elide_quotes_signature_quote_then_list_footer_is_cut() -> None:
+    # A list footer or a URL wrapped onto its own line below the quote is not
+    # the author's prose, so it does not rescue the text after the signature.
+    footer = (
+        "_______________________________________________\n"
+        "TLS mailing list -- tls@ietf.org\n"
+        "To unsubscribe send an email to tls-leave@ietf.org\n"
+    )
+    for tail in (footer, "https://example.org/a/very/long/wrapped/url?x=1\n\n" + footer):
+        text = (
+            "Hi,\n\n--\nAron\n\n"
+            "On Mon, 15 Dec 2025, Med <med@example.org> wrote:\n\n"
+            "> a\n> b\n> c\n\n" + tail
+        )
+        assert elide_quotes(text).strip() == "Hi,"
+
+
 def test_elide_quotes_top_post_with_marked_quote_keeps_attribution() -> None:
     # A `>`-prefixed top-post: the reply is above, the attribution introduces
     # the quoted original. Run-collapse handles the quote; nothing is trail-cut,
