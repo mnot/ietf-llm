@@ -24,6 +24,10 @@ from ietf_llm.gather.lifecycle import GatherOutcome
 from ietf_llm.gather.runner import GatherSpec
 
 
+def posix_only(reason: str):  # type: ignore[no-untyped-def]
+    return pytest.mark.skipif(sys.platform == "win32", reason=reason)
+
+
 # --- CPU-contention hardening: nice + thread caps --------------------------
 
 
@@ -47,6 +51,7 @@ def test_limit_child_cpu_respects_operator_setting(
     assert env["MKL_NUM_THREADS"] == "7"  # the unset ones still filled
 
 
+@posix_only("os.nice does not exist on Windows; `_renice` skips it there")
 def test_child_renices_by_default_and_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -363,6 +368,7 @@ def test_parent_carries_the_childs_error_into_the_crash_message(
     )
 
 
+@posix_only("a Windows process cannot die from a signal; it exits with a code")
 def test_parent_names_the_signal_that_killed_the_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
